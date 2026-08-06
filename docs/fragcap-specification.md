@@ -82,7 +82,8 @@ enforcement.
 | Version | Date | Author | Summary |
 | --- | --- | --- | --- |
 | 0.1.0-draft | 2026-08-06 | W. Thompson | Initial specification. |
-| 0.1.1-draft | 2026-08-06 | W. Thompson | Reconnaissance findings applied. A-1 through A-4 confirmed, **A-5 refuted**. Changes to 5.4, 6.2, 8.4, 10.2, 10.3, 11.2, 12.1, 12.2, 15.2, 15.4, 22.3, 28, 29, Appendix D. Adds credential-handling rules for command lines in 10.2. |
+| 0.1.1-draft | 2026-08-06 | W. Thompson | Reconnaissance findings applied. A-1 through A-4 confirmed, **A-5 refuted**. Changes to 5.4, 6.2, 8.4, 10.2, 10.3, 11.2, 12.1, 12.2, 15.2, 15.4, 22.3, 28, 29, Appendix D. Adds command line handling rules in 10.2. |
+| 0.1.2-draft | 2026-08-06 | W. Thompson | **Withdraws a claim.** 0.1.1-draft asserted that a focal title passes a live credential on its client's command line, and described it as documented. That was inference from a parameter name and was not supported by the capture. An entropy scan of 3,694 command lines found no credential in either title. Sections 6.2, 10.2, 29, and Appendix D corrected. The 10.2 rules stand, rescoped to the operator-identifying data that was actually observed. A-5's fallback now cites an observed named pipe instead. |
 
 ## 2. Purpose and Problem Statement
 
@@ -589,13 +590,17 @@ traffic.** **REFUTED, 2026-08-06. The fallback is in effect.**
 - *Result:* No launcher-to-client loopback conversation exists in
   either focal title. Every loopback conversation attributed during the
   session had the same process on both ends, including the largest at
-  5.4 MB. The handoff is instead a single-use token on the client's
-  command line. The fallback applies with one amendment: the mechanism
-  is a command line argument rather than a pipe or shared memory, and it
-  is therefore **observable by the process watcher in section 10 even
-  though it is invisible to packet capture**. Sections 10.2, 12.1, and
-  22.3 carry the consequences, and the credential-handling rules in
-  10.2 exist because of this finding.
+  5.4 MB. **The fallback applies as written.** One title's platform
+  service is passed a named pipe path on its command line,
+  `\\.\pipe\terminal_1_uplay_service_ipc_pipe_`, base64 encoded, which
+  is direct evidence for the named-pipe mechanism the fallback
+  anticipated. The other title's client receives parameters that appear
+  intended for a handoff but are unset on the platform launch path, so
+  its mechanism is **not established**; see Q-10.
+
+  Either way the conclusion for fragcap is the same: the handoff is not
+  a packet and will not appear in a capture. Sections 12.1 and 22.3
+  carry the consequences.
 
 ## 7. Functional Requirements
 
@@ -1032,25 +1037,47 @@ Exited nodes are retained for the session. Retention costs a few
 kilobytes and permits attribution of packets that arrive after their
 owning process has terminated.
 
-**Command lines are credential-bearing and are not captured by
-default.** Reconnaissance established that at least one focal title
-performs its launcher-to-client handoff by passing a single-use
-authentication token on the client's command line, as a parameter named
-`onetime_token`. A process tree that records command lines
-indiscriminately therefore records live credentials.
+**Command lines carry operator-identifying data and are not captured by
+default.**
 
-The following rules are binding.
+Reconnaissance measured this rather than assuming it. An entropy scan
+over 3,694 command lines from two focal-title sessions found **no
+credentials**: the highest-entropy arguments decoded to file paths,
+named pipe paths, and build identifiers. The credential risk on argv is
+a real and well-known category, but it was not demonstrated in either
+focal title and is not claimed here.
+
+What the same scan did establish is that **every command line contains
+the operator's account name**, embedded in user-profile paths, along
+with installation layout and, on a working machine, unrelated
+concurrent activity. That is identifying, it appears in every process
+record, and it is sufficient reason for the rules below on its own.
+
+The following rules are binding. They are scoped to protect against
+identifying data, and they protect against credentials as a side effect
+if a future title does put one on argv.
 
 Command line capture is **off by default** and enabled by an explicit
 flag. The default tree records image path, which is what stage matching
 in section 10.3 needs, and omits the command line.
 
-When capture is enabled, parameters on a redaction list are replaced
-with a fixed marker before the value reaches memory that outlives the
-event handler. The list is data rather than code so a profile can extend
-it, and it ships containing `onetime_token`, `token`, `ticket`,
-`password`, `session`, `auth`, and `key`. Matching is
-case-insensitive and applies to the parameter name.
+When capture is enabled, user-profile path segments are replaced with a
+fixed marker, since the account name is the identifying element and it
+appears in nearly every argument list.
+
+Additionally, parameters on a redaction list are replaced before the
+value reaches memory that outlives the event handler. The list is data
+rather than code so a profile can extend it, and it ships containing
+`token`, `ticket`, `password`, `session`, `auth`, and `key`. Matching is
+case-insensitive and applies to the parameter name. This list is
+precautionary against a category rather than a response to an observed
+leak; see Appendix D.
+
+Name-based redaction is a weak control on its own, because it only
+catches parameters someone thought to name. An entropy check over
+argument values, flagging high-entropy strings that do not decode to a
+path, is the stronger complement and is the reason the reconnaissance
+tooling implements one.
 
 A command line **never enters output**, regardless of the flag: not
 `.fcapng` annotations, not JSON Lines records, not the structured event
@@ -1058,12 +1085,12 @@ stream. It is available to diagnostics and to the operator's own
 terminal only. A capture file is routinely attached to bug reports, and
 a format that can carry a credential into one is a defect in the format.
 
-The rationale is worth stating plainly because the convenient reading is
-the wrong one. fragcap can observe more about the handoff than a packet
-capture can, since the process watcher sees argv while the network sees
-nothing. That capability is exactly why the restriction is needed:
-the tool's reach here exceeds what a capture tool's users expect it to
-record.
+The rationale is worth stating plainly. The process watcher sees things
+a packet capture cannot, and a user who installs a network capture tool
+does not expect their account name and installed software layout to be
+recorded alongside the packets. The restriction exists because the
+tool's reach here exceeds what its category implies, not because a
+specific leak was observed.
 
 ### 10.3 Stage Matching
 
@@ -3008,9 +3035,15 @@ New questions raised by the reconnaissance, none of which block v0.1.0:
 
 | ID | Question | Method | Blocks |
 | --- | --- | --- | --- |
-| Q-10 | Does the non-Steam launch path populate `onetime_token` with a live credential? | Launch outside Steam, inspect argv | Redaction list scope, section 10.2 |
-| Q-11 | Do other titles pass credentials on argv, and under what parameter names? | Widen the sample as profiles are contributed | Redaction list defaults |
+| Q-10 | By what mechanism does the first focal title hand off to its client? Its argv parameters are unset on the platform path and no loopback conversation exists, so the channel is unidentified. | Launch outside the platform path; inspect argv, named pipes, and shared sections | Nothing. Documentation completeness only. |
+| Q-11 | Do any titles pass credentials on argv? Not observed in either focal title across 3,694 command lines. | Entropy scan as profiles are contributed | Redaction list defaults, section 10.2 |
 | Q-12 | Does image-name recurrence appear in titles beyond the second focal title? | Observe during profile authoring | Section 15.4 check severity |
+
+Q-10 and Q-11 are open because they are unanswered, not because they
+are suspected. An earlier revision asserted a credential handoff on argv
+for the first focal title; that assertion was inference from a parameter
+name, was not supported by the capture, and has been withdrawn. The
+measurement that replaced it found no credential in either title.
 
 ## 30. Appendices
 
@@ -3077,7 +3110,8 @@ Established before any session, and applicable to both.
 | Encryption | TCP 7.61, UDP 7.951 bits per byte. Encrypted throughout. |
 | Connection lifetimes | 11,246 closed, none under 250 ms, gameplay connections in the hundreds of seconds |
 | Loopback | 5.4 MB, entirely intra-process. No launcher-to-client conversation. |
-| Handoff | Command line parameter `onetime_token` on the client's argv |
+| Handoff | **Not established.** The client's argv carries `viewer_id`, `onetime_token`, and an unsubstituted `{ProductID}` placeholder, all unset on the Steam launch path. Consistent with an unused template as much as with a disabled handoff channel. See Q-10. |
+| Credential scan | 2,526 command lines scanned by entropy. No credential found. Highest-entropy values were build identifiers and paths. |
 | Verdicts | A-1 confirmed, A-2 confirmed, A-3 confirmed, A-4 confirmed, **A-5 refuted** |
 
 #### D.3 Tom Clancy's The Division 2
@@ -3093,6 +3127,8 @@ Established before any session, and applicable to both.
 | Encryption | TCP 7.862, UDP 7.947 bits per byte. Encrypted throughout. |
 | Connection lifetimes | 1,003 closed, none under 250 ms |
 | Loopback | 125 conversations, no launcher-to-client conversation |
+| Inter-process channel | Named pipe. `UplayService.exe` receives `\\.\pipe\terminal_1_uplay_service_ipc_pipe_` base64 encoded on argv. This is the mechanism the A-5 fallback anticipated, observed directly. |
+| Credential scan | 1,168 command lines scanned by entropy. No credential found. Highest-entropy values decoded to file paths and the named pipe above. |
 | Verdicts | A-1 confirmed, A-2 confirmed, A-3 confirmed, A-4 confirmed, **A-5 refuted** |
 
 #### D.4 Measurement caveats
