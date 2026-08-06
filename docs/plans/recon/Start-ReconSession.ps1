@@ -413,7 +413,6 @@ namespace FragcapRecon {
     $script:Recorders  = @()
     $script:Subs       = @()
     $script:SocketLog  = $null
-    $script:ProcLog    = $null
 
 #_______________________________________________________________________________
 ## Execute Operations
