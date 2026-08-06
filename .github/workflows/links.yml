@@ -1,0 +1,23 @@
+# External reference verification. Specification 22.5, 24.2.
+#
+# SKELETON. Owned by slice S18, which builds the documentation the linter
+# checks. Runs weekly rather than per commit, because external link liveness
+# is not a property of a change.
+name: links
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: verify external references
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Not yet implemented
+        run: |
+          echo "External link verification is owned by slice S18."
+          echo "This workflow is a declared skeleton, not a passing check."
+          exit 1

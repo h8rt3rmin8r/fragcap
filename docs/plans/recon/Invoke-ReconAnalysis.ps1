@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 <#
 .SYNOPSIS
     Answer reconnaissance questions Q-1 to Q-6 from a recorded session.

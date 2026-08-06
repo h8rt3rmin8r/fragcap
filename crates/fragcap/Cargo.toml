@@ -1,0 +1,17 @@
+[package]
+name        = "fragcap"
+description = "Facade re-exporting the fragcap library surface."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+fragcap-core.workspace = true
+fragcap-profile.workspace = true
+fragcap-capture.workspace = true
+fragcap-attr.workspace = true
+fragcap-sink.workspace = true
+fragcap-steam.workspace = true

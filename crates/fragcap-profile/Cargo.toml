@@ -1,0 +1,12 @@
+[package]
+name        = "fragcap-profile"
+description = "Game profile schema, parsing, and stage matching."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+fragcap-core.workspace = true

@@ -2,8 +2,8 @@
 
 **Feature**: S01 | **Branch**: `feat/workspace-scaffold` \
 **Input**: [spec.md](spec.md), [plan.md](plan.md),
-[data-model.md](data-model.md), [contracts/xtask-cli.md](contracts/xtask-cli.md),
-[quickstart.md](quickstart.md)
+[data-model.md](data-model.md), [quickstart.md](quickstart.md),
+[contracts/xtask-cli.md](contracts/xtask-cli.md)
 
 **Tests are required for this slice.** FR-015a requires the conventions check
 to be covered by tests, and SC-004 requires each check to be demonstrated

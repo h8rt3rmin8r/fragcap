@@ -5,11 +5,31 @@ Passive, process-attributed network capture for game clients on Windows.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-pre--implementation-orange.svg)](docs/plans/README.md)
 
-> **Status: pre-implementation.** This repository currently holds the
-> specification, the constitution, and the plan. There is no Cargo workspace
-> and no Rust code yet; slice S01 creates them. Nothing here is installable or
-> runnable. See [`docs/plans/README.md`](docs/plans/README.md) for what is
-> being built and in what order.
+> **Status: early. The workspace exists; the capability does not.** Slice S01
+> has established the Cargo workspace, the crate graph, and the check set.
+> Every crate is a skeleton: nothing captures, attributes, or writes anything
+> yet. fragcap is not installable or runnable as a capture tool. See
+> [`docs/plans/README.md`](docs/plans/README.md) for what is being built and in
+> what order.
+
+## Building
+
+```bash
+cargo build --workspace
+cargo test --workspace --locked
+cargo xtask ci          # the full local check set, same as CI runs
+```
+
+`rustup` is the only prerequisite; the repository names the toolchain it needs
+and `rustup` fetches it on first build. **npcap is not required to build**, and
+no crate links against it yet.
+
+To verify platform neutrality locally you need one extra target:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+cargo xtask neutral
+```
 
 ## The problem
 

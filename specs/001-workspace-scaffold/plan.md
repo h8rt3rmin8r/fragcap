@@ -94,6 +94,28 @@ setup. The task runner additionally offers a local cross-target check for
 contributors who have the target installed, and says plainly when they do not
 rather than passing silently.
 
+**D-7. Platform neutrality needs two checks, not one.** Discovered while
+demonstrating that the checks can fail, which is the only reason it was caught.
+
+`cargo xtask neutral` builds `fragcap-core` for a target with no capture
+backend. That is what section 9.3 literally asks for, and it passes. But adding
+`windows-sys` to core as a dependency, conditionally or unconditionally, **does
+not make that build fail**: platform crates are themselves internally
+cfg-gated and compile to nothing off-platform. The build succeeds while P-2 has
+been violated.
+
+So the build check proves core *compiles* portably. It does not prove core has
+no platform-specific dependency, which is what FR-005 and data model rule V-4
+actually require. The stronger property needs a manifest check, and
+`cargo xtask deps` now asserts that `fragcap-core` has no dependencies of any
+kind, across `[dependencies]` and every `[target.'cfg(...)'.dependencies]`
+table.
+
+Both checks are retained because they fail on different things. Recorded here
+because the gap is invisible from the outside: a reader seeing a green
+neutrality check would reasonably conclude core was dependency-free, and until
+this was tested against known-bad input, so would this plan.
+
 ## Project Structure
 
 ### Documentation (this feature)
