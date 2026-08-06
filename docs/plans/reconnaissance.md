@@ -47,6 +47,20 @@ direction, port ranges, endpoint ownership, timing distributions) rather than
 the capture itself. If a fixture is genuinely needed for the S04 corpus, it is
 scrubbed and reviewed before it lands.
 
+## Tooling
+
+`recon/Start-ReconSession.ps1` runs all four recorders described below and is
+the intended way to execute this protocol. It performs the preflight checks,
+starts the recorders in the right order, and tears them down cleanly.
+
+```powershell
+pwsh -File docs/plans/recon/Start-ReconSession.ps1 -Title eso
+```
+
+The manual procedure below documents what the script does and why, so that the
+protocol survives the script and so a step can be run by hand when something
+misbehaves.
+
 ## Procedure
 
 Run these in order. Steps 1 and 2 must be started before the launcher, which
@@ -78,13 +92,23 @@ between the two captures depend on it.
 
 ### Step 3: start the socket table sampler
 
-Poll the socket table on a fixed interval for the whole session, appending
-every sample to a log with a timestamp. One second is a reasonable starting
-interval; it is short enough to characterize lifetimes and long enough not to
-perturb the machine.
+Poll the socket table on a fixed interval for the whole session, recording each
+socket when it first appears and again when it disappears.
 
-Each sample records, for every TCP and UDP endpoint: protocol, local address
-and port, remote address and port, state, and owning process identifier.
+**Use the direct IP Helper call, not the CIM path.** Measured on a busy machine
+with roughly 1800 sockets, `Get-NetTCPConnection` costs 1400 to 2000
+milliseconds per snapshot, while `GetExtendedTcpTable` costs 1 to 3. See PF-4 in
+`recon/README.md`. A one second cadence is not a design choice on the CIM path;
+it is the floor, and it is too coarse to characterize connection lifetimes. The
+default is 250 milliseconds and the interval is a parameter.
+
+Each sample records, for every TCP and UDP endpoint: protocol, local address and
+port, remote address and port where one exists, state, and owning process
+identifier.
+
+Note that **UDP endpoints have no remote address or port**, because
+`GetExtendedUdpTable` does not carry one. UDP attribution keys on the local
+endpoint alone. See PF-3.
 
 This log is the join key for everything else. Q-1 and Q-3 are answered from it
 directly, and it is the only artifact that cannot be reconstructed afterward.
