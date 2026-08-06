@@ -112,10 +112,8 @@ directories, populated with machine-local symlinks by the skills CLI; those
 symlinks are gitignored because they carry absolute paths. Spec-kit's own
 generated `speckit-*` skills are tracked in every surface.
 
-Two skill categories are deliberately absent and MUST NOT be added: anything
-teaching detection evasion, and anything teaching sandbox or process escape.
-Both contradict P-1 directly, and both would misrepresent what this project is
-to anyone auditing the repository.
+A skill is checked against P-1 before it is vendored. A skill that teaches a
+denylisted technique does not land here, whatever else it is useful for.
 
 ## Non-negotiables
 

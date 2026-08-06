@@ -86,22 +86,16 @@ machine, so they are gitignored and regenerated locally. Spec-kit's own
 why the gitignore excludes directory *contents* with a `speckit-*` exception
 rather than the directories themselves.
 
-### Two skill categories were deliberately excluded
+### The vendored set was curated against P-1
 
-A sibling repository carries skills covering antivirus evasion and sandbox
-escape. Both were left out.
+Thirty-five skills were carried: the house authoring standards, Rust craft,
+packet and traffic analysis, and the general process and quality skills the
+project runs on. Skills with no bearing on this work were not carried.
 
-They contradict constitution P-1 directly. They also misrepresent the project:
-specification section 23.3 makes "reads as laboratory equipment, not cheat
-tooling" a load-bearing requirement rather than a matter of taste, because
-identity that reads as cheat tooling attracts platform removal, security
-software heuristics, and community moderation regardless of what the software
-actually does. A public packet-capture repository shipping evasion tooling in
-its agent configuration would undercut that on the first look by anyone
-auditing it.
-
-`AGENTS.md` records this as a standing prohibition so it does not get
-reintroduced by a later bulk skill sync.
+The selection rule is recorded in `AGENTS.md` and `skills/README.md` so it
+survives a later bulk skill sync: a skill is checked against P-1 before it is
+vendored, and one teaching a denylisted technique does not land here whatever
+else it is useful for.
 
 ### Git is local only
 

@@ -39,25 +39,12 @@ therefore gitignored and regenerated per machine.
 hash covers every file in the skill directory, path-sorted, not `SKILL.md`
 alone, so a changed asset or script is detected too.
 
-## What is deliberately not here
+## Scope of the vendored set
 
-**Detection evasion and sandbox escape skills MUST NOT be added.** A sibling
-repository carries them; they were left out of this one on purpose.
-
-They contradict constitution principle P-1, which makes passive observation
-absolute. They also misrepresent the project. Specification section 23.3 makes
-"reads as laboratory equipment, not cheat tooling" a load-bearing requirement,
-because an identity that reads as cheat tooling attracts platform removal,
-security software heuristics, and community moderation regardless of what the
-software does. A public packet-capture repository shipping evasion tooling in
-its agent configuration undercuts that on first inspection.
-
-This is recorded in `AGENTS.md` as a standing prohibition so a later bulk skill
-sync does not quietly reintroduce it.
-
-Also excluded as irrelevant rather than harmful: Lua, GraphQL, and game
-engine skills. Front-end and design skills are held until S18 brings the
-documentation site into scope.
+The vendored set covers the house authoring standards, Rust craft, packet and
+traffic analysis, and the general process and quality skills the project runs
+on. Skills with no bearing on this work are not carried. Front-end and design
+skills are held until S18 brings the documentation site into scope.
 
 ## Known gap
 

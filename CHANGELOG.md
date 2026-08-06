@@ -45,8 +45,8 @@ change pinned artifacts, as required by the constitution.
   a bespoke directory. Codex reads that path natively, the skills CLI targets
   it, and spec-kit's own Codex integration writes there, so it is the path with
   the most tooling agreement.
-- **2026-08-06** Detection-evasion and sandbox-escape skills present in a
-  sibling repository were deliberately excluded. They contradict constitution
-  P-1 and would misrepresent the project to anyone auditing it.
+- **2026-08-06** The vendored skill set is curated against constitution P-1
+  rather than mirrored wholesale from a sibling repository. A skill is checked
+  against P-1 before it is vendored.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
