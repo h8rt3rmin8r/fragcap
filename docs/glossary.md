@@ -344,7 +344,8 @@ and per-block options.
 > Extensibility through options is what lets fragcap carry attribution in a
 > file that unmodified tools still read as an ordinary capture.
 
-**See also:** [.fcapng](#fcapng), [Enhanced Packet Block](#enhanced-packet-block)
+**See also:** [.fcapng](#fcapng),
+[Enhanced Packet Block](#enhanced-packet-block)
 
 **References:**
 
