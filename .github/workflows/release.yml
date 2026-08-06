@@ -30,7 +30,9 @@ jobs:
           $hits = Get-ChildItem target/release -Recurse -File |
                   Where-Object { $_.Name -match $pattern }
           if ($hits) {
-            $hits | ForEach-Object { Write-Error "npcap component in artifact: $($_.FullName)" }
+            $hits | ForEach-Object {
+              Write-Error "npcap component in artifact: $($_.FullName)"
+            }
             exit 1
           }
           Write-Output "OK: no npcap component found in the artifact tree."
