@@ -1,0 +1,130 @@
+# Contributing to fragcap
+
+Thanks for looking. This document is the practical how; the governing rules
+live in `.specify/memory/constitution.md`, and the mechanical ones in
+`CONVENTIONS.md`.
+
+Contributions are accepted under the Apache-2.0 inbound-equals-outbound model
+described in section 5 of the license. No separate contributor license
+agreement is required. Contributed game profiles are data covered by the same
+license.
+
+## Before anything else: what fragcap will not accept
+
+fragcap is a passive observation tool, and that is enforced rather than
+aspirational. Constitution principle P-1 prohibits, absolutely:
+
+- Packet interception or filtering drivers
+- Code injection into any target process
+- Function hooking
+- Process handles carrying memory-read rights against a target
+- Layered service providers or Winsock catalog modification
+- Executable image modification
+
+A pull request using any of these will be declined regardless of how well it
+works or what it enables. This is not negotiable and is not a judgment about
+the contributor. If a capability seems to require one of them, open an issue
+rather than an implementation; it usually means the problem has been framed in
+a way that has a passive solution.
+
+Copyleft-licensed dependencies are also declined. See constitution, licensing
+section.
+
+## Current state
+
+The repository is pre-implementation. There is no Cargo workspace yet; slice
+S01 creates it. Until then the useful contributions are review of the
+specification, the constitution, and the slice ordering, plus the
+reconnaissance work described in `docs/plans/reconnaissance.md`.
+
+## The rule
+
+- **All changes reach `main` only through a pull request that a human reviews
+  and approves.** No one pushes commits directly to `main`, and no agent merges
+  its own pull request.
+- The operator (`@h8rt3rmin8r`) is the reviewer, approver, and merger.
+- Continuous integration must be green before a pull request is merged.
+- A release is cut only by pushing a `vX.Y.Z` tag, and that tag push is the
+  operator's.
+
+## Workflow
+
+1. Branch off `main` (for example `feat/<slug>` or `fix/<slug>`).
+2. If the change implements a feature, it goes through the spec-kit sequence
+   first. Every feature traces to `docs/fragcap-specification.md` and lands as
+   a numbered `specs/NNN-slug/` slice. See `AGENTS.md` for the full cycle. Bug
+   fixes and documentation corrections do not need a slice.
+3. Make the change. Follow the constitution, `CONVENTIONS.md`, and the existing
+   patterns. Do not modify pinned artifacts (`.github/workflows/**`,
+   `rust-toolchain.toml`, `release.toml`, `scripts/**`, release documentation)
+   without a dated decision recorded in `CHANGELOG.md`.
+4. Add or update tests. Run verification in the foreground and watch it finish:
+
+   ```sh
+   cargo fmt --all -- --check
+   cargo clippy --all-targets --all-features -- -D warnings
+   cargo test --all --locked
+   ```
+
+5. Add a changelog **fragment**: a new `changelog.d/<key>.<section>.md` file.
+   **Do not edit `CHANGELOG.md` directly.** It conflicts with every other
+   concurrent pull request. See `changelog.d/README.md`.
+6. Open a pull request. Put `Closes #N` in the body so the issue auto-closes on
+   merge, summarize the change, and state how you verified it.
+7. Do not merge your own pull request.
+
+Two files are deliberately never edited by a pull request: `CHANGELOG.md` (use
+a fragment) and `.specify/feature.json` (local per-branch spec-kit state, and
+gitignored).
+
+If a change is ambiguous or underspecified, open the pull request as a draft
+and use the body to ask the specific questions rather than guessing.
+
+## Testing
+
+The testing strategy exists so that most of the project is verifiable with no
+capture driver, no elevation, and no game running. A replay `PacketSource`
+backed by capture fixtures and a scripted `FlowAttributor` make the whole
+pipeline testable offline. That property is worth protecting: if a change makes
+a previously offline-testable component require live hardware, that is a design
+problem, not a testing inconvenience.
+
+Three tiers:
+
+| Tier | What it covers | Runs in CI |
+| --- | --- | --- |
+| Unit | Individual components in isolation | yes |
+| Pipeline integration | End to end over fixtures, no driver, no game | yes |
+| Live smoke | Real capture against a real title | no, manual |
+
+Test fixtures under `fixtures/` are the one place capture files are committed.
+They are reviewed before they land and MUST NOT contain account identifiers,
+session tokens, or addresses attributable to a real operator.
+
+## Documentation and the glossary
+
+Constitution principle P-6: a term introduced in code or documentation gets a
+glossary entry in the same change that introduces it. No term appears in a
+project document without an entry existing first.
+
+This is enforced by the documentation linter, so a pull request introducing
+vocabulary without an entry fails continuous integration rather than review.
+The glossary is what lets the prose stay precise without condescending, and it
+only works if it never falls behind.
+
+## Reporting a problem
+
+Use the issue templates. For a capture defect, the useful report includes the
+`fragcap doctor` output, the fragcap version, the npcap version, the profile in
+use, and the capture statistics.
+
+**Scrub anything you attach.** Capture files carry addresses and, in some
+titles, session identifiers. Do not attach a raw capture to a public issue.
+Findings and fixtures are recorded without account identifiers, session tokens,
+or addresses attributable to the reporter.
+
+## Security
+
+If you believe you have found a security problem, or a way fragcap could be
+made to do something the constitution prohibits, do not open a public issue.
+Report it privately through the repository's security advisory process.

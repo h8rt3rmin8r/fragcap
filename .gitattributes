@@ -1,0 +1,54 @@
+# Normalize all text files to LF on commit and checkout, on every platform.
+# CONVENTIONS.md makes LF a repository rule; this file is what enforces it for
+# contributors who have not configured their editor.
+
+* text=auto eol=lf
+
+# Belt-and-suspenders for files where execution or parsing depends on LF
+*.md       text eol=lf
+*.mdx      text eol=lf
+*.rs       text eol=lf
+*.sh       text eol=lf
+*.ps1      text eol=lf
+*.psm1     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.json     text eol=lf
+*.toml     text eol=lf
+*.txt      text eol=lf
+*.ts       text eol=lf
+*.tsx      text eol=lf
+*.css      text eol=lf
+LICENSE    text eol=lf
+NOTICE     text eol=lf
+
+# Capture fixtures are binary. Never normalize them: a single byte changed by
+# line-ending translation invalidates every golden-output test that reads them
+# (specification section 25.4).
+*.pcap     binary
+*.pcapng   binary
+*.fcapng   binary
+
+# Mark common binaries explicitly so Git does not try to normalize them
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.webp     binary
+*.bmp      binary
+*.ico      binary
+*.pdf      binary
+*.zip      binary
+*.7z       binary
+*.gz       binary
+*.tar      binary
+*.tgz      binary
+*.woff     binary
+*.woff2    binary
+*.ttf      binary
+*.otf      binary
+
+# Keep generated and vendored content out of language statistics and collapsed
+# in pull request diffs.
+.agents/skills/**  linguist-vendored
+docs/fragcap-specification.md  linguist-documentation

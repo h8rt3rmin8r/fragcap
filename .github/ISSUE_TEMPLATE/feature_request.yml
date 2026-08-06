@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the non-goals in `README.md` and constitution principle P-1 first.
+        fragcap does not inject, hook, read target memory, or modify traffic,
+        and a proposal requiring any of those will be declined regardless of
+        how useful it would be. That is a scope boundary, not a judgment about
+        the request.
+
+        Check `docs/plans/README.md` too. The capability may already be a
+        planned slice, and specification section 28 records what is
+        deliberately deferred past v0.1.0.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What are you trying to observe or understand that you cannot today?
+        Describe the problem rather than the solution; the solution is often
+        different from the one that comes to mind first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed capability
+      description: What fragcap would do. Include the invocation if it is a CLI change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >-
+        Existing tooling, a different fragcap invocation, or post-processing
+        the output. If the capability is reachable by combining what already
+        exists, that is useful to know.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not require injecting into, hooking, or reading the memory of any target process.
+          required: true
+        - label: This does not require modifying, injecting, or replaying network traffic.
+          required: true
+        - label: I have checked docs/plans/README.md and specification section 28.
+          required: true

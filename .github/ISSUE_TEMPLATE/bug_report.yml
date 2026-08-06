@@ -1,0 +1,102 @@
+name: Bug report
+description: Something fragcap does incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you attach anything: scrub it.** Capture files carry addresses
+        and, in some titles, session identifiers. Do not attach a raw capture
+        to a public issue. Paste the derived facts instead, or open a security
+        advisory if the detail is genuinely needed.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        The exact invocation, and what state the system was in. If it involves
+        a specific title, say which and at what stage (launcher,
+        authentication, character select, gameplay, shutdown).
+      placeholder: |
+        1. fragcap run --profile eso --launch --duration 30m
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: fragcap doctor output
+      description: >-
+        Paste the full output. This covers the capture driver version, its
+        installation options, privilege level, interface inventory, and ETW
+        session availability, which is most of what is needed to triage.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: statistics
+    attributes:
+      label: Capture statistics
+      description: >-
+        If the capture ran, paste the reported statistics, including every drop
+        counter. A nonzero drop counter is frequently the whole answer.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: fragcap version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: npcap-version
+    attributes:
+      label: npcap version
+      placeholder: "1.79"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: npcap-options
+    attributes:
+      label: npcap installation options
+      description: >-
+        Both are required and neither is default. If you are unsure, fragcap
+        doctor reports them by name.
+      multiple: true
+      options:
+        - Loopback traffic capture support
+        - WinPcap API-compatible mode
+        - Neither
+        - Not sure
+
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 Pro 26200"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have removed addresses, account identifiers, and session tokens from everything above.
+          required: true
+        - label: I ran the invocation from an administrative shell.
+          required: true

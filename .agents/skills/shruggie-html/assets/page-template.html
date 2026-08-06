@@ -1,0 +1,83 @@
+<!doctype html>
+<!--
+  All {{*_DATA_URI}} placeholders below are filled at build time from
+  assets/inline-assets.md so generated pages embed every logo and favicon
+  as a base64 data URI. The only remote dependency is the typography
+  stylesheet imported inside the <style> block.
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+
+  <title>{{PAGE_TITLE}}</title>
+  <meta name="description" content="{{PAGE_DESCRIPTION}}">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{PAGE_TITLE}}">
+  <meta property="og:description" content="{{PAGE_DESCRIPTION}}">
+  <meta property="og:image" content="{{OG_IMAGE_DATA_URI}}">
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{PAGE_TITLE}}">
+  <meta name="twitter:description" content="{{PAGE_DESCRIPTION}}">
+  <meta name="twitter:image" content="{{OG_IMAGE_DATA_URI}}">
+
+  <!-- Favicons (inline base64; see assets/inline-assets.md) -->
+  <link rel="icon" href="{{FAVICON_ICO_DATA_URI}}" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="{{FAVICON_192_DATA_URI}}">
+  <link rel="apple-touch-icon" sizes="256x256" href="{{FAVICON_256_DATA_URI}}">
+
+  <style>
+    /* Inline the contents of assets/brand.css here. */
+  </style>
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="/" class="logo" aria-label="ShruggieTech">
+        <img src="{{LOGO_DARKBG_DATA_URI}}" alt="ShruggieTech">
+      </a>
+      <nav aria-label="Primary">
+        <a href="#section-1">Section</a>
+        <a href="#section-2">Section</a>
+        <a href="#section-3">Section</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <section class="section hero">
+      <div class="container">
+        <span class="eyebrow">{{EYEBROW}}</span>
+        <h1>{{HEADLINE}}</h1>
+        <p class="lede">{{LEDE}}</p>
+        <p>
+          <a href="#cta" class="button-primary">{{CTA_LABEL}}</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- Compose additional sections from assets/sections.md here. -->
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div>By ShruggieTech</div>
+      <div class="tagline">
+        <span class="shruggie" aria-hidden="true">¯\_(ツ)_/¯</span>
+        We'll figure it out.
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

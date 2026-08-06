@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/h8rt3rmin8r/fragcap/security/advisories/new
+    about: >-
+      Report a security problem privately, including any way fragcap could be
+      made to do something the constitution prohibits. Do not open a public
+      issue for these.
+  - name: Specification and design discussion
+    url: https://github.com/h8rt3rmin8r/fragcap/discussions
+    about: >-
+      Questions about the architecture, the constitution, or why a design
+      decision was made. Read docs/fragcap-specification.md first; most design
+      rationale is already recorded there.

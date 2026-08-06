@@ -1,0 +1,46 @@
+# EditorConfig enforces the mechanical rules in CONVENTIONS.md at edit time, so
+# they are satisfied before the repository linter ever runs.
+# https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+[*.{md,mdx}]
+indent_size = 2
+# CONVENTIONS.md wraps Markdown prose at 80 columns. Trailing whitespace is
+# still trimmed here: hard line breaks use a backslash, never two spaces.
+max_line_length = 80
+
+[*.{yml,yaml,json,jsonc}]
+indent_size = 2
+
+[*.toml]
+indent_size = 2
+
+[*.{ts,tsx,js,jsx,css}]
+indent_size = 2
+
+[*.sh]
+indent_size = 2
+
+[*.ps1]
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+
+[LICENSE]
+# Verbatim license text. Never reformat, never trim.
+trim_trailing_whitespace = false
+max_line_length = off
