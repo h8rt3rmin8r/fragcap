@@ -4,11 +4,19 @@
 # locally; see the slice completion notes for its exercised status.
 name: audit
 
+# Weekly and on demand. Not per push: the workspace currently has zero external
+# dependencies, so there is nothing to audit on a change, and advisory data
+# moves on its own schedule rather than with the code. S02 adds `pull_request`
+# when dependencies first enter the graph and the check starts to mean
+# something.
 on:
-  push:
-  pull_request:
   schedule:
     - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deny:

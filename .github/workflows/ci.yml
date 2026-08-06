@@ -6,9 +6,21 @@
 # counted as a passing check.
 name: ci
 
+# Triggers are scoped deliberately. `on: push` unqualified plus `on:
+# pull_request` fires BOTH for any branch with an open pull request, so every
+# workflow ran twice and burned double the minutes. Scoping push to the default
+# branch means a pull request gets exactly one run, and a merge gets one more.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Supersede in-flight runs for the same ref. Without this, pushing three times
+# to a branch leaves three runs competing for runners, and the two stale ones
+# are pure waste.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always

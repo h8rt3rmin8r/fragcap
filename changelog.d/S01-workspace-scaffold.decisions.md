@@ -30,3 +30,18 @@ that fails on every push reports red permanently, which carries no more
 information than reporting green and trains readers to ignore the signal. Not
 reporting at all is the honest option. The `release` workflow keeps its trigger,
 because it is tag-gated and will not fire until a release is deliberately cut.
+
+**2026-08-06** Workflow triggers scoped after the first push produced six runs
+for three workflows. An unqualified `on: push` plus `on: pull_request` fires
+both for any branch with an open pull request, doubling the minute burn.
+`push` is now scoped to the default branch, and every workflow carries a
+concurrency group so superseded runs cancel rather than queue.
+
+`platform` and `audit` are manual-dispatch only for the same reason `docs` and
+`links` are: neither has anything to verify yet. No crate links the capture
+library until S09, and the workspace has no external dependencies to audit
+until S02. Both regain real triggers with the slice that gives them a subject.
+
+**2026-08-06** Removed `--features platform-tests` from the platform workflow.
+No crate declares that feature, so the flag would have failed resolution. It
+was never caught locally because the workflow has never run.
