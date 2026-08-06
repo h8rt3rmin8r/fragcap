@@ -1,7 +1,8 @@
 # Reconnaissance tooling
 
-Scripts supporting the protocol in [`../reconnaissance.md`](../reconnaissance.md),
-which answers open questions Q-1 through Q-6.
+Scripts supporting the protocol in
+[`../reconnaissance.md`](../reconnaissance.md), which answers open questions
+Q-1 through Q-6.
 
 These live here rather than in `scripts/` because that directory is reserved by
 specification section 21.1 for shell wrappers and linters, and is owned by
