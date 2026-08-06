@@ -21,3 +21,12 @@ compiles portably, but does not fail when a platform crate is added to it,
 because such crates compile to nothing off-platform. The manifest check in
 `cargo xtask deps` asserts the stronger property that data model rule V-4
 requires.
+
+**2026-08-06** The `docs` and `links` workflows are manual-dispatch only until
+slice S18 implements them. Both were written to run automatically and exit
+non-zero, on the reasoning that a skeleton must not report success for work it
+has not done. That reasoning is right and the implementation was wrong: a job
+that fails on every push reports red permanently, which carries no more
+information than reporting green and trains readers to ignore the signal. Not
+reporting at all is the honest option. The `release` workflow keeps its trigger,
+because it is tag-gated and will not fire until a release is deliberately cut.

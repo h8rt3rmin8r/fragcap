@@ -1,13 +1,16 @@
 # Documentation site build and deploy. Specification 22, 24.2.
 #
-# SKELETON. Owned by slice S18. There is no site to build yet, so this
-# declares its trigger and purpose and does nothing else. It deliberately does
-# not report success for work it has not done.
+# SKELETON. Owned by slice S18. There is no site to build yet.
+#
+# Manual dispatch only, deliberately. A skeleton that runs automatically and
+# fails reports red on every push forever, which is as uninformative as
+# reporting green would be and trains readers to ignore the signal. Not
+# reporting is honest; reporting false success is not. S18 adds the real
+# triggers along with the site.
 name: docs
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:

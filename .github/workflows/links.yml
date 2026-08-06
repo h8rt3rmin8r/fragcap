@@ -1,13 +1,14 @@
 # External reference verification. Specification 22.5, 24.2.
 #
-# SKELETON. Owned by slice S18, which builds the documentation the linter
-# checks. Runs weekly rather than per commit, because external link liveness
-# is not a property of a change.
+# SKELETON. Owned by slice S18, which builds the documentation this checks.
+#
+# Manual dispatch only until then. The weekly schedule belongs here eventually,
+# because external link liveness is not a property of a change, but a scheduled
+# job that fails every Monday is noise rather than signal. S18 restores the
+# schedule when there is something to verify.
 name: links
 
 on:
-  schedule:
-    - cron: "0 7 * * 1"
   workflow_dispatch:
 
 jobs:
