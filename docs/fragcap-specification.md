@@ -82,6 +82,7 @@ enforcement.
 | Version | Date | Author | Summary |
 | --- | --- | --- | --- |
 | 0.1.0-draft | 2026-08-06 | W. Thompson | Initial specification. |
+| 0.1.1-draft | 2026-08-06 | W. Thompson | Reconnaissance findings applied. A-1 through A-4 confirmed, **A-5 refuted**. Changes to 5.4, 6.2, 8.4, 10.2, 10.3, 11.2, 12.1, 12.2, 15.2, 15.4, 22.3, 28, 29, Appendix D. Adds credential-handling rules for command lines in 10.2. |
 
 ## 2. Purpose and Problem Statement
 
@@ -431,6 +432,39 @@ Both topologies defeat detection strategies that watch for the game
 executable, and both require the observer to be running before the
 chain begins.
 
+**Observed depth.** Reconnaissance on the two focal titles found chains
+deeper than either topology suggests in isolation. Both are recorded in
+Appendix D; the shapes are:
+
+```text
+ESO   explorer.exe -> steam.exe -> zosSteamStarter.exe
+                   -> Bethesda.net_Launcher.exe -> eso64.exe
+
+DIV2  explorer.exe -> steam.exe -> TheDivision2.exe(A)
+                   -> UbisoftGameLauncher.exe -> TheDivision2.exe(B)
+                   -> EACLaunch.exe -> TheDivision2.exe(C)
+```
+
+Five levels and six levels respectively, counting from the shell. Three
+observations follow, and each has a design consequence.
+
+Chains contain **pure shims that hold no sockets at all**:
+`zosSteamStarter.exe`, `UbisoftGameLauncher.exe`, and two of the three
+Div2 processes transmit nothing. A detector that stops at the first
+process bearing the expected image name binds to one of these and
+observes an empty session.
+
+Chains contain **an anti-cheat launcher in the ancestry path**. The Div2
+client is a child of `EACLaunch.exe`. fragcap observes this relationship
+through creation-time telemetry and does not interact with the
+anti-cheat process in any way; see section 19.
+
+The same image name **recurs at different depths with different roles**.
+Three processes are named `TheDivision2.exe`, and only the last holds
+sockets. Image name alone is therefore not a sufficient identity, which
+is why section 10.3 provides `descends_from` and why section 15.4
+requires its use where a name is ambiguous.
+
 ### 5.5 What Game Anti-Cheat Observes
 
 Anti-cheat systems in current use monitor a defined set of behaviors
@@ -485,13 +519,20 @@ Assumptions are beliefs about the environment that are load-bearing and
 not yet fully verified. Each carries a validation method and a defined
 fallback. Validation status is tracked in section 29.
 
-**A-1. Game traffic is attributable by 5-tuple.**
+**A-1. Game traffic is attributable by 5-tuple.** **CONFIRMED,
+2026-08-06.**
 
 - *Validation:* Compare captured flows against socket table snapshots
   across a full session for each focal title.
 - *Fallback:* If a title multiplexes gameplay through a shared platform
   socket, attribution resolves to the platform process, and the profile
   marks the affected role as `attribution = "coarse"`.
+- *Result:* 99.45 and 98.78 percent of frames attributed. All gameplay
+  resolved to the client process. Unresolved conversations were
+  ephemeral name-resolution sockets carrying under a tenth of one
+  percent of UDP bytes. The fallback was not needed. Note the caveat in
+  section 8.4: the 5-tuple is available for TCP only, and UDP resolves
+  on the local endpoint, which proved sufficient for both titles.
 
 **A-2. Game session connections are long-lived enough for poll-based
 attribution.**
@@ -500,6 +541,12 @@ attribution.**
   fraction of packets on connections shorter than the poll interval.
 - *Fallback:* Reduce poll interval, then promote to event-driven socket
   tracking if the measured loss exceeds the SC-7 threshold.
+- *Result:* **CONFIRMED, 2026-08-06.** Of 11,246 and 1,003 connections
+  observed opening and closing, none lived less than the 250 millisecond
+  measurement interval. Gameplay connections ran for hundreds of
+  seconds. Neither fallback step is warranted, and the event-driven
+  backend in section 28 stays deferred on evidence rather than on
+  preference.
 
 **A-3. Neither focal title tunnels gameplay through a relay service.**
 
@@ -508,6 +555,13 @@ attribution.**
 - *Fallback:* Relay-tunneled traffic attributes to the platform
   process. The profile declares the relay, and section 11 gains a
   documented coarse-attribution path.
+- *Result:* **CONFIRMED, 2026-08-06.** Neither title is relayed. One
+  reaches publisher-operated address space directly; the other reaches
+  publisher infrastructure hosted on commercial cloud providers, which
+  is ordinary hosting rather than relaying, since no intermediary
+  re-originates the traffic. The fallback was not needed. Both titles
+  reach gameplay endpoints **by address with no preceding name
+  resolution**, which section 12.2 depends on.
 
 **A-4. Launcher and client traffic are separable by process.**
 
@@ -515,15 +569,33 @@ attribution.**
   sharing an inherited handle.
 - *Fallback:* Roles collapse to a single attributed process, and role
   separation becomes advisory rather than authoritative.
+- *Result:* **CONFIRMED, 2026-08-06.** Every stage in both chains holds
+  its own sockets on its own port ranges, with no shared or inherited
+  handle observed. Role separation is authoritative. The fallback was
+  not needed. Two qualifications, both recorded in section 5.4: several
+  chain members are shims holding no sockets at all, and one title runs
+  three processes under a single image name of which only the last
+  transmits, so identifying the right process requires ancestry rather
+  than image name.
 
 **A-5. npcap's loopback adapter captures launcher-to-client local
-traffic.**
+traffic.** **REFUTED, 2026-08-06. The fallback is in effect.**
 
 - *Validation:* Capture on the loopback adapter during a launch
   sequence and confirm the handoff is visible.
 - *Fallback:* If the handoff uses named pipes or shared memory rather
   than loopback sockets, it is out of scope for a network capture tool
   and is documented as such.
+- *Result:* No launcher-to-client loopback conversation exists in
+  either focal title. Every loopback conversation attributed during the
+  session had the same process on both ends, including the largest at
+  5.4 MB. The handoff is instead a single-use token on the client's
+  command line. The fallback applies with one amendment: the mechanism
+  is a command line argument rather than a pipe or shared memory, and it
+  is therefore **observable by the process watcher in section 10 even
+  though it is invisible to packet capture**. Sections 10.2, 12.1, and
+  22.3 carry the consequences, and the credential-handling rules in
+  10.2 exist because of this finding.
 
 ## 7. Functional Requirements
 
@@ -734,6 +806,44 @@ endpoint on the capturing host, determined by matching against the
 interface address set. This makes a single flow one key rather than
 two, and makes `Direction` an independent property of each packet.
 
+**The join against the socket table is asymmetric by protocol, because
+the operating system supplies different information for each.** The TCP
+socket table carries both endpoints, so a TCP flow resolves on the full
+5-tuple. The UDP socket table carries the local endpoint and owning
+process only, because a UDP socket generally has no fixed peer, so a UDP
+flow resolves on `(proto, local)` alone.
+
+```rust
+impl FlowKey {
+    /// The subset of this key that can be matched against a socket
+    /// table entry. TCP matches on both endpoints; UDP matches on the
+    /// local endpoint, since the table carries no remote for it.
+    pub fn attribution_key(&self) -> AttributionKey {
+        match self.proto {
+            Proto::Tcp => AttributionKey::Pair(self.local, self.remote),
+            Proto::Udp => AttributionKey::Local(self.local),
+        }
+    }
+}
+```
+
+UDP sockets bound to a wildcard address are matched against the wildcard
+as well as the specific interface address, since the table reports the
+bind address rather than the address a datagram arrived on.
+
+This is a property of the platform interface rather than a fragcap
+design choice, and it holds on every backend in section 9.4.
+Implementations MUST NOT paper over it by inventing a remote endpoint
+for UDP entries, because that produces confident wrong attributions
+rather than honest coarse ones.
+
+Measurement in Appendix D found the practical impact smaller than the
+asymmetry suggests: one focal title carries gameplay entirely over TCP,
+and the other carries it on a single long-lived UDP socket, so the local
+endpoint identifies it unambiguously. The UDP conversations that fail to
+resolve are short-lived request-response sockets, chiefly name
+resolution, carrying under a tenth of one percent of UDP bytes.
+
 `Attribution` uses `Arc<str>` for process and role names because both
 are drawn from a small set and repeat across every packet in a flow.
 Reference counting avoids per-packet allocation.
@@ -922,6 +1032,39 @@ Exited nodes are retained for the session. Retention costs a few
 kilobytes and permits attribution of packets that arrive after their
 owning process has terminated.
 
+**Command lines are credential-bearing and are not captured by
+default.** Reconnaissance established that at least one focal title
+performs its launcher-to-client handoff by passing a single-use
+authentication token on the client's command line, as a parameter named
+`onetime_token`. A process tree that records command lines
+indiscriminately therefore records live credentials.
+
+The following rules are binding.
+
+Command line capture is **off by default** and enabled by an explicit
+flag. The default tree records image path, which is what stage matching
+in section 10.3 needs, and omits the command line.
+
+When capture is enabled, parameters on a redaction list are replaced
+with a fixed marker before the value reaches memory that outlives the
+event handler. The list is data rather than code so a profile can extend
+it, and it ships containing `onetime_token`, `token`, `ticket`,
+`password`, `session`, `auth`, and `key`. Matching is
+case-insensitive and applies to the parameter name.
+
+A command line **never enters output**, regardless of the flag: not
+`.fcapng` annotations, not JSON Lines records, not the structured event
+stream. It is available to diagnostics and to the operator's own
+terminal only. A capture file is routinely attached to bug reports, and
+a format that can carry a credential into one is a defect in the format.
+
+The rationale is worth stating plainly because the convenient reading is
+the wrong one. fragcap can observe more about the handoff than a packet
+capture can, since the process watcher sees argv while the network sees
+nothing. That capability is exactly why the restriction is needed:
+the tool's reach here exceeds what a capture tool's users expect it to
+record.
+
 ### 10.3 Stage Matching
 
 Each start event is evaluated against every stage declared in the
@@ -941,6 +1084,20 @@ specified predicates must hold.
 
 `descends_from` resolves against the synthetic tree, not the operating
 system parent chain, which is what makes it reliable.
+
+`cmdline_contains` requires command line capture, which section 10.2
+makes opt-in. A profile using it MUST declare that dependency, and a
+profile that relies on it while command line capture is disabled fails
+validation rather than silently failing to match.
+
+**Where an image name is not unique within a chain, `descends_from` is
+required rather than advisory.** Section 5.4 records a focal title
+running three processes that share one image name, only the last of
+which holds sockets. A stage matching on `exe` alone binds to the first,
+which transmits nothing, and the session then completes successfully
+having captured no gameplay. Section 15.4 makes this a validation error
+rather than a matter of profile-author discipline, because the failure
+is silent and the output looks correct.
 
 ### 10.4 Lifecycle Classes
 
@@ -1023,6 +1180,20 @@ through the process tree.
 The default snapshot interval is one second. Snapshots are additionally
 triggered on demand by two events.
 
+The interval is set by measurement rather than caution. A socket table
+snapshot through the platform's table interface costs one to three
+milliseconds against roughly 1800 sockets, so the cadence is bounded by
+what is useful rather than by what is affordable, and a substantially
+tighter interval remains available if a title ever requires one.
+
+Note that the cost differs by three orders of magnitude across access
+paths to the same data on Windows: the object-model projection of the
+socket table costs 1400 to 2000 milliseconds for the same query. An
+implementation that reaches for the convenient interface rather than the
+table interface will conclude that polling is unworkable and reach for
+the event-driven backend in section 28 without needing it. The
+measurement is recorded in Appendix D.
+
 A process start event matching a profile stage triggers an immediate
 snapshot, because a newly matched process is about to open sockets.
 
@@ -1103,6 +1274,22 @@ precedence order.
 3. All interfaces that are up, have an address, and are not virtual, if
    the profile requests broad capture.
 
+**Why loopback capture is retained.** The original justification was
+that the launcher-to-client handoff would be visible there.
+Reconnaissance refuted that; see assumption A-5 in section 6.2. Loopback
+capture is nonetheless required, for a different reason that the
+measurement supplied: both focal titles use loopback heavily for
+intra-process communication, with one client moving 5.4 MB of it in a
+twenty minute session. Excluding loopback would leave a visible and
+unexplained gap in the record of what a process did.
+
+Two consequences for the operator's expectations, which the getting
+started documentation must state rather than leave to discovery. The
+handoff is not in the capture, so looking for it there wastes time. And
+loopback conversations are frequently a process talking to itself, so a
+conversation appearing on the loopback adapter is not evidence that two
+processes communicated.
+
 Virtual interfaces created by hypervisors, container runtimes, and
 subsystem networking are excluded from automatic selection. They are
 selectable explicitly. This exclusion exists because a development
@@ -1139,6 +1326,19 @@ recompiles and reinstalls. Recompilation is debounced by two seconds
 and rate limited to one reinstallation per five seconds per handle,
 because filter installation briefly interrupts capture on that handle
 and endpoint sets churn during connection establishment.
+
+Narrowing matters more than the phase description suggests. In
+reconnaissance on an ordinary working machine, a single unrelated
+background process accounted for up to 94 percent of captured bytes, and
+concurrent development work contributed thousands of further loopback
+conversations. Bootstrap-phase volume is not a theoretical concern, and
+the interval before narrowing should be treated as a cost to minimize.
+
+Gameplay endpoints are reached **by address, with no preceding name
+resolution**, in both focal titles. A filter strategy that expects to
+learn endpoints from observed name resolution will not find them. The
+attribution map is the only reliable source, which is why phase two
+depends on it rather than on traffic inspection.
 
 ### 12.3 Filter Correctness
 
@@ -1515,6 +1715,33 @@ terminal  = true
 match     = { exe = "eso64.exe" }
 ```
 
+Where an image name is unique within the chain, as `eso64.exe` is, `exe`
+alone suffices. Where it is not, ancestry is required. The second focal
+title runs three processes named `TheDivision2.exe` and only the last
+holds sockets, so its profile must disambiguate:
+
+```toml
+[[stage]]
+role      = "platform"
+lifecycle = "service"
+match     = { exe = "upc.exe" }
+
+[[stage]]
+role      = "client"
+lifecycle = "session"
+terminal  = true
+# exe alone matches three processes here, two of which never transmit.
+# The anti-cheat launcher is the ancestor that distinguishes the real
+# client; fragcap observes the relationship and does not interact with
+# that process. See sections 5.4 and 19.
+match     = { exe = "TheDivision2.exe", descends_from = "anticheat" }
+
+[[stage]]
+role      = "anticheat"
+lifecycle = "transient"
+match     = { exe = "EACLaunch.exe" }
+```
+
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `schema` | Yes | Schema version, currently `1` |
@@ -1556,6 +1783,31 @@ Semantic checks cover role name uniqueness, at most one terminal stage,
 compilation, glob compilation, duration parsing, and the requirement
 that at least one stage is not a service, since a profile consisting
 entirely of services can never trigger acquisition.
+
+Two further semantic checks exist because the failures they catch are
+silent, and a silent failure in a capture tool produces a file that
+looks correct and is not.
+
+**Ambiguous image match.** If two stages in a profile match on `exe`
+alone with patterns that can match the same image name, or if a stage
+matches on `exe` alone against an image name the profile elsewhere
+indicates recurs, validation fails and names the stages. Section 5.4
+records the case this exists for: a title running three processes under
+one image name, only the last of which transmits. A stage bound to the
+wrong one produces a complete, well-formed, empty capture.
+
+Because a profile cannot generally know that a name recurs, the check
+also fires at runtime: if a stage matching on `exe` alone binds to a
+process that transmits nothing before a later process with the same
+image name appears, fragcap emits a warning naming the stage and
+suggesting `descends_from`. Under constitution principle P-4 this is a
+counted, surfaced event rather than a silent rebinding.
+
+**Undeclared command line dependency.** A stage using
+`cmdline_contains` requires command line capture, which section 10.2
+makes opt-in and off by default. Validation fails if such a stage exists
+without the profile declaring the dependency, rather than letting the
+match silently never fire.
 
 Validation runs implicitly before every capture. A profile that fails
 validation produces exit code 2 and no capture attempt.
@@ -2161,6 +2413,26 @@ Getting started is ordered by the actual first-run sequence: install
 the capture driver with its required options, verify with diagnostics,
 capture a session, open the result.
 
+Getting started also sets three expectations that users otherwise form
+incorrectly and spend time disproving. Each comes from a measured
+finding in Appendix D.
+
+**Payloads are encrypted.** Both focal titles encrypt everything. Users
+get timing, sizing, endpoints, and attribution, not readable game
+packets. Section 19.6 states the position; getting started states it
+where a new user will actually encounter it.
+
+**The launcher-to-client handoff is not in the capture.** It happens on
+the command line, so no packet carries it. It is visible in process
+metadata instead. Without this, a user reasonably spends an evening
+looking for a packet that does not exist.
+
+**Loopback conversations are usually a process talking to itself.**
+Loopback capture is on because processes use it heavily for internal
+communication, not because it reveals inter-process handoffs. A
+conversation on the loopback adapter is not evidence that two processes
+communicated.
+
 ### 22.4 Glossary Implementation
 
 The glossary occupies one page per category from section 4.4, plus a
@@ -2676,6 +2948,14 @@ socket table join.
 subscription, eliminating the race window in section 11.3. Scheduled
 only if measurement against A-2 shows polling insufficient.
 
+Measurement has now been taken and does not support scheduling it. Of
+12,249 connections observed opening and closing across two focal-title
+sessions, none lived less than the 250 millisecond sampling interval,
+and the table interface sustains an interval far tighter than that at
+one to three milliseconds per snapshot. This item stays deferred on
+evidence. Revisit only if a future title measures differently, not on
+the general intuition that polling is inferior to subscription.
+
 **Binary annotation options.** pcapng custom options carrying
 attribution in binary form alongside the text comment, reducing size
 and parsing cost. Requires a Private Enterprise Number. Contingent on
@@ -2700,23 +2980,37 @@ there natively.
 Tracked unknowns with resolution methods. Assumption identifiers refer
 to section 6.2.
 
+| ID | Question | Method | Blocks | Status |
+| --- | --- | --- | --- | --- |
+| Q-1 | Are focal title gameplay flows attributable by 5-tuple? (A-1) | Reconnaissance session per title | S10 | **Resolved 2026-08-06.** A-1 confirmed. |
+| Q-2 | Is either focal title relay-tunneled? (A-3) | Endpoint ownership inspection | S10 | **Resolved 2026-08-06.** A-3 confirmed, neither relayed. |
+| Q-3 | Connection lifetime distribution per title (A-2) | Socket table logging over a session | S10 | **Resolved 2026-08-06.** A-2 confirmed. |
+| Q-4 | Exact process topology and image names per title (A-4) | Process tree capture during launch | S17 profiles | **Resolved 2026-08-06.** A-4 confirmed. |
+| Q-5 | Is the launcher handoff visible on loopback? (A-5) | Loopback capture during launch | S09 | **Resolved 2026-08-06. A-5 REFUTED.** |
+| Q-6 | Transport encryption posture per title | Payload entropy inspection | Documentation | **Resolved 2026-08-06.** Encrypted throughout. |
+| Q-7 | Monospace face selection for brand | Brand session | S18 | Open |
+| Q-8 | Parent brand visual relationship | Brand session | S18 | Open |
+| Q-9 | Crate name reservation on the registry | Reserve before first release | S01 | Open |
+
+Q-1 through Q-6 were answered by one reconnaissance session per focal
+title, using existing analyzer tooling and requiring no fragcap code.
+Performing them before S10 meant sections 11 and 12 are implemented
+against evidence rather than assumption, and the fallbacks in section
+6.2 are exercised only if actually needed. Findings are in Appendix D.
+
+That sequencing paid for itself. Five assumptions were confirmed and one
+refuted, and the refutation changed three sections plus a security
+requirement. Building attribution machinery first would have produced a
+loopback strategy aimed at traffic that does not exist and a process
+watcher that recorded credentials by default.
+
+New questions raised by the reconnaissance, none of which block v0.1.0:
+
 | ID | Question | Method | Blocks |
 | --- | --- | --- | --- |
-| Q-1 | Are focal title gameplay flows attributable by 5-tuple? (A-1) | Reconnaissance session per title | S10 |
-| Q-2 | Is either focal title relay-tunneled? (A-3) | Endpoint ownership inspection | S10 |
-| Q-3 | Connection lifetime distribution per title (A-2) | Socket table logging over a session | S10 |
-| Q-4 | Exact process topology and image names per title (A-4) | Process tree capture during launch | S17 profiles |
-| Q-5 | Is the launcher handoff visible on loopback? (A-5) | Loopback capture during launch | S09 |
-| Q-6 | Transport encryption posture per title | Payload entropy inspection | Documentation |
-| Q-7 | Monospace face selection for brand | Brand session | S18 |
-| Q-8 | Parent brand visual relationship | Brand session | S18 |
-| Q-9 | Crate name reservation on the registry | Reserve before first release | S01 |
-
-Q-1 through Q-6 are answered by one reconnaissance session per focal
-title, using existing analyzer tooling and requiring no fragcap code.
-Performing them before S10 means sections 11 and 12 are implemented
-against evidence rather than assumption, and the fallbacks in section
-6.2 are exercised only if actually needed.
+| Q-10 | Does the non-Steam launch path populate `onetime_token` with a live credential? | Launch outside Steam, inspect argv | Redaction list scope, section 10.2 |
+| Q-11 | Do other titles pass credentials on argv, and under what parameter names? | Widen the sample as profiles are contributed | Redaction list defaults |
+| Q-12 | Does image-name recurrence appear in titles beyond the second focal title? | Observe during profile authoring | Section 15.4 check severity |
 
 ## 30. Appendices
 
@@ -2756,7 +3050,75 @@ topology, transport protocols, endpoint ownership, encryption posture,
 and connection lifetime distribution.
 
 Findings are recorded without account identifiers, session tokens, or
-addresses attributable to the operator.
+addresses attributable to the operator. Raw session artifacts are
+retained locally and are never committed.
+
+#### D.1 Environment
+
+Established before any session, and applicable to both.
+
+| Property | Finding |
+| --- | --- |
+| Capture driver options | Both options required by section 20.3 are readable from the registry as `WinPcapCompatible` and the presence of a loopback device in the interface list. `fragcap doctor` can verify them without opening a handle. |
+| Privilege for capture | **Not required** when the driver is installed permitting non-administrator access. Section 19.5 overstates this: only the process telemetry source requires elevation, and an unprivileged fallback exists for it. |
+| Socket table, remote endpoint | The UDP table carries no remote endpoint. UDP attribution keys on the local endpoint. See section 8.4. |
+| Socket table, creation time | The TCP table exposes a socket creation timestamp, so attribution can be back-dated to socket creation rather than to first observation. This narrows the section 11.3 race window to sockets that both open and close within one interval. |
+| Socket table, cost | 1 to 3 ms per snapshot of roughly 1800 sockets through the table interface. The object-model projection of the same data costs 1400 to 2000 ms. See section 11.2. |
+
+#### D.2 The Elder Scrolls Online
+
+| Field | Finding |
+| --- | --- |
+| Session | 2026-08-06, 19.6 minutes, launcher through gameplay |
+| Process topology | `explorer.exe` to `steam.exe` to `zosSteamStarter.exe` to `Bethesda.net_Launcher.exe` to `eso64.exe` |
+| Stage sockets | Shim holds none; launcher 16 flows on 443; client 4 flows on 24120 to 24131 |
+| Transport, gameplay | **TCP only.** No UDP gameplay observed. |
+| Endpoint ownership | Publisher-operated address space, reached by address with no name resolution |
+| Encryption | TCP 7.61, UDP 7.951 bits per byte. Encrypted throughout. |
+| Connection lifetimes | 11,246 closed, none under 250 ms, gameplay connections in the hundreds of seconds |
+| Loopback | 5.4 MB, entirely intra-process. No launcher-to-client conversation. |
+| Handoff | Command line parameter `onetime_token` on the client's argv |
+| Verdicts | A-1 confirmed, A-2 confirmed, A-3 confirmed, A-4 confirmed, **A-5 refuted** |
+
+#### D.3 Tom Clancy's The Division 2
+
+| Field | Finding |
+| --- | --- |
+| Session | 2026-08-06, 15.4 minutes, launcher through gameplay |
+| Process topology | `explorer.exe` to `steam.exe` to `TheDivision2.exe` to `UbisoftGameLauncher.exe` to `TheDivision2.exe` to `EACLaunch.exe` to `TheDivision2.exe` |
+| Image name recurrence | **Three processes share the image name `TheDivision2.exe`; only the last holds sockets.** The anti-cheat launcher is the distinguishing ancestor. |
+| Stage sockets | Two shims and the anti-cheat launcher hold none; platform service 10 flows on 443; client 31 flows on 13000, 22003, 51000, 55002, 443 |
+| Transport, gameplay | TCP and UDP concurrently to one host, both for the full session on a single long-lived socket each |
+| Endpoint ownership | Publisher infrastructure on commercial cloud providers. Not relayed: no intermediary re-originates traffic. Reached by address with no name resolution. |
+| Encryption | TCP 7.862, UDP 7.947 bits per byte. Encrypted throughout. |
+| Connection lifetimes | 1,003 closed, none under 250 ms |
+| Loopback | 125 conversations, no launcher-to-client conversation |
+| Verdicts | A-1 confirmed, A-2 confirmed, A-3 confirmed, A-4 confirmed, **A-5 refuted** |
+
+#### D.4 Measurement caveats
+
+Recorded so that later readers can judge how far these findings
+generalize.
+
+Both sessions ran on one machine, on one date, on one network, against
+one build of each title. Findings about topology and transport are
+likely stable across builds; findings about specific address ranges and
+port numbers are not, and profiles are expected to drift per section
+15.3.
+
+Both sessions ran on a working machine with unrelated software active. A
+single background process accounted for up to 94 percent of captured
+bytes, and a concurrent test suite contributed thousands of loopback
+conversations. This affected volume statistics, which is why the
+attribution figures above are frame-weighted over traffic the host
+originated or received, excluding foreign multicast the adapter merely
+witnessed. It did not affect the topology, lifetime, or handoff
+findings.
+
+The unprivileged process telemetry source polls at one second and can
+miss a process living less than that. Every chain member reported here
+persisted for far longer, but a shorter-lived member could have gone
+unobserved in either chain.
 
 ### Appendix E: Referenced Standards
 
