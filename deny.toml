@@ -1,0 +1,43 @@
+# Dependency license and advisory policy, specification section 20.4.
+#
+# Copyleft licenses are excluded. This applies with particular force to packet
+# interception libraries, which are commonly copyleft licensed and which
+# constitution principle P-1 prohibits on independent grounds.
+
+[licenses]
+# The permitted set, verbatim from specification section 20.4.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[[licenses.exceptions]]
+# The project's own crates.
+allow = ["Apache-2.0"]
+name  = "fragcap"
+
+[bans]
+multiple-versions = "warn"
+wildcards         = "deny"
+
+[[bans.deny]]
+# Packet interception rather than capture. Prohibited by P-1, not merely by
+# license policy; listed here so the ban is mechanical as well as principled.
+name = "windivert"
+
+[[bans.deny]]
+name = "windivert-sys"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"

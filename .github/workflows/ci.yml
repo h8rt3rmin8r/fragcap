@@ -1,0 +1,85 @@
+# Standard check set. Specification section 24.3; every gate here is blocking.
+#
+# NOTE: as of slice S01 this workflow has never executed, because the
+# repository has no remote. It is written to be correct when one exists, and
+# its unexercised status is recorded in the slice completion notes rather than
+# counted as a passing check.
+name: ci
+
+# Triggers are scoped deliberately. `on: push` unqualified plus `on:
+# pull_request` fires BOTH for any branch with an open pull request, so every
+# workflow ran twice and burned double the minutes. Scoping push to the default
+# branch means a pull request gets exactly one run, and a merge gets one more.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Supersede in-flight runs for the same ref. Without this, pushing three times
+# to a branch leaves three runs competing for runners, and the two stale ones
+# are pure waste.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version; this action honors it.
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Repository conventions
+        run: cargo run --package xtask -- lint
+
+      - name: Dependency direction
+        run: cargo run --package xtask -- deps
+
+  neutrality:
+    # Constitution P-2 proven mechanically: fragcap-core must build where no
+    # capture backend exists. A native Linux build is that proof, and needs no
+    # cross-compilation setup.
+    name: core builds without a capture backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build fragcap-core on a platform with no capture backend
+        run: cargo build --package fragcap-core --locked
+
+  msrv:
+    # Verifies the minimum supported version declared in Cargo.toml.
+    #
+    # NOTE: currently vacuous. The workspace has no external dependencies, so
+    # any declared minimum passes. Retained because it becomes meaningful the
+    # moment dependencies enter the graph at S02.
+    name: minimum supported toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.82.0
+      - name: Build at the declared minimum
+        run: cargo build --workspace --locked

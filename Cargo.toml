@@ -1,0 +1,29 @@
+[workspace]
+members  = ["crates/*", "xtask"]
+resolver = "2"
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+# The minimum version a consumer needs. Distinct from the toolchain this
+# repository builds with, which rust-toolchain.toml pins. Verified by
+# `cargo xtask msrv`; see specs/001-workspace-scaffold/research.md R-1.
+rust-version = "1.82"
+license      = "Apache-2.0"
+repository   = "https://github.com/h8rt3rmin8r/fragcap"
+authors      = ["William Thompson"]
+
+[workspace.dependencies]
+fragcap-core    = { version = "0.1.0", path = "crates/fragcap-core" }
+fragcap-profile = { version = "0.1.0", path = "crates/fragcap-profile" }
+fragcap-capture = { version = "0.1.0", path = "crates/fragcap-capture" }
+fragcap-attr    = { version = "0.1.0", path = "crates/fragcap-attr" }
+fragcap-sink    = { version = "0.1.0", path = "crates/fragcap-sink" }
+fragcap-steam   = { version = "0.1.0", path = "crates/fragcap-steam" }
+fragcap         = { version = "0.1.0", path = "crates/fragcap" }
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "debuginfo"

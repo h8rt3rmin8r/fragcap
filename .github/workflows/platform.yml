@@ -1,0 +1,48 @@
+# Windows platform tests that need the capture driver. Specification 24.2.
+#
+# NOTE: scaffolded and NOT exercised as of S01. No crate links against the
+# capture library until S09, so the acquisition step below has never run. The
+# software development kit is acquired at build time and never vendored, per
+# specification section 20.2.
+name: platform
+
+# Manual dispatch only until slice S09. No crate links against the capture
+# library yet, so there is nothing here this workflow can verify, and running
+# it on every push spends minutes to prove nothing. S09 adds the real triggers
+# along with the code that needs them.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: platform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Acquired at build time. Never committed, never bundled into any artifact.
+  NPCAP_SDK_URL: https://npcap.com/dist/npcap-sdk-1.13.zip
+
+jobs:
+  windows-capture:
+    name: windows capture tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Acquire the npcap SDK
+        shell: pwsh
+        run: |
+          # Downloaded at build time and discarded with the runner. npcap is
+          # not redistributable, so it is never vendored and never enters an
+          # artifact. Specification section 20.2.
+          Invoke-WebRequest -Uri $env:NPCAP_SDK_URL -OutFile npcap-sdk.zip
+          Expand-Archive npcap-sdk.zip -DestinationPath npcap-sdk
+          "LIB=$PWD\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
+
+      - name: Test
+        # No `--features platform-tests`: no crate declares that feature, so
+        # passing it fails resolution. The feature arrives with S09, which is
+        # also when this workflow gets a real trigger.
+        run: cargo test --workspace --locked

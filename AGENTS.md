@@ -43,12 +43,22 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-The repository is pre-implementation. There is no Cargo workspace and no Rust
-code yet. Slice S01 creates them.
+Slice S01 is complete. The Cargo workspace exists with the eight crates from
+the architecture of record, a task runner carrying the repository's own checks,
+and six workflow files.
 
-Do not scaffold the workspace, the crates, or the continuous integration
-workflows outside the spec-kit sequence. S01 owns that work, and building it by
-hand would bypass the workflow every later slice inherits.
+**Every crate is a skeleton.** Nothing captures, attributes, parses, or writes
+anything. Types and traits arrive at S02; each crate's module documentation
+names the slice that fills it.
+
+Three things are scaffolded but not exercised, and must not be reported as
+passing checks:
+
+- **No workflow has ever run.** There is no git remote.
+- **The minimum-toolchain check is vacuous.** The workspace has no external
+  dependencies, so any declared minimum passes. It becomes meaningful at S02.
+- **The npcap SDK acquisition step is unexercised.** No crate links against the
+  capture library until S09.
 
 ## Spec-driven development workflow (spec-kit)
 
@@ -150,16 +160,22 @@ authoritative; this list is the one to keep in working memory.
 Run verification in the foreground and watch it to completion. Never background
 it, never infer a result you did not read.
 
-Once the workspace exists (S01), the gate set is:
+The gate set, all of which `cargo xtask ci` runs in order:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all --locked
+cargo test --workspace --locked
+cargo xtask lint          # repository conventions, CONVENTIONS.md
+cargo xtask deps          # dependency direction, specification section 8.3
 ```
 
-plus the repository conventions linter, the documentation linter in check
-mode, and both shell wrapper compliance checkers.
+Two further checks are not in `ci` because they need a target or a toolchain
+the runner may not have: `cargo xtask neutral` (constitution P-2) and
+`cargo xtask msrv`. Both exit 2 rather than 0 when they cannot run.
+
+The documentation linter and the shell wrapper compliance checkers arrive with
+the slices that own them.
 
 **Claims require evidence.** Do not report a slice complete, a test passing, or
 a defect fixed without having run the command and read its output. If tests

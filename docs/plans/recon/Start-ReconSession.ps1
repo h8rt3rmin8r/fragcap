@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 <#
 .SYNOPSIS
     Record a fragcap reconnaissance session for one focal title.

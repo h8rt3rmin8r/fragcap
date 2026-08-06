@@ -1,0 +1,3 @@
+# Makes `cargo xtask <command>` work from anywhere in the workspace.
+[alias]
+xtask = "run --package xtask --"

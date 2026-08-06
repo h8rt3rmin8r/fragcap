@@ -26,5 +26,6 @@ full.
   this tracked file. That keeps per-slice pointer churn out of the diff and
   stops parallel slices conflicting here. The durable artifact for the current
   slice is its `specs/NNN-slug/plan.md`, pointed to by `.specify/feature.json`.
-- The repository is pre-implementation: no Cargo workspace, no Rust code. S01
-  creates them through the spec-kit sequence. Do not scaffold it by hand.
+- S01 is complete: the workspace, the crate skeletons, and the check set exist.
+  Run `cargo xtask ci` before proposing any change; it is the same set the
+  automated checks run, so the two cannot drift.

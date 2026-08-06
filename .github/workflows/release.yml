@@ -1,0 +1,43 @@
+# Artifacts and crate publication. Specification 24.4, 24.5.
+#
+# SKELETON. Tag-triggered, and cutting a release always requires explicit
+# authorization. Publication order is encoded in `cargo xtask publish`, which
+# is itself a stub in S01.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  artifacts:
+    name: build release artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Assert no npcap component is present in any artifact
+        shell: pwsh
+        run: |
+          # Specification section 20.2: no distribution artifact contains npcap
+          # binaries, installers, or driver files. Asserted mechanically here
+          # rather than left to release-time discipline.
+          $pattern = '(?i)npcap|wpcap|packet\.dll'
+          $hits = Get-ChildItem target/release -Recurse -File |
+                  Where-Object { $_.Name -match $pattern }
+          if ($hits) {
+            $hits | ForEach-Object {
+              Write-Error "npcap component in artifact: $($_.FullName)"
+            }
+            exit 1
+          }
+          Write-Output "OK: no npcap component found in the artifact tree."
+
+      - name: Not yet implemented
+        run: |
+          echo "Artifact packaging and publication are not implemented in S01."
+          exit 1
