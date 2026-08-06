@@ -1,5 +1,21 @@
 <!--
-Sync Impact Report
+Sync Impact Report (1.1.0, 2026-08-06)
+- Version change: 1.0.0 -> 1.1.0 (MINOR: principle added)
+- Added principle:
+  P-9. The Instrument Does Not Lie (NON-NEGOTIABLE)
+- Reason: specification revision 0.1.1-draft introduced capture-time redaction
+  of process command lines, including irreversible masking at the source and
+  withholding observed data from output. That is contrary to the project's
+  stated purpose of accurate observation, and the reasoning that produced it
+  was the well-intentioned kind that no existing principle blocked. P-4
+  covered silent packet loss but not silent alteration. Withdrawn in
+  specification 0.1.3-draft; this principle prevents its reintroduction.
+- Templates: no changes required. The Constitution Check gate in
+  plan-template.md reads this file and picks up the new principle
+  automatically.
+- Follow-up TODOs: none
+
+Prior report, 1.0.0
 - Version change: unversioned template -> 1.0.0
 - Ratification: initial adoption (first authored constitution)
 - Source: fragcap v0.1.0 Technical Specification section 27.2, which names
@@ -170,6 +186,48 @@ Rationale: mechanical consistency that depends on a reviewer noticing is
 consistency that decays. Automating it frees review for the questions that
 actually need judgment.
 
+### P-9. The Instrument Does Not Lie (NON-NEGOTIABLE)
+
+What fragcap reports is what fragcap observed. No capture path alters,
+masks, truncates, reorders, or withholds an observation in order to produce a
+safer, tidier, or more comfortable result.
+
+This binds specifically against the well-intentioned version, which is the one
+that actually gets written: redacting a field that looked sensitive, dropping a
+record that looked like noise, normalizing a value that looked malformed,
+suppressing an anomaly that looked like a bug. Each is a small, defensible,
+local decision. Together they are a tool whose output no longer means what it
+says.
+
+Three things this does not prohibit, because they preserve the observation:
+
+**Scope.** The operator decides what to watch. Not observing something is a
+choice they make and can see in their own invocation. It is not the same act as
+observing it and altering the record.
+
+**Downstream transformation.** Preparing a capture for publication is a
+distinct operation, applied to a copy, reporting exactly what it changed,
+leaving the original intact. Never a default, never implicit, never during
+capture.
+
+**Declared omission.** If fragcap does drop something, P-4 applies: it is
+counted in a named counter and surfaced. A silent redaction is the same defect
+class as a silent packet drop.
+
+Rationale: the project's stated purpose is to observe accurately where network
+theory and shipped game networking diverge. The shape of that divergence is not
+fragcap's concern; recording it faithfully is the entire product. A tool that
+sanitizes on the operator's behalf has substituted its judgment for theirs
+about their own machine, and has done it invisibly. Every downstream conclusion
+then inherits a distortion the researcher cannot see or correct for. Section
+2.3 already ranks fidelity of observation above throughput and completeness;
+this principle makes that ranking binding on implementation rather than
+advisory.
+
+The honest researcher is the user. Treating them as someone to be protected
+from their own data is both a product failure and, given the domain, a
+credibility failure.
+
 ## Licensing And Third-Party Obligations
 
 fragcap is licensed under Apache-2.0. Every source file carries an SPDX
@@ -260,4 +318,4 @@ raises it, rather than proceeding under an interpretation that weakens it. P-1
 in particular is never reinterpreted; a slice that appears to need a denylisted
 technique is a slice that has been scoped wrong.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-06
+**Version**: 1.1.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-06

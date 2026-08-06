@@ -83,7 +83,8 @@ enforcement.
 | --- | --- | --- | --- |
 | 0.1.0-draft | 2026-08-06 | W. Thompson | Initial specification. |
 | 0.1.1-draft | 2026-08-06 | W. Thompson | Reconnaissance findings applied. A-1 through A-4 confirmed, **A-5 refuted**. Changes to 5.4, 6.2, 8.4, 10.2, 10.3, 11.2, 12.1, 12.2, 15.2, 15.4, 22.3, 28, 29, Appendix D. Adds command line handling rules in 10.2. |
-| 0.1.2-draft | 2026-08-06 | W. Thompson | **Withdraws a claim.** 0.1.1-draft asserted that a focal title passes a live credential on its client's command line, and described it as documented. That was inference from a parameter name and was not supported by the capture. An entropy scan of 3,694 command lines found no credential in either title. Sections 6.2, 10.2, 29, and Appendix D corrected. The 10.2 rules stand, rescoped to the operator-identifying data that was actually observed. A-5's fallback now cites an observed named pipe instead. |
+| 0.1.2-draft | 2026-08-06 | W. Thompson | **Withdraws a claim.** 0.1.1-draft asserted that a focal title passes a live credential on its client's command line, and described it as documented. That was inference from a parameter name and was not supported by the capture. An entropy scan of 3,694 command lines found no credential in either title. Sections 6.2, 10.2, 29, and Appendix D corrected. A-5's fallback now cites an observed named pipe instead. |
+| 0.1.3-draft | 2026-08-06 | W. Thompson | **Withdraws the redaction rules.** 0.1.1-draft made command line capture opt-in, masked profile paths, redacted parameters by name at the source, and barred command lines from output. All four alter what the instrument reports, contrary to section 2.3 and to the project's stated purpose. Command lines are recorded verbatim, as the original 10.2 specified. Scope remains the operator's control; preparation for publication becomes an explicit downstream operation on a copy. Removes the 15.4 and 10.3 rules that existed only to manage the invented default. Adds constitution principle **P-9, The Instrument Does Not Lie** (constitution 1.1.0), so the reasoning that produced those rules is blocked rather than merely reverted. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1037,60 +1038,48 @@ Exited nodes are retained for the session. Retention costs a few
 kilobytes and permits attribution of packets that arrive after their
 owning process has terminated.
 
-**Command lines carry operator-identifying data and are not captured by
-default.**
+**Command lines are recorded verbatim.** They are a tree field, as
+listed above, and fragcap does not alter, truncate, mask, or withhold
+them. This follows from constitution principle P-9: what the instrument
+reports is what the instrument observed.
 
-Reconnaissance measured this rather than assuming it. An entropy scan
-over 3,694 command lines from two focal-title sessions found **no
-credentials**: the highest-entropy arguments decoded to file paths,
-named pipe paths, and build identifiers. The credential risk on argv is
-a real and well-known category, but it was not demonstrated in either
-focal title and is not claimed here.
+Command lines contain identifying material. Reconnaissance measured
+what: every one carries the operator's account name in user-profile
+paths, along with installation layout and whatever else was running. An
+entropy scan over 3,694 command lines from two focal-title sessions
+found **no credentials** in either title, though argv is a known
+credential-carrying channel in general and a future title may differ.
 
-What the same scan did establish is that **every command line contains
-the operator's account name**, embedded in user-profile paths, along
-with installation layout and, on a working machine, unrelated
-concurrent activity. That is identifying, it appears in every process
-record, and it is sufficient reason for the rules below on its own.
+None of that is a reason for fragcap to modify what it records. A
+capture already contains addresses, timing, and endpoint identities that
+are equally revealing, and a tool that quietly sanitizes one channel
+while faithfully recording the others has not protected the operator; it
+has only made its own output untrustworthy in a way the operator cannot
+see. **An instrument that decides what its user may know is not an
+instrument.**
 
-The following rules are binding. They are scoped to protect against
-identifying data, and they protect against credentials as a side effect
-if a future title does put one on argv.
+Two things follow instead, and both keep the observation intact.
 
-Command line capture is **off by default** and enabled by an explicit
-flag. The default tree records image path, which is what stage matching
-in section 10.3 needs, and omits the command line.
+**Scope is the operator's control, and it is honest.** Section 15.2's
+capture defaults and the command line surface in section 17 decide which
+processes are watched. Choosing not to observe something is a scope
+decision the operator makes and can see in their own invocation.
+Observing it and then altering the record is not the same act, and the
+second is never performed silently.
 
-When capture is enabled, user-profile path segments are replaced with a
-fixed marker, since the account name is the identifying element and it
-appears in nearly every argument list.
+**Preparation for sharing is a separate, explicit, downstream
+operation.** Publishing a capture is a distinct act from taking one, and
+it is the point at which removing identifying material is appropriate.
+That belongs in a documented transformation applied to a copy, which
+reports exactly what it changed and how many times, leaving the original
+untouched. Section 25.3 requires this for the fixture corpus, which is
+the one case where captures are deliberately published. It is never a
+default and never implicit.
 
-Additionally, parameters on a redaction list are replaced before the
-value reaches memory that outlives the event handler. The list is data
-rather than code so a profile can extend it, and it ships containing
-`token`, `ticket`, `password`, `session`, `auth`, and `key`. Matching is
-case-insensitive and applies to the parameter name. This list is
-precautionary against a category rather than a response to an observed
-leak; see Appendix D.
-
-Name-based redaction is a weak control on its own, because it only
-catches parameters someone thought to name. An entropy check over
-argument values, flagging high-entropy strings that do not decode to a
-path, is the stronger complement and is the reason the reconnaissance
-tooling implements one.
-
-A command line **never enters output**, regardless of the flag: not
-`.fcapng` annotations, not JSON Lines records, not the structured event
-stream. It is available to diagnostics and to the operator's own
-terminal only. A capture file is routinely attached to bug reports, and
-a format that can carry a credential into one is a defect in the format.
-
-The rationale is worth stating plainly. The process watcher sees things
-a packet capture cannot, and a user who installs a network capture tool
-does not expect their account name and installed software layout to be
-recorded alongside the packets. The restriction exists because the
-tool's reach here exceeds what its category implies, not because a
-specific leak was observed.
+If fragcap ever does omit something it observed, that omission is
+counted in a named counter and surfaced, per P-4. A silent redaction is
+the same defect class as a silent packet drop, and is treated the same
+way.
 
 ### 10.3 Stage Matching
 
@@ -1111,11 +1100,6 @@ specified predicates must hold.
 
 `descends_from` resolves against the synthetic tree, not the operating
 system parent chain, which is what makes it reliable.
-
-`cmdline_contains` requires command line capture, which section 10.2
-makes opt-in. A profile using it MUST declare that dependency, and a
-profile that relies on it while command line capture is disabled fails
-validation rather than silently failing to match.
 
 **Where an image name is not unique within a chain, `descends_from` is
 required rather than advisory.** Section 5.4 records a focal title
@@ -1829,12 +1813,6 @@ process that transmits nothing before a later process with the same
 image name appears, fragcap emits a warning naming the stage and
 suggesting `descends_from`. Under constitution principle P-4 this is a
 counted, surfaced event rather than a silent rebinding.
-
-**Undeclared command line dependency.** A stage using
-`cmdline_contains` requires command line capture, which section 10.2
-makes opt-in and off by default. Validation fails if such a stage exists
-without the profile declaring the dependency, rather than letting the
-match silently never fire.
 
 Validation runs implicitly before every capture. A profile that fails
 validation produces exit code 2 and no capture attempt.
