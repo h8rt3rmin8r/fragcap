@@ -14,6 +14,7 @@ next version.
 | Script | Purpose |
 | --- | --- |
 | `Start-ReconSession.ps1` | Runs all four recorders for one session |
+| `Invoke-ReconAnalysis.ps1` | Derives the Q-1 to Q-6 answers from a session |
 
 ## Running a session
 
@@ -134,10 +135,36 @@ because the delta encoding already brackets lifetimes to within one interval.
 fragcap itself should evaluate `OWNER_MODULE`, which carries the timestamp and
 the owning module path at the cost of a larger, variable-length row.
 
+## Analyzing a session
+
+```powershell
+pwsh -File docs/plans/recon/Invoke-ReconAnalysis.ps1
+```
+
+With no arguments it takes the most recent session. It writes `FINDINGS.md`
+into the session directory, with a verdict per question and a draft Appendix D
+entry, plus CSV evidence tables under `analysis/` so any conclusion can be
+traced back to what produced it.
+
+Two points about how it reads the evidence:
+
+**Endpoint ownership is resolved from the capture itself**, using DNS answers
+and TLS server names that were observed, rather than by querying anything. The
+analysis stays offline and no lookup discloses what was captured.
+
+**Q-3 reports the packet-weighted fraction on short connections**, not the
+connection count. Many short connections carrying almost no traffic is a
+different situation from a few carrying a lot, and only the weighted figure
+distinguishes them. It is the number that decides A-2.
+
+Pass `-Scrub` to mask addresses in the report. The CSV tables are never
+scrubbed, since they are the local evidence.
+
 ## Development notes
 
-Two defects were found by smoke testing rather than by review, both worth
-remembering because both produce plausible-looking success:
+Five defects were found by running the tooling against real data rather than by
+review. Every one produced plausible-looking success, which is the pattern worth
+remembering:
 
 **An array `-notmatch` is a filter, not a boolean.** `$interfaces -notmatch 'x'`
 returns every element that does not match, which is a non-empty array, which is
@@ -150,8 +177,30 @@ Three cosmetic spacer calls aborted the recording loop one second after it
 started, after every recorder had reported success. The session looked healthy
 in the log and produced a zero-byte socket table.
 
-The second is the more instructive one: every recorder logged `SUCCESS`, the
-script exited 0, and the output directory contained files. Only the byte counts
-revealed that nothing had been recorded. This is exactly the failure mode
-constitution principle P-4 exists to prevent in fragcap itself, met here in the
-tooling built to validate it.
+**`$host` is a read-only automatic variable.** Assigning to it inside a
+pipeline fails per item while the pipeline keeps running, so every resolved
+hostname came back empty, the endpoint table filled with `(unresolved)`, and
+the script still exited 0 with a complete-looking report. Renamed to
+`$hostName`, and `$ErrorActionPreference` is now `Stop` so a per-item failure
+cannot be absorbed silently again.
+
+**`data.data` is empty once tshark dissects a payload.** Sampling it for
+entropy returned nothing for TLS, HTTP, and QUIC traffic, which is exactly the
+encrypted traffic the measurement exists to characterize. Use `tcp.payload` and
+`udp.payload`, which carry raw bytes regardless of dissection.
+
+**tshark `-c` caps packets read, not packets matched.** Combined with a display
+filter on a capture dominated by one high-volume flow, it returned a one-byte
+sample for every other class. The fix is to scan without `-c` and stop
+accumulating once the sample is large enough.
+
+The pattern across all five is the point: every recorder logged `SUCCESS`, every
+script exited 0, and every output directory contained files. What exposed them
+was byte counts, sample sizes, and a verdict that disagreed with the underlying
+number. None would have been caught by reading the code.
+
+This is the failure mode constitution principle P-4 exists to prevent in fragcap
+itself, met repeatedly in the tooling built to validate it. It is worth carrying
+into the implementation slices: a capture tool that reports success while having
+recorded nothing is the single most expensive defect this project can ship,
+because every downstream conclusion inherits it.
