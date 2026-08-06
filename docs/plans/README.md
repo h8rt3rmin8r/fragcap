@@ -56,30 +56,25 @@ Consequence for slice scoping: S01 carries requirement 4, S14 carries
 requirement 2 through `doctor`, and S18 carries requirement 3. Requirement 1 is
 a release-workflow assertion. None of these are afterthoughts to bolt on later.
 
-## Open gap: the glossary has no home until S18
+## Resolved: the glossary has a home
 
-Raised by the S01 analyze gate, 2026-08-06. Not S01's to fix, and recorded here
-rather than absorbed silently.
+Raised by the S01 analyze gate and closed the same day, 2026-08-06.
 
-Constitution P-6 requires a term introduced in code or documentation to get a
-glossary entry **in the same change that introduces it**. Specification section
-22.4 puts the glossary in the documentation site, which S18 owns. Slices S01
-through S17 therefore have nowhere to write, so P-6 is unenforceable for
-seventeen slices and the entire backlog lands on the slice least able to
-reconstruct why each term was chosen.
+Constitution P-6 requires a glossary entry in the same change that introduces a
+term, but the glossary was scheduled to live in the documentation site that S18
+owns. Seventeen slices therefore had nowhere to write, and the backlog would
+have landed on the slice least able to reconstruct why each term was chosen.
 
-Three ways out, none adopted yet:
+`docs/glossary.md` is now the interim home, seeded with 22 entries covering the
+vocabulary already in use. S18 splits it into the per-category pages of
+specification section 22.4 and adds the generated alphabetical index; nothing
+has to be reconstructed at that point.
 
-1. Create `docs/glossary.md` as a plain document early, with the site rendering
-   it at S18. Cheapest, and keeps P-6 enforceable from S02 onward.
-2. Fold a glossary stub into S02, which is the slice that first introduces real
-   domain vocabulary (flow, attribution, stage, role).
-3. Accept the backlog and schedule a dedicated pass before S18.
-
-Option 1 looks right and costs almost nothing, but it is a scope decision for
-the operator rather than something to absorb into a slice that did not ask for
-it. Until it is resolved, P-6 is understood to be **deferred, not satisfied**,
-and saying otherwise would be the reporting failure P-9 exists to prevent.
+One caveat worth keeping in view: the documentation linter in section 4.6,
+which enforces entry completeness and cross-link resolution mechanically,
+arrives with S18. Until then these rules are kept by hand, which is a weaker
+guarantee than the constitution assumes. **P-6 is satisfiable now, but not yet
+enforced.**
 
 ## Slice ordering
 
