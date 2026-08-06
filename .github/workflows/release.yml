@@ -26,8 +26,9 @@ jobs:
           # Specification section 20.2: no distribution artifact contains npcap
           # binaries, installers, or driver files. Asserted mechanically here
           # rather than left to release-time discipline.
+          $pattern = '(?i)npcap|wpcap|packet\.dll'
           $hits = Get-ChildItem target/release -Recurse -File |
-                  Where-Object { $_.Name -match '(?i)npcap|wpcap|packet\.dll' }
+                  Where-Object { $_.Name -match $pattern }
           if ($hits) {
             $hits | ForEach-Object { Write-Error "npcap component in artifact: $($_.FullName)" }
             exit 1
