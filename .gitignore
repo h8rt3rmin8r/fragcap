@@ -27,10 +27,18 @@ out
 # Capture output. Capture files can carry addresses, and in some titles session
 # identifiers, so nothing written by a live run is ever committed by accident.
 # Test fixtures are the exception and live under fixtures/, which is tracked.
-/captures
+#
+# Deliberately unanchored: an earlier path defect wrote sessions to
+# docs/captures/ instead of the repository root, where only the *.pcapng rule
+# caught them and the socket log and manifest were left tracked. Match the
+# directory name anywhere rather than relying on it landing where intended.
+captures/
+recon-session/
 *.fcapng
 *.pcapng
 *.pcap
+sockets.jsonl
+processes.jsonl
 !fixtures/**/*.fcapng
 !fixtures/**/*.pcapng
 !fixtures/**/*.pcap

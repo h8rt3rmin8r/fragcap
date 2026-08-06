@@ -441,7 +441,11 @@ namespace FragcapRecon {
     }
 
     if (-not $OutputRoot) {
-        $repoRoot   = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ThisScriptPath))
+        # This script lives at <repo>/docs/plans/recon/, so reaching the
+        # repository root takes four steps up from the file: recon, plans,
+        # docs, root. Three steps lands in docs/ and writes sessions to
+        # docs/captures/, outside the gitignore rule that protects them.
+        $repoRoot   = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ThisScriptPath)))
         $OutputRoot = Join-Path $repoRoot 'captures/recon'
     }
     $stamp     = (Get-Date).ToString('yyyyMMdd-HHmmss')
@@ -486,9 +490,15 @@ namespace FragcapRecon {
         Write-Log "Loopback capture started -> loopback.pcapng" -Level Success -Source capture
 
         $procPath = Join-Path $outDir 'processes.jsonl'
-        $script:ProcLog = [System.IO.StreamWriter]::new($procPath, $false, [System.Text.UTF8Encoding]::new($false))
-        $script:ProcLog.AutoFlush = $true
+        [System.IO.File]::WriteAllText($procPath, '', [System.Text.UTF8Encoding]::new($false))
 
+        # An -Action scriptblock runs in its own scope and CANNOT see this
+        # script's $script: variables. A shared StreamWriter handle therefore
+        # arrives as $null, every write throws into the event job's error
+        # stream where nothing surfaces it, and the session completes reporting
+        # success with an empty log. Pass the path through -MessageData and
+        # append per event instead. Process creation is low rate, so opening
+        # per write costs nothing that matters.
         $startAction = {
             $e = $Event.SourceEventArgs.NewEvent
             $rec = [ordered]@{
@@ -502,7 +512,8 @@ namespace FragcapRecon {
             }
             $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($e.ProcessID)" -ErrorAction SilentlyContinue
             if ($p) { $rec.path = $p.ExecutablePath; $rec.cmd = $p.CommandLine }
-            $script:ProcLog.WriteLine(($rec | ConvertTo-Json -Compress -Depth 3))
+            [System.IO.File]::AppendAllText($Event.MessageData,
+                ($rec | ConvertTo-Json -Compress -Depth 3) + "`n")
         }
         $stopAction = {
             $e = $Event.SourceEventArgs.NewEvent
@@ -513,14 +524,27 @@ namespace FragcapRecon {
                 name     = [string]$e.ProcessName
                 exitCode = [int]$e.ExitStatus
             }
-            $script:ProcLog.WriteLine(($rec | ConvertTo-Json -Compress -Depth 3))
+            [System.IO.File]::AppendAllText($Event.MessageData,
+                ($rec | ConvertTo-Json -Compress -Depth 3) + "`n")
         }
 
         $script:Subs += Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace `
-            -SourceIdentifier 'FragcapProcStart' -Action $startAction
+            -SourceIdentifier 'FragcapProcStart' -Action $startAction -MessageData $procPath
         $script:Subs += Register-CimIndicationEvent -ClassName Win32_ProcessStopTrace `
-            -SourceIdentifier 'FragcapProcStop' -Action $stopAction
-        Write-Log "Process tree recorder started -> processes.jsonl" -Level Success -Source process
+            -SourceIdentifier 'FragcapProcStop' -Action $stopAction -MessageData $procPath
+
+        # Prove the recorder actually writes before trusting it for a whole
+        # session. Spawning one throwaway process and confirming the log grows
+        # is the difference between a working recorder and one that reports
+        # success into a void.
+        $probe = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','exit' -PassThru -WindowStyle Hidden
+        $probe.WaitForExit()
+        Start-Sleep -Milliseconds 700
+        if ((Get-Item -LiteralPath $procPath).Length -eq 0) {
+            Write-Log "Process tree recorder is registered but wrote nothing for a test process. Q-4 will be unanswerable. Aborting rather than recording a session that cannot answer it." -Level Error -Source process
+            exit 1
+        }
+        Write-Log "Process tree recorder started and verified -> processes.jsonl" -Level Success -Source process
 
         $sockPath = Join-Path $outDir 'sockets.jsonl'
         $script:SocketLog = [System.IO.StreamWriter]::new($sockPath, $false, [System.Text.UTF8Encoding]::new($false))
@@ -592,7 +616,6 @@ namespace FragcapRecon {
             }
         }
         if ($script:SocketLog) { $script:SocketLog.Flush(); $script:SocketLog.Dispose() }
-        if ($script:ProcLog)   { $script:ProcLog.Flush();   $script:ProcLog.Dispose() }
 
         if ($outDir -and (Test-Path -LiteralPath $outDir)) {
             $endUtc = (Get-Date).ToUniversalTime()

@@ -421,7 +421,9 @@ Param(
     }
 
     if (-not $SessionPath) {
-        $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ThisScriptPath))
+        # Four steps up from <repo>/docs/plans/recon/<file>: recon, plans,
+        # docs, root. Three lands in docs/ and misses the sessions entirely.
+        $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ThisScriptPath)))
         $root     = Join-Path $repoRoot 'captures/recon'
         if (-not (Test-Path -LiteralPath $root)) {
             Write-Host "FAIL: no sessions found under $root. Run Start-ReconSession.ps1 first." -ForegroundColor Red
@@ -563,6 +565,13 @@ Param(
             $ownerName = if ($hit) { $hit.Name } else { "pid $($match.pid)" }
         }
 
+        # A conversation with neither endpoint in this machine's socket table is
+        # not ours: LAN multicast and broadcast from other hosts (SSDP, mDNS,
+        # DHCPv6) is captured because the adapter sees it, not because anything
+        # here sent it. Counting those as attribution failures understates the
+        # mechanism, so they are classified separately rather than lumped in.
+        $isOurs = ($aLocal -or $bLocal)
+
         [pscustomobject]@{
             Protocol      = $c.Protocol
             LocalAddress  = $lAddr
@@ -575,6 +584,7 @@ Param(
             OwnerPid      = if ($match) { $match.pid } else { $null }
             OwnerName     = $ownerName
             Attributed    = [bool]$match
+            OurTraffic    = $isOurs
         }
     }
     $flows | Export-Csv -LiteralPath (Join-Path $analysis 'flows.csv') -NoTypeInformation
@@ -584,11 +594,22 @@ Param(
     if (-not $totalFrames) { $totalFrames = 1 }
     $attrPct = [math]::Round(100.0 * $attrFrames / $totalFrames, 2)
 
-    $tcpFlows = @($flows | Where-Object { $_.Protocol -eq 'tcp' })
-    $udpFlows = @($flows | Where-Object { $_.Protocol -eq 'udp' })
+    # Judge attribution only on traffic this machine actually originated or
+    # received. Flow counts including foreign multicast measure the LAN, not
+    # the mechanism.
+    $ours     = @($flows | Where-Object { $_.OurTraffic })
+    $foreign  = @($flows | Where-Object { -not $_.OurTraffic })
+    $tcpFlows = @($ours | Where-Object { $_.Protocol -eq 'tcp' })
+    $udpFlows = @($ours | Where-Object { $_.Protocol -eq 'udp' })
     $tcpAttr  = @($tcpFlows | Where-Object { $_.Attributed }).Count
     $udpAttr  = @($udpFlows | Where-Object { $_.Attributed }).Count
-    Write-Log "Q-1: $attrPct% of frames attributed to a process" -Level Success -Source analyze
+    $udpUnattr = @($udpFlows | Where-Object { -not $_.Attributed })
+    $udpUnattrBytes = ($udpUnattr | Measure-Object -Property Bytes -Sum).Sum
+    if (-not $udpUnattrBytes) { $udpUnattrBytes = 0 }
+    $udpBytes = ($udpFlows | Measure-Object -Property Bytes -Sum).Sum
+    if (-not $udpBytes) { $udpBytes = 1 }
+    $udpMissBytePct = [math]::Round(100.0 * $udpUnattrBytes / $udpBytes, 4)
+    Write-Log "Q-1: $attrPct% of frames attributed; UDP misses carry $udpMissBytePct% of UDP bytes" -Level Success -Source analyze
 
     # ---- Q-2: endpoint ownership --------------------------------------------
 
@@ -735,9 +756,16 @@ Param(
           elseif ($shortFramePct -lt 5) { 'A-2 holds, marginal' }
           else { 'A-2 at risk' }
     $q4 = if ($procs.Count -eq 0) { 'INCONCLUSIVE (session not elevated)' } else { 'see topology' }
+    # Loopback traffic existing does not establish that the launcher-to-client
+    # handoff is what produced it: plenty of unrelated software talks over
+    # loopback. Confirming the handoff needs the conversations attributed to the
+    # launcher and client processes, which needs the process tree. Without it
+    # this is inconclusive, and saying otherwise would be the convenient answer
+    # rather than the true one.
     $q5 = if (-not (Test-Path -LiteralPath $loopback)) { 'INCONCLUSIVE (no loopback capture)' }
-          elseif ($loopFlows.Count -gt 0) { 'A-5 holds (loopback traffic present)' }
-          else { 'A-5 fails (no loopback traffic)' }
+          elseif ($loopFlows.Count -eq 0) { 'A-5 fails (no loopback traffic at all)' }
+          elseif ($procs.Count -eq 0) { "INCONCLUSIVE ($($loopFlows.Count) loopback conv, unattributable without process tree)" }
+          else { "A-5 plausible ($($loopFlows.Count) loopback conv; confirm the launcher and client own them)" }
 
     [void]$sb.AppendLine("| Q-1 5-tuple attributable | A-1 | $q1 ($attrPct% of frames) |")
     [void]$sb.AppendLine("| Q-2 relay tunneled | A-3 | $q2 |")
@@ -769,14 +797,25 @@ Param(
 
     [void]$sb.AppendLine("## Q-1: attribution")
     [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Counting only traffic this machine sent or received. " +
+                         "$($foreign.Count) further conversations were foreign LAN multicast " +
+                         "or broadcast, which the adapter sees but nothing here originated; " +
+                         "those are excluded rather than counted as attribution failures.")
+    [void]$sb.AppendLine()
     [void]$sb.AppendLine("- Conversations: $($tcpFlows.Count) TCP, $($udpFlows.Count) UDP.")
     [void]$sb.AppendLine("- Attributed: $tcpAttr of $($tcpFlows.Count) TCP, $udpAttr of $($udpFlows.Count) UDP.")
     [void]$sb.AppendLine("- Frame-weighted attribution: **$attrPct%**.")
+    [void]$sb.AppendLine("- **UDP conversations that missed carry $udpMissBytePct% of UDP bytes.**")
     [void]$sb.AppendLine()
     [void]$sb.AppendLine("TCP joins on the full 5-tuple. UDP joins on the local endpoint alone, " +
-                         "because the UDP socket table carries no remote endpoint (PF-3). A " +
-                         "materially lower UDP attribution rate is the signal that matters here, " +
-                         "since gameplay traffic is predominantly UDP.")
+                         "because the UDP socket table carries no remote endpoint (PF-3).")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Read the byte figure, not the conversation count. UDP misses cluster on " +
+                         "ephemeral request-response sockets, chiefly DNS, which open and close " +
+                         "inside one poll interval and carry almost nothing. A low conversation " +
+                         "rate paired with a negligible byte share means the race window is real " +
+                         "but lands on traffic that does not matter. A high byte share is the " +
+                         "result that would threaten A-1.")
     [void]$sb.AppendLine()
     [void]$sb.AppendLine("Largest conversations by volume:")
     [void]$sb.AppendLine()
