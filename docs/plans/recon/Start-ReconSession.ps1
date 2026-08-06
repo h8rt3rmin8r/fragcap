@@ -208,12 +208,14 @@ Param(
         [CmdletBinding()]
         Param()
 
+        # Elevation is no longer required. Capture works unprivileged when npcap
+        # is installed with AdminOnly = 0 (PF-2), and the process recorder now
+        # falls back to a polling source that needs no privilege. Elevation only
+        # buys the ETW source, which is more precise, so it is reported rather
+        # than demanded.
         $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
         $principal = [Security.Principal.WindowsPrincipal]$identity
-        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            Write-Host "FAIL: administrative privilege required for the process tree recorder. Relaunch pwsh as administrator." -ForegroundColor Red
-            exit 2
-        }
+        $script:IsElevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
         $npcap = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Npcap' -ErrorAction SilentlyContinue
         if (-not $npcap) {
@@ -412,6 +414,7 @@ namespace FragcapRecon {
 
     $script:Recorders  = @()
     $script:Subs       = @()
+    $script:IsElevated = $false
     $script:SocketLog  = $null
 
 #_______________________________________________________________________________
@@ -498,18 +501,25 @@ namespace FragcapRecon {
         # success with an empty log. Pass the path through -MessageData and
         # append per event instead. Process creation is low rate, so opening
         # per write costs nothing that matters.
-        $startAction = {
+        # Every action writes through $Event.MessageData rather than a captured
+        # variable. An -Action scriptblock runs in its own scope and cannot see
+        # this script's $script: state, so a shared handle arrives as null and
+        # every write throws into the job error stream where nothing surfaces
+        # it. That failure is silent and the session completes reporting
+        # success.
+        $etwStartAction = {
             $e = $Event.SourceEventArgs.NewEvent
             $rec = [ordered]@{
-                ts    = (Get-Date).ToUniversalTime().ToString('o')
-                event = 'start'
-                pid   = [int]$e.ProcessID
-                ppid  = [int]$e.ParentProcessID
-                name  = [string]$e.ProcessName
-                path  = $null
-                cmd   = $null
+                ts     = (Get-Date).ToUniversalTime().ToString('o')
+                event  = 'start'
+                source = 'etw'
+                pid    = [int]$e.ProcessID
+                ppid   = [int]$e.ParentProcessID
+                name   = [string]$e.ProcessName
+                path   = $null
+                cmd    = $null
             }
-            $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($e.ProcessID)" -ErrorAction SilentlyContinue
+            $p = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$e.ProcessID)" -ErrorAction SilentlyContinue
             if ($p) { $rec.path = $p.ExecutablePath; $rec.cmd = $p.CommandLine }
             [System.IO.File]::AppendAllText($Event.MessageData,
                 ($rec | ConvertTo-Json -Compress -Depth 3) + "`n")
@@ -519,6 +529,7 @@ namespace FragcapRecon {
             $rec = [ordered]@{
                 ts       = (Get-Date).ToUniversalTime().ToString('o')
                 event    = 'stop'
+                source   = 'etw'
                 pid      = [int]$e.ProcessID
                 name     = [string]$e.ProcessName
                 exitCode = [int]$e.ExitStatus
@@ -526,24 +537,141 @@ namespace FragcapRecon {
             [System.IO.File]::AppendAllText($Event.MessageData,
                 ($rec | ConvertTo-Json -Compress -Depth 3) + "`n")
         }
+        # The WMI source carries the executable path and full command line on
+        # the instance itself, so no second query is needed and no race exists
+        # against a process that has already exited.
+        $wmiStartAction = {
+            $t = $Event.SourceEventArgs.NewEvent.TargetInstance
+            $rec = [ordered]@{
+                ts     = (Get-Date).ToUniversalTime().ToString('o')
+                event  = 'start'
+                source = 'wmi'
+                pid    = [int]$t.ProcessId
+                ppid   = [int]$t.ParentProcessId
+                name   = [string]$t.Name
+                path   = [string]$t.ExecutablePath
+                cmd    = [string]$t.CommandLine
+            }
+            [System.IO.File]::AppendAllText($Event.MessageData,
+                ($rec | ConvertTo-Json -Compress -Depth 3) + "`n")
+        }
+        $wmiStopAction = {
+            $t = $Event.SourceEventArgs.NewEvent.TargetInstance
+            $rec = [ordered]@{
+                ts     = (Get-Date).ToUniversalTime().ToString('o')
+                event  = 'stop'
+                source = 'wmi'
+                pid    = [int]$t.ProcessId
+                name   = [string]$t.Name
+            }
+            [System.IO.File]::AppendAllText($Event.MessageData,
+                ($rec | ConvertTo-Json -Compress -Depth 3) + "`n")
+        }
 
-        $script:Subs += Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace `
-            -SourceIdentifier 'FragcapProcStart' -Action $startAction -MessageData $procPath
-        $script:Subs += Register-CimIndicationEvent -ClassName Win32_ProcessStopTrace `
-            -SourceIdentifier 'FragcapProcStop' -Action $stopAction -MessageData $procPath
+        # Two independent sources, because each has a failure mode the other
+        # covers.
+        #
+        # ETW (Win32_ProcessStartTrace) is push-based and catches processes far
+        # shorter-lived than any poll interval, but it requires elevation.
+        #
+        # WMI instance creation (__InstanceCreationEvent WITHIN 1) needs no
+        # privilege and carries the executable path and full command line, which
+        # the ETW trace does not, at the cost of a one second poll that can miss
+        # a process living less than that. Launcher-chain stages live for
+        # seconds to minutes, so this is an acceptable floor for Q-4, but it IS
+        # a floor and short-lived helpers may be missed.
+        #
+        # Whichever fire, both write to the same log with a 'source' field, and
+        # the analysis deduplicates on process identifier.
+        $live = @()
 
-        # Prove the recorder actually writes before trusting it for a whole
-        # session. Spawning one throwaway process and confirming the log grows
-        # is the difference between a working recorder and one that reports
-        # success into a void.
-        $probe = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','exit' -PassThru -WindowStyle Hidden
-        $probe.WaitForExit()
-        Start-Sleep -Milliseconds 700
-        if ((Get-Item -LiteralPath $procPath).Length -eq 0) {
-            Write-Log "Process tree recorder is registered but wrote nothing for a test process. Q-4 will be unanswerable. Aborting rather than recording a session that cannot answer it." -Level Error -Source process
+        if ($script:IsElevated) {
+            try {
+                $script:Subs += Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace `
+                    -SourceIdentifier 'FragcapEtwStart' -Action $etwStartAction -MessageData $procPath -ErrorAction Stop
+                $script:Subs += Register-CimIndicationEvent -ClassName Win32_ProcessStopTrace `
+                    -SourceIdentifier 'FragcapEtwStop' -Action $stopAction -MessageData $procPath -ErrorAction Stop
+                $live += 'etw'
+            } catch {
+                Write-Log "ETW process source unavailable: $($_.Exception.Message)" -Level Warn -Source process
+            }
+        } else {
+            Write-Log "Not elevated: ETW process source skipped, polling source only" -Level Warn -Source process
+        }
+
+        try {
+            $script:Subs += Register-CimIndicationEvent `
+                -Query "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'" `
+                -SourceIdentifier 'FragcapWmiStart' -Action $wmiStartAction -MessageData $procPath -ErrorAction Stop
+            $script:Subs += Register-CimIndicationEvent `
+                -Query "SELECT * FROM __InstanceDeletionEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'" `
+                -SourceIdentifier 'FragcapWmiStop' -Action $wmiStopAction -MessageData $procPath -ErrorAction Stop
+            $live += 'wmi'
+        } catch {
+            Write-Log "WMI process source unavailable: $($_.Exception.Message)" -Level Warn -Source process
+        }
+
+        if ($live.Count -eq 0) {
+            Write-Log "No process source could be registered. Q-4 cannot be answered." -Level Error -Source process
             exit 1
         }
-        Write-Log "Process tree recorder started and verified -> processes.jsonl" -Level Success -Source process
+
+        # Prove the recorder writes before trusting it for a whole session, and
+        # give delivery time to actually happen: WMI indication delivery runs
+        # around a second, so a sub-second check reports failure on a recorder
+        # that works. Poll for growth instead of sleeping once and guessing.
+        # Snapshot everything already running. Creation events only name
+        # processes that start during the session, so persistent platform
+        # services (the Steam client, a publisher launcher left running) would
+        # hold sockets under a process identifier with no name attached, which
+        # is exactly the lifecycle class section 10.4 cares about.
+        $baseStamp = (Get-Date).ToUniversalTime().ToString('o')
+        $baseline = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+            [ordered]@{
+                ts     = $baseStamp
+                event  = 'baseline'
+                source = 'snapshot'
+                pid    = [int]$_.ProcessId
+                ppid   = [int]$_.ParentProcessId
+                name   = [string]$_.Name
+                path   = [string]$_.ExecutablePath
+                cmd    = [string]$_.CommandLine
+            } | ConvertTo-Json -Compress -Depth 3
+        }
+        [System.IO.File]::AppendAllText($procPath, (($baseline -join "`n") + "`n"))
+        Write-Log "Baseline snapshot: $($baseline.Count) processes already running" -Level Info -Source process
+
+        # Measure GROWTH past the baseline, not whether the file is non-empty.
+        # The baseline alone makes it non-empty, so an emptiness test would pass
+        # with the event recorder completely dead, which is the false success
+        # this check exists to prevent.
+        $sizeBeforeProbe = (Get-Item -LiteralPath $procPath).Length
+
+        $probe = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','exit' -PassThru -WindowStyle Hidden
+        $probe.WaitForExit()
+        $deadline = (Get-Date).AddSeconds(8)
+        while (((Get-Item -LiteralPath $procPath).Length -le $sizeBeforeProbe) -and ((Get-Date) -lt $deadline)) {
+            Start-Sleep -Milliseconds 250
+        }
+
+        if ((Get-Item -LiteralPath $procPath).Length -le $sizeBeforeProbe) {
+            Write-Log "Process recorder registered ($($live -join ', ')) but wrote nothing for a test process in 8 seconds." -Level Error -Source process
+            # Action-block failures land in the subscriber's job error stream,
+            # where nothing surfaces them by default. Surface them: this is the
+            # only place the actual cause is visible.
+            foreach ($id in @('FragcapEtwStart','FragcapWmiStart')) {
+                $sub = Get-EventSubscriber -SourceIdentifier $id -ErrorAction SilentlyContinue
+                if ($sub -and $sub.Action) {
+                    Write-Log "  $id job state $($sub.Action.State), $($sub.Action.Error.Count) errors" -Level Error -Source process
+                    $sub.Action.Error | Select-Object -First 3 | ForEach-Object {
+                        Write-Log "    $_" -Level Error -Source process
+                    }
+                }
+            }
+            Write-Log "Aborting rather than recording a session that cannot answer Q-4." -Level Error -Source process
+            exit 1
+        }
+        Write-Log "Process recorder verified, sources: $($live -join ', ') -> processes.jsonl" -Level Success -Source process
 
         $sockPath = Join-Path $outDir 'sockets.jsonl'
         $script:SocketLog = [System.IO.StreamWriter]::new($sockPath, $false, [System.Text.UTF8Encoding]::new($false))
@@ -606,7 +734,7 @@ namespace FragcapRecon {
     finally {
         Write-Log "Stopping recorders" -Level Info -Source session
 
-        foreach ($id in @('FragcapProcStart','FragcapProcStop')) {
+        foreach ($id in @('FragcapEtwStart','FragcapEtwStop','FragcapWmiStart','FragcapWmiStop')) {
             Unregister-Event -SourceIdentifier $id -ErrorAction SilentlyContinue
         }
         foreach ($r in $script:Recorders) {

@@ -18,7 +18,10 @@ next version.
 
 ## Running a session
 
-Administrative privilege is required, for the process tree recorder only.
+**No elevation required.** Capture works unprivileged when npcap is installed
+with `AdminOnly = 0` (PF-1, PF-2), and the process recorder has an unprivileged
+source. Running elevated adds the ETW process source, which catches processes
+shorter-lived than the one second polling floor, but it is not needed.
 
 ```powershell
 pwsh -File docs/plans/recon/Start-ReconSession.ps1 -Title eso
@@ -194,10 +197,33 @@ filter on a capture dominated by one high-volume flow, it returned a one-byte
 sample for every other class. The fix is to scan without `-c` and stop
 accumulating once the sample is large enough.
 
-The pattern across all five is the point: every recorder logged `SUCCESS`, every
-script exited 0, and every output directory contained files. What exposed them
-was byte counts, sample sizes, and a verdict that disagreed with the underlying
-number. None would have been caught by reading the code.
+**The process recorder was shipped broken twice.** The first fix addressed the
+scope problem but was validated only on a substitute event source, because the
+ETW class needs elevation and could not be exercised. That is not validation,
+and calling it validation cost a second session.
+
+What actually resolved it was finding a source that could be tested:
+`__InstanceCreationEvent WITHIN 1` on `Win32_Process` needs no privilege, and
+carries the executable path and full command line that the ETW trace does not.
+The recorder now registers both, writes them to one log with a `source` field,
+and the analysis deduplicates on process identifier. The whole path was then
+run unprivileged, end to end, and confirmed against a real session.
+
+The lesson generalizes past this script: **a fix for a path you cannot execute
+is a hypothesis.** Where a privileged path resists testing, find an
+unprivileged equivalent and make that the primary, rather than shipping
+reasoning and calling it verified.
+
+**The self-check nearly re-introduced the bug it was added to prevent.** Adding
+the baseline snapshot made `processes.jsonl` non-empty before any event fired,
+so a check for emptiness would have passed with the recorder completely dead.
+It now measures growth past the baseline. A health check that shares an
+assumption with the thing it checks is not a check.
+
+The pattern across all of these is the point: every recorder logged `SUCCESS`,
+every script exited 0, and every output directory contained files. What exposed
+them was byte counts, sample sizes, and a verdict that disagreed with the
+underlying number. None would have been caught by reading the code.
 
 This is the failure mode constitution principle P-4 exists to prevent in fragcap
 itself, met repeatedly in the tooling built to validate it. It is worth carrying

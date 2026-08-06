@@ -491,20 +491,37 @@ Param(
     # ---- Q-4: process topology ----------------------------------------------
 
     Write-Log "Q-4: building process topology" -Level Info -Source analyze
-    $starts = @($procs | Where-Object { $_.event -eq 'start' })
+    # Baseline records name processes that were already running when the
+    # session began, which is how persistent platform services get a name
+    # instead of a bare identifier. Creation events supersede them, and the two
+    # process sources can both report the same start, so deduplicate on
+    # identifier keeping the earliest real start.
     $stops  = @($procs | Where-Object { $_.event -eq 'stop' })
     $stopBy = @{}
     foreach ($s in $stops) { $stopBy[[string]$s.pid] = $s.ts }
 
-    $tree = foreach ($p in $starts) {
+    $byPid = [ordered]@{}
+    foreach ($p in ($procs | Where-Object { $_.event -eq 'baseline' })) {
+        $byPid[[string]$p.pid] = @{ Rec = $p; Pre = $true }
+    }
+    foreach ($p in ($procs | Where-Object { $_.event -eq 'start' })) {
+        $k = [string]$p.pid
+        if ((-not $byPid.Contains($k)) -or $byPid[$k].Pre) {
+            $byPid[$k] = @{ Rec = $p; Pre = $false }
+        }
+    }
+
+    $tree = foreach ($k in $byPid.Keys) {
+        $p = $byPid[$k].Rec
         [pscustomobject]@{
-            Pid       = $p.pid
-            Ppid      = $p.ppid
-            Name      = $p.name
-            Path      = $p.path
-            Started   = $p.ts
-            Stopped   = $stopBy[[string]$p.pid]
-            Persisted = -not $stopBy.ContainsKey([string]$p.pid)
+            Pid            = $p.pid
+            Ppid           = $p.ppid
+            Name           = $p.name
+            Path           = $p.path
+            Started        = $p.ts
+            Stopped        = $stopBy[$k]
+            Persisted      = -not $stopBy.ContainsKey($k)
+            RunningAtStart = $byPid[$k].Pre
         }
     }
     $tree | Export-Csv -LiteralPath (Join-Path $analysis 'process-tree.csv') -NoTypeInformation
@@ -783,10 +800,14 @@ Param(
     if ($netProcs.Count) {
         [void]$sb.AppendLine("Processes that held sockets during the session, in creation order.")
         [void]$sb.AppendLine()
-        [void]$sb.AppendLine("| PID | Parent | Image | Started | Persisted |")
-        [void]$sb.AppendLine("| --- | --- | --- | --- | --- |")
-        foreach ($p in ($netProcs | Sort-Object Started)) {
-            [void]$sb.AppendLine("| $($p.Pid) | $($p.Ppid) | ``$($p.Name)`` | $($p.Started) | $($p.Persisted) |")
+        [void]$sb.AppendLine("``Pre`` marks a process already running when the session began, " +
+                             "which is the persistent platform-service lifecycle class. The " +
+                             "others were created during the session and are the launch chain.")
+        [void]$sb.AppendLine()
+        [void]$sb.AppendLine("| PID | Parent | Image | Pre | Started | Persisted |")
+        [void]$sb.AppendLine("| --- | --- | --- | --- | --- | --- |")
+        foreach ($p in ($netProcs | Sort-Object RunningAtStart, Started)) {
+            [void]$sb.AppendLine("| $($p.Pid) | $($p.Ppid) | ``$($p.Name)`` | $($p.RunningAtStart) | $($p.Started) | $($p.Persisted) |")
         }
     } else {
         [void]$sb.AppendLine("No process events recorded. Q-4 is unanswered, and Q-1 " +
