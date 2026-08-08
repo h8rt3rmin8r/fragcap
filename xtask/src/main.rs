@@ -14,6 +14,7 @@
 //! repository.
 
 mod deps;
+mod license;
 mod lint;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ cargo xtask <command>
 
   lint       Repository conventions check
   deps       Dependency direction check
+  license    Per-crate license, notice, and readme files for publication
   neutral    Build fragcap-core for a target with no capture backend
   msrv       Build at the declared minimum supported toolchain
   ci         Run the full local check set in order
@@ -82,6 +84,21 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("deps: could not run: {e}");
+                ExitCode::from(2)
+            }
+        },
+
+        "license" => match license::run(&root) {
+            Ok(0) => {
+                println!("license: every publishable crate carries its own license text");
+                ExitCode::SUCCESS
+            }
+            Ok(n) => {
+                eprintln!("license: {n} problem(s)");
+                ExitCode::from(1)
+            }
+            Err(e) => {
+                eprintln!("license: could not run: {e}");
                 ExitCode::from(2)
             }
         },
@@ -177,6 +194,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: deps could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running license");
+            match license::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: license reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: license could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

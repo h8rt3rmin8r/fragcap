@@ -1,0 +1,59 @@
+fragcap
+Copyright 2026 William Thompson
+
+This product includes software developed by the fragcap project
+(https://github.com/h8rt3rmin8r/fragcap).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+--------------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE NOT DISTRIBUTED WITH THIS PRODUCT
+--------------------------------------------------------------------------------
+
+npcap
+
+    fragcap requires npcap to be installed separately. npcap is NOT
+    redistributable under its standard license and is NOT included in any
+    fragcap distribution artifact: not in release archives, not in installers,
+    and not in container images.
+
+    fragcap detects npcap at runtime and reports its absence with the official
+    download location. It never downloads, installs, or invokes an installer
+    for it.
+
+    npcap is a product of the Nmap Project and is governed by its own license.
+    Obtain it from https://npcap.com and review the license terms there.
+
+    Building fragcap additionally requires the npcap Software Development Kit,
+    which is likewise not redistributed and is acquired at build time.
+
+--------------------------------------------------------------------------------
+TRADEMARKS
+--------------------------------------------------------------------------------
+
+Product names, game titles, company names, and trademarks referenced in this
+product or its documentation are the property of their respective owners. They
+are used solely to identify software that fragcap has been tested against or
+designed to observe. Their use does not imply any affiliation with, endorsement
+by, or sponsorship from those owners.
+
+--------------------------------------------------------------------------------
+DEPENDENCY LICENSES
+--------------------------------------------------------------------------------
+
+fragcap depends on third-party Rust crates distributed under permissive
+licenses (MIT, Apache-2.0, BSD two-clause and three-clause, ISC, Unicode-DFS,
+and Zlib). Copyleft-licensed dependencies are not accepted.
+
+The complete dependency license inventory is generated during the release
+build and accompanies each distribution artifact.

@@ -11,7 +11,10 @@ edition      = "2021"
 rust-version = "1.82"
 license      = "Apache-2.0"
 repository   = "https://github.com/h8rt3rmin8r/fragcap"
+homepage     = "https://github.com/h8rt3rmin8r/fragcap"
 authors      = ["William Thompson"]
+keywords     = ["pcap", "pcapng", "capture", "attribution", "windows"]
+categories   = ["network-programming"]
 
 [workspace.dependencies]
 fragcap-core    = { version = "0.1.0", path = "crates/fragcap-core" }
