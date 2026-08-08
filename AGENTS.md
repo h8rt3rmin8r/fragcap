@@ -43,18 +43,23 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slice S01 is complete. The Cargo workspace exists with the eight crates from
-the architecture of record, a task runner carrying the repository's own checks,
-and six workflow files.
+Slices S01 and S02 are complete. The Cargo workspace exists with the eight
+crates from the architecture of record, a task runner carrying the repository's
+own checks, and six workflow files. `fragcap-core` carries the type and trait
+vocabulary from specification sections 8.4 and 8.5.
 
-**Every crate is a skeleton.** Nothing captures, attributes, parses, or writes
-anything. Types and traits arrive at S02; each crate's module documentation
-names the slice that fills it.
+**There is still no behavior.** Nothing captures, attributes, parses, or writes
+anything. S02 fixed the shape of the seams; the slices that fill them start at
+S03. Each crate's module documentation names the slice that fills it.
+
+The workspace has one external dependency, `bytes`. `fragcap-core` may depend
+only on crates named in the allowlist in `xtask/src/deps.rs`, which is checked
+mechanically.
 
 The remote is `origin`, at `https://github.com/h8rt3rmin8r/fragcap`. S01
 integrated through pull request #1.
 
-Three things are scaffolded but not exercised, and must not be reported as
+Two things are scaffolded but not exercised, and must not be reported as
 passing checks:
 
 - **Half the workflow matrix has never completed.** The first runs landed
@@ -63,10 +68,16 @@ passing checks:
   without a capture backend`, `platform`, and `audit` never acquired a runner
   and are red for that reason, not for a code reason. Re-run them before
   treating any of the four as green.
-- **The minimum-toolchain check is vacuous.** The workspace has no external
-  dependencies, so any declared minimum passes. It becomes meaningful at S02.
+- **The minimum-toolchain check now runs for real.** Until S02 it built with
+  the pinned toolchain and reported success, which said nothing about the
+  declared minimum. It now builds through `rustup run 1.82` and exits 2 when
+  that toolchain is absent, so a check that did not run can no longer look like
+  one that passed.
 - **The npcap SDK acquisition step is unexercised.** No crate links against the
   capture library until S09.
+- **`cargo deny` has never run.** The `audit` workflow owns it and is weekly
+  and dispatch-only. The dependency graph is no longer empty, so the check now
+  has a subject; nobody has watched it pass.
 
 ## Spec-driven development workflow (spec-kit)
 

@@ -186,6 +186,28 @@ shape their signatures require and are expected to grow in S13, S11, and S11
 respectively. Each carries documentation naming the slice that fills it, so a
 later contributor does not read a thin type as a finished one.
 
+### D-8. The core dependency rule became an allowlist
+
+**Decision**: `cargo xtask deps` no longer requires `fragcap-core` to have zero
+dependencies. It checks against a named allowlist, currently `["bytes"]`.
+
+**Rationale**: discovered during implementation, not planned. The S01 check read
+P-2 as "core has no dependencies at all", which is stricter than the principle
+it enforces. P-2 forbids a platform-specific dependency, an I/O crate, and a
+capture library. It does not forbid every dependency, and `bytes` is none of the
+three.
+
+The empty-set rule would therefore have blocked D-1 on a reading the
+constitution does not support. Relaxing the check to match the principle is not
+a weakening: it still fails closed, so a crate that is not listed is a problem,
+and adding one is a deliberate edit that shows up in review. The value the check
+carries, catching a platform crate that `cargo xtask neutral` cannot see because
+it compiles to nothing off-platform, is unchanged.
+
+Recorded as a dated decision in `changelog.d/S02-core-types-traits.decisions.md`
+even though `xtask/` is not on the pinned artifact list, because it changes what
+a constitution check enforces.
+
 ## Project Structure
 
 ### Documentation (this feature)

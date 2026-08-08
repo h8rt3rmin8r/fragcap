@@ -17,6 +17,10 @@ keywords     = ["pcap", "pcapng", "capture", "attribution", "windows"]
 categories   = ["network-programming"]
 
 [workspace.dependencies]
+# External. Slice S02, plan D-1: reference-counted payload clones, MIT licensed,
+# declares a 1.57 minimum, and pulls in no transitive dependencies.
+bytes           = "1.12"
+
 fragcap-core    = { version = "0.1.0", path = "crates/fragcap-core" }
 fragcap-profile = { version = "0.1.0", path = "crates/fragcap-profile" }
 fragcap-capture = { version = "0.1.0", path = "crates/fragcap-capture" }
