@@ -1,9 +1,9 @@
 # Standard check set. Specification section 24.3; every gate here is blocking.
 #
-# NOTE: as of slice S01 this workflow has never executed, because the
-# repository has no remote. It is written to be correct when one exists, and
-# its unexercised status is recorded in the slice completion notes rather than
-# counted as a passing check.
+# NOTE: the `check` matrix first executed on 2026-08-06 and passed on both
+# operating systems. The `neutrality` and `msrv` jobs in this file have still
+# never completed: their first runs coincided with a GitHub incident and never
+# acquired a runner. Do not count either as a passing check until one does.
 name: ci
 
 # Triggers are scoped deliberately. `on: push` unqualified plus `on:
@@ -56,6 +56,9 @@ jobs:
 
       - name: Dependency direction
         run: cargo run --package xtask -- deps
+
+      - name: Publication licensing
+        run: cargo run --package xtask -- license
 
   neutrality:
     # Constitution P-2 proven mechanically: fragcap-core must build where no

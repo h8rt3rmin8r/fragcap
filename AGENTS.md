@@ -51,10 +51,18 @@ and six workflow files.
 anything. Types and traits arrive at S02; each crate's module documentation
 names the slice that fills it.
 
+The remote is `origin`, at `https://github.com/h8rt3rmin8r/fragcap`. S01
+integrated through pull request #1.
+
 Three things are scaffolded but not exercised, and must not be reported as
 passing checks:
 
-- **No workflow has ever run.** There is no git remote.
+- **Half the workflow matrix has never completed.** The first runs landed
+  during the GitHub incident of 2026-08-06. `check (ubuntu-latest)` and
+  `check (windows-latest)` passed; `minimum supported toolchain`, `core builds
+  without a capture backend`, `platform`, and `audit` never acquired a runner
+  and are red for that reason, not for a code reason. Re-run them before
+  treating any of the four as green.
 - **The minimum-toolchain check is vacuous.** The workspace has no external
   dependencies, so any declared minimum passes. It becomes meaningful at S02.
 - **The npcap SDK acquisition step is unexercised.** No crate links against the
@@ -149,9 +157,14 @@ authoritative; this list is the one to keep in working memory.
 - **A new term gets a glossary entry in the same change that introduces it.**
 - **Wrappers stay thin.** A wrapper that needs to parse output means a missing
   capability in Rust.
-- **Pinned artifacts change only with a dated decision in `CHANGELOG.md`:**
-  `.github/workflows/**`, `rust-toolchain.toml`, `release.toml`, `scripts/**`,
-  and release documentation.
+- **Pinned artifacts change only with a dated decision recorded in
+  `CHANGELOG.md`:** `.github/workflows/**`, `rust-toolchain.toml`,
+  `release.toml`, `scripts/**`, and release documentation. Write the decision
+  as a `changelog.d/<key>.decisions.md` fragment; `CHANGELOG.md` is assembled
+  from those fragments at release time, and editing it from a feature branch
+  conflicts with every other concurrent pull request. `release.toml` does not
+  exist yet; it arrives with the release process. The rule binds it from the
+  moment it lands.
 - **All text files are UTF-8 without BOM with LF line endings. No em-dashes or
   en-dashes anywhere, including code comments.**
 
@@ -168,6 +181,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace --locked
 cargo xtask lint          # repository conventions, CONVENTIONS.md
 cargo xtask deps          # dependency direction, specification section 8.3
+cargo xtask license       # per-crate license text for registry publication
 ```
 
 Two further checks are not in `ci` because they need a target or a toolchain
@@ -195,15 +209,13 @@ constitution conflict needs a human call. A P-1 conflict is always a halt.
 
 ## Reconnaissance gate
 
-Open questions Q-1 through Q-6 (specification section 29) are unanswered.
-They are resolved by one reconnaissance session per focal title using existing
-analyzer tooling and no fragcap code, and their findings populate Appendix D.
-The protocol is `docs/plans/reconnaissance.md`.
+**Closed.** Open questions Q-1 through Q-6 (specification section 29) are
+resolved. The findings are recorded in Appendix D and were applied to the
+specification; the protocol that produced them is
+`docs/plans/reconnaissance.md`.
 
-Slices S09, S10, and S17 depend on those answers. Implementing attribution
-machinery before them risks building for a topology that does not exist. If a
-slice in that set is kicked off with the questions still open, say so before
-starting.
+Slices S09, S10, and S17 were gated on those answers and are now unblocked.
+Q-7 and Q-8 remain open and gate S18.
 
 ## Integration workflow
 

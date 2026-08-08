@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
+homepage.workspace     = true
+keywords.workspace     = true
+readme                 = "README.md"
+categories             = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 fragcap.workspace = true
