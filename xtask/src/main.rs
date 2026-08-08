@@ -16,6 +16,7 @@
 mod deps;
 mod license;
 mod lint;
+mod notes;
 mod publish;
 
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ cargo xtask <command>
   ci         Run the full local check set in order
   docs       Documentation site (stub; owned by S18)
   publish    Registry publication in dependency order (--execute to publish)
+  notes      Print release notes for a version, from CHANGELOG.md
 ";
 
 fn repo_root() -> PathBuf {
@@ -52,6 +54,27 @@ fn cargo(args: &[&str]) -> bool {
         .args(args)
         .status();
     matches!(status, Ok(s) if s.success())
+}
+
+/// Run cargo and return whether it succeeded along with its combined output.
+///
+/// Needed where a caller has to tell one failure from another rather than
+/// only see that something failed. The output is echoed as well as returned,
+/// so an automated log still shows the work.
+fn cargo_captured(args: &[&str]) -> (bool, String) {
+    match Command::new(env!("CARGO"))
+        .current_dir(repo_root())
+        .args(args)
+        .output()
+    {
+        Ok(out) => {
+            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            print!("{text}");
+            (out.status.success(), text)
+        }
+        Err(e) => (false, format!("could not run cargo: {e}")),
+    }
 }
 
 fn main() -> ExitCode {
@@ -220,6 +243,17 @@ fn main() -> ExitCode {
             eprintln!("docs: not implemented. The documentation site is owned by slice S18.");
             ExitCode::from(2)
         }
+        "notes" => match std::env::args().nth(2) {
+            Some(version) => match notes::run(&root, &version) {
+                0 => ExitCode::SUCCESS,
+                _ => ExitCode::from(1),
+            },
+            None => {
+                eprintln!("notes: a version is required, for example: cargo xtask notes 0.2.0");
+                ExitCode::from(2)
+            }
+        },
+
         // Publishing changes the outside world and cannot be undone, so
         // `--execute` is required. Without it this prints the plan.
         "publish" => {
