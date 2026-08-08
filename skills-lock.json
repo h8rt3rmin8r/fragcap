@@ -146,6 +146,12 @@
       "skillPath": ".agents/skills/rust-skills/SKILL.md",
       "computedHash": "b39043884928e644d2a138b9689262f229824102812073c18a70faf3b0f2f349"
     },
+    "shruggie-graph-memory": {
+      "source": "h8rt3rmin8r/eso-weave",
+      "sourceType": "vendored",
+      "skillPath": ".agents/skills/shruggie-graph-memory/SKILL.md",
+      "computedHash": "78d71190d4f35f11fefb075c438e00d174635e1a30dc511128d7b40f9b692fbe"
+    },
     "shruggie-html": {
       "source": "h8rt3rmin8r/eso-weave",
       "sourceType": "vendored",
