@@ -1,0 +1,4 @@
+# One fragmented datagram: initial, middle, last. Nothing is
+# reassembled; the later fragments resolve from what the first said.
+flow udp 192.0.2.10:30000 * always owner 4242 game.exe
+endpoint udp 192.0.2.10:30000

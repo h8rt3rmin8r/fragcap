@@ -1,0 +1,6 @@
+# One local port, two processes, ten seconds apart. The windows are
+# half-open and abut, so they do not overlap.
+# first window ends at base + 5s, second at base + 20s
+flow tcp 192.0.2.10:51000 198.51.100.5:443 1700000000000000000..1700000005000000000 owner 100 first.exe
+flow tcp 192.0.2.10:51000 198.51.100.5:443 1700000005000000000..1700000020000000000 owner 200 second.exe
+endpoint tcp 192.0.2.10:51000

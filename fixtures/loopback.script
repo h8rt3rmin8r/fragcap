@@ -1,0 +1,11 @@
+# Both endpoints local, so section 12.6's rule returns two answers
+# and the direction is left undetermined. Section 12.6 resolves it
+# from the attributed endpoint in a later slice.
+#
+# The entry is written low endpoint first, which is not arbitrary.
+# When both endpoints are local there is no local one in the usual
+# sense, so the parser picks the position by a canonical ordering
+# (slice S03 decision D-5) and a script has to agree with it or it
+# matches nothing. Port 8080 sorts below 51000, so 8080 is local.
+flow tcp 127.0.0.1:8080 127.0.0.1:51000 always owner 4242 game.exe
+endpoint tcp 127.0.0.1:8080

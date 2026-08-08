@@ -26,7 +26,8 @@ full.
   this tracked file. That keeps per-slice pointer churn out of the diff and
   stops parallel slices conflicting here. The durable artifact for the current
   slice is its `specs/NNN-slug/plan.md`, pointed to by `.specify/feature.json`.
-- S01 through S03 are complete: the workspace, the crate skeletons, the check
-  set, the core vocabulary, and the header parser exist. Run `cargo xtask ci`
-  before proposing any change; it is the same set the automated checks run, so
-  the two cannot drift.
+- S01 through S04 are complete: the workspace, the crate skeletons, the check
+  set, the core vocabulary, the header parser, and the tier 1 test substrate
+  exist. Run `cargo xtask ci` before proposing any change; it is the same set
+  the automated checks run, so the two cannot drift. It now includes the
+  fixture corpus drift check, so a hand-edited fixture fails there.

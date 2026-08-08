@@ -1,0 +1,3 @@
+# Ordinary TCP flow, both directions. One owner throughout.
+flow tcp 192.0.2.10:51000 198.51.100.5:443 always owner 4242 game.exe
+endpoint tcp 192.0.2.10:51000

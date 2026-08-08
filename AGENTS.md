@@ -43,26 +43,45 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01, S02, and S03 are complete. The Cargo workspace exists with the
-eight crates from the architecture of record, a task runner carrying the
-repository's own checks, and six workflow files. `fragcap-core` carries the
-type and trait vocabulary from specification sections 8.4 and 8.5, and a
-`parse` module implementing sections 12.5 and 12.6.
+Slices S01 through S04 are complete. The Cargo workspace exists with the eight
+crates from the architecture of record, a task runner carrying the repository's
+own checks, and six workflow files. `fragcap-core` carries the type and trait
+vocabulary from specification sections 8.4 and 8.5 and a `parse` module
+implementing sections 12.5 and 12.6. `fragcap-capture` reads classic pcap and
+replays it as a `PacketSource`. `fragcap-attr` answers attribution from a
+declared script. `fixtures/` holds the committed corpus of section 25.3.
 
-**There is one piece of behavior, and it is not yet reachable.**
-`fragcap_core::parse::HeaderParser` turns a frame into a flow key and a
-direction, or into one of twelve named rejection causes. Nothing calls it:
-there is still no packet source, no attributor, no pipeline, and no output. S04
-adds the replay source that gives it fixtures to read, and S08 the pipeline that
-runs it. Each crate's module documentation names the slice that fills it.
+**The section 25.1 claim is now demonstrated rather than asserted.**
+`crates/fragcap/tests/pipeline.rs` reads a fixture, parses every packet, and
+resolves every flow, with no capture driver, no elevated privilege, and no game.
+Every slice from here is testable the day it is written.
 
-The parser lives in `fragcap-core` rather than `fragcap-capture` because the
-capture thread that calls it belongs to the pipeline, which specification
-section 8.2 places in core; the other way round would invert section 8.3.
+**There is still no pipeline and no output.** Nothing buffers, counts drops,
+fans out, or writes a file. S06 adds the pcapng writer, S07 the JSON Lines
+writer, and S08 the pipeline that runs the whole thing over this corpus and
+compares against goldens. Each crate's module documentation names the slice that
+fills it.
 
-The workspace has one external dependency, `bytes`. S03 added none: the parser
-is arithmetic over a byte slice and needs nothing the standard library does not
-have. `fragcap-core` may depend only on crates named in the allowlist in
+Two placements are load-bearing and worth not relitigating. The parser lives in
+`fragcap-core` rather than `fragcap-capture`, because the capture thread that
+calls it belongs to the pipeline, which specification section 8.2 places in
+core; the other way round would invert section 8.3. The end-to-end test lives in
+the `fragcap` facade rather than in either backend crate, because the facade is
+the only crate that legitimately depends on both, and a dev-dependency between
+capture and attribution would create exactly the edge P-3 exists to prevent
+while slipping past `cargo xtask deps` unnoticed.
+
+**Fixtures are generated, not hand-made.** The generator in
+`crates/fragcap-capture/tests/corpus.rs` is the readable record of what each
+one contains, and a drift check in the ordinary gate fails if a committed file
+stops matching it. Regenerate with `FRAGCAP_UPDATE_FIXTURES=1 cargo test -p
+fragcap-capture --test corpus`, then read the diff. See `fixtures/README.md`.
+
+The workspace has one external dependency, `bytes`. Neither S03 nor S04 added
+any: the parser is arithmetic over a byte slice, a pcap file is a header and a
+run of records, and the attribution script format is deliberately trivial so
+that S05 can pick a parser for the profile schema on the profile's merits.
+`fragcap-core` may depend only on crates named in the allowlist in
 `xtask/src/deps.rs`, which is checked mechanically.
 
 The remote is `origin`, at `https://github.com/h8rt3rmin8r/fragcap`. S01
