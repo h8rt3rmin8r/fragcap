@@ -368,6 +368,15 @@ pub(crate) mod build {
         }
     }
 
+    impl Wide {
+        pub fn u16(self, v: u16) -> [u8; 2] {
+            match self {
+                Wide::Le => v.to_le_bytes(),
+                Wide::Be => v.to_be_bytes(),
+            }
+        }
+    }
+
     pub struct File {
         pub magic: [u8; 4],
         pub wide: Wide,
@@ -389,13 +398,17 @@ pub(crate) mod build {
     pub fn header(f: &File) -> Vec<u8> {
         let mut out = Vec::with_capacity(24);
         out.extend_from_slice(&f.magic);
-        out.extend_from_slice(&f.wide.u32(0x0004_0002)[..]);
+        // Two independent two-byte fields, major then minor. Writing them as
+        // one four-byte value happens to be right in little-endian and declares
+        // version 4.2 in big-endian, which made the big-endian test inputs
+        // non-standard captures while the tests still passed, because the
+        // reader ignores the version. Raised in review of pull request 7.
+        out.extend_from_slice(&f.wide.u16(2)[..]);
+        out.extend_from_slice(&f.wide.u16(4)[..]);
         out.extend_from_slice(&f.wide.u32(0)[..]);
         out.extend_from_slice(&f.wide.u32(0)[..]);
         out.extend_from_slice(&f.wide.u32(f.snaplen)[..]);
         out.extend_from_slice(&f.wide.u32(f.link_type)[..]);
-        // The version is two two-byte fields; written as one four-byte value
-        // above, which is the same bytes in either order for 2 and 4.
         out
     }
 

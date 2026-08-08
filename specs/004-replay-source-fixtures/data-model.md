@@ -118,22 +118,22 @@ A `FlowAttributor` backed by a script.
 | Field | Purpose |
 | --- | --- |
 | `script` | The parsed script |
-| `now` | The instant the caller last set. Defaults to the epoch |
 
-Behavior against the seam:
+No clock. Behavior against the seam:
 
 | Method | Behavior |
 | --- | --- |
-| `resolve` | The owner whose window contains `now`, or nothing |
+| `resolve(key, at)` | The owner whose window contains `at`, or nothing |
 | `refresh` | Succeeds, does nothing |
 | `active_endpoints` | What the script declares |
 
-Plus one inherent method, `set_now`, which is not on the seam and must not be.
-A real attributor reads a table that is already current, so "now" is implicit in
-its data; only a scripted one has to be told. Widening the trait so a test
-double can be written would hand every real implementation a parameter it does
-not want, and S02 fixed these traits as the surface intended to reach 1.0.0
-unchanged.
+The instant is a parameter of `resolve` rather than stored state. The first
+draft of this slice put it on an inherent `set_now` instead, reasoning that a
+real attributor reads a table that is already current. Review of pull request 7
+refuted that twice: specification section 11.4 says capture and socket table
+observation are not synchronized, so a real attributor is also answering about
+the past; and the pipeline holds a boxed attributor, which can reach no
+inherent method, so a time-windowed script would have stayed at the epoch.
 
 ## Matching
 

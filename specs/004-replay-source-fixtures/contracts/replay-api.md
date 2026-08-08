@@ -62,9 +62,8 @@ pub mod scripted {
 
     impl ScriptedAttributor {
         pub fn new(script: AttributionScript) -> Self;
-        /// Not on the seam, and must not be. See plan D-7.
-        pub fn set_now(&mut self, now: Timestamp);
-        pub fn now(&self) -> Timestamp;
+        pub fn script(&self) -> &AttributionScript;
+        // No clock. The instant arrives through the seam. See plan D-7.
     }
 
     impl FlowAttributor for ScriptedAttributor { /* the seam, unchanged */ }
@@ -73,9 +72,15 @@ pub mod scripted {
 
 ## Guarantees
 
-**The seams are unchanged.** Neither `PacketSource` nor `FlowAttributor` gains
-a method, a parameter, or a bound in this slice. `set_now` is inherent to the
-scripted attributor, and a test asserts the trait definitions are untouched.
+**`FlowAttributor::resolve` gains the packet's instant.** That is a change to
+specification section 8.5, recorded for promotion to section 29 and made here
+because section 11.4 says capture and socket table observation are not
+synchronized, so the question is always who owned the flow then. `PacketSource`
+is unchanged.
+
+**Everything the pipeline needs is reachable through the seam.** A boxed
+attributor can drive a time-windowed script, which is asserted rather than
+assumed, because the pipeline holds one and can reach nothing else.
 
 **Replay is deterministic.** The same bytes yield the same packet sequence, on
 every run and every platform: same order, same timestamps, same lengths, same
@@ -155,7 +160,8 @@ named error, not a precedence rule.
 | `always` alongside any other window for one flow | `Err`, naming the line |
 | A flow the script does not mention | `resolve` returns nothing |
 | An `unowned` entry covering now | `resolve` returns nothing |
-| No window set, no clock set by the caller | `always` entries still resolve |
+| An `always` entry, resolved at any instant | Resolves; no window means no time dependence |
+| A time-windowed entry, resolved through a boxed attributor | Resolves per window; nothing inherent is needed |
 
 Each row is a test. The tables are the coverage obligation SC-003, SC-004, and
 SC-006 state, written out so a reviewer can count them.

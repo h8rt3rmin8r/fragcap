@@ -55,7 +55,10 @@ fn run(name: &str, local: &[IpAddr]) -> Run {
         .unwrap_or_else(|e| panic!("{name}.pcap must open: {e}"));
     let script = AttributionScript::load(dir.join(format!("{name}.script")))
         .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
-    let mut attributor = ScriptedAttributor::new(script);
+    // Boxed, which is how S08 will hold it. Anything the pipeline needs from an
+    // attributor has to be reachable through the seam, and this is where that
+    // gets proved rather than assumed.
+    let attributor: Box<dyn FlowAttributor> = Box::new(ScriptedAttributor::new(script));
     let mut parser = HeaderParser::new(InterfaceAddrs::new(local.iter().copied()));
     let link = source.link_type();
 
@@ -75,12 +78,11 @@ fn run(name: &str, local: &[IpAddr]) -> Run {
         };
         let mut packet = CapturedPacket::from_raw(raw);
         parser.apply(link, &mut packet);
-        // The caller supplies the instant, because the seam carries none. A
-        // real attributor reads a table that is already current; a scripted one
-        // has to be told.
-        attributor.set_now(packet.ts);
         if let Some(key) = packet.flow.as_ref() {
-            packet.attribution = attributor.resolve(key);
+            // The packet's own instant, through the seam. Specification section
+            // 11.4: capture and socket table observation are not synchronized,
+            // so the question is who owned this flow then, not now.
+            packet.attribution = attributor.resolve(key, packet.ts);
         }
         match packet.attribution_state() {
             AttributionState::Resolved => out.attributed += 1,
@@ -255,6 +257,40 @@ fn direction_reflects_the_interface_address_set() {
         r.packets[0].direction, flipped.packets[0].direction,
         "direction is a statement about the capturing host, not the wire"
     );
+}
+
+// C5's regression guard. Task T025a asked for an endpoint declaration per
+// scripted flow, and `ipv6-mixed` had one for its TCP flow and not its UDP one.
+// Nothing caught it, because nothing checked.
+#[test]
+fn every_scripted_flow_declares_its_local_endpoint() {
+    let dir = fixtures_dir();
+    for name in [
+        "tcp-session",
+        "udp-gameplay",
+        "ipv6-mixed",
+        "fragmented",
+        "loopback",
+        "malformed",
+        "port-reuse",
+        "burst",
+    ] {
+        let script = AttributionScript::load(dir.join(format!("{name}.script")))
+            .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
+        let declared: std::collections::HashSet<_> = script
+            .endpoints()
+            .iter()
+            .map(|e| (e.addr, e.proto))
+            .collect();
+        for entry in script.entries() {
+            assert!(
+                declared.contains(&(entry.local, entry.proto)),
+                "{name}.script scripts a flow on {} but never declares it as an \
+                 active endpoint, so an attributor cannot report it",
+                entry.local
+            );
+        }
+    }
 }
 
 #[test]

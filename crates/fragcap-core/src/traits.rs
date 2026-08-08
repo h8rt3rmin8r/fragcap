@@ -28,7 +28,7 @@ use crate::error::{AttrError, SinkError, SourceError};
 use crate::filter::FilterProgram;
 use crate::flow::{Endpoint, FlowKey};
 use crate::link::LinkType;
-use crate::packet::{CapturedPacket, RawPacket};
+use crate::packet::{CapturedPacket, RawPacket, Timestamp};
 use crate::process::{ProcessEvent, ProcessRecord};
 use crate::stats::{CaptureStats, SourceStats};
 
@@ -59,10 +59,24 @@ pub trait PacketSource {
 /// Contains no packet acquisition, per P-3. `Send` because the control thread
 /// owns it while the capture thread reads a snapshot it publishes.
 pub trait FlowAttributor: Send {
-    /// The process owning this flow, if it can be determined. `None` means
-    /// attempted and unresolved: the packet is retained and marked, per P-4,
-    /// never dropped.
-    fn resolve(&self, key: &FlowKey) -> Option<Attribution>;
+    /// The process owning this flow at the instant the packet was observed, if
+    /// it can be determined. `None` means attempted and unresolved: the packet
+    /// is retained and marked, per P-4, never dropped.
+    ///
+    /// `at` is the packet's own timestamp, not the present moment, and the
+    /// distinction is load-bearing rather than pedantic. Specification section
+    /// 11.4: "capture and socket table observation are not synchronized. A
+    /// connection closing produces final packets that may be processed after
+    /// the socket has left the table." The question is therefore always who
+    /// owned this flow *then*, and an implementation that answered about now
+    /// would misattribute the tail of every connection and every reused port.
+    ///
+    /// Slice S04 added this parameter. It was omitted in S02, on the reasoning
+    /// that a socket table is already current so the instant is implicit; that
+    /// reasoning does not survive section 11.4, and the omission was found in
+    /// review of pull request 7. Recorded for promotion to specification
+    /// section 29.
+    fn resolve(&self, key: &FlowKey, at: Timestamp) -> Option<Attribution>;
 
     /// Re-read the underlying table.
     fn refresh(&mut self) -> Result<(), AttrError>;
@@ -160,7 +174,7 @@ mod tests {
     }
 
     impl FlowAttributor for StubAttributor {
-        fn resolve(&self, _key: &FlowKey) -> Option<Attribution> {
+        fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
             self.answer.clone()
         }
         fn refresh(&mut self) -> Result<(), AttrError> {
@@ -291,7 +305,8 @@ mod tests {
         // Capture thread: attribution lookup against the control thread's
         // published snapshot.
         if let Some(key) = packet.flow.as_ref() {
-            packet.attribution = attributor.resolve(key);
+            // The packet's own instant, not the present one. Section 11.4.
+            packet.attribution = attributor.resolve(key, packet.ts);
         }
         match packet.attribution_state() {
             AttributionState::Resolved => stats.packets_attributed += 1,
@@ -329,7 +344,7 @@ mod tests {
             addr("192.0.2.10:30000"),
             addr("198.51.100.5:5055"),
         ));
-        packet.attribution = attributor.resolve(packet.flow.as_ref().unwrap());
+        packet.attribution = attributor.resolve(packet.flow.as_ref().unwrap(), packet.ts);
 
         let mut stats = CaptureStats::default();
         stats.packets_captured += 1;

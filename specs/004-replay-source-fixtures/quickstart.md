@@ -71,14 +71,14 @@ condition section 25.3 states for it.
 
 | Criterion | Verified by |
 | --- | --- |
-| SC-001 the pipeline runs with no driver | `tests/corpus.rs`, the end-to-end test reading, parsing, and resolving |
-| SC-002 reading twice is identical | `tests/corpus.rs`, over every fixture |
+| SC-001 the pipeline runs with no driver | `fragcap/tests/pipeline.rs`, reading, parsing, and resolving over every fixture |
+| SC-002 reading twice is identical | `tests/corpus.rs` and `pipeline.rs`, over every fixture |
 | SC-003 byte order and resolution | `pcap::tests`, the same capture generated four ways |
 | SC-004 every skip cause reachable | `pcap::tests`, one per counter, asserting only that one moved |
 | SC-005 nothing dropped for being unusual | `pcap::tests`, zero-length, out-of-order, unknown link type |
 | SC-006 scripted port reuse | `scripted::tests` |
 | SC-006a wildcard bind agreement | `scripted::tests` |
-| SC-006b the seam is unwidened | `scripted::tests`, a trait object built from the unchanged trait |
+| SC-006b a boxed attributor drives a window | `scripted::tests`, and the whole pipeline test |
 | SC-007 eight pairs | `tests/corpus.rs`, checked both directions |
 | SC-008 each condition asserted | `tests/corpus.rs`, one assertion per fixture |
 | SC-009 drift detection | `tests/corpus.rs`, plus altering a fixture by hand |
@@ -104,17 +104,20 @@ the corpus test are what actually hold the corpus to its description.
 
 ```rust
 let mut source = ReplaySource::open("fixtures/tcp-session.pcap")?;
-let mut attributor = ScriptedAttributor::new(
+// Boxed, which is how the pipeline will hold it. Everything needed is on the
+// seam, so nothing here depends on knowing the concrete type.
+let attributor: Box<dyn FlowAttributor> = Box::new(ScriptedAttributor::new(
     AttributionScript::load("fixtures/tcp-session.script")?,
-);
+));
 let mut parser = HeaderParser::new(InterfaceAddrs::new([local]));
+let link = source.link_type();
 
 while let Ok(Some(raw)) = source.next_packet(Duration::from_millis(0)) {
     let mut packet = CapturedPacket::from_raw(raw);
-    parser.apply(source.link_type(), &mut packet);
-    attributor.set_now(packet.ts);
+    parser.apply(link, &mut packet);
     if let Some(key) = packet.flow.as_ref() {
-        packet.attribution = attributor.resolve(key);
+        // The packet's instant, not the present one. Section 11.4.
+        packet.attribution = attributor.resolve(key, packet.ts);
     }
 }
 ```

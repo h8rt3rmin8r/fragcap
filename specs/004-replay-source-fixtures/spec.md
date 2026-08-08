@@ -87,8 +87,11 @@ reserved for exactly this purpose.
   protocol and local endpoint for UDP, both endpoints for TCP. The script
   reuses that asymmetry rather than inventing a parallel one.
 - Q: How does the attributor know what time it is, given that the resolve
-  method takes no time parameter? → A: The caller tells it, through a method on
-  the scripted attributor rather than on the seam. The seam is not changed.
+  method takes no time parameter? → A: First answered "through a method on the
+  double, leaving the seam unchanged". Reversed in review of pull request 7:
+  the instant is now a parameter of the seam, because section 11.4 makes the
+  question time-dependent for a real attributor too, and because a pipeline
+  holding a boxed attributor could never have reached an inherent method.
 - Q: What time base do script windows use? → A: Absolute nanoseconds since the
   Unix epoch, matching the packet timestamps the fixtures carry, with comments
   permitted so the generator can annotate them readably.
@@ -488,10 +491,18 @@ The scripted attributor.
 - **FR-022**: The attributor MUST return the owner whose window contains the
   time asked about, and MUST return nothing for a flow the script does not
   mention.
-- **FR-022a**: The attributor MUST take the current time from its caller
-  through a method of its own, and the flow attributor seam MUST NOT be
-  widened to carry a timestamp. An entry with no window MUST match at any time,
-  so a caller that never sets a clock still resolves.
+- **FR-022a**: The flow attributor seam MUST carry the instant the packet was
+  observed, and the attributor MUST answer for that instant rather than for the
+  present one. An entry with no window MUST match at any instant.
+
+  This reverses the first draft of this slice, which kept the instant off the
+  seam and on the double. Review of pull request 7 found two independent
+  reasons that could not work. Specification section 11.4 says capture and
+  socket table observation are not synchronized, so the question a real
+  attributor answers is also about the past. And the pipeline holds a boxed
+  attributor, so an inherent method is unreachable, which would have left every
+  time-windowed fixture at the epoch resolving nothing. Recorded for promotion
+  to specification section 29, since it changes a section 8.5 signature.
 - **FR-022b**: Script times MUST be absolute, on the same base as the packet
   timestamps the fixtures carry, so a script and its fixture cannot disagree
   about when something happened.
@@ -601,8 +612,11 @@ Hygiene.
   specific interface address against a wildcard bind, matching the rule
   specification section 8.4 states, so the double cannot disagree with the
   attributor S10 builds.
-- **SC-006b**: The flow attributor seam is unchanged by this slice, verified by
-  the trait definition carrying no timestamp parameter after it.
+- **SC-006b**: A time-windowed script resolves correctly when the attributor is
+  held only as a trait object, which is how the pipeline will hold it. This
+  replaces a criterion asserting the seam was unchanged; that criterion was
+  satisfiable and wrong, because a seam narrow enough to leave the pipeline
+  unable to drive the fixture is not a virtue.
 - **SC-007**: The corpus contains all eight named fixtures, each paired with a
   script, verified by a check that fails on a missing pair either way.
 - **SC-008**: Each fixture's stated condition is asserted by a test, with no
@@ -631,12 +645,11 @@ Hygiene.
   in this slice consumes. Section 25.3 lists fixtures for buffering and port
   reuse, which S08 and S10 use; this slice builds them and asserts their
   contents without building the consumers.
-- The scripted attributor's time dimension is driven by the caller, which knows
-  the packet timestamp. This slice provides the mechanism; wiring it to the
-  packet being attributed is the pipeline's job in S08. The caller is
-  single-threaded for tier 1 purposes, so the clock needs no synchronization.
-  If S08 publishes the attributor across threads it inherits that problem, and
-  it is the same problem a real attributor already has.
+- The scripted attributor's time dimension arrives through the seam, so a
+  caller holding it as a trait object can drive it. There is no clock to
+  synchronize, because there is no stored clock: every answer is a function of
+  the flow and the instant passed in, which is also what makes the attributor
+  free of interior state a threaded pipeline would have to protect.
 - Golden output files, specification section 25.4, are not part of this slice.
   They compare pipeline output, and there is no pipeline until S08.
 - The replay source reads a whole file. Streaming a file being written

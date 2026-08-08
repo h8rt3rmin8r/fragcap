@@ -10,18 +10,21 @@
 //! `fragcap-attr` has no dependency edge to `fragcap-capture`, which
 //! `cargo xtask deps` enforces.
 //!
-//! # The clock is here and not on the seam
+//! # The instant comes through the seam
 //!
-//! [`FlowAttributor::resolve`] takes a flow key and no timestamp. A real
-//! attributor needs none, because it reads a socket table that is already
-//! current: "now" is implicit in the data. Only a scripted one has to be told,
-//! and port reuse is exactly the case that depends on it.
+//! [`FlowAttributor::resolve`] takes the packet's own timestamp. This slice
+//! first tried to keep it off the seam, on the reasoning that a real attributor
+//! reads a socket table that is already current so the instant is implicit, and
+//! carried the clock as an inherent method on this type instead.
 //!
-//! Widening the seam would have been the easy fix and is refused. Slice S02
-//! fixed those five traits as the part of the surface intended to reach 1.0.0
-//! unchanged, and a test double is a poor reason to hand every real
-//! implementation a parameter it does not want. [`ScriptedAttributor::set_now`]
-//! is inherent to this type, and the asymmetry stays where it belongs.
+//! That was wrong twice over, and review of pull request 7 found both. It does
+//! not survive specification section 11.4, which says capture and socket table
+//! observation are not synchronized and that a closing connection produces
+//! final packets processed after the socket has left the table: the question is
+//! always who owned the flow *then*. And it does not survive the pipeline,
+//! which holds a `Box<dyn FlowAttributor>` and therefore could never have
+//! called an inherent method, leaving every time-windowed fixture stuck at the
+//! epoch and resolving nothing.
 
 use fragcap_core::attribution::Attribution;
 use fragcap_core::error::AttrError;
@@ -32,33 +35,18 @@ use fragcap_core::traits::FlowAttributor;
 use crate::script::AttributionScript;
 
 /// Answers attribution questions from a script.
+///
+/// Holds no clock of its own. Every answer is a function of the flow and the
+/// instant the caller passes, which is what lets a pipeline holding this behind
+/// a trait object drive a time-windowed script at all.
 #[derive(Clone, Debug)]
 pub struct ScriptedAttributor {
     script: AttributionScript,
-    now: Timestamp,
 }
 
 impl ScriptedAttributor {
-    /// Defaults to the epoch, so a script of `always` entries resolves without
-    /// the caller ever setting a clock.
     pub fn new(script: AttributionScript) -> Self {
-        ScriptedAttributor {
-            script,
-            now: Timestamp::from_nanos(0),
-        }
-    }
-
-    /// Tell the attributor what time it is.
-    ///
-    /// Not on the [`FlowAttributor`] seam, and must not be. The caller knows
-    /// the timestamp of the packet it is about to attribute; in tier 1 that is
-    /// a test, and in S08 it will be the pipeline.
-    pub fn set_now(&mut self, now: Timestamp) {
-        self.now = now;
-    }
-
-    pub fn now(&self) -> Timestamp {
-        self.now
+        ScriptedAttributor { script }
     }
 
     pub fn script(&self) -> &AttributionScript {
@@ -67,14 +55,14 @@ impl ScriptedAttributor {
 }
 
 impl FlowAttributor for ScriptedAttributor {
-    /// The owner the script declares for this flow at the instant last set.
+    /// The owner the script declares for this flow at `at`.
     ///
     /// `None` covers both "declared unowned" and "not mentioned", which is the
     /// same distinction a real attributor cannot make either: both are
     /// attempted and unresolved, and the packet is retained and marked per
     /// constitution P-4.
-    fn resolve(&self, key: &FlowKey) -> Option<Attribution> {
-        self.script.resolve(key, self.now)
+    fn resolve(&self, key: &FlowKey, at: Timestamp) -> Option<Attribution> {
+        self.script.resolve(key, at)
     }
 
     /// Succeeds and does nothing. There is no table behind this to re-read.
@@ -109,33 +97,41 @@ mod tests {
         ScriptedAttributor::new(AttributionScript::parse(text).expect("the script loads"))
     }
 
+    fn at(n: i64) -> Timestamp {
+        Timestamp::from_nanos(n)
+    }
+
     #[test]
-    fn an_always_entry_resolves_with_no_clock_ever_set() {
+    fn an_always_entry_resolves_at_any_instant() {
         let a = attributor("flow tcp 192.0.2.10:51000 198.51.100.5:443 always owner 42 game.exe");
-        assert_eq!(a.now(), Timestamp::from_nanos(0));
-        assert_eq!(a.resolve(&tcp_key()).expect("always resolves").pid, 42);
+        for t in [i64::MIN, 0, 1_700_000_000_000_000_000, i64::MAX] {
+            assert_eq!(
+                a.resolve(&tcp_key(), at(t)).expect("always resolves").pid,
+                42
+            );
+        }
     }
 
     // SC-006 through the seam rather than through the script directly.
     #[test]
-    fn the_clock_selects_the_window() {
-        let mut a = attributor(
+    fn the_instant_selects_the_window() {
+        let a = attributor(
             "flow tcp 192.0.2.10:51000 198.51.100.5:443 100..200 owner 1 first.exe\n\
              flow tcp 192.0.2.10:51000 198.51.100.5:443 200..300 owner 2 second.exe\n",
         );
-        a.set_now(Timestamp::from_nanos(150));
-        assert_eq!(a.resolve(&tcp_key()).expect("in the first").pid, 1);
-        a.set_now(Timestamp::from_nanos(250));
-        assert_eq!(a.resolve(&tcp_key()).expect("in the second").pid, 2);
-        a.set_now(Timestamp::from_nanos(500));
-        assert_eq!(a.resolve(&tcp_key()), None, "outside both");
+        assert_eq!(a.resolve(&tcp_key(), at(150)).expect("in the first").pid, 1);
+        assert_eq!(
+            a.resolve(&tcp_key(), at(250)).expect("in the second").pid,
+            2
+        );
+        assert_eq!(a.resolve(&tcp_key(), at(500)), None, "outside both");
     }
 
     #[test]
     fn an_unresolved_flow_is_not_an_error() {
         let a = attributor("# nothing declared\n");
         assert_eq!(
-            a.resolve(&tcp_key()),
+            a.resolve(&tcp_key(), at(0)),
             None,
             "attempted and unresolved, which P-4 says is retained and marked"
         );
@@ -144,9 +140,9 @@ mod tests {
     #[test]
     fn refreshing_succeeds_and_changes_nothing() {
         let mut a = attributor("flow tcp 192.0.2.10:51000 198.51.100.5:443 always owner 1 a.exe");
-        let before = a.resolve(&tcp_key());
+        let before = a.resolve(&tcp_key(), at(0));
         assert!(a.refresh().is_ok());
-        assert_eq!(a.resolve(&tcp_key()), before);
+        assert_eq!(a.resolve(&tcp_key(), at(0)), before);
     }
 
     // FR-023, the requirement the analyze gate found uncovered.
@@ -169,25 +165,30 @@ mod tests {
         assert!(a.active_endpoints().is_empty());
     }
 
-    // SC-006b. The seam is unchanged: this compiles only while `resolve` takes
-    // a flow key and nothing else, and while the trait stays dyn compatible.
+    // SC-006b, inverted by review of pull request 7. The property that matters
+    // is not that the seam is narrow but that a time-windowed script is drivable
+    // through it, because a pipeline holds this as a trait object and can reach
+    // nothing else.
     #[test]
-    fn the_flow_attributor_seam_is_unwidened_and_still_dyn_compatible() {
-        let mut a = attributor("flow tcp 192.0.2.10:51000 198.51.100.5:443 always owner 5 a.exe");
-        a.set_now(Timestamp::from_nanos(1));
-        let seam: &mut dyn FlowAttributor = &mut a;
-        assert_eq!(seam.resolve(&tcp_key()).expect("resolves").pid, 5);
-        assert!(seam.refresh().is_ok());
-        assert!(seam.active_endpoints().is_empty());
+    fn a_time_windowed_script_is_drivable_through_the_seam_alone() {
+        let a = attributor(
+            "flow tcp 192.0.2.10:51000 198.51.100.5:443 100..200 owner 1 first.exe\n\
+             flow tcp 192.0.2.10:51000 198.51.100.5:443 200..300 owner 2 second.exe\n",
+        );
+        let seam: Box<dyn FlowAttributor> = Box::new(a);
+        // No inherent method is reachable here. If the instant were not on the
+        // seam, this test could not be written and S08 could not drive
+        // port-reuse.pcap at all.
+        assert_eq!(seam.resolve(&tcp_key(), at(150)).expect("first").pid, 1);
+        assert_eq!(seam.resolve(&tcp_key(), at(250)).expect("second").pid, 2);
+        assert_eq!(seam.resolve(&tcp_key(), at(50)), None);
 
-        // The clock is reachable only off the seam. If `set_now` ever moves
-        // onto the trait, this comment is the record that it was deliberate.
         fn assert_send<T: Send + ?Sized>() {}
         assert_send::<dyn FlowAttributor>();
     }
 
     #[test]
-    fn a_scripted_attributor_is_usable_as_a_boxed_trait_object() {
+    fn a_boxed_attributor_still_takes_the_wildcard_bind_allowance() {
         let boxed: Box<dyn FlowAttributor> =
             Box::new(attributor("flow udp 0.0.0.0:30000 * always owner 9 g.exe"));
         let udp = FlowKey::new(
@@ -196,7 +197,10 @@ mod tests {
             addr("198.51.100.5:5055"),
         );
         assert_eq!(
-            boxed.resolve(&udp).expect("the wildcard bind owns it").pid,
+            boxed
+                .resolve(&udp, at(0))
+                .expect("the wildcard bind owns it")
+                .pid,
             9
         );
     }

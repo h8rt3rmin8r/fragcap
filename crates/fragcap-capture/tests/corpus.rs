@@ -384,6 +384,7 @@ fn ipv6_mixed() -> Fixture {
             "flow tcp [2001:db8::10]:51000 [2001:db8::5]:443 always owner 4242 game.exe\n",
             "flow udp [2001:db8::10]:30000 * always owner 4242 game.exe\n",
             "endpoint tcp [2001:db8::10]:51000\n",
+            "endpoint udp [2001:db8::10]:30000\n",
         )
         .to_string(),
         local: vec![IpAddr::V6(host_v6())],
@@ -396,8 +397,14 @@ fn fragmented() -> Fixture {
     let ident = 4242u16;
 
     // The initial fragment carries the transport header, and therefore the
-    // ports every later fragment is attributed by.
-    let mut first = udp(30_000, 5_055, 1_400);
+    // ports every later fragment is attributed by. Its length field describes
+    // the whole reassembled datagram rather than this fragment: eight header
+    // bytes plus 1472 here, 1480 in the middle, and 400 in the last. Declaring
+    // only this fragment's worth made the fixture an internally malformed
+    // datagram rather than the valid fragmentation it claims to be, which
+    // review of pull request 7 caught.
+    const FRAGMENTED_UDP_PAYLOAD: usize = 1_472 + 1_480 + 400;
+    let mut first = udp(30_000, 5_055, FRAGMENTED_UDP_PAYLOAD);
     first.extend_from_slice(&filler(1_472));
     let mut h = V4::new(HOST_V4, PEER_V4, IPPROTO_UDP);
     h.ident = ident;
@@ -871,15 +878,41 @@ fn ipv6_mixed_carries_extension_header_chains() {
         resolved.iter().all(|k| k.local.is_ipv6()),
         "every flow here is IPv6"
     );
-    // A chain moves the transport header, so a fixture that lost its chains
-    // would still parse and would silently stop testing the walk. The frame
-    // lengths are what distinguish them.
+    // Read the IPv6 next header field directly, at offset 6 of the network
+    // header, which begins after the fourteen byte Ethernet header.
+    //
+    // An earlier version compared captured lengths instead, and review of pull
+    // request 7 pointed out that it could not fail: strip every extension
+    // header and the fixture still holds differently sized bare TCP and UDP
+    // packets, so the assertion passed while the condition it claimed to guard
+    // had gone. A check that cannot detect its own regression is worse than no
+    // check, because it reads as coverage.
     let (_, packets) = read_packets(&f.pcap);
-    let lengths: std::collections::HashSet<usize> =
-        packets.iter().map(|p| p.captured_len()).collect();
+    let next_headers: Vec<u8> = packets.iter().map(|p| p.data[14 + 6]).collect();
+    let chained = next_headers
+        .iter()
+        .filter(|n| matches!(**n, 0 | 43 | 44 | 51 | 60))
+        .count();
+    let bare = next_headers
+        .iter()
+        .filter(|n| matches!(**n, IPPROTO_TCP | IPPROTO_UDP))
+        .count();
     assert!(
-        lengths.len() >= 2,
-        "chained and unchained packets must differ in length"
+        chained >= 2,
+        "the fixture must carry extension chains, but its next headers are \
+         {next_headers:?}"
+    );
+    assert!(
+        bare >= 1,
+        "and must carry unchained packets to contrast with"
+    );
+
+    // And the walk must actually reach the transport behind them, or the chain
+    // is present and never traversed.
+    assert_eq!(
+        resolved.len(),
+        packets.len(),
+        "every packet, chained or not, must resolve to a flow"
     );
 }
 
@@ -899,6 +932,20 @@ fn fragmented_carries_an_initial_and_a_later_fragment() {
     }
     let keys: std::collections::HashSet<_> = os.iter().filter_map(|o| o.flow()).collect();
     assert_eq!(keys.len(), 1, "one datagram is one flow");
+
+    // The UDP length field describes the reassembled datagram, so it must equal
+    // the sum of every fragment's IP payload. Asserted because the first
+    // version of this fixture declared only the initial fragment's worth and
+    // was therefore a malformed datagram that nonetheless parsed, which is the
+    // kind of fixture defect that surfaces as a mystery in a later slice.
+    let (_, packets) = read_packets(&f.pcap);
+    let ip_payload: usize = packets.iter().map(|p| p.captured_len() - 14 - 20).sum();
+    let first = &packets[0].data;
+    let declared = u16::from_be_bytes([first[14 + 20 + 4], first[14 + 20 + 5]]) as usize;
+    assert_eq!(
+        declared, ip_payload,
+        "the declared UDP length must cover every fragment, not just the first"
+    );
 }
 
 #[test]

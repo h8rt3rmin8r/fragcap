@@ -2,3 +2,4 @@
 flow tcp [2001:db8::10]:51000 [2001:db8::5]:443 always owner 4242 game.exe
 flow udp [2001:db8::10]:30000 * always owner 4242 game.exe
 endpoint tcp [2001:db8::10]:51000
+endpoint udp [2001:db8::10]:30000

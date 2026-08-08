@@ -177,24 +177,42 @@ attribution requiring a remote endpoint, which is exactly the fabrication
 specification section 8.4 prohibits, and a test built on it would demand
 behavior S10 must never implement.
 
-### D-7. The clock lives on the double, not on the seam
+### D-7. The instant is a parameter of the seam
 
-**Decision**: `ScriptedAttributor::set_now(Timestamp)`, an inherent method.
-`resolve` reads the stored instant. `refresh` succeeds and does nothing. The
-`FlowAttributor` trait is not touched.
+**Decision**: `FlowAttributor::resolve(&self, key: &FlowKey, at: Timestamp)`.
+The scripted attributor stores no clock. `refresh` succeeds and does nothing.
 
-**Rationale**: A real attributor needs no timestamp parameter, because it reads
-a socket table that is already current. Only a scripted one needs to be told
-what "now" is, so the parameter belongs to the double.
+**Reversed in review of pull request 7.** The first version of this decision
+kept the instant off the seam, as an inherent `ScriptedAttributor::set_now`,
+reasoning that a real attributor reads a socket table that is already current
+so only a double needs telling, and that widening a trait S02 fixed as the
+1.0.0 surface would pay an architectural cost for a testing convenience.
 
-S02 fixed these five traits as the part of the surface intended to reach 1.0.0
-unchanged. Widening one so a test double can be written would pay an
-architectural cost for a testing convenience, and would hand every real
-implementation a parameter it does not want. SC-006b asserts the seam is still
-unwidened after this slice, so a later attempt is noticed.
+Both halves of that were wrong.
 
-An entry with no window matches at any time, so a caller that never sets a
-clock still resolves. The default instant is the epoch.
+The premise fails against specification section 11.4: "capture and socket table
+observation are not synchronized. A connection closing produces final packets
+that may be processed after the socket has left the table." That is why the
+retention window exists. A real attributor is therefore also answering a
+question about the past, and the instant is not a test-only concern at all. The
+S02 signature was under-specified rather than deliberately narrow, and this
+slice is where that surfaced.
+
+The mechanism fails against the pipeline. Section 8.6 holds the attributor
+behind a trait object, and S02's own test pins that. An inherent method is
+unreachable through `Box<dyn FlowAttributor>`, and core cannot downcast to a
+backend type without the dependency P-2 and P-3 forbid. So S08 could never have
+advanced the clock, and `port-reuse.pcap`, the fixture whose whole purpose is
+time-windowed attribution, would have sat at the epoch resolving nothing. The
+slice's own test masked this by holding the concrete type.
+
+**Cost**: a signature change to specification section 8.5, recorded for
+promotion to section 29. It is cheap now, with one real implementor and one
+stub, and would be expensive after S10, S11, and S12. Finding it in this slice
+rather than that one is the whole value of the review.
+
+An entry with no window matches at any instant, so a caller that has no
+meaningful time still resolves.
 
 ### D-8. The script format
 
