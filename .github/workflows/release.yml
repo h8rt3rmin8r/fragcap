@@ -1,13 +1,26 @@
 # Artifacts and crate publication. Specification 24.4, 24.5.
 #
-# SKELETON. Tag-triggered, and cutting a release always requires explicit
-# authorization. Publication order is encoded in `cargo xtask publish`, which
-# is itself a stub in S01.
+# Fires on a version tag. Cutting that tag is the operator's authorization to
+# release; approving the `crates-io` environment is the second, because
+# publication is irreversible and a tag can be pushed by mistake.
+#
+# Publication order is encoded in `cargo xtask publish`, which asserts the
+# order against the dependency graph before it uploads anything.
 name: release
 
 on:
   push:
     tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   artifacts:
@@ -37,7 +50,40 @@ jobs:
           }
           Write-Output "OK: no npcap component found in the artifact tree."
 
-      - name: Not yet implemented
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fragcap-windows-x86_64
+          path: target/release/fragcap.exe
+          if-no-files-found: error
+
+  publish:
+    name: publish to crates.io
+    needs: artifacts
+    runs-on: ubuntu-latest
+    # Requires a human to approve the run. This is the gate that keeps
+    # "never publish a crate without explicit authorization" mechanical
+    # rather than remembered.
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Assert the tag matches the workspace version
+        shell: bash
         run: |
-          echo "Artifact packaging and publication are not implemented in S01."
-          exit 1
+          # A tag that disagrees with the manifest would publish a version
+          # nobody named. Cheap to check, expensive to discover afterwards.
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME does not match workspace version $declared"
+            exit 1
+          fi
+          echo "tag and workspace version agree on $declared"
+
+      - name: Publish in dependency order
+        run: cargo run --package xtask -- publish --execute
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

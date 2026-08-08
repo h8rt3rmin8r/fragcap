@@ -16,6 +16,7 @@
 mod deps;
 mod license;
 mod lint;
+mod publish;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -34,7 +35,7 @@ cargo xtask <command>
   msrv       Build at the declared minimum supported toolchain
   ci         Run the full local check set in order
   docs       Documentation site (stub; owned by S18)
-  publish    Registry publication (stub; owned by the release process)
+  publish    Registry publication in dependency order (--execute to publish)
 ";
 
 fn repo_root() -> PathBuf {
@@ -219,12 +220,14 @@ fn main() -> ExitCode {
             eprintln!("docs: not implemented. The documentation site is owned by slice S18.");
             ExitCode::from(2)
         }
+        // Publishing changes the outside world and cannot be undone, so
+        // `--execute` is required. Without it this prints the plan.
         "publish" => {
-            eprintln!(
-                "publish: not implemented. Registry publication in dependency order is owned \
-                 by the release process, and requires explicit authorization."
-            );
-            ExitCode::from(2)
+            let execute = std::env::args().any(|a| a == "--execute");
+            match publish::run(&root, execute) {
+                0 => ExitCode::SUCCESS,
+                _ => ExitCode::from(1),
+            }
         }
 
         "" | "-h" | "--help" | "help" => {
