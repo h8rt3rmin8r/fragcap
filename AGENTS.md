@@ -43,18 +43,27 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 and S02 are complete. The Cargo workspace exists with the eight
-crates from the architecture of record, a task runner carrying the repository's
-own checks, and six workflow files. `fragcap-core` carries the type and trait
-vocabulary from specification sections 8.4 and 8.5.
+Slices S01, S02, and S03 are complete. The Cargo workspace exists with the
+eight crates from the architecture of record, a task runner carrying the
+repository's own checks, and six workflow files. `fragcap-core` carries the
+type and trait vocabulary from specification sections 8.4 and 8.5, and a
+`parse` module implementing sections 12.5 and 12.6.
 
-**There is still no behavior.** Nothing captures, attributes, parses, or writes
-anything. S02 fixed the shape of the seams; the slices that fill them start at
-S03. Each crate's module documentation names the slice that fills it.
+**There is one piece of behavior, and it is not yet reachable.**
+`fragcap_core::parse::HeaderParser` turns a frame into a flow key and a
+direction, or into one of twelve named rejection causes. Nothing calls it:
+there is still no packet source, no attributor, no pipeline, and no output. S04
+adds the replay source that gives it fixtures to read, and S08 the pipeline that
+runs it. Each crate's module documentation names the slice that fills it.
 
-The workspace has one external dependency, `bytes`. `fragcap-core` may depend
-only on crates named in the allowlist in `xtask/src/deps.rs`, which is checked
-mechanically.
+The parser lives in `fragcap-core` rather than `fragcap-capture` because the
+capture thread that calls it belongs to the pipeline, which specification
+section 8.2 places in core; the other way round would invert section 8.3.
+
+The workspace has one external dependency, `bytes`. S03 added none: the parser
+is arithmetic over a byte slice and needs nothing the standard library does not
+have. `fragcap-core` may depend only on crates named in the allowlist in
+`xtask/src/deps.rs`, which is checked mechanically.
 
 The remote is `origin`, at `https://github.com/h8rt3rmin8r/fragcap`. S01
 integrated through pull request #1.

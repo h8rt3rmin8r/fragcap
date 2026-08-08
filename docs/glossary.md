@@ -177,7 +177,133 @@ fragcap carries the code rather than a closed enumeration, so a backend
 reporting an encapsulation fragcap has never seen is representable and is
 written through unchanged rather than becoming a parse failure.
 
-**See also:** [pcapng](#pcapng)
+**See also:** [pcapng](#pcapng), [EtherType](#ethertype),
+[BSD loopback encapsulation](#bsd-loopback-encapsulation)
+
+### EtherType
+
+The two byte field at the end of an Ethernet header naming the protocol its
+payload carries. `0x0800` is IPv4 and `0x86DD` is IPv6.
+
+fragcap dispatches on it and parses those two. Anything else, VLAN tagged
+frames included, produces no flow key and advances a named counter, because
+specification section 12.5 enumerates what fragcap parses and does not name
+them.
+
+{: .matters }
+> The counter is what makes the gap visible. A VLAN tagged capture would
+> otherwise present as traffic fragcap simply failed to attribute, with no
+> indication that the encapsulation was the reason.
+
+**See also:** [Link type](#link-type),
+[Parse rejection cause](#parse-rejection-cause)
+
+### BSD loopback encapsulation
+
+The link layer encapsulation identified by link type code 0, in which a four
+byte address family value in the capturing host's byte order precedes the
+network header.
+
+Distinct from code 101, raw IP, which has no link layer header at all. The two
+are easily confused because both deliver a network header near the start of the
+frame.
+
+{: .matters }
+> The value is host ordered and a capture file records no host byte order, so
+> fragcap reads it both ways and accepts whichever matches a known family. That
+> resolves rather than guesses: no known family value is also a known value
+> byte-swapped.
+
+**See also:** [Link type](#link-type), [EtherType](#ethertype)
+
+### Extension header chain
+
+The sequence of optional headers an IPv6 packet may carry between its fixed
+header and its transport header, each naming the next.
+
+fragcap walks the chain to reach the transport ports. The walk is bounded at
+eight headers, because the IPv6 standard sets no limit and an unbounded walk
+over attacker-controlled bytes on the capture thread would be a denial of
+service against the capture rather than merely a parse defect. Real traffic
+uses zero to two.
+
+**See also:** [IP fragment](#ip-fragment), [Flow key](#flow-key)
+
+### IP fragment
+
+One piece of an IP datagram that was split to fit a smaller path maximum
+transmission unit. Only the first piece carries the transport header, and
+therefore the ports.
+
+fragcap does not reassemble. Reassembly is an analysis concern, and performing
+it during capture would destroy the on-wire fidelity that makes the capture
+worth taking. Non-initial fragments, also called subsequent fragments, are
+attributed instead from a [fragment identity table](#fragment-identity-table).
+
+**See also:** [Fragment identity](#fragment-identity),
+[Fragment identity table](#fragment-identity-table)
+
+### Fragment identity
+
+What associates the fragments of one datagram with each other, so a fragment
+carrying no transport header can be attributed from what the first one said.
+
+The two address families define it differently, and fragcap follows each rather
+than imposing one shape. IPv4 keys on the address pair, the protocol number,
+and a sixteen bit identification, because that identification is only unique
+per protocol. IPv6 keys on the address pair and a thirty two bit
+identification, and carries no protocol number.
+
+{: .matters }
+> A shared definition would have meant inventing a protocol number for the IPv6
+> case, which is the same fabrication specification section 8.4 prohibits for
+> UDP remote endpoints. Honest coarse attribution beats confident wrong
+> attribution.
+
+**See also:** [IP fragment](#ip-fragment),
+[Fragment identity table](#fragment-identity-table)
+
+### Fragment identity table
+
+The bounded memory from a [fragment identity](#fragment-identity) to the
+protocol and ports its first fragment carried.
+
+Two hundred and fifty six entries, evicting oldest first, with the eviction
+counted. It stores ports rather than an assembled [flow key](#flow-key), so
+that direction and the local position are recomputed for every fragment
+against the current [interface address set](#interface-address-set).
+
+{: .matters }
+> Bounded by entry count rather than by age, because an age bound needs a
+> clock, and a clock in `fragcap-core` is a platform surface constitution
+> principle P-2 excludes. A sixteen bit IPv4 identifier can therefore be reused
+> before its entry is evicted; that residual case is stated in slice S03 rather
+> than claimed away, because it is not detectable from the capture and so
+> cannot be counted.
+
+**See also:** [IP fragment](#ip-fragment),
+[Fragment identity](#fragment-identity), [Backpressure](#backpressure)
+
+### Interface address set
+
+The addresses belonging to the capturing host, against which a packet's
+endpoints are tested to decide [direction](#direction).
+
+Supplied to the parser by its caller and replaced wholesale on an address
+change notification, never polled and never queried from inside
+`fragcap-core`. A local source is outbound and a local destination is inbound.
+Both local is [loopback](#loopback), which leaves direction undetermined.
+Neither local yields no flow key at all, because a flow key's local field is
+defined as the endpoint on the capturing host and there is not one.
+
+{: .matters }
+> A stale set silently inverts direction on every subsequent packet, which is
+> why it is refreshed on notification rather than on a timer. An empty or stale
+> set now announces itself: every packet lands in the no-local-endpoint
+> counter, rather than yielding keys that no socket table lookup could resolve.
+
+**See also:** [Direction](#direction), [Flow key](#flow-key),
+[Loopback](#loopback)
 
 ## Windows Internals
 
@@ -377,6 +503,53 @@ dissector layer from being retrofitted against types that were not designed for
 it.
 
 **See also:** [Sink](#sink)
+
+### Parse outcome
+
+What header parsing concluded about one frame: either a [flow key](#flow-key)
+with an optionally determined [direction](#direction), or a named
+[parse rejection cause](#parse-rejection-cause). Never silence.
+
+An undetermined direction accompanies a successful parse rather than being a
+third outcome, because the frame was understood and one property of it was
+not.
+
+**See also:** [Parse rejection cause](#parse-rejection-cause),
+[Flow key](#flow-key), [Direction](#direction)
+
+### Parse rejection cause
+
+The specific reason a frame produced no [flow key](#flow-key). Twelve of them,
+a closed set, each with its own counter.
+
+The set is separated exactly where the remedy differs. A short header means
+raise the snapshot length; a malformed header means a broken sender or a
+defect in fragcap; an unsupported [EtherType](#ethertype) means unexpected
+traffic; an unsupported [link type](#link-type) means an unexpected capture
+backend.
+
+{: .matters }
+> A packet that produced no flow key is retained and marked, never dropped, so
+> a rejection is not loss. Constitution principle P-4 requires the cause be
+> named and surfaced, and the set is closed so that adding a way to decline
+> without adding a counter does not compile.
+
+**See also:** [Parse outcome](#parse-outcome),
+[Parse statistics](#parse-statistics)
+
+### Parse statistics
+
+One counter per [parse rejection cause](#parse-rejection-cause), plus one for
+an undetermined [loopback](#loopback) direction and one for a
+[fragment identity table](#fragment-identity-table) eviction.
+
+Carried beside the capture and source counters rather than folded into them,
+and contributing to no drop total, because no parse outcome is a drop. There is
+deliberately no counter for a successful parse: it is the captured count less
+the rejections, and a stored total can drift from its parts.
+
+**See also:** [Parse rejection cause](#parse-rejection-cause),
+[Backpressure](#backpressure)
 
 ## Anti-Cheat and Security
 
