@@ -1,0 +1,41 @@
+# cargo-release configuration. Pinned artifact: changes need a dated decision.
+#
+# This file owns exactly one thing: moving the version number. It does not
+# tag, does not push, and does not publish.
+#
+# The reason is the integration workflow. Work reaches `main` through a pull
+# request reviewed by the operator, and nobody pushes to `main` directly. A
+# release tool that commits, tags, and pushes in one step would have to break
+# that rule to be useful, so it does not get the chance.
+#
+# The release sequence is therefore:
+#
+#   1. git checkout -b release/0.2.0
+#   2. cargo release minor --execute     # bump and commit, nothing else
+#   3. open a pull request, operator reviews and merges
+#   4. git tag v0.2.0 && git push origin v0.2.0
+#   5. the release workflow builds artifacts, then waits on the `crates-io`
+#      environment gate before running `cargo xtask publish --execute`
+#
+# Step 4 is the authorization point required by the constitution. Step 5 is
+# the second one, because the environment gate needs a human to approve it.
+#
+# cargo-release defaults to a dry run. `--execute` is required to change
+# anything, which is the same contract `cargo xtask publish` uses.
+
+# All eight crates carry one version, from workspace.package.version.
+shared-version = true
+
+# One commit for the whole workspace rather than one per crate.
+consolidate-commits = true
+pre-release-commit-message = "release: {{version}}"
+
+# Only from a release branch. Running this on a feature branch by accident
+# produces a version bump nobody asked for.
+allow-branch = ["release/*"]
+
+# Deliberately off. See the header: tagging, pushing, and publishing are
+# separate authorized steps, not side effects of a version bump.
+tag = false
+push = false
+publish = false
