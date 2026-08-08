@@ -19,3 +19,6 @@ fragcap-capture.workspace = true
 fragcap-attr.workspace = true
 fragcap-sink.workspace = true
 fragcap-steam.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -21,6 +21,12 @@ categories   = ["network-programming"]
 # declares a 1.57 minimum, and pulls in no transitive dependencies.
 bytes           = "1.12"
 
+# External, test-only. Slice S07, research R-1: the JSON Lines writer is
+# hand-rolled because its exact byte shape is the deliverable, and this parses
+# every line it emits so validity is judged by something other than the writer.
+# Never a runtime dependency; it appears only under [dev-dependencies].
+serde_json      = "1.0"
+
 fragcap-core    = { version = "0.1.0", path = "crates/fragcap-core" }
 fragcap-profile = { version = "0.1.0", path = "crates/fragcap-profile" }
 fragcap-capture = { version = "0.1.0", path = "crates/fragcap-capture" }

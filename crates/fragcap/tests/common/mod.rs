@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use fragcap::{
     AttributionScript, CaptureStats, CapturedPacket, FlowAttributor, HeaderParser, InterfaceAddrs,
-    InterfaceDeclaration, LinkType, PacketSource, PcapngWriter, ReplaySource, Sink, SourceError,
-    SourceStats,
+    InterfaceDeclaration, JsonLinesWriter, LinkType, PacketSource, PayloadMode, PcapngWriter,
+    ReplaySource, Sink, SourceError, SourceStats,
 };
 
 /// Every fixture in the corpus, with the local addresses its script implies.
@@ -122,6 +122,93 @@ pub fn render(name: &str) -> Vec<u8> {
         .finish(&stats)
         .expect("finishing cannot fail in memory");
     buf
+}
+
+/// Read a fixture and write the result as JSON Lines.
+///
+/// Deliberately a separate pass over the same inputs rather than a tee off the
+/// pcapng one. The two formats must agree because they read the same derivation,
+/// not because they share a loop; sharing the loop would hide a divergence that
+/// a real deployment with two sinks would hit.
+pub fn render_jsonl(name: &str, mode: PayloadMode) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut writer =
+            JsonLinesWriter::new(&mut buf, &[name], mode).expect("in-memory write cannot fail");
+        let (packets, stats) = replay(name);
+        for p in &packets {
+            writer.write(p).expect("every packet is written");
+        }
+        Box::new(writer)
+            .finish(&stats)
+            .expect("finishing cannot fail in memory");
+    }
+    buf
+}
+
+/// Read a fixture, parse every packet, and resolve every flow.
+///
+/// The shared front half of both renders.
+pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
+    let local: Vec<IpAddr> = CORPUS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("{name} is not in the corpus table"))
+        .1
+        .iter()
+        .map(|s| s.parse().expect("a corpus address must parse"))
+        .collect();
+
+    let dir = fixtures_dir();
+    let mut source = ReplaySource::open(dir.join(format!("{name}.pcap")))
+        .unwrap_or_else(|e| panic!("{name}.pcap must open: {e}"));
+    let script = AttributionScript::load(dir.join(format!("{name}.script")))
+        .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
+    let attributor: Box<dyn FlowAttributor> = Box::new(fragcap::ScriptedAttributor::new(script));
+    let link = source.link_type();
+    let mut parser = HeaderParser::new(InterfaceAddrs::new(local.iter().copied()));
+
+    let mut packets = Vec::new();
+    let mut attributed = 0u64;
+    let mut unattributed = 0u64;
+    loop {
+        let raw = match source.next_packet(Duration::from_millis(0)) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => panic!("a replay source never times out"),
+            Err(SourceError::Closed) => break,
+            Err(e) => panic!("{name}: unexpected source failure: {e}"),
+        };
+        let mut packet = CapturedPacket::from_raw(raw);
+        parser.apply(link, &mut packet);
+        if let Some(key) = packet.flow.as_ref() {
+            packet.attribution = attributor.resolve(key, packet.ts);
+        }
+        if packet.attribution.is_some() {
+            attributed += 1;
+        } else {
+            unattributed += 1;
+        }
+        packets.push(packet);
+    }
+
+    assert!(
+        source.replay_stats().read_whole_file(),
+        "{name} did not read whole: {}",
+        source.replay_stats()
+    );
+
+    let received = packets.len() as u64;
+    let stats = CaptureStats {
+        packets_captured: received,
+        packets_attributed: attributed,
+        packets_unattributed: unattributed,
+        source: SourceStats {
+            received,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    (packets, stats)
 }
 
 /// The snap length declared for a fixture's interface.

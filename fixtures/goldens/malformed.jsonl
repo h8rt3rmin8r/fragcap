@@ -1,0 +1,7 @@
+{"type":"header","version":"fragcap/0.1.0","interfaces":["malformed"]}
+{"ts":1700000000.000000,"iface":"malformed","dir":"unknown","attr":"none","len":54,"orig_len":54,"data":"0200000000020200000000018100a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"}
+{"ts":1700000000.001000,"iface":"malformed","dir":"unknown","attr":"none","len":54,"orig_len":54,"data":"0200000000020200000000010800450000280000000040010000c000020ac6336405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"}
+{"ts":1700000000.002000,"iface":"malformed","dir":"unknown","attr":"none","len":54,"orig_len":54,"data":"0200000000020200000000010800440000280000000040060000c000020ac63364050001000200000000000000005000000000000000"}
+{"ts":1700000000.003000,"iface":"malformed","dir":"unknown","attr":"none","len":36,"orig_len":36,"data":"0200000000020200000000010800450000160000000040060000c000020ac63364050001"}
+{"ts":1700000000.004000,"iface":"malformed","dir":"unknown","attr":"none","len":54,"orig_len":54,"data":"02000000000202000000000186dd6000000000003b4020010db800000000000000000000001020010db8000000000000000000000005"}
+{"type":"trailer","packets":5,"attributed":0,"unattributed":5,"kernel_dropped":0,"interface_dropped":0,"buffer_dropped":0,"sink_dropped":0,"filter_gaps":0}

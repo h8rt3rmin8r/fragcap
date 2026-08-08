@@ -940,6 +940,59 @@ produces for it.
 
 **See also:** [Fixture corpus](#fixture-corpus), [Fixture](#fixture)
 
+### JSON Lines
+
+**Also known as:** JSONL, newline-delimited JSON, NDJSON
+
+One JSON object per line, with no enclosing array and no separators between
+records.
+
+{: .matters }
+> The property that matters is that a line is self-contained: a stream can be
+> split, tailed, filtered, or truncated with ordinary line tools and every
+> surviving line is still a complete record. fragcap writes it for consumers
+> that do not read [pcapng](#pcapng), and it drives the differences from the
+> [.fcapng](#fcapng) profile. The interface name appears on every record here
+> and only in multi-interface captures there, because a pcapng file holds the
+> interface in its container and a line has no container to hold it.
+
+**See also:** [pcapng](#pcapng), [Trailer record](#trailer-record),
+[Payload-free mode](#payload-free-mode)
+
+**References:**
+
+- fragcap specification section 13.5.
+
+### Trailer record
+
+The final object of a [JSON Lines](#json-lines) stream, carrying the capture's
+statistics. Distinguished from a packet record by a `type` key that packet
+records never carry.
+
+{: .matters }
+> Its absence is the only way a consumer can tell a truncated stream from a
+> complete one, which makes it load-bearing rather than decorative. It carries
+> every counter even when zero, so that "nothing was lost" is distinguishable
+> from "this build does not report that": the same reasoning that puts the
+> counters in an [Interface Statistics Block](#interface-statistics-block) for
+> the other format, and the reason constitution principle P-4 is satisfied for
+> a consumer who never sees the pcapng file.
+
+**See also:** [JSON Lines](#json-lines),
+[Interface Statistics Block](#interface-statistics-block)
+
+### Payload-free mode
+
+A [JSON Lines](#json-lines) stream that omits packet payloads, producing
+metadata suitable for flow analysis at a fraction of the volume.
+
+{: .matters }
+> The key is omitted entirely rather than emitted empty, because an empty
+> payload is a real observation that renders as an empty string. A consumer
+> distinguishes the two by the length fields, which are present in both modes.
+
+**See also:** [JSON Lines](#json-lines)
+
 ### Percent-encoding
 
 Representing a character as a percent sign followed by two hexadecimal digits

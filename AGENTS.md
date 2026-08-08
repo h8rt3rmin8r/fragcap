@@ -43,24 +43,40 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S04 are complete. The Cargo workspace exists with the eight
+Slices S01 through S04, S06, and S07 are complete. S05 is not: the profile
+schema is still unbuilt, and the ordering in `docs/plans/README.md` does not
+put it before S08. The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
 vocabulary from specification sections 8.4 and 8.5 and a `parse` module
 implementing sections 12.5 and 12.6. `fragcap-capture` reads classic pcap and
 replays it as a `PacketSource`. `fragcap-attr` answers attribution from a
-declared script. `fixtures/` holds the committed corpus of section 25.3.
+declared script. `fragcap-sink` writes both output formats: pcapng carrying
+attribution in packet comments, and JSON Lines. `fixtures/` holds the committed
+corpus of section 25.3 and, since S06, a golden per fixture per format.
 
 **The section 25.1 claim is now demonstrated rather than asserted.**
 `crates/fragcap/tests/pipeline.rs` reads a fixture, parses every packet, and
 resolves every flow, with no capture driver, no elevated privilege, and no game.
 Every slice from here is testable the day it is written.
 
-**There is still no pipeline and no output.** Nothing buffers, counts drops,
-fans out, or writes a file. S06 adds the pcapng writer, S07 the JSON Lines
-writer, and S08 the pipeline that runs the whole thing over this corpus and
-compares against goldens. Each crate's module documentation names the slice that
-fills it.
+**There is output, and still no pipeline.** Nothing buffers, counts drops, or
+fans out. S08 is the slice that runs the whole thing over the corpus, and it is
+what makes the loss counters carry real values rather than the fixed snapshots
+the writers are currently handed. Each crate's module documentation names the
+slice that fills it.
+
+Both writers record one interface and refuse a second, for the same reason:
+`CapturedPacket` carries no interface identifier and `Sink::write` has nowhere
+to pass one, so every packet would route to the first declared interface and be
+labelled with it. S09 brings live capture and the identifier, and lifts both
+restrictions. The pcapng writer additionally cannot attribute the capture-wide
+`CaptureStats` per interface, which is a second reason it waits.
+
+Attribution fidelity is carried on `Attribution`, not derived from whether an
+attribution exists. S06 initially derived it and review caught that every
+golden was claiming a live socket-table hit for a resolution that came from a
+text file.
 
 Two placements are load-bearing and worth not relitigating. The parser lives in
 `fragcap-core` rather than `fragcap-capture`, because the capture thread that
@@ -77,12 +93,32 @@ one contains, and a drift check in the ordinary gate fails if a committed file
 stops matching it. Regenerate with `FRAGCAP_UPDATE_FIXTURES=1 cargo test -p
 fragcap-capture --test corpus`, then read the diff. See `fixtures/README.md`.
 
-The workspace has one external dependency, `bytes`. Neither S03 nor S04 added
-any: the parser is arithmetic over a byte slice, a pcap file is a header and a
-run of records, and the attribution script format is deliberately trivial so
-that S05 can pick a parser for the profile schema on the profile's merits.
+**Dependency inventory.** The workspace has one runtime dependency and one
+dev-dependency, and the distinction is load-bearing rather than bookkeeping.
+
+| Crate | Kind | Added by | Why |
+| --- | --- | --- | --- |
+| `bytes` | runtime | S02 | Reference-counted payload clones |
+| `serde_json` | dev only | S07 | Parses every line the JSON writer emits, in tests |
+
+S03, S04, and S06 added none. The parser is arithmetic over a byte slice, a
+pcap file is a header and a run of records, the attribution script format is
+deliberately trivial, and pcapng is length-prefixed binary over a byte sink.
+S05 remains free to pick a parser for the profile schema on the profile's
+merits; `serde_json` being present as a dev-dependency is not a runtime
+precedent, and adopting it at runtime would be a decision that slice makes for
+its own reasons.
+
+S07's writer is hand-rolled and its `serde_json` is test-only on purpose:
+verification is worth more the less it shares with what it verifies. Anything
+proposing to move it into `[dependencies]` is changing that argument and should
+say so.
+
 `fragcap-core` may depend only on crates named in the allowlist in
-`xtask/src/deps.rs`, which is checked mechanically.
+`xtask/src/deps.rs`, which is checked mechanically. Note that `cargo xtask
+deps` ignores `[dev-dependencies]` by design, so a dev-dependency on a sibling
+crate would pass the gate; S06 and S07 both keep their corpus tests in the
+`fragcap` facade for that reason.
 
 The remote is `origin`, at `https://github.com/h8rt3rmin8r/fragcap`. S01
 integrated through pull request #1.

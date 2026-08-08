@@ -48,6 +48,7 @@ pub mod sink {
         AnnotatedDirection, Annotation, AnnotationError, Fidelity, SENTINEL,
     };
     pub use fragcap_sink::error::WriteError;
+    pub use fragcap_sink::json::{JsonLinesWriter, PayloadMode, VERSION as JSONL_VERSION};
     pub use fragcap_sink::pcapng::interface::InterfaceDeclaration;
     pub use fragcap_sink::pcapng::{PcapngWriter, PROFILE_COMMENT, USER_APPL};
 }
@@ -56,6 +57,6 @@ pub use crate::core::*;
 pub use attr::{AttributionScript, ScriptedAttributor};
 pub use capture::{PcapReader, ReplaySource, ReplayStats};
 pub use sink::{
-    AnnotatedDirection, Annotation, AnnotationError, Fidelity, InterfaceDeclaration, PcapngWriter,
-    WriteError,
+    AnnotatedDirection, Annotation, AnnotationError, Fidelity, InterfaceDeclaration,
+    JsonLinesWriter, PayloadMode, PcapngWriter, WriteError,
 };
