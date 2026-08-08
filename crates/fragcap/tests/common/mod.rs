@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Turning a fixture into a written capture.
+//!
+//! Shared by the structural validation and golden comparison targets, which
+//! need the same input and ask different questions of it.
+//!
+//! This lives in the facade because producing it needs a replay source from
+//! `fragcap-capture`, a scripted attributor from `fragcap-attr`, and the writer
+//! from `fragcap-sink`, and the facade is the only crate that legitimately
+//! depends on all three. Reaching them from `fragcap-sink/tests/` would mean a
+//! dev-dependency on a sibling, which is the edge constitution P-3 prevents and
+//! which `cargo xtask deps` does not catch, because it ignores
+//! dev-dependencies by design. See slice S06 plan decision D-7.
+
+#![allow(dead_code)]
+
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use fragcap::{
+    AttributionScript, CaptureStats, CapturedPacket, FlowAttributor, HeaderParser, InterfaceAddrs,
+    InterfaceDeclaration, LinkType, PacketSource, PcapngWriter, ReplaySource, Sink, SourceError,
+    SourceStats,
+};
+
+/// Every fixture in the corpus, with the local addresses its script implies.
+///
+/// The addresses are not decoration: direction is determined by matching a
+/// packet's source against the capturing interface's address set, so a wrong
+/// entry here silently inverts `dir` on every packet of that fixture.
+pub const CORPUS: &[(&str, &[&str])] = &[
+    ("burst", &["192.0.2.10"]),
+    ("fragmented", &["192.0.2.10"]),
+    ("ipv6-mixed", &["2001:db8::10"]),
+    ("loopback", &["127.0.0.1"]),
+    ("malformed", &["192.0.2.10", "2001:db8::10"]),
+    ("port-reuse", &["192.0.2.10"]),
+    ("tcp-session", &["192.0.2.10"]),
+    ("udp-gameplay", &["192.0.2.10"]),
+];
+
+pub fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("fixtures")
+}
+
+pub fn goldens_dir() -> PathBuf {
+    fixtures_dir().join("goldens")
+}
+
+/// Read a fixture, parse and attribute every packet, and write the result as
+/// pcapng.
+///
+/// Deterministic by construction: the only inputs are the fixture bytes, the
+/// script, and constants. Nothing here reads a clock or the environment, which
+/// is what lets the output be compared against a committed golden.
+pub fn render(name: &str) -> Vec<u8> {
+    let local: Vec<IpAddr> = CORPUS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("{name} is not in the corpus table"))
+        .1
+        .iter()
+        .map(|s| s.parse().expect("a corpus address must parse"))
+        .collect();
+
+    let dir = fixtures_dir();
+    let mut source = ReplaySource::open(dir.join(format!("{name}.pcap")))
+        .unwrap_or_else(|e| panic!("{name}.pcap must open: {e}"));
+    let script = AttributionScript::load(dir.join(format!("{name}.script")))
+        .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
+    let attributor: Box<dyn FlowAttributor> = Box::new(fragcap::ScriptedAttributor::new(script));
+    let link = source.link_type();
+    let mut parser = HeaderParser::new(InterfaceAddrs::new(local.iter().copied()));
+
+    let mut buf = Vec::new();
+    let mut writer = PcapngWriter::new(&mut buf).expect("in-memory write cannot fail");
+    writer
+        .declare_interface(&InterfaceDeclaration::new(link, snap_len(link), name))
+        .expect("declaring an interface cannot fail in memory");
+
+    let mut received = 0u64;
+    loop {
+        let raw = match source.next_packet(Duration::from_millis(0)) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => panic!("a replay source never times out"),
+            Err(SourceError::Closed) => break,
+            Err(e) => panic!("{name}: unexpected source failure: {e}"),
+        };
+        received += 1;
+        let mut packet = CapturedPacket::from_raw(raw);
+        parser.apply(link, &mut packet);
+        if let Some(key) = packet.flow.as_ref() {
+            packet.attribution = attributor.resolve(key, packet.ts);
+        }
+        writer.write(&packet).expect("every packet is written");
+    }
+
+    assert!(
+        source.replay_stats().read_whole_file(),
+        "{name} did not read whole: {}",
+        source.replay_stats()
+    );
+
+    // A fixed statistics snapshot derived from the fixture, so the trailing
+    // block is stable across runs. Non-zero fragcap counters on purpose: they
+    // are the values with no standard pcapng field, and a golden of all zeroes
+    // would not prove they were written.
+    let stats = CaptureStats {
+        packets_captured: received,
+        source: SourceStats {
+            received,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    Box::new(writer)
+        .finish(&stats)
+        .expect("finishing cannot fail in memory");
+    buf
+}
+
+/// The snap length declared for a fixture's interface.
+///
+/// A constant rather than the largest packet observed, because deriving it from
+/// the data would make the declared value depend on which packets happened to
+/// be in the file.
+fn snap_len(_link: LinkType) -> u32 {
+    65_535
+}
