@@ -2,10 +2,16 @@
 
 //! Core types, traits, and pipeline vocabulary for fragcap.
 //!
-//! This crate is the vocabulary the other seven are written in. It carries no
-//! behavior: nothing here captures a packet, resolves an attribution, parses a
-//! header, or writes a file. What it fixes is the shape of the seams those
-//! things are built against.
+//! This crate is the vocabulary the other seven are written in. Most of it
+//! fixes the shape of the seams the later slices are built against: nothing
+//! here captures a packet, resolves an attribution, or writes a file.
+//!
+//! One module is behavior. [`parse`] arrived in slice S03 and turns a frame
+//! into the identity of the conversation it belongs to. It is here rather than
+//! in `fragcap-capture` because the capture thread that calls it belongs to
+//! the pipeline, which specification section 8.2 places in this crate, and
+//! because parsing is arithmetic over a byte slice with no platform surface
+//! for constitution P-2 to object to.
 //!
 //! # Platform neutrality
 //!
@@ -58,6 +64,7 @@ pub mod filter;
 pub mod flow;
 pub mod link;
 pub mod packet;
+pub mod parse;
 pub mod process;
 pub mod stats;
 pub mod traits;
@@ -68,6 +75,7 @@ pub use filter::FilterProgram;
 pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
 pub use link::LinkType;
 pub use packet::{AttributionState, CapturedPacket, Payload, RawPacket, Timestamp};
+pub use parse::{HeaderParser, InterfaceAddrs, ParseOutcome, ParseReject};
 pub use process::{ProcessEvent, ProcessRecord};
-pub use stats::{CaptureStats, SourceStats};
+pub use stats::{CaptureStats, ParseStats, SourceStats};
 pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};

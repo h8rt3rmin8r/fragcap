@@ -26,6 +26,7 @@ full.
   this tracked file. That keeps per-slice pointer churn out of the diff and
   stops parallel slices conflicting here. The durable artifact for the current
   slice is its `specs/NNN-slug/plan.md`, pointed to by `.specify/feature.json`.
-- S01 is complete: the workspace, the crate skeletons, and the check set exist.
-  Run `cargo xtask ci` before proposing any change; it is the same set the
-  automated checks run, so the two cannot drift.
+- S01 through S03 are complete: the workspace, the crate skeletons, the check
+  set, the core vocabulary, and the header parser exist. Run `cargo xtask ci`
+  before proposing any change; it is the same set the automated checks run, so
+  the two cannot drift.

@@ -17,11 +17,19 @@
 pub struct LinkType(u16);
 
 impl LinkType {
-    /// No link layer header; the payload begins with a network layer header.
+    /// BSD loopback encapsulation: a four byte address family value in the
+    /// capturing host's byte order, then a network layer header.
+    ///
+    /// S02 documented this constant as having no link layer header, which is
+    /// code 101's property rather than this one's. The error was harmless
+    /// while nothing parsed and was corrected in S03, which is the slice that
+    /// would have read a network header out of the address family field. See
+    /// that slice's plan decision D-7.
     pub const NULL: LinkType = LinkType(0);
     /// Ethernet, which every focal title's traffic is carried over.
     pub const ETHERNET: LinkType = LinkType(1);
-    /// Raw IP, with no link layer header at all.
+    /// Raw IP: no link layer header at all, so the frame begins with a network
+    /// layer header.
     pub const RAW: LinkType = LinkType(101);
 
     pub const fn from_code(code: u16) -> Self {
