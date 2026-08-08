@@ -1,0 +1,4 @@
+# Four hundred datagrams a tenth of a millisecond apart. The
+# capacity half of the backpressure test belongs to S08.
+flow udp 192.0.2.10:30000 * always owner 4242 game.exe
+endpoint udp 192.0.2.10:30000

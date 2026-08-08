@@ -284,6 +284,53 @@ against the current [interface address set](#interface-address-set).
 **See also:** [IP fragment](#ip-fragment),
 [Fragment identity](#fragment-identity), [Backpressure](#backpressure)
 
+### pcap
+
+The original libpcap capture file format: a twenty-four byte file header, then
+records of a sixteen byte header and their packet bytes. Distinct from
+[pcapng](#pcapng), which is a much larger format and the one fragcap writes.
+
+fragcap reads pcap and writes pcapng, and the asymmetry is deliberate. The
+[fixture corpus](#fixture-corpus) is written in the small format because a
+reader for it needs no dependency and because ordinary tooling opens it. The
+output format carries attribution, which pcap cannot.
+
+{: .matters }
+> Byte order and timestamp resolution are both declared by the file's magic
+> number, in four combinations. A reader that assumed either would silently
+> report a nanosecond capture's timestamps a thousand times too small, or read
+> a foreign-endian file as garbage that still looked plausible.
+
+**See also:** [pcapng](#pcapng), [Replay source](#replay-source),
+[Fixture](#fixture)
+
+### Fixture
+
+One small, committed, synthetic capture file that exists to exercise one stated
+condition, paired with an [attribution script](#attribution-script).
+
+Synthetic is not incidental. A capture from a real game session carries account
+identifiers, session tokens, and addresses, none of which belong in a public
+repository, so every fixture is generated from constants and every payload byte
+is filler.
+
+**See also:** [Fixture corpus](#fixture-corpus), [pcap](#pcap)
+
+### Fixture corpus
+
+The eight [fixtures](#fixture) of specification section 25.3 together, with
+their scripts, the generator that produces them, and the check that proves the
+committed bytes still match it.
+
+{: .matters }
+> The generator is the readable record of what each fixture contains; the
+> binary is its output. A committed capture nobody can read is a test input
+> nobody can review, and the drift check is what stops a hand-edited fixture
+> passing quietly.
+
+**See also:** [Fixture](#fixture),
+[Attribution script](#attribution-script), [Test tier](#test-tier)
+
 ### Interface address set
 
 The addresses belonging to the capturing host, against which a packet's
@@ -504,6 +551,59 @@ it.
 
 **See also:** [Sink](#sink)
 
+### Replay source
+
+A [packet source](#packet-source) that reads a recorded capture file rather
+than an interface. Half of what makes specification section 25.1's claim true.
+
+Deterministic by construction: the same bytes yield the same packets, on every
+run and platform. That is the property golden comparison depends on, and a test
+whose input varies is a failure nobody can reproduce.
+
+{: .matters }
+> It accepts a capture filter and applies nothing, and says so. Failing would
+> break a pipeline that filters unconditionally; accepting silently would let a
+> test believe filtering happened. Exhaustion is reported as the terminal
+> closed condition rather than as a timeout, because a timeout means keep going
+> and would spin forever on a finished file.
+
+**See also:** [Packet source](#packet-source),
+[Scripted attributor](#scripted-attributor), [Fixture](#fixture)
+
+### Scripted attributor
+
+A [flow attributor](#flow-attributor) that answers from a declared
+[attribution script](#attribution-script) rather than a
+[socket table](#socket-table). The other half of the section 25.1 claim.
+
+It matches through the same [attribution key](#attribution-key) derivation and
+[wildcard bind](#wildcard-bind-address) allowance the real attributor will use,
+so a test that passes against a script is one that implementation has to
+satisfy. It cannot express an attribution the platform could never supply.
+
+{: .matters }
+> The attributor seam carries no timestamp, because a real attributor reads a
+> table that is already current. A scripted one has to be told what "now" is,
+> and that is a method on the double rather than a widening of the seam: a test
+> double is a poor reason to hand every real implementation a parameter it does
+> not want.
+
+**See also:** [Flow attributor](#flow-attributor),
+[Attribution script](#attribution-script), [Replay source](#replay-source)
+
+### Attribution script
+
+A text file declaring what a [scripted attributor](#scripted-attributor)
+answers for each flow in each window of time.
+
+The time dimension is the point. [PID recycling](#pid-recycling) and port reuse
+mean one local endpoint can belong to different processes at different
+instants, and without windows there is no way to test that short of a live
+machine and a stopwatch.
+
+**See also:** [Scripted attributor](#scripted-attributor),
+[Fixture corpus](#fixture-corpus), [PID recycling](#pid-recycling)
+
 ### Parse outcome
 
 What header parsing concluded about one frame: either a [flow key](#flow-key)
@@ -605,6 +705,28 @@ promise to consumers; the second is a reproducibility control for the project.
 > the workspace has no external dependencies, and it says so in its own output.
 
 **See also:** [xtask](#xtask)
+
+### Test tier
+
+One of the four levels specification section 25.2 defines, distinguished by
+what each needs in order to run.
+
+| Tier | Needs | In continuous integration |
+| --- | --- | --- |
+| 0, unit | nothing | yes |
+| 1, pipeline | nothing | yes |
+| 2, platform | privilege and a capture driver | yes, on a Windows runner |
+| 3, live | privilege, a driver, and a game | no, manual |
+
+{: .matters }
+> Tier 1 is the one the architecture was shaped to make possible. Because a
+> [replay source](#replay-source) and a [scripted
+> attributor](#scripted-attributor) substitute for the two platform-dependent
+> seams, the whole pipeline is testable on any machine with no privilege. That
+> is the return on keeping capture and attribution apart.
+
+**See also:** [Fixture corpus](#fixture-corpus),
+[Replay source](#replay-source)
 
 ### xtask
 

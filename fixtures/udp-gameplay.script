@@ -1,0 +1,4 @@
+# Sustained UDP at a sixty hertz tick. A UDP entry names no remote
+# endpoint, because the UDP socket table carries none.
+flow udp 192.0.2.10:30000 * always owner 4242 game.exe
+endpoint udp 192.0.2.10:30000
