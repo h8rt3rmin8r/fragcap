@@ -33,6 +33,20 @@ pub enum WriteError {
     /// instead. See specification section 12.7 and constitution P-9.
     TimestampBeforeEpoch { nanos: i64 },
 
+    /// A second interface was declared.
+    ///
+    /// Slice S06 writes single-interface captures. Two things break when a
+    /// second interface appears, and neither is fixable at the point the
+    /// second declaration arrives: packet blocks already written carry no
+    /// `iface` key and cannot be revised, and the capture-wide `CaptureStats`
+    /// snapshot carries no per-interface breakdown, so copying it into each
+    /// Interface Statistics Block would multiply the capture totals for anyone
+    /// summing them. Refusing is the only option that does not put a false
+    /// statement in the file. Multi-interface capture arrives with S09, which
+    /// is the slice that creates the second interface and will carry the
+    /// per-interface counters to describe it.
+    SecondInterface,
+
     /// An option value longer than a pcapng option length field can express.
     ///
     /// The field is 16 bits. Truncating the value would silently alter what was
@@ -56,6 +70,9 @@ impl fmt::Display for WriteError {
                 f,
                 "timestamp {nanos} ns predates the Unix epoch and pcapng cannot represent it"
             ),
+            WriteError::SecondInterface => {
+                f.write_str("this writer records one interface per capture")
+            }
             WriteError::OptionTooLong { code, len } => write!(
                 f,
                 "option {code} value is {len} bytes, over the 65535 byte limit"
@@ -106,6 +123,7 @@ mod tests {
                 code: 1,
                 len: 70_000,
             },
+            WriteError::SecondInterface,
             WriteError::Io {
                 detail: "disk full".into(),
             },

@@ -31,10 +31,16 @@ impl InterfaceDeclaration {
     }
 }
 
-/// A declaration plus the state the writer keeps for it.
-#[derive(Clone, Debug)]
+/// The state the writer keeps for a declared interface.
+///
+/// Holds no copy of the declaration. It held one until review of pull request
+/// 8: the writer read the name back to decide the annotation `iface` key per
+/// packet, and that per-packet decision was the defect, since a second
+/// interface declared later would have left earlier packets without a key they
+/// then needed. The declaration is written into its block and not consulted
+/// again. S09 will want it back when a capture can hold more than one.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct DeclaredInterface {
-    pub(crate) decl: InterfaceDeclaration,
     /// The timestamp of the last packet written against this interface, in
     /// microseconds. `None` until one is.
     ///
@@ -42,13 +48,4 @@ pub(crate) struct DeclaredInterface {
     /// data rather than from a clock is what keeps the writer a pure function
     /// of its input, which the golden comparison depends on.
     pub(crate) last_ts_micros: Option<u64>,
-}
-
-impl DeclaredInterface {
-    pub(crate) fn new(decl: InterfaceDeclaration) -> Self {
-        DeclaredInterface {
-            decl,
-            last_ts_micros: None,
-        }
-    }
 }

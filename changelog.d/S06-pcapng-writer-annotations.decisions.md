@@ -83,3 +83,43 @@ which did not run must never look like one that passed. Adding Wireshark to the
 runner image is left as an option for S18, which owns analyzer integration and
 has other reasons to want it. The mandatory check is the structural validator,
 which is independent of the writer's encoding code and runs everywhere.
+
+**2026-08-08** Recorded for promotion to specification section 29, from review
+of pull request 8: attribution fidelity moves onto `Attribution` in
+`fragcap-core`, and `Attribution::new` takes it as a required argument. Section
+8.4 fixed the type without it, and S06 initially derived `attr=live` in the
+pcapng writer from `AttributionState::Resolved`. That is an inference, which
+section 13.4 forbids, and it was wrong the day it was written rather than
+wrong-in-future: the scripted attributor resolves from a declared script, so
+every committed golden asserted that an endpoint was present in a socket table
+at a moment when no socket table existed. P-9 covers exactly this. Fidelity is
+now a statement by the party that knows, and the writer records it. Required
+rather than defaulted, because a default is the same inference with a different
+author. The change costs one argument at sixteen call sites now, with one real
+implementor; after S10, S11, and S12 it would have cost considerably more, and
+the retained path would have been silently mislabelled as live in the interim.
+
+**2026-08-08** Narrowing recorded from review of pull request 8: the S06 writer
+records one interface per capture and refuses a second declaration with a named
+error. The slice claimed support for any number. Two defects followed and
+neither is repairable at the moment the second declaration arrives. The
+annotation `iface` key was decided per packet from the interface count at write
+time, so a second interface declared after packets had been written left those
+blocks without a key that section 13.3 then required of them, in blocks pcapng
+cannot revise in place. And `CaptureStats` carries no per-interface breakdown,
+so the same capture-wide counters were written into every Interface Statistics
+Block, reporting each received packet once per interface to anyone summing
+them.
+
+Both are fixable, and neither is fixable here. Consistent `iface` needs all
+interfaces known before the first packet, which a live capture cannot promise;
+correct per-interface statistics need per-interface source counters, which is a
+core type change belonging to the slice that creates the second interface.
+S09 owns live capture and interface enumeration and will have both. Refusing is
+the only option in this slice that puts no false statement in the file, and the
+packet path still carries an interface identifier rather than a constant zero,
+so lifting the restriction does not mean rewriting it.
+
+The annotation grammar keeps the `iface` key, encoded and decoded and tested.
+An unreachable value in a grammar the later slice can populate is cheaper than
+a grammar that has to be widened once there is data for it.

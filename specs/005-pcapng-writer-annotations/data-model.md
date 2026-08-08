@@ -24,7 +24,7 @@ separate step, so S07 can render the same value as JSON.
 | `role` | `Option<Arc<str>>` | When present | `Attribution::role` |
 | `stage` | `Option<StageId>` | When present | `Attribution::stage` |
 | `direction` | `AnnotatedDirection` | Always | `CapturedPacket::direction` |
-| `fidelity` | `Fidelity` | Always | Pipeline resolution |
+| `fidelity` | `Fidelity` | Always | `Attribution::fidelity`, or `None` when unattributed |
 | `interface` | `Option<Arc<str>>` | When multi-interface | Interface declaration |
 
 **Derivation rules**, which are the part FR-025 makes reusable:
@@ -38,6 +38,9 @@ separate step, so S07 can render the same value as JSON.
 - `interface` is present exactly when the writer holds more than one interface
   declaration. FR-021.
 - `direction` and `fidelity` are always present. FR-019, FR-020.
+- `fidelity` is copied from the attribution, never computed from whether one
+  exists. FR-029. The one case this crate decides is absence: no attribution
+  means `None`, because nothing was found.
 
 **Rendering rules**, which are the part that produces bytes:
 
@@ -74,6 +77,15 @@ the first is the substitution P-9 exists to block.
 How attribution was obtained. Section 13.4. Never inferred, never defaulted,
 never upgraded. FR-029.
 
+**Lives in `fragcap-core`, on `Attribution`.** Moved there during review of
+pull request 8, which found the writer deriving `Live` from the mere presence
+of an attribution. That was an inference, and a wrong one: the scripted
+attributor resolves from a declared script rather than a socket table, so every
+golden claimed an endpoint was in a table that did not exist. Only the
+attributor knows how it reached an answer, so the value travels with the
+answer. `Attribution::new` takes it as a required argument, because a defaulted
+field is the same inference wearing a different hat.
+
 | Variant | Rendered | Meaning |
 | --- | --- | --- |
 | `Live` | `live` | Endpoint present in the socket table at resolution time |
@@ -83,8 +95,9 @@ never upgraded. FR-029.
 `None` implies the absence of `pid`, `proc`, `role`, and `stage`, rather than
 their presence with an empty value. FR-028.
 
-This slice produces `Live` and `None`. `Retained` becomes reachable when the
-grace period map lands with the socket table attributor. As with
+This slice writes `Live` and `None`, and writes whichever the attributor
+supplied rather than choosing. `Retained` becomes reachable when the grace
+period map lands with the socket table attributor. As with
 `AnnotatedDirection::Local`, the value exists here so the later slice supplies
 data rather than extending the grammar.
 
@@ -104,10 +117,8 @@ it.
 declaration order and a caller-supplied identifier could disagree with it.
 FR-006.
 
-Declaring the same interface twice produces two declarations and two
-identifiers. The writer does not deduplicate; pcapng's identity is positional,
-and collapsing two declarations would silently repoint packets the caller
-attributed to the second.
+Declaring a second interface, identical or not, is refused. pcapng identity is
+positional, so the question of deduplication does not arise while there is one.
 
 ## PcapngWriter
 
@@ -123,14 +134,14 @@ The sink itself.
 **State transitions**:
 
 ```text
-new  ->  declare_interface*  ->  write*  ->  finish
-          (any number)          (any number)   (consumes)
+new  ->  declare_interface  ->  write*  ->  finish
+           (exactly once)      (any number)   (consumes)
 ```
 
-- `declare_interface` may be called after packets have been written, which is
-  what a live capture adding an interface mid-session needs. The resulting
-  Interface Description Block appears at that point in the file, which pcapng
-  permits, and its identifier is the next in sequence.
+- `declare_interface` succeeds once. A second call is an error, per FR-006a.
+  Late declaration was permitted in the first draft of this slice and is not:
+  a packet block already written cannot gain the `iface` key that a
+  now-multi-interface capture requires of it.
 - `write` against an undeclared identifier is an error, not an invented
   interface. FR-033.
 - `finish` writes one Interface Statistics Block per declared interface and

@@ -107,12 +107,19 @@ fields where they exist and a declared comment where they do not.
   decision on behalf of the slice that actually has the data. S08 owns capture
   start and supplies it. Recorded as a known gap against section 12.7 rather
   than resolved silently.
-- Q: How many interfaces does the writer support? → A: Any number, though the
-  fixture corpus exercises one. Section 13.2 assigns interface identifiers in
-  the Interface Description Block that every packet block then references, so
-  the identifier has to be a real value the writer tracks rather than a
-  constant zero. A writer that hardcodes one interface would need its packet
-  path rewritten by S09, which is the slice least able to absorb it.
+- Q: How many interfaces does the writer support? → A: One, refusing a second
+  with a named error. Revised during review of pull request 8; the slice
+  originally claimed any number. Two things break with a second interface and
+  neither is fixable when the second declaration arrives. Packet blocks already
+  written carry no `iface` key and pcapng blocks cannot be revised in place, so
+  a capture that became multi-interface would be internally inconsistent about
+  a key section 13.3 governs. And `CaptureStats` carries no per-interface
+  breakdown, so the same capture-wide counters would go into every Interface
+  Statistics Block, reporting each packet once per interface to anyone summing
+  them. Refusing is the only option that puts no false statement in the file.
+  The packet path still takes an interface identifier rather than a constant
+  zero, so S09 supplies the counters and lifts the restriction without
+  rewriting it.
 - Q: Is the `iface` annotation key written when there is one interface? → A:
   No. Section 13.3 marks it "when multi-interface", and writing it always would
   add a key to every packet comment in the common case for no information. It
@@ -435,6 +442,12 @@ serialization applied as a separate step.
 - **FR-006**: The writer MUST assign interface identifiers in declaration
   order, starting at zero, and every Enhanced Packet Block MUST reference a
   valid one.
+- **FR-006a**: The writer MUST refuse a second interface declaration with a
+  named error. Accepting one would put two false statements in the file:
+  packet blocks already written cannot gain the `iface` key they would then
+  need, and the capture-wide statistics snapshot has no per-interface
+  breakdown, so copying it into each Interface Statistics Block would multiply
+  the capture totals for anyone summing them.
 - **FR-007**: The writer MUST emit one Enhanced Packet Block per packet,
   carrying the interface identifier, the timestamp, the captured length, the
   original length, and the packet data.
@@ -482,7 +495,10 @@ serialization applied as a separate step.
 - **FR-020**: The writer MUST emit `attr` on every packet, with a value of
   `live`, `retained`, or `none`.
 - **FR-021**: The writer MUST emit `iface` when more than one interface is
-  declared, and MUST omit it otherwise.
+  declared, and MUST omit it otherwise. Since FR-006a restricts this slice to
+  one interface, the writer never emits it; the annotation type carries the key
+  and round-trips it, so the slice that lifts the restriction supplies data
+  rather than widening a grammar.
 - **FR-022**: The writer MUST percent-encode any value containing a semicolon,
   an equals sign, or a percent sign.
 - **FR-023**: The writer MUST percent-encode any value containing a code point

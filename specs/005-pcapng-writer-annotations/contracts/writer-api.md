@@ -61,7 +61,8 @@ impl Annotation {
 | Obligation | Requirement |
 | --- | --- |
 | `new` writes the Section Header Block before returning | FR-001 |
-| `declare_interface` returns identifiers from zero, in order | FR-006 |
+| `declare_interface` returns identifier zero, once | FR-006 |
+| A second `declare_interface` is an error | FR-006a |
 | `write` against an undeclared identifier is an error | FR-033 |
 | `write` never drops or skips a packet | FR-030 |
 | `finish` writes one Interface Statistics Block per interface | FR-008 |
@@ -78,6 +79,7 @@ conditions this slice introduces:
 | Condition | Behavior |
 | --- | --- |
 | Undeclared interface identifier | Error, no bytes written for that packet |
+| A second interface declaration | Error, no bytes written |
 | Timestamp predates the Unix epoch | Error, no bytes written for that packet |
 | Annotation exceeds the 16-bit option length | Error, never silently truncated |
 | Underlying writer fails | Error propagated, blocks already written stay valid |
@@ -133,7 +135,7 @@ Keys, in the order they appear:
 | `stage` | When a stage is present | Profile stage identifier |
 | `dir` | Always | `in`, `out`, `local`, or `unknown` |
 | `attr` | Always | `live`, `retained`, or `none` |
-| `iface` | When multi-interface | Capture interface name |
+| `iface` | When multi-interface | Capture interface name. Defined and round-tripped; not produced while the writer records one interface |
 
 Encoded characters: `;`, `=`, `%`, every code point below 0x20, and 0x7F.
 

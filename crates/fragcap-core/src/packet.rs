@@ -180,6 +180,7 @@ impl CapturedPacket {
 mod tests {
     use super::*;
     use crate::attribution::Attribution;
+    use crate::attribution::Fidelity;
     use crate::flow::{FlowKey, Proto};
     use std::net::SocketAddr;
 
@@ -297,7 +298,7 @@ mod tests {
         let mut p =
             CapturedPacket::from_raw(RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0));
         p.flow = Some(key());
-        p.attribution = Some(Attribution::new(4242, "eso64.exe"));
+        p.attribution = Some(Attribution::new(4242, "eso64.exe", Fidelity::Live));
         assert_eq!(p.attribution_state(), AttributionState::Resolved);
     }
 

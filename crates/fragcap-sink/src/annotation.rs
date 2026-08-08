@@ -19,52 +19,34 @@ use std::fmt;
 use std::sync::Arc;
 
 use fragcap_core::attribution::StageId;
-use fragcap_core::packet::{AttributionState, CapturedPacket};
+use fragcap_core::packet::CapturedPacket;
 use fragcap_core::Direction;
+
+/// Re-exported from `fragcap-core`, where the attributor sets it.
+pub use fragcap_core::attribution::Fidelity;
 
 /// The sentinel every annotation begins with.
 pub const SENTINEL: &str = "fragcap:";
 
-/// How attribution was obtained. Specification section 13.4.
+/// The section 13.4 spelling of a fidelity value.
 ///
-/// Never inferred by a consumer and never inferred by the writer. The value
-/// records what the pipeline resolved, because the distinction between an
-/// observation and an inference is the thing a reader cannot reconstruct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fidelity {
-    /// The endpoint was present in the socket table at the time of resolution.
-    Live,
-    /// Resolved from the grace period map of specification section 11.4.
-    ///
-    /// Inferential: an endpoint that closed and was reassigned to a different
-    /// process inside the grace period attributes incorrectly. Marking it lets
-    /// analysis discount it where precision matters.
-    ///
-    /// Not produced by this slice. The grace period map arrives with the socket
-    /// table attributor; the value exists here so that slice supplies data
-    /// rather than widening a grammar.
-    Retained,
-    /// The packet could not be attributed. Implies no `pid`, `proc`, `role`, or
-    /// `stage`.
-    None,
+/// A free function rather than a method because [`Fidelity`] lives in
+/// `fragcap-core`, where it belongs: it is attribution vocabulary that the
+/// attributor produces, not something this crate invents at rendering time.
+fn fidelity_str(f: Fidelity) -> &'static str {
+    match f {
+        Fidelity::Live => "live",
+        Fidelity::Retained => "retained",
+        Fidelity::None => "none",
+    }
 }
 
-impl Fidelity {
-    fn as_str(self) -> &'static str {
-        match self {
-            Fidelity::Live => "live",
-            Fidelity::Retained => "retained",
-            Fidelity::None => "none",
-        }
-    }
-
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "live" => Some(Fidelity::Live),
-            "retained" => Some(Fidelity::Retained),
-            "none" => Some(Fidelity::None),
-            _ => None,
-        }
+fn parse_fidelity(s: &str) -> Option<Fidelity> {
+    match s {
+        "live" => Some(Fidelity::Live),
+        "retained" => Some(Fidelity::Retained),
+        "none" => Some(Fidelity::None),
+        _ => None,
     }
 }
 
@@ -160,13 +142,11 @@ impl Annotation {
             role: attr.and_then(|a| a.role.clone()),
             stage: attr.and_then(|a| a.stage.clone()),
             direction: packet.direction.into(),
-            fidelity: match packet.attribution_state() {
-                // Resolution here is always from a live table: the grace period
-                // map does not exist yet. When it does, the pipeline tells the
-                // writer which it was rather than the writer guessing.
-                AttributionState::Resolved => Fidelity::Live,
-                AttributionState::Unresolved | AttributionState::NotAttempted => Fidelity::None,
-            },
+            // Recorded, never inferred. The attributor is the only party that
+            // knows how it reached an answer, and section 13.4 makes the value
+            // its statement rather than this crate's guess. Absent attribution
+            // is the one case this crate can decide, because nothing was found.
+            fidelity: attr.map_or(Fidelity::None, |a| a.fidelity),
             interface: interface.map(Arc::from),
         }
     }
@@ -203,7 +183,7 @@ impl Annotation {
             pair("stage", s.as_str(), &mut out);
         }
         pair("dir", self.direction.as_str(), &mut out);
-        pair("attr", self.fidelity.as_str(), &mut out);
+        pair("attr", fidelity_str(self.fidelity), &mut out);
         if let Some(i) = &self.interface {
             pair("iface", i, &mut out);
         }
@@ -254,7 +234,7 @@ impl Annotation {
                     }
                     "attr" => {
                         fidelity = Some(
-                            Fidelity::parse(&value)
+                            parse_fidelity(&value)
                                 .ok_or_else(|| AnnotationError::BadValue("attr", value.clone()))?,
                         )
                     }
@@ -636,7 +616,11 @@ mod tests {
     #[test]
     fn identity_keys_are_present_exactly_when_attributed() {
         let attributed = Annotation::from_packet(
-            &packet(Some(Attribution::new(7412, "eso64.exe")), None, true),
+            &packet(
+                Some(Attribution::new(7412, "eso64.exe", Fidelity::Live)),
+                None,
+                true,
+            ),
             None,
         );
         assert_eq!(attributed.pid, Some(7412));
@@ -650,7 +634,11 @@ mod tests {
     #[test]
     fn identity_keys_are_never_present_individually() {
         for p in [
-            packet(Some(Attribution::new(1, "a.exe")), None, true),
+            packet(
+                Some(Attribution::new(1, "a.exe", Fidelity::Live)),
+                None,
+                true,
+            ),
             packet(None, None, true),
             packet(None, None, false),
         ] {
@@ -667,17 +655,18 @@ mod tests {
     fn role_and_stage_are_decided_independently() {
         // Section 13.3 presents them as a pair. `Attribution` does not, and the
         // type is what the data actually looks like.
-        let role_only = Attribution::new(1, "a.exe").with_role("client");
+        let role_only = Attribution::new(1, "a.exe", Fidelity::Live).with_role("client");
         let a = Annotation::from_packet(&packet(Some(role_only), None, true), None);
         assert_eq!(a.role.as_deref(), Some("client"));
         assert!(a.stage.is_none(), "a role must not imply a stage");
 
-        let stage_only = Attribution::new(1, "a.exe").with_stage(StageId::new("play"));
+        let stage_only =
+            Attribution::new(1, "a.exe", Fidelity::Live).with_stage(StageId::new("play"));
         let a = Annotation::from_packet(&packet(Some(stage_only), None, true), None);
         assert!(a.role.is_none(), "a stage must not imply a role");
         assert_eq!(a.stage.as_ref().map(|s| s.as_str()), Some("play"));
 
-        let both = Attribution::new(1, "a.exe")
+        let both = Attribution::new(1, "a.exe", Fidelity::Live)
             .with_role("client")
             .with_stage(StageId::new("play"));
         let a = Annotation::from_packet(&packet(Some(both), None, true), None);
@@ -718,7 +707,7 @@ mod tests {
         // The guarantee that lets a consumer parse without a presence check.
         let cases = [
             packet(
-                Some(Attribution::new(1, "a.exe")),
+                Some(Attribution::new(1, "a.exe", Fidelity::Live)),
                 Some(Direction::Inbound),
                 true,
             ),
@@ -748,7 +737,11 @@ mod tests {
 
     #[test]
     fn fidelity_follows_the_attribution_state_and_is_never_upgraded() {
-        let resolved = packet(Some(Attribution::new(1, "a.exe")), None, true);
+        let resolved = packet(
+            Some(Attribution::new(1, "a.exe", Fidelity::Live)),
+            None,
+            true,
+        );
         assert_eq!(
             Annotation::from_packet(&resolved, None).fidelity,
             Fidelity::Live
