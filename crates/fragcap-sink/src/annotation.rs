@@ -33,7 +33,7 @@ pub const SENTINEL: &str = "fragcap:";
 /// A free function rather than a method because [`Fidelity`] lives in
 /// `fragcap-core`, where it belongs: it is attribution vocabulary that the
 /// attributor produces, not something this crate invents at rendering time.
-fn fidelity_str(f: Fidelity) -> &'static str {
+pub fn fidelity_str(f: Fidelity) -> &'static str {
     match f {
         Fidelity::Live => "live",
         Fidelity::Retained => "retained",
@@ -74,7 +74,9 @@ pub enum AnnotatedDirection {
 }
 
 impl AnnotatedDirection {
-    fn as_str(self) -> &'static str {
+    /// The section 13.3 spelling. Public because both output formats render
+    /// it and neither should keep its own table.
+    pub fn as_str(self) -> &'static str {
         match self {
             AnnotatedDirection::In => "in",
             AnnotatedDirection::Out => "out",

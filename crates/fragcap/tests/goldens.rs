@@ -16,7 +16,8 @@ mod common;
 
 use std::fs;
 
-use common::{goldens_dir, render, CORPUS};
+use common::{goldens_dir, render, render_jsonl, CORPUS};
+use fragcap::PayloadMode;
 
 /// Report the first byte at which two files disagree.
 ///
@@ -118,6 +119,82 @@ fn every_fixture_matches_its_committed_golden() {
 }
 
 #[test]
+fn every_fixture_matches_its_committed_jsonl_golden() {
+    let dir = goldens_dir();
+    for (name, _) in CORPUS {
+        let produced = render_jsonl(name, PayloadMode::WithPayload);
+        let path = dir.join(format!("{name}.jsonl"));
+
+        if updating() {
+            fs::create_dir_all(&dir).expect("goldens directory must be creatable");
+            fs::write(&path, &produced)
+                .unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
+            continue;
+        }
+
+        let golden = fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e}
+Regenerate with                  FRAGCAP_UPDATE_GOLDENS=1 cargo test -p fragcap --test goldens",
+                path.display()
+            )
+        });
+
+        // Reported by line rather than by byte offset. A JSON stream is
+        // line-oriented, so the line number is what a reader can act on.
+        let want = String::from_utf8(golden).expect("a golden is UTF-8");
+        let got = String::from_utf8(produced).expect("output is UTF-8");
+        for (i, (w, g)) in want.lines().zip(got.lines()).enumerate() {
+            assert_eq!(
+                w,
+                g,
+                "{name} diverged at line {}.
+ golden: {w}
+ writer: {g}
+
+                 If the format changed on purpose, regenerate and read the diff.",
+                i + 1
+            );
+        }
+        assert_eq!(
+            want.lines().count(),
+            got.lines().count(),
+            "{name}: line counts differ"
+        );
+    }
+}
+
+#[test]
+fn writing_the_same_fixture_twice_produces_the_same_jsonl() {
+    for (name, _) in CORPUS {
+        assert_eq!(
+            render_jsonl(name, PayloadMode::WithPayload),
+            render_jsonl(name, PayloadMode::WithPayload),
+            "{name} is not deterministic across runs"
+        );
+    }
+}
+
+#[test]
+fn every_line_of_every_jsonl_golden_parses() {
+    // The external oracle over the committed bytes rather than over fresh
+    // output, so a golden that was hand-edited into invalidity is caught.
+    if updating() {
+        return;
+    }
+    for (name, _) in CORPUS {
+        let path = goldens_dir().join(format!("{name}.jsonl"));
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert!(!text.is_empty(), "{name}: empty golden");
+        for (i, line) in text.lines().enumerate() {
+            let v: serde_json::Value =
+                serde_json::from_str(line).unwrap_or_else(|e| panic!("{name} line {}: {e}", i + 1));
+            assert!(v.is_object(), "{name} line {}: not an object", i + 1);
+        }
+    }
+}
+
+#[test]
 fn a_golden_exists_for_every_fixture_in_the_corpus() {
     // Which fixtures have goldens should never be a question a contributor has
     // to answer, and a missing golden is otherwise invisible: the comparison
@@ -127,12 +204,14 @@ fn a_golden_exists_for_every_fixture_in_the_corpus() {
     }
     let dir = goldens_dir();
     for (name, _) in CORPUS {
-        let path = dir.join(format!("{name}.fcapng"));
-        assert!(
-            path.exists(),
-            "{} is missing. Every corpus fixture has a golden.",
-            path.display()
-        );
+        for ext in ["fcapng", "jsonl"] {
+            let path = dir.join(format!("{name}.{ext}"));
+            assert!(
+                path.exists(),
+                "{} is missing. Every corpus fixture has a golden in both formats.",
+                path.display()
+            );
+        }
     }
 }
 

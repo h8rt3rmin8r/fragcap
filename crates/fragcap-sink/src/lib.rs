@@ -16,9 +16,15 @@
 //! would drift, and the drift would be silent because each would be internally
 //! consistent.
 //!
-//! What this crate still does not do: JSON Lines output arrives in S07,
-//! transports and streaming sinks in S15, and ring mode in S16. The pipeline
-//! that drives any of them is S08.
+//! Slice S07 added the second format, [`json`], for consumers that do not read
+//! pcapng. It is the test of whether the split above was real: the JSON writer
+//! reads an `Annotation` and renders it, and restates no presence rule. What
+//! differs between the two is confined to rendering, where a reviewer can see
+//! it: `iface` on every JSON record because a line is self-contained, lowercase
+//! hex, and endpoints named for what is known about them.
+//!
+//! What this crate still does not do: transports and streaming sinks arrive in
+//! S15, and ring mode in S16. The pipeline that drives any of them is S08.
 //!
 //! The corpus-driven tests for this crate live in the `fragcap` facade rather
 //! than here. Writing a fixture needs a replay source and a scripted
@@ -29,9 +35,11 @@
 
 pub mod annotation;
 pub mod error;
+pub mod json;
 pub mod pcapng;
 
 pub use annotation::{AnnotatedDirection, Annotation, AnnotationError, Fidelity};
 pub use error::WriteError;
+pub use json::{JsonLinesWriter, PayloadMode};
 pub use pcapng::interface::InterfaceDeclaration;
 pub use pcapng::PcapngWriter;
