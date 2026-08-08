@@ -35,6 +35,40 @@ impl std::fmt::Display for StageId {
     }
 }
 
+/// How an attribution was obtained. Specification section 13.4.
+///
+/// Carried on the attribution rather than derived from it, because only the
+/// attributor knows. That an attribution exists says nothing about how it was
+/// reached, and the difference between the two is not recoverable downstream:
+/// a retained attribution can be wrong, in the specific case where an endpoint
+/// closed and was reassigned inside the grace period, and a consumer that
+/// cannot see which packets are exposed to that cannot correct for it.
+///
+/// Added in slice S06 after review found the pcapng writer inferring `Live`
+/// from the presence of an attribution. That inference was wrong the day it was
+/// written: the scripted attributor of slice S04 resolves from a declared
+/// script rather than from a socket table, so every fixture golden claimed an
+/// endpoint was in the table at a moment when there was no table. Constitution
+/// P-9 forbids exactly this, and section 13.4 says the value is never inferred.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Fidelity {
+    /// The endpoint was present in the socket table at the time of resolution.
+    Live,
+    /// Resolved from the grace period map of specification section 11.4, after
+    /// the socket had left the table. Inferential rather than observed.
+    ///
+    /// No implementor produces this yet; the grace period map arrives with the
+    /// socket table attributor in slice S10. The variant exists here so that
+    /// slice supplies a value rather than widening this type.
+    Retained,
+    /// Attribution was attempted and did not resolve.
+    ///
+    /// Rarely constructed: an unresolved attribution is normally the absence of
+    /// an [`Attribution`] rather than one carrying this value. Present so the
+    /// enum covers the section 13.4 vocabulary completely.
+    None,
+}
+
 /// The process a flow belongs to.
 ///
 /// `process` and `role` are reference-counted shared strings because both are
@@ -50,16 +84,26 @@ pub struct Attribution {
     pub role: Option<Arc<str>>,
     /// Launcher chain stage, when one was resolved. Slice S12.
     pub stage: Option<StageId>,
+    /// How this attribution was obtained.
+    pub fidelity: Fidelity,
 }
 
 impl Attribution {
-    /// The minimum an attribution can carry: a process, named.
-    pub fn new(pid: u32, process: impl AsRef<str>) -> Self {
+    /// The minimum an attribution can carry: a process, named, and how it was
+    /// found.
+    ///
+    /// Fidelity is a required argument rather than a defaulted field on
+    /// purpose. A default is an inference, and specification section 13.4 says
+    /// the value is never inferred; making every construction site state it
+    /// means an attributor cannot accidentally claim a live socket-table hit it
+    /// did not make.
+    pub fn new(pid: u32, process: impl AsRef<str>, fidelity: Fidelity) -> Self {
         Attribution {
             pid,
             process: Arc::from(process.as_ref()),
             role: None,
             stage: None,
+            fidelity,
         }
     }
 
@@ -81,7 +125,7 @@ mod tests {
     // V-4. The reason these fields are shared rather than owned.
     #[test]
     fn cloning_shares_the_process_name_rather_than_allocating() {
-        let a = Attribution::new(4242, "eso64.exe");
+        let a = Attribution::new(4242, "eso64.exe", Fidelity::Live);
         let b = a.clone();
         assert!(
             Arc::ptr_eq(&a.process, &b.process),
@@ -91,7 +135,7 @@ mod tests {
 
     #[test]
     fn cloning_shares_the_role_too() {
-        let a = Attribution::new(4242, "eso64.exe").with_role("game-client");
+        let a = Attribution::new(4242, "eso64.exe", Fidelity::Live).with_role("game-client");
         let b = a.clone();
         let (ra, rb) = (a.role.as_ref().unwrap(), b.role.as_ref().unwrap());
         assert!(Arc::ptr_eq(ra, rb));
@@ -99,14 +143,14 @@ mod tests {
 
     #[test]
     fn a_minimal_attribution_has_no_role_or_stage() {
-        let a = Attribution::new(1, "x.exe");
+        let a = Attribution::new(1, "x.exe", Fidelity::Live);
         assert!(a.role.is_none());
         assert!(a.stage.is_none());
     }
 
     #[test]
     fn role_and_stage_are_attachable() {
-        let a = Attribution::new(1, "x.exe")
+        let a = Attribution::new(1, "x.exe", Fidelity::Live)
             .with_role("game-client")
             .with_stage(StageId::new("launcher"));
         assert_eq!(a.role.as_deref(), Some("game-client"));

@@ -136,6 +136,7 @@ pub trait Dissector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attribution::Fidelity;
     use crate::flow::{Direction, Proto};
     use crate::packet::{AttributionState, Payload, Timestamp};
     use std::net::SocketAddr;
@@ -285,7 +286,7 @@ mod tests {
             },
         };
         let attributor = StubAttributor {
-            answer: Some(Attribution::new(4242, "eso64.exe")),
+            answer: Some(Attribution::new(4242, "eso64.exe", Fidelity::Live)),
         };
         let mut sink: Box<dyn Sink> = Box::new(StubSink::default());
         let mut stats = CaptureStats::default();

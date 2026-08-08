@@ -48,7 +48,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 
-use fragcap_core::attribution::Attribution;
+use fragcap_core::attribution::{Attribution, Fidelity};
 use fragcap_core::flow::{AttributionKey, Endpoint, FlowKey, Proto};
 use fragcap_core::packet::Timestamp;
 
@@ -392,7 +392,7 @@ fn parse_flow(line: usize, words: &[&str]) -> Result<ScriptEntry, ScriptError> {
                 line,
                 found: words[6].to_string(),
             })?;
-            Some(Attribution::new(pid, words[7]))
+            Some(Attribution::new(pid, words[7], Fidelity::Live))
         }
         other => {
             return Err(ScriptError::UnknownStatement {

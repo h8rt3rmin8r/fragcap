@@ -69,7 +69,7 @@ pub mod process;
 pub mod stats;
 pub mod traits;
 
-pub use attribution::{Attribution, StageId};
+pub use attribution::{Attribution, Fidelity, StageId};
 pub use error::{AttrError, SinkError, SourceError};
 pub use filter::FilterProgram;
 pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
