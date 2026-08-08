@@ -201,6 +201,14 @@ way.
    header length that is legal but extends past the captured bytes is short.
    The two are separated here rather than merged because they are the pair most
    easily conflated and they have opposite remedies.
+
+   The datagram's **extent** is fixed at this stage and bounds every read after
+   it: the smaller of the declared length and the captured length, or the
+   captured length when the declared length is zero and therefore unset. A
+   declared length below the header's own length is malformed. Everything past
+   the extent is padding or trailing data and is never read, which is what
+   stops a datagram with no transport header producing ports out of Ethernet
+   padding.
 3. **Fragment classification.** Initial, non-initial, or not fragmented.
 4. **Transport.** For an initial or unfragmented packet, the protocol is TCP or
    UDP, its header fits, and both ports are present. For a non-initial

@@ -251,8 +251,12 @@ impl HeaderParser {
             // Not fragmented, or the initial fragment, which carries the
             // transport header.
             None | Some((_, Role::Initial)) => {
+                // Bounded by the datagram's extent rather than the captured
+                // length. Anything past the extent is Ethernet padding or
+                // trailing data, and a port read out of it would be a
+                // fabrication rather than an observation.
                 let transport_bytes = net_bytes
-                    .get(net.transport_offset..)
+                    .get(net.transport_offset..net.extent)
                     .ok_or(ParseReject::ShortHeader)?;
                 let (proto, src_port, dst_port) = transport::ports(net.proto, transport_bytes)?;
                 let ports = FragmentPorts {
@@ -309,16 +313,14 @@ impl HeaderParser {
 pub(crate) mod testframe {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// Append bytes to a frame under construction.
-    pub trait WithPayload {
-        fn with_payload(self, bytes: &[u8]) -> Vec<u8>;
-    }
-
-    impl WithPayload for Vec<u8> {
-        fn with_payload(mut self, bytes: &[u8]) -> Vec<u8> {
-            self.extend_from_slice(bytes);
-            self
+    /// Concatenate parts, for building an extension header chain and its
+    /// transport header as one payload.
+    pub fn cat(parts: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for part in parts {
+            out.extend_from_slice(part);
         }
+        out
     }
 
     pub fn ethernet(ether_type: u16, payload: &[u8]) -> Vec<u8> {
@@ -346,6 +348,10 @@ pub(crate) mod testframe {
         pub more_fragments: bool,
         /// Option words, four octets each, beyond the fixed header.
         pub option_words: u8,
+        /// Override the total length. `None` computes it from the payload,
+        /// which is what a real sender does; `Some` is for the tests that need
+        /// a frame whose declared length disagrees with its contents.
+        pub total_len: Option<u16>,
     }
 
     impl Default for V4 {
@@ -358,16 +364,27 @@ pub(crate) mod testframe {
                 frag_offset: 0,
                 more_fragments: false,
                 option_words: 0,
+                total_len: None,
             }
         }
     }
 
-    pub fn ipv4(h: V4) -> Vec<u8> {
+    /// Build an IPv4 packet whose declared total length matches its contents,
+    /// unless the caller overrode it.
+    ///
+    /// Taking the payload rather than appending it afterwards is deliberate:
+    /// the earlier builder set the total length from the header alone, so every
+    /// frame it produced was internally inconsistent and no test could have
+    /// caught the parser ignoring the field.
+    pub fn ipv4(h: V4, payload: &[u8]) -> Vec<u8> {
         let header_words = 5 + h.option_words;
         let header_len = header_words as usize * 4;
         let mut out = vec![0u8; header_len];
         out[0] = 0x40 | header_words;
-        out[2..4].copy_from_slice(&(header_len as u16).to_be_bytes());
+        let total = h
+            .total_len
+            .unwrap_or_else(|| (header_len + payload.len()) as u16);
+        out[2..4].copy_from_slice(&total.to_be_bytes());
         out[4..6].copy_from_slice(&h.ident.to_be_bytes());
         let flags = if h.more_fragments { 0x2000 } else { 0 };
         out[6..8].copy_from_slice(&(flags | (h.frag_offset & 0x1fff)).to_be_bytes());
@@ -375,6 +392,7 @@ pub(crate) mod testframe {
         out[9] = h.proto;
         out[12..16].copy_from_slice(&h.src.octets());
         out[16..20].copy_from_slice(&h.dst.octets());
+        out.extend_from_slice(payload);
         out
     }
 
@@ -383,6 +401,8 @@ pub(crate) mod testframe {
         pub dst: Ipv6Addr,
         /// The fixed header's next header field.
         pub next: u8,
+        /// Override the payload length. `None` computes it from the payload.
+        pub payload_len: Option<u16>,
     }
 
     impl Default for V6 {
@@ -391,17 +411,23 @@ pub(crate) mod testframe {
                 src: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10),
                 dst: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5),
                 next: 6,
+                payload_len: None,
             }
         }
     }
 
-    pub fn ipv6(h: V6) -> Vec<u8> {
+    /// Build an IPv6 packet. `payload` is everything after the fixed header:
+    /// the extension header chain, if any, then the transport header.
+    pub fn ipv6(h: V6, payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; 40];
         out[0] = 0x60;
+        let declared = h.payload_len.unwrap_or(payload.len() as u16);
+        out[4..6].copy_from_slice(&declared.to_be_bytes());
         out[6] = h.next;
         out[7] = 64;
         out[8..24].copy_from_slice(&h.src.octets());
         out[24..40].copy_from_slice(&h.dst.octets());
+        out.extend_from_slice(payload);
         out
     }
 
@@ -444,7 +470,7 @@ pub(crate) mod testframe {
 
 #[cfg(test)]
 mod tests {
-    use super::testframe::{self as f, WithPayload};
+    use super::testframe as f;
     use super::*;
     use crate::flow::Proto;
     use crate::packet::{Payload, RawPacket, Timestamp};
@@ -473,7 +499,7 @@ mod tests {
 
     /// An Ethernet frame carrying IPv4 and the transport bytes given.
     fn eth_v4(header: f::V4, transport: &[u8]) -> Vec<u8> {
-        f::ethernet(ETHERTYPE_IPV4, &f::ipv4(header).with_payload(transport))
+        f::ethernet(ETHERTYPE_IPV4, &f::ipv4(header, transport))
     }
 
     /// Parse one frame and report which counters moved, so a test can assert
@@ -648,12 +674,15 @@ mod tests {
         let peer: Ipv6Addr = "2001:db8::5".parse().expect("test address must parse");
         let frame = f::ethernet(
             ETHERTYPE_IPV6,
-            &f::ipv6(f::V6 {
-                src: local_v6(),
-                dst: peer,
-                next: IPPROTO_UDP,
-            })
-            .with_payload(&f::udp(30000, 5055, 8)),
+            &f::ipv6(
+                f::V6 {
+                    src: local_v6(),
+                    dst: peer,
+                    next: IPPROTO_UDP,
+                    ..f::V6::default()
+                },
+                &f::udp(30000, 5055, 8),
+            ),
         );
         assert_eq!(
             p.parse(LinkType::ETHERNET, &frame),
@@ -677,7 +706,7 @@ mod tests {
             proto: IPPROTO_UDP,
             ..f::V4::default()
         };
-        let ip = f::ipv4(header).with_payload(&f::udp(30000, 5055, 8));
+        let ip = f::ipv4(header, &f::udp(30000, 5055, 8));
         let via_raw = p.parse(LinkType::RAW, &ip).flow();
         let via_eth = p
             .parse(LinkType::ETHERNET, &f::ethernet(ETHERTYPE_IPV4, &ip))
@@ -690,13 +719,15 @@ mod tests {
     fn a_bsd_loopback_frame_parses_past_its_address_family_field() {
         let loop_v4 = Ipv4Addr::LOCALHOST;
         let mut p = parser_with(&[IpAddr::V4(loop_v4)]);
-        let ip = f::ipv4(f::V4 {
-            src: loop_v4,
-            dst: loop_v4,
-            proto: IPPROTO_TCP,
-            ..f::V4::default()
-        })
-        .with_payload(&f::tcp(51000, 8080));
+        let ip = f::ipv4(
+            f::V4 {
+                src: loop_v4,
+                dst: loop_v4,
+                proto: IPPROTO_TCP,
+                ..f::V4::default()
+            },
+            &f::tcp(51000, 8080),
+        );
         let frame = f::loopback_raw(&2u32.to_le_bytes(), &ip);
         let outcome = p.parse(LinkType::NULL, &frame);
         assert!(outcome.flow().is_some(), "the four byte prefix was skipped");
@@ -709,14 +740,19 @@ mod tests {
         let peer: Ipv6Addr = "2001:db8::5".parse().expect("test address must parse");
         let frame = f::ethernet(
             ETHERTYPE_IPV6,
-            &f::ipv6(f::V6 {
-                src: local_v6(),
-                dst: peer,
-                next: 0,
-            })
-            .with_payload(&f::extension(60))
-            .with_payload(&f::extension(IPPROTO_TCP))
-            .with_payload(&f::tcp(51000, 443)),
+            &f::ipv6(
+                f::V6 {
+                    src: local_v6(),
+                    dst: peer,
+                    next: 0,
+                    ..f::V6::default()
+                },
+                &f::cat(&[
+                    &f::extension(60),
+                    &f::extension(IPPROTO_TCP),
+                    &f::tcp(51000, 443),
+                ]),
+            ),
         );
         let flow = p
             .parse(LinkType::ETHERNET, &frame)
@@ -747,24 +783,35 @@ mod tests {
         let v6 = |next, tail: &[u8]| {
             f::ethernet(
                 ETHERTYPE_IPV6,
-                &f::ipv6(f::V6 {
-                    src: local_v6(),
-                    dst: peer,
-                    next,
-                })
-                .with_payload(tail),
+                &f::ipv6(
+                    f::V6 {
+                        src: local_v6(),
+                        dst: peer,
+                        next,
+                        ..f::V6::default()
+                    },
+                    tail,
+                ),
             )
         };
 
-        let mut chain = f::ipv6(f::V6 {
-            src: local_v6(),
-            dst: peer,
-            next: 0,
-        });
+        let mut chain_tail = Vec::new();
         for _ in 0..9 {
-            chain = chain.with_payload(&f::extension(0));
+            chain_tail.extend_from_slice(&f::extension(0));
         }
-        let long_chain = f::ethernet(ETHERTYPE_IPV6, &chain.with_payload(&f::tcp(1, 2)));
+        chain_tail.extend_from_slice(&f::tcp(1, 2));
+        let long_chain = f::ethernet(
+            ETHERTYPE_IPV6,
+            &f::ipv6(
+                f::V6 {
+                    src: local_v6(),
+                    dst: peer,
+                    next: 0,
+                    ..f::V6::default()
+                },
+                &chain_tail,
+            ),
+        );
 
         let mut bad_ihl = v4(IPPROTO_TCP, &f::tcp(1, 2));
         bad_ihl[14] = 0x44;
@@ -869,6 +916,57 @@ mod tests {
         assert_eq!(stats.parse.rejected(), 2);
         assert_eq!(stats.fragcap_dropped(), 0);
         assert!(!stats.lost_anything());
+    }
+
+    // Raised in review of pull request 6. The concrete frame from that review:
+    // an IPv4 datagram declaring TCP but carrying no TCP header, padded to
+    // Ethernet's sixty byte minimum. Before the fix this produced a flow key
+    // with ports 0:0 read out of the padding.
+    #[test]
+    fn ethernet_padding_never_becomes_a_flow_key() {
+        let mut p = local_parser();
+        let mut frame = eth_v4(
+            f::V4 {
+                src: LOCAL_V4,
+                dst: PEER_V4,
+                proto: IPPROTO_TCP,
+                ..f::V4::default()
+            },
+            &[],
+        );
+        assert!(frame.len() < 60, "the frame must need padding to be legal");
+        frame.resize(60, 0);
+        let (outcome, moved) = parse_counting(&mut p, LinkType::ETHERNET, &frame);
+        assert_eq!(
+            outcome,
+            ParseOutcome::Rejected(ParseReject::ShortHeader),
+            "padding is not a transport header"
+        );
+        assert_eq!(outcome.flow(), None, "no key may be built from padding");
+        assert_eq!(moved.len(), 1);
+    }
+
+    #[test]
+    fn a_padded_frame_that_does_carry_a_transport_header_still_parses() {
+        // The other half of the same rule: the extent must not truncate real
+        // data, only exclude what is past the datagram.
+        let mut p = local_parser();
+        let mut frame = eth_v4(
+            f::V4 {
+                src: LOCAL_V4,
+                dst: PEER_V4,
+                proto: IPPROTO_UDP,
+                ..f::V4::default()
+            },
+            &f::udp(30000, 5055, 8),
+        );
+        frame.resize(60, 0);
+        let flow = p
+            .parse(LinkType::ETHERNET, &frame)
+            .flow()
+            .expect("a real header inside a padded frame still parses");
+        assert_eq!(flow.local.port(), 30000);
+        assert_eq!(flow.remote.port(), 5055);
     }
 
     // The stage ordering in data-model.md: a frame wrong at more than one

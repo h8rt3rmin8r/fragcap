@@ -78,11 +78,34 @@ Assuming twenty bytes would be correct for the overwhelming majority of traffic
 and wrong in a way that reads plausible header bytes as ports, which is worse
 than rejecting.
 
-The total length field is deliberately not used to bound reads. It describes the
-frame on the wire, and a snapshot length legitimately makes the captured bytes
-shorter than it. Bounding reads by the captured length and treating the declared
-length as informational is what keeps a truncated capture a short-header
-rejection rather than a malformed-header one.
+**Corrected in review of pull request 6.** The first draft of this entry said
+the total length is not used to bound reads at all, on the grounds that a
+snapshot length legitimately makes the captured bytes shorter than it. That
+reasoning is sound for one direction and was wrongly generalized to both.
+
+The datagram extent is the smaller of the declared length and the captured
+length. When the declared length is larger, the capture was truncated and the
+captured length wins, which is the case the original reasoning covered. When it
+is smaller, the excess is not the datagram at all: Ethernet pads every frame
+below its sixty byte minimum, and some senders append trailing data.
+
+The concrete failure that reasoning permitted: an IPv4 datagram declaring TCP
+and carrying no TCP header, padded to sixty bytes, yielded a flow key with both
+ports read from the padding. Both were zero, so the key looked plausible. That
+is a fabricated observation, which constitution P-9 forbids outright, and it
+would have attributed a packet to whatever process happened to hold port zero
+semantics downstream.
+
+A declared length of zero is a third case and is not an error. Large send
+offload leaves the field for the network adapter to fill in, after the point
+the capture is taken, so outbound traffic captured on the sending host reads
+zero routinely. That is ordinary on the focal platform, where captures are
+taken on the sending host by definition, and treating it as malformed would
+discard real game traffic. The captured length is the only information
+available, so it is used.
+
+A non-zero declared length below the header's own length is self-contradictory
+and is the malformed case.
 
 ## R-4. IPv6 extension header chain encodings
 
@@ -168,6 +191,26 @@ limitation this slice accepts.
 or its fragment offset is non-zero. It is the initial fragment when its offset
 is zero. IPv6, a packet is a fragment when the chain contains a fragment header,
 and it is the initial fragment when that header's offset is zero.
+
+**A non-initial fragment ends the chain walk.** Raised in review of pull
+request 6. IPv6 splits a packet into an unfragmentable part, everything up to
+and including the routing header, and a fragmentable part, everything after it.
+Each fragment carries the unfragmentable part, then a fragment header, then a
+chunk of the fragmentable part. The fragment header's next header field names
+the first header of the fragmentable part *in the original packet*.
+
+For the initial fragment that field does name what immediately follows, because
+the chunk it carries is the start of the fragmentable part. For every other
+fragment it does not: the chunk begins at an arbitrary offset and need not
+contain that header at all. Walking on parses payload bytes as whatever the
+field named, advances by a length read out of payload, and rejects a valid
+fragment before its recorded identity is ever consulted. A destination options
+or authentication header in that position is both legal and common, so this is
+not a corner case.
+
+The walk therefore returns as soon as it reads a fragment header with a
+non-zero offset. Nothing is lost: a non-initial fragment carries no transport
+header, and its ports come from the table.
 
 **Rationale**: The two conditions differ because IPv4 signals fragmentation in
 the fixed header of every fragment while IPv6 signals it in an optional

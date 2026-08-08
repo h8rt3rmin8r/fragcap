@@ -111,7 +111,9 @@ fn ipv4(h: V4, payload: &[u8]) -> Vec<u8> {
     let header_len = words as usize * 4;
     let mut out = vec![0u8; header_len];
     out[0] = 0x40 | words;
-    out[2..4].copy_from_slice(&(header_len as u16).to_be_bytes());
+    // Consistent with the payload, so the corpus exercises the extent rule
+    // rather than the unset-length fallback.
+    out[2..4].copy_from_slice(&((header_len + payload.len()) as u16).to_be_bytes());
     out[4..6].copy_from_slice(&h.ident.to_be_bytes());
     let flags = if h.more_fragments { 0x2000u16 } else { 0 };
     out[6..8].copy_from_slice(&(flags | (h.frag_offset & 0x1fff)).to_be_bytes());
@@ -126,6 +128,7 @@ fn ipv4(h: V4, payload: &[u8]) -> Vec<u8> {
 fn ipv6(next: u8, tail: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; 40];
     out[0] = 0x60;
+    out[4..6].copy_from_slice(&(tail.len() as u16).to_be_bytes());
     out[6] = next;
     out[7] = 64;
     out[8..24].copy_from_slice(&local_v6().octets());
@@ -214,10 +217,13 @@ fn corpus() -> Vec<(LinkType, Vec<u8>)> {
         (
             LinkType::ETHERNET,
             ethernet(ETHERTYPE_IPV6, &{
-                let mut p = ipv6(0, &extension(60));
-                p.extend_from_slice(&extension(IPPROTO_TCP));
-                p.extend_from_slice(&tcp(51000, 443));
-                p
+                // The whole chain is the payload, so the declared payload
+                // length covers it. Appending after the builder would declare
+                // a length that excludes what was appended.
+                let mut tail = extension(60);
+                tail.extend_from_slice(&extension(IPPROTO_TCP));
+                tail.extend_from_slice(&tcp(51000, 443));
+                ipv6(0, &tail)
             }),
         ),
         (LinkType::RAW, ipv4(V4::default(), &tcp(51000, 443))),

@@ -28,3 +28,13 @@ IP fragments are attributed without reassembly, from a 256 entry table of what
 each datagram's first fragment said. fragcap does not reassemble and will not:
 doing it during capture would destroy the on-wire fidelity that makes the
 capture worth taking.
+
+Reads are bounded by the datagram's extent rather than by the captured frame.
+The two differ in both directions and each needs its own answer. A declared
+length longer than the capture is truncation, usually a snapshot length, and
+the capture wins. A declared length shorter than the capture means the frame
+carries bytes that are not the datagram, because Ethernet pads anything below
+sixty bytes, and the declared length wins. A declared length of zero is neither
+and is not an error: large send offload leaves the field for the adapter to
+fill in after the capture point, which is ordinary for outbound traffic
+captured on the sending host.

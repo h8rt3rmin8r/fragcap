@@ -81,6 +81,12 @@ captured bytes never causes a read past the end. It causes a `ShortHeader`
 rejection or, where the field contradicts itself rather than merely exceeding
 the capture, a malformed rejection.
 
+**Reads stay inside the datagram.** A declared length *smaller* than the
+captured bytes bounds parsing to the declared extent. Ethernet padding and
+trailing data are never read, so a datagram carrying no transport header cannot
+produce a flow key. A declared length of zero is treated as unset, because
+large send offload defers the field past the capture point.
+
 **Exactly one counter moves per rejection.** A `Rejected` outcome advances the
 counter for its variant and no other rejection counter. A `Parsed` outcome
 advances no rejection counter, and advances `direction_ambiguous` only when
@@ -120,6 +126,10 @@ undetermined.
 | Truncated within the TCP header | absent | absent | `ShortHeader` |
 | IPv4 with a legal header length extending past the captured bytes | absent | absent | `ShortHeader` |
 | IPv4 unfragmented packet | present | per locality | no table entry recorded |
+| IPv4 declaring TCP, no TCP header, padded to 60 bytes | absent | absent | `ShortHeader` |
+| IPv4 with a total length below its header length | absent | absent | `MalformedNetworkHeader` |
+| IPv4 with a total length of zero, carrying TCP | present | per locality | none |
+| IPv6 non-initial fragment whose fragment header names an extension header | present | per locality | none |
 
 Each row is a test. The table is the coverage obligation SC-001 and SC-002
 state, written out so that a reviewer can count it rather than trust it.

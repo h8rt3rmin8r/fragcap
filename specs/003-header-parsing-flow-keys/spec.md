@@ -340,6 +340,13 @@ global allocator and confirm zero allocations occurred.
   Parsing continues from the captured bytes only, because the declared length
   describes the wire and the capture may legitimately be truncated. Reading
   past the captured bytes is never attempted.
+- What happens when it is shorter than the captured bytes? The excess is not
+  the datagram, and is not read. A frame below Ethernet's sixty byte minimum is
+  padded, and a datagram declaring TCP but carrying no TCP header would
+  otherwise produce a flow key with both ports read out of that padding.
+- What happens when it is zero? It is treated as unset and the captured length
+  is used, because large send offload defers the field to the adapter, past the
+  point the capture is taken.
 - What happens when an IPv4 header length field is legal but points past the
   end of the captured bytes? Short header counter, not malformed. A legal
   header length on a snapshotted frame is truncation, and calling it
@@ -427,6 +434,13 @@ Network layer.
   transport header, handling at minimum hop-by-hop options, routing,
   destination options, fragment, and authentication headers, each advanced by
   its own length encoding.
+- **FR-014a**: The walk MUST stop at a fragment header whose offset is
+  non-zero, returning the fragment's identity rather than continuing. A
+  non-initial fragment's data is a chunk from the middle of the original
+  packet's fragmentable part, so the fragment header's next header field names
+  a header that fragment does not begin with and may not contain at all.
+  Continuing would parse payload bytes as that header and reject a valid
+  fragment before its recorded identity was consulted.
 - **FR-015**: The extension header walk MUST be bounded at eight headers and
   MUST terminate on any chain that would exceed that, advancing a named
   counter. It MUST also terminate on a declared header length that would not
@@ -441,6 +455,20 @@ Network layer.
   malformed, and MUST advance the short header counter instead. The distinction
   is that the first indicates a broken sender or a parser bug and the second
   indicates a snapshot length, which are different remedies.
+- **FR-017a**: The parser MUST bound its reads by the datagram's extent, which
+  is the smaller of the declared length and the captured length. Bytes past the
+  declared length are not part of the datagram: Ethernet pads any frame below
+  its sixty byte minimum, and some senders append trailing data. Reading them
+  would let a datagram carrying no transport header yield ports out of padding,
+  which is a fabricated observation rather than a parsed one.
+- **FR-017b**: A declared length of zero MUST be treated as unset rather than
+  as an error, and the captured length used instead. Large send offload leaves
+  the field for the network adapter to fill in after the point the capture is
+  taken, so outbound traffic captured on the sending host routinely carries
+  zero. Rejecting it would discard real traffic on the focal platform.
+- **FR-017c**: A non-zero declared length below the header's own length MUST
+  yield no flow key and MUST advance the malformed network header counter,
+  because a datagram shorter than its own header contradicts itself.
 
 Transport layer.
 
