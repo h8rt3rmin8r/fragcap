@@ -62,3 +62,40 @@ absent from the pcapng output. There is no session in this slice, and giving it
 a placeholder would leave a consumer unable to distinguish an absent anchor
 from a null one that meant something. S08 owns capture start and supplies it to
 both formats.
+
+**2026-08-08** Narrowing recorded from review of pull request 9: the JSON Lines
+writer records one interface per stream and refuses a second, matching the
+pcapng writer. The slice's data model claimed this format escaped that
+restriction, on the reasoning that a JSON record names its interface explicitly
+where a pcapng packet block cannot. That reasoning was wrong, and wrong in an
+instructive way: naming the interface is not the difficulty, choosing it is.
+`CapturedPacket` carries no interface identifier and `Sink::write` has nowhere
+to pass one, so every packet routes to index 0 no matter how many were
+declared. A stream constructed with two interfaces would name both in its
+header and then label every record with the first, which is a false statement
+repeated on every line rather than a field left out, and arguably worse than
+the pcapng case because each record asserts it individually.
+
+The two writers are now blocked on the same thing rather than on different
+things: an interface identifier on the packet, which S09 brings with live
+capture. Only one of S06's two reasons applied here; that this format genuinely
+escaped the per-interface statistics problem is what made the wrong claim look
+right.
+
+**2026-08-08** Hex encoding appends digits directly rather than formatting each
+byte into a temporary `String`. Recorded because the fix is small and the
+reasoning is not: this runs once per payload byte, so an ordinary 1500 byte
+frame made 1500 short-lived heap allocations. That is not a throughput
+question, which this slice sets no target for. It is a P-4 question, because
+the sink thread drains the bounded buffer of section 12.4, and a sink slowed by
+allocator pressure is what fills that buffer and makes the pipeline drop
+packets. A test guards the property by asserting a preallocated output buffer
+does not grow.
+
+**2026-08-08** `AGENTS.md` gains a dependency inventory table distinguishing
+the runtime dependency from the dev-dependency, replacing the claim that the
+workspace has one external dependency. That file is what later agents are
+directed to read, so leaving it stale would have meant the next slice reasoning
+from a false inventory. The entry also states that a test-only `serde_json` is
+not a runtime precedent for S05, and notes that `cargo xtask deps` ignores
+dev-dependencies by design.

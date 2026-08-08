@@ -68,7 +68,21 @@ impl<W: Write> JsonLinesWriter<W> {
     /// The interface set is supplied here rather than declared incrementally,
     /// because the header lists it and the header is the first line. There is
     /// no point at which a later declaration could be accommodated.
+    ///
+    /// At most one interface, for the same reason the pcapng writer takes one.
+    /// The slice's data model claimed this format escaped that restriction,
+    /// because a JSON record names its interface explicitly where a pcapng
+    /// packet block cannot. That was wrong, and review of pull request 9 caught
+    /// it: naming the interface is not the problem, choosing it is.
+    /// `CapturedPacket` carries no interface identifier and `Sink::write` has
+    /// nowhere to pass one, so every packet routes through index 0. A stream
+    /// declaring `["Ethernet", "NPF_Loopback"]` would label loopback traffic
+    /// `Ethernet` on every record, which is a false statement about every
+    /// packet in it rather than a missing field.
     pub fn new(mut out: W, interfaces: &[&str], mode: PayloadMode) -> Result<Self, WriteError> {
+        if interfaces.len() > 1 {
+            return Err(WriteError::SecondInterface);
+        }
         let interfaces: Vec<String> = interfaces.iter().map(|s| (*s).to_owned()).collect();
 
         let mut line = String::from("{\"type\":\"header\",\"version\":");
@@ -370,16 +384,40 @@ mod tests {
     }
 
     #[test]
-    fn the_interface_set_keeps_declaration_order() {
+    fn the_interface_set_is_an_array_even_with_one_member() {
+        // An array rather than a scalar, so the slice that lifts the
+        // single-interface restriction adds members instead of changing a
+        // consumer's parse.
         let mut buf = Vec::new();
-        JsonLinesWriter::new(
-            &mut buf,
-            &["zeta", "alpha", "mid"],
-            PayloadMode::WithPayload,
-        )
-        .unwrap();
+        JsonLinesWriter::new(&mut buf, &["zeta"], PayloadMode::WithPayload).unwrap();
         let v: Value = serde_json::from_str(String::from_utf8(buf).unwrap().trim()).unwrap();
-        assert_eq!(v["interfaces"], serde_json::json!(["zeta", "alpha", "mid"]));
+        assert_eq!(v["interfaces"], serde_json::json!(["zeta"]));
+    }
+
+    #[test]
+    fn a_second_interface_is_refused_rather_than_mislabelled() {
+        // Accepting one would declare both in the header and then label every
+        // packet with the first, because `Sink::write` has no interface to
+        // pass and `CapturedPacket` carries none.
+        let mut buf = Vec::new();
+        assert_eq!(
+            JsonLinesWriter::new(
+                &mut buf,
+                &["Ethernet", "NPF_Loopback"],
+                PayloadMode::WithPayload
+            )
+            .err(),
+            Some(WriteError::SecondInterface)
+        );
+        assert!(buf.is_empty(), "not even a header for a refused stream");
+    }
+
+    #[test]
+    fn a_stream_with_no_interfaces_is_still_a_valid_header() {
+        let mut buf = Vec::new();
+        JsonLinesWriter::new(&mut buf, &[], PayloadMode::WithPayload).unwrap();
+        let v: Value = serde_json::from_str(String::from_utf8(buf).unwrap().trim()).unwrap();
+        assert_eq!(v["interfaces"], serde_json::json!([]));
     }
 
     #[test]

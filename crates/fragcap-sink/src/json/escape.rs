@@ -12,6 +12,15 @@
 //! hand-rolled writer is verified by a real parser rather than by its own
 //! reader, which is the arrangement S06 wanted for pcapng and could not have.
 
+/// Lowercase hexadecimal digits, indexed by nibble.
+const HEX: [u8; 16] = *b"0123456789abcdef";
+
+/// Push one byte as two hexadecimal digits, without allocating.
+fn push_hex_byte(b: u8, out: &mut String) {
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0F) as usize] as char);
+}
+
 /// Append `value` to `out` as a quoted, escaped JSON string.
 ///
 /// Escapes the two structural characters and every C0 control, using the short
@@ -45,10 +54,16 @@ pub(crate) fn write_json_string(value: &str, out: &mut String) {
 /// percent-encodes in uppercase, following that encoding's convention; the two
 /// differ because each follows its own format, and both are fixed so goldens
 /// are stable.
+/// Appends directly rather than formatting each byte into a temporary
+/// `String`. That is not a micro-optimization here: this runs once per payload
+/// byte, so an ordinary 1500 byte frame would otherwise make 1500 short-lived
+/// heap allocations. On the sink thread under sustained capture that turns
+/// into allocator pressure, and a slow sink is what fills the bounded buffer
+/// and makes the pipeline drop packets it then has to count.
 pub(crate) fn write_hex_string(bytes: &[u8], out: &mut String) {
     out.push('"');
     for b in bytes {
-        out.push_str(&format!("{b:02x}"));
+        push_hex_byte(*b, out);
     }
     out.push('"');
 }
@@ -121,6 +136,31 @@ mod tests {
     fn hex_is_lowercase_and_two_digits_per_byte() {
         assert_eq!(hex(&[0x3f, 0x8a, 0x01]), "\"3f8a01\"");
         assert_eq!(hex(&[0x00, 0xff]), "\"00ff\"");
+    }
+
+    #[test]
+    fn hex_encoding_allocates_nothing_beyond_the_output() {
+        // Guards the property rather than the speed: rendering into a buffer
+        // with room reserved must not have to grow it, which it would if each
+        // byte round-tripped through a temporary.
+        let payload = vec![0xABu8; 1_500];
+        let mut out = String::with_capacity(2 + payload.len() * 2);
+        let reserved = out.capacity();
+        write_hex_string(&payload, &mut out);
+        assert_eq!(out.len(), 2 + payload.len() * 2);
+        assert_eq!(out.capacity(), reserved, "the output buffer did not grow");
+    }
+
+    #[test]
+    fn every_byte_value_renders_as_two_lowercase_digits() {
+        let all: Vec<u8> = (0..=255u8).collect();
+        let mut out = String::new();
+        write_hex_string(&all, &mut out);
+        let inner = out.trim_matches('"');
+        assert_eq!(inner.len(), 512);
+        for (i, b) in all.iter().enumerate() {
+            assert_eq!(&inner[i * 2..i * 2 + 2], format!("{b:02x}"));
+        }
     }
 
     #[test]

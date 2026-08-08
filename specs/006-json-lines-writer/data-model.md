@@ -103,10 +103,12 @@ Every counter is present even when zero, per FR-031. Omitting a zero would make
 "nothing was lost" indistinguishable from "this build does not report that",
 which is the ambiguity P-4 exists to remove.
 
-Unlike the pcapng Interface Statistics Block, this record has no per-interface
-problem: it describes the capture, is written once, and says so. The pcapng
-equivalent had to be per-interface because the format defines it that way,
-which is what forced S06 to a single interface.
+Unlike the pcapng Interface Statistics Block, this record genuinely has no
+per-interface problem: it describes the capture, is written once, and says so.
+The pcapng equivalent had to be per-interface because the format defines it
+that way. That was one of the two reasons S06 restricted itself to a single
+interface; this format escapes that one and not the other, which is what made
+the earlier claim above look right.
 
 ## PayloadMode
 
@@ -142,9 +144,22 @@ new  ->  write*  ->  finish
 Interfaces are supplied at construction rather than declared incrementally,
 which differs from the pcapng writer. The header must list them all and is
 written first, so there is no point at which a later declaration could be
-accommodated. This is the same constraint that forced the pcapng writer to one
-interface, arriving at a different answer because a JSON header can hold a set
-where a pcapng file's blocks cannot be revised.
+accommodated.
+
+**At most one, and a second is refused.** An earlier version of this document
+claimed the JSON format escaped the single-interface restriction the pcapng
+writer needed, on the reasoning that a JSON record names its interface
+explicitly where a pcapng packet block cannot. Review of pull request 9 refuted
+it. Naming the interface is not the difficulty; choosing it is.
+`CapturedPacket` carries no interface identifier and `Sink::write` has nowhere
+to pass one, so every packet routes through index 0 regardless of how many were
+declared. A stream declaring two interfaces would name both in its header and
+then label every record with the first, which is a false statement on every
+line rather than a missing field, and worse than the pcapng case because each
+record asserts it individually.
+
+Both writers therefore wait for the same thing: an interface identifier on the
+packet, which arrives with live capture in S09.
 
 **Invariants**:
 

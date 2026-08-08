@@ -41,6 +41,7 @@ impl<W: Write + Send> Sink for JsonLinesWriter<W> {
 | --- | --- |
 | `new` writes the header before returning | FR-003 |
 | Interfaces are fixed at construction, in order | FR-038b |
+| More than one interface is refused | FR-015a |
 | `write` emits exactly one line | FR-002, FR-008 |
 | `write` never drops or skips a packet | FR-032 |
 | `finish` writes the trailer and consumes the writer | FR-004 |
@@ -54,6 +55,7 @@ impl<W: Write + Send> Sink for JsonLinesWriter<W> {
 | --- | --- |
 | Timestamp predates the Unix epoch | Error, no line written |
 | Interface identifier not declared | Error, no line written |
+| More than one interface at construction | Error, no header written |
 | Underlying writer fails | Error propagated; lines already written stay valid |
 
 No condition is a discard.

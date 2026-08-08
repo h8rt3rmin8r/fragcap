@@ -343,6 +343,9 @@ against a committed golden.
 - **FR-014**: A timestamp predating the Unix epoch MUST produce a named error
   rather than a negative or wrapped value.
 - **FR-015**: `iface` MUST be present on every packet record.
+- **FR-015a**: The writer MUST refuse more than one interface with a named
+  error, until a packet can say which interface it arrived on. Accepting more
+  would declare them all in the header and label every record with the first.
 - **FR-016**: `pid` and `proc` MUST be present exactly when the packet is
   attributed, and MUST be absent otherwise.
 - **FR-017**: `role` and `stage` MUST each be present when the corresponding
