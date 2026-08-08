@@ -157,10 +157,14 @@ authoritative; this list is the one to keep in working memory.
 - **A new term gets a glossary entry in the same change that introduces it.**
 - **Wrappers stay thin.** A wrapper that needs to parse output means a missing
   capability in Rust.
-- **Pinned artifacts change only with a dated decision in `CHANGELOG.md`:**
-  `.github/workflows/**`, `rust-toolchain.toml`, `release.toml`, `scripts/**`,
-  and release documentation. `release.toml` does not exist yet; it arrives with
-  the release process. The rule binds it from the moment it lands.
+- **Pinned artifacts change only with a dated decision recorded in
+  `CHANGELOG.md`:** `.github/workflows/**`, `rust-toolchain.toml`,
+  `release.toml`, `scripts/**`, and release documentation. Write the decision
+  as a `changelog.d/<key>.decisions.md` fragment; `CHANGELOG.md` is assembled
+  from those fragments at release time, and editing it from a feature branch
+  conflicts with every other concurrent pull request. `release.toml` does not
+  exist yet; it arrives with the release process. The rule binds it from the
+  moment it lands.
 - **All text files are UTF-8 without BOM with LF line endings. No em-dashes or
   en-dashes anywhere, including code comments.**
 
