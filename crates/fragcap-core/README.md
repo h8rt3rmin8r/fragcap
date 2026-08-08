@@ -4,12 +4,16 @@ Types, traits, and the capture pipeline for fragcap. Platform-neutral.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
+**Published 0.1.0 is a skeleton and contains no functionality.** The types and
+traits described below are in the repository but are not in any released
+version yet. They ship at the next release.
 
-Version 0.1.0 reserves the name and fixes the crate boundary.
-The types and traits arrive in slice S02.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Slice S02 filled this crate with the vocabulary the rest of the workspace is
+written against. There is still no behavior here: nothing captures a packet,
+resolves an attribution, parses a header, or writes a file. What exists is the
+shape of the seams those slices are built to.
+
+Follow [the repository][repo] for progress.
 
 ## About fragcap
 

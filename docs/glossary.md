@@ -92,6 +92,93 @@ discarding. Each choice trades a different failure: latency, memory, or data.
 > surfaced. A capture tool that loses data without saying so produces
 > conclusions the user cannot check.
 
+### Flow key
+
+The normalized identity of one conversation: a protocol plus a local and a
+remote endpoint, where local is always the endpoint on the capturing host.
+
+Normalizing the local position is what makes a single conversation one key
+rather than two, and it is why [direction](#direction) is recorded per packet
+instead of being implied by which endpoint appears first.
+
+{: .matters }
+> A flow key is the lookup key into the attribution index on the capture
+> thread, so equality and hashing are part of its contract rather than an
+> implementation convenience. See specification section 8.4.
+
+**See also:** [Flow](#flow), [5-tuple](#5-tuple),
+[Attribution key](#attribution-key), [Direction](#direction)
+
+### Attribution key
+
+The part of a [flow key](#flow-key) that a [socket table](#socket-table) can
+actually answer. It carries both endpoints for TCP and the local endpoint alone
+for UDP.
+
+The asymmetry is a property of the platform interface, not a fragcap choice.
+The TCP socket table carries both endpoints, so a TCP flow resolves on the full
+5-tuple. A UDP socket generally has no fixed peer, so the UDP table carries the
+local endpoint and owning process only.
+
+{: .matters }
+> Specification section 8.4 requires that implementations never invent a remote
+> endpoint for a UDP entry, because doing so produces confident wrong
+> attributions rather than honest coarse ones. fragcap encodes this in the type:
+> there is no variant that could carry a UDP remote.
+
+**See also:** [Flow key](#flow-key), [Socket table](#socket-table),
+[Wildcard bind address](#wildcard-bind-address)
+
+### Direction
+
+Which way an individual packet travelled, inbound or outbound.
+
+A property of the packet rather than of the [flow](#flow). Because the
+[flow key](#flow-key) already normalized endpoint position, direction carries no
+information the key duplicates and the two cannot disagree.
+
+**See also:** [Flow key](#flow-key), [Flow](#flow)
+
+### Wildcard bind address
+
+An address of `0.0.0.0` or `::` recorded for a socket bound to every local
+interface rather than to one.
+
+The socket table reports the address a socket was bound to, not the address a
+given datagram arrived on. A UDP socket bound to the wildcard therefore has to
+be matched against both the wildcard and the specific interface address, or
+attribution misses traffic it should have resolved.
+
+**See also:** [Attribution key](#attribution-key),
+[Socket table](#socket-table)
+
+### Snapshot length
+
+A limit on how many bytes of each frame are retained, set by the operator.
+
+Choosing one is scope: the operator decides what to record, and the choice is
+visible in their own invocation. Constitution principle P-9 permits that and
+forbids something different, namely a record that fails to say truncation
+happened.
+
+{: .matters }
+> fragcap keeps the original on-wire length beside the possibly shorter
+> payload, so a truncated capture is self-describing. A single length field
+> would have made truncation invisible after the fact.
+
+**See also:** [Backpressure](#backpressure)
+
+### Link type
+
+The link layer encapsulation a capture source produces, identified by the
+standard numeric code shared by libpcap and pcapng.
+
+fragcap carries the code rather than a closed enumeration, so a backend
+reporting an encapsulation fragcap has never seen is representable and is
+written through unchanged rather than becoming a parse failure.
+
+**See also:** [pcapng](#pcapng)
+
 ## Windows Internals
 
 ### ETW
@@ -231,6 +318,65 @@ class.
 > modifying Rust.
 
 **See also:** [Game profile](#game-profile), [Launcher chain](#launcher-chain)
+
+### Packet source
+
+The seam that acquires packets. A live capture backend implements it in slice
+S09; a replay source over recorded fixtures implements it in slice S04.
+
+{: .matters }
+> Keeping acquisition behind a trait is what makes the pipeline testable
+> offline, with no capture driver, no elevation, and no game running.
+> Constitution principle P-3 forbids merging it with the
+> [flow attributor](#flow-attributor).
+
+**See also:** [Flow attributor](#flow-attributor), [Sink](#sink)
+
+### Flow attributor
+
+The seam that resolves a [flow key](#flow-key) to the process owning it, by
+matching against the [socket table](#socket-table).
+
+Returning nothing means attempted and unresolved. The packet is retained and
+marked, per constitution principle P-4, never dropped.
+
+**See also:** [Packet source](#packet-source), [Attribution](#attribution),
+[Socket table](#socket-table)
+
+### Process watcher
+
+The seam that reports process creation and exit, over
+[ETW](#etw) kernel providers.
+
+Ancestry comes from creation-time events rather than from inspecting a running
+process, which is what lets fragcap reconstruct a [launcher
+chain](#launcher-chain) without a process handle. Constitution principle P-1
+forbids handles carrying memory-read rights against a target.
+
+**See also:** [Process tree](#process-tree), [ETW](#etw),
+[Launcher chain](#launcher-chain)
+
+### Sink
+
+The seam that accepts captured packets and writes them somewhere: a file, a
+stream, or a ring buffer.
+
+Sinks are independent of one another and of the pipeline, and a session may
+have any number attached. A sink that cannot accept a packet reports it, and
+the pipeline counts it in a named counter rather than aborting the capture.
+
+**See also:** [Packet source](#packet-source), [.fcapng](#fcapng),
+[Backpressure](#backpressure)
+
+### Dissector
+
+The seam for protocol dissection, declared in v0.1.0 with no implementations.
+
+Fixing the shape before any protocol work begins prevents the eventual
+dissector layer from being retrofitted against types that were not designed for
+it.
+
+**See also:** [Sink](#sink)
 
 ## Anti-Cheat and Security
 

@@ -90,19 +90,44 @@ pub fn parse_deps(manifest: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Assert that `fragcap-core` has no dependencies of any kind.
+/// Crates `fragcap-core` is permitted to depend on.
+///
+/// An allowlist rather than an empty set, and short on purpose. Every entry has
+/// been read against constitution P-2: no platform-specific surface, no I/O, no
+/// capture library. Adding to this list is a deliberate edit that a reviewer
+/// sees, which is the property that matters. Growing it casually is how
+/// platform leakage gets in.
+///
+/// - `bytes`: reference-counted byte buffers. Pure Rust, no platform surface,
+///   no I/O. Admitted by slice S02 decision D-1 because a payload is cloned
+///   into a bounded ring and fanned out to several sinks, and copying it per
+///   sink is the hot path of the program.
+const CORE_ALLOWED_DEPS: &[&str] = &["bytes"];
+
+/// Assert that `fragcap-core` depends on nothing outside `CORE_ALLOWED_DEPS`.
 ///
 /// This exists because `cargo xtask neutral` does not cover it, and the gap is
 /// not obvious. A platform-specific crate can be added to core and core will
 /// still build for a non-Windows target, because such crates are themselves
 /// internally cfg-gated and compile to nothing off-platform. The build
-/// therefore succeeds while P-2 has been violated. Data model rule V-4
-/// requires the stronger property, and only a manifest check delivers it.
-pub fn check_core_has_no_dependencies(manifest: &str) -> Vec<String> {
+/// therefore succeeds while P-2 has been violated. Only a manifest check
+/// catches that.
+///
+/// Until slice S02 this was "no dependencies at all", which was simpler and
+/// stricter than the principle it enforces. P-2 forbids a platform-specific
+/// dependency, an I/O crate, and a capture library; it does not forbid every
+/// dependency. The empty-set rule would have blocked a pure-Rust buffer crate
+/// on a reading the constitution does not support, so S02 replaced it with a
+/// named allowlist. The check still fails closed: anything not listed is a
+/// problem.
+pub fn check_core_dependencies_are_allowed(manifest: &str) -> Vec<String> {
     parse_all_deps(manifest)
         .into_iter()
+        .filter(|d| !CORE_ALLOWED_DEPS.contains(&d.as_str()))
         .map(|d| {
-            format!("fragcap-core must have no dependencies at all (constitution P-2), found {d}")
+            format!(
+                "fragcap-core may depend only on {CORE_ALLOWED_DEPS:?} (constitution P-2),                  found {d}"
+            )
         })
         .collect()
 }
@@ -160,7 +185,7 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
             observed.insert((name.clone(), dep));
         }
         if name == "fragcap-core" {
-            extra.extend(check_core_has_no_dependencies(&manifest));
+            extra.extend(check_core_dependencies_are_allowed(&manifest));
         }
     }
 
@@ -263,7 +288,26 @@ mod tests {
         let m = "[package]
 name = \"fragcap-core\"
 ";
-        assert_eq!(check_core_has_no_dependencies(m), Vec::<String>::new());
+        assert_eq!(check_core_dependencies_are_allowed(m), Vec::<String>::new());
+    }
+
+    #[test]
+    fn core_may_take_an_allowlisted_dependency() {
+        let m = "[dependencies]
+bytes.workspace = true
+";
+        assert_eq!(check_core_dependencies_are_allowed(m), Vec::<String>::new());
+    }
+
+    #[test]
+    fn core_may_not_take_an_unlisted_dependency_however_harmless() {
+        // The check fails closed. A crate being pure Rust is not enough; it has
+        // to have been read against P-2 and added deliberately.
+        let m = "[dependencies]
+itoa = \"1\"
+";
+        let p = check_core_dependencies_are_allowed(m);
+        assert!(p.iter().any(|s| s.contains("itoa")), "got {p:?}");
     }
 
     #[test]
@@ -271,7 +315,7 @@ name = \"fragcap-core\"
         let m = "[dependencies]
 windows-sys = { version = \"0.59\" }
 ";
-        let p = check_core_has_no_dependencies(m);
+        let p = check_core_dependencies_are_allowed(m);
         assert!(p.iter().any(|s| s.contains("windows-sys")), "got {p:?}");
     }
 
@@ -283,7 +327,7 @@ windows-sys = { version = \"0.59\" }
         let m = "[target.'cfg(windows)'.dependencies]
 windows-sys = \"0.59\"
 ";
-        let p = check_core_has_no_dependencies(m);
+        let p = check_core_dependencies_are_allowed(m);
         assert!(p.iter().any(|s| s.contains("windows-sys")), "got {p:?}");
     }
 
@@ -292,7 +336,7 @@ windows-sys = \"0.59\"
         let m = "[dev-dependencies]
 tempfile = \"3\"
 ";
-        assert_eq!(check_core_has_no_dependencies(m), Vec::<String>::new());
+        assert_eq!(check_core_dependencies_are_allowed(m), Vec::<String>::new());
     }
 
     #[test]

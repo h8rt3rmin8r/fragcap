@@ -1,10 +1,73 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Core types, traits, and pipeline for fragcap.
+//! Core types, traits, and pipeline vocabulary for fragcap.
 //!
-//! This crate is platform-neutral by constitution principle P-2: it takes no
-//! platform-specific dependency, no I/O crate, and no capture library, and
-//! continuous integration proves it by building this crate for a target where
-//! no capture backend exists.
+//! This crate is the vocabulary the other seven are written in. It carries no
+//! behavior: nothing here captures a packet, resolves an attribution, parses a
+//! header, or writes a file. What it fixes is the shape of the seams those
+//! things are built against.
 //!
-//! Skeleton only. Types and traits arrive in S02.
+//! # Platform neutrality
+//!
+//! Constitution P-2: this crate takes no platform-specific dependency, no I/O
+//! crate, and no capture library. Continuous integration proves it by building
+//! this crate for a target where no capture backend exists. Its one external
+//! dependency, `bytes`, is pure Rust with no platform surface.
+//!
+//! # What the type system is doing here
+//!
+//! Three constitution principles are enforced structurally rather than by
+//! documentation, because a rule that lives only in prose is a rule someone
+//! violates without reading it.
+//!
+//! **P-1, passive observation.** Nothing in these traits obliges an implementor
+//! to open a process handle, inject code, or hook a function. Process ancestry
+//! arrives as creation-time events, and flow ownership arrives from the socket
+//! table, both from outside the target.
+//!
+//! **P-4, no silent loss.** [`stats::CaptureStats`] carries one named counter
+//! per discard cause, named as specification section 12.4 names them, and every
+//! total is a method rather than a field so it cannot drift from its parts. An
+//! unattributed packet is retained and marked, never dropped, and
+//! [`packet::AttributionState`] is what marks it.
+//!
+//! **P-9, the instrument does not lie.** No public operation in this crate
+//! alters, masks, truncates, reorders, or withholds an observed field. The one
+//! place the temptation arises is truncation, and [`packet::RawPacket`] keeps
+//! the original on-wire length beside the possibly shorter payload so a
+//! shortened capture says so. There is deliberately no microsecond conversion
+//! on [`packet::Timestamp`]: the single lossy conversion happens at the output
+//! boundary in slice S06, so there is one site to inspect rather than many.
+//!
+//! Specification section 8.4 additionally requires that an implementation never
+//! invent a remote endpoint for a UDP socket table entry, because that produces
+//! confident wrong attributions rather than honest coarse ones.
+//! [`flow::AttributionKey`] has no variant that could express one.
+//!
+//! # What is not settled
+//!
+//! Types whose documentation names a later slice are expected to change when
+//! that slice lands: [`filter::FilterProgram`] at S13, [`process::ProcessEvent`]
+//! and [`process::ProcessRecord`] at S11, [`link::LinkType`] when S09 discovers
+//! what the capture backend actually reports. The five traits in [`traits`] are
+//! the part intended to survive to 1.0.0 unchanged.
+
+pub mod attribution;
+pub mod error;
+pub mod filter;
+pub mod flow;
+pub mod link;
+pub mod packet;
+pub mod process;
+pub mod stats;
+pub mod traits;
+
+pub use attribution::{Attribution, StageId};
+pub use error::{AttrError, SinkError, SourceError};
+pub use filter::FilterProgram;
+pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
+pub use link::LinkType;
+pub use packet::{AttributionState, CapturedPacket, Payload, RawPacket, Timestamp};
+pub use process::{ProcessEvent, ProcessRecord};
+pub use stats::{CaptureStats, SourceStats};
+pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};

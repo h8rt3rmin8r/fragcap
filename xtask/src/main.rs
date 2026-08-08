@@ -153,23 +153,64 @@ fn main() -> ExitCode {
             }
         }
 
+        // Builds at the declared minimum, not with the pinned toolchain.
+        //
+        // Until S02 this ran an ordinary build and reported success, which
+        // checked the pinned toolchain and said nothing about the minimum. That
+        // was harmless while the dependency graph was empty and every minimum
+        // passed trivially. It stopped being harmless the moment a real
+        // dependency arrived, so the check now either uses the minimum
+        // toolchain or exits 2 to say it could not run.
         "msrv" => {
-            let msrv = workspace_msrv(&root).unwrap_or_else(|| "unknown".into());
-            let ok = cargo(&["build", "--workspace", "--locked"]);
-
-            // State the caveat where a reader sees it. This check is currently
-            // vacuous: with no external dependencies in the graph, it passes
-            // for any declared minimum. It is scaffolded now so it is already
-            // in place when it starts to constrain something at S02.
+            let msrv = match workspace_msrv(&root) {
+                Some(v) => v,
+                None => {
+                    eprintln!("msrv: could not read rust-version from the workspace manifest");
+                    return ExitCode::from(2);
+                }
+            };
             println!("msrv: declared minimum supported version is {msrv}");
-            println!(
-                "msrv: NOTE this check does not yet constrain anything. The workspace has no \
-                 external dependencies, so any declared minimum passes. It becomes meaningful \
-                 when dependencies enter the graph at S02."
-            );
-            if ok {
+
+            let installed = Command::new("rustup")
+                .args(["toolchain", "list"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains(&msrv))
+                .unwrap_or(false);
+
+            if !installed {
+                // Exit 2, never 0. A check that did not run must not be
+                // indistinguishable from one that passed.
+                eprintln!("msrv: toolchain {msrv} is not installed, so the check did not run.");
+                eprintln!("msrv: install it with: rustup toolchain install {msrv}");
+                return ExitCode::from(2);
+            }
+
+            // Through rustup, not through `env!("CARGO")`. The latter is the
+            // pinned toolchain's own cargo binary, which does not understand a
+            // `+toolchain` directive because that is a rustup shim feature.
+            // A separate target directory, for two reasons. This process is
+            // `target/debug/xtask.exe`, and a workspace build would try to
+            // replace the running binary and fail on Windows. It also keeps a
+            // second toolchain's artifacts from thrashing the main cache.
+            let built = Command::new("rustup")
+                .current_dir(&root)
+                .args([
+                    "run",
+                    &msrv,
+                    "cargo",
+                    "build",
+                    "--workspace",
+                    "--locked",
+                    "--target-dir",
+                    "target/msrv",
+                ])
+                .status();
+
+            if matches!(built, Ok(s) if s.success()) {
+                println!("msrv: the workspace builds at {msrv}");
                 ExitCode::SUCCESS
             } else {
+                eprintln!("msrv: the workspace does NOT build at {msrv}");
                 ExitCode::from(1)
             }
         }
