@@ -117,9 +117,9 @@ compliance, not when the code works.
   given that the author has to act on it? [Measurability, Spec §FR-032]
 - [x] CHK034 Is the runtime half of section 15.4's ambiguity check explicitly
   deferred, rather than silently omitted? [Clarity, Spec §Out of Scope]
-- [x] CHK035 Is the cost of the check stated, so that a quadratic pass over
-  stages is a known property rather than a discovery? [Assumption, Spec
-  §Clarifications, §SC-018]
+- [x] CHK035 Is the cost of the check bounded by limits the crate enforces,
+  rather than merely stated, so that a profile cannot exhaust the process
+  refusing it? [Gap closed, Spec §FR-003a, §FR-020a, §FR-029a, §SC-018]
 
 ## Resolution order
 
@@ -269,8 +269,16 @@ to what is both true and sufficient. That is the outcome the gate exists for: a
 claim that would have shipped unexamined was measured instead, and the artifact
 changed rather than the reading of it.
 
-One item deserves a note rather than a mark. CHK035 records the ambiguity
-check's cost as a stated bound rather than a capped one, and the bound holds
-only because the file size limit of CHK058 bounds the stage count. If a later
-slice raises or removes that limit, the quadratic pass stops being bounded by
-anything, and this item is where that connection is written down.
+CHK035 was answered wrongly and is now answered again. It originally recorded
+the ambiguity check's cost as a stated bound rather than a capped one, on the
+reasoning that the file size limit bounded it. Pull request 11's review showed
+that the file limit bounds each factor and not their product, so the pass was
+unbounded in practice: two half-megabyte patterns inside a one mebibyte profile
+ask for about 10^12 table cells. The requirement now demands enforced limits on
+pattern length and stage count, FR-020a, FR-003a, and FR-029a, and the item
+passes against that instead.
+
+The lesson is worth carrying to the next checklist: an item that asks whether a
+cost is stated is weaker than one that asks whether it is bounded, and for
+anything reading a file an operator did not write, only the second is worth
+having.

@@ -207,7 +207,10 @@ impl fmt::Display for ResolveError {
             } => {
                 write!(f, "no profile `{reference}` found; searched")?;
                 if searched.is_empty() {
-                    write!(f, " nowhere: no profile directories were given")
+                    write!(
+                        f,
+                        " no directories: none were given, and no bundled profile matched"
+                    )
                 } else {
                     for p in searched {
                         write!(f, "\n  {}", p.display())?;
@@ -310,17 +313,20 @@ pub fn resolve(
 /// an error. A candidate that is present has won its step, so a failure to use it
 /// is an error rather than a skip: falling through would silently select a
 /// profile the operator did not choose.
+///
+/// The candidate is recorded before the directory is tested, so that a location
+/// the caller supplied appears in [`ResolveError::NotFound`] whether or not it
+/// exists. Recording only directories that exist would let a failure report that
+/// nothing was searched when something was, and the answer an operator needs on
+/// this failure is where to put the file.
 fn try_directory(
     dir: &Path,
     file_name: &str,
     searched: &mut Vec<PathBuf>,
 ) -> Result<Option<(Profile, PathBuf)>, ResolveError> {
-    if !dir.is_dir() {
-        return Ok(None);
-    }
     let candidate = dir.join(file_name);
     searched.push(candidate.clone());
-    if !candidate.is_file() {
+    if !dir.is_dir() || !candidate.is_file() {
         return Ok(None);
     }
     let profile = load(&candidate).map_err(|source| ResolveError::Load {

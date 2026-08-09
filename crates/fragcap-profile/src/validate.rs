@@ -298,7 +298,10 @@ fn capture_roles_are_declared(
     };
     let at = draft.roles_span.or(draft.capture_span).unwrap_or(0);
 
-    if roles.is_empty() {
+    // Emptiness is judged on what the author declared, not on what survived
+    // parsing. A list of `["ghost", 1]` has one bad element and is not empty, and
+    // reporting it as empty would be a wrong diagnostic rather than an extra one.
+    if draft.roles_declared == Some(0) {
         d.push(Diagnostic::at(
             DiagnosticCode::EmptyRoles,
             "capture.roles",

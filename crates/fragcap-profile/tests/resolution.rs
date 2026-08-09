@@ -193,6 +193,57 @@ fn an_absent_search_directory_is_skipped_rather_than_an_error() {
 }
 
 #[test]
+fn an_absent_search_directory_is_still_reported_as_searched() {
+    // Regression, PR 11 review. Skipping an absent directory is right; leaving it
+    // out of the failure report is not. A search consisting only of a missing
+    // directory used to fail with an empty list and the message "no profile
+    // directories were given", which is false when one was given. The answer an
+    // operator needs here is where to put the file.
+    let root = scratch("absent_is_reported");
+    let missing = root.join("missing");
+
+    let search = SearchPath {
+        command_line: vec![missing.clone()],
+        user: None,
+    };
+    match resolve("eso", &search, &BundledSet::empty()) {
+        Err(ResolveError::NotFound {
+            reference,
+            searched,
+        }) => {
+            assert_eq!(reference, "eso");
+            assert_eq!(
+                searched,
+                vec![missing.join("eso.toml")],
+                "a directory the caller supplied must appear whether or not it exists"
+            );
+            let rendered = ResolveError::NotFound {
+                reference,
+                searched,
+            }
+            .to_string();
+            assert!(
+                !rendered.contains("none were given"),
+                "the message must not claim nothing was supplied: {rendered}"
+            );
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_search_with_no_directories_at_all_says_so() {
+    // The case the message above is reserved for: nothing was supplied, so there
+    // is genuinely nowhere to name.
+    match resolve("eso", &SearchPath::new(), &BundledSet::empty()) {
+        Err(ResolveError::NotFound { searched, .. }) => {
+            assert!(searched.is_empty());
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_candidate_that_wins_its_step_and_cannot_be_used_is_an_error_not_a_fallthrough() {
     // The property that matters: the file has already won its step, so falling
     // through would silently hand the operator a profile they did not choose. An

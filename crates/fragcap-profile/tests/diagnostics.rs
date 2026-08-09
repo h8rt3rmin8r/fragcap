@@ -11,7 +11,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use fragcap_profile::{load, DiagnosticCode, Diagnostics, LoadError, Profile, MAX_PROFILE_BYTES};
+use fragcap_profile::{
+    load, DiagnosticCode, Diagnostics, LoadError, Profile, MAX_PATTERN_CHARS, MAX_PROFILE_BYTES,
+    MAX_STAGES,
+};
 
 /// Parse text that must be refused, and return everything found.
 fn refused(text: &str) -> Diagnostics {
@@ -77,8 +80,9 @@ fn datetime_is_a_syntax_fault_not_a_type_fault() {
 
 #[test]
 fn an_unsupported_schema_version_suppresses_the_semantic_set() {
-    // The profile below also has an unknown key and no stage. Reporting those
-    // alongside a version fault would bury the one thing the author needs to know.
+    // The profile below also has an unknown key inside [game] and no stage.
+    // Reporting those alongside a version fault would bury the one thing the
+    // author needs to know.
     let d = refused("schema = 2\n[game]\nid = \"t\"\nname = \"T\"\nbogus = 1\n");
     assert_eq!(d.len(), 1);
     assert!(d.has(DiagnosticCode::UnsupportedSchema));
@@ -86,6 +90,27 @@ fn an_unsupported_schema_version_suppresses_the_semantic_set() {
         d.iter().next().expect("one").message.contains('1'),
         "the diagnostic must name the version this build supports"
     );
+}
+
+#[test]
+fn an_unsupported_schema_version_suppresses_a_top_level_unknown_key() {
+    // Regression, PR 11 review. The first version of this slice ran the top level
+    // key check before the schema gate, so a later-schema profile came back with
+    // both an UnsupportedSchema and an UnknownKey diagnostic. A new top level key
+    // is the most likely thing a later schema adds, so reporting it is reporting a
+    // consequence of the version fault as though it were a second problem.
+    //
+    // The test above did not catch this because `bogus = 1` after `[game]` is
+    // inside that table rather than at the top level, so it passed for the wrong
+    // reason. This case places the key where the check actually runs.
+    let d = refused("schema = 2\nfuture_key = true\n");
+    assert_eq!(
+        d.len(),
+        1,
+        "an unsupported version must be the only diagnostic, got:\n{d}"
+    );
+    assert!(d.has(DiagnosticCode::UnsupportedSchema));
+    assert!(!d.has(DiagnosticCode::UnknownKey));
 }
 
 #[test]
@@ -629,6 +654,97 @@ fn a_file_over_the_size_limit_is_refused_before_its_contents_are_read() {
 }
 
 #[test]
+fn a_roles_entry_with_the_wrong_type_does_not_hide_the_other_entries() {
+    // Regression, PR 11 review. The first version discarded the whole list when
+    // any element failed to parse, so `["ghost", 1]` reported the type fault and
+    // silently dropped the fact that `ghost` is a role no stage declares. Two
+    // independent faults, one reported, which is what FR-013 forbids.
+    let d = refused(&with(&format!(
+        "[capture]\nroles = [\"ghost\", 1]\n{}",
+        one_stage()
+    )));
+    assert!(
+        d.has(DiagnosticCode::WrongType),
+        "the second element's type is still a fault:\n{d}"
+    );
+    assert!(
+        d.has(DiagnosticCode::UndeclaredCaptureRole),
+        "and the first element still names a role nothing declares:\n{d}"
+    );
+    assert!(
+        !d.has(DiagnosticCode::EmptyRoles),
+        "a two element list is not empty, whatever survived parsing:\n{d}"
+    );
+}
+
+#[test]
+fn a_roles_list_of_only_bad_entries_is_not_reported_as_empty() {
+    // The other half of the same rule. Emptiness is judged on what the author
+    // declared, so a list with one bad element is a type fault and not an empty
+    // list.
+    let d = refused(&with(&format!("[capture]\nroles = [1]\n{}", one_stage())));
+    assert!(d.has(DiagnosticCode::WrongType));
+    assert!(
+        !d.has(DiagnosticCode::EmptyRoles),
+        "the author wrote one entry, so the list is not empty:\n{d}"
+    );
+}
+
+#[test]
+fn an_over_long_exe_pattern_is_refused() {
+    // The bound exists because the ambiguity check allocates a table proportional
+    // to the product of two pattern lengths. Without it, two patterns inside the
+    // one mebibyte file limit ask for about 10^12 cells and abort the process
+    // instead of returning a diagnostic. Found in PR 11 review.
+    let pattern = "a".repeat(MAX_PATTERN_CHARS + 1);
+    let d = refused(&with(&format!(
+        "[[stage]]\nrole = \"c\"\nlifecycle = \"session\"\nmatch = {{ exe = \"{pattern}\" }}\n"
+    )));
+    assert!(d.has(DiagnosticCode::InvalidGlob), "got:\n{d}");
+    let msg = &d
+        .iter()
+        .find(|x| x.code == DiagnosticCode::InvalidGlob)
+        .expect("glob diagnostic")
+        .message;
+    assert!(
+        msg.contains(&MAX_PATTERN_CHARS.to_string()),
+        "the diagnostic must name the limit: {msg}"
+    );
+}
+
+#[test]
+fn a_profile_at_the_stage_limit_is_accepted_and_one_above_it_is_not() {
+    // The pairwise ambiguity pass is quadratic in stage count, and the file size
+    // limit does not bound it: a one mebibyte profile can declare thousands of
+    // stages. Found in PR 11 review, which also falsified this slice's original
+    // claim that no stage limit was needed.
+    let stage = |i: usize| {
+        format!(
+            "[[stage]]\nrole = \"r{i}\"\nlifecycle = \"transient\"\n\
+             match = {{ exe = \"e{i}.exe\" }}\n"
+        )
+    };
+
+    let at_limit: String = (0..MAX_STAGES).map(stage).collect();
+    let p = Profile::parse(&with(&at_limit))
+        .unwrap_or_else(|d| panic!("the limit itself must be accepted:\n{d}"));
+    assert_eq!(p.stages().len(), MAX_STAGES);
+
+    let over: String = (0..MAX_STAGES + 1).map(stage).collect();
+    let d = refused(&with(&over));
+    assert!(d.has(DiagnosticCode::TooManyStages), "got:\n{d}");
+    let msg = &d
+        .iter()
+        .find(|x| x.code == DiagnosticCode::TooManyStages)
+        .expect("stage limit diagnostic")
+        .message;
+    assert!(
+        msg.contains(&MAX_STAGES.to_string()),
+        "the diagnostic must name the limit: {msg}"
+    );
+}
+
+#[test]
 fn every_diagnostic_code_is_produced_by_a_test_in_this_file() {
     // SC-003. Listed explicitly rather than derived, because the enumeration is
     // non-exhaustive to callers and a new variant should force a decision about
@@ -672,6 +788,10 @@ fn every_diagnostic_code_is_produced_by_a_test_in_this_file() {
         (DiagnosticCode::EmptyMatch, "an_empty_match_table..."),
         (DiagnosticCode::EmptyRoles, "an_empty_roles_list..."),
         (DiagnosticCode::NoStages, "a_profile_with_no_stage..."),
+        (
+            DiagnosticCode::TooManyStages,
+            "a_profile_at_the_stage_limit...",
+        ),
         (DiagnosticCode::DuplicateRole, "a_duplicate_role..."),
         (DiagnosticCode::MultipleTerminal, "two_terminal_stages..."),
         (
@@ -698,7 +818,7 @@ fn every_diagnostic_code_is_produced_by_a_test_in_this_file() {
     ];
     assert_eq!(
         expected.len(),
-        23,
+        24,
         "if a code was added to the enumeration, add the case that produces it"
     );
     // The pairing is documentation; this asserts the codes are distinct so a
@@ -706,5 +826,5 @@ fn every_diagnostic_code_is_produced_by_a_test_in_this_file() {
     let mut codes: Vec<DiagnosticCode> = expected.iter().map(|(c, _)| *c).collect();
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 23);
+    assert_eq!(codes.len(), 24);
 }

@@ -78,10 +78,12 @@ description of one is arithmetic over text.
 **Project Type**: Library crate within a Cargo workspace.
 
 **Performance Goals**: None set. Validation runs once per capture against a file
-of tens of lines. The one cost worth stating is the ambiguity pass, which is
-quadratic in stage count with each decision linear in the product of two pattern
-lengths; both are bounded by the one mebibyte file limit, which is why no stage
-limit is introduced.
+of tens of lines. One cost is bounded rather than merely stated: the ambiguity
+pass is quadratic in stage count with each decision allocating a table linear in
+the product of two pattern lengths, and the file size limit does not bound that
+product. An `exe` pattern is capped at 255 characters and a profile at 64
+stages, which puts the worst case at about 1.3 times 10^8 cell visits and 64
+kibibytes of peak table. See decision D-11.
 
 **Constraints**: Every problem in one report. No declared value normalized. The
 same regular expression engine validates and, in S12, evaluates. No platform
@@ -269,6 +271,42 @@ decisions fragment as candidates for promotion into section 15.4 rather than
 presented as readings of it, because a future reader comparing the code against
 the specification should find the difference explained rather than have to
 decide whether it is a defect.
+
+**D-11. Two limits bound the ambiguity pass, reversing this slice's first
+answer.** The slice originally stated the pass's complexity and declined to cap
+it, on the reasoning that the one mebibyte file limit bounded both factors. Pull
+request 11's review showed the reasoning was wrong rather than incomplete: the
+file limit bounds each factor and not their product, so two half-megabyte `exe`
+patterns ask the decision for about 10^12 table cells and abort the process
+instead of producing a diagnostic. The total work is also invariant under how
+the bytes are split between stage count and pattern length, so one cap alone
+would have moved the cost rather than removed it.
+
+`exe` patterns are capped at 255 characters, which is the Windows file name
+component limit and therefore the length past which a pattern is longer than
+anything it can match. Profiles are capped at 64 stages, which is two orders of
+magnitude beyond the two and three the focal titles declare. Each limit is
+refused with its own diagnostic naming it, and each has a test that accepts the
+limit and refuses one past it.
+
+The reversal is recorded in the changelog decisions fragment, and research R-2
+keeps the original reasoning alongside why it failed, because a future reader
+proposing to lift either limit should find the argument rather than reconstruct
+it.
+
+**D-12. The schema version gate runs before the top level key check.** A
+correction found in the same review. Running the key check first meant a profile
+declaring a later schema came back with both an `UnsupportedSchema` and an
+`UnknownKey` diagnostic, where FR-012 promises one. A key this build does not
+know is the most likely thing a later schema added, so reporting it beside the
+version fault reports a consequence as though it were an independent problem.
+
+**D-13. A wrongly typed entry in `capture.roles` does not suppress its
+siblings.** Also from that review. The first implementation discarded the whole
+list when any element failed to parse, which hid the undeclared-role fault the
+surviving entries carried. Emptiness is judged on the declared count rather than
+the surviving count, so a list with one bad element is not also reported as
+empty.
 
 ## Complexity Tracking
 

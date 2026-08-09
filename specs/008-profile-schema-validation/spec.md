@@ -306,6 +306,40 @@ known to compile and known not to contradict each other.
   not available: `toml` declares Rust 1.85 against a floor of 1.82, and holding
   it there would require pinning a transitive crate this slice never calls.
 
+- Q: Pull request 11's review found the ambiguity pass unbounded in
+  practice. Does that change the decision to state its cost rather than cap it?
+  -> A: Yes, and the reversal is worth being precise about because the original
+  reasoning was not merely incomplete, it was wrong. The claim was that the one
+  mebibyte file limit bounded the pass. It bounds each factor and not their
+  product: two `exe` patterns of half a megabyte each fit inside that limit and
+  ask the intersection decision for a table of roughly 10^12 cells, which aborts
+  the process instead of returning a diagnostic. A profile that has already been
+  refused should not be able to end the run that refuses it. Two bounds now
+  exist, and each is justified by the domain rather than picked for
+  tidiness. An `exe` pattern is capped at 255 characters, because it matches one
+  Windows file name component and Windows caps that at 255, so a longer pattern
+  is longer than anything it can be compared against. A profile is capped at 64
+  stages, because the pairwise pass is quadratic in that count and the focal
+  titles of section 5.4 declare two and three, so 64 is two orders of magnitude
+  beyond any plausible launcher chain. Together they bound the worst case at
+  about 1.3 times 10^8 cell visits and 64 kibibytes of peak table.
+- Q: Should the schema version gate run before or after the top level key check?
+  -> A: Before, which is a correction rather than a preference. The first
+  implementation ran the key check first, so a profile declaring a later schema
+  and a key this build does not know came back with two diagnostics where FR-012
+  promises one. A new key is the most likely thing a later schema adds, so
+  reporting it beside the version fault reports a consequence of that fault as
+  though it were a second problem. Found in pull request 11's review; the test
+  that was supposed to cover it had placed its unknown key inside `[game]`
+  rather than at the top level, and so passed without exercising the path.
+- Q: When one entry in `capture.roles` has the wrong type, are the others still
+  checked? -> A: Yes. A list of `["ghost", 1]` carries two independent faults:
+  the second element's type, and the first naming a role no stage declares.
+  Discarding the list on the first fault reports one and hides the other, which
+  is what FR-013 forbids. Emptiness is judged on what the author declared rather
+  than on what survived parsing, so a list with one bad element is not also
+  reported as empty, which would be a wrong diagnostic rather than an extra one.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - A profile is read into facts (Priority: P1)
@@ -533,6 +567,14 @@ and non-integer schema value.
 - What happens when a profile is valid but describes a game that is not
   installed? Nothing here. A profile is a description, not a claim about the
   current machine, and section 15.5 expects bundled profiles to drift.
+- What happens when an `exe` pattern is enormous? Refused, naming the 255
+  character limit. Windows caps a file name component there, so a longer pattern
+  cannot match anything that exists, and the limit is also what keeps the
+  intersection decision's table from being proportional to the file size.
+- What happens when a profile declares thousands of stages? Refused, naming the
+  64 stage limit. The pairwise ambiguity pass is quadratic in that count, and a
+  file that has already been refused should not be able to exhaust the machine
+  that refuses it.
 - What happens when a candidate file is enormous? It is refused on size before
   its contents are read, naming the limit. A profile is tens of lines, so the
   limit cannot be reached by a legitimate file, and reading an arbitrary
@@ -572,6 +614,10 @@ and non-integer schema value.
 - **FR-003**: Parsing MUST read `schema`, the `[game]` table, the optional
   `[capture]` table, and one or more `[[stage]]` tables. A profile declaring no
   stage MUST be refused.
+- **FR-003a**: A profile declaring more than 64 stages MUST be refused with a
+  diagnostic naming the limit. The bound exists because the ambiguity check of
+  FR-030 is quadratic in stage count and the file size limit does not bound that
+  product.
 - **FR-004**: `game.id` and `game.name` MUST be required; `game.platform` and
   `game.app_id` MUST be optional and MUST report absence rather than a
   substituted value.
@@ -594,8 +640,10 @@ and non-integer schema value.
 **Structural validation, section 15.4**
 
 - **FR-012**: A `schema` value other than 1 MUST be reported as an unsupported
-  version, naming the supported version, and MUST suppress all other semantic
-  diagnostics for that file.
+  version, naming the supported version, and MUST suppress every other
+  diagnostic for that file, including the top level unknown-key check. The
+  version gate therefore runs before that check rather than after it: a key this
+  build does not know is the most likely thing a later schema added.
 - **FR-013**: Every missing required field MUST be reported, and reporting MUST
   NOT stop at the first.
 - **FR-014**: Every field whose type does not match the schema MUST be reported
@@ -615,6 +663,10 @@ and non-integer schema value.
   it, and a failure MUST carry the engine's message.
 - **FR-020**: Every `exe` glob MUST be a well-formed pattern in the glob syntax
   this crate defines.
+- **FR-020a**: An `exe` pattern longer than 255 characters MUST be refused with
+  a diagnostic naming the limit. Windows caps a file name component at 255
+  characters, and the limit is also what bounds the intersection decision's
+  table.
 - **FR-021**: Every duration literal MUST parse.
 - **FR-022**: At least one stage MUST have a lifecycle other than `service`.
 - **FR-023**: `lifecycle` MUST be one of `transient`, `session`, or `service`,
@@ -628,6 +680,9 @@ and non-integer schema value.
 - **FR-026**: A `terminal` stage MUST have lifecycle `session`.
 - **FR-027**: Every role named in `capture.roles` MUST be declared by a stage,
   and `capture.roles` MUST NOT be empty when present.
+- **FR-027a**: An entry in `capture.roles` whose type is wrong MUST NOT suppress
+  the checks on the entries that parsed, and emptiness MUST be judged on the
+  number of entries declared rather than on the number that parsed.
 - **FR-028**: The `descends_from` relation MUST be acyclic, and a cycle MUST
   name every role in it.
 
@@ -635,6 +690,9 @@ and non-integer schema value.
 
 - **FR-029**: The crate MUST decide exactly whether two `exe` patterns can match
   a common image name, over the glob syntax it defines, case-insensitively.
+- **FR-029a**: The decision's memory and time MUST be bounded by constants this
+  crate enforces, not by the size of the profile. Exactness is not permitted to
+  cost an unbounded allocation.
 - **FR-030**: Validation MUST refuse a profile containing a pair of stages whose
   `exe` patterns can match a common image name where at least one of the two
   matches on `exe` alone.
@@ -661,7 +719,9 @@ and non-integer schema value.
 - **FR-039**: A successful resolution MUST report which source supplied the
   profile, and the path for the three file sources.
 - **FR-040**: A failed resolution MUST name the reference and every location
-  searched.
+  searched, including a candidate in a supplied directory that does not exist.
+  Reporting only the directories that existed would let a failure claim nothing
+  was searched when something was supplied.
 - **FR-041**: A bundled set containing two profiles with the same `game.id` MUST
   be refused, naming both.
 
@@ -795,8 +855,18 @@ and non-integer schema value.
   diagnostic carries the engine's own message.
 - **SC-017**: A reference naming an existing directory is exercised, both as a
   bare name and as a name carrying a path separator.
-- **SC-018**: The ambiguity check's cost is stated in the plan as a complexity
-  bound, and no arbitrary stage limit is introduced.
+- **SC-018**: The ambiguity check's cost is bounded by a pattern length limit
+  and a stage count limit that the crate enforces, each justified in the plan
+  against the domain rather than chosen for convenience, and each demonstrated
+  by a test that accepts the limit and refuses one past it.
+- **SC-020**: A profile declaring a later schema version and an unknown top
+  level key yields exactly one diagnostic, asserted by a test that places the
+  key at the top level rather than inside a table.
+- **SC-021**: A `capture.roles` list mixing a valid entry with a wrongly typed
+  one reports both the type fault and the undeclared role, and does not report
+  the list as empty.
+- **SC-022**: A resolution failure names a supplied directory that does not
+  exist, and the rendered message does not claim no directories were given.
 - **SC-019**: Every value form a schema version 1 profile can contain is
   exercised by a parser test, including a Windows path as a literal string, and
   the known datetime divergence is pinned by a test that asserts the observed

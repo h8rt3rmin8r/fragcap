@@ -82,21 +82,44 @@ pub struct ImagePattern {
     toks: Vec<Tok>,
 }
 
-/// Why a pattern was refused.
+/// The longest `exe` pattern this crate accepts, in characters.
 ///
-/// One variant, because every non-empty string is a well-formed pattern in this
-/// syntax. It is an enumeration rather than a unit type so that adding a rule
-/// later does not change the shape of every call site.
+/// Windows caps a file name component at 255 characters, and `exe` matches one
+/// such component, so a longer pattern is longer than anything it can be
+/// compared against.
+///
+/// The limit is load-bearing rather than tidy, and the reason is
+/// [`ImagePattern::intersects`]. That decision allocates a table proportional to
+/// the product of the two pattern lengths, so two patterns bounded only by the
+/// one mebibyte file limit would ask for a table of about 10^12 cells. The first
+/// draft of this slice claimed the file limit bounded the pass; it bounds each
+/// factor and not their product, which is a different thing. See the S05
+/// decisions changelog fragment.
+pub const MAX_PATTERN_CHARS: usize = 255;
+
+/// Why a pattern was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatternError {
     /// The pattern was empty, which matches only the empty image name.
     Empty,
+    /// The pattern is longer than [`MAX_PATTERN_CHARS`].
+    TooLong {
+        /// How many characters the pattern carries.
+        chars: usize,
+    },
 }
 
 impl fmt::Display for PatternError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PatternError::Empty => write!(f, "empty image name pattern"),
+            PatternError::TooLong { chars } => write!(
+                f,
+                "image name pattern is {chars} characters, above the \
+                 {MAX_PATTERN_CHARS} character limit; Windows caps a file name \
+                 at {MAX_PATTERN_CHARS} characters, so a longer pattern is longer \
+                 than anything it can match"
+            ),
         }
     }
 }
@@ -108,10 +131,15 @@ impl ImagePattern {
     ///
     /// # Errors
     ///
-    /// [`PatternError::Empty`] if the pattern is empty.
+    /// [`PatternError::Empty`] if the pattern is empty, and
+    /// [`PatternError::TooLong`] above [`MAX_PATTERN_CHARS`].
     pub fn new(source: &str) -> Result<Self, PatternError> {
         if source.is_empty() {
             return Err(PatternError::Empty);
+        }
+        let chars = source.chars().count();
+        if chars > MAX_PATTERN_CHARS {
+            return Err(PatternError::TooLong { chars });
         }
         let toks = source
             .chars()
@@ -138,7 +166,15 @@ impl ImagePattern {
     /// literal asterisk, not a wildcard. Windows cannot produce such a name,
     /// but reading the haystack as a pattern would be a way for a crafted name
     /// to widen its own match, so the distinction is made explicitly.
+    ///
+    /// A name longer than [`MAX_PATTERN_CHARS`] cannot match, and is answered
+    /// without building a table. Such a name cannot exist on Windows, and the
+    /// early return is what keeps this method's cost bounded by the pattern
+    /// rather than by its argument.
     pub fn matches(&self, name: &str) -> bool {
+        if name.chars().count() > MAX_PATTERN_CHARS {
+            return false;
+        }
         let literal: Vec<Tok> = name.chars().map(Tok::Lit).collect();
         reachable(&self.toks, &literal)
     }
@@ -161,9 +197,17 @@ impl ImagePattern {
 /// when the prefixes `a[..i]` and `b[..j]` can be produced by one common
 /// string, and the answer is whether `(a.len(), b.len())` is reachable.
 ///
-/// Cost is `O(a.len() * b.len())`: each cell is enqueued at most once. Slice
-/// S05 research R-2 records why that bound is left stated rather than capped.
+/// Cost is `O(a.len() * b.len())` in both time and space: each cell is enqueued
+/// at most once, and the table is allocated up front. Both inputs are bounded by
+/// [`MAX_PATTERN_CHARS`], so the table is at most 256 by 256, which is why that
+/// limit exists. Slice S05 research R-2 records the bound and the review that
+/// corrected it.
 fn reachable(a: &[Tok], b: &[Tok]) -> bool {
+    debug_assert!(
+        a.len() <= MAX_PATTERN_CHARS && b.len() <= MAX_PATTERN_CHARS,
+        "the table is only bounded because both inputs are; a caller reaching \
+         this with a longer sequence has bypassed ImagePattern::new"
+    );
     let (n, m) = (a.len(), b.len());
     let mut seen = vec![false; (n + 1) * (m + 1)];
     let idx = |i: usize, j: usize| i * (m + 1) + j;
@@ -216,6 +260,63 @@ mod tests {
     #[test]
     fn the_empty_pattern_is_refused() {
         assert_eq!(ImagePattern::new(""), Err(PatternError::Empty));
+    }
+
+    #[test]
+    fn a_pattern_above_the_length_limit_is_refused() {
+        let ok = "a".repeat(MAX_PATTERN_CHARS);
+        assert!(
+            ImagePattern::new(&ok).is_ok(),
+            "the limit itself is accepted"
+        );
+
+        let over = "a".repeat(MAX_PATTERN_CHARS + 1);
+        assert_eq!(
+            ImagePattern::new(&over),
+            Err(PatternError::TooLong {
+                chars: MAX_PATTERN_CHARS + 1
+            })
+        );
+    }
+
+    #[test]
+    fn the_length_limit_counts_characters_not_bytes() {
+        // A pattern of multi-byte characters that is inside the limit by
+        // characters must be accepted. Counting bytes would refuse it, and an
+        // image path can carry non-ASCII through a localized directory name.
+        let pattern = "é".repeat(MAX_PATTERN_CHARS);
+        assert!(pattern.len() > MAX_PATTERN_CHARS, "bytes exceed the limit");
+        assert!(
+            ImagePattern::new(&pattern).is_ok(),
+            "characters do not, so it is accepted"
+        );
+    }
+
+    #[test]
+    fn the_intersection_table_stays_small_because_both_inputs_are_bounded() {
+        // The bound this test exists for is memory, not behavior. Two patterns at
+        // the limit produce a table of (255 + 1) squared cells, about 65 kilobytes.
+        // Without the limit, two patterns bounded only by the one mebibyte file
+        // size would ask for roughly 10^12 cells, which aborts the process rather
+        // than returning a diagnostic. The first draft of this slice claimed the
+        // file limit bounded this pass; it bounds each factor and not the product.
+        let a = p(&format!("{}*", "a".repeat(MAX_PATTERN_CHARS - 1)));
+        let b = p(&format!("{}*", "a".repeat(MAX_PATTERN_CHARS - 1)));
+        assert!(a.intersects(&b));
+        assert_eq!(a.as_str().chars().count(), MAX_PATTERN_CHARS);
+    }
+
+    #[test]
+    fn a_name_longer_than_the_limit_cannot_match() {
+        // Windows cannot produce such a name. Answered without a table, which is
+        // what keeps `matches` bounded by the pattern rather than its argument.
+        let pattern = p("*");
+        let name = "a".repeat(MAX_PATTERN_CHARS + 1);
+        assert!(
+            !pattern.matches(&name),
+            "`*` matches any name that can exist, and this one cannot"
+        );
+        assert!(pattern.matches(&"a".repeat(MAX_PATTERN_CHARS)));
     }
 
     #[test]

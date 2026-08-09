@@ -52,6 +52,21 @@ use crate::validate;
 /// file's metadata before the contents are read rather than after.
 pub const MAX_PROFILE_BYTES: u64 = 1024 * 1024;
 
+/// The most stages one profile may declare.
+///
+/// A launcher chain is a handful of processes: the focal titles of specification
+/// section 5.4 declare two and three. This is two orders of magnitude beyond any
+/// plausible topology and exists for a mechanical reason rather than a modelling
+/// one. The ambiguity check of section 15.4 compares every unordered pair of
+/// stages, so the pass is quadratic in this count, and [`MAX_PROFILE_BYTES`]
+/// alone does not bound it: a one mebibyte profile can declare thousands of
+/// stages, and thousands squared is not a number to spend on a file that has
+/// already been refused.
+///
+/// This reverses a decision the slice first wrote down. See the S05 decisions
+/// changelog fragment for why the original reasoning did not hold.
+pub const MAX_STAGES: usize = 64;
+
 /// Why a profile could not be loaded from a path.
 #[derive(Debug)]
 pub enum LoadError {
@@ -155,11 +170,11 @@ impl Profile {
             return Err(d.finish());
         };
 
-        unknown_keys(table, Profile::ACCEPTED, "", text, &mut d);
-
-        // The schema version gate. An unsupported version suppresses the rest,
-        // because every other fault is then likely a consequence of reading a
-        // later schema under this one's rules.
+        // The schema version gate comes first, before even the top level key
+        // check. An unsupported version suppresses everything else, and a key
+        // this build does not know is the most likely thing a later schema
+        // added, so reporting it alongside the version fault would be reporting
+        // a consequence of the fault as though it were a second problem.
         match table.get("schema") {
             None => d.push(Diagnostic::whole_file(
                 DiagnosticCode::MissingField,
@@ -181,6 +196,8 @@ impl Profile {
                 }
             },
         }
+
+        unknown_keys(table, Profile::ACCEPTED, "", text, &mut d);
 
         let draft = draft(table, text, &mut d);
         validate::check(&draft, text, &mut d);
@@ -228,6 +245,11 @@ pub(crate) struct Draft {
     pub(crate) capture: CaptureDefaults,
     pub(crate) capture_span: Option<usize>,
     pub(crate) roles_span: Option<usize>,
+    /// How many entries `capture.roles` declared, whatever their types.
+    ///
+    /// Kept beside the surviving entries so that a list whose elements failed to
+    /// parse is not mistaken for an empty list.
+    pub(crate) roles_declared: Option<usize>,
     pub(crate) stages: Vec<DraftStage>,
     pub(crate) stage_key_span: Option<usize>,
 }
@@ -280,6 +302,7 @@ fn draft(table: &Table<'_>, text: &str, d: &mut Diagnostics) -> Draft {
         capture: CaptureDefaults::default(),
         capture_span: None,
         roles_span: None,
+        roles_declared: None,
         stages: Vec::new(),
         stage_key_span: None,
     };
@@ -320,6 +343,18 @@ fn draft(table: &Table<'_>, text: &str, d: &mut Diagnostics) -> Draft {
                     text,
                     v.span.start,
                     "profile declares no `[[stage]]`; at least one is required",
+                )),
+                Some(items) if items.len() > MAX_STAGES => d.push(Diagnostic::at(
+                    DiagnosticCode::TooManyStages,
+                    "stage",
+                    text,
+                    v.span.start,
+                    format!(
+                        "profile declares {} stages, above the {MAX_STAGES} stage \
+                         limit; the ambiguity check of section 15.4 compares every \
+                         pair of stages, so the pass is quadratic in this count",
+                        items.len()
+                    ),
                 )),
                 Some(items) => {
                     for (index, item) in items.iter().enumerate() {
@@ -440,18 +475,23 @@ fn read_capture(table: &Table<'_>, text: &str, d: &mut Diagnostics, out: &mut Dr
         match v.as_array() {
             None => d.push(wrong_type("capture.roles", "array of strings", v, text)),
             Some(items) => {
+                // Every entry that parsed is kept, even when a sibling did not.
+                // A list of `["ghost", 1]` carries two independent faults: the
+                // second element's type, and the first naming a role no stage
+                // declares. Discarding the list on the first fault would report
+                // one and hide the other, which is what FR-013 forbids.
                 let mut roles = Vec::with_capacity(items.len());
-                let mut ok = true;
                 for (i, item) in items.iter().enumerate() {
                     let loc = format!("capture.roles[{i}]");
-                    match want_str(&loc, item, text, d) {
-                        Some(s) => roles.push(s.to_string()),
-                        None => ok = false,
+                    if let Some(s) = want_str(&loc, item, text, d) {
+                        roles.push(s.to_string());
                     }
                 }
-                if ok {
-                    out.capture.set_roles(roles);
-                }
+                // How many entries the author wrote, which is what decides
+                // whether the list was empty. Using the surviving count would
+                // report `["ghost", 1]` as an empty list, which it is not.
+                out.roles_declared = Some(items.len());
+                out.capture.set_roles(roles);
             }
         }
     }

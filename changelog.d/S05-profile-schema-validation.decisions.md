@@ -55,13 +55,13 @@ written anyway, giving two implementations of one syntax to drift apart.
 Section 25.2 lists duration parsing as a tier 0 concern without placing it, and
 three consumers are visible: `capture.duration` in a profile, `--duration` and
 `--wait` on the command line, and the ring window. Core is the crate all three
-reach, and the grammar adds no dependency there, so the allowlist
-`cargo xtask deps` enforces is untouched.
+reach, and the grammar adds no dependency there, so the allowlist `cargo xtask
+deps` enforces is untouched.
 
-Keeping it in `fragcap-profile` was the alternative and fails on ring mode:
-that slice would either depend on a sibling, which section 8.3 forbids, or carry
-a second grammar. Two implementations of `30m` that disagree produce a capture
-of the wrong length, which is a defect an operator cannot see in the output.
+Keeping it in `fragcap-profile` was the alternative and fails on ring mode: that
+slice would either depend on a sibling, which section 8.3 forbids, or carry a
+second grammar. Two implementations of `30m` that disagree produce a capture of
+the wrong length, which is a defect an operator cannot see in the output.
 
 Recorded for promotion to specification section 29, since section 25.2 names the
 concern without assigning it a crate.
@@ -80,8 +80,8 @@ than having to decide whether it is a defect.
 - The `descends_from` relation must be acyclic. A cycle is unsatisfiable, so
   every stage in it binds nothing.
 - Every role named in `capture.roles` must be declared by a stage, and the list
-  must not be empty when present. A role nothing declares captures nothing
-  under it.
+  must not be empty when present. A role nothing declares captures nothing under
+  it.
 
 Each is in the failure class the two unusual checks section 15.4 already names
 were added for: a run that succeeds, exits zero, and captures nothing. All three
@@ -96,11 +96,11 @@ accepted here: a profile key with no consumer is a key whose behavior is
 untested and whose meaning is set by whoever first reads it. S14 owns the
 command line and adds the keys it can honor.
 
-Ignoring an unknown key is the silent failure. An author who writes
-`payloads = false` intending `payload = false` gets a capture containing full
-packet contents they meant to exclude, and nothing in the run says so. That is a
-P-9 problem rather than a typo: the instrument was told to narrow what it
-recorded and did not.
+Ignoring an unknown key is the silent failure. An author who writes `payloads =
+false` intending `payload = false` gets a capture containing full packet
+contents they meant to exclude, and nothing in the run says so. That is a P-9
+problem rather than a typo: the instrument was told to narrow what it recorded
+and did not.
 
 Strictness is only safe because `schema` exists. A profile written for a later
 format declares it and is refused with one version diagnostic rather than a wall
@@ -141,3 +141,74 @@ it is worth less than the minimum toolchain the alternative would have cost.
 The behavior is pinned by a test rather than left in prose, so a future reader
 finds a recorded decision instead of a surprise, and so that the day the parser
 gains datetime support the test says so.
+
+### 2026-08-09: The ambiguity pass is bounded rather than merely measured, reversing an answer in this slice
+
+Recorded as a reversal because the first answer was written into the plan, the
+research, a success criterion, and a checklist item, and was then shown to be
+wrong in review rather than merely incomplete.
+
+The claim was that the ambiguity check's cost needed no cap because the one
+mebibyte profile size limit already bounded it. It does not. The limit bounds
+each factor and not their product: two `exe` patterns of half a megabyte each
+fit inside a one mebibyte profile and ask the intersection decision for a table
+of roughly 10^12 cells, which aborts the process instead of returning a
+diagnostic. A profile that has already been refused should not be able to end
+the run that is refusing it.
+
+The arithmetic is worse than it first looks. With `k` stages of pattern length
+`L`, the pairwise pass costs about `(kL)^2 / 2`, which depends only on the total
+bytes spent on patterns. Capping one factor moves the cost between the two
+rather than removing it, so one limit would not have been enough.
+
+Two limits now exist, and each answers to the domain rather than being a round
+number:
+
+- An `exe` pattern is capped at 255 characters. `exe` matches one Windows file
+  name component, and Windows caps that component at 255 characters, so a longer
+  pattern is longer than anything it can be compared against.
+- A profile is capped at 64 stages. The focal titles of specification section
+  5.4 declare two stages and three, so 64 is two orders of magnitude beyond any
+  plausible launcher chain, and it bounds the pass at 2,016 decisions.
+
+Worst case is then about 1.3 times 10^8 cell visits and 64 kibibytes of peak
+table. Each limit is its own diagnostic naming itself, and each has a test that
+accepts the limit and refuses one past it. The decision walk carries a
+`debug_assert` stating the invariant it relies on, so a future caller that
+constructs a pattern by some other route fails loudly in a test build.
+
+The general form is worth keeping, because this slice will not be the last to
+read a file an operator did not write: a quadratic pass over such input is not
+made safe by bounding the input, only by bounding the factors the quadratic is
+taken over.
+
+### 2026-08-09: Three corrections from pull request 11 review
+
+Smaller than the above and recorded because each was a promise the code did not
+keep.
+
+**The schema version gate now runs before the top level key check.** A profile
+declaring a later schema and a key this build does not know returned two
+diagnostics, where FR-012 promises one. A new key is the most likely thing a
+later schema adds, so reporting it beside the version fault reports a
+consequence of that fault as though it were a second problem. The test that was
+meant to cover this had placed its unknown key after `[game]`, where TOML puts
+it inside that table rather than at the top level, so it passed without
+exercising the path. Both the ordering and the test are fixed.
+
+**A wrongly typed entry in `capture.roles` no longer suppresses its siblings.**
+The first implementation discarded the whole list when any element failed to
+parse, so `["ghost", 1]` reported the type fault and silently dropped the fact
+that `ghost` is a role no stage declares. Two independent faults, one reported.
+Emptiness is now judged on the number of entries the author declared rather than
+the number that survived parsing, so a list with one bad element is not also
+reported as empty, which would have been a wrong diagnostic rather than an extra
+one.
+
+**A resolution failure now names a supplied directory that does not exist.**
+Skipping an absent search directory is right, and leaving it out of the failure
+report was not: a search consisting only of a missing directory failed with an
+empty list and the message "no profile directories were given", which is false
+when one was given. The candidate path is now recorded before the directory is
+tested, because the answer an operator needs on this failure is where to put the
+file.

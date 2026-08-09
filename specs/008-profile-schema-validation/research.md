@@ -148,9 +148,11 @@ two implementations of one syntax to drift apart.
 matches any run of characters including none, `?` matches exactly one character,
 every other character is a literal, and there is no escape sequence. No escape
 is needed because Windows forbids `*` and `?` in a file name, so a pattern
-containing one always means the wildcard. Every string is therefore a
-well-formed pattern, and FR-020's compilation check can only fail on an empty
-pattern, which is refused because it matches only the empty image name.
+containing one always means the wildcard. Every string of at most 255 characters
+is therefore a well-formed pattern, so FR-020's check can fail in exactly two
+ways: an empty pattern, refused because it matches only the empty image name,
+and a pattern above the length limit, refused for the reason in the complexity
+note below.
 
 **The decision procedure.** Reachability over a table indexed by position in
 each pattern. A cell is reachable when the corresponding prefixes can be
@@ -168,11 +170,36 @@ is the author's text verbatim, which is what FR-009 requires. A reviewer
 encountering a lowercase conversion in `glob.rs` should read it against this
 distinction rather than as a P-9 violation.
 
-**Complexity.** The pass is quadratic in stage count, and each decision is
-linear in the product of the two pattern lengths. Both are bounded by the one
-mebibyte file limit, which is why no arbitrary stage limit is introduced. This
-is the connection checklist item CHK035 records, and it is the thing that stops
-holding if a later slice raises the limit.
+**Complexity, and a bound this entry originally got wrong.** The pass is
+quadratic in stage count, and each decision allocates a table linear in the
+product of the two pattern lengths. The first version of this entry concluded
+that the one mebibyte file limit bounded both, and that conclusion is false: the
+file limit bounds each factor and not their product. Two `exe` patterns of half
+a megabyte each fit inside a one mebibyte profile and ask for a table of roughly
+10^12 cells, which aborts the process rather than returning a diagnostic. Worse,
+the total work is invariant under how the bytes are split: with `k` stages of
+pattern length `L`, the pass costs about `(kL)^2 / 2`, so capping only one
+factor moves the cost around without reducing it.
+
+Pull request 11's review found this. Two limits now bound it, and both are
+answers to the domain rather than round numbers:
+
+- An `exe` pattern is capped at 255 characters. `exe` matches one Windows file
+  name component and Windows caps that component at 255 characters, so a longer
+  pattern is longer than anything it can be compared against.
+- A profile is capped at 64 stages. The focal titles of section 5.4 declare two
+  and three, so 64 is two orders of magnitude beyond any plausible launcher
+  chain, and it bounds the pairwise pass at 2,016 decisions.
+
+Together the worst case is about 1.3 times 10^8 cell visits and 64 kibibytes of
+peak table, which is well under a second and a rounding error of memory. A
+`debug_assert` in the walk states the invariant it depends on, so a future
+caller that bypasses `ImagePattern::new` fails loudly in a test build rather
+than quietly asking for a terabyte.
+
+The general lesson is worth keeping: a quadratic pass over input an operator did
+not write is not made safe by bounding the input, only by bounding the factors
+the quadratic is taken over.
 
 ## R-3. Which regular expression engine, and where it lives
 

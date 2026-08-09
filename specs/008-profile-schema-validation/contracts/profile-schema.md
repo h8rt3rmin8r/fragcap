@@ -89,6 +89,7 @@ the author a profile narrower or wider than the one they wrote.
 | `stage.lifecycle` | string | `transient`, `session`, `service`. |
 | `stage.terminal` | boolean | At most one stage true; that stage's lifecycle must be `session`. |
 | `stage.match` | table | At least one predicate. |
+| `stage` (the array) | array of tables | One or more, at most 64. |
 | `match.exe` | string | Image name glob, below. Non-empty. |
 | `match.path_contains` | string | Substring, case-insensitive at evaluation. |
 | `match.path_regex` | string | Must compile. |
@@ -124,8 +125,11 @@ forbids `*` and `?` in a file name, so an occurrence always means the wildcard.
 Comparison is case-insensitive, per section 10.3. The pattern is stored as the
 author wrote it; case folding happens on copies at comparison time.
 
-Every non-empty string is a well-formed pattern. The empty pattern is refused
-because it matches only the empty image name.
+Every non-empty string of at most 255 characters is a well-formed pattern. The
+empty pattern is refused because it matches only the empty image name, and a
+pattern above 255 characters is refused because Windows caps a file name
+component there, so a longer pattern is longer than anything it can match. That
+limit is also what bounds the intersection decision's table.
 
 ## The ambiguity rule
 

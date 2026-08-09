@@ -105,6 +105,8 @@ pub enum DiagnosticCode {
     EmptyRoles,
     /// The profile declares no stage.
     NoStages,
+    /// The profile declares more stages than [`crate::MAX_STAGES`].
+    TooManyStages,
     /// Two stages declare the same role.
     DuplicateRole,
     /// More than one stage is marked terminal.
@@ -146,6 +148,7 @@ impl DiagnosticCode {
             DiagnosticCode::EmptyMatch => "empty-match",
             DiagnosticCode::EmptyRoles => "empty-roles",
             DiagnosticCode::NoStages => "no-stages",
+            DiagnosticCode::TooManyStages => "too-many-stages",
             DiagnosticCode::DuplicateRole => "duplicate-role",
             DiagnosticCode::MultipleTerminal => "multiple-terminal",
             DiagnosticCode::TerminalLifecycle => "terminal-lifecycle",

@@ -64,8 +64,8 @@ pub mod schema;
 pub mod validate;
 
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
-pub use glob::{ImagePattern, PatternError};
-pub use parse::{load, LoadError, MAX_PROFILE_BYTES};
+pub use glob::{ImagePattern, PatternError, MAX_PATTERN_CHARS};
+pub use parse::{load, LoadError, MAX_PROFILE_BYTES, MAX_STAGES};
 pub use resolve::{
     resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
 };
