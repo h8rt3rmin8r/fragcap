@@ -14,3 +14,5 @@ readme                 = "README.md"
 
 [dependencies]
 fragcap-core.workspace = true
+regex.workspace        = true
+toml-span.workspace    = true

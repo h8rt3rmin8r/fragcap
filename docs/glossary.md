@@ -460,6 +460,25 @@ short.
 **See also:** [Sink](#sink), [Sink thread](#sink-thread),
 [Pipeline](#pipeline)
 
+### Duration literal
+
+A capture duration as an operator writes it: one unsigned decimal integer
+followed by one unit from `ms`, `s`, `m`, or `h`. `30m` is thirty minutes.
+
+A bare integer is refused rather than given a default unit, zero is refused, and
+compound forms such as `1h30m` are not accepted in this schema version. The
+grammar lives in `fragcap-core` because a [game profile](#game-profile), the
+command line, and ring mode all need the same one.
+
+{: .matters }
+> A guessed unit is a guess about how much of a session the operator loses, and
+> two implementations of `30m` that disagree produce a capture of the wrong
+> length. Widening the accepted syntax later keeps every profile written today
+> valid; narrowing it does not, so the narrow form ships first.
+
+**See also:** [Game profile](#game-profile),
+[Profile schema version](#profile-schema-version)
+
 ## Windows Internals
 
 ### ETW
@@ -598,7 +617,119 @@ class.
 > first class. Adding support for a game means writing a TOML file, never
 > modifying Rust.
 
-**See also:** [Game profile](#game-profile), [Launcher chain](#launcher-chain)
+**See also:** [Game profile](#game-profile),
+[Launcher chain](#launcher-chain), [Lifecycle class](#lifecycle-class),
+[Terminal stage](#terminal-stage), [Match predicate](#match-predicate)
+
+### Lifecycle class
+
+What a [stage](#stage) declares about how long its process is expected to live,
+and therefore how its exit is treated: `transient` exits during the session and
+that exit is normal, `session` is expected to live for the session and its exit
+is significant, `service` may have been running before the session began and is
+never awaited during acquisition.
+
+{: .matters }
+> Waiting for a service to start deadlocks, because it has already started. The
+> class is also what makes a [terminal stage](#terminal-stage) meaningful: only
+> a `session` process has an exit worth ending a capture on.
+
+**See also:** [Stage](#stage), [Terminal stage](#terminal-stage),
+[Launcher chain](#launcher-chain)
+
+### Terminal stage
+
+The one [stage](#stage) in a [game profile](#game-profile) whose exit ends the
+capture. At most one per profile, and its [lifecycle class](#lifecycle-class) is
+always `session`.
+
+{: .matters }
+> A terminal `transient` stage would end the capture at the moment a launcher
+> hands off, which is the point the whole [launcher chain](#launcher-chain)
+> exists to survive. Validation refuses it rather than leaving the mistake to be
+> discovered in a short well-formed capture file.
+
+**See also:** [Stage](#stage), [Lifecycle class](#lifecycle-class)
+
+### Match predicate
+
+One condition a [stage](#stage) tests against a process start event: `exe`, an
+image name glob compared case-insensitively; `path_contains`; `path_regex`;
+`cmdline_contains`; and `descends_from`, an ancestor bound to a named role. All
+predicates a stage declares must hold.
+
+`descends_from` resolves against the synthetic [process tree](#process-tree)
+rather than the operating system parent chain, which is what makes it reliable
+across a launcher that has already exited.
+
+{: .matters }
+> Where an image name is not unique within a chain, `descends_from` is required
+> rather than advisory. See [ambiguous image match](#ambiguous-image-match) for
+> what happens when it is missing.
+
+**See also:** [Stage](#stage), [Ambiguous image match](#ambiguous-image-match),
+[Process tree](#process-tree)
+
+### Ambiguous image match
+
+Two [stages](#stage) in one [game profile](#game-profile) whose `exe` patterns
+can match a common image name, where at least one of them declares no other
+[match predicate](#match-predicate). Validation refuses the profile and names
+both stages.
+
+The decision is exact rather than approximate: two patterns over `*`, `?`, and
+literals either can match a common name or cannot.
+
+{: .matters }
+> A stage bound to the wrong process among several sharing an image name
+> produces a capture that exits zero, is well formed, and contains no gameplay.
+> One focal title runs three processes under one image name and only the last
+> holds sockets, so this is a recorded case rather than a hypothetical. It is
+> the configuration-side form of the loss constitution principle P-4 forbids:
+> every packet is lost and none is counted.
+
+**See also:** [Match predicate](#match-predicate), [Stage](#stage),
+[Launcher chain](#launcher-chain)
+
+### Profile schema version
+
+The `schema` key at the top of a [game profile](#game-profile), declaring which
+version of the file format it is written against. Currently `1`.
+
+A profile declaring an unsupported version is refused with one diagnostic naming
+the supported version, and the rest of the file is not reported on.
+
+{: .matters }
+> The version is what makes strict key checking safe. Unknown keys are refused
+> rather than ignored, because ignoring `payloads = false` written for
+> `payload = false` hands the operator a capture containing contents they meant
+> to exclude and says nothing. Refusing needs a way for the format to grow, and
+> this is it. Reporting forty unknown-key faults when the real answer is that
+> the profile is newer than the build would be misleading rather than merely
+> unhelpful.
+
+**See also:** [Game profile](#game-profile),
+[Profile resolution order](#profile-resolution-order)
+
+### Profile resolution order
+
+The four steps by which a profile reference becomes a profile, first match
+winning: an existing file at that path, then `<ref>.toml` in a profile directory
+given on the command line, then `<ref>.toml` in the user profile directory, then
+a bundled profile whose `game.id` matches.
+
+A reference used in the last three steps must be a valid identifier and is
+refused before any path is joined to it. An explicit path is exempt, because an
+operator who types a path has named a file.
+
+{: .matters }
+> User profiles shadow bundled ones by design, so a bundled profile that has
+> drifted from a game update is corrected locally without waiting for a release.
+> The identifier check happens before the join rather than relying on the open
+> failing, because a check that depends on what is at the target is not a check.
+
+**See also:** [Game profile](#game-profile),
+[Profile schema version](#profile-schema-version)
 
 ### Packet source
 
@@ -871,13 +1002,23 @@ A Windows packet capture driver and library, the current successor to WinPcap.
 ### Game profile
 
 A TOML file describing a game's process topology, stage match rules, and
-capture defaults.
+capture defaults. Versioned: every profile declares a
+[profile schema version](#profile-schema-version), and a reference to one
+resolves through the [profile resolution order](#profile-resolution-order).
 
 {: .matters }
 > Profiles are data, not code. They carry the same license as the repository,
-> and a contributor can add support for a title without writing Rust.
+> and a contributor can add support for a title without writing Rust. Validation
+> reports every problem in a profile rather than stopping at the first, because
+> the population writing these files is not the population that can debug a
+> parser.
 
-**See also:** [Stage](#stage)
+**See also:** [Stage](#stage), [Lifecycle class](#lifecycle-class),
+[Terminal stage](#terminal-stage), [Match predicate](#match-predicate),
+[Ambiguous image match](#ambiguous-image-match),
+[Profile schema version](#profile-schema-version),
+[Profile resolution order](#profile-resolution-order),
+[Duration literal](#duration-literal)
 
 ## File and Wire Formats
 

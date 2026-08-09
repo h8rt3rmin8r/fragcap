@@ -22,6 +22,14 @@
 //! facilities with no platform surface, which `cargo xtask neutral` proves
 //! rather than asserts.
 //!
+//! [`duration`] arrived in slice S05 and is the third. It parses a duration
+//! literal as an operator writes it. It is here rather than in
+//! `fragcap-profile` because three slices need the same grammar (a profile's
+//! `capture.duration`, the command line's `--duration` and `--wait`, and the
+//! ring window), section 8.3 forbids a crate below the facade depending on a
+//! sibling, and two implementations of `30m` that disagree would produce a
+//! capture of the wrong length.
+//!
 //! # Platform neutrality
 //!
 //! Constitution P-2: this crate takes no platform-specific dependency, no I/O
@@ -68,6 +76,7 @@
 //! the part intended to survive to 1.0.0 unchanged.
 
 pub mod attribution;
+pub mod duration;
 pub mod error;
 pub mod filter;
 pub mod flow;
@@ -80,6 +89,7 @@ pub mod stats;
 pub mod traits;
 
 pub use attribution::{Attribution, Fidelity, StageId};
+pub use duration::DurationError;
 pub use error::{AttrError, SinkError, SourceError};
 pub use filter::FilterProgram;
 pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};

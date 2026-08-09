@@ -15,10 +15,15 @@
 //! to add any: the tier 1 substrate that makes specification section 25.1's
 //! claim true, namely that the whole pipeline runs with no capture driver, no
 //! elevated privilege, and no game.
+//!
+//! Slice S05 added [`profile`], which is the first surface an operator writes
+//! against rather than a contributor: a profile is a TOML file, and adding
+//! support for a game never requires modifying Rust.
 
 /// Types, traits, and the header parser.
 pub mod core {
     pub use fragcap_core::attribution::{Attribution, StageId};
+    pub use fragcap_core::duration::DurationError;
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
     pub use fragcap_core::flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
     pub use fragcap_core::link::LinkType;
@@ -46,6 +51,20 @@ pub mod attr {
     pub use fragcap_attr::scripted::ScriptedAttributor;
 }
 
+/// Game profiles: schema, validation, and resolution.
+pub mod profile {
+    pub use fragcap_profile::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
+    pub use fragcap_profile::glob::{ImagePattern, PatternError};
+    pub use fragcap_profile::parse::{load, LoadError, MAX_PROFILE_BYTES};
+    pub use fragcap_profile::resolve::{
+        resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
+    };
+    pub use fragcap_profile::schema::{
+        CaptureDefaults, CaptureMode, Game, GameId, Lifecycle, MatchPredicates, PathRegex, Profile,
+        Stage, SCHEMA_VERSION,
+    };
+}
+
 /// Output sinks.
 pub mod sink {
     pub use fragcap_sink::annotation::{
@@ -61,6 +80,10 @@ pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
 pub use attr::{AttributionScript, ScriptedAttributor};
 pub use capture::{PcapReader, ReplaySource, ReplayStats};
+pub use profile::{
+    resolve, BundledSet, Diagnostic, DiagnosticCode, Diagnostics, Profile, ProfileSource,
+    ResolveError, SearchPath,
+};
 pub use sink::{
     AnnotatedDirection, Annotation, AnnotationError, Fidelity, InterfaceDeclaration,
     JsonLinesWriter, PayloadMode, PcapngWriter, WriteError,

@@ -43,18 +43,19 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S04 and S06 through S08 are complete. S05 is not: the profile
-schema is still unbuilt, and the ordering in `docs/plans/README.md` does not
-put it before S08. The Cargo workspace exists with the eight
+Slices S01 through S08 are complete. The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
 vocabulary from specification sections 8.4 and 8.5, a `parse` module
-implementing sections 12.5 and 12.6, and a `pipeline` module implementing
-sections 8.6 and 12.4. `fragcap-capture` reads classic pcap and
-replays it as a `PacketSource`. `fragcap-attr` answers attribution from a
-declared script. `fragcap-sink` writes both output formats: pcapng carrying
-attribution in packet comments, and JSON Lines. `fixtures/` holds the committed
-corpus of section 25.3 and, since S06, a golden per fixture per format.
+implementing sections 12.5 and 12.6, a `pipeline` module implementing
+sections 8.6 and 12.4, and a `duration` module carrying the literal grammar
+three later slices share. `fragcap-profile` carries section 15 in full: the
+schema, the validation set, and the resolution order. `fragcap-capture` reads
+classic pcap and replays it as a `PacketSource`. `fragcap-attr` answers
+attribution from a declared script. `fragcap-sink` writes both output formats:
+pcapng carrying attribution in packet comments, and JSON Lines. `fixtures/`
+holds the committed corpus of section 25.3 and, since S06, a golden per fixture
+per format.
 
 **The section 25.1 claim is now demonstrated rather than asserted.**
 `crates/fragcap/tests/pipeline.rs` reads a fixture, parses every packet, and
@@ -97,6 +98,30 @@ labelled with it. S09 brings live capture and the identifier, and lifts both
 restrictions. The pcapng writer additionally cannot attribute the capture-wide
 `CaptureStats` per interface, which is a second reason it waits.
 
+**A profile cannot exist unvalidated, and being wrong well is the deliverable.**
+S05 filled in `fragcap-profile`. `Profile::parse` returns either a validated
+profile or every diagnostic found, and there is no other constructor, so section
+15.4's requirement that validation run before every capture cannot be forgotten
+by a later caller. Nothing on a diagnostic path uses `?`: a profile with four
+mistakes reports four, which is what section 15.4 asks for and what an author
+working against a game update needs.
+
+Two of its checks exist because the failures they catch are invisible. A stage
+bound to the wrong process among several sharing an image name, and a
+`capture.roles` entry naming a role nothing declares, both produce a run that
+exits zero, writes a well-formed file, and contains no gameplay. That is the
+configuration-side form of the loss P-4 forbids: every packet lost, none
+counted. The ambiguity decision is therefore exact rather than approximate, by a
+reachability walk over the two patterns. Three further checks were added beyond
+the section 15.4 list for the same reason and are recorded in the S05 decisions
+fragment as candidates for promotion.
+
+**Unknown keys in a profile are refused rather than ignored**, and the schema
+version is what makes that safe. An author who writes `payloads = false`
+intending `payload = false` is told, rather than handed a capture containing
+contents they meant to exclude. Do not relax this to be helpful; read the S05
+decisions fragment first.
+
 **A packet with no flow key advances neither attribution counter.** Never
 attempted is not attempted and failed, and `AttributionState` has kept the two
 apart since S02. S07's corpus helper conflated them and put a wrong count into
@@ -124,12 +149,14 @@ one contains, and a drift check in the ordinary gate fails if a committed file
 stops matching it. Regenerate with `FRAGCAP_UPDATE_FIXTURES=1 cargo test -p
 fragcap-capture --test corpus`, then read the diff. See `fixtures/README.md`.
 
-**Dependency inventory.** The workspace has one runtime dependency and one
+**Dependency inventory.** The workspace has three runtime dependencies and one
 dev-dependency, and the distinction is load-bearing rather than bookkeeping.
 
 | Crate | Kind | Added by | Why |
 | --- | --- | --- | --- |
 | `bytes` | runtime | S02 | Reference-counted payload clones |
+| `toml-span` | runtime | S05 | Profile parsing with byte spans on every value |
+| `regex` | runtime | S05 | Compiles the `path_regex` match predicate |
 | `serde_json` | dev only | S07 | Parses every line the JSON writer emits, in tests |
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
@@ -146,10 +173,30 @@ therefore a `VecDeque` behind a `Mutex` and a `Condvar`, and a proposal to add
 `crossbeam` or an async runtime here should say which of those three properties
 it thinks the dependency supplies.
 
-S05 remains free to pick a parser for the profile schema on the profile's
-merits; `serde_json` being present as a dev-dependency is not a runtime
-precedent, and adopting it at runtime would be a decision that slice makes for
-its own reasons.
+S05 is the other one worth spelling out, because it added two and the obvious
+choice was not available. `toml` declares Rust 1.85 against this workspace's
+1.82 minimum, and pinning it to `~1.0` does not help: `toml_parser` resolves to
+1.1.3 underneath and declares 1.85 too. `toml-span` declares 1.70, brings one
+transitive crate, has no serde in its graph, and carries the byte spans the
+diagnostics are built on. A serde-derived deserializer was never available on
+its own terms either: it returns the first error and stops, and section 15.4
+requires every problem in one report. `regex` is taken with default features off
+because the engine that validates a `path_regex` must be the engine that
+evaluates it in S12, and because `aho-corasick` and `memchr` accelerate scanning
+large haystacks while a haystack here is one image path. `regex-lite` was
+rejected for reduced Unicode support against paths that can carry non-ASCII.
+
+The `exe` glob matcher stays hand-rolled despite both, and the pairing only
+looks inconsistent: section 15.4 needs glob intersection, every glob crate
+answers glob matching, and a dependency would leave the harder half to be
+written anyway. A proposal to replace it should say how it decides whether two
+patterns can match one name.
+
+`toml-span` does not implement TOML datetimes, which its own documentation
+states and which the S05 analyze gate caught contradicting that slice's first
+requirement. No key in schema version 1 has a datetime type, so the divergence
+is confined to profiles that are invalid anyway; it is pinned by a test rather
+than left in prose.
 
 S07's writer is hand-rolled and its `serde_json` is test-only on purpose:
 verification is worth more the less it shares with what it verifies. Anything
