@@ -933,11 +933,21 @@ mod tests {
         /// fires. Give the sender to [`StubSource::signal_on_exhaustion`] and
         /// the sink cannot move until acquisition has finished.
         fn gated(log: &Log) -> (Box<dyn Sink>, Sender<()>) {
+            Self::gated_scripted(log, SinkScript::default())
+        }
+
+        /// A gated sink that also follows a script once released.
+        ///
+        /// The combination is what orders a sink failure strictly after
+        /// acquisition has ended. Without the gate the two race, and the test
+        /// asserting on the end reason passes or fails depending on which
+        /// thread won.
+        fn gated_scripted(log: &Log, script: SinkScript) -> (Box<dyn Sink>, Sender<()>) {
             let (tx, rx) = mpsc::channel();
             (
                 Box::new(StubSink {
                     log: Arc::clone(log),
-                    script: SinkScript::default(),
+                    script,
                     seen: 0,
                     gate: Some(rx),
                 }),
@@ -1731,22 +1741,31 @@ mod tests {
     // An ending acquisition reached on its own outranks a retirement the output
     // side observed afterwards, while draining. Reporting `AllSinksRetired`
     // here would bury the reason an operator most needs.
+    //
+    // The ordering is established by the gate, not by capacity and hope. The
+    // first version of this test used a roomy buffer and assumed acquisition
+    // would finish before the output side popped anything, which is a race: it
+    // passed locally and failed on the Windows runner, where the output side
+    // won, retired the sink, and set the stop that acquisition then reported.
+    // The gate is released by the source running dry, so the retirement is
+    // strictly after acquisition has chosen its ending.
     #[test]
     fn a_terminal_source_failure_outranks_a_later_retirement() {
         let log = log();
-        let source = StubSource::new(frames(8)).ending(Ending::Failed(SourceError::DeviceLost {
-            detail: "interface removed".into(),
-        }));
-        // Capacity 8 so every packet is buffered before the output side starts
-        // failing, which puts the retirement strictly after acquisition ended.
-        let mut p = pipeline(Box::new(source), 8);
-        p.add_sink(StubSink::scripted(
+        let (sink, release) = StubSink::gated_scripted(
             &log,
             SinkScript {
                 fail_at: Some(0),
                 ..SinkScript::default()
             },
-        ));
+        );
+        let source = StubSource::new(frames(8))
+            .ending(Ending::Failed(SourceError::DeviceLost {
+                detail: "interface removed".into(),
+            }))
+            .signal_on_exhaustion(release);
+        let mut p = pipeline(Box::new(source), 8);
+        p.add_sink(sink);
         let report = p.run();
 
         assert!(

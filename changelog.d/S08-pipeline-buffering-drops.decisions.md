@@ -117,6 +117,30 @@ Retirement now replaces only the stop it requested. An ending acquisition
 reached on its own happened first and is the reason. The retirements are
 reported either way, in `sink_failures`, so nothing is lost by the narrowing.
 
+### 2026-08-09: A timing-dependent test slipped in with the review fixes, and continuous integration caught it
+
+Worth recording because the discipline that should have prevented it is written
+down in this slice's own research: no test depends on a sleep or on a particular
+thread interleaving, and the tool for ordering two threads is a gate the test
+controls.
+
+The test added for the end-reason fix used a roomy buffer and assumed the
+acquisition side would finish before the output side popped anything. That is a
+race, not an ordering. It passed on the development machine and failed on the
+Windows runner, where the output side won, retired the sink first, and set the
+stop that acquisition then reported, which is the one case where reporting
+`AllSinksRetired` is correct.
+
+The fix under test was never in question: reverting it still fails the test.
+What was wrong was that the test only sometimes produced the scenario it named.
+It now gates the sink on the source running dry, so the retirement is strictly
+after acquisition has chosen its ending, by construction rather than by luck.
+
+The general lesson is that a concurrency test which passes locally has
+demonstrated one schedule. Prefer an ordering the test imposes, and prefer
+asserting an invariant that holds under every schedule, which is why the
+conservation identity is the assertion the rest of this slice leans on.
+
 ### 2026-08-08: The bounded buffer refuses a zero capacity rather than documenting against it
 
 `Pipeline::new` rejects a zero capacity with a named error, and review pointed

@@ -168,12 +168,14 @@ integrated through pull request #1.
 Two things are scaffolded but not exercised, and must not be reported as
 passing checks:
 
-- **Half the workflow matrix has never completed.** The first runs landed
-  during the GitHub incident of 2026-08-06. `check (ubuntu-latest)` and
-  `check (windows-latest)` passed; `minimum supported toolchain`, `core builds
-  without a capture backend`, `platform`, and `audit` never acquired a runner
-  and are red for that reason, not for a code reason. Re-run them before
-  treating any of the four as green.
+- **Two of the four workflows that had never completed now have.** The first
+  runs landed during the GitHub incident of 2026-08-06, and `minimum supported
+  toolchain`, `core builds without a capture backend`, `platform`, and `audit`
+  never acquired a runner, so they were red for that reason rather than a code
+  reason. On pull request 10 the first two ran and passed. `platform` and
+  `audit` still have not: `audit` is weekly and dispatch-only, and `platform`
+  did not trigger on that pull request. Neither should be treated as green
+  until watched.
 - **The minimum-toolchain check now runs for real.** Until S02 it built with
   the pinned toolchain and reported success, which said nothing about the
   declared minimum. It now builds through `rustup run 1.82` and exits 2 when
