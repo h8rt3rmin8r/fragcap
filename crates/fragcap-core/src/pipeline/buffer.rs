@@ -62,7 +62,18 @@ struct Shared {
 }
 
 /// A buffer's two halves, created together.
+///
+/// # Panics
+///
+/// If `capacity` is zero. [`super::Pipeline::new`] rejects that with a named
+/// error and is the only caller today, but this function is reachable from
+/// anywhere in the crate and a zero capacity is not merely useless here: every
+/// push would find the queue full, pop nothing, and still advance the eviction
+/// count, so the buffer would grow without bound while reporting losses that
+/// did not happen. A counter that lies is the one failure this module exists to
+/// prevent, so the precondition is enforced rather than documented.
 pub(crate) fn channel(capacity: usize) -> (Producer, Consumer) {
+    assert!(capacity > 0, "a bounded buffer needs a non-zero capacity");
     let shared = Arc::new((
         Mutex::new(Shared {
             queue: VecDeque::new(),
@@ -194,6 +205,16 @@ mod tests {
             }
         }
         out
+    }
+
+    // A zero capacity would make every push find the queue full, pop nothing,
+    // and still advance the eviction count. `Pipeline::new` rejects it with a
+    // named error; this is the crate-internal backstop for a caller that
+    // bypassed it.
+    #[test]
+    #[should_panic(expected = "non-zero capacity")]
+    fn a_zero_capacity_buffer_cannot_be_created() {
+        let _ = channel(0);
     }
 
     // T009. FR-014.

@@ -96,6 +96,36 @@ correctly as though it were. The acquisition side's counters are lost with its
 stack, which is a real gap and is documented rather than hidden; the eviction
 count survives because it is not kept there.
 
+**The obligation is symmetric, and the first version of this only went one
+way.** Review found that a panicking sink unwound the output thread without
+telling the acquisition side, which then kept reading until the source closed on
+its own. A replay source closes; a live source does not, so `run` would have
+acquired forever and never reached the join that re-raises the panic. The
+original test used a finite source and could not have caught it. The output
+thread now holds a guard that requests the stop however it terminates, and the
+test uses a source that never closes, so a regression hangs rather than passing.
+
+### 2026-08-08: An ending acquisition reached on its own outranks a later retirement
+
+Also from review. The end reason was replaced with every-sink-retired whenever
+every sink had retired, regardless of what had already ended acquisition. A
+source that failed with a `DeviceLost` and a last sink that failed afterwards,
+while the output side was still draining, therefore reported the retirement and
+buried the device loss, which is the diagnostic an operator most needs.
+
+Retirement now replaces only the stop it requested. An ending acquisition
+reached on its own happened first and is the reason. The retirements are
+reported either way, in `sink_failures`, so nothing is lost by the narrowing.
+
+### 2026-08-08: The bounded buffer refuses a zero capacity rather than documenting against it
+
+`Pipeline::new` rejects a zero capacity with a named error, and review pointed
+out that the crate-private constructor beneath it did not. A zero capacity there
+is worse than useless: every push finds the queue full, pops nothing, and still
+advances the eviction count, so the buffer grows without bound while reporting
+losses that never happened. A counter that lies is the one failure the module
+exists to prevent, so the precondition is asserted.
+
 ### 2026-08-08: The `malformed` JSON golden was wrong, and driving the writers from the pipeline found it
 
 `fixtures/goldens/malformed.jsonl` claimed `"unattributed":5` for five packets

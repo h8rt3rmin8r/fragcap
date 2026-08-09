@@ -99,12 +99,24 @@ The expected result for this slice is no change to any manifest. The pipeline
 uses the standard library only. A diff here is a decision, and it belongs in
 the changelog's decisions fragment before it belongs in the code.
 
-## Regenerating fixtures
+## Regenerating fixtures and goldens
 
-Not needed for this slice, and doing it would be a warning sign: S08 changes no
-fixture and no golden. If a golden appears to need regenerating, the pipeline
-is behaving differently from the loop the goldens were produced by, and the
-difference is the finding.
+S08 changes no fixture. It changed exactly one golden, and the paragraph below
+is what that rule is for rather than an exception to it.
 
-The command exists for completeness and is documented in
+`fixtures/goldens/malformed.jsonl` claimed `"unattributed":5` for five packets
+that produced no flow key, where attribution was never attempted. The S07
+corpus helper counted with `attribution.is_some()` and folded two of the three
+`AttributionState` variants together. Driving the same writers from the
+pipeline, which counts the three apart, is what surfaced it. The helper and the
+golden were both corrected; the other fifteen goldens reproduce byte for byte.
+
+The rule stands unchanged, and it is the reason the change is defensible: **do
+not regenerate a golden to turn a test green.** A golden that needs changing is
+the finding, and the work is to explain why the output moved before touching
+the file. The diff above was one field on one line, read before it was
+committed, and written up in the S08 decisions fragment. A regeneration nobody
+can account for that way is a defect being laundered.
+
+The command is documented in
 [../../fixtures/README.md](../../fixtures/README.md).

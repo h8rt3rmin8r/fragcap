@@ -121,7 +121,14 @@ Owns everything for one run.
 | `SourceClosed` | | The source reported `Closed`. The ordinary ending. |
 | `Stopped` | | A stop was requested and observed. |
 | `SourceFailed` | `SourceError` | A non-recoverable source error other than `Closed`. |
-| `AllSinksRetired` | | Every attached sink returned a non-countable error. Only reachable with at least one sink. |
+| `AllSinksRetired` | | Every attached sink returned a non-countable error, and the stop that caused is what ended acquisition. Only reachable with at least one sink. |
+
+`AllSinksRetired` replaces `Stopped` and nothing else. If acquisition had
+already ended on its own, by exhaustion or by a terminal source failure, before
+the output side finished draining and retired the last sink, that earlier
+ending is the reason and is reported. Burying a `DeviceLost` under a retirement
+the output side found afterwards would hide the diagnostic an operator needs
+most. The retirement is still reported, in `sink_failures`.
 
 A recoverable source error produces none of these; the loop continues.
 
@@ -130,10 +137,19 @@ A recoverable source error produces none of these; the loop continues.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `index` | `usize` | Position in the sink list as added. |
-| `error` | `SinkError` | The non-countable error that retired it. |
+| `error` | `SinkError` | The error that retired the sink, or that it produced while being flushed or finished. |
 
-Recorded once per sink, at retirement. Subsequent packets advance
-`sink_dropped` rather than adding another record.
+Two distinct events produce one of these, and a caller must not assume which.
+A `write` returning a non-countable error records one and retires the sink;
+subsequent packets then advance `sink_dropped` rather than adding another
+record. A `flush` or `finish` returning any error also records one, and there
+is nothing left to retire or count, so the record is the only statement that
+the output is probably incomplete.
+
+One sink can therefore appear up to three times: once for retirement, once for
+a failing flush, once for a failing finish. A `SinkError::Full` from `write`
+produces no record at all; it is counted in `sink_dropped` and the sink stays
+in service.
 
 ### `PipelineReport`
 

@@ -65,7 +65,14 @@ The output loop, per item:
 
 When every sink has retired, the output side requests the stop so the
 acquisition side winds down, and continues to drain and count until the
-terminal item arrives. The end reason is `AllSinksRetired`.
+terminal item arrives.
+
+The end reason is `AllSinksRetired` only when that stop is what ended
+acquisition. If acquisition had already ended on its own, by exhaustion or by a
+terminal source failure, that ending is reported instead: it happened first and
+it is the reason, and a `DeviceLost` is exactly the diagnostic a caller must not
+have buried under a retirement discovered afterwards. The retirements are
+reported either way, in `sink_failures`.
 
 ## Finishing
 
@@ -84,7 +91,10 @@ that sink. It cannot retire the sink for future writes, because there are none.
 ## Panic behavior
 
 - If a sink panics, the pipeline does not catch it. The panic unwinds the
-  output thread and reaches the caller when `run` joins it.
+  output thread, which requests the stop as it goes, so the acquisition loop
+  ends and `run` reaches the join that re-raises the panic. Without that
+  request a source that never closes on its own, which is every live source,
+  would leave `run` acquiring forever and the panic would never surface.
 - If the acquisition side panics, the producer is dropped during unwinding,
   which closes the buffer. The output side drains, flushes, and finishes. The
   guard holding the output thread's join handle joins it during the same

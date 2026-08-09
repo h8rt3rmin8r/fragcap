@@ -510,6 +510,10 @@ run it.
 - **FR-027a**: Every packet admitted after a sink is retired MUST advance
   `sink_dropped` once for that retired sink.
 - **FR-027b**: The run MUST end when every sink has been retired.
+- **FR-027c**: The run MUST report every-sink-retired as the end reason only
+  when that is what ended acquisition. An ending acquisition reached on its own
+  first, by exhaustion or by a terminal source failure, MUST be reported
+  instead, with the retirements still named in the report.
 - **FR-028**: Every sink MUST be flushed and finished, retired or not, and
   every non-countable failure MUST be named in the report alongside the index
   of the sink that produced it.
@@ -534,6 +538,12 @@ run it.
 - **FR-033a**: The output side MUST observe an ending when the acquisition side
   terminates for any reason, including an unwinding panic, and MUST NOT wait
   indefinitely for a terminal item.
+- **FR-033a1**: The acquisition side MUST observe an ending when the output side
+  terminates for any reason, including an unwinding panic, and MUST NOT continue
+  acquiring indefinitely. The obligation is symmetric with FR-033a and matters
+  for the same reason: a source that never closes on its own, which is every
+  live source, would otherwise keep the run alive forever and the panic would
+  never reach the caller.
 - **FR-033b**: When the acquisition side panics, the run MUST drain, flush, and
   finish every sink before the panic reaches the caller, and MUST re-raise the
   panic rather than reporting it as an end reason.
@@ -621,6 +631,9 @@ run it.
 - **SC-011**: An acquisition-side panic is exercised by a test that asserts the
   output side ended, the sinks were finished, and the panic still reached the
   caller.
+- **SC-011a**: An output-side panic is exercised against a source that never
+  closes on its own, so a test that hangs is the failure. A finite source cannot
+  detect this and must not be used for it.
 - **SC-012**: No test in this slice asserts a throughput or latency number, and
   no benchmark is added.
 

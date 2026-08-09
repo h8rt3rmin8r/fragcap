@@ -186,8 +186,24 @@ impl fmt::Display for EndReason {
     }
 }
 
-/// A sink that returned an error the pipeline could not count and carry on
-/// from.
+/// A sink that failed in a way the pipeline recorded rather than counted.
+///
+/// Two distinct events produce one of these, and a caller reading
+/// `sink_failures` should not assume which:
+///
+/// - A `write` returning an error for which [`SinkError::is_countable`] is
+///   false. The sink is retired, and every subsequent packet advances
+///   `sink_dropped` for it.
+/// - A `flush` or `finish` returning any error. Those run once, after the last
+///   write, so there is nothing left to retire and nothing further to count.
+///   The output is likely incomplete, and this record is the only place that
+///   says so.
+///
+/// A [`SinkError::Full`] from `write` produces no record at all: it is counted
+/// in `sink_dropped` and the sink stays in service.
+///
+/// One sink can therefore appear more than once, at most once for retirement
+/// and once each for a failing flush and finish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SinkFailure {
@@ -363,7 +379,17 @@ impl Pipeline {
 
         let (tx, rx) = buffer::channel(config.capacity);
         let output_stop = stop.clone();
-        let handle = std::thread::spawn(move || output_loop(rx, sinks, output_stop));
+        let handle = std::thread::spawn(move || {
+            // Ends the acquisition loop however this thread terminates,
+            // including an unwinding panic from a sink. Without it a panicking
+            // sink would leave the calling thread in `acquire` until the source
+            // closed on its own, which a live capture never does, so `run`
+            // would never reach the join that re-raises the panic. On the
+            // ordinary path this is a no-op: the output thread only returns
+            // after acquisition has already ended and sent its terminal item.
+            let _end_acquisition = StopOnDrop(output_stop.clone());
+            output_loop(rx, sinks, output_stop)
+        });
         // The guard owns the producer as well as the join handle, so that
         // closing the buffer always precedes joining the thread that is
         // draining it. Holding them separately would deadlock on the panic
@@ -396,15 +422,29 @@ impl Pipeline {
         let output = guard.finish(stats);
         PipelineReport {
             stats: output.stats,
-            // A sink failure that ended the run outranks the stop it requested,
-            // because the stop was a consequence rather than a cause.
-            ended: if output.all_retired {
+            // Retirement outranks the stop it requested, because the stop was a
+            // consequence rather than a cause. It does not outrank an ending
+            // acquisition reached on its own: a source that closed, or one that
+            // failed with a `DeviceLost` worth diagnosing, ended the run before
+            // the output side finished draining and any later retirement is a
+            // second fact rather than the reason. Those failures are still
+            // named in `sink_failures` either way.
+            ended: if output.all_retired && ended == EndReason::Stopped {
                 EndReason::AllSinksRetired
             } else {
                 ended
             },
             sink_failures: output.failures,
         }
+    }
+}
+
+/// Requests a stop when dropped, however the holder terminated.
+struct StopOnDrop(StopHandle);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.stop();
     }
 }
 
@@ -1658,6 +1698,71 @@ mod tests {
         let report = p.run();
         assert!(report.stats.lost_anything(), "two writes did not happen");
         assert!(report.is_clean(), "but the run itself ended normally");
+        // Exactly two, not merely some. Asserting only that loss occurred would
+        // accept any wrong positive `sink_dropped`, which is the failure this
+        // helper exists to catch.
+        assert_eq!(report.stats.sink_dropped, 2);
+        assert_conserved(&report, &log, 2);
         assert!(report.into_result().is_ok());
+    }
+
+    // A sink panic must end the acquisition loop, not merely reach the caller
+    // once the source happens to run out. The source here never closes on its
+    // own, so a `run` that did not signal acquisition would hang here rather
+    // than fail, which is the shape of the defect: the original panic test used
+    // a finite source and could not have detected it.
+    #[test]
+    fn a_sink_panic_ends_acquisition_even_when_the_source_never_closes() {
+        let mut p = pipeline(
+            Box::new(StubSource::new(frames(64)).ending(Ending::TimeoutsThenClosed(usize::MAX))),
+            4,
+        );
+        p.add_sink(Box::new(PanickingSink {
+            panic_at: 1,
+            seen: 0,
+        }));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.run()));
+        assert!(
+            outcome.is_err(),
+            "the panic reached the caller, which means acquisition stopped"
+        );
+    }
+
+    // An ending acquisition reached on its own outranks a retirement the output
+    // side observed afterwards, while draining. Reporting `AllSinksRetired`
+    // here would bury the reason an operator most needs.
+    #[test]
+    fn a_terminal_source_failure_outranks_a_later_retirement() {
+        let log = log();
+        let source = StubSource::new(frames(8)).ending(Ending::Failed(SourceError::DeviceLost {
+            detail: "interface removed".into(),
+        }));
+        // Capacity 8 so every packet is buffered before the output side starts
+        // failing, which puts the retirement strictly after acquisition ended.
+        let mut p = pipeline(Box::new(source), 8);
+        p.add_sink(StubSink::scripted(
+            &log,
+            SinkScript {
+                fail_at: Some(0),
+                ..SinkScript::default()
+            },
+        ));
+        let report = p.run();
+
+        assert!(
+            matches!(
+                report.ended,
+                EndReason::SourceFailed(SourceError::DeviceLost { .. })
+            ),
+            "the device loss is the reason the run ended, not the retirement \
+             the output side found afterwards; got {:?}",
+            report.ended
+        );
+        assert_eq!(
+            report.sink_failures.len(),
+            1,
+            "and the retirement is still reported, just not as the reason"
+        );
+        assert_conserved(&report, &log, report.stats.sink_dropped);
     }
 }
