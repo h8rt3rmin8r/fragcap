@@ -43,13 +43,14 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S04, S06, and S07 are complete. S05 is not: the profile
+Slices S01 through S04 and S06 through S08 are complete. S05 is not: the profile
 schema is still unbuilt, and the ordering in `docs/plans/README.md` does not
 put it before S08. The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
-vocabulary from specification sections 8.4 and 8.5 and a `parse` module
-implementing sections 12.5 and 12.6. `fragcap-capture` reads classic pcap and
+vocabulary from specification sections 8.4 and 8.5, a `parse` module
+implementing sections 12.5 and 12.6, and a `pipeline` module implementing
+sections 8.6 and 12.4. `fragcap-capture` reads classic pcap and
 replays it as a `PacketSource`. `fragcap-attr` answers attribution from a
 declared script. `fragcap-sink` writes both output formats: pcapng carrying
 attribution in packet comments, and JSON Lines. `fixtures/` holds the committed
@@ -60,11 +61,34 @@ corpus of section 25.3 and, since S06, a golden per fixture per format.
 resolves every flow, with no capture driver, no elevated privilege, and no game.
 Every slice from here is testable the day it is written.
 
-**There is output, and still no pipeline.** Nothing buffers, counts drops, or
-fans out. S08 is the slice that runs the whole thing over the corpus, and it is
-what makes the loss counters carry real values rather than the fixed snapshots
-the writers are currently handed. Each crate's module documentation names the
-slice that fills it.
+**There is a pipeline, and the loss counters carry real values.** S08 composes
+a source, the parser, an attributor, and any number of sinks across two threads
+with a bounded drop-oldest buffer between them, and
+`crates/fragcap/tests/corpus_pipeline.rs` runs the whole corpus through it with
+both writers attached, reproducing the committed goldens. The
+`CaptureStats` a writer receives is now the run's own rather than a snapshot a
+test composed by hand.
+
+The assertion that matters is conservation, not reachability: for every sink,
+received plus `buffer_dropped` plus refusals equals `packets_captured`. It is
+checked in every pipeline test, and a discard path added later with no counter
+fails there rather than passing quietly. Prefer extending it over adding a
+counter-specific test.
+
+**A failed sink is retired, not fatal.** Every packet after the failure
+advances `sink_dropped` for that sink, which is what section 12.4 already
+defines the counter as; the run ends only when every sink has retired. This
+reverses the first answer the slice wrote down, and the reasoning for the
+reversal is in the S08 decisions fragment. Do not relitigate it without reading
+that first.
+
+**The pipeline acquires on the calling thread and spawns the sink thread.**
+`PacketSource` carries no `Send` bound while the other three cross-thread
+traits do, so this arrangement avoids changing a trait intended to reach 1.0.0
+unchanged. It does not survive S09: section 12.1 requires one capture thread per
+interface, so **S09 must add `Send` to `PacketSource`** through the deviation
+process. A `Pipeline` cannot currently be moved to another thread, which its own
+tests had to work around.
 
 Both writers record one interface and refuse a second, for the same reason:
 `CapturedPacket` carries no interface identifier and `Sink::write` has nowhere
@@ -72,6 +96,13 @@ to pass one, so every packet would route to the first declared interface and be
 labelled with it. S09 brings live capture and the identifier, and lifts both
 restrictions. The pcapng writer additionally cannot attribute the capture-wide
 `CaptureStats` per interface, which is a second reason it waits.
+
+**A packet with no flow key advances neither attribution counter.** Never
+attempted is not attempted and failed, and `AttributionState` has kept the two
+apart since S02. S07's corpus helper conflated them and put a wrong count into
+the `malformed` golden, which stood for a whole slice because the goldens were
+self-consistent and the definition lived in another crate. S08 found it by
+driving the same writers from the pipeline. Corrected in both.
 
 Attribution fidelity is carried on `Attribution`, not derived from whether an
 attribution exists. S06 initially derived it and review caught that every
@@ -101,9 +132,20 @@ dev-dependency, and the distinction is load-bearing rather than bookkeeping.
 | `bytes` | runtime | S02 | Reference-counted payload clones |
 | `serde_json` | dev only | S07 | Parses every line the JSON writer emits, in tests |
 
-S03, S04, and S06 added none. The parser is arithmetic over a byte slice, a
+S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
 pcap file is a header and a run of records, the attribution script format is
 deliberately trivial, and pcapng is length-prefixed binary over a byte sink.
+
+S08 is the one worth spelling out, because a concurrency crate is the obvious
+reach and it would not have helped. Section 12.4 needs bounded, drop-oldest, and
+a producer that never waits, together. The standard library's channels are
+either unbounded or blocking, and their non-blocking form fails rather than
+evicting, which is drop-newest. A third-party bounded channel has the same two
+shapes and would still leave the eviction to be written by hand. The buffer is
+therefore a `VecDeque` behind a `Mutex` and a `Condvar`, and a proposal to add
+`crossbeam` or an async runtime here should say which of those three properties
+it thinks the dependency supplies.
+
 S05 remains free to pick a parser for the profile schema on the profile's
 merits; `serde_json` being present as a dev-dependency is not a runtime
 precedent, and adopting it at runtime would be a decision that slice makes for

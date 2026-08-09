@@ -15,14 +15,17 @@
 
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fragcap::{
-    AttributionScript, CaptureStats, CapturedPacket, FlowAttributor, HeaderParser, InterfaceAddrs,
-    InterfaceDeclaration, JsonLinesWriter, LinkType, PacketSource, PayloadMode, PcapngWriter,
-    ReplaySource, Sink, SourceError, SourceStats,
+    AttributionScript, AttributionState, CaptureStats, CapturedPacket, FlowAttributor,
+    HeaderParser, InterfaceAddrs, InterfaceDeclaration, JsonLinesWriter, LinkType, PacketSource,
+    PayloadMode, PcapngWriter, Pipeline, PipelineConfig, PipelineReport, ReplaySource, Sink,
+    SourceError, SourceStats,
 };
 
 /// Every fixture in the corpus, with the local addresses its script implies.
@@ -183,10 +186,18 @@ pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
         if let Some(key) = packet.flow.as_ref() {
             packet.attribution = attributor.resolve(key, packet.ts);
         }
-        if packet.attribution.is_some() {
-            attributed += 1;
-        } else {
-            unattributed += 1;
+        // Three states, not two. A packet that produced no flow key was never
+        // attempted, which `stats.rs` distinguishes from attempted and
+        // unresolved because the remedies differ and because P-4's counter is
+        // defined as "retained and marked because attribution did not
+        // resolve". S07 wrote `attribution.is_some()` here and folded the
+        // never-attempted packets into `unattributed`, which put a wrong count
+        // into the `malformed` golden. Slice S08 found it by driving the same
+        // writers from the pipeline, which counts the three states apart.
+        match packet.attribution_state() {
+            AttributionState::Resolved => attributed += 1,
+            AttributionState::Unresolved => unattributed += 1,
+            AttributionState::NotAttempted => {}
         }
         packets.push(packet);
     }
@@ -209,6 +220,103 @@ pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
         ..Default::default()
     };
     (packets, stats)
+}
+
+/// A byte sink a writer can own while a test still reads it afterwards.
+///
+/// The pipeline holds its sinks as `Box<dyn Sink>`, which is `'static`, so the
+/// borrowed `&mut Vec<u8>` the hand-written renders use is not expressible
+/// there. Sharing the buffer is the smallest change that keeps the test able to
+/// compare the bytes.
+#[derive(Clone, Default)]
+pub struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+impl SharedBuf {
+    pub fn contents(&self) -> Vec<u8> {
+        self.0
+            .lock()
+            .expect("the buffer mutex is never poisoned")
+            .clone()
+    }
+}
+
+impl Write for SharedBuf {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("the buffer mutex is never poisoned")
+            .extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The local addresses a fixture's script implies.
+pub fn corpus_addrs(name: &str) -> Vec<IpAddr> {
+    CORPUS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("{name} is not in the corpus table"))
+        .1
+        .iter()
+        .map(|s| s.parse().expect("a corpus address must parse"))
+        .collect()
+}
+
+/// What one run of the real pipeline over a fixture produced.
+pub struct PipelineRun {
+    pub pcapng: Vec<u8>,
+    pub jsonl: Vec<u8>,
+    pub report: PipelineReport,
+}
+
+/// Run a fixture through the real pipeline with both writers attached.
+///
+/// Slice S08. Everything here is a seam: a `ReplaySource`, a
+/// `ScriptedAttributor`, and two `Sink` values, composed by a `Pipeline` that
+/// names none of their concrete types. One pass over the source produces both
+/// outputs, which is the fan-out of specification section 8.6.
+pub fn render_via_pipeline(name: &str, capacity: usize) -> PipelineRun {
+    let local = corpus_addrs(name);
+    let dir = fixtures_dir();
+    let source = ReplaySource::open(dir.join(format!("{name}.pcap")))
+        .unwrap_or_else(|e| panic!("{name}.pcap must open: {e}"));
+    let script = AttributionScript::load(dir.join(format!("{name}.script")))
+        .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
+    let link = source.link_type();
+
+    let pcapng_buf = SharedBuf::default();
+    let jsonl_buf = SharedBuf::default();
+
+    let mut pcapng = PcapngWriter::new(pcapng_buf.clone()).expect("in-memory write cannot fail");
+    pcapng
+        .declare_interface(&InterfaceDeclaration::new(link, snap_len(link), name))
+        .expect("declaring an interface cannot fail in memory");
+    let jsonl = JsonLinesWriter::new(jsonl_buf.clone(), &[name], PayloadMode::WithPayload)
+        .expect("in-memory write cannot fail");
+
+    let mut pipeline = Pipeline::new(
+        Box::new(source),
+        Box::new(fragcap::ScriptedAttributor::new(script)),
+        PipelineConfig {
+            capacity,
+            addrs: InterfaceAddrs::new(local.iter().copied()),
+            ..PipelineConfig::default()
+        },
+    )
+    .expect("a non-zero capacity builds");
+    pipeline.add_sink(Box::new(pcapng));
+    pipeline.add_sink(Box::new(jsonl));
+
+    let report = pipeline.run();
+    PipelineRun {
+        pcapng: pcapng_buf.contents(),
+        jsonl: jsonl_buf.contents(),
+        report,
+    }
 }
 
 /// The snap length declared for a fixture's interface.

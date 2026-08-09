@@ -26,6 +26,10 @@ pub mod core {
         AttributionState, CapturedPacket, Payload, RawPacket, Timestamp,
     };
     pub use fragcap_core::parse::{HeaderParser, InterfaceAddrs, ParseOutcome, ParseReject};
+    pub use fragcap_core::pipeline::{
+        ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport,
+        SinkFailure, StopHandle, DEFAULT_CAPACITY, DEFAULT_READ_TIMEOUT,
+    };
     pub use fragcap_core::stats::{CaptureStats, ParseStats, SourceStats};
     pub use fragcap_core::traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};
 }
@@ -54,6 +58,7 @@ pub mod sink {
 }
 
 pub use crate::core::*;
+pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
 pub use attr::{AttributionScript, ScriptedAttributor};
 pub use capture::{PcapReader, ReplaySource, ReplayStats};
 pub use sink::{
