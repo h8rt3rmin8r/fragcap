@@ -6,12 +6,21 @@
 //! fixes the shape of the seams the later slices are built against: nothing
 //! here captures a packet, resolves an attribution, or writes a file.
 //!
-//! One module is behavior. [`parse`] arrived in slice S03 and turns a frame
+//! Two modules are behavior. [`parse`] arrived in slice S03 and turns a frame
 //! into the identity of the conversation it belongs to. It is here rather than
 //! in `fragcap-capture` because the capture thread that calls it belongs to
 //! the pipeline, which specification section 8.2 places in this crate, and
 //! because parsing is arithmetic over a byte slice with no platform surface
 //! for constitution P-2 to object to.
+//!
+//! [`pipeline`] arrived in slice S08 and is the thing that argument was about.
+//! It composes a source, the parser, an attributor, and a set of sinks across
+//! two threads with a bounded buffer between them, per specification sections
+//! 8.6 and 12.4. It is here for the same reason `parse` is, and it is what
+//! finally produces the [`stats::CaptureStats`] values the writers had been
+//! handed by hand since S06. Threads and mutexes are standard library
+//! facilities with no platform surface, which `cargo xtask neutral` proves
+//! rather than asserts.
 //!
 //! # Platform neutrality
 //!
@@ -65,6 +74,7 @@ pub mod flow;
 pub mod link;
 pub mod packet;
 pub mod parse;
+pub mod pipeline;
 pub mod process;
 pub mod stats;
 pub mod traits;
@@ -76,6 +86,10 @@ pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
 pub use link::LinkType;
 pub use packet::{AttributionState, CapturedPacket, Payload, RawPacket, Timestamp};
 pub use parse::{HeaderParser, InterfaceAddrs, ParseOutcome, ParseReject};
+pub use pipeline::{
+    ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport, SinkFailure,
+    StopHandle,
+};
 pub use process::{ProcessEvent, ProcessRecord};
 pub use stats::{CaptureStats, ParseStats, SourceStats};
 pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};

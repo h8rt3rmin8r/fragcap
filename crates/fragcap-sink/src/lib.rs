@@ -24,7 +24,16 @@
 //! hex, and endpoints named for what is known about them.
 //!
 //! What this crate still does not do: transports and streaming sinks arrive in
-//! S15, and ring mode in S16. The pipeline that drives any of them is S08.
+//! S15, and ring mode in S16.
+//!
+//! The pipeline that drives these arrived in S08 and lives in
+//! `fragcap_core::pipeline`. Both writers are now fed by it over the whole
+//! fixture corpus, and the statistics they write into their trailing blocks are
+//! the run's own rather than a snapshot a test composed by hand. That change
+//! found one defect immediately: the S07 corpus helper folded packets that
+//! produced no flow key into `packets_unattributed`, and the `malformed`
+//! golden had been carrying the wrong count ever since. The writers were
+//! faithful; what they were handed was not.
 //!
 //! The corpus-driven tests for this crate live in the `fragcap` facade rather
 //! than here. Writing a fixture needs a replay source and a scripted

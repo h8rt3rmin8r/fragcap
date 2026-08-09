@@ -92,6 +92,9 @@ discarding. Each choice trades a different failure: latency, memory, or data.
 > surfaced. A capture tool that loses data without saying so produces
 > conclusions the user cannot check.
 
+**See also:** [Bounded buffer](#bounded-buffer), [Drop-oldest](#drop-oldest),
+[Pipeline](#pipeline)
+
 ### Flow key
 
 The normalized identity of one conversation: a protocol plus a local and a
@@ -351,6 +354,111 @@ defined as the endpoint on the capturing host and there is not one.
 
 **See also:** [Direction](#direction), [Flow key](#flow-key),
 [Loopback](#loopback)
+
+### Pipeline
+
+The composition that reads packets from a [packet source](#packet-source),
+derives a [flow key](#flow-key), resolves attribution through a
+[flow attributor](#flow-attributor), and writes the result to a set of
+[sinks](#sink).
+
+Specification section 8.6 places it in `fragcap-core` and puts it on three
+threads: a [capture thread](#capture-thread), a control thread owning the
+process watcher and the filter manager, and a [sink thread](#sink-thread). A
+[bounded buffer](#bounded-buffer) sits between the first and the last.
+
+{: .matters }
+> The pipeline is the only thing that produces fragcap's own loss counters.
+> Until slice S08 built it, `CaptureStats` had named fields and no producer,
+> and every value written into a capture file was composed by hand in a test.
+
+**See also:** [Bounded buffer](#bounded-buffer),
+[Capture thread](#capture-thread), [Sink thread](#sink-thread),
+[Fan-out](#fan-out)
+
+### Bounded buffer
+
+The fixed-capacity queue between the [capture thread](#capture-thread) and the
+[sink thread](#sink-thread), holding 65,536 packets by default per
+specification section 12.4.
+
+It applies no [backpressure](#backpressure). When full it evicts rather than
+blocking, per [drop-oldest](#drop-oldest), and each eviction advances the
+`buffer_dropped` counter.
+
+{: .matters }
+> The capacity is the whole budget for a slow [sink](#sink). A buffer drop
+> means the sink could not keep up, which is a different remedy from a kernel
+> drop, and section 12.4 keeps the two counters apart for exactly that reason.
+
+**See also:** [Backpressure](#backpressure), [Drop-oldest](#drop-oldest),
+[Pipeline](#pipeline)
+
+### Drop-oldest
+
+The eviction policy of the [bounded buffer](#bounded-buffer): when full, the
+oldest buffered packet is discarded to admit the newest, and the discard is
+counted.
+
+The alternatives are blocking the producer, which specification section 12.4
+rejects because it stalls the kernel buffer behind the capture and converts a
+fragcap drop into a less visible kernel drop, and drop-newest, which section
+12.4 rejects because a stalled sink is usually transient and preserving recent
+traffic keeps the capture aligned with whatever caused the stall.
+
+{: .matters }
+> Drop-oldest is a declared omission, not an exception to constitution
+> principle P-9. The instrument does not lie about it: the packets are counted
+> and the count is written into the output.
+
+**See also:** [Bounded buffer](#bounded-buffer),
+[Backpressure](#backpressure)
+
+### Capture thread
+
+The thread that acquires packets from a [packet source](#packet-source),
+parses their headers, and looks up attribution, then pushes into the
+[bounded buffer](#bounded-buffer).
+
+It never waits for a [sink](#sink) to make progress. Specification section 12.1
+gives each captured interface its own handle and its own capture thread.
+
+{: .matters }
+> Anything that blocks this thread stalls the capture driver's buffer behind
+> it. That is why the [bounded buffer](#bounded-buffer) evicts rather than
+> applying [backpressure](#backpressure).
+
+**See also:** [Sink thread](#sink-thread), [Pipeline](#pipeline),
+[Bounded buffer](#bounded-buffer)
+
+### Sink thread
+
+The thread that drains the [bounded buffer](#bounded-buffer) and performs the
+[fan-out](#fan-out) to every attached [sink](#sink), then flushes and finishes
+each one with the run's final statistics.
+
+{: .matters }
+> Trailing statistics are written by this thread after the buffer is drained,
+> so the last packet is in the file before the counters that describe it.
+
+**See also:** [Capture thread](#capture-thread), [Fan-out](#fan-out),
+[Pipeline](#pipeline)
+
+### Fan-out
+
+Offering each captured packet to every attached [sink](#sink), so that one pass
+over a [packet source](#packet-source) produces every configured output.
+
+A sink that cannot accept a packet advances the `sink_dropped` counter, once
+per sink rather than once per packet, because each refusal is one output left
+short.
+
+{: .matters }
+> Counting per packet would report one loss where three files are short, and
+> the number would shrink as more outputs were attached, which is backwards.
+
+**See also:** [Sink](#sink), [Sink thread](#sink-thread),
+[Pipeline](#pipeline)
 
 ## Windows Internals
 
