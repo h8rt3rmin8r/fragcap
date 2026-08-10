@@ -2512,9 +2512,11 @@ the reason for the choice.
 
 ### 23.3 Brand Guardrails
 
-Brand identity is developed in a dedicated session. The following
-guardrails constrain that work and are sufficient to build the site
-against in the interim.
+Brand identity is resolved (brand session, 2026-08-10). The approved kit
+is vendored in `brand/` and recorded in `docs/brand/README.md`, and the
+former open questions Q-7 and Q-8 are closed (section 29). The following
+guardrails governed that work and remain the acceptance test for the site
+and interface design.
 
 **Governing principle: instrument, not weapon.** Every visual and
 verbal decision reads as laboratory equipment. This is accurate

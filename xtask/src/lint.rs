@@ -23,14 +23,6 @@ const EXCLUDED: &[&str] = &[
     "target",
     "node_modules",
     "captures",
-    // Vendored brand assets (slice S18 brand session): OFL-licensed fonts,
-    // generated vector logos and favicons, a PDF guide, and design tokens. The
-    // binary files are skipped by content sniffing already; the PDF guide is
-    // text-like enough in its first bytes to be linted as prose, and the vector
-    // art is machine-generated, so the whole directory is vendored content the
-    // way the skills directories below are. Re-imported wholesale from the kit
-    // rather than edited in place.
-    "brand",
     ".agents/skills",
     ".claude/skills",
     // Machine-local git worktrees. A worktree here is a complete second
@@ -50,6 +42,23 @@ const EXCLUDED: &[&str] = &[
 /// Extensions treated as source, and therefore required to carry an SPDX
 /// identifier as their first line.
 const SOURCE_EXT: &[&str] = &["rs", "sh", "ps1", "psm1"];
+
+/// Extensions whose files are binary regardless of content and are never linted
+/// as text. Content sniffing catches most binaries by an embedded null, but a
+/// file can be binary and carry no null in its first bytes: the vendored
+/// `brand/brand-guide.pdf` begins with a prose-like header and was linted as
+/// text. Skipping by extension as well as by content lets a vendored binary
+/// asset sit beside editable text (the brand `README.md`, tokens, and SVG
+/// masters) without a directory exclusion that would also stop the linter
+/// checking that text.
+const BINARY_EXT: &[&str] = &[
+    "pdf", "ttf", "otf", "woff", "woff2", "png", "jpg", "jpeg", "gif", "ico", "webp",
+];
+
+/// Whether a file extension marks a binary asset the linter never reads as text.
+fn is_binary_ext(ext: &str) -> bool {
+    BINARY_EXT.contains(&ext.to_ascii_lowercase().as_str())
+}
 
 const SPDX: &str = "SPDX-License-Identifier: Apache-2.0";
 
@@ -297,6 +306,14 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
     }
 
     for path in files {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        if is_binary_ext(&ext) {
+            continue;
+        }
         let bytes = match fs::read(&path) {
             Ok(b) => b,
             Err(_) => continue,
@@ -304,8 +321,7 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
         if is_binary(&bytes) {
             continue;
         }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let is_source = SOURCE_EXT.contains(&ext);
+        let is_source = SOURCE_EXT.contains(&ext.as_str());
         let rel = path.strip_prefix(root).unwrap_or(&path);
         let shown = rel.to_string_lossy().replace('\\', "/");
 
@@ -428,6 +444,22 @@ mod tests {
     fn binary_content_is_recognized() {
         assert!(is_binary(&[0x00, 0x01, 0x02]));
         assert!(!is_binary(b"plain text\n"));
+    }
+
+    #[test]
+    fn binary_extensions_are_skipped_regardless_of_content() {
+        // A PDF whose header is prose-like carries no null in its first bytes,
+        // so content sniffing alone would lint it as text. The extension guard
+        // is what skips it, while leaving text assets beside it (md, css, svg)
+        // under the walk. Case-insensitive.
+        assert!(is_binary_ext("pdf"));
+        assert!(is_binary_ext("PDF"));
+        assert!(is_binary_ext("woff2"));
+        assert!(is_binary_ext("ico"));
+        assert!(!is_binary_ext("md"));
+        assert!(!is_binary_ext("svg"));
+        assert!(!is_binary_ext("css"));
+        assert!(!is_binary_ext(""));
     }
 
     #[test]

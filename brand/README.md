@@ -6,7 +6,7 @@
 **Domain:** `fragcap.com`\
 **Last updated:** 2026-08-10
 
-fragcap is a passive capture and analysis instrument for game network traffic.
+fragcap is a passive, process-attributed network capture instrument for games.
 Its identity combines packet structure, capture framing, and controlled
 fragmentation without borrowing the visual language of cheat tooling.
 
@@ -41,8 +41,8 @@ security posture.
 **Role:** Passive technical instrument.\
 **Audience:** Developers, protocol researchers, security engineers, tool
 authors, and technically capable operators.\
-**Functional descriptor:** Passive capture and analysis for game network
-traffic.
+**Functional descriptor:** Passive process-attributed network capture for
+games.
 
 ### Brand idea
 
@@ -264,7 +264,7 @@ feature grids, urgency, and generalized calls to action.
 
 ### Examples
 
-**Product statement:** Passive capture and analysis for game network traffic.
+**Product statement:** Passive process-attributed network capture for games.
 
 **Prerequisite:** Packet capture requires an Npcap-compatible capture driver.
 

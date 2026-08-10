@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 12925
+      "bytes": 12923
     },
     {
       "path": "brand-guide.pdf",
@@ -64,15 +64,15 @@
     },
     {
       "path": "fonts/licenses/OFL-Space-Grotesk.txt",
-      "bytes": 4495
+      "bytes": 4401
     },
     {
       "path": "fonts/ttf/Geist-Medium.ttf",
-      "bytes": 90372
+      "bytes": 90528
     },
     {
       "path": "fonts/ttf/Geist-Regular.ttf",
-      "bytes": 90344
+      "bytes": 90440
     },
     {
       "path": "fonts/ttf/GeistMono-Regular.ttf",
@@ -80,11 +80,11 @@
     },
     {
       "path": "fonts/ttf/SpaceGrotesk-Bold.ttf",
-      "bytes": 88256
+      "bytes": 88404
     },
     {
       "path": "fonts/ttf/SpaceGrotesk-Medium.ttf",
-      "bytes": 88332
+      "bytes": 88500
     },
     {
       "path": "fonts/woff2/Geist-Medium.woff2",
@@ -128,7 +128,7 @@
     },
     {
       "path": "logos/png/fragcap-social-preview-1280x640.png",
-      "bytes": 72235
+      "bytes": 161769
     },
     {
       "path": "logos/png/fragcap-stacked-dark-2048.png",
@@ -152,15 +152,15 @@
     },
     {
       "path": "logos/svg/fragcap-horizontal-white.svg",
-      "bytes": 1383
+      "bytes": 1381
     },
     {
       "path": "logos/svg/fragcap-mark-black.svg",
-      "bytes": 798
+      "bytes": 796
     },
     {
       "path": "logos/svg/fragcap-mark-color.svg",
-      "bytes": 798
+      "bytes": 796
     },
     {
       "path": "logos/svg/fragcap-mark-dark-background.svg",
@@ -172,11 +172,11 @@
     },
     {
       "path": "logos/svg/fragcap-mark-white.svg",
-      "bytes": 798
+      "bytes": 796
     },
     {
       "path": "logos/svg/fragcap-social-preview.svg",
-      "bytes": 1983
+      "bytes": 1982
     },
     {
       "path": "logos/svg/fragcap-stacked-dark.svg",
@@ -188,15 +188,15 @@
     },
     {
       "path": "logos/svg/fragcap-wordmark-black.svg",
-      "bytes": 651
+      "bytes": 649
     },
     {
       "path": "logos/svg/fragcap-wordmark-cyan.svg",
-      "bytes": 651
+      "bytes": 649
     },
     {
       "path": "logos/svg/fragcap-wordmark-white.svg",
-      "bytes": 651
+      "bytes": 649
     },
     {
       "path": "specimens/fragcap-type-specimen.png",
