@@ -84,17 +84,28 @@ impl FilterProgram {
 }
 
 /// One endpoint's libpcap clause: protocol, host, and port.
+///
+/// A wildcard bind (`0.0.0.0` or `::`) is the address a UDP game socket is
+/// commonly reported under: the socket table returns the raw bind while
+/// attribution matches packets seen on concrete interface addresses to it
+/// (specification section 8.4). A `host 0.0.0.0` clause would match no real
+/// packet, so the narrowed filter would silently exclude the socket's entire
+/// traffic and, being the first narrowing, record no gap. So a wildcard bind
+/// drops the host constraint and admits by protocol and port alone. The extra
+/// traffic that admits is over-admission, which userspace attribution cleans up
+/// (section 12.3), the same trade the port-sharing case already makes.
 fn clause(endpoint: Endpoint) -> String {
     let proto = match endpoint.proto {
         Proto::Tcp => "tcp",
         Proto::Udp => "udp",
     };
-    format!(
-        "({} and host {} and port {})",
-        proto,
-        endpoint.addr.ip(),
-        endpoint.addr.port()
-    )
+    let ip = endpoint.addr.ip();
+    let port = endpoint.addr.port();
+    if ip.is_unspecified() {
+        format!("({proto} and port {port})")
+    } else {
+        format!("({proto} and host {ip} and port {port})")
+    }
 }
 
 /// The maintenance timings of specification section 12.2.
@@ -150,6 +161,13 @@ enum Installed {
 struct HandleState {
     installed: Installed,
     last_install: Option<Instant>,
+    /// Wanted endpoints the installed program excludes and that a gap has already
+    /// been counted for, so a gap that spans several polls is counted once and an
+    /// endpoint that closes before a reinstall is still counted once.
+    gapped: BTreeSet<Endpoint>,
+    /// A handle whose capture thread has ended. It installs nothing more and
+    /// accrues no more gaps, so a dead interface cannot fabricate future loss.
+    retired: bool,
 }
 
 /// The phase-two and phase-three policy of specification section 12.2, as a pure
@@ -178,6 +196,8 @@ impl FilterManager {
             .map(|_| HandleState {
                 installed: Installed::Bootstrap,
                 last_install: None,
+                gapped: BTreeSet::new(),
+                retired: false,
             })
             .collect();
         FilterManager {
@@ -206,12 +226,17 @@ impl FilterManager {
     /// - Idempotence: a handle already narrowed to exactly the wanted set is left
     ///   alone.
     ///
-    /// Gap accounting (section 12.3): after a reinstall on a handle whose prior
-    /// program was narrowed, [`FilterManager::filter_gaps`] rises by the count of
-    /// endpoints the new set adds. A bootstrap-to-first-narrowing install adds
-    /// none, because bootstrap admitted everything. The count is of gap
-    /// occurrences, endpoints briefly excluded, never a fabricated count of the
-    /// packets the kernel dropped, which fragcap never observed (P-9).
+    /// Gap accounting (section 12.3) runs every poll, independent of the install
+    /// decision: a gap begins the instant a wanted endpoint is excluded by the
+    /// program actually installed on a handle, and is counted then. So an
+    /// endpoint excluded during the debounce or rate-limit window, or one that
+    /// closes again before any reinstall, or one still excluded when capture
+    /// ends, is counted; it is counted once per episode, not again at the
+    /// reinstall that finally admits it. Bootstrap admits all IP traffic, so
+    /// nothing is excluded under it and a bootstrap-to-first-narrowing transition
+    /// opens no gap. The count is of gap occurrences, endpoints briefly excluded,
+    /// never a fabricated count of the packets the kernel dropped, which fragcap
+    /// never observed (P-9).
     pub fn poll(&mut self, wanted: &[Endpoint], now: Instant) -> Vec<Install> {
         let wanted: BTreeSet<Endpoint> = wanted.iter().copied().collect();
 
@@ -220,6 +245,23 @@ impl FilterManager {
             self.last_wanted = Some(wanted.clone());
             self.changed_at = Some(now);
         }
+
+        // Account gaps against what is actually installed now, before deciding
+        // any reinstall. A gap is counted the first poll an endpoint is excluded,
+        // whether or not an install follows.
+        let mut new_gaps = 0u64;
+        for handle in self.handles.iter_mut() {
+            if handle.retired {
+                continue;
+            }
+            let excluded: BTreeSet<Endpoint> = match &handle.installed {
+                Installed::Bootstrap => BTreeSet::new(),
+                Installed::Narrowed(installed) => wanted.difference(installed).copied().collect(),
+            };
+            new_gaps += excluded.difference(&handle.gapped).count() as u64;
+            handle.gapped = excluded;
+        }
+        self.gaps = self.gaps.saturating_add(new_gaps);
 
         let settled = match self.changed_at {
             Some(t) => now.saturating_duration_since(t) >= self.config.debounce,
@@ -238,6 +280,9 @@ impl FilterManager {
         let ordered: Vec<Endpoint> = wanted.iter().copied().collect();
         let mut installs = Vec::new();
         for (idx, handle) in self.handles.iter_mut().enumerate() {
+            if handle.retired {
+                continue;
+            }
             // Already narrowed to exactly this set: nothing to do.
             if let Installed::Narrowed(current) = &handle.installed {
                 if *current == wanted {
@@ -250,14 +295,11 @@ impl FilterManager {
                     continue;
                 }
             }
-            // Gap accounting: endpoints this reinstall newly admits that a prior
-            // narrowed program excluded. Bootstrap admitted everything.
-            if let Installed::Narrowed(prev) = &handle.installed {
-                let added = wanted.difference(prev).count() as u64;
-                self.gaps = self.gaps.saturating_add(added);
-            }
             handle.installed = Installed::Narrowed(wanted.clone());
             handle.last_install = Some(now);
+            // The new program admits every wanted endpoint, so no gap remains
+            // open on this handle.
+            handle.gapped.clear();
             installs.push(Install {
                 handle: idx,
                 program: FilterProgram::narrowed(&ordered),
@@ -269,6 +311,20 @@ impl FilterManager {
     /// The running total of filter gaps, for the capture statistics.
     pub fn filter_gaps(&self) -> u64 {
         self.gaps
+    }
+
+    /// Retire a handle whose capture thread has ended. It installs nothing more
+    /// and accrues no more gaps.
+    ///
+    /// The control thread calls this when it can no longer reach a capture
+    /// thread, so a handle that is gone cannot fabricate future gaps for
+    /// endpoints its frozen program would nominally exclude, and the manager does
+    /// not keep asking a dead thread to reinstall.
+    pub fn retire(&mut self, handle: usize) {
+        if let Some(h) = self.handles.get_mut(handle) {
+            h.retired = true;
+            h.gapped.clear();
+        }
     }
 }
 
@@ -325,6 +381,16 @@ mod tests {
         let one = FilterProgram::narrowed(&[a, b]);
         let two = FilterProgram::narrowed(&[b, a, a, b]);
         assert_eq!(one, two, "order and duplicates do not change the program");
+    }
+
+    #[test]
+    fn a_wildcard_bind_drops_the_host_constraint() {
+        // `host 0.0.0.0` or `host ::` matches no real packet, so a wildcard bind
+        // admits by protocol and port alone rather than excluding all its traffic.
+        let v4 = FilterProgram::narrowed(&[ep("0.0.0.0:30000", Proto::Udp)]);
+        assert_eq!(v4.expression(), "(udp and port 30000)");
+        let v6 = FilterProgram::narrowed(&[ep("[::]:30000", Proto::Udp)]);
+        assert_eq!(v6.expression(), "(udp and port 30000)");
     }
 
     #[test]
@@ -487,5 +553,49 @@ mod tests {
         assert_eq!(installs.len(), 3, "one install per handle");
         let handles: BTreeSet<usize> = installs.iter().map(|i| i.handle).collect();
         assert_eq!(handles, BTreeSet::from([0, 1, 2]));
+    }
+
+    #[test]
+    fn a_gap_is_counted_when_it_begins_even_if_no_reinstall_follows() {
+        // Zero debounce so the first narrowing installs; a long rate limit so the
+        // handle stays on that program while a new endpoint comes and goes.
+        let mut mgr = FilterManager::new(1, cfg(0, 60_000));
+        let t0 = Instant::now();
+        let a = [ep("198.51.100.5:443", Proto::Tcp)];
+        let ab = [
+            ep("198.51.100.5:443", Proto::Tcp),
+            ep("203.0.113.9:5055", Proto::Udp),
+        ];
+
+        assert_eq!(mgr.poll(&a, t0).len(), 1, "narrow to A");
+        assert_eq!(mgr.filter_gaps(), 0);
+
+        // B appears while A's program is installed and the rate limit blocks a
+        // reinstall: the gap is counted the moment B is excluded, not at a
+        // reinstall that never comes.
+        assert!(mgr.poll(&ab, t0 + Duration::from_millis(100)).is_empty());
+        assert_eq!(mgr.filter_gaps(), 1, "B's gap counted when it began");
+
+        // B disappears again before any reinstall. It is not double counted, and
+        // it was recorded even though B was never installed.
+        assert!(mgr.poll(&a, t0 + Duration::from_millis(200)).is_empty());
+        assert_eq!(mgr.filter_gaps(), 1);
+    }
+
+    #[test]
+    fn a_retired_handle_accrues_no_more_gaps_or_installs() {
+        let mut mgr = FilterManager::new(1, cfg(0, 0));
+        let t0 = Instant::now();
+        let a = [ep("198.51.100.5:443", Proto::Tcp)];
+        let ab = [
+            ep("198.51.100.5:443", Proto::Tcp),
+            ep("203.0.113.9:5055", Proto::Udp),
+        ];
+        assert_eq!(mgr.poll(&a, t0).len(), 1);
+        mgr.retire(0);
+        // However the wanted set grows, a retired handle installs nothing and
+        // charges no gap: a dead interface cannot fabricate loss.
+        assert!(mgr.poll(&ab, t0 + Duration::from_millis(10)).is_empty());
+        assert_eq!(mgr.filter_gaps(), 0);
     }
 }

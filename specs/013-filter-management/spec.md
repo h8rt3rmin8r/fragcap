@@ -80,15 +80,26 @@ required.
   phase two depends on it rather than on traffic inspection." The diagram's "flow
   set" and the prose's "attribution map" denote the same endpoint set; the
   divergence in rendering is recorded as a deviation candidate for specification
-  section 29.
+  section 29. **Known limitation (review of pull request 17):**
+  `active_endpoints()` currently reports every socket-table endpoint, not only
+  those owned by profiled processes, and nothing in the pipeline drives the
+  refresh that keeps the live snapshot current (`FlowAttributor::refresh` is `&mut
+  self` and cannot be called through the shared `Arc`). Restricting the set to
+  profiled endpoints (a join with the S11/S12 process-tree stage bindings) and
+  driving the refresh (which needs a `refresh(&self)` signature) are the
+  session-to-pipeline integration required before the live backend narrows
+  correctly; both are recorded as section 29 open items. The tier-1 machinery is
+  verified against a controlled endpoint set and does not depend on them.
 - Q (D-b): How is a filter gap counted, given fragcap never sees a packet the
   kernel filter excluded? -> A: The `filter_gaps` counter counts gap occurrences,
   not packets. A gap occurrence is an endpoint that is active in the attribution
   map while a narrowed filter that does not admit it is installed on a handle, for
   the interval from the endpoint appearing in the map until the reinstall that
   admits it. fragcap counts these occurrences (a set difference between the wanted
-  endpoint set and the installed program, per handle, computed when a new program
-  is prepared). It does not fabricate a count of the packets the kernel excluded,
+  endpoint set and the installed program, per handle) the first poll an endpoint is
+  excluded, once per episode, independent of whether a reinstall ever follows, so an
+  endpoint that closes before settling or is still excluded when capture ends is
+  counted. It does not fabricate a count of the packets the kernel excluded,
   because those packets are never delivered to fragcap and inventing a number for
   them would violate P-9. This is the honest reading of section 12.3's "counted as
   a filter gap and reported in statistics"; the prose says "packets," so the unit
@@ -115,9 +126,13 @@ required.
   composed? -> A: A libpcap filter expression (npcap's grammar; specification
   appendix E), built as the union over the endpoint set: each endpoint contributes
   a clause constraining protocol, host address, and port, ORed together, spanning
-  IPv4 and IPv6 by address family. Over-admission of traffic that shares a
-  target's ports is expected and left to userspace attribution (section 12.2), not
-  tightened further in the kernel. An endpoint set that is non-empty compiles to a
+  IPv4 and IPv6 by address family. A wildcard bind (`0.0.0.0` or `::`, the address
+  a UDP game socket is commonly reported under) drops the host constraint and
+  admits by protocol and port alone, because a `host 0.0.0.0` clause matches no
+  real packet and would silently exclude the socket's whole traffic. Over-admission
+  of traffic that shares a target's ports, or a wildcard's port, is expected and
+  left to userspace attribution (section 12.2), not tightened further in the
+  kernel. An endpoint set that is non-empty compiles to a
   strictly narrowed program; once narrowing has begun, an endpoint set that
   transiently empties keeps the last narrowed program rather than reverting to the
   bootstrap admit-all, because reverting would re-flood the boundary for endpoints
@@ -272,9 +287,13 @@ holds.
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST derive the profiled endpoint set from the live
+- **FR-001**: The system MUST derive the narrowing endpoint set from the
   attribution map via `FlowAttributor::active_endpoints()`, never from observed
-  name resolution or traffic inspection.
+  name resolution or traffic inspection. (Restricting that set to endpoints owned
+  by profiled processes on the live backend, and driving the periodic refresh that
+  keeps it current, are the session-to-pipeline integration recorded as section 29
+  open items; see the Clarifications known-limitation note. This slice's machinery
+  and its tier-1 verification narrow whatever set the attributor reports.)
 - **FR-002**: The system MUST compile an endpoint set into a capture filter
   program admitting exactly the union of those endpoints, spanning IPv4 and IPv6,
   as a pure function over core types.

@@ -23,6 +23,21 @@ endpoint stays in the set through teardown, which the filter must respect. The
 diagram's "flow set" and the prose's "attribution map" denote the same endpoint
 set; the divergence in rendering is a **deviation candidate for section 29**.
 
+**Known limitation (from review of pull request 17).** `active_endpoints` returns
+*every* socket-table endpoint plus retained ones (`AttributionIndex::endpoints`),
+not only those owned by profiled processes, and section 12.2 asks for "endpoints
+belonging to profiled processes." Restricting the narrowing input to profiled
+endpoints requires joining the socket table with the S11/S12 process-tree stage
+bindings, which the pipeline does not have (the session is not yet wired into the
+live pipeline, and `active_endpoints` has dropped the owning process identifier).
+That restriction, and driving the periodic refresh the live snapshot needs (which
+requires a `FlowAttributor::refresh(&self)` signature the shared `Arc` can call),
+are the session-to-pipeline integration steps required before the **live** backend
+narrows correctly. They are recorded as section 29 open items. The tier-1
+machinery this slice delivers, compilation, the maintenance policy, the control
+thread, and gap accounting, is verified against a controlled endpoint set and does
+not depend on them.
+
 ## D-b. `filter_gaps` counts gap occurrences, not kernel-excluded packets
 
 **Decision**: A filter gap is an endpoint that is active in the attribution map

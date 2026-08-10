@@ -599,9 +599,14 @@ impl Pipeline {
                 while !control_stop.load(Ordering::Relaxed) {
                     let wanted = attributor.active_endpoints();
                     for install in manager.poll(&wanted, Instant::now()) {
-                        // A send fails only if the capture thread already ended,
-                        // in which case its handle needs no more filters.
-                        let _ = filter_senders[install.handle].send(install.program);
+                        let handle = install.handle;
+                        // A send fails only once the capture thread has ended and
+                        // dropped its receiver. Retire the handle so it accrues no
+                        // more gaps and is asked to reinstall no more: a dead
+                        // interface cannot fabricate loss it did not observe.
+                        if filter_senders[handle].send(install.program).is_err() {
+                            manager.retire(handle);
+                        }
                     }
                     std::thread::sleep(FILTER_POLL_INTERVAL);
                 }
@@ -648,13 +653,21 @@ impl Pipeline {
         // Every capture thread has finished, so no handle needs another filter.
         // End the control thread and fold in the filter gaps it counted. It is
         // joined on every path out, including the panic path below, so it never
-        // outlives the run. If it panicked its count is lost, which is a defect
-        // but not a reason to abandon the capture data every other thread
-        // produced; the capture threads' own panic, if any, is the one that
-        // surfaces.
+        // outlives the run.
         control_stop.store(true, Ordering::Relaxed);
-        if let Ok(control_stats) = control.join() {
-            merged.absorb(control_stats);
+        match control.join() {
+            Ok(control_stats) => merged.absorb(control_stats),
+            // A control-thread panic is a defect, not an accounting outcome, and
+            // is carried to the caller the same as a capture-thread panic:
+            // resumed after the buffer is closed and the sinks are flushed and
+            // finished, rather than presented as a completed report. Section
+            // 8.6's control thread gets the same contract the acquisition threads
+            // already have.
+            Err(payload) => {
+                if panicked.is_none() {
+                    panicked = Some(payload);
+                }
+            }
         }
 
         if let Some(payload) = panicked {
@@ -2350,5 +2363,79 @@ mod tests {
                 .is_empty(),
             "nothing was narrowed with no active endpoints"
         );
+    }
+
+    /// An attributor that panics when the control thread reads its endpoints,
+    /// signalling first so the source can close deterministically after.
+    struct PanicOnEndpoints {
+        ready: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl FlowAttributor for PanicOnEndpoints {
+        fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            None
+        }
+        fn refresh(&mut self) -> Result<(), crate::error::AttrError> {
+            Ok(())
+        }
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            self.ready.store(true, std::sync::atomic::Ordering::Relaxed);
+            panic!("the control thread failed");
+        }
+    }
+
+    /// A source that closes once the shared flag is set, and otherwise waits on
+    /// recoverable timeouts. Paired with `PanicOnEndpoints`, the run cannot end
+    /// before the control thread has panicked, so the test is deterministic.
+    struct CloseWhenReady {
+        ready: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl PacketSource for CloseWhenReady {
+        fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+            if self.ready.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(SourceError::Closed)
+            } else {
+                Err(SourceError::Timeout)
+            }
+        }
+        fn set_filter(&mut self, _filter: &FilterProgram) -> Result<(), SourceError> {
+            Ok(())
+        }
+        fn stats(&self) -> SourceStats {
+            SourceStats::default()
+        }
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    // S13, review of pull request 17. A control-thread panic is a defect and must
+    // escape rather than be presented as a completed capture, the same contract
+    // the acquisition threads have.
+    #[test]
+    #[should_panic(expected = "the control thread failed")]
+    fn a_control_thread_panic_propagates_rather_than_completing_the_run() {
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = CloseWhenReady {
+            ready: Arc::clone(&ready),
+        };
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(PanicOnEndpoints { ready }),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        p.set_filter_config(FilterConfig {
+            debounce: Duration::from_millis(0),
+            min_reinstall_interval: Duration::from_millis(0),
+        });
+        let log = log();
+        p.add_sink(StubSink::recording(&log));
+        let _ = p.run();
     }
 }
