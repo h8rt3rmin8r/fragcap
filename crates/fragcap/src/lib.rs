@@ -49,7 +49,9 @@ pub mod core {
     };
     pub use fragcap_core::size::SizeError;
     pub use fragcap_core::stats::{CaptureStats, ParseStats, SourceStats};
-    pub use fragcap_core::traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};
+    pub use fragcap_core::traits::{
+        Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink, WriteGate,
+    };
 }
 
 /// Packet acquisition.
@@ -126,8 +128,8 @@ pub mod session;
 pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
 pub use crate::session::{
-    BindingPublisher, CaptureSession, PacketDisposition, RoleStampingAttributor, SessionConfig,
-    SessionState, SessionStats, StopReason,
+    BindingPublisher, CaptureSession, GateHandle, PacketDisposition, RoleStampingAttributor,
+    SessionConfig, SessionGate, SessionState, SessionStats, StopReason,
 };
 #[cfg(all(feature = "etw", windows))]
 pub use attr::EtwWatcher;

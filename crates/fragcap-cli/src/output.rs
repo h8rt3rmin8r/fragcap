@@ -22,6 +22,10 @@ pub struct CompletionSummary {
     pub stop_reason: Option<StopReason>,
     /// Packets fragcap accepted from the source.
     pub packets_captured: u64,
+    /// Packets written to the capture: the packet records on disk. With a volume
+    /// bound this is the bound, and it equals captured less the gate's discards
+    /// (slice 017). Without a gate (target never acquired) it is zero.
+    pub retained: u64,
     /// Packets that resolved to a process.
     pub packets_attributed: u64,
     /// Packets retained and marked because attribution did not resolve.
@@ -78,6 +82,7 @@ impl CompletionSummary {
         }
         push_field(out, "stop reason", self.stop_word());
         push_count(out, "packets captured", self.packets_captured);
+        push_count(out, "retained", self.retained);
         push_count(out, "attributed", self.packets_attributed);
         push_count(out, "unattributed", self.packets_unattributed);
         push_count(out, "watching discarded", self.watching_discarded);

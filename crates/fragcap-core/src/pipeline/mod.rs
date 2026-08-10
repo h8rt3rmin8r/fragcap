@@ -43,14 +43,20 @@
 //!   the same event as far as the counter is concerned, because section 12.4
 //!   defines it as "dropped by a sink that could not accept" and a failed sink
 //!   is a sink that cannot accept.
+//! - Each packet a [`WriteGate`] withheld from the sinks advances `gate_dropped`
+//!   exactly once, counted before the fan-out so it is withheld from every sink
+//!   at once (slice 017). Zero on any run with no gate attached.
 //! - The backend's own counters are relayed unaltered and folded into nothing.
 //!
 //! The property worth asserting is not that a counter can be non-zero but that
 //! nothing escaped the accounting. For every sink:
 //!
 //! ```text
-//! received + buffer_dropped + refusals == packets_captured
+//! received + buffer_dropped + gate_dropped + refusals == packets_captured
 //! ```
+//!
+//! The `gate_dropped` term is zero unless a gate is attached, so this reduces to
+//! the pre-slice-017 three-term identity for every run that attaches none.
 //!
 //! That identity holds under every interleaving, which is what makes it usable
 //! as a test in a concurrent module. It is checked in every pipeline test
@@ -82,7 +88,7 @@ use crate::interface::{InterfaceId, InterfaceRetirement, RetirementReason};
 use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
 use crate::stats::CaptureStats;
-use crate::traits::{FlowAttributor, PacketSource, Sink};
+use crate::traits::{FlowAttributor, PacketSource, Sink, WriteGate};
 
 use buffer::Item;
 
@@ -338,6 +344,11 @@ pub struct Pipeline {
     config: PipelineConfig,
     filter_config: FilterConfig,
     stop: StopHandle,
+    /// Consulted by the output thread before the per-sink fan-out, if attached.
+    /// `None` is the pre-slice-017 behavior: every captured packet reaches every
+    /// sink. A gate withholds a packet, which the output loop counts in
+    /// `gate_dropped`. Set by [`Pipeline::set_write_gate`].
+    gate: Option<Arc<dyn WriteGate>>,
 }
 
 /// A packet source together with the interface identity its packets carry.
@@ -440,12 +451,26 @@ impl Pipeline {
             config,
             filter_config: FilterConfig::default(),
             stop: StopHandle::default(),
+            gate: None,
         })
     }
 
     /// Attach a sink. Its index in the report is the order it was added.
     pub fn add_sink(&mut self, sink: Box<dyn Sink>) {
         self.sinks.push(sink);
+    }
+
+    /// Attach a write gate the output thread consults before the per-sink
+    /// fan-out.
+    ///
+    /// A setter rather than a [`Pipeline::new`] parameter, so no existing caller
+    /// or struct-literal construction changes; the corpus tests, the pipeline
+    /// unit tests, and every prior slice's `new` call are untouched. With no gate
+    /// attached the run is exactly as before and `gate_dropped` is zero. Slice
+    /// 017: the CLI attaches a session-driven gate here to make a volume bound
+    /// produce an exactly-bounded file and to discard and count watch-time frames.
+    pub fn set_write_gate(&mut self, gate: Arc<dyn WriteGate>) {
+        self.gate = Some(gate);
     }
 
     /// Override the filter maintenance timings the control thread uses. Defaults
@@ -492,6 +517,7 @@ impl Pipeline {
             config,
             filter_config,
             stop,
+            gate,
         } = self;
         let source_count = sources.len();
 
@@ -506,7 +532,7 @@ impl Pipeline {
             // ordinary path this is a no-op: the output thread only returns
             // after acquisition has already ended and sent its terminal item.
             let _end_acquisition = StopOnDrop(output_stop.clone());
-            output_loop(rx, sinks, output_stop)
+            output_loop(rx, sinks, output_stop, gate)
         });
         // The guard owns the producer as well as the join handle, so that
         // closing the buffer always precedes joining the thread that is
@@ -954,15 +980,17 @@ impl Drop for OutputThread {
     }
 }
 
-/// The output loop: drain, fan out, then flush and finish.
+/// The output loop: drain, gate, fan out, then flush and finish.
 fn output_loop(
     rx: buffer::Consumer,
     mut sinks: Vec<Box<dyn Sink>>,
     stop: StopHandle,
+    gate: Option<Arc<dyn WriteGate>>,
 ) -> OutputOutcome {
     let mut failures: Vec<SinkFailure> = Vec::new();
     let mut retired = vec![false; sinks.len()];
     let mut sink_dropped: u64 = 0;
+    let mut gate_dropped: u64 = 0;
     let mut all_retired = false;
     // Default rather than an option: an acquisition thread that panicked sends
     // no terminal item, and the output side still has to report what it
@@ -977,6 +1005,16 @@ fn output_loop(
                 break;
             }
         };
+        // Consult the gate before any sink sees the packet, so a rejected
+        // packet is written nowhere. Counting it here, before the fan-out, is
+        // what makes `gate_dropped` a single capture-wide term of the
+        // conservation identity: a gate drop is withheld from every sink at once.
+        if let Some(gate) = gate.as_ref() {
+            if !gate.admit(&packet) {
+                gate_dropped = gate_dropped.saturating_add(1);
+                continue;
+            }
+        }
         for (index, sink) in sinks.iter_mut().enumerate() {
             if retired[index] {
                 // A retired sink cannot accept, which is exactly what section
@@ -1007,6 +1045,7 @@ fn output_loop(
 
     stats.buffer_dropped = rx.evicted();
     stats.sink_dropped = sink_dropped;
+    stats.gate_dropped = gate_dropped;
 
     for (index, sink) in sinks.iter_mut().enumerate() {
         if let Err(error) = sink.flush() {
@@ -1574,6 +1613,40 @@ mod tests {
         }
     }
 
+    /// Slice 017. A write gate that admits only packets whose marker byte is in
+    /// a chosen set, and counts what it rejects. It stands in for the facade's
+    /// session-driven gate: the pipeline only needs a `WriteGate`, and this one
+    /// answers a decision the test controls without a session or a profile.
+    struct ScriptedGate {
+        admit: std::collections::HashSet<u8>,
+        rejected: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl ScriptedGate {
+        fn new(
+            admit: impl IntoIterator<Item = u8>,
+        ) -> (Arc<Self>, Arc<std::sync::atomic::AtomicU64>) {
+            let rejected = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let gate = Arc::new(ScriptedGate {
+                admit: admit.into_iter().collect(),
+                rejected: Arc::clone(&rejected),
+            });
+            (gate, rejected)
+        }
+    }
+
+    impl WriteGate for ScriptedGate {
+        fn admit(&self, packet: &CapturedPacket) -> bool {
+            if self.admit.contains(&marker_of(packet)) {
+                true
+            } else {
+                self.rejected
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Harness
     // ------------------------------------------------------------------
@@ -1614,11 +1687,12 @@ mod tests {
             .written
             .len() as u64;
         assert_eq!(
-            received + report.stats.buffer_dropped + refusals,
+            received + report.stats.buffer_dropped + report.stats.gate_dropped + refusals,
             report.stats.packets_captured,
-            "conservation failed: {received} written, {} evicted, {refusals} refused, \
+            "conservation failed: {received} written, {} evicted, {} gated, {refusals} refused, \
              {} captured",
             report.stats.buffer_dropped,
+            report.stats.gate_dropped,
             report.stats.packets_captured
         );
     }
@@ -1680,6 +1754,35 @@ mod tests {
         assert_eq!(report.ended, EndReason::SourceClosed);
         assert!(report.is_clean());
         assert_conserved(&report, &log, 0);
+        // FR-004: a run with no gate leaves the new term zero, so the identity
+        // is exactly the pre-slice-017 one.
+        assert_eq!(report.stats.gate_dropped, 0);
+    }
+
+    // Slice 017, SC-004. A gate that admits a subset withholds the rest from
+    // every sink, counts them in gate_dropped, and the four-term conservation
+    // identity holds. This is the property that folds the gate into the P-4
+    // accounting rather than letting a synchronous write discard escape it.
+    #[test]
+    fn a_write_gate_withholds_packets_and_the_identity_holds() {
+        let log = log();
+        let (gate, rejected) = ScriptedGate::new([0u8, 2, 4, 6]);
+        let mut p = pipeline(Box::new(StubSource::new(frames(8))), 64);
+        p.add_sink(StubSink::recording(&log));
+        p.set_write_gate(gate);
+        let report = p.run();
+
+        // Only the admitted markers reached the sink; the odd ones did not.
+        assert_eq!(written(&log), vec![0, 2, 4, 6]);
+        assert_eq!(report.stats.packets_captured, 8);
+        assert_eq!(
+            report.stats.gate_dropped, 4,
+            "the four rejected packets are counted"
+        );
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::Relaxed), 4);
+        // received (4) + buffer_dropped (0) + gate_dropped (4) + refusals (0) == 8.
+        assert_conserved(&report, &log, 0);
+        assert!(report.is_clean(), "a gate discard is not a failure");
     }
 
     // T032, T034. FR-025, US6.

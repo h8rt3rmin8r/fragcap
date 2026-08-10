@@ -5,11 +5,14 @@
 //! The pipeline owns the packet threads and the shared attributor; a session
 //! driver owns the [`CaptureSession`], and the two connect through a
 //! [`StopHandle`] and a published binding snapshot rather than by routing
-//! packets through the session (slice S14 research D-c). A [`TeeCountingSink`]
-//! prepended to the sink list forwards each retained packet's length and
-//! instant to the driver, which is what keeps the session the single authority
-//! for the volume bound and its counters while it never sees the packet path
-//! (D-e).
+//! packets through the session (slice S14 research D-c). A [`SessionGate`]
+//! attached to the pipeline (slice 017) decides, synchronously on the write
+//! path, whether each packet reaches the sinks: it admits only while the session
+//! is capturing and within the bound, discards and counts everything else, and
+//! forwards each admitted packet's length and instant to the driver. That makes a
+//! volume bound produce an exactly-bounded file and lets the live path read and
+//! count watch-time frames from arm, reversing S14's D-e observe-only tee for
+//! those two cases while keeping the offline unbounded run a pass-through.
 //!
 //! # The offline shape is deterministic in two phases
 //!
@@ -24,8 +27,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Once;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Once};
 
 use fragcap::core::CaptureStats;
 // The stamper's active_endpoints (profiled-filtered, slice 015) is read for the
@@ -34,8 +37,8 @@ use fragcap::core::FlowAttributor;
 #[cfg(all(feature = "etw", windows))]
 use fragcap::StopReason;
 use fragcap::{
-    BindingPublisher, CaptureSession, CapturedPacket, Pipeline, PipelineConfig, PipelineReport,
-    ProcessEvent, Profile, SessionState, Sink, SinkError, StopHandle, Timestamp,
+    BindingPublisher, CaptureSession, GateHandle, Pipeline, PipelineConfig, PipelineReport,
+    ProcessEvent, Profile, SessionGate, SessionState, StopHandle, Timestamp,
 };
 
 use crate::args::Direction;
@@ -64,35 +67,6 @@ pub fn install_interrupt_handler() {
     INSTALL.call_once(|| {
         let _ = ctrlc::set_handler(|| INTERRUPT.store(true, Ordering::Relaxed));
     });
-}
-
-/// A sink that counts and forwards, writing nothing of its own.
-///
-/// First in the sink list, so it is inside the pipeline's conservation identity
-/// (it receives every packet and refuses none) and its receipts feed the
-/// session. It forwards each packet's retained length and instant to the driver
-/// over an unbounded channel, so a `write` never blocks the output thread.
-struct TeeCountingSink {
-    tx: Sender<(u32, Timestamp)>,
-}
-
-impl Sink for TeeCountingSink {
-    fn write(&mut self, packet: &CapturedPacket) -> Result<(), SinkError> {
-        let len = packet.data.as_ref().len() as u32;
-        // A send fails only once the driver has dropped its receiver, which
-        // happens only as the run is torn down. Nothing the session needed is
-        // lost, so the failure is ignored.
-        let _ = self.tx.send((len, packet.ts));
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<(), SinkError> {
-        Ok(())
-    }
-
-    fn finish(self: Box<Self>, _stats: &CaptureStats) -> Result<(), SinkError> {
-        Ok(())
-    }
 }
 
 /// Run a capture to completion and return its exit code.
@@ -212,7 +186,7 @@ fn capture_prerecorded(
                 ARMED_AT.as_nanos() + timeout.as_nanos() as i64,
             ));
         }
-        let summary = build_summary(false, &session, &CaptureStats::default());
+        let summary = build_summary(false, &session, &CaptureStats::default(), None);
         emitter.summary(&summary);
         return Ok(Exit::FAILURE);
     }
@@ -246,9 +220,24 @@ fn capture_prerecorded(
     // The events not consumed during acquisition, folded during capture.
     let mut pending: Vec<ProcessEvent> = events[cursor..].to_vec();
 
-    // Build the sinks, prepend the tee, and run the pipeline on its own thread.
+    // Build the gate and run the pipeline on its own thread. Offline is
+    // two-phase: acquisition has already reached Capturing above, so the gate's
+    // window is opened before the pipeline starts and it never sees a watch-time
+    // packet. For an unbounded run the gate then admits every packet, a
+    // pass-through that keeps the committed goldens byte-identical (slice 017,
+    // decision D-6).
     let (tx, rx) = mpsc::channel::<(u32, Timestamp)>();
-    let (handle, stop) = spawn_pipeline(config, &mut components, tx)?;
+    let (gate, gate_handle) = SessionGate::new(&config.session_config(), tx);
+    // Offline is two-phase: acquisition is already complete, so the window admits
+    // every replayed frame from the earliest instant and there is no watch-time
+    // frame; the bound alone does the bounding.
+    gate_handle.open_from(Timestamp::from_nanos(i64::MIN));
+    // A zero volume bound is met before any packet is retained, so no on_packet
+    // fires it; stop for it now so the reason is volume-reached (review of PR #26).
+    if zero_volume_bound(config) {
+        session.on_volume_reached();
+    }
+    let (handle, stop) = spawn_pipeline(config, &mut components, gate)?;
 
     drive(
         &rx,
@@ -277,7 +266,7 @@ fn capture_prerecorded(
     }
     session.finalize();
 
-    let summary = build_summary(true, &session, &report.stats);
+    let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
     emitter.summary(&summary);
 
     if report.sink_failures.is_empty() {
@@ -289,13 +278,19 @@ fn capture_prerecorded(
     }
 }
 
-/// Build the sinks, prepend the counting tee, and spawn the pipeline on its own
+/// Build the sinks, attach the write gate, and spawn the pipeline on its own
 /// thread. Shared by both drivers so the two construct the output path
 /// identically and the offline bytes cannot drift from the live ones.
+///
+/// The gate is the synchronous authority for what reaches the sinks: the output
+/// loop consults it before the fan-out (slice 017). It forwards each admitted
+/// packet's length and instant to the driver over the gate's own channel, which
+/// is what feeds `CaptureSession::on_packet` so `VolumeReached` and the duration
+/// bound still fire in the session.
 fn spawn_pipeline(
     config: &EffectiveConfig,
     components: &mut CaptureComponents,
-    tee_tx: Sender<(u32, Timestamp)>,
+    gate: SessionGate,
 ) -> Result<(std::thread::JoinHandle<PipelineReport>, StopHandle), CliError> {
     let sinks = assemble::build_sinks(config, &components.interfaces)?;
     let stamper = components
@@ -308,7 +303,7 @@ fn spawn_pipeline(
         Box::new(stamper),
         PipelineConfig::default(),
     )?;
-    pipeline.add_sink(Box::new(TeeCountingSink { tx: tee_tx }));
+    pipeline.set_write_gate(Arc::new(gate));
     for sink in sinks {
         pipeline.add_sink(sink);
     }
@@ -396,12 +391,37 @@ fn capture_live(
     let started = Instant::now();
     let tick = Duration::from_millis(200);
 
+    // Run from arm (slice 017, C2). The live capture handle is open from arm, so
+    // the pipeline is spawned before acquisition and its pre-acquisition frames
+    // are read. The gate starts in its Watching window, so those frames are
+    // discarded and counted rather than never observed. Keep an endpoint reader
+    // clone of the stamper, since the stamper itself is moved into the pipeline
+    // here and the filter-narrowed count is read after acquisition.
+    let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
+    let (gate, gate_handle) = SessionGate::new(&config.session_config(), tee_tx);
+    let stamper_reader = components.stamper.clone();
+    let (handle, stop) = spawn_pipeline(config, &mut components, gate)?;
+
     // Acquisition: fold live events until a terminal stage acquires the target,
     // or acquisition ends for another reason (the acquisition timeout, a
-    // duration bound reached while still watching, an operator interrupt, or the
-    // watcher disconnecting).
+    // duration bound reached while still watching, an operator interrupt, the
+    // watcher disconnecting, or the pipeline itself ending). The pipeline is
+    // already running; watch-time frames are discarded and counted by the gate as
+    // this loop turns. `acquired_at` records the capture instant of the acquiring
+    // event, so the gate can classify a buffered pre-acquisition frame by its own
+    // instant rather than by the window state at write time (review of PR #26).
+    let mut acquired_at: Option<Timestamp> = None;
     loop {
         if session.state() == SessionState::Capturing {
+            break;
+        }
+        // The pipeline was spawned from arm, so it can end before a target is
+        // acquired: the sole capture interface may close or fail. Its tee channel
+        // disconnects when the output thread ends, which is the signal that no
+        // source remains; without observing it here the command would wait forever
+        // on a still-running watcher (review of PR #26). No receipt is ever sent
+        // while watching, so this only ever observes empty or disconnected.
+        if let Err(mpsc::TryRecvError::Disconnected) = tee_rx.try_recv() {
             break;
         }
         // An operator interrupt during acquisition is a clean cancellation, not
@@ -422,8 +442,12 @@ fn capture_live(
         }
         match rx.recv_timeout(tick) {
             Ok(event) => {
+                let event_at = event.at();
                 apply_event(event, &mut session, &mut bound, emitter);
                 publisher.publish(session.role_bindings());
+                if session.state() == SessionState::Capturing {
+                    acquired_at = Some(event_at);
+                }
             }
             // No event arrived; advance the session clock so a tick-based
             // acquisition timeout or duration bound can still fire.
@@ -434,9 +458,16 @@ fn capture_live(
     }
 
     if session.state() != SessionState::Capturing {
-        // No target was acquired. Fire the acquisition timeout, if set and the
-        // session is still watching, so the summary can name it; an interrupt or
-        // a duration bound has already stopped the session and set its reason.
+        // No target was acquired. The pipeline has been running from arm, so it
+        // is stopped and joined before reporting; its watch-time frames are in
+        // the gate's tallies and surface in the summary. Dropping the watcher
+        // ends the live receiver.
+        stop.stop();
+        let _ = components.watcher.take();
+        let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
+        // Fire the acquisition timeout, if set and the session is still watching,
+        // so the summary can name it; an interrupt or a duration bound has
+        // already stopped the session and set its reason.
         if is_active(&session) {
             if let Some(timeout) = config.acquisition_timeout {
                 session.on_tick(Timestamp::from_nanos(
@@ -444,8 +475,11 @@ fn capture_live(
                 ));
             }
         }
+        // The window was never opened (admit_from stayed at its watching sentinel),
+        // so every frame the pipeline read is already a watch-time discard in the
+        // gate's tallies; there is nothing to close.
         session.finalize();
-        let summary = build_summary(false, &session, &CaptureStats::default());
+        let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
         emitter.summary(&summary);
         // A clean operator interrupt exits zero; every other way of capturing
         // nothing (timeout, duration, disconnect) is the target-never-acquired
@@ -457,35 +491,40 @@ fn capture_live(
         });
     }
 
+    // Acquired: open the window from the acquiring event's capture instant, so a
+    // frame captured before it (a buffered pre-acquisition frame) stays a
+    // watch-time discard even though the window is now open (review of PR #26).
+    // The acquiring event set `acquired_at`; fall back to the arm instant if it is
+    // somehow unset (it never is once the session is Capturing).
+    gate_handle.open_from(acquired_at.unwrap_or(ARMED_AT));
+    // A zero volume bound is met before any packet is retained; stop for it now so
+    // the reason is volume-reached (review of PR #26). drive_live observes the
+    // inactive session and stops the pipeline within a tick.
+    if zero_volume_bound(config) {
+        session.on_volume_reached();
+    }
+
     publisher.publish(session.role_bindings());
     // Drive an initial refresh so the count reflects the first real snapshot.
-    // On the live socket-table path the pipeline control thread performs the
-    // refreshes during the run, but it has not started yet at this point, so
-    // without this the attributor still holds its empty initial publication and
-    // the count would always be reported as zero (found in review of pull
-    // request 24). Offline the scripted attributor reports it wants no refresh,
-    // so this is a no-op and the count is unchanged.
-    if let Some(s) = components.stamper.as_ref() {
+    // The pipeline's control thread also drives refreshes, but reading the count
+    // through the retained stamper reader here keeps the filter-narrowed event
+    // meaningful at the moment of acquisition. An attributor with nothing to
+    // re-read reports it wants no refresh, so this is a no-op there.
+    if let Some(s) = stamper_reader.as_ref() {
         if s.wants_refresh() {
             let _ = s.refresh();
         }
     }
     // The count of endpoints actually narrowed to: the stamper reports only
     // endpoints owned by profiled processes (slice 015), not the full
-    // socket-table set the inner attributor holds. Offline this is the scripted
-    // set unchanged (those endpoints carry no owner and are kept); live it is
-    // the profiled subset.
-    let endpoints = components
-        .stamper
+    // socket-table set the inner attributor holds. Read through the retained
+    // reader, since the stamper itself is now inside the pipeline.
+    let endpoints = stamper_reader
         .as_ref()
         .map(|s| s.active_endpoints().len())
         .unwrap_or(0);
     emitter.event(&Event::FilterNarrowed { endpoints });
     emitter.progress(&format!("filter narrowed to {endpoints} endpoint(s)"));
-
-    // The same pipeline the offline path builds, feeding a counting tee.
-    let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
-    let (handle, stop) = spawn_pipeline(config, &mut components, tee_tx)?;
 
     // The merged channel. Two forwarders fold the two source channels into it so
     // the driver reads one totally ordered stream.
@@ -519,6 +558,7 @@ fn capture_live(
         &mut session,
         &mut bound,
         &publisher,
+        &gate_handle,
         emitter,
         interrupt,
         &stop,
@@ -527,7 +567,10 @@ fn capture_live(
     );
 
     // The pipeline observed the stop and returns; its tee channel closes and the
-    // packet forwarder ends.
+    // packet forwarder ends. A terminal-stage exit closed the window at its own
+    // capture instant inside drive_live, so a post-stop frame still draining is out
+    // of window; an interrupt or duration stop left the window open, keeping what
+    // was captured before it (specification FR-005).
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
 
     // Slice 015: the socket-table refresh is driven by the pipeline's own
@@ -546,7 +589,7 @@ fn capture_live(
     }
     session.finalize();
 
-    let summary = build_summary(true, &session, &report.stats);
+    let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
     emitter.summary(&summary);
 
     if report.sink_failures.is_empty() {
@@ -569,6 +612,7 @@ fn drive_live(
     session: &mut CaptureSession,
     bound: &mut HashMap<u32, String>,
     publisher: &BindingPublisher,
+    gate_handle: &GateHandle,
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     stop: &StopHandle,
@@ -582,8 +626,19 @@ fn drive_live(
                 session.on_tick(ts);
             }
             Ok(DriverMsg::Proc(event)) => {
+                // A process event carries its own capture instant. If applying it
+                // stops the session (a terminal-stage or all-processes exit), close
+                // the window at that instant, so a frame captured at or after the
+                // exit is out of window even while the pipeline drains (review of
+                // PR #26). An interrupt or duration stop has no such instant and
+                // does not close the window, keeping what was captured before it.
+                let event_at = event.at();
+                let was_active = is_active(session);
                 apply_event(event, session, bound, emitter);
                 publisher.publish(session.role_bindings());
+                if was_active && !is_active(session) {
+                    gate_handle.close_at(event_at);
+                }
             }
             // Nothing arrived. Advance the clock so a duration bound can fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
@@ -659,20 +714,47 @@ fn is_active(session: &CaptureSession) -> bool {
     )
 }
 
+/// Whether a zero volume bound is configured (`--max-packets 0` or
+/// `--max-bytes 0`). Such a bound is met before any packet is retained, so the
+/// session's per-packet volume check never fires it; the driver stops for it
+/// explicitly after acquisition (review of PR #26).
+fn zero_volume_bound(config: &EffectiveConfig) -> bool {
+    config.max_packets == Some(0) || config.max_bytes == Some(0)
+}
+
 fn build_summary(
     acquired: bool,
     session: &CaptureSession,
     stats: &CaptureStats,
+    gate: Option<&GateHandle>,
 ) -> CompletionSummary {
-    let s = session.stats();
+    // The gate is the authority for what was written and what was discarded by
+    // cause (slice 017): its admitted count is the packets on disk, and its
+    // watch-time and out-of-window tallies are the discards the summary reports.
+    // Sourcing these from the gate rather than the session is what makes the
+    // summary match the produced file. On the target-never-acquired path there is
+    // no gate (the pipeline never started), and the session's own counters, which
+    // are zero there, are used instead.
+    let (retained, watching, out_of_window) = match gate {
+        Some(g) => (
+            g.admitted(),
+            g.watch_discarded(),
+            g.out_of_window_discarded(),
+        ),
+        None => {
+            let s = session.stats();
+            (s.retained, s.watching_discarded, s.discarded_out_of_window)
+        }
+    };
     CompletionSummary {
         acquired,
         stop_reason: session.stop_reason(),
         packets_captured: stats.packets_captured,
+        retained,
         packets_attributed: stats.packets_attributed,
         packets_unattributed: stats.packets_unattributed,
-        watching_discarded: s.watching_discarded,
-        discarded_out_of_window: s.discarded_out_of_window,
+        watching_discarded: watching,
+        discarded_out_of_window: out_of_window,
         buffer_dropped: stats.buffer_dropped,
         sink_dropped: stats.sink_dropped,
     }
