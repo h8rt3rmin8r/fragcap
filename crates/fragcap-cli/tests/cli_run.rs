@@ -286,6 +286,98 @@ fn an_acquisition_timeout_with_no_target_captures_nothing_and_exits_one() {
     assert!(err.contains("acquisition-timeout"), "{err}");
 }
 
+// Slice S16, US1. The first four bytes of a pcapng stream are the Section Header
+// Block magic in little-endian, so a dump that starts with them is a real file.
+fn is_valid_pcapng(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && bytes[0..4] == 0x0A0D_0D0Au32.to_le_bytes()
+}
+
+// Slice S16, US1, SC-001. Ring mode dumped on interrupt: a rolling window smaller
+// than the fixture, the target never exits, and the operator interrupt is the
+// trigger. The dump is a valid pcapng holding only the recent tail.
+#[test]
+fn a_ring_capture_dumps_the_recent_tail_on_interrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("ring.fcapng");
+    let args: Vec<String> = vec![
+        "run".into(),
+        "--profile".into(),
+        data("game.toml"),
+        "--replay-source".into(),
+        fixture("udp-gameplay.pcap"),
+        "--attr-script".into(),
+        fixture("udp-gameplay.script"),
+        "--process-script".into(),
+        data("game-running.procscript"),
+        "--local-addr".into(),
+        "192.0.2.10".into(),
+        "--fire-interrupt".into(),
+        "--mode".into(),
+        "ring".into(),
+        "--ring".into(),
+        "200b".into(),
+        "--out".into(),
+        out.to_string_lossy().into_owned(),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _out, err) = common::run(&refs);
+    assert_eq!(code, 0, "an interrupt is a clean stop: {err}");
+    assert!(
+        err.contains("interrupt"),
+        "the stop reason is the interrupt: {err}"
+    );
+
+    let bytes = fs::read(&out).expect("the ring window was dumped");
+    assert!(is_valid_pcapng(&bytes), "the dump is a valid pcapng");
+    let epbs = pcapng_epb_count(&bytes);
+    assert!(epbs >= 1, "a seen capture dumps at least one packet");
+    assert!(
+        epbs < 24,
+        "a small window holds only the tail, not all 24 packets"
+    );
+}
+
+// Slice S16, US1, SC-002, SC-003, FR-012. A non-interrupt trigger (the terminal
+// stage exits) also dumps the window, and a window larger than the whole capture
+// dumps every retained packet, equal in count to a plain file capture of the same
+// input.
+#[test]
+fn a_large_ring_window_dumps_the_whole_capture_on_a_non_interrupt_stop() {
+    // Reference: the same run as a plain file capture.
+    let (code, _err, file_bytes, _jsonl) = run_offline_to_files(&[]);
+    assert_eq!(code, 0);
+    let reference = pcapng_epb_count(&file_bytes);
+    assert!(reference > 0, "the reference capture has packets");
+
+    // The same run in ring mode with a window larger than the whole capture.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("ring.fcapng");
+    let (code, _o, err) = run_offline(&[
+        "--mode".into(),
+        "ring".into(),
+        "--ring".into(),
+        "100mb".into(),
+        "--out".into(),
+        out.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(
+        code, 0,
+        "a terminal-stage-exit stop dumps the window: {err}"
+    );
+    assert!(
+        !err.contains("interrupt"),
+        "this run stops on a non-interrupt condition: {err}"
+    );
+
+    let bytes = fs::read(&out).expect("the ring window was dumped");
+    assert!(is_valid_pcapng(&bytes), "the dump is a valid pcapng");
+    assert_eq!(
+        pcapng_epb_count(&bytes),
+        reference,
+        "a whole-input ring dump holds the same packets as a plain file capture"
+    );
+}
+
 #[test]
 fn tap_captures_a_named_process_through_the_same_engine() {
     let dir = tempfile::tempdir().unwrap();

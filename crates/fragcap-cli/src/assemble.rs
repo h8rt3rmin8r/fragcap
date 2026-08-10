@@ -23,8 +23,9 @@ use fragcap::profile::CaptureMode;
 use fragcap::{
     AttributionScript, BindingPublisher, CommandLine, ConsumerReport, FlowAttributor, Format,
     InterfaceAddrs, InterfaceId, InterfaceSpec, LinkType, PacketSource, PayloadMode, ProcessEvent,
-    ProcessScript, ProcessWatcher, Profile, ReplaySource, RoleStampingAttributor, RotatingFileSink,
-    RotationPolicy, ScriptedAttributor, ScriptedWatcher, SinkFactory, StreamSink, Timestamp,
+    ProcessScript, ProcessWatcher, Profile, ReplaySource, RingSink, RingWindow,
+    RoleStampingAttributor, RotatingFileSink, RotationPolicy, ScriptedAttributor, ScriptedWatcher,
+    SinkFactory, StreamSink, Timestamp,
 };
 use fragcap::{SessionConfig, Sink};
 
@@ -43,6 +44,11 @@ const DEFAULT_INTERFACE: &str = "capture";
 /// onto a profile's `CaptureDefaults`.
 #[derive(Clone, Debug)]
 pub struct EffectiveConfig {
+    /// The effective capture mode, command line over the profile default.
+    pub mode: CaptureMode,
+    /// The ring window, when ring mode was configured. Carries the sink-side
+    /// [`RingWindow`], mapped from the command-line grammar.
+    pub ring: Option<RingWindow>,
     /// The output capture file, when one was given.
     pub out: Option<PathBuf>,
     /// The parsed sink specifications.
@@ -105,8 +111,12 @@ pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveCo
         .or_else(|| defaults.roles().map(|r| r.to_vec()));
     let loopback = args.loopback || defaults.loopback().unwrap_or(false);
     let duration = args.duration.or_else(|| defaults.duration());
+    let mode = resolve_mode(args, profile);
+    let ring = args.ring.map(map_ring_window);
 
     Ok(EffectiveConfig {
+        mode,
+        ring,
         out: args.out.clone(),
         sinks: args.sink.clone(),
         duration,
@@ -134,6 +144,8 @@ pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -
         defaults.payload().unwrap_or(true)
     };
     EffectiveConfig {
+        mode: CaptureMode::File,
+        ring: None,
         out: args.out.clone(),
         sinks: args.sink.clone(),
         duration: args.duration.or_else(|| defaults.duration()),
@@ -148,34 +160,58 @@ pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -
     }
 }
 
-/// Refuse the modes, sinks, and options deferred to later slices.
-///
-/// The capture mode is resolved as the command line over the profile's
-/// `[capture]` default (specification FR-007): an explicit `--mode` wins, and a
-/// mode absent from the command line falls back to the profile. A profile that
-/// declares `mode = "stream"` or `mode = "ring"` with no `--mode` override is
-/// therefore refused here naming its slice, rather than silently treated as a
-/// file capture the operator did not ask for.
-fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError> {
-    let effective_mode = match args.mode {
-        Some(ModeArg::File) => Some(CaptureMode::File),
-        Some(ModeArg::Stream) => Some(CaptureMode::Stream),
-        Some(ModeArg::Ring) => Some(CaptureMode::Ring),
-        None => profile.capture().mode(),
-    };
-    match effective_mode {
-        // Stream mode is delivered by slice S15 (this slice). File and stream
-        // are both valid; ring is still S16.
-        Some(CaptureMode::Ring) => {
-            return Err(CliError::usage(
-                "capture mode `ring` is not yet supported (slice S16)",
-            ))
-        }
-        Some(CaptureMode::Stream) | Some(CaptureMode::File) | None => {}
+/// The effective capture mode: the command line over the profile's `[capture]`
+/// default (specification FR-007). An explicit `--mode` wins; absent one, the
+/// profile's declared mode; absent both, `file`.
+fn resolve_mode(args: &RunArgs, profile: &Profile) -> CaptureMode {
+    match args.mode {
+        Some(ModeArg::File) => CaptureMode::File,
+        Some(ModeArg::Stream) => CaptureMode::Stream,
+        Some(ModeArg::Ring) => CaptureMode::Ring,
+        None => profile.capture().mode().unwrap_or(CaptureMode::File),
     }
-    if args.ring.is_some() {
+}
+
+/// Map the command-line ring window onto the sink-side [`RingWindow`]. The two
+/// enums are deliberately separate: the sink is a library crate that must not
+/// depend on the CLI (constitution P-2 dependency direction).
+fn map_ring_window(window: crate::args::RingWindow) -> RingWindow {
+    match window {
+        crate::args::RingWindow::Duration(d) => RingWindow::Duration(d),
+        crate::args::RingWindow::Size(bytes) => RingWindow::Size(bytes),
+    }
+}
+
+/// Validate the mode-specific configuration, refusing every misconfiguration and
+/// the options deferred to later slices before capture starts.
+///
+/// Ring mode (specification section 7.2, this slice) requires both a `--out` dump
+/// target and a `--ring` window; a volume stop bound (`--max-bytes`,
+/// `--max-packets`) does not apply to a rolling window; and a `--ring` window
+/// given outside ring mode would be silently ignored. Each is a configuration
+/// error naming the cause.
+fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError> {
+    let mode = resolve_mode(args, profile);
+    if mode == CaptureMode::Ring {
+        if args.out.is_none() {
+            return Err(CliError::usage(
+                "ring mode needs an output file to dump the retained window to; pass --out <PATH>",
+            ));
+        }
+        if args.ring.is_none() {
+            return Err(CliError::usage(
+                "ring mode needs a ring window; pass --ring <DURATION|SIZE>",
+            ));
+        }
+        if args.max_packets.is_some() || args.max_bytes.is_some() {
+            return Err(CliError::usage(
+                "--max-packets and --max-bytes do not apply in ring mode; a rolling window does \
+                 not stop on accumulated volume",
+            ));
+        }
+    } else if args.ring.is_some() {
         return Err(CliError::usage(
-            "ring capture is not yet supported (slice S16)",
+            "--ring applies only in ring mode; add --mode ring",
         ));
     }
     if args.launch {
@@ -565,16 +601,27 @@ pub fn build_sinks(
     let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
     let mut stream_reports: Vec<StreamReports> = Vec::new();
 
-    // The primary capture file, from --out, is a pcapng file sink with no
-    // rotation and the global payload mode. `--out` is the pcapng shorthand and
-    // is always pcapng regardless of the filename extension; a JSON Lines file
-    // is asked for with an explicit `--sink jsonl:` or `--sink ...,format=jsonl`.
+    // The primary capture file, from --out, is a pcapng sink. `--out` is the
+    // pcapng shorthand and is always pcapng regardless of the filename extension;
+    // a JSON Lines file is asked for with an explicit `--sink jsonl:` or
+    // `--sink ...,format=jsonl`. In ring mode the --out file is the ring dump
+    // target: a RingSink retains a rolling window in memory and materializes it
+    // to this file at drain, instead of the continuous file sink.
     if let Some(out) = &config.out {
         let factory = SinkFactory::new(Format::Pcapng, iface_specs.clone());
-        sinks.push(Box::new(
-            RotatingFileSink::create(out, RotationPolicy::None, factory)
-                .map_err(|e| CliError::failure(e.to_string()))?,
-        ));
+        if config.mode == CaptureMode::Ring {
+            // Ring mode is validated to carry a window (reject_unsupported); the
+            // fallback keeps this total rather than panicking if that ever changes.
+            let window = config.ring.ok_or_else(|| {
+                CliError::usage("ring mode needs a ring window; pass --ring <DURATION|SIZE>")
+            })?;
+            sinks.push(Box::new(RingSink::create(out.clone(), window, factory)));
+        } else {
+            sinks.push(Box::new(
+                RotatingFileSink::create(out, RotationPolicy::None, factory)
+                    .map_err(|e| CliError::failure(e.to_string()))?,
+            ));
+        }
     }
 
     for spec in &config.sinks {
@@ -829,6 +876,8 @@ mod tests {
 
     fn base_config() -> EffectiveConfig {
         EffectiveConfig {
+            mode: CaptureMode::File,
+            ring: None,
             out: None,
             sinks: Vec::new(),
             duration: None,
@@ -852,6 +901,139 @@ mod tests {
         for sink in built.sinks {
             let _ = sink.finish(&CaptureStats::default());
         }
+    }
+
+    // --- Ring mode configuration (slice S16, US2) -----------------------
+
+    use clap::Parser;
+
+    /// Parse a `run` invocation into its `RunArgs`, for the ring refusal tests.
+    fn run_args(extra: &[&str]) -> Box<crate::cli::RunArgs> {
+        let mut argv = vec!["fragcap", "run", "--profile", "game"];
+        argv.extend_from_slice(extra);
+        match crate::cli::Cli::try_parse_from(argv)
+            .expect("args parse")
+            .command
+        {
+            crate::cli::Command::Run(a) => a,
+            _ => unreachable!("run parses to Command::Run"),
+        }
+    }
+
+    /// A minimal valid profile with no `[capture]` mode declared.
+    fn plain_profile() -> Profile {
+        Profile::parse(
+            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\n\
+             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
+             match = { exe = \"game.exe\" }\n",
+        )
+        .expect("the profile parses")
+    }
+
+    /// A minimal valid profile declaring ring mode in its `[capture]` table.
+    fn ring_mode_profile() -> Profile {
+        Profile::parse(
+            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\n\
+             [capture]\nmode = \"ring\"\n\
+             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
+             match = { exe = \"game.exe\" }\n",
+        )
+        .expect("the profile parses")
+    }
+
+    // FR-005. Ring mode without an output file is refused before capture.
+    #[test]
+    fn ring_mode_without_out_is_refused() {
+        let args = run_args(&["--mode", "ring", "--ring", "10m"]);
+        let err = effective_config(&args, &plain_profile()).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("output"), "{err}");
+    }
+
+    // FR-005. Ring mode without a window is refused before capture.
+    #[test]
+    fn ring_mode_without_a_window_is_refused() {
+        let args = run_args(&["--mode", "ring", "--out", "x.fcapng"]);
+        let err = effective_config(&args, &plain_profile()).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("ring window"),
+            "{err}"
+        );
+    }
+
+    // FR-006. A volume stop bound does not apply to a rolling window.
+    #[test]
+    fn a_volume_bound_in_ring_mode_is_refused() {
+        for bound in [["--max-packets", "1000"], ["--max-bytes", "1mb"]] {
+            let args = run_args(&[
+                "--mode", "ring", "--ring", "10m", "--out", "x.fcapng", bound[0], bound[1],
+            ]);
+            let err = effective_config(&args, &plain_profile()).unwrap_err();
+            assert!(
+                err.to_string().to_lowercase().contains("ring mode"),
+                "{bound:?}: {err}"
+            );
+        }
+    }
+
+    // FR-007. A ring window given outside ring mode is refused rather than
+    // silently ignored.
+    #[test]
+    fn a_ring_window_without_ring_mode_is_refused() {
+        let args = run_args(&["--ring", "10m", "--out", "x.fcapng"]);
+        let err = effective_config(&args, &plain_profile()).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("ring mode"),
+            "{err}"
+        );
+    }
+
+    // FR-008. A profile declaring ring mode selects it with no `--mode` override,
+    // and is validated identically (here, the missing window is refused).
+    #[test]
+    fn a_profile_declared_ring_mode_is_resolved_and_validated() {
+        let args = run_args(&["--out", "x.fcapng"]);
+        assert_eq!(resolve_mode(&args, &ring_mode_profile()), CaptureMode::Ring);
+        let err = effective_config(&args, &ring_mode_profile()).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("ring window"),
+            "{err}"
+        );
+    }
+
+    // FR-010. `--duration` remains valid in ring mode; a valid ring configuration
+    // is accepted and carries the window.
+    #[test]
+    fn a_valid_ring_configuration_is_accepted_with_duration() {
+        let args = run_args(&[
+            "--mode",
+            "ring",
+            "--ring",
+            "5m",
+            "--duration",
+            "30m",
+            "--out",
+            "x.fcapng",
+        ]);
+        let config = effective_config(&args, &plain_profile()).expect("a valid ring config");
+        assert_eq!(config.mode, CaptureMode::Ring);
+        assert_eq!(
+            config.ring,
+            Some(RingWindow::Duration(Duration::from_secs(300)))
+        );
+        assert_eq!(config.duration, Some(Duration::from_secs(1800)));
+    }
+
+    // The valid ring configuration builds a sink set (the ring dump over --out).
+    #[test]
+    fn a_valid_ring_configuration_builds_a_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = base_config();
+        config.mode = CaptureMode::Ring;
+        config.ring = Some(RingWindow::Size(64 * 1024));
+        config.out = Some(dir.path().join("ring.fcapng"));
+        let built = build_sinks(&config, &one_interface()).expect("build");
+        assert_eq!(built.sinks.len(), 1, "the ring dump is the one sink");
+        finish_all(built);
     }
 
     #[test]

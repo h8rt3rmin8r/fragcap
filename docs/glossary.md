@@ -540,6 +540,43 @@ capture, with no packet lost, duplicated, or reordered across the joins.
 
 **See also:** [Transport](#transport), [Sink](#sink), [Pipeline](#pipeline)
 
+### Ring mode
+
+The capture mode in which fragcap retains a rolling in-memory window of the most
+recently captured packets, bounded by a [ring window](#ring-window), discarding
+the oldest as new ones arrive, and writes the retained window to a capture file
+when the capture ends. The dump fires on any [stop condition](#stop-condition),
+the operator interrupt being the headline one; ring mode adds no stop condition of
+its own. See specification section 7.2 (FR-8).
+
+{: .matters }
+> Ring mode is not the [bounded buffer](#bounded-buffer) of section 12.4, which is
+> also a bounded, drop-oldest ring. That buffer is the internal backpressure stage
+> between the [capture thread](#capture-thread) and the [sink thread](#sink-thread);
+> ring mode is an output mode an operator selects, and its evictions are the
+> operator's declared retention scope, counted rather than lost (constitution P-4,
+> P-9). Confusing the two conflates an internal mechanism with a user-facing mode.
+
+**See also:** [Ring window](#ring-window), [Bounded buffer](#bounded-buffer),
+[Sink](#sink), [Stop condition](#stop-condition)
+
+### Ring window
+
+The bound on a [ring mode](#ring-mode) capture's retained set: either a duration or
+a byte size, from the `--ring` option. A duration window keeps the packets whose
+capture instant is within the window measured back from the newest instant
+observed; a size window keeps the newest packets whose total captured length is
+within the window, the same per-packet quantity the `--max-bytes` bound sums.
+
+{: .matters }
+> Measuring the size window by captured length, not encoded file size, lets an
+> operator reason about one notion of capture size across `--ring` and
+> `--max-bytes`. A window smaller than one packet still retains that one packet, so
+> a capture that observed traffic never dumps an empty file.
+
+**See also:** [Ring mode](#ring-mode), [Duration literal](#duration-literal),
+[Write gate](#write-gate)
+
 ### Write gate
 
 A decision the [sink thread](#sink-thread) consults, synchronously, before the
