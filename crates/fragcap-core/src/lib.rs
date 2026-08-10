@@ -92,7 +92,7 @@ pub mod traits;
 pub use attribution::{Attribution, Fidelity, StageId};
 pub use duration::DurationError;
 pub use error::{AttrError, SinkError, SourceError};
-pub use filter::FilterProgram;
+pub use filter::{FilterConfig, FilterManager, FilterProgram, Install};
 pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
 pub use interface::{
     select, DriverReport, ExclusionReason, InterfaceId, InterfaceInventory, InterfaceRecord,

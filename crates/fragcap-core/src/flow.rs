@@ -38,7 +38,11 @@ pub enum Direction {
 /// Returned in bulk by [`crate::traits::FlowAttributor::active_endpoints`].
 /// Endpoint retention after a socket leaves the table is specification section
 /// 11.4 and belongs to slice S10; this type is only the shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// `Ord` so a set of endpoints keys a `BTreeSet`, which slice S13 uses to
+/// compile a filter deterministically and to count filter gaps by set
+/// difference. The order is arbitrary but total; nothing reads meaning into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Endpoint {
     pub addr: SocketAddr,
     pub proto: Proto,

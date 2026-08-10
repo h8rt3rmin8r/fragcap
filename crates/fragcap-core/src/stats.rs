@@ -212,8 +212,17 @@ pub struct CaptureStats {
     /// Dropped by a sink that could not accept, per specification section 12.4.
     /// Indicates a slow consumer downstream of fragcap.
     pub sink_dropped: u64,
-    /// Packets that passed while a filter was being narrowed, per the summary
-    /// output in specification section 13.
+    /// Filter gaps, per specification section 12.3: occurrences of an endpoint
+    /// active in the attribution map while a narrowed kernel filter that did not
+    /// admit it was installed, from the endpoint appearing until the reinstall
+    /// that admitted it.
+    ///
+    /// A count of occurrences, not of packets: a packet the kernel filter
+    /// excludes is never delivered to fragcap, so a packet count would be
+    /// fabricated, which P-9 forbids. Distinct from the three drop counters and
+    /// not part of the conservation identity, because it counts no packet fragcap
+    /// observed and then discarded. Populated by the filter manager in slice S13
+    /// and surfaced in the section 13 summary.
     pub filter_gaps: u64,
     /// Each capture backend's own report, unaltered, one entry per interface.
     ///
