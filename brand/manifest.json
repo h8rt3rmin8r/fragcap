@@ -1,0 +1,222 @@
+{
+  "name": "fragcap-brand-kit",
+  "version": "1.0.0",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 12915
+    },
+    {
+      "path": "brand-guide.pdf",
+      "bytes": 134122
+    },
+    {
+      "path": "favicons/android-chrome-192x192.png",
+      "bytes": 3871
+    },
+    {
+      "path": "favicons/android-chrome-512x512.png",
+      "bytes": 6332
+    },
+    {
+      "path": "favicons/apple-touch-icon.png",
+      "bytes": 3639
+    },
+    {
+      "path": "favicons/favicon-16x16.png",
+      "bytes": 181
+    },
+    {
+      "path": "favicons/favicon-256x256.png",
+      "bytes": 3715
+    },
+    {
+      "path": "favicons/favicon-32x32.png",
+      "bytes": 1298
+    },
+    {
+      "path": "favicons/favicon-48x48.png",
+      "bytes": 1812
+    },
+    {
+      "path": "favicons/favicon.ico",
+      "bytes": 16701
+    },
+    {
+      "path": "favicons/favicon.svg",
+      "bytes": 845
+    },
+    {
+      "path": "favicons/site.webmanifest",
+      "bytes": 372
+    },
+    {
+      "path": "fonts/README.md",
+      "bytes": 386
+    },
+    {
+      "path": "fonts/fonts.css",
+      "bytes": 848
+    },
+    {
+      "path": "fonts/licenses/OFL-Geist.txt",
+      "bytes": 4383
+    },
+    {
+      "path": "fonts/licenses/OFL-Space-Grotesk.txt",
+      "bytes": 4401
+    },
+    {
+      "path": "fonts/ttf/Geist-Medium.ttf",
+      "bytes": 90528
+    },
+    {
+      "path": "fonts/ttf/Geist-Regular.ttf",
+      "bytes": 90440
+    },
+    {
+      "path": "fonts/ttf/GeistMono-Regular.ttf",
+      "bytes": 101868
+    },
+    {
+      "path": "fonts/ttf/SpaceGrotesk-Bold.ttf",
+      "bytes": 88404
+    },
+    {
+      "path": "fonts/ttf/SpaceGrotesk-Medium.ttf",
+      "bytes": 88500
+    },
+    {
+      "path": "fonts/woff2/Geist-Medium.woff2",
+      "bytes": 46356
+    },
+    {
+      "path": "fonts/woff2/Geist-Regular.woff2",
+      "bytes": 45172
+    },
+    {
+      "path": "fonts/woff2/GeistMono-Regular.woff2",
+      "bytes": 50196
+    },
+    {
+      "path": "fonts/woff2/SpaceGrotesk-Bold.woff2",
+      "bytes": 12840
+    },
+    {
+      "path": "fonts/woff2/SpaceGrotesk-Medium.woff2",
+      "bytes": 13312
+    },
+    {
+      "path": "logos/png/fragcap-horizontal-dark-2400.png",
+      "bytes": 20493
+    },
+    {
+      "path": "logos/png/fragcap-horizontal-light-2400.png",
+      "bytes": 20657
+    },
+    {
+      "path": "logos/png/fragcap-mark-color-1024.png",
+      "bytes": 7962
+    },
+    {
+      "path": "logos/png/fragcap-mark-dark-1024.png",
+      "bytes": 8012
+    },
+    {
+      "path": "logos/png/fragcap-mark-light-1024.png",
+      "bytes": 8021
+    },
+    {
+      "path": "logos/png/fragcap-social-preview-1280x640.png",
+      "bytes": 162657
+    },
+    {
+      "path": "logos/png/fragcap-stacked-dark-2048.png",
+      "bytes": 34501
+    },
+    {
+      "path": "logos/png/fragcap-stacked-light-2048.png",
+      "bytes": 34620
+    },
+    {
+      "path": "logos/png/fragcap-wordmark-cyan-1440.png",
+      "bytes": 9867
+    },
+    {
+      "path": "logos/svg/fragcap-horizontal-dark.svg",
+      "bytes": 1431
+    },
+    {
+      "path": "logos/svg/fragcap-horizontal-light.svg",
+      "bytes": 1431
+    },
+    {
+      "path": "logos/svg/fragcap-horizontal-white.svg",
+      "bytes": 1381
+    },
+    {
+      "path": "logos/svg/fragcap-mark-black.svg",
+      "bytes": 796
+    },
+    {
+      "path": "logos/svg/fragcap-mark-color.svg",
+      "bytes": 796
+    },
+    {
+      "path": "logos/svg/fragcap-mark-dark-background.svg",
+      "bytes": 845
+    },
+    {
+      "path": "logos/svg/fragcap-mark-light-background.svg",
+      "bytes": 845
+    },
+    {
+      "path": "logos/svg/fragcap-mark-white.svg",
+      "bytes": 796
+    },
+    {
+      "path": "logos/svg/fragcap-social-preview.svg",
+      "bytes": 2031
+    },
+    {
+      "path": "logos/svg/fragcap-stacked-dark.svg",
+      "bytes": 1425
+    },
+    {
+      "path": "logos/svg/fragcap-stacked-light.svg",
+      "bytes": 1425
+    },
+    {
+      "path": "logos/svg/fragcap-wordmark-black.svg",
+      "bytes": 649
+    },
+    {
+      "path": "logos/svg/fragcap-wordmark-cyan.svg",
+      "bytes": 649
+    },
+    {
+      "path": "logos/svg/fragcap-wordmark-white.svg",
+      "bytes": 649
+    },
+    {
+      "path": "specimens/fragcap-type-specimen.png",
+      "bytes": 68729
+    },
+    {
+      "path": "specimens/fragcap-type-specimen.svg",
+      "bytes": 1458
+    },
+    {
+      "path": "tokens/brand.tokens.json",
+      "bytes": 815
+    },
+    {
+      "path": "tokens/colors.css",
+      "bytes": 399
+    },
+    {
+      "path": "tokens/typography.css",
+      "bytes": 332
+    }
+  ]
+}

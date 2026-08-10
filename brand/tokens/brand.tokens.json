@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "name": "fragcap",
+    "version": "1.0.0"
+  },
+  "color": {
+    "signal_cyan": "#27C7E7",
+    "capture_orange": "#FF5300",
+    "void": "#050708",
+    "surface": "#0B1115",
+    "surface_raised": "#101A20",
+    "line": "#21323A",
+    "text": "#F2F7F8",
+    "text_muted": "#94A8B0",
+    "light_surface": "#F5F8F9",
+    "light_text": "#102027",
+    "light_cyan": "#006F82",
+    "light_orange": "#C24100"
+  },
+  "font": {
+    "display": "Space Grotesk",
+    "body": "Geist",
+    "mono": "Geist Mono",
+    "wordmark": "Custom fragcap vector lettering"
+  },
+  "radius": {
+    "small": "4px",
+    "control": "6px",
+    "panel": "8px"
+  },
+  "stroke": {
+    "hairline": "1px",
+    "icon": "1.5px",
+    "focus": "2px"
+  },
+  "motion": {
+    "fast": "120ms",
+    "normal": "180ms",
+    "slow": "240ms"
+  }
+}

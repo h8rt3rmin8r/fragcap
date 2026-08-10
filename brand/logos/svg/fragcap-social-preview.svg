@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <title>fragcap logo</title>
+  <rect width="1280" height="640" fill="#050708"/>
+  <defs>
+  <radialGradient id="mesh" cx="28%" cy="45%" r="70%">
+    <stop offset="0" stop-color="#27C7E7" stop-opacity=".12"/>
+    <stop offset="1" stop-color="#050708" stop-opacity="0"/>
+  </radialGradient>
+</defs>
+<rect width="1280" height="640" fill="url(#mesh)"/>
+<g transform="translate(76 62) scale(.9)"><g id="fragcap-mark">
+  <g id="capture-reticle" fill="#27C7E7">
+    <path d="M72 154V72h82v22H94v60z"/>
+    <path d="M358 72h82v82h-22V94h-60z"/>
+    <path d="M72 358h22v60h60v22H72z"/>
+    <path d="M418 358h22v82h-82v-22h60z"/>
+  </g>
+  <g id="packet-f" fill="#27C7E7">
+    <path d="M156 134l16-16h34v272h-50z"/>
+    <path d="M188 118h150l14 12-14 12H188z"/>
+    <path d="M188 220h150l14 12-14 12H188z"/>
+    <path d="M188 322h92l14 12-14 12h-92z"/>
+  </g>
+  <g id="captured-terminals" fill="#FF5300">
+    <rect x="370" y="118" width="34" height="34"/>
+    <rect x="370" y="220" width="34" height="34"/>
+    <rect x="312" y="322" width="34" height="34"/>
+  </g>
+</g></g>
+<g transform="translate(560 190) scale(.88)"><g id="fragcap-wordmark" fill="none" stroke="#27C7E7" stroke-width="22" stroke-linecap="square" stroke-linejoin="bevel">
+  <path d="M30 150V42L42 30h42M10 82h68"/>
+  <path d="M128 150V72m0 0h34l18 18"/>
+  <path d="M224 82l12-12h45v80h-48l-13-13v-24l13-13h48"/>
+  <path d="M378 70h-45l-13 13v42l13 13h45m0-68v88l-13 13h-32"/>
+  <path d="M475 79l-9-9h-38l-13 13v54l13 13h43"/>
+  <path d="M516 82l12-12h45v80h-48l-13-13v-24l13-13h48"/>
+  <path d="M621 174V70h45l13 13v44l-13 13h-45"/>
+</g></g>
+<text x="559" y="405" fill="#F2F7F8" font-family="Geist,Arial,sans-serif" font-size="23" textLength="608" lengthAdjust="spacingAndGlyphs">Passive process-attributed network capture for games.</text>
+<text x="559" y="456" fill="#94A8B0" font-family="Geist Mono,monospace" font-size="17" letter-spacing="2">A SHRUGGIETECH PROJECT</text>
+</svg>

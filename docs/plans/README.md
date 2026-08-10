@@ -122,7 +122,7 @@ within a single autopilot run.
 | S15 | Transports and streaming sinks | v0.2.0 | S08 | 14.1 to 14.4 | |
 | S16 | Ring mode and triggers | v0.2.0 | S08 | 7.2 | |
 | S17 | Steam integration and managed launch | v0.2.0 | S05, S12 | 16 | Q-4 resolved |
-| S18 | Extcap, wrappers, documentation site | v0.2.0 | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 |
+| S18 | Extcap, wrappers, documentation site | v0.2.0 | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 resolved |
 
 ### Follow-up slices and directory numbering
 

@@ -294,9 +294,9 @@ regeneration of the alphabetical index.
 ## 23. Website and Brand
 
 **(deferrable)** Site structure, hosting, custom domain configuration,
-and the brand guardrails. Brand is a placeholder in v0.2.0 pending a
-dedicated session, but the guardrails belong in the specification
-because they constrain the site build.
+and the brand guardrails. Brand identity is resolved (the approved kit is
+vendored in `brand/`); the guardrails belong in the specification because
+they constrain the site build.
 
 ## 24. Build, CI, and Release
 

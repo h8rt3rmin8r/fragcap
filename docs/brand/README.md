@@ -1,90 +1,50 @@
 # Brand
 
-**Status: placeholder.** Identity is developed in a dedicated session. The
-guardrails below are from specification section 23.3 and are sufficient to
-build the site against in the interim.
+**Status: resolved (brand session, 2026-08-10).** The approved fragcap identity,
+version 1.0.0, is vendored in the top-level [`brand/`](../../brand/) directory:
+the full brand system (`brand/README.md`), the logo lockups (`brand/logos/`),
+favicons, fonts with their OFL licenses (`brand/fonts/`), design tokens
+(`brand/tokens/`), a type and hex-readability specimen (`brand/specimens/`), and
+the printable guide (`brand/brand-guide.pdf`). Treat `brand/logos/svg/` as the
+source of truth. This directory carries the repository-specific notes that the
+kit does not: the security-posture framing that governs acceptance, the two
+resolved open questions, and the site deployment target for S18.
 
-Two open questions remain, both from specification section 29:
+The two former open questions from specification section 29 are both resolved:
 
-| ID | Question | Blocks |
+| ID | Question | Resolution |
 | --- | --- | --- |
-| Q-7 | Monospace face selection | S18 |
-| Q-8 | Parent brand visual relationship | S18 |
+| Q-7 | Monospace face selection | **Geist Mono.** Its `0 O`, `1 l I`, `8 B`, `5 S`, and `2 Z` stay distinguishable in packet payloads at the interface size, and its family relationship to Geist keeps technical specimens from feeling detached from the surrounding documentation. Evaluate any future replacement against `brand/specimens/`, not a decorative alphabet. |
+| Q-8 | Parent brand visual relationship | fragcap is an independent **ShruggieTech** sub-brand with its own identity. It shares Space Grotesk, Geist, Geist Mono, dark-first discipline, and the parent's exact `#FF5300` orange, but not ShruggieTech green, the shruggie mark, or marketing layouts. The endorsement is **A ShruggieTech project**, set in Geist Mono, uppercase, subordinate, and outside the logo's clear space. Do not create a combined parent-product logo. |
 
-Brand is not on the critical path and is deliberately not a v0.2.0 priority.
-It is also not forgettable: S18 ships the documentation site, and a site cannot
-be built against an undecided identity. Resolve it before S18 starts, not
-during.
+With both resolved, S18 (the documentation site) is unblocked: the site can be
+built against a decided identity.
 
 ## Governing principle: instrument, not weapon
 
-Every visual and verbal decision reads as laboratory equipment.
+Every visual and verbal decision reads as laboratory equipment. fragcap observes
+traffic; it does not alter game state, conceal activity, automate play, or
+promise advantage.
 
-This is accurate positioning, since fragcap is a passive observation tool. It
-is also load-bearing rather than decorative: an identity that reads as cheat
+This is load-bearing rather than decorative: an identity that reads as cheat
 tooling attracts platform removal, security software heuristics, and community
 moderation regardless of what the software actually does. The brand is part of
-the security posture, not a layer applied on top of it.
-
-Treat a proposed design that fails this test the way you would treat a
-constitution violation, because the consequence is the same order of severity.
-
-## Excluded
-
-Each of these signals cheat tooling to precisely the audiences whose assessment
-matters most:
-
-- Saturated multi-color peripheral palettes
-- Angular chrome logotypes
-- Skull and crosshair imagery
-- Exploit vocabulary
-
-## Directional
-
-- Instrumentation visual language, drawn from oscilloscopes, spectrum
-  analyzers, and network topology diagrams
-- A restrained dark base with a single signal accent
-- Density and precision over decoration
-
-## Typography carries functional weight
-
-The monospace face is a **selection requirement, not a stylistic preference**,
-because users read packet payloads in it. Candidates are evaluated against
-hex-reading criteria:
-
-- Unambiguous zero against capital O
-- Unambiguous one against lowercase L and capital I
-- Clear separation among hexadecimal digits
-
-A face that fails any of these is rejected regardless of how it looks in a
-heading. Evaluate candidates on a real hex dump at the size the documentation
-will actually use, not on a specimen sheet.
-
-This is open question Q-7.
+the security posture, not a layer applied on top of it. Treat a proposed design
+that fails this test the way you would treat a constitution violation, because
+the consequence is the same order of severity. The full excluded-signal list,
+color ratios, voice rules, and prohibited treatments are in `brand/README.md`
+(specification section 23.3 remains the governing reference).
 
 ## Voice
 
 Precise, dry, assumes technical competence. Links unfamiliar vocabulary to the
-glossary rather than simplifying it.
+glossary rather than simplifying it. Constitution principle P-6 keeps the
+glossary current, which is what makes precise prose affordable: the reader has
+somewhere to go when a term is new. No marketing register. The landing page
+states what fragcap is in one sentence, shows one worked invocation with its
+output, names the prerequisite plainly, and links onward.
 
-The glossary exists so that prose does not have to condescend. Constitution
-principle P-6 keeps it current, which is what makes this affordable: writing
-precisely is only viable if the reader has somewhere to go when a term is new.
-
-No marketing register. The landing page states what fragcap is in one sentence,
-shows one worked invocation with its output, names the prerequisite plainly,
-and links onward. No testimonials, no feature grids, no calls to action. The
-audience arrives already knowing they need a capture tool.
-
-## Parent brand relationship
-
-fragcap is a ShruggieTech sub-brand carrying its own visual identity, alongside
-the other product sub-brands rather than inheriting the parent system.
-
-The nature of the visible relationship is unresolved. This is open question
-Q-8.
-
-## Domain
+## Domain and deployment
 
 `fragcap.com` is registered. Deployment targets GitHub Pages from a static
 export built by continuous integration: the apex resolves through address
@@ -97,14 +57,3 @@ rather than a repository subpath. A `.nojekyll` marker must be emitted into the
 output root; without it the static host's legacy processing removes the
 framework's asset directory and the site loads with no styling or
 interactivity.
-
-## Before the brand session
-
-Worth having on hand:
-
-- A real `.fcapng` hex dump, for evaluating monospace candidates against actual
-  content rather than a specimen
-- The other ShruggieTech sub-brand identities, for the Q-8 relationship
-  decision
-- The landing page copy, since the one-sentence statement constrains the
-  visual composition more than the reverse

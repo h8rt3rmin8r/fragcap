@@ -534,7 +534,11 @@ specification; the protocol that produced them is
 `docs/plans/reconnaissance.md`.
 
 Slices S09, S10, and S17 were gated on those answers and are now unblocked.
-Q-7 and Q-8 remain open and gate S18.
+Q-7 and Q-8 (the brand session) are resolved as of 2026-08-10: Geist Mono for
+the monospace face, and fragcap as an independent ShruggieTech sub-brand carrying
+an "A ShruggieTech project" endorsement rather than a combined logo. The approved
+identity is vendored in `brand/` and recorded in `docs/brand/README.md`, so S18 is
+unblocked.
 
 ## Integration workflow
 

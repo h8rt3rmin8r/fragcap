@@ -1,0 +1,9 @@
+:root {
+  --fragcap-font-display: "Space Grotesk", system-ui, sans-serif;
+  --fragcap-font-body: "Geist", system-ui, sans-serif;
+  --fragcap-font-mono: "Geist Mono", ui-monospace, monospace;
+  --fragcap-display-tracking: -0.025em;
+  --fragcap-label-tracking: 0.08em;
+  --fragcap-body-leading: 1.65;
+  --fragcap-code-leading: 1.5;
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <rect width="1600" height="1000" fill="#050708"/>
+  <text x="100" y="110" fill="#27C7E7" font-family="Space Grotesk" font-size="28" font-weight="500" letter-spacing="4">FRAGCAP TYPOGRAPHY</text>
+  <text x="100" y="220" fill="#F2F7F8" font-family="Space Grotesk" font-size="76" font-weight="700">Observe the traffic.</text>
+  <text x="100" y="286" fill="#94A8B0" font-family="Geist" font-size="30">Passive process-attributed network capture for games.</text>
+  <text x="100" y="390" fill="#FF5300" font-family="Geist Mono" font-size="23" letter-spacing="2">HEX READABILITY TEST</text>
+  <text x="100" y="465" fill="#F2F7F8" font-family="Geist Mono" font-size="34">00000000  45 00 00 3C 1C 46 40 00 40 06 B1 E6</text>
+  <text x="100" y="525" fill="#F2F7F8" font-family="Geist Mono" font-size="34">00000010  AC 10 0A 63 AC 10 0A 0C C2 03 00 50</text>
+  <text x="100" y="610" fill="#27C7E7" font-family="Geist Mono" font-size="32">0 O  1 l I  8 B  5 S  2 Z  { } [ ] ( )</text>
+  <line x1="100" y1="670" x2="1500" y2="670" stroke="#21323A"/>
+  <text x="100" y="750" fill="#F2F7F8" font-family="Geist" font-size="26">Display: Space Grotesk 500/700</text>
+  <text x="100" y="800" fill="#F2F7F8" font-family="Geist" font-size="26">Body: Geist 400/500</text>
+  <text x="100" y="850" fill="#F2F7F8" font-family="Geist Mono" font-size="26">Data: Geist Mono 400</text>
+</svg>

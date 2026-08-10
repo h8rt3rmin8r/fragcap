@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="200" viewBox="0 0 720 200">
+  <title>fragcap logo</title>
+
+  <g transform="translate(0 8)"><g id="fragcap-wordmark" fill="none" stroke="#050708" stroke-width="22" stroke-linecap="square" stroke-linejoin="bevel">
+  <path d="M30 150V42L42 30h42M10 82h68"/>
+  <path d="M128 150V72m0 0h34l18 18"/>
+  <path d="M224 82l12-12h45v80h-48l-13-13v-24l13-13h48"/>
+  <path d="M378 70h-45l-13 13v42l13 13h45m0-68v88l-13 13h-32"/>
+  <path d="M475 79l-9-9h-38l-13 13v54l13 13h43"/>
+  <path d="M516 82l12-12h45v80h-48l-13-13v-24l13-13h48"/>
+  <path d="M621 174V70h45l13 13v44l-13 13h-45"/>
+</g></g>
+</svg>
