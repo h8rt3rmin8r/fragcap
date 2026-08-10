@@ -677,7 +677,127 @@ identifier owning each.
 > millisecond sampling interval, so the race window is real but lands on
 > traffic that does not matter, chiefly name resolution.
 
-**See also:** [Attribution](#attribution), [IP Helper](#ip-helper)
+**See also:** [Attribution](#attribution), [IP Helper](#ip-helper),
+[Socket table entry](#socket-table-entry),
+[Attribution index](#attribution-index)
+
+**References:**
+
+- Microsoft, `GetExtendedTcpTable` and `GetExtendedUdpTable`. The interface
+  fragcap reads. The table class selects the row shape; the owning-module
+  classes carry a socket creation timestamp and the owning-process classes do
+  not.
+
+### Socket table entry
+
+One row of a [socket table](#socket-table): a protocol, a local endpoint, a
+remote endpoint for TCP only, an owning process identifier, and the instant the
+socket was created when the platform reports one.
+
+The absent remote for UDP is a property of the platform interface rather than a
+fragcap simplification, and specification section 8.4 forbids inventing one.
+
+{: .matters }
+> The creation instant is what tells the previous owner of a reused port from
+> the current one. A socket created after a packet cannot have owned that
+> packet, so an entry that postdates the packet is not a candidate at all.
+> Without it, a port reassigned between two snapshots attributes the new
+> owner's identity to the old owner's traffic, confidently and silently.
+>
+> Reconnaissance recorded the timestamp as a property of the TCP table.
+> Slice S10 found it on both, which matters more for UDP: a UDP entry has no
+> remote, so its key is the weakest of the two and a reused port is least
+> distinguishable there.
+
+**See also:** [Socket table](#socket-table), [5-tuple](#5-tuple),
+[Attribution fidelity](#attribution-fidelity)
+
+### Attribution index
+
+The immutable value a lookup reads: a [socket table](#socket-table) snapshot,
+the image names resolved for the process identifiers in it, and the
+[retention window](#retention-window)'s map of endpoints that have left the
+table.
+
+The control thread builds a new one on each refresh and publishes it
+atomically. Capture threads read the current one without locking.
+
+{: .matters }
+> Everything an answer can contain is in the index before the lookup begins.
+> That is what makes attribution lookup unable to block packet acquisition:
+> there is nothing on the lookup path to block on. An implementation that
+> resolved an image name lazily would put an operating system call on the
+> capture thread at the start of a session, which is exactly when the most
+> sockets are opening at once.
+
+**See also:** [Socket table](#socket-table), [Capture thread](#capture-thread),
+[Flow attributor](#flow-attributor)
+
+### Retention window
+
+The grace period, defaulting to thirty seconds, during which an endpoint that
+has left the [socket table](#socket-table) remains resolvable.
+
+Measured from the instant the endpoint was last observed *present* in a table,
+not from the refresh that first noticed it gone. Those differ by up to one
+poll interval.
+
+{: .matters }
+> Capture and socket table observation are not synchronized. A connection
+> closing produces final packets processed after the socket has gone, so
+> discarding attribution the moment an endpoint disappears would leave the tail
+> of every connection unattributed.
+>
+> The cost is that a retained answer can be wrong, in the one case where the
+> port was reassigned inside the window. That is why such answers are marked:
+> see [attribution fidelity](#attribution-fidelity). It is also why the origin
+> is exact. Measuring from the refresh that noticed the absence would make a
+> thirty second window silently thirty-one, widening the exposure without
+> saying so.
+
+**See also:** [Socket table](#socket-table),
+[Attribution fidelity](#attribution-fidelity), [Attribution](#attribution)
+
+### Refresh trigger
+
+An event that causes the [socket table](#socket-table) to be re-read before the
+poll interval elapses.
+
+Two exist. A process start matching a profile stage triggers one immediately,
+because a newly matched process is about to open sockets. An unattributed
+packet on a previously unseen endpoint triggers one too, rate limited to one
+per two hundred milliseconds.
+
+{: .matters }
+> The rate limit is the load-bearing half. Without it, traffic fragcap will
+> never attribute, which arrives at line rate and is unattributable no matter
+> how often the table is read, would drive the table read rate. The limit is
+> measured in wall-clock time rather than capture time for the same reason:
+> replaying an hour of traffic in one second must not request thousands of
+> reads.
+>
+> The trigger is recorded rather than acted on, because it arrives on the
+> capture thread, where reading a table is precisely what the publication
+> contract forbids.
+
+**See also:** [Attribution index](#attribution-index),
+[Capture thread](#capture-thread), [Socket table](#socket-table)
+
+### Dual-stack socket
+
+An IPv6 socket bound to the unspecified address that also accepts IPv4 traffic,
+which the socket table reports under its IPv6 bind rather than under the
+address a datagram arrived on.
+
+{: .matters }
+> Matching these is a judgement call fragcap makes deliberately. Reconnaissance
+> found no focal title relying on one, so the rule is unexercised by them rather
+> than wrong. Refusing to match would make a whole class of sockets silently
+> unattributable, and a silent unattributable class is worse than an imprecise
+> match that ranks below every exact one and still requires the port to agree.
+
+**See also:** [Wildcard bind address](#wildcard-bind-address),
+[Socket table entry](#socket-table-entry)
 
 ### Process tree
 

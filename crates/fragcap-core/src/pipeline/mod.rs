@@ -71,7 +71,7 @@ pub(crate) mod buffer;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -502,18 +502,17 @@ impl Pipeline {
         };
 
         // Shared because every capture thread asks the same attributor, and
-        // `FlowAttributor` is `Send` without being `Sync`, so a shared reference
-        // is not enough on its own.
+        // shared without a lock because specification section 11.6 says the
+        // capture thread reads the current snapshot without blocking.
         //
-        // A mutex on the per-packet path is not the destination. Specification
-        // section 8.6 has a control thread owning the attributor and publishing
-        // a snapshot the capture threads read without blocking, which is the
-        // arrangement that removes this lock. That thread arrives with S11 and
-        // S13. Taking it now would fix the snapshot's shape before S10 knows
-        // what a socket table snapshot costs to publish, and adding `Sync` to
-        // the trait instead would be a fourth deviation against section 8.5 to
-        // buy something the control thread makes moot.
-        let attributor = Arc::new(Mutex::new(attributor));
+        // S08 held this behind a `Mutex` and took it once per packet, and said
+        // in this comment that the lock was not the destination. S10 is where
+        // it goes: `FlowAttributor` gained `Sync`, an implementor publishes an
+        // immutable index its lookups read atomically, and there is nothing
+        // left here to lock. The conversion is free and invisible to callers,
+        // because `Arc<dyn T>` is constructible from the `Box<dyn T>` that
+        // `Pipeline::new` still takes.
+        let attributor: Arc<dyn FlowAttributor> = Arc::from(attributor);
 
         let mut threads = Vec::with_capacity(sources.len());
         for SourceBinding {
@@ -538,7 +537,7 @@ impl Pipeline {
                 let link = source.link_type();
                 let ended = acquire(
                     source.as_mut(),
-                    &attributor,
+                    attributor.as_ref(),
                     &mut parser,
                     &tx,
                     &stop,
@@ -687,7 +686,7 @@ impl Drop for StopOnDrop {
 #[allow(clippy::too_many_arguments)]
 fn acquire(
     source: &mut dyn PacketSource,
-    attributor: &Mutex<Box<dyn FlowAttributor>>,
+    attributor: &dyn FlowAttributor,
     parser: &mut HeaderParser,
     tx: &buffer::Producer,
     stop: &StopHandle,
@@ -717,9 +716,8 @@ fn acquire(
             // The packet's own instant, not the present one. Specification
             // section 11.4: capture and socket table observation are not
             // synchronized, so the question is who owned this flow then.
-            let attributor = attributor
-                .lock()
-                .expect("the attributor mutex is never poisoned");
+            //
+            // No lock. Section 11.6, and slice S10.
             packet.attribution = attributor.resolve(key, packet.ts);
         }
         match packet.attribution_state() {

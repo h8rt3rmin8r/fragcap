@@ -58,6 +58,40 @@ regex           = { version = "1.13", default-features = false, features = [
 # the workspace below its own minimum.
 pcap            = "2.4"
 
+# External. Slice S10, research R-3: the attribution snapshot publication of
+# specification section 11.6, which requires that the capture thread read the
+# current snapshot without locking while the control thread replaces it.
+#
+# The alternative worth naming is `RwLock<Arc<Index>>`, which is the tempting
+# one and is a lock: a reader can block behind a writer, and the reader here is
+# the acquisition path that section 11.6 exists to keep unblocked. It would
+# satisfy a test and not the requirement, which is worse than failing both.
+# A hand-rolled `AtomicPtr` is correct and needs a reclamation scheme written
+# in `unsafe`, in a workspace that has none outside a platform binding.
+#
+# MIT or Apache-2.0, no dependencies of its own, edition 2018 with no declared
+# minimum toolchain, so it cannot move `cargo xtask msrv`.
+arc-swap        = "1.9"
+
+# External, optional. Slice S10, research R-1 and R-4: the IP Helper socket
+# table and query-only process enumeration that flow attribution is built on.
+# Optional and off by default behind the `socket-table` feature.
+#
+# Pinned to the 0.36 line because `pcap` already resolves it there, so this
+# adds no package to Cargo.lock at all. Taking the current line would put a
+# second complete windows-sys tree in the graph for declarations that have not
+# changed. MIT or Apache-2.0, declares Rust 1.64.
+#
+# Note that this is unrelated to npcap. The IP Helper API ships with the
+# operating system, so the socket table backend needs no capture driver and no
+# software development kit, which is why its feature is not `live`.
+windows-sys     = { version = "0.36", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is
 # hand-rolled because its exact byte shape is the deliverable, and this parses
 # every line it emits so validity is judged by something other than the writer.

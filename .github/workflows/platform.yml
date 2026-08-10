@@ -5,6 +5,12 @@
 # development kit acquisition step below had never run. It still has not been
 # watched to completion, and must not be reported as passing until it has.
 #
+# Slice S10 added a second subject, and it is a different kind. The socket table
+# backend in `fragcap-attr` needs Windows and nothing else, so unlike everything
+# below it, its tests actually run on a runner with no npcap installed. They
+# were also run to completion on a developer machine before this file was
+# changed, which is more than the capture half has ever managed.
+#
 # The kit is acquired at build time and never vendored, per specification
 # section 20.2 and the constitution's licensing section. `cargo xtask lint`
 # fails if any of its files reach the repository.
@@ -23,12 +29,14 @@ on:
     paths:
       - "crates/fragcap-capture/**"
       - "crates/fragcap-core/**"
+      - "crates/fragcap-attr/**"
       - ".github/workflows/platform.yml"
       - "Cargo.lock"
   pull_request:
     paths:
       - "crates/fragcap-capture/**"
       - "crates/fragcap-core/**"
+      - "crates/fragcap-attr/**"
       - ".github/workflows/platform.yml"
       - "Cargo.lock"
 
@@ -49,6 +57,20 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # Slice S10. Deliberately before the software development kit is
+      # acquired, and not gated on the capture driver being present, because
+      # the socket table backend needs neither. The IP Helper API and the
+      # toolhelp snapshot ship with the operating system, so this is the first
+      # step in this workflow that can go green on a bare Windows runner and
+      # the first that does not depend on an external download succeeding.
+      #
+      # Its feature is `socket-table` and not `live` for exactly that reason;
+      # see crates/fragcap-attr/Cargo.toml.
+      - name: Build and test the socket table backend
+        run: |
+          cargo test -p fragcap-attr --features socket-table --locked
+          cargo test -p fragcap-attr --features socket-table --locked -- --ignored
 
       - name: Acquire the npcap SDK
         shell: pwsh

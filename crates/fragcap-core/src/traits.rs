@@ -69,9 +69,25 @@ pub trait PacketSource: Send {
 /// Resolves a flow to the process that owns it. Implemented against the socket
 /// table in slice S10.
 ///
-/// Contains no packet acquisition, per P-3. `Send` because the control thread
-/// owns it while the capture thread reads a snapshot it publishes.
-pub trait FlowAttributor: Send {
+/// Contains no packet acquisition, per P-3.
+///
+/// **`Sync` is a recorded deviation.** Specification section 8.5 declares this
+/// trait with neither bound, and S08 needed neither: it held the attributor
+/// behind a mutex and locked it once per packet, which was correct for a
+/// pipeline with one capture thread and no publication mechanism.
+///
+/// Specification section 11.6 ends that arrangement. It requires the control
+/// thread to publish an immutable snapshot atomically and the capture threads
+/// to read it without locking, and there is no arrangement of a `Send`-only
+/// trait that several threads share without a lock somewhere. S08 deferred the
+/// mechanism to S10 by name, on the reasoning that building it earlier would
+/// fix the snapshot's shape before anything knew what a socket table snapshot
+/// costs to publish. Added by S10 and promoted to specification section 29.
+///
+/// The same reasoning S09 used for [`PacketSource`] applies to the size of the
+/// change: a bound that every existing implementor already satisfies is a far
+/// smaller commitment than a method on a surface intended to reach 1.0.0.
+pub trait FlowAttributor: Send + Sync {
     /// The process owning this flow at the instant the packet was observed, if
     /// it can be determined. `None` means attempted and unresolved: the packet
     /// is retained and marked, per P-4, never dropped.
@@ -300,6 +316,42 @@ mod tests {
         assert_send::<dyn FlowAttributor>();
         assert_send::<dyn ProcessWatcher>();
         assert_send::<dyn Sink>();
+    }
+
+    // S10. Section 11.6 has every capture thread reading one published
+    // attribution snapshot without locking, which requires `Sync` and not only
+    // `Send`. Asserted at the trait rather than at the pipeline, so an
+    // implementor that stops being `Sync` fails here instead of inside a
+    // `spawn` call whose error message names neither.
+    #[test]
+    fn the_attributor_is_shareable_across_threads() {
+        fn requires_sync<T: Sync + ?Sized>(_: &T) {}
+        fn assert_sync<T: Sync + ?Sized>() {}
+
+        let attributor: Box<dyn FlowAttributor> = Box::new(StubAttributor { answer: None });
+        requires_sync(&attributor);
+        assert_sync::<dyn FlowAttributor>();
+    }
+
+    // The conversion the pipeline performs. `Arc<dyn T>` is constructible from
+    // `Box<dyn T>`, which is what lets `Pipeline::new` keep taking a `Box`
+    // while `run` shares an `Arc` across capture threads with no lock. If this
+    // stops compiling, every existing caller of `Pipeline::new` has to change.
+    #[test]
+    fn a_boxed_attributor_converts_into_a_shared_one() {
+        use std::sync::Arc;
+
+        let boxed: Box<dyn FlowAttributor> = Box::new(StubAttributor {
+            answer: Some(Attribution::new(7, "x.exe", Fidelity::Live)),
+        });
+        let shared: Arc<dyn FlowAttributor> = Arc::from(boxed);
+        let second = Arc::clone(&shared);
+
+        let key = FlowKey::new(Proto::Tcp, addr("192.0.2.1:1"), addr("192.0.2.2:2"));
+        assert_eq!(
+            second.resolve(&key, Timestamp::from_nanos(0)).unwrap().pid,
+            7
+        );
     }
 
     // V-8 and V-2. The whole pipeline shape from specification section 8.6,

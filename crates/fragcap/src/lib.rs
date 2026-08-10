@@ -47,8 +47,22 @@ pub mod capture {
 
 /// Flow attribution.
 pub mod attr {
+    pub use fragcap_attr::index::{
+        AttributionIndex, MatchRank, PublishedIndex, RetainedEntry, RetentionMap,
+    };
+    pub use fragcap_attr::schedule::RefreshSchedule;
     pub use fragcap_attr::script::{AttributionScript, ScriptEntry, ScriptError, Window};
     pub use fragcap_attr::scripted::ScriptedAttributor;
+    pub use fragcap_attr::seam::{
+        Clock, DeclaredNames, DeclaredTable, ProcessNamer, SocketTableSource, SystemClock,
+        TestClock,
+    };
+    pub use fragcap_attr::socket::{AttributorConfig, SocketTableAttributor};
+    pub use fragcap_attr::table::{SocketTable, SocketTableEntry};
+
+    /// The Windows socket table backends, behind the `socket-table` feature.
+    #[cfg(all(feature = "socket-table", windows))]
+    pub use fragcap_attr::platform::{IpHelperTable, ToolhelpNamer};
 }
 
 /// Game profiles: schema, validation, and resolution.
@@ -78,7 +92,10 @@ pub mod sink {
 
 pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
-pub use attr::{AttributionScript, ScriptedAttributor};
+pub use attr::{
+    AttributionScript, AttributorConfig, Clock, DeclaredNames, DeclaredTable, ScriptedAttributor,
+    SocketTable, SocketTableAttributor, SocketTableEntry, SystemClock, TestClock,
+};
 pub use capture::{PcapReader, ReplaySource, ReplayStats};
 pub use profile::{
     resolve, BundledSet, Diagnostic, DiagnosticCode, Diagnostics, Profile, ProfileSource,

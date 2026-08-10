@@ -144,14 +144,20 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
 
-            // Both crates, not just core. Until slice S09 this built
-            // `fragcap-core` alone, while the specification claimed that
-            // `fragcap-capture` also builds for a target with no capture
-            // backend. That claim was true and nothing checked it, which the
-            // S09 analyze gate caught. `fragcap-capture` is built with default
-            // features, which is what leaves the live source compiled out.
+            // Every crate with a platform backend, not just core. Until slice
+            // S09 this built `fragcap-core` alone, while the specification
+            // claimed that `fragcap-capture` also builds for a target with no
+            // capture backend. That claim was true and nothing checked it,
+            // which the S09 analyze gate caught. Slice S10 added
+            // `fragcap-attr` for the same reason and by the same route: its
+            // socket table backend is Windows-only, and nothing would
+            // otherwise have checked that the crate still builds where that
+            // backend does not exist.
+            //
+            // All three are built with default features, which is what leaves
+            // the live source and the socket table backend compiled out.
             let mut ok = true;
-            for crate_name in ["fragcap-core", "fragcap-capture"] {
+            for crate_name in ["fragcap-core", "fragcap-capture", "fragcap-attr"] {
                 if cargo(&["build", "-p", crate_name, "--target", NEUTRAL_TARGET]) {
                     println!(
                         "neutral: {crate_name} builds for {NEUTRAL_TARGET} (constitution P-2)"

@@ -12,5 +12,23 @@ keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
 
+[features]
+# Off by default, deliberately. Enabling this compiles the socket table backend,
+# which binds the operating system's IP Helper API and process enumeration.
+# Leaving it off is what lets `cargo xtask ci` pass on any machine, which is
+# slice S10 success criterion SC-010.
+#
+# Named for the capability rather than borrowing `fragcap-capture`'s `live`.
+# That feature means "links against the npcap import library"; this one does
+# not, because the IP Helper API ships with the operating system. Folding the
+# two together would make a build that wanted attribution also require a
+# capture driver software development kit it never calls. Slice S10 tasks T002.
+default      = []
+socket-table = ["dep:windows-sys"]
+
 [dependencies]
 fragcap-core.workspace = true
+arc-swap.workspace     = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }
