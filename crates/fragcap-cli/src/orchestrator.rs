@@ -328,6 +328,17 @@ fn emit_stream_reports(reports: &[assemble::StreamReports], emitter: &mut Emitte
     for stream in reports {
         let consumers = stream.handle.lock().expect("reports mutex not poisoned");
         for consumer in consumers.iter() {
+            // A structured event so a `--json` consumer sees the per-consumer
+            // loss, and a progress line for the human summary. `progress` is a
+            // no-op in JSON mode and `event` a no-op in human mode, so exactly
+            // one shape is emitted.
+            emitter.event(&Event::StreamConsumer {
+                transport: stream.transport.clone(),
+                id: consumer.id.clone(),
+                written: consumer.written,
+                dropped: consumer.dropped,
+                reason: consumer.reason.as_str().to_string(),
+            });
             emitter.progress(&format!(
                 "stream {} consumer {}: {} written, {} dropped, {}",
                 stream.transport,

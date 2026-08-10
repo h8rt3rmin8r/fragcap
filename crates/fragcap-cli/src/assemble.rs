@@ -566,9 +566,11 @@ pub fn build_sinks(
     let mut stream_reports: Vec<StreamReports> = Vec::new();
 
     // The primary capture file, from --out, is a pcapng file sink with no
-    // rotation and the global payload mode.
+    // rotation and the global payload mode. `--out` is the pcapng shorthand and
+    // is always pcapng regardless of the filename extension; a JSON Lines file
+    // is asked for with an explicit `--sink jsonl:` or `--sink ...,format=jsonl`.
     if let Some(out) = &config.out {
-        let factory = SinkFactory::new(pcapng_or_jsonl(out, config.payload), iface_specs.clone());
+        let factory = SinkFactory::new(Format::Pcapng, iface_specs.clone());
         sinks.push(Box::new(
             RotatingFileSink::create(out, RotationPolicy::None, factory)
                 .map_err(|e| CliError::failure(e.to_string()))?,
@@ -608,21 +610,26 @@ fn payload_mode(payload: bool) -> PayloadMode {
     }
 }
 
-/// Resolve the format for a streaming or explicit sink: the `format=` qualifier
-/// wins; otherwise a file path is inferred from its extension, and a network
-/// transport (with no extension) defaults to pcapng.
+/// Resolve the format for a sink: the `format=` qualifier wins; otherwise a
+/// file path is inferred from its extension. A transport with no extension (a
+/// pipe, a socket, TCP) and no explicit `format=` is a configuration error, per
+/// specification 14.1, rather than a silent default that might send pcapng when
+/// the operator meant JSON Lines.
 fn resolve_format(
     spec: &SinkSpec,
     config: &EffectiveConfig,
     path: Option<&std::path::Path>,
-) -> Format {
+) -> Result<Format, CliError> {
     let payload = spec.payload.unwrap_or(config.payload);
     match spec.format {
-        Some(SinkFormat::Pcapng) => Format::Pcapng,
-        Some(SinkFormat::JsonLines) => Format::JsonLines(payload_mode(payload)),
+        Some(SinkFormat::Pcapng) => Ok(Format::Pcapng),
+        Some(SinkFormat::JsonLines) => Ok(Format::JsonLines(payload_mode(payload))),
         None => match path {
-            Some(path) => pcapng_or_jsonl(path, payload),
-            None => Format::Pcapng,
+            Some(path) => Ok(pcapng_or_jsonl(path, payload)),
+            None => Err(CliError::usage(
+                "this sink has no file extension to infer a format from; add `,format=pcapng` \
+                 or `,format=jsonl`",
+            )),
         },
     }
 }
@@ -693,7 +700,7 @@ fn build_one_sink(
     match &spec.transport {
         SinkTransport::File(path) => {
             no_stream_options(spec)?;
-            let format = resolve_format(spec, config, Some(path));
+            let format = resolve_format(spec, config, Some(path))?;
             let policy = rotation_policy(spec)?;
             let factory = SinkFactory::new(format, iface_specs.to_vec());
             sinks.push(Box::new(
@@ -717,7 +724,7 @@ fn build_one_sink(
         }
         SinkTransport::Tcp(authority) => {
             no_rotation_options(spec)?;
-            let format = resolve_format(spec, config, None);
+            let format = resolve_format(spec, config, None)?;
             let factory = SinkFactory::new(format, iface_specs.to_vec());
             let acceptor = fragcap::TcpAcceptor::bind(authority)
                 .map_err(|e| CliError::failure(format!("cannot bind {authority}: {e}")))?;
@@ -749,7 +756,7 @@ fn build_pipe_sink(
     sinks: &mut Vec<Box<dyn Sink>>,
     stream_reports: &mut Vec<StreamReports>,
 ) -> Result<(), CliError> {
-    let format = resolve_format(spec, config, None);
+    let format = resolve_format(spec, config, None)?;
     let factory = SinkFactory::new(format, iface_specs.to_vec());
     let acceptor = fragcap::NamedPipeAcceptor::bind(name)
         .map_err(|e| CliError::failure(format!("cannot create pipe {name}: {e}")))?;
@@ -785,7 +792,7 @@ fn build_unix_sink(
     sinks: &mut Vec<Box<dyn Sink>>,
     stream_reports: &mut Vec<StreamReports>,
 ) -> Result<(), CliError> {
-    let format = resolve_format(spec, config, None);
+    let format = resolve_format(spec, config, None)?;
     let factory = SinkFactory::new(format, iface_specs.to_vec());
     let acceptor = fragcap::UnixAcceptor::bind(path)
         .map_err(|e| CliError::failure(format!("cannot bind {}: {e}", path.display())))?;
@@ -850,12 +857,36 @@ mod tests {
     #[test]
     fn a_tcp_sink_builds_a_streaming_sink_with_a_report_handle() {
         let mut config = base_config();
-        config.sinks = vec![parse_sink("tcp://127.0.0.1:0").unwrap()];
+        config.sinks = vec![parse_sink("tcp://127.0.0.1:0,format=pcapng").unwrap()];
         let built = build_sinks(&config, &one_interface()).expect("build");
         assert_eq!(built.sinks.len(), 1);
         assert_eq!(built.stream_reports.len(), 1);
         assert!(built.stream_reports[0].transport.starts_with("tcp://"));
         finish_all(built);
+    }
+
+    #[test]
+    fn an_extensionless_sink_without_a_format_is_refused() {
+        let mut config = base_config();
+        config.sinks = vec![parse_sink("tcp://127.0.0.1:0").unwrap()];
+        match build_sinks(&config, &one_interface()) {
+            Err(e) => assert!(e.to_string().to_lowercase().contains("format")),
+            Ok(_) => panic!("an extensionless sink with no format= must be refused"),
+        }
+    }
+
+    #[test]
+    fn out_is_pcapng_regardless_of_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.jsonl");
+        let mut config = base_config();
+        config.out = Some(path.clone());
+        let built = build_sinks(&config, &one_interface()).expect("build");
+        finish_all(built);
+        // --out is the pcapng shorthand: a .jsonl name still writes pcapng, so
+        // the file begins with the Section Header Block magic, not `{`.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], &0x0A0D_0D0Au32.to_le_bytes());
     }
 
     #[test]

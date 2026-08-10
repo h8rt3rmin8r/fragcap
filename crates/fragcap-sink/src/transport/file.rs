@@ -9,12 +9,18 @@
 //! unmodified analyzer (constitution P-5).
 //!
 //! A rotated (intermediate) segment is closed by dropping its encoder after a
-//! flush, not by writing a trailing statistics block: a per-segment statistics
-//! block would either carry the whole run's counters (wrong for the segment) or
-//! zeroes (a false statement about a segment that did carry packets, which P-9
-//! forbids). The absence of the optional block is not a false statement; a
-//! zeroed one would be. The final segment is finished with the run's real
-//! statistics, so a single-segment capture is byte identical to today's.
+//! flush, not by writing a trailing statistics record, and this holds for both
+//! formats: a per-segment trailer (a pcapng Interface Statistics Block, a JSON
+//! Lines trailer record) would carry either the whole run's counters (wrong for
+//! the segment) or zeroes (a false statement about a segment that did carry
+//! packets, which P-9 forbids), and the sink has no per-segment attribution or
+//! loss breakdown to state truthfully. A segment without its trailer is still
+//! independently readable: the pcapng Interface Statistics Block is optional,
+//! and a JSON Lines segment without its trailer is valid newline-delimited JSON,
+//! exactly as a live stream that has not yet ended. The absence of the optional
+//! trailer is not a false statement; a fabricated one would be. Only the final
+//! segment is finished with the run's real statistics, where they are complete
+//! and true, so a single-segment capture is byte identical to today's.
 
 use std::fs::File;
 use std::io::Write;

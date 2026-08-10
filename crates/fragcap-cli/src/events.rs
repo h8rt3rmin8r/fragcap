@@ -40,6 +40,15 @@ pub enum Event {
         watching_discarded: u64,
         discarded_out_of_window: u64,
     },
+    /// A streaming consumer left, carrying its per-consumer accounting. Distinct
+    /// from the capture-wide `dropped` in `session.complete`.
+    StreamConsumer {
+        transport: String,
+        id: String,
+        written: u64,
+        dropped: u64,
+        reason: String,
+    },
 }
 
 impl Event {
@@ -51,6 +60,7 @@ impl Event {
             Event::StageExited { .. } => "stage.exited",
             Event::FilterNarrowed { .. } => "filter.narrowed",
             Event::SessionComplete { .. } => "session.complete",
+            Event::StreamConsumer { .. } => "stream.consumer",
         }
     }
 
@@ -107,6 +117,24 @@ impl Event {
                 line.push_str(&watching_discarded.to_string());
                 line.push_str(",\"discarded_out_of_window\":");
                 line.push_str(&discarded_out_of_window.to_string());
+            }
+            Event::StreamConsumer {
+                transport,
+                id,
+                written,
+                dropped,
+                reason,
+            } => {
+                line.push_str(",\"transport\":");
+                write_json_string(transport, &mut line);
+                line.push_str(",\"id\":");
+                write_json_string(id, &mut line);
+                line.push_str(",\"written\":");
+                line.push_str(&written.to_string());
+                line.push_str(",\"dropped\":");
+                line.push_str(&dropped.to_string());
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
             }
         }
         line.push('}');

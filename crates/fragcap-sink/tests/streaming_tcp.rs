@@ -9,7 +9,7 @@ use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-use common::{assert_valid_pcapng_stream, epb_payloads, expected_payloads, packets, walk};
+use common::{assert_valid_pcapng_stream, epb_payloads, expected_payloads, packets, walk, ISB};
 
 use fragcap_core::stats::CaptureStats;
 use fragcap_core::traits::Sink;
@@ -73,6 +73,31 @@ fn a_single_client_receives_a_valid_stream() {
     let bytes = read_all(client);
     assert_valid_pcapng_stream(&bytes, 1);
     assert_eq!(epb_payloads(&walk(&bytes)), expected_payloads(&pkts));
+}
+
+#[test]
+fn a_cleanly_finished_stream_carries_its_trailer() {
+    let (mut sink, addr) = bind(1024, Duration::from_secs(5));
+    let client = TcpStream::connect(addr).expect("connect");
+    wait_registered(&sink, 1);
+
+    let pkts = packets(4, 64);
+    for p in &pkts {
+        sink.write(p).expect("write");
+    }
+    Box::new(sink)
+        .finish(&CaptureStats::default())
+        .expect("finish");
+
+    // On clean capture end the consumer's encoder is finalized, so the pcapng
+    // stream ends with an Interface Statistics Block, not just packet blocks.
+    let bytes = read_all(client);
+    let blocks = walk(&bytes);
+    assert_eq!(epb_payloads(&blocks), expected_payloads(&pkts));
+    assert!(
+        blocks.iter().any(|b| b.block_type == ISB),
+        "a cleanly finished stream carries its Interface Statistics Block trailer"
+    );
 }
 
 #[test]
