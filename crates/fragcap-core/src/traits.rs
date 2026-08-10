@@ -192,6 +192,33 @@ pub trait Sink: Send {
     fn finish(self: Box<Self>, stats: &CaptureStats) -> Result<(), SinkError>;
 }
 
+/// Decides whether a captured packet reaches the sinks.
+///
+/// A decision the output thread consults once per packet, before the per-sink
+/// fan-out, so a packet the gate does not admit is written to no sink and never
+/// reaches disk. That synchronous placement is the point: it is what makes a
+/// volume bound produce an exactly-bounded file rather than a soft one that the
+/// accounting has to apologize for.
+///
+/// Generic on purpose. This crate learns nothing of capture sessions or profiles
+/// (constitution P-3); the gate answers a question about a packet, and the
+/// session-aware answer (open only while capturing, closed at the configured
+/// bound) lives in the facade, exactly as the real [`FlowAttributor`] and [`Sink`]
+/// implementations do. A pipeline with no gate attached behaves as before, so this
+/// adds a capability without changing an existing run.
+///
+/// `Send + Sync` because [`crate::pipeline::Pipeline`] holds it as an
+/// `Arc<dyn WriteGate>` shared with the output thread; interior mutability because
+/// an implementor counts what it admits and discards. A packet the gate withholds
+/// is counted by the pipeline in `gate_dropped` (specification section 12.4,
+/// constitution P-4), a term of the conservation identity, so no gated packet
+/// escapes the accounting. Added by slice 017.
+pub trait WriteGate: Send + Sync {
+    /// Whether this packet is admitted to the sinks. `false` withholds it from
+    /// every sink, and the output loop counts it in `gate_dropped`.
+    fn admit(&self, packet: &CapturedPacket) -> bool;
+}
+
 /// Protocol dissection.
 ///
 /// Declared with no implementations, deliberately. Specification section 8.5

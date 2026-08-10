@@ -212,6 +212,15 @@ pub struct CaptureStats {
     /// Dropped by a sink that could not accept, per specification section 12.4.
     /// Indicates a slow consumer downstream of fragcap.
     pub sink_dropped: u64,
+    /// Withheld from every sink by a [`WriteGate`](crate::traits::WriteGate)
+    /// before the fan-out, per specification section 12.4. A term of the
+    /// conservation identity, distinct from the two loss counters because the
+    /// cause and the remedy differ: a gate drop is a packet the operator's own
+    /// configuration placed outside the capture window or beyond a `--max-packets`
+    /// or `--max-bytes` bound, which is intended rather than loss to be remedied.
+    /// Zero on any run with no gate attached. Populated by the output loop in
+    /// slice 017.
+    pub gate_dropped: u64,
     /// Filter gaps, per specification section 12.3: occurrences of an endpoint
     /// active in the attribution map while a narrowed kernel filter that did not
     /// admit it was installed, from the endpoint appearing until the reinstall
@@ -284,10 +293,10 @@ impl CaptureStats {
     /// Fold another capture thread's counters into these.
     ///
     /// Every counter here is a count of events, so several capture threads'
-    /// counts add. `buffer_dropped` and `sink_dropped` are deliberately not
-    /// touched: the buffer and the sinks are capture-wide, the output side owns
-    /// both counters, and adding them per thread would multiply one eviction by
-    /// the number of interfaces running.
+    /// counts add. `buffer_dropped`, `sink_dropped`, and `gate_dropped` are
+    /// deliberately not touched: the buffer, the sinks, and the write gate are
+    /// capture-wide, the output side owns all three counters, and adding them per
+    /// thread would multiply one eviction by the number of interfaces running.
     pub fn absorb(&mut self, other: CaptureStats) {
         self.packets_captured = self.packets_captured.saturating_add(other.packets_captured);
         self.packets_attributed = self
@@ -332,6 +341,7 @@ mod tests {
             packets_unattributed: 328,
             buffer_dropped: 5,
             sink_dropped: 2,
+            gate_dropped: 9,
             filter_gaps: 2,
             sources: vec![(
                 InterfaceId::default(),
@@ -394,6 +404,24 @@ mod tests {
     #[test]
     fn a_clean_capture_reports_no_loss() {
         assert!(!CaptureStats::default().lost_anything());
+    }
+
+    // Slice 017, FR-002 / P-4. A gate drop is an intended discard (a packet the
+    // operator's configuration placed outside the window or beyond a bound), so
+    // it is a term of the conservation identity but not of the loss an operator
+    // acts on. It must not reach `fragcap_dropped`, `total_dropped`, or
+    // `lost_anything`, which separate a slow sink and an undersized driver buffer
+    // from a configuration choice.
+    #[test]
+    fn a_gate_drop_is_not_counted_as_loss() {
+        let s = CaptureStats {
+            packets_captured: 10,
+            gate_dropped: 4,
+            ..CaptureStats::default()
+        };
+        assert_eq!(s.fragcap_dropped(), 0, "a gate drop is not fragcap loss");
+        assert_eq!(s.total_dropped(), 0, "a gate drop is not overall loss");
+        assert!(!s.lost_anything(), "a gate drop alone is not loss");
     }
 
     #[test]

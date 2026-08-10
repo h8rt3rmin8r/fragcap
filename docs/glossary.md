@@ -460,6 +460,45 @@ short.
 **See also:** [Sink](#sink), [Sink thread](#sink-thread),
 [Pipeline](#pipeline)
 
+### Write gate
+
+A decision the [sink thread](#sink-thread) consults, synchronously, before the
+[fan-out](#fan-out): whether a captured packet is admitted to the sinks at all. A
+generic `WriteGate` seam in `fragcap-core` answers admit-or-discard for a packet; a
+session-driven implementation in the facade admits only while the session is
+[capturing](#capture-window) and the configured volume bound has not been reached.
+A packet the gate withholds is written to no sink and counted in the `gate_dropped`
+counter, a term of the pipeline conservation identity distinct from a buffer drop
+and a sink drop.
+
+{: .matters }
+> Making the decision on the write path, rather than observing the count after the
+> fact, is what makes a `--max-packets` or `--max-bytes` bound produce an exactly
+> bounded file: a packet the gate discards is never written, so the file and the
+> accounting are the same set by construction. A `gate_dropped` counter keeps that
+> synchronous discard inside the P-4 accounting rather than letting it escape.
+
+**See also:** [Fan-out](#fan-out), [Capture window](#capture-window),
+[Completion summary](#completion-summary), [Stop condition](#stop-condition)
+
+### Capture window
+
+The state a [write gate](#write-gate) reads to decide whether a packet is
+admitted: open while the [capture session](#capture-session) is capturing, closed
+while it is watching for a target or draining after a stop. A live capture holds
+its handle open from arm, so frames arrive while the window is still closed for
+watching; the gate discards and counts those rather than letting them go
+unobserved. Offline the window is opened before the pipeline starts, so no
+watch-time frame is seen and an unbounded run is a pass-through.
+
+{: .matters }
+> The window is published lock-free and written only by the driver, the same
+> discipline the attribution snapshot uses (section 11.6), so the sink thread
+> reads it without ever blocking the thread that advances the session.
+
+**See also:** [Write gate](#write-gate), [Capture session](#capture-session),
+[Completion summary](#completion-summary)
+
 ### Duration literal
 
 A capture duration as an operator writes it: one unsigned decimal integer

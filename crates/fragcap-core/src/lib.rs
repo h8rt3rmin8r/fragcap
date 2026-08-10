@@ -120,4 +120,4 @@ pub use process::{
 };
 pub use size::SizeError;
 pub use stats::{CaptureStats, ParseStats, SourceStats};
-pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};
+pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink, WriteGate};
