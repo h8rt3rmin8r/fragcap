@@ -90,8 +90,11 @@ the end of S14. `v0.3.0` completes the remaining slices.
 | v0.3.0 | Streaming, ring mode, managed launch, extcap, docs | S15 through S18 |
 
 The workspace stays at `0.1.0` through S13; the bump to `0.2.0` is a release-time
-`cargo release minor` action taken when S14 lands. See specification section
-27.3.
+`cargo release minor` action taken when S14 lands. That bump is necessary but not
+sufficient: the pcapng `USER_APPL` and JSON Lines `VERSION` strings derive from
+`CARGO_PKG_VERSION`, so the release commit must also regenerate the golden corpus
+and update the two version assertions in `fragcap-sink`, or the release branch
+fails `cargo xtask ci`. See specification section 27.3.
 
 ## Slice ordering
 

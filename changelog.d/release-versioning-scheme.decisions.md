@@ -9,3 +9,14 @@ synonym for the deliverable is updated in the specification, its outline, the
 brand notes, and the plan documents. The workspace manifest stays at `0.1.0`;
 the bump to `0.2.0` is a release-time `cargo release minor` action when S14
 lands, so no code artifact changes here.
+
+**2026-08-10** The `0.2.0` version bump is necessary but not sufficient at
+release time, and the release runbook must say so. The pcapng `USER_APPL` and
+the JSON Lines `VERSION` are both `concat!("fragcap/", env!("CARGO_PKG_VERSION"))`,
+so `cargo release minor` changes them from `fragcap/0.1.0` to `fragcap/0.2.0`.
+That moves the value embedded in every committed golden and the two assertions
+that pin it (`crates/fragcap-sink/src/pcapng/mod.rs` and
+`crates/fragcap-sink/src/json/mod.rs`), so the release commit must also
+regenerate the golden corpus and update those assertions, or `cargo xtask ci`
+fails on the release branch. Recorded now so the obligation is not discovered
+during the S14 release.
