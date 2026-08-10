@@ -825,7 +825,133 @@ original exits.
 > identifier and start timestamp rather than by the identifier alone, and why
 > ancestry must be captured live rather than walked afterward.
 
-**See also:** [Process tree](#process-tree)
+**See also:** [Process tree](#process-tree),
+[Synthetic process identifier](#synthetic-process-identifier)
+
+### Synthetic process identifier
+
+The session-local identity fragcap assigns to each process it observes, never
+reused within a session.
+
+Distinct from the operating system process identifier, which is drawn from a
+reusable pool and is unique only among live processes.
+
+{: .matters }
+> The distinction is what makes the [process tree](#process-tree) correct across
+> [PID recycling](#pid-recycling). The synthetic identifier is a node's
+> identity; the pair of operating system identifier and timestamp is the lookup
+> key into the tree. An implementation that collapses the two merges two
+> unrelated processes into one node, and every descendant of the second then
+> claims ancestry it does not have.
+
+**See also:** [Process node](#process-node), [PID recycling](#pid-recycling)
+
+**References:**
+
+- fragcap specification section 10.2. The tree's keying rule.
+
+### Process node
+
+One process in the [process tree](#process-tree), carrying its operating system
+identifier, its resolved parent, image path, command line, start and exit
+timestamps, [ancestry provenance](#ancestry-provenance), and the profile
+[stage](#stage) it is bound to where one matched.
+
+{: .matters }
+> Nodes are retained for the whole session after the process exits. Retention is
+> what lets a packet arriving after its sender has terminated still be
+> attributed, and specification section 5.4's observed chains are full of
+> transient launchers that are already gone by the time the client matters.
+
+**See also:** [Process tree](#process-tree),
+[Synthetic process identifier](#synthetic-process-identifier),
+[Ancestry provenance](#ancestry-provenance)
+
+**References:**
+
+- fragcap specification section 10.2. The node's fields.
+
+### Ancestry provenance
+
+Whether a [process node](#process-node) learned its parent from a creation event
+or from the [startup snapshot](#startup-snapshot).
+
+{: .matters }
+> The two differ in how much they can be trusted, and the difference is carried
+> on the node rather than derived. A parent observed at creation is unambiguous;
+> one read from a running process may name an unrelated process or nothing at
+> all, because Windows records a parent identifier and then neither maintains it
+> nor stops reusing the values. A consumer that cannot tell them apart treats a
+> guess as a measurement.
+
+**See also:** [Process node](#process-node),
+[Startup snapshot](#startup-snapshot), [PID recycling](#pid-recycling)
+
+**References:**
+
+- fragcap specification section 5.3. Why creation-time ancestry is the only
+  reliable kind.
+
+### Startup snapshot
+
+The single enumeration of already-running processes fragcap takes when its
+watcher starts, so that targets running before fragcap began are present in the
+[process tree](#process-tree).
+
+{: .matters }
+> Taken after the event subscription, never before. Subscribing first can report
+> one process twice, which the tree reconciles into a single node; snapshotting
+> first leaves a window in which a process created in between is reported by
+> neither source, and nothing downstream can detect that it is missing. It is
+> also the only source of processes whose command line fragcap cannot obtain,
+> because reading one from a running process needs a memory-read right the
+> [technique denylist](#technique-denylist) forbids.
+
+**See also:** [Process tree](#process-tree),
+[Ancestry provenance](#ancestry-provenance), [ETW](#etw)
+
+**References:**
+
+- fragcap specification section 10.1. The snapshot establishes initial state;
+  the event stream maintains it.
+
+### Trace session
+
+A named [ETW](#etw) collection fragcap starts for itself, carrying the kernel
+process provider, and stopped when fragcap finishes.
+
+{: .matters }
+> Never the machine-wide kernel logger, which exists once per machine.
+> Contending for it would make fragcap fail whenever any other tool is tracing,
+> and taking it by force would make fragcap the tool that silently breaks the
+> operator's other instrumentation. Windows 8 and later permit several
+> concurrent system loggers, subject to a small fixed limit, and exhausting that
+> limit is reported with the platform's own reason rather than worked around.
+
+**See also:** [ETW](#etw), [Lost event](#lost-event)
+
+**References:**
+
+- Microsoft Learn, Configuring and Starting a SystemTraceProvider Session.
+
+### Lost event
+
+An event the kernel reported dropping before fragcap could read it.
+
+{: .matters }
+> A lost event is not a lost packet. A packet's loss costs that packet; a lost
+> process start event removes a node and silently orphans everything beneath it.
+> That is why the channel between the trace consumer and its subscribers is
+> unbounded rather than a bounded drop-oldest ring, and why a
+> [process tree](#process-tree) built while anything was lost reports itself
+> incomplete rather than presenting as whole.
+
+**See also:** [Trace session](#trace-session), [Process tree](#process-tree),
+[Drop-oldest](#drop-oldest)
+
+**References:**
+
+- fragcap specification section 10.1 and constitution principles P-4 and P-9.
 
 ### Launcher chain
 

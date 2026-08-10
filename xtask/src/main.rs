@@ -154,8 +154,13 @@ fn main() -> ExitCode {
             // otherwise have checked that the crate still builds where that
             // backend does not exist.
             //
+            // Slice S11 gave that crate a second Windows-only backend, the ETW
+            // process watcher, so the same build now covers both. Nothing had
+            // to change here, which is the point of having added it.
+            //
             // All three are built with default features, which is what leaves
-            // the live source and the socket table backend compiled out.
+            // the live source, the socket table, and the process watcher
+            // compiled out.
             let mut ok = true;
             for crate_name in ["fragcap-core", "fragcap-capture", "fragcap-attr"] {
                 if cargo(&["build", "-p", crate_name, "--target", NEUTRAL_TARGET]) {

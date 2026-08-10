@@ -73,23 +73,44 @@ pcap            = "2.4"
 # minimum toolchain, so it cannot move `cargo xtask msrv`.
 arc-swap        = "1.9"
 
-# External, optional. Slice S10, research R-1 and R-4: the IP Helper socket
-# table and query-only process enumeration that flow attribution is built on.
-# Optional and off by default behind the `socket-table` feature.
+# External, optional. Two backends are built on this, and they share one entry
+# rather than two on purpose.
 #
-# Pinned to the 0.36 line because `pcap` already resolves it there, so this
-# adds no package to Cargo.lock at all. Taking the current line would put a
-# second complete windows-sys tree in the graph for declarations that have not
-# changed. MIT or Apache-2.0, declares Rust 1.64.
+# Slice S10, research R-1 and R-4: the IP Helper socket table and query-only
+# process enumeration that flow attribution is built on, behind the
+# `socket-table` feature.
 #
-# Note that this is unrelated to npcap. The IP Helper API ships with the
-# operating system, so the socket table backend needs no capture driver and no
-# software development kit, which is why its feature is not `live`.
+# Slice S11, research R-1: the ETW session the process watcher consumes, behind
+# the `etw` feature. Chosen over `ferrisetw`, which specification Appendix A
+# names, on measured grounds: `ferrisetw` resolves to thirty crates including a
+# bignum stack and a random number generator that a passive observer of process
+# events has no use for, and it wraps this same generated binding a version line
+# behind. The value in a platform binding is in who guarantees the struct
+# layouts, which is the argument S09 gave for taking `pcap`, and it points here.
+# The kernel process provider's events are fixed MOF layouts rather than
+# manifest-based ones, so the schema parsing a wrapper would supply is not the
+# parsing S11 needs.
+#
+# Pinned to the 0.36 line because `pcap` already resolves it there, so this adds
+# no package to Cargo.lock at all. Taking the current line would put a second
+# complete windows-sys tree in the graph for declarations that have not changed.
+# S11 initially took 0.61 and moved to 0.36 during integration, having checked
+# that every symbol its watcher names resolves there. MIT or Apache-2.0,
+# declares Rust 1.64.
+#
+# Note that none of this is npcap. The IP Helper API and ETW both ship with the
+# operating system, so neither backend needs a capture driver or a software
+# development kit, which is why neither feature is `live`.
+#
+# `Win32_System_Time` is in the list and is not obvious: it gates
+# `EVENT_TRACE_LOGFILEW` and `OpenTraceW`, not the ETW feature group.
 windows-sys     = { version = "0.36", default-features = false, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
+    "Win32_System_Diagnostics_Etw",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Time",
 ] }
 
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is

@@ -222,6 +222,34 @@ const FORBIDDEN_CALLS: &[(&str, &str)] = &[
         "writeprocessmemory",
         "writes another process's memory; on the section 19.3 denylist (P-1)",
     ),
+    // Slice S11 added the access-right constants, which are complementary to
+    // the three calls above rather than a duplicate of them. A right can be
+    // named where the call is not: passed to a helper, stored in a constant, or
+    // handed to a binding that opens the handle on the caller's behalf. The
+    // calls are how a handle is obtained; these are what it would carry.
+    //
+    // S11 originally added these to permit `openprocess` with
+    // PROCESS_QUERY_LIMITED_INFORMATION, which P-1 does allow. It withdrew that
+    // during integration and kept S10's stronger rule instead: fragcap opens no
+    // process at all, so there are no rights to audit. These entries exist so
+    // that a slice which deletes the `openprocess` line still cannot quietly
+    // ask for memory.
+    (
+        "process_vm_read",
+        "reads another process's memory; P-1 forbids a handle carrying memory rights",
+    ),
+    (
+        "process_vm_write",
+        "writes another process's memory; P-1 forbids a handle carrying memory rights",
+    ),
+    (
+        "process_vm_operation",
+        "operates on another process's memory; P-1 forbids a handle carrying memory rights",
+    ),
+    (
+        "process_all_access",
+        "includes memory rights; name the narrowest right the call needs (P-1)",
+    ),
 ];
 
 /// Files that must never appear in the repository.

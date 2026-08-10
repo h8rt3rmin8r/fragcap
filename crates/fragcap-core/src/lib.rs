@@ -106,6 +106,10 @@ pub use pipeline::{
     ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport, SinkFailure,
     SourceBinding, StopHandle,
 };
-pub use process::{ProcessEvent, ProcessRecord};
+pub use process::tree::NodeId;
+pub use process::{
+    Ancestry, CommandLine, ProcessEvent, ProcessId, ProcessNode, ProcessRecord, ProcessTree,
+    WatcherReport,
+};
 pub use stats::{CaptureStats, ParseStats, SourceStats};
 pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};

@@ -13,19 +13,22 @@ categories.workspace   = true
 readme                 = "README.md"
 
 [features]
-# Passed through, both off by default for the same reason they are off in the
-# crates that declare them. Slice S09 plan decision D-2, and slice S10 task
-# T002.
+# Passed through, all three off by default for the same reason they are off in
+# the crates that declare them. Slice S09 plan decision D-2, slice S10 task
+# T002, and slice S11 plan decision D-2.
 #
-# They are separate features and not one, because they gate separate
-# capabilities with separate requirements. `live` needs the npcap import
-# library at link time and the driver at load time; `socket-table` needs
-# neither, because the IP Helper API ships with the operating system. A single
-# feature would make attribution unavailable to anyone without a capture driver
-# software development kit.
+# They are three features and not one, because they gate three capabilities
+# with three sets of requirements. `live` needs the npcap import library at
+# link time and the driver at load time. `socket-table` needs neither, because
+# the IP Helper API ships with the operating system. `etw` needs neither
+# either, but does need an elevated session at run time. A single feature would
+# make attribution unavailable to anyone without a capture driver software
+# development kit, and would make either of the other two demand elevation that
+# only one of them uses.
 default      = []
 live         = ["fragcap-capture/live"]
 socket-table = ["fragcap-attr/socket-table"]
+etw          = ["fragcap-attr/etw"]
 
 [dependencies]
 fragcap-core.workspace = true
