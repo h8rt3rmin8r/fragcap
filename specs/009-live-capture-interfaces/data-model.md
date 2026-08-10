@@ -201,6 +201,25 @@ vector.
 
 Recorded as a deviation, discovered in planning rather than before it.
 
+## Corrected in review of pull request 12
+
+**`SourceBinding` carries an `InterfaceAddrs`.** Specification section 12.6
+determines direction by matching against the capturing interface's address set,
+and `PipelineConfig` held one set for the whole run. `PipelineConfig::addrs` was
+removed rather than kept as a fallback, so the ambiguous form cannot be written.
+
+**A capture thread that panics stops the others through a `StopOnPanic` guard.**
+Distinct from the existing `StopOnDrop`: a thread ending normally must leave the
+other interfaces running, and a thread that unwinds must not, because it holds a
+producer that would otherwise keep the buffer open forever. The guard fires
+inside the panicking thread rather than at the join, because join order is
+arbitrary and waiting for the join is what let a survivor run on unbounded.
+
+**`LiveSource` records the timeout it was activated with.** libpcap fixes the
+read timeout at activation, so `next_packet`'s argument cannot be honoured.
+`LiveOptions::for_pipeline` makes the two agree by construction and
+`LiveSource::configured_timeout` exposes the one that governs.
+
 ## What does not change
 
 `RawPacket`, `Timestamp`, `SourceStats` itself, `ParseStats`, `FlowKey`,

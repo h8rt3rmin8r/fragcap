@@ -67,6 +67,7 @@ future precedence rule drops an interface on the floor.
 pub struct SourceBinding {
     pub id: InterfaceId,
     pub source: Box<dyn PacketSource>,
+    pub addrs: InterfaceAddrs,
 }
 
 impl Pipeline {
@@ -82,6 +83,15 @@ The link type is not carried on the binding: `PacketSource::link_type` already
 answers it per source, and duplicating it would create two answers that can
 disagree. Each capture thread reads it once at start and parses against it,
 which is FR-026.
+
+**The address set is carried on the binding, and `PipelineConfig` no longer has
+one.** Review of pull request 12 caught that a run-wide set cannot satisfy
+section 12.6, which matches against the address set of the *capturing
+interface*. Both ways of faking it are wrong on a multi-homed machine: one
+interface's addresses reject the rest as `no_local_endpoint`, and their union
+labels a packet with a local endpoint the capturing adapter does not hold. The
+field was removed from the configuration rather than left as a fallback, so the
+ambiguity is not reachable.
 
 **Compatibility**: breaking for the single-source constructor S08 shipped.
 Every caller in the workspace is a test, and the tests that worked around

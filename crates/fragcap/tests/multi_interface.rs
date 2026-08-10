@@ -106,8 +106,18 @@ struct Run {
     report: fragcap::PipelineReport,
 }
 
+/// The loopback side's only address.
+fn loopback_addr() -> InterfaceAddrs {
+    InterfaceAddrs::new(["127.0.0.1".parse().expect("a literal address parses")])
+}
+
 /// Compose two replay sources as two declared interfaces and run them.
-fn run_two(extra: Option<Box<dyn PacketSource>>) -> Run {
+///
+/// `swap` gives each interface the *other* one's address set, which is the only
+/// way to tell a genuinely per-interface address set from a shared union: a
+/// union is unchanged by swapping its halves, so a pipeline that ignored the
+/// per-binding set would produce identical counters either way.
+fn run_two(extra: Option<Box<dyn PacketSource>>, swap: bool) -> Run {
     let dir = fixtures_dir();
 
     let a = ReplaySource::open(dir.join(format!("{FIRST}.pcap"))).expect("fixture opens");
@@ -148,22 +158,30 @@ fn run_two(extra: Option<Box<dyn PacketSource>>) -> Run {
     let jsonl = JsonLinesWriter::new(jsonl_buf.clone(), &names, PayloadMode::MetadataOnly)
         .expect("in-memory write cannot fail");
 
-    let mut addrs: Vec<_> = corpus_addrs(FIRST);
-    addrs.push("127.0.0.1".parse().expect("a literal address parses"));
+    // Each interface gets its own addresses, per specification section 12.6.
+    let ethernet_addrs = InterfaceAddrs::new(corpus_addrs(FIRST).iter().copied());
+    let (addrs_a, addrs_b) = if swap {
+        (loopback_addr(), ethernet_addrs)
+    } else {
+        (ethernet_addrs, loopback_addr())
+    };
 
     let mut sources = vec![
-        SourceBinding::new(InterfaceId::new(0), Box::new(a)),
-        SourceBinding::new(InterfaceId::new(1), Box::new(b)),
+        SourceBinding::new(InterfaceId::new(0), Box::new(a), addrs_a),
+        SourceBinding::new(InterfaceId::new(1), Box::new(b), addrs_b),
     ];
     if let Some(extra) = extra {
-        sources.push(SourceBinding::new(InterfaceId::new(2), extra));
+        sources.push(SourceBinding::new(
+            InterfaceId::new(2),
+            extra,
+            InterfaceAddrs::default(),
+        ));
     }
 
     let mut pipeline = Pipeline::new(
         sources,
         Box::new(ScriptedAttributor::new(script)),
         PipelineConfig {
-            addrs: InterfaceAddrs::new(addrs.iter().copied()),
             ..PipelineConfig::default()
         },
     )
@@ -212,7 +230,7 @@ impl PacketSource for LostDevice {
 // references the one it came from.
 #[test]
 fn both_interfaces_are_declared_and_every_packet_names_its_own() {
-    let run = run_two(None);
+    let run = run_two(None, false);
 
     let jsonl = String::from_utf8(run.jsonl).expect("the writer emits UTF-8");
     let mut lines = jsonl.lines();
@@ -252,7 +270,7 @@ fn both_interfaces_are_declared_and_every_packet_names_its_own() {
 // and produce rejections rather than flow keys.
 #[test]
 fn each_interface_is_parsed_against_its_own_link_type() {
-    let run = run_two(None);
+    let run = run_two(None, false);
     let parse = run.report.stats.parse;
     // The discriminating assertion. A loopback frame parsed as Ethernet eats
     // its first fourteen bytes as a link header and reads a nonsense ether
@@ -275,7 +293,7 @@ fn each_interface_is_parsed_against_its_own_link_type() {
 // SC-006. The identity S08 established, now with two capture threads.
 #[test]
 fn the_conservation_identity_holds_with_several_capture_threads() {
-    let run = run_two(None);
+    let run = run_two(None, false);
     let s = &run.report.stats;
     assert!(
         s.packets_attributed + s.packets_unattributed <= s.packets_captured,
@@ -292,7 +310,7 @@ fn the_conservation_identity_holds_with_several_capture_threads() {
 // readable on its own, and the capture-wide view is their sum.
 #[test]
 fn each_interface_reports_its_own_backend_counters() {
-    let run = run_two(None);
+    let run = run_two(None, false);
     let s = &run.report.stats;
     assert_eq!(s.sources.len(), 2, "one report per interface");
     let summed: u64 = s.sources.iter().map(|(_, st)| st.received).sum();
@@ -304,8 +322,8 @@ fn each_interface_reports_its_own_backend_counters() {
 // T033a. SC-012, FR-027, FR-028. One interface fails; the others finish.
 #[test]
 fn a_failed_interface_retires_without_ending_the_run() {
-    let baseline = run_two(None).report.stats.packets_captured;
-    let run = run_two(Some(Box::new(LostDevice { yielded: false })));
+    let baseline = run_two(None, false).report.stats.packets_captured;
+    let run = run_two(Some(Box::new(LostDevice { yielded: false })), false);
 
     assert_eq!(
         run.report.stats.packets_captured, baseline,
@@ -335,4 +353,131 @@ fn a_failed_interface_retires_without_ending_the_run() {
     // FR-028. Nothing was observed and then discarded, so no drop counter moved.
     assert_eq!(run.report.stats.buffer_dropped, 0);
     assert_eq!(run.report.stats.sink_dropped, 0);
+}
+
+// Review of pull request 12, and the reason the address set moved onto the
+// binding. Specification section 12.6 matches a packet's source against the
+// address set of the *capturing interface*, and one run-wide set cannot say
+// that on a multi-homed machine.
+//
+// Swapping the two sets is what makes the assertion discriminating: a shared
+// union is unchanged by swapping its halves, so a pipeline that ignored the
+// per-binding set would report the same counters both ways round.
+#[test]
+fn each_interface_uses_its_own_address_set_and_not_a_shared_union() {
+    let correct = run_two(None, false);
+    assert_eq!(
+        correct.report.stats.parse.rejected(),
+        0,
+        "with each interface given its own addresses, every frame should parse"
+    );
+
+    let swapped = run_two(None, true);
+    assert!(
+        swapped.report.stats.parse.no_local_endpoint > 0,
+        "with the address sets swapped, frames should stop finding a local          endpoint. They did not, which means the per-interface set is not          actually being used: {:?}",
+        swapped.report.stats.parse
+    );
+    assert_eq!(
+        swapped.report.stats.packets_captured, correct.report.stats.packets_captured,
+        "the same packets are captured either way; only what parses changes"
+    );
+}
+
+// Review of pull request 12. A capture thread that panics must not leave the
+// others running.
+//
+// Every capture thread holds a clone of the single producer, so resuming the
+// unwind immediately would leave a live source pushing into a buffer nobody
+// closes: the output thread waits on it forever and the guard's drop joins a
+// thread that never returns. A panic would become a hang, which reports
+// nothing at all and is strictly worse than a panic that reports a defect.
+//
+// The assertion that discriminates is the survivor's packet count. Without the
+// stop, it runs to its own limit; with it, it is wound down almost immediately.
+#[test]
+fn a_panicking_capture_thread_stops_the_others_rather_than_hanging() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Yields frames until its own generous limit, so that a missing stop shows
+    /// up as a much larger count rather than as a hung test.
+    const SURVIVOR_LIMIT: usize = 100_000;
+
+    struct Panicking;
+    impl PacketSource for Panicking {
+        fn next_packet(&mut self, _t: Duration) -> Result<Option<RawPacket>, SourceError> {
+            panic!("a capture thread defect");
+        }
+        fn set_filter(&mut self, _f: &FilterProgram) -> Result<(), SourceError> {
+            Ok(())
+        }
+        fn stats(&self) -> SourceStats {
+            SourceStats::default()
+        }
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    struct Survivor {
+        produced: Arc<AtomicUsize>,
+    }
+    impl PacketSource for Survivor {
+        fn next_packet(&mut self, _t: Duration) -> Result<Option<RawPacket>, SourceError> {
+            if self.produced.fetch_add(1, Ordering::Relaxed) >= SURVIVOR_LIMIT {
+                return Err(SourceError::Closed);
+            }
+            Ok(Some(RawPacket::new(
+                fragcap_core::packet::Timestamp::from_nanos(1),
+                fragcap_core::packet::Payload::from_static(&[0u8; 4]),
+                4,
+            )))
+        }
+        fn set_filter(&mut self, _f: &FilterProgram) -> Result<(), SourceError> {
+            Ok(())
+        }
+        fn stats(&self) -> SourceStats {
+            SourceStats::default()
+        }
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    let produced = Arc::new(AtomicUsize::new(0));
+    let pipeline = Pipeline::new(
+        vec![
+            SourceBinding::new(
+                InterfaceId::new(0),
+                Box::new(Survivor {
+                    produced: Arc::clone(&produced),
+                }),
+                InterfaceAddrs::default(),
+            ),
+            SourceBinding::new(
+                InterfaceId::new(1),
+                Box::new(Panicking),
+                InterfaceAddrs::default(),
+            ),
+        ],
+        Box::new(ScriptedAttributor::new(AttributionScript::default())),
+        PipelineConfig::default(),
+    )
+    .expect("two sources build");
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| pipeline.run()));
+    assert!(
+        outcome.is_err(),
+        "a capture thread defect must reach the caller as a panic, not be filed \
+         under an accounting category"
+    );
+
+    let count = produced.load(Ordering::Relaxed);
+    assert!(
+        count < SURVIVOR_LIMIT,
+        "the surviving capture thread ran to its own limit ({count}), which \
+         means the panic did not wind it down"
+    );
 }

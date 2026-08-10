@@ -72,6 +72,34 @@ pub struct LiveOptions {
     pub read_timeout: Duration,
 }
 
+impl LiveOptions {
+    /// Options whose read timeout matches the pipeline that will drive them.
+    ///
+    /// The correct way to build these, and the reason it exists is that
+    /// `next_packet`'s timeout argument cannot be honoured by this backend:
+    /// libpcap fixes the read timeout when the handle is activated and offers
+    /// no way to change it afterwards. If the two disagree, the handle's value
+    /// wins and stop latency follows it, so a source opened with a thirty
+    /// second timeout would delay a requested stop by thirty seconds however
+    /// short the pipeline's own timeout is.
+    ///
+    /// Passing [`crate::live::LiveOptions::for_pipeline`] the value from
+    /// `PipelineConfig::read_timeout` makes them agree by construction. Raised
+    /// in review of pull request 12.
+    pub fn for_pipeline(read_timeout: Duration) -> Self {
+        LiveOptions {
+            read_timeout,
+            ..LiveOptions::default()
+        }
+    }
+
+    /// The read timeout this handle was activated with, which is the one that
+    /// actually governs how long a read blocks.
+    pub fn read_timeout(&self) -> Duration {
+        self.read_timeout
+    }
+}
+
 impl Default for LiveOptions {
     fn default() -> Self {
         LiveOptions {
@@ -83,7 +111,10 @@ impl Default for LiveOptions {
             // other hosts, which is a broader observation than attributing this
             // machine's own processes requires.
             promiscuous: false,
-            read_timeout: Duration::from_millis(100),
+            // Deliberately the same value as the pipeline's own default, and a
+            // test below pins them together so that changing one without the
+            // other fails rather than silently widening stop latency.
+            read_timeout: fragcap_core::pipeline::DEFAULT_READ_TIMEOUT,
         }
     }
 }
@@ -100,6 +131,7 @@ pub struct LiveSource {
     /// and so that re-enumeration can look for it.
     name: String,
     link: LinkType,
+    read_timeout: Duration,
 }
 
 impl LiveSource {
@@ -131,6 +163,7 @@ impl LiveSource {
             handle: std::cell::RefCell::new(handle),
             name,
             link,
+            read_timeout: options.read_timeout,
         };
         source.install_filter(BOOTSTRAP_FILTER)?;
         Ok(source)
@@ -139,6 +172,15 @@ impl LiveSource {
     /// The interface's platform name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The read timeout this handle was activated with.
+    ///
+    /// This is the value that actually bounds how long a read blocks, and
+    /// therefore how long a requested stop takes to be observed. See
+    /// [`PacketSource::next_packet`] on this type.
+    pub fn configured_timeout(&self) -> Duration {
+        self.read_timeout
     }
 
     fn install_filter(&mut self, program: &str) -> Result<(), SourceError> {
@@ -172,11 +214,21 @@ impl LiveSource {
 }
 
 impl PacketSource for LiveSource {
+    /// # The timeout argument
+    ///
+    /// **This backend cannot honour it, and says so rather than pretending.**
+    /// libpcap fixes the read timeout when the handle is activated and offers
+    /// no way to change it on a live handle; reopening would lose the driver's
+    /// buffer and the installed filter, which is a worse trade than a longer
+    /// read.
+    ///
+    /// The consequence is that stop latency follows the value passed to
+    /// [`LiveSource::open`], not the value passed here. Build the options with
+    /// [`LiveOptions::for_pipeline`] so the two agree by construction, and read
+    /// [`LiveSource::configured_timeout`] if you need to check.
+    ///
+    /// Raised in review of pull request 12.
     fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
-        // The timeout is a property of the open handle rather than of the call,
-        // so the parameter is honoured at `open` and ignored here. Applying it
-        // per call would mean reopening the handle, which loses the driver's
-        // buffer and the installed filter.
         let mut handle = self.handle.borrow_mut();
         match handle.next_packet() {
             Ok(packet) => {
@@ -251,5 +303,24 @@ mod tests {
     #[test]
     fn promiscuous_mode_is_off_unless_asked_for() {
         assert!(!LiveOptions::default().promiscuous);
+    }
+
+    // Review of pull request 12. `next_packet`'s timeout argument cannot be
+    // honoured by this backend, so the default must match the pipeline's or a
+    // default-configured live capture would have stop latency governed by a
+    // number nobody chose. Pinned here so that changing either value alone
+    // fails rather than quietly widening it.
+    #[test]
+    fn the_default_read_timeout_matches_the_pipelines_own() {
+        assert_eq!(
+            LiveOptions::default().read_timeout,
+            fragcap_core::pipeline::DEFAULT_READ_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn options_can_be_built_to_agree_with_a_pipeline() {
+        let t = Duration::from_millis(250);
+        assert_eq!(LiveOptions::for_pipeline(t).read_timeout(), t);
     }
 }

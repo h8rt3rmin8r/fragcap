@@ -132,3 +132,34 @@ and proves nothing about whether it captures.
 `fragcap-core`.** It only ever built core, while the specification claimed both
 build for a target with no capture backend. The claim was true and nothing
 checked it. Found by this slice's analyze gate.
+
+**2026-08-10: three defects found by automated review of pull request 12, all
+real.**
+
+- **The interface address set moved from `PipelineConfig` onto
+  `SourceBinding`.** Specification section 12.6 determines direction by matching
+  against "the address set of the capturing interface", and section 8.4 places
+  the flow key's local endpoint by the same test. One run-wide set cannot say
+  that on a multi-homed machine, and both ways of faking it put a false
+  statement in the output: one interface's addresses reject every other's
+  traffic as `no_local_endpoint`, and their union labels a packet with a local
+  endpoint the capturing adapter does not hold. The field was removed from the
+  configuration rather than kept as a fallback, so the ambiguous form is
+  unwritable. A test gives the two interfaces each other's address sets and
+  asserts the counters change, which a shared union could not do.
+- **A panicking capture thread now winds the others down.** Every capture thread
+  holds a producer, so resuming the unwind while another source was live left
+  the buffer open, the output thread waiting on it, and the run hung instead of
+  reporting the defect. The first attempt at this fix stopped the others at the
+  join and did not work, because join order is arbitrary and the survivor was
+  joined first; the regression test caught that. The stop now fires inside the
+  panicking thread through a guard that checks `std::thread::panicking`, which
+  is deliberately distinct from the existing unconditional one: a source that
+  ends normally must leave the other interfaces running.
+- **The live source documents the timeout it cannot honour.** libpcap fixes the
+  read timeout when a handle is activated, so `next_packet`'s argument is not
+  applicable and silently substituting the handle's value would let stop latency
+  follow a number the pipeline did not choose. `LiveOptions::for_pipeline` makes
+  the two agree by construction, `LiveSource::configured_timeout` exposes the
+  one that governs, and a test pins the default to the pipeline's own so that
+  changing either alone fails.

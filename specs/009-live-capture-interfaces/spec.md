@@ -475,6 +475,24 @@ output.
 - **FR-051**: Any dependency added MUST carry a license from the allowlist in
   the constitution's licensing section.
 
+**Found in review of pull request 12**
+
+- **FR-052**: Each packet source MUST carry the address set of the interface it
+  captures on, and header parsing MUST use that set rather than a run-wide one.
+  Specification section 12.6 determines direction by matching against "the
+  address set of the capturing interface", and section 8.4 places the flow key's
+  local endpoint by the same test. A shared set cannot express this on a
+  multi-homed machine: one interface's addresses reject every other interface's
+  traffic, and their union assigns a direction and a local endpoint to a packet
+  observed on an adapter that does not hold the matched address.
+- **FR-053**: A capture thread that panics MUST wind down the other capture
+  threads before the panic reaches the caller. Every capture thread holds a
+  producer, so a surviving one keeps the bounded buffer open, the output thread
+  waits on it, and the run hangs instead of reporting a defect.
+- **FR-054**: Where a backend cannot honour the timeout passed to
+  `next_packet`, it MUST document that and MUST make the value that does govern
+  reachable, rather than silently substituting a different one.
+
 ### Key Entities
 
 - **Interface inventory**: What the machine reports about its capture-capable

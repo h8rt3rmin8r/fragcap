@@ -307,11 +307,14 @@ pub fn render_via_pipeline(name: &str, capacity: usize) -> PipelineRun {
         .expect("in-memory write cannot fail");
 
     let mut pipeline = Pipeline::new(
-        vec![SourceBinding::new(InterfaceId::default(), Box::new(source))],
+        vec![SourceBinding::new(
+            InterfaceId::default(),
+            Box::new(source),
+            InterfaceAddrs::new(local.iter().copied()),
+        )],
         Box::new(fragcap::ScriptedAttributor::new(script)),
         PipelineConfig {
             capacity,
-            addrs: InterfaceAddrs::new(local.iter().copied()),
             ..PipelineConfig::default()
         },
     )
