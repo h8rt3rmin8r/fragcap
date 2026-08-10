@@ -28,6 +28,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Once;
 
 use fragcap::core::CaptureStats;
+#[cfg(all(feature = "etw", windows))]
+use fragcap::StopReason;
 use fragcap::{
     BindingPublisher, CaptureSession, CapturedPacket, Pipeline, PipelineConfig, PipelineReport,
     ProcessEvent, Profile, SessionState, Sink, SinkError, StopHandle, Timestamp,
@@ -97,6 +99,7 @@ impl Sink for TeeCountingSink {
 /// session and the operator-facing preamble are shared; the event source then
 /// decides which driver runs. An offline timeline drives the deterministic
 /// two-phase path; a live ETW stream drives the streaming merged-channel path.
+#[allow(clippy::too_many_arguments)]
 pub fn capture(
     profile: Profile,
     config: &EffectiveConfig,
@@ -104,8 +107,9 @@ pub fn capture(
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     fire_interrupt: bool,
+    allowed_roles: Option<Vec<String>>,
 ) -> Result<Exit, CliError> {
-    let mut session = CaptureSession::new(profile, config.session_config());
+    let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
     session.attach(ARMED_AT);
 
     let interface_names = config.interface_names();
@@ -123,13 +127,16 @@ pub fn capture(
              filtering is deferred to a later slice",
         );
     }
+    // Roles are enforced: the session was scoped above, so a role outside the
+    // set never triggers or is captured (specification FR-011b). Direction, by
+    // contrast, is still only recorded, which the warning above says.
     let roles = config
         .roles
         .as_ref()
         .map(|r| r.join(","))
         .unwrap_or_else(|| "all".to_string());
     emitter.progress(&format!(
-        "scope: direction {}, roles {}, loopback {}",
+        "scope: direction {}, roles {} (enforced), loopback {}",
         config.direction.as_str(),
         roles,
         config.loopback
@@ -179,8 +186,6 @@ fn capture_prerecorded(
     interrupt: &AtomicBool,
     fire_interrupt: bool,
 ) -> Result<Exit, CliError> {
-    let interface_names = config.interface_names();
-
     // The pid to role map, so a new binding is detected as a match and an exit
     // of a bound pid is detected as a stage exit.
     let mut bound: HashMap<u32, String> = HashMap::new();
@@ -219,7 +224,7 @@ fn capture_prerecorded(
 
     // Build the sinks, prepend the tee, and run the pipeline on its own thread.
     let (tx, rx) = mpsc::channel::<(u32, Timestamp)>();
-    let (handle, stop) = spawn_pipeline(config, &mut components, &interface_names, tx)?;
+    let (handle, stop) = spawn_pipeline(config, &mut components, tx)?;
 
     drive(
         &rx,
@@ -266,10 +271,9 @@ fn capture_prerecorded(
 fn spawn_pipeline(
     config: &EffectiveConfig,
     components: &mut CaptureComponents,
-    interface_names: &[String],
     tee_tx: Sender<(u32, Timestamp)>,
 ) -> Result<(std::thread::JoinHandle<PipelineReport>, StopHandle), CliError> {
-    let sinks = assemble::build_sinks(config, components.link, interface_names)?;
+    let sinks = assemble::build_sinks(config, &components.interfaces)?;
     let stamper = components
         .stamper
         .take()
@@ -360,7 +364,6 @@ fn capture_live(
 ) -> Result<Exit, CliError> {
     use std::time::{Duration, Instant};
 
-    let interface_names = config.interface_names();
     let mut bound: HashMap<u32, String> = HashMap::new();
     let publisher = components.publisher.clone();
 
@@ -370,9 +373,22 @@ fn capture_live(
     let tick = Duration::from_millis(200);
 
     // Acquisition: fold live events until a terminal stage acquires the target,
-    // or the acquisition timeout elapses.
+    // or acquisition ends for another reason (the acquisition timeout, a
+    // duration bound reached while still watching, an operator interrupt, or the
+    // watcher disconnecting).
     loop {
         if session.state() == SessionState::Capturing {
+            break;
+        }
+        // An operator interrupt during acquisition is a clean cancellation, not
+        // a failure to acquire: stop the session cleanly and leave the loop.
+        if (fire_interrupt || interrupt.load(Ordering::Relaxed)) && is_active(&session) {
+            session.on_interrupt();
+            break;
+        }
+        // A tick may have moved the session out of an active state (a --duration
+        // bound reached while still watching); nothing more can be acquired.
+        if !is_active(&session) {
             break;
         }
         if let Some(timeout) = config.acquisition_timeout {
@@ -386,7 +402,7 @@ fn capture_live(
                 publisher.publish(session.role_bindings());
             }
             // No event arrived; advance the session clock so a tick-based
-            // acquisition timeout can still fire.
+            // acquisition timeout or duration bound can still fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
             // The watcher is gone; no target can now be acquired.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -394,14 +410,27 @@ fn capture_live(
     }
 
     if session.state() != SessionState::Capturing {
-        if let Some(timeout) = config.acquisition_timeout {
-            session.on_tick(Timestamp::from_nanos(
-                ARMED_AT.as_nanos() + timeout.as_nanos() as i64,
-            ));
+        // No target was acquired. Fire the acquisition timeout, if set and the
+        // session is still watching, so the summary can name it; an interrupt or
+        // a duration bound has already stopped the session and set its reason.
+        if is_active(&session) {
+            if let Some(timeout) = config.acquisition_timeout {
+                session.on_tick(Timestamp::from_nanos(
+                    ARMED_AT.as_nanos() + timeout.as_nanos() as i64,
+                ));
+            }
         }
+        session.finalize();
         let summary = build_summary(false, &session, &CaptureStats::default());
         emitter.summary(&summary);
-        return Ok(Exit::FAILURE);
+        // A clean operator interrupt exits zero; every other way of capturing
+        // nothing (timeout, duration, disconnect) is the target-never-acquired
+        // failure that exits one.
+        return Ok(if session.stop_reason() == Some(StopReason::Interrupt) {
+            Exit::SUCCESS
+        } else {
+            Exit::FAILURE
+        });
     }
 
     publisher.publish(session.role_bindings());
@@ -411,7 +440,7 @@ fn capture_live(
 
     // The same pipeline the offline path builds, feeding a counting tee.
     let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
-    let (handle, stop) = spawn_pipeline(config, &mut components, &interface_names, tee_tx)?;
+    let (handle, stop) = spawn_pipeline(config, &mut components, tee_tx)?;
 
     // The merged channel. Two forwarders fold the two source channels into it so
     // the driver reads one totally ordered stream.

@@ -57,12 +57,16 @@ impl CompletionSummary {
     ///
     /// `dropped` is fragcap's own drops (buffer plus sink), the discards inside
     /// the pipeline's conservation identity. The watch-time and out-of-window
-    /// discards are the session's and appear in the human summary.
+    /// discards are the session's; they ride the event too so a `--json`
+    /// consumer, which never sees the human summary, still reads every discard
+    /// counter FR-021 requires be surfaced.
     pub fn complete_event(&self) -> Event {
         Event::SessionComplete {
             packets: self.packets_captured,
             attributed: self.packets_attributed,
             dropped: self.buffer_dropped.saturating_add(self.sink_dropped),
+            watching_discarded: self.watching_discarded,
+            discarded_out_of_window: self.discarded_out_of_window,
         }
     }
 
@@ -116,6 +120,8 @@ mod tests {
             packets_attributed: 90,
             buffer_dropped: 2,
             sink_dropped: 1,
+            watching_discarded: 7,
+            discarded_out_of_window: 4,
             ..CompletionSummary::default()
         };
         assert_eq!(
@@ -124,6 +130,8 @@ mod tests {
                 packets: 100,
                 attributed: 90,
                 dropped: 3,
+                watching_discarded: 7,
+                discarded_out_of_window: 4,
             }
         );
     }

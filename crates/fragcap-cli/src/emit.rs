@@ -16,7 +16,9 @@
 use std::io::Write;
 use std::time::SystemTime;
 
-use crate::events::Event;
+use fragcap::write_json_string;
+
+use crate::events::{rfc3339_utc, Event};
 use crate::output::CompletionSummary;
 
 /// The output shape.
@@ -90,17 +92,41 @@ impl<'w> Emitter<'w> {
         }
     }
 
-    /// A warning, kept under quiet, suppressed under silent, and printed in
-    /// either output shape.
+    /// A warning, kept under quiet, suppressed under silent. In human mode a
+    /// `warning:` line; in JSON mode a `warning` NDJSON record, so a `--json`
+    /// consumer reading standard error line by line never meets a line that is
+    /// not JSON.
     pub fn warn(&mut self, line: &str) {
         if self.verbosity != Verbosity::Silent {
-            let _ = writeln!(self.err, "warning: {line}");
+            self.diagnostic("warning", line);
         }
     }
 
-    /// An error. Never suppressed, in any mode or verbosity.
+    /// An error. Never suppressed, in any mode or verbosity. In human mode an
+    /// `error:` line; in JSON mode an `error` NDJSON record.
     pub fn error(&mut self, line: &str) {
-        let _ = writeln!(self.err, "error: {line}");
+        self.diagnostic("error", line);
+    }
+
+    /// Write one diagnostic, shaped by the output format. `kind` is the human
+    /// label prefix and the JSON `event` discriminator; the two agree by
+    /// construction so a reader keys on the same word either way.
+    fn diagnostic(&mut self, kind: &str, message: &str) {
+        match self.format {
+            Format::Human => {
+                let _ = writeln!(self.err, "{kind}: {message}");
+            }
+            Format::Json => {
+                let mut record = String::from("{\"ts\":");
+                write_json_string(&rfc3339_utc((self.clock)()), &mut record);
+                record.push_str(",\"event\":");
+                write_json_string(kind, &mut record);
+                record.push_str(",\"message\":");
+                write_json_string(message, &mut record);
+                record.push('}');
+                let _ = writeln!(self.err, "{record}");
+            }
+        }
     }
 
     /// The completion summary. In human mode it is rendered unless silent; in
@@ -149,6 +175,26 @@ mod tests {
         assert!(emit(Format::Human, Verbosity::Quiet, |e| e.warn("w")).contains("warning: w"));
         assert!(emit(Format::Human, Verbosity::Silent, |e| e.warn("w")).is_empty());
         assert!(emit(Format::Human, Verbosity::Silent, |e| e.error("boom")).contains("error: boom"));
+    }
+
+    #[test]
+    fn json_diagnostics_are_ndjson_records_honoring_verbosity() {
+        // A warning in JSON mode is a record, not a `warning:` line, and it
+        // carries the timestamp, the event discriminator, and the escaped
+        // message.
+        let warn = emit(Format::Json, Verbosity::Normal, |e| {
+            e.warn("a \"quoted\" note")
+        });
+        assert!(!warn.contains("warning: "), "no human prefix in JSON mode");
+        assert!(warn.contains("\"event\":\"warning\""));
+        assert!(warn.contains("\"ts\":\"1970-01-01T00:00:00Z\""));
+        assert!(warn.contains("\"message\":\"a \\\"quoted\\\" note\""));
+
+        // Verbosity still governs: silent drops the warning but never the error.
+        assert!(emit(Format::Json, Verbosity::Silent, |e| e.warn("w")).is_empty());
+        let err = emit(Format::Json, Verbosity::Silent, |e| e.error("boom"));
+        assert!(err.contains("\"event\":\"error\""));
+        assert!(err.contains("\"message\":\"boom\""));
     }
 
     #[test]

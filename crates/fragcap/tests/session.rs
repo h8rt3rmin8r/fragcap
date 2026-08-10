@@ -350,3 +350,45 @@ fn packets_offered_after_a_stop_are_counted_out_of_window() {
         "conservation holds across all three counters"
     );
 }
+
+#[test]
+fn a_role_outside_the_scope_neither_acquires_nor_stamps() {
+    // Specification FR-011b: --roles scopes which stages trigger and are
+    // captured. Scoped to the launcher, the terminal client stage is treated as
+    // if it were absent from the profile: it never binds, so it never stamps a
+    // role and its match cannot stop the run, while the in-scope launcher
+    // acquires the target and stamps exactly as an unscoped run would.
+    let scope = Some(vec!["launcher".to_string()]);
+    let mut s = CaptureSession::new_scoped(terminal_chain(), SessionConfig::default(), scope);
+    s.attach(at(0));
+
+    // The in-scope launcher binds and acquires the target.
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1));
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "the in-scope role acquires"
+    );
+    let bindings = s.role_bindings();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(
+        bindings[0].1.as_deref(),
+        Some("launcher"),
+        "the in-scope role is stamped"
+    );
+
+    // The out-of-scope client would match (it descends from the bound launcher
+    // and is terminal), but scope keeps it from binding: no new stamp, and the
+    // run does not stop on a terminal it was told to ignore.
+    s.on_process_event(start(200, 100, "C:\\G\\game.exe", 2));
+    assert_eq!(
+        s.role_bindings().len(),
+        1,
+        "the out-of-scope role does not stamp"
+    );
+    assert!(
+        s.stop_reason().is_none(),
+        "an out-of-scope terminal match does not stop the run"
+    );
+    assert_eq!(s.state(), SessionState::Capturing);
+}

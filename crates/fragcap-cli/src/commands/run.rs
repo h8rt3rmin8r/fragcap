@@ -27,6 +27,7 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let components = assemble::components(&args.offline, &config)?;
 
     orchestrator::install_interrupt_handler();
+    let allowed_roles = config.roles.clone();
     orchestrator::capture(
         resolved.profile,
         &config,
@@ -34,5 +35,6 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         emitter,
         &orchestrator::INTERRUPT,
         args.offline.fire_interrupt,
+        allowed_roles,
     )
 }

@@ -36,6 +36,13 @@ fragcap.workspace = true
 clap.workspace    = true
 ctrlc.workspace   = true
 
+# Windows only, for the `doctor` elevation probe. Pinned to the same 0.36 line
+# fragcap-attr already resolves (see the workspace manifest for why), so this
+# adds no second windows-sys tree to Cargo.lock. Only the token features the
+# probe reads are requested; `Win32_Foundation` is already in the workspace set.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security"] }
+
 [dev-dependencies]
 serde_json.workspace = true
 tempfile.workspace   = true

@@ -161,15 +161,42 @@ pub struct CaptureSession {
     pending_nonservice: Vec<String>,
     /// Count of bound non-service processes still live.
     live_nonservice: u64,
+    /// The roles the run was scoped to with `--roles` (specification FR-011b).
+    /// `None` means unscoped: every stage triggers and is captured. `Some` means
+    /// only a stage whose role is in the set may bind, so a stage outside it
+    /// never becomes pending, never stamps, and never influences the stop
+    /// conditions, exactly as if it were not in the profile.
+    allowed_roles: Option<Vec<String>>,
 }
 
 impl CaptureSession {
-    /// A new session in Arming, over a validated profile.
+    /// A new session in Arming, over a validated profile. Unscoped: every stage
+    /// the profile declares may trigger and be captured.
     pub fn new(profile: Profile, config: SessionConfig) -> Self {
+        Self::new_scoped(profile, config, None)
+    }
+
+    /// A new session scoped to a set of roles, per specification FR-011b.
+    ///
+    /// `allowed_roles` of `None` is the unscoped session [`new`](Self::new)
+    /// builds. `Some` restricts the run to those roles: a stage whose role is
+    /// not in the set is treated as if it were absent from the profile. It never
+    /// enters the pending set, so it never gates acquisition or
+    /// `AllProcessesExited`; it never binds in
+    /// [`match_and_bind`](Self::match_and_bind), so it never stamps a role or
+    /// stage and a terminal one outside the set never stops the run. This keeps
+    /// existing callers working: `new` delegates here with no restriction.
+    pub fn new_scoped(
+        profile: Profile,
+        config: SessionConfig,
+        allowed_roles: Option<Vec<String>>,
+    ) -> Self {
+        let allowed = |role: &str| role_in(&allowed_roles, role);
         let pending_nonservice = profile
             .stages()
             .iter()
             .filter(|s| s.lifecycle() != Lifecycle::Service)
+            .filter(|s| allowed(s.role()))
             .map(|s| s.role().to_string())
             .collect();
         CaptureSession {
@@ -183,6 +210,7 @@ impl CaptureSession {
             bindings: Vec::new(),
             pending_nonservice,
             live_nonservice: 0,
+            allowed_roles,
         }
     }
 
@@ -339,6 +367,12 @@ impl CaptureSession {
         let Some((sid, lifecycle, terminal, role)) = decision else {
             return;
         };
+        // A stage outside the scoped role set is treated as if it were not in
+        // the profile: no bind, so no stamp, no live count, and no stop
+        // condition (specification FR-011b).
+        if !role_in(&self.allowed_roles, &role) {
+            return;
+        }
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
             // A process whose exit was delivered before its start is bound
@@ -437,6 +471,14 @@ impl CaptureSession {
 /// backward across a session's own clock).
 fn elapsed(from: Timestamp, to: Timestamp) -> Duration {
     Duration::from_nanos(to.nanos_since(from).max(0) as u64)
+}
+
+/// Whether a role is in scope: always so when the run is unscoped (`None`),
+/// otherwise only when the set names it.
+fn role_in(allowed: &Option<Vec<String>>, role: &str) -> bool {
+    allowed
+        .as_ref()
+        .is_none_or(|set| set.iter().any(|r| r == role))
 }
 
 /// A published map from process identifier to its role and stage.

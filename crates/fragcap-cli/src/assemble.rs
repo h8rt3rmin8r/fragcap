@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fragcap::core::SourceBinding;
+use fragcap::profile::CaptureMode;
 use fragcap::{
     AttributionScript, BindingPublisher, CommandLine, FlowAttributor, InterfaceAddrs, InterfaceId,
     JsonLinesWriter, LinkType, PacketSource, PayloadMode, PcapngWriter, ProcessEvent,
@@ -91,7 +92,7 @@ impl EffectiveConfig {
 /// Build the effective configuration from `run` arguments and a resolved
 /// profile, refusing the options this slice does not yet support.
 pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveConfig, CliError> {
-    reject_unsupported(args)?;
+    reject_unsupported(args, profile)?;
 
     let defaults = profile.capture();
     let payload = if args.no_payload {
@@ -149,19 +150,32 @@ pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -
 }
 
 /// Refuse the modes, sinks, and options deferred to later slices.
-fn reject_unsupported(args: &RunArgs) -> Result<(), CliError> {
-    match args.mode {
-        Some(ModeArg::Stream) => {
+///
+/// The capture mode is resolved as the command line over the profile's
+/// `[capture]` default (specification FR-007): an explicit `--mode` wins, and a
+/// mode absent from the command line falls back to the profile. A profile that
+/// declares `mode = "stream"` or `mode = "ring"` with no `--mode` override is
+/// therefore refused here naming its slice, rather than silently treated as a
+/// file capture the operator did not ask for.
+fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError> {
+    let effective_mode = match args.mode {
+        Some(ModeArg::File) => Some(CaptureMode::File),
+        Some(ModeArg::Stream) => Some(CaptureMode::Stream),
+        Some(ModeArg::Ring) => Some(CaptureMode::Ring),
+        None => profile.capture().mode(),
+    };
+    match effective_mode {
+        Some(CaptureMode::Stream) => {
             return Err(CliError::usage(
                 "capture mode `stream` is not yet supported (slice S15)",
             ))
         }
-        Some(ModeArg::Ring) => {
+        Some(CaptureMode::Ring) => {
             return Err(CliError::usage(
                 "capture mode `ring` is not yet supported (slice S16)",
             ))
         }
-        Some(ModeArg::File) | None => {}
+        Some(CaptureMode::File) | None => {}
     }
     if args.ring.is_some() {
         return Err(CliError::usage(
@@ -214,8 +228,14 @@ pub enum EventStream {
 pub struct CaptureComponents {
     /// The bound packet sources.
     pub sources: Vec<SourceBinding>,
-    /// The link type the source produces, for declaring interfaces.
-    pub link: LinkType,
+    /// One `(name, link type)` per selected interface, in selection order, for
+    /// declaring interfaces on the sinks. The pipeline assigns each source its
+    /// `InterfaceId` from selection position, so this list is in the same order
+    /// and of the same length as [`sources`](Self::sources); a sink declares one
+    /// interface per source, each with its own link type, so a packet from any
+    /// selected interface references a declared one rather than being refused as
+    /// undeclared.
+    pub interfaces: Vec<(String, LinkType)>,
     /// The inner attributor, kept for polling active endpoints for the
     /// filter-narrowed event.
     pub inner_attributor: Arc<dyn FlowAttributor>,
@@ -349,6 +369,14 @@ fn offline_components(
         Box::new(source),
         addrs,
     )];
+    // The single replay interface, declared under every configured name against
+    // the one replay link type. With no `-i` this is the single stable
+    // "capture" name, so the offline sink bytes are unchanged.
+    let interfaces: Vec<(String, LinkType)> = config
+        .interface_names()
+        .into_iter()
+        .map(|name| (name, link))
+        .collect();
 
     let script = match &offline.attr_script {
         Some(path) => AttributionScript::load(path)
@@ -361,10 +389,9 @@ fn offline_components(
 
     let events = process_events(&offline.process_script)?;
 
-    let _ = config; // The effective config gates sinks and bounds, built later.
     Ok(CaptureComponents {
         sources,
-        link,
+        interfaces,
         inner_attributor: inner,
         stamper: Some(stamper),
         publisher,
@@ -429,21 +456,24 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
             .map_err(|e| CliError::failure(format!("interface selection: {e}")))?;
 
         // A live handle per selected interface. The read timeout matches the
-        // pipeline's own so a requested stop is observed promptly.
+        // pipeline's own so a requested stop is observed promptly. Each
+        // interface carries its own name and link type into the declarations, so
+        // a capture spanning interfaces of different link types declares each
+        // correctly rather than assuming the first one's.
         let read_timeout = PipelineConfig::default().read_timeout;
         let mut sources: Vec<SourceBinding> = Vec::new();
-        let mut link: Option<LinkType> = None;
+        let mut interfaces: Vec<(String, LinkType)> = Vec::new();
         for sel in &outcome.selected {
             let source = LiveSource::open(&sel.record, LiveOptions::for_pipeline(read_timeout))?;
-            if link.is_none() {
-                link = Some(source.link_type());
-            }
+            interfaces.push((sel.record.name.to_string(), source.link_type()));
             let addrs = InterfaceAddrs::new(sel.record.addresses.iter().copied());
             sources.push(SourceBinding::new(sel.id, Box::new(source), addrs));
         }
         // select already errors on NothingSelected, so at least one source was
-        // opened and the link type is known.
-        let link = link.ok_or_else(|| CliError::failure("no interface was opened for capture"))?;
+        // opened and its declaration recorded.
+        if interfaces.is_empty() {
+            return Err(CliError::failure("no interface was opened for capture"));
+        }
 
         // The inner attributor the pipeline resolves against, and, on the
         // socket-table path, the control thread that keeps its published index
@@ -483,7 +513,7 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
 
         Ok(CaptureComponents {
             sources,
-            link,
+            interfaces,
             inner_attributor: inner,
             stamper: Some(stamper),
             publisher,
@@ -614,15 +644,14 @@ pub fn image_name(event: &ProcessEvent) -> String {
 /// is prepended by the orchestrator, not here.
 pub fn build_sinks(
     config: &EffectiveConfig,
-    link: LinkType,
-    interface_names: &[String],
+    interfaces: &[(String, LinkType)],
 ) -> Result<Vec<Box<dyn Sink>>, CliError> {
     let mode = if config.payload {
         PayloadMode::WithPayload
     } else {
         PayloadMode::MetadataOnly
     };
-    let name_refs: Vec<&str> = interface_names.iter().map(String::as_str).collect();
+    let name_refs: Vec<&str> = interfaces.iter().map(|(n, _)| n.as_str()).collect();
 
     let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
 
@@ -648,9 +677,9 @@ pub fn build_sinks(
     for path in file_targets {
         let file = create(&path)?;
         let mut writer = PcapngWriter::new(file).map_err(|e| CliError::failure(e.to_string()))?;
-        for name in interface_names {
+        for (name, link) in interfaces {
             writer
-                .declare_interface(&InterfaceDeclaration::new(link, SNAP_LEN, name.as_str()))
+                .declare_interface(&InterfaceDeclaration::new(*link, SNAP_LEN, name.as_str()))
                 .map_err(|e| CliError::failure(e.to_string()))?;
         }
         sinks.push(Box::new(writer));

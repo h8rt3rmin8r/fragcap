@@ -37,6 +37,8 @@ pub enum Event {
         packets: u64,
         attributed: u64,
         dropped: u64,
+        watching_discarded: u64,
+        discarded_out_of_window: u64,
     },
 }
 
@@ -92,6 +94,8 @@ impl Event {
                 packets,
                 attributed,
                 dropped,
+                watching_discarded,
+                discarded_out_of_window,
             } => {
                 line.push_str(",\"packets\":");
                 line.push_str(&packets.to_string());
@@ -99,6 +103,10 @@ impl Event {
                 line.push_str(&attributed.to_string());
                 line.push_str(",\"dropped\":");
                 line.push_str(&dropped.to_string());
+                line.push_str(",\"watching_discarded\":");
+                line.push_str(&watching_discarded.to_string());
+                line.push_str(",\"discarded_out_of_window\":");
+                line.push_str(&discarded_out_of_window.to_string());
             }
         }
         line.push('}');
@@ -188,11 +196,15 @@ mod tests {
             packets: 10,
             attributed: 9,
             dropped: 0,
+            watching_discarded: 3,
+            discarded_out_of_window: 1,
         }
         .render(now);
         assert!(complete.contains("\"packets\":10"));
         assert!(complete.contains("\"attributed\":9"));
         assert!(complete.contains("\"dropped\":0"));
+        assert!(complete.contains("\"watching_discarded\":3"));
+        assert!(complete.contains("\"discarded_out_of_window\":1"));
     }
 
     #[test]

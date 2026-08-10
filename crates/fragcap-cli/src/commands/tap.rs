@@ -23,6 +23,8 @@ pub fn run(args: &TapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let components = assemble::components(&args.offline, &config)?;
 
     orchestrator::install_interrupt_handler();
+    // `tap` scopes to its single synthesized stage, so it imposes no role
+    // restriction of its own: the whole (one-stage) profile is in scope.
     orchestrator::capture(
         profile,
         &config,
@@ -30,6 +32,7 @@ pub fn run(args: &TapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         emitter,
         &orchestrator::INTERRUPT,
         args.offline.fire_interrupt,
+        None,
     )
 }
 

@@ -119,3 +119,32 @@ specification section 29.**
   does run is the `fragcap-attr` unit test proving a resolver answers from the
   index its attributor publishes and that the resolver's own `refresh` is a
   harmless no-op.
+- **Review pass (2026-08-10): scope enforcement, mode honoring, JSON
+  completeness, live declarations, and a real elevation probe.** `--roles` is now
+  enforced rather than merely printed: `CaptureSession::new_scoped` treats a stage
+  outside the scoped set as absent from the profile, so it never becomes pending,
+  never binds or stamps, and never influences the stop conditions; `new` delegates
+  to it with no restriction, so existing callers are unchanged, and `run` scopes
+  to the resolved roles while `tap` imposes none. A profile-declared `[capture]
+  mode` is honored through the same command-line-over-profile overlay as the other
+  defaults, so a profile asking for `stream` or `ring` with no `--mode` override is
+  refused naming its slice rather than silently captured as a file. The
+  `session.complete` JSON event now carries `watching_discarded` and
+  `discarded_out_of_window`, so a `--json` consumer, which never sees the human
+  summary, still reads every discard counter FR-021 requires; and `--json`
+  warnings and errors are emitted as `warning`/`error` NDJSON records instead of
+  plain lines, so a diagnostic stream a consumer reads line by line stays valid
+  NDJSON. The live path declares every selected interface with its own name and
+  link type in selection order, matching the pipeline's per-position `InterfaceId`
+  assignment, so a packet from an interface past the first is no longer refused as
+  undeclared; the offline path still declares one interface named "capture" and is
+  byte-identical to its goldens. The live acquisition loop now also ends on an
+  operator interrupt (a clean exit-zero stop) and when a `--duration` bound moves
+  the session out of an active state while still watching, rather than only on
+  acquisition timeout or watcher disconnect. The `doctor` probe detects real
+  elevation by reading the current process token's elevation flag through the
+  documented current-process token pseudo handle, so no handle is opened against
+  any process (P-1) and the blocking elevated-and-tracing-unavailable branch can
+  actually be reached; this adds a windows-only `windows-sys` dependency pinned to
+  the same 0.36 line `fragcap-attr` already resolves, so no second copy enters
+  `Cargo.lock`.

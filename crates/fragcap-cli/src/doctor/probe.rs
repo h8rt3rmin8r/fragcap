@@ -110,9 +110,11 @@ fn gather_windows(user_count: usize) -> Inputs {
     Inputs {
         os: "Windows".to_string(),
         subsystem: Subsystem::Native,
-        // Detecting elevation needs a token query this crate deliberately does
-        // not link a platform binding for; the conservative answer only warns.
-        privilege: Privilege::NotElevated,
+        privilege: if is_elevated() {
+            Privilege::Elevated
+        } else {
+            Privilege::NotElevated
+        },
         npcap,
         etw_available: tracing_availability(),
         // Interface enumeration belongs to the capture backend, which is not
@@ -122,4 +124,41 @@ fn gather_windows(user_count: usize) -> Inputs {
         bundled_count: crate::paths::bundled().len(),
         user_count,
     }
+}
+
+/// Whether this process runs elevated, read from its own access token.
+///
+/// Reads the elevation flag of the current process's primary token through the
+/// documented current-process token pseudo handle, so no handle is opened
+/// against any process and nothing is closed: there is no handle to audit
+/// against P-1, and the query carries no rights beyond read. A query that
+/// genuinely fails defaults to not elevated, so the blocking doctor branch that
+/// pairs elevation with an unavailable trace session is never entered on a false
+/// positive.
+#[cfg(windows)]
+fn is_elevated() -> bool {
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
+
+    // The current process's primary token, a documented pseudo handle whose
+    // value is (HANDLE)-4. HANDLE is an isize in this binding.
+    const CURRENT_PROCESS_TOKEN: isize = -4;
+
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned: u32 = 0;
+    let size = core::mem::size_of::<TOKEN_ELEVATION>() as u32;
+    // SAFETY: the token is the well-known current-process pseudo handle, the
+    // information class matches the out buffer type, the buffer is a live
+    // `TOKEN_ELEVATION` whose exact size is passed, and `returned` is a live
+    // `u32`. On failure the call returns 0 and leaves `TokenIsElevated` at its
+    // initialized 0, which reads as not elevated.
+    let ok = unsafe {
+        GetTokenInformation(
+            CURRENT_PROCESS_TOKEN,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size,
+            &mut returned,
+        )
+    };
+    ok != 0 && elevation.TokenIsElevated != 0
 }
