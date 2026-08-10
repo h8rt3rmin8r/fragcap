@@ -1,0 +1,3 @@
+# game.exe starts before the first packet, exits after the last
+start 4242 100 C:\Games\game.exe game.exe 0
+exit 4242 1800000000000000000

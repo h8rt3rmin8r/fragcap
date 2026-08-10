@@ -42,6 +42,10 @@ processes.jsonl
 !fixtures/**/*.fcapng
 !fixtures/**/*.pcapng
 !fixtures/**/*.pcap
+# Committed capture goldens also live beside the tests that assert them (slice
+# S14's CLI end-to-end goldens), so the same exception applies there.
+!crates/**/tests/goldens/*.fcapng
+!crates/**/tests/goldens/*.pcapng
 
 # npcap Software Development Kit. Acquired at build time, never vendored
 # (specification section 20.2). If a local build drops it here, it stays out

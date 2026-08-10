@@ -23,11 +23,16 @@
 //! onto an [`Attribution`](fragcap_core::attribution::Attribution) are S13 and
 //! S14.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fragcap_core::attribution::StageId;
+use fragcap_core::attribution::{Attribution, StageId};
+use fragcap_core::error::AttrError;
+use fragcap_core::flow::{Endpoint, FlowKey};
 use fragcap_core::packet::Timestamp;
 use fragcap_core::process::{ProcessEvent, ProcessId, ProcessTree};
+use fragcap_core::traits::FlowAttributor;
 
 use fragcap_profile::matching::stage_for;
 use fragcap_profile::schema::{Lifecycle, Profile};
@@ -156,15 +161,42 @@ pub struct CaptureSession {
     pending_nonservice: Vec<String>,
     /// Count of bound non-service processes still live.
     live_nonservice: u64,
+    /// The roles the run was scoped to with `--roles` (specification FR-011b).
+    /// `None` means unscoped: every stage triggers and is captured. `Some` means
+    /// only a stage whose role is in the set may bind, so a stage outside it
+    /// never becomes pending, never stamps, and never influences the stop
+    /// conditions, exactly as if it were not in the profile.
+    allowed_roles: Option<Vec<String>>,
 }
 
 impl CaptureSession {
-    /// A new session in Arming, over a validated profile.
+    /// A new session in Arming, over a validated profile. Unscoped: every stage
+    /// the profile declares may trigger and be captured.
     pub fn new(profile: Profile, config: SessionConfig) -> Self {
+        Self::new_scoped(profile, config, None)
+    }
+
+    /// A new session scoped to a set of roles, per specification FR-011b.
+    ///
+    /// `allowed_roles` of `None` is the unscoped session [`new`](Self::new)
+    /// builds. `Some` restricts the run to those roles: a stage whose role is
+    /// not in the set is treated as if it were absent from the profile. It never
+    /// enters the pending set, so it never gates acquisition or
+    /// `AllProcessesExited`; it never binds in
+    /// [`match_and_bind`](Self::match_and_bind), so it never stamps a role or
+    /// stage and a terminal one outside the set never stops the run. This keeps
+    /// existing callers working: `new` delegates here with no restriction.
+    pub fn new_scoped(
+        profile: Profile,
+        config: SessionConfig,
+        allowed_roles: Option<Vec<String>>,
+    ) -> Self {
+        let allowed = |role: &str| role_in(&allowed_roles, role);
         let pending_nonservice = profile
             .stages()
             .iter()
             .filter(|s| s.lifecycle() != Lifecycle::Service)
+            .filter(|s| allowed(s.role()))
             .map(|s| s.role().to_string())
             .collect();
         CaptureSession {
@@ -178,6 +210,7 @@ impl CaptureSession {
             bindings: Vec::new(),
             pending_nonservice,
             live_nonservice: 0,
+            allowed_roles,
         }
     }
 
@@ -292,6 +325,24 @@ impl CaptureSession {
         &self.tree
     }
 
+    /// The stage bindings the session has applied, as `(pid, role, stage)`.
+    ///
+    /// The snapshot source for [`RoleStampingAttributor`]. A node bound to a
+    /// stage carries the stage's role name, and the stage identifier is that
+    /// same name (a stage binds as `StageId::new(role)`), so both are reported:
+    /// the role for [`Attribution::with_role`] and the stage for
+    /// [`Attribution::with_stage`]. A node with no bound stage is omitted, so
+    /// the orchestrator republishes only what has matched.
+    pub fn role_bindings(&self) -> Vec<(u32, Option<Arc<str>>, Option<StageId>)> {
+        self.tree
+            .nodes()
+            .filter_map(|n| {
+                n.stage()
+                    .map(|s| (n.pid().get(), Some(Arc::from(s.as_str())), Some(s.clone())))
+            })
+            .collect()
+    }
+
     // -- internals --------------------------------------------------------
 
     fn is_active(&self) -> bool {
@@ -316,6 +367,12 @@ impl CaptureSession {
         let Some((sid, lifecycle, terminal, role)) = decision else {
             return;
         };
+        // A stage outside the scoped role set is treated as if it were not in
+        // the profile: no bind, so no stamp, no live count, and no stop
+        // condition (specification FR-011b).
+        if !role_in(&self.allowed_roles, &role) {
+            return;
+        }
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
             // A process whose exit was delivered before its start is bound
@@ -414,4 +471,214 @@ impl CaptureSession {
 /// backward across a session's own clock).
 fn elapsed(from: Timestamp, to: Timestamp) -> Duration {
     Duration::from_nanos(to.nanos_since(from).max(0) as u64)
+}
+
+/// Whether a role is in scope: always so when the run is unscoped (`None`),
+/// otherwise only when the set names it.
+fn role_in(allowed: &Option<Vec<String>>, role: &str) -> bool {
+    allowed
+        .as_ref()
+        .is_none_or(|set| set.iter().any(|r| r == role))
+}
+
+/// A published map from process identifier to its role and stage.
+type BindingMap = HashMap<u32, (Option<Arc<str>>, Option<StageId>)>;
+
+/// A handle that publishes new role and stage bindings to a live
+/// [`RoleStampingAttributor`].
+///
+/// The orchestrator keeps a clone of this after the attributor is handed to the
+/// pipeline, so that when the session binds a new stage it republishes the
+/// updated snapshot. The write is rare (a process start or exit) and swaps an
+/// `Arc` under a short-held lock; the per-packet read on the capture threads
+/// clones the current `Arc` without contending with a writer for longer than
+/// the swap, which is what keeps the acquisition path off a lock it holds.
+#[derive(Clone, Default)]
+pub struct BindingPublisher {
+    cell: Arc<Mutex<Arc<BindingMap>>>,
+}
+
+impl BindingPublisher {
+    /// Replace the published snapshot with these bindings.
+    ///
+    /// Takes the whole set rather than a delta: the session already knows every
+    /// binding it has applied ([`CaptureSession::role_bindings`]), and
+    /// republishing the whole set is simpler than reconciling a delta and
+    /// cannot leave a stale entry behind.
+    pub fn publish(&self, bindings: Vec<(u32, Option<Arc<str>>, Option<StageId>)>) {
+        let map: BindingMap = bindings
+            .into_iter()
+            .map(|(pid, role, stage)| (pid, (role, stage)))
+            .collect();
+        *self.cell.lock().expect("binding publisher lock") = Arc::new(map);
+    }
+
+    /// The current snapshot, cloned by pointer.
+    fn snapshot(&self) -> Arc<BindingMap> {
+        Arc::clone(&self.cell.lock().expect("binding publisher lock"))
+    }
+}
+
+/// A [`FlowAttributor`] decorator that stamps the profile role and stage onto
+/// an attribution the inner attributor resolved.
+///
+/// The seam that joins the capture session's profile knowledge to the packet
+/// path without either the pipeline or the attribution crate learning about
+/// profiles (constitution P-3). It wraps the real attributor as a shared
+/// `Arc<dyn FlowAttributor>`, resolves through it, and then, if the resolved
+/// process identifier is in the published binding map, applies
+/// [`Attribution::with_role`] and [`Attribution::with_stage`]. Those fields
+/// already exist on [`Attribution`], so this changes no type; it only populates
+/// what the writers already emit.
+///
+/// It performs no packet acquisition and adds no drop path, so P-3 and P-4 both
+/// hold. It lives in the facade `session` module because that is the one place
+/// already above both `fragcap-capture` and `fragcap-attr`.
+pub struct RoleStampingAttributor {
+    inner: Arc<dyn FlowAttributor>,
+    publisher: BindingPublisher,
+}
+
+impl RoleStampingAttributor {
+    /// Wrap the real attributor. Bindings are empty until the first
+    /// [`BindingPublisher::publish`].
+    pub fn new(inner: Arc<dyn FlowAttributor>) -> Self {
+        RoleStampingAttributor {
+            inner,
+            publisher: BindingPublisher::default(),
+        }
+    }
+
+    /// A handle the orchestrator keeps to publish bindings after this
+    /// attributor has been handed to the pipeline.
+    pub fn publisher(&self) -> BindingPublisher {
+        self.publisher.clone()
+    }
+}
+
+impl FlowAttributor for RoleStampingAttributor {
+    fn resolve(&self, key: &FlowKey, at: Timestamp) -> Option<Attribution> {
+        let mut attribution = self.inner.resolve(key, at)?;
+        let snapshot = self.publisher.snapshot();
+        if let Some((role, stage)) = snapshot.get(&attribution.pid) {
+            if let Some(role) = role {
+                attribution = attribution.with_role(role);
+            }
+            if let Some(stage) = stage {
+                attribution = attribution.with_stage(stage.clone());
+            }
+        }
+        Some(attribution)
+    }
+
+    /// A no-op. The pipeline never calls this: the socket-table attributor's
+    /// own refresh is driven by its retention schedule, and the inner
+    /// attributor is held shared here so there is no `&mut` to forward to. The
+    /// method exists only to satisfy the trait.
+    fn refresh(&mut self) -> Result<(), AttrError> {
+        Ok(())
+    }
+
+    fn active_endpoints(&self) -> Vec<Endpoint> {
+        self.inner.active_endpoints()
+    }
+}
+
+#[cfg(test)]
+mod stamping_tests {
+    use super::*;
+    use fragcap_core::attribution::Fidelity;
+    use fragcap_core::flow::Proto;
+    use std::net::SocketAddr;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().expect("test address parses")
+    }
+
+    fn key() -> FlowKey {
+        FlowKey::new(
+            Proto::Tcp,
+            addr("192.0.2.10:51000"),
+            addr("198.51.100.5:443"),
+        )
+    }
+
+    /// An attributor that always resolves the given pid, with no role or stage.
+    struct Fixed(u32);
+
+    impl FlowAttributor for Fixed {
+        fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            Some(Attribution::new(self.0, "game.exe", Fidelity::Live))
+        }
+        fn refresh(&mut self) -> Result<(), AttrError> {
+            Ok(())
+        }
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            Vec::new()
+        }
+    }
+
+    fn at() -> Timestamp {
+        Timestamp::from_nanos(0)
+    }
+
+    #[test]
+    fn an_unstamped_resolve_passes_through_unchanged() {
+        let stamper = RoleStampingAttributor::new(Arc::new(Fixed(42)));
+        let a = stamper.resolve(&key(), at()).expect("resolves");
+        assert_eq!(a.pid, 42);
+        assert!(a.role.is_none());
+        assert!(a.stage.is_none());
+    }
+
+    #[test]
+    fn a_published_binding_stamps_role_and_stage() {
+        let stamper = RoleStampingAttributor::new(Arc::new(Fixed(42)));
+        stamper.publisher().publish(vec![(
+            42,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        let a = stamper.resolve(&key(), at()).expect("resolves");
+        assert_eq!(a.role.as_deref(), Some("client"));
+        assert_eq!(a.stage.as_ref().map(StageId::as_str), Some("client"));
+    }
+
+    #[test]
+    fn a_pid_with_no_binding_is_unchanged() {
+        let stamper = RoleStampingAttributor::new(Arc::new(Fixed(7)));
+        stamper.publisher().publish(vec![(
+            42,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        let a = stamper.resolve(&key(), at()).expect("resolves");
+        assert_eq!(a.pid, 7);
+        assert!(a.role.is_none(), "only the bound pid is stamped");
+    }
+
+    #[test]
+    fn republishing_swaps_the_snapshot() {
+        let stamper = RoleStampingAttributor::new(Arc::new(Fixed(42)));
+        let publisher = stamper.publisher();
+        publisher.publish(vec![(
+            42,
+            Some(Arc::from("launcher")),
+            Some(StageId::new("launcher")),
+        )]);
+        assert_eq!(
+            stamper.resolve(&key(), at()).unwrap().role.as_deref(),
+            Some("launcher")
+        );
+        publisher.publish(vec![(
+            42,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        assert_eq!(
+            stamper.resolve(&key(), at()).unwrap().role.as_deref(),
+            Some("client"),
+            "the latest publication wins"
+        );
+    }
 }

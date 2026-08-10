@@ -12,8 +12,37 @@ keywords.workspace     = true
 readme                 = "README.md"
 categories             = ["command-line-utilities", "network-programming"]
 
-[dependencies]
-fragcap.workspace = true
+[features]
+# Passed through to the facade so the tier-2 backends compile under the
+# --all-features clippy gate. All off by default: the whole tier-1 surface runs
+# with no capture driver, no elevation, and no game. Slice S14.
+default      = []
+live         = ["fragcap/live"]
+socket-table = ["fragcap/socket-table"]
+etw          = ["fragcap/etw"]
+
+# The library is the testable product: `fragcap_cli::run` drives the whole
+# command surface without spawning a process. The binary is a shim over it.
+[lib]
+name = "fragcap_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "fragcap"
 path = "src/main.rs"
+
+[dependencies]
+fragcap.workspace = true
+clap.workspace    = true
+ctrlc.workspace   = true
+
+# Windows only, for the `doctor` elevation probe. Pinned to the same 0.36 line
+# fragcap-attr already resolves (see the workspace manifest for why), so this
+# adds no second windows-sys tree to Cargo.lock. Only the token features the
+# probe reads are requested; `Win32_Foundation` is already in the workspace set.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace   = true

@@ -1,0 +1,11 @@
+schema = 1
+
+[game]
+id = "game"
+name = "Test Game"
+
+[[stage]]
+role = "client"
+lifecycle = "session"
+terminal = true
+match = { exe = "game.exe" }

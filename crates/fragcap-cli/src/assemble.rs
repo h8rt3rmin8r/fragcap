@@ -1,0 +1,775 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Turning the parsed arguments and a resolved profile into the pieces a
+//! capture runs on: the effective configuration, the sources, the attributor
+//! and its role-stamping decorator, the process events, and the sinks.
+//!
+//! Two responsibilities live here. The overlay of specification FR-007, command
+//! line over the profile's `[capture]` defaults, with the command line winning
+//! and an option absent from both staying absent, is [`effective_config`]. The
+//! assembly of the seams is the rest: the offline substrate (a replay source, a
+//! scripted attributor, and a scripted process timeline) that drives every
+//! tier-1 test, and the feature-gated live, socket-table, and ETW paths that
+//! run only on a developer machine. The not-yet-supported modes, transport
+//! sinks, and managed launch are refused here as configuration errors naming
+//! the slice that delivers them (FR-010, FR-011).
+
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use fragcap::core::SourceBinding;
+use fragcap::profile::CaptureMode;
+use fragcap::{
+    AttributionScript, BindingPublisher, CommandLine, FlowAttributor, InterfaceAddrs, InterfaceId,
+    JsonLinesWriter, LinkType, PacketSource, PayloadMode, PcapngWriter, ProcessEvent,
+    ProcessScript, ProcessWatcher, Profile, ReplaySource, RoleStampingAttributor,
+    ScriptedAttributor, ScriptedWatcher, Sink, Timestamp,
+};
+use fragcap::{InterfaceDeclaration, SessionConfig};
+
+use crate::args::{Direction, SinkSpec};
+use crate::cli::{ModeArg, OfflineArgs, RunArgs};
+use crate::exit::CliError;
+
+/// The default snapshot length declared for a capture interface.
+const SNAP_LEN: u32 = 65_535;
+
+/// The interface name used when none is given, so a single-interface offline
+/// capture has a stable name for its declaration.
+const DEFAULT_INTERFACE: &str = "capture";
+
+/// The capture options actually used, formed by overlaying the command line
+/// onto a profile's `CaptureDefaults`.
+#[derive(Clone, Debug)]
+pub struct EffectiveConfig {
+    /// The output capture file, when one was given.
+    pub out: Option<PathBuf>,
+    /// The parsed sink specifications.
+    pub sinks: Vec<SinkSpec>,
+    /// The capture duration bound, from arm.
+    pub duration: Option<Duration>,
+    /// The acquisition timeout.
+    pub acquisition_timeout: Option<Duration>,
+    /// The packet bound.
+    pub max_packets: Option<u64>,
+    /// The byte bound.
+    pub max_bytes: Option<u64>,
+    /// The roles to capture, when scoped.
+    pub roles: Option<Vec<String>>,
+    /// The direction to scope to.
+    pub direction: Direction,
+    /// The declared interface names.
+    pub interfaces: Vec<String>,
+    /// Whether the loopback adapter is included.
+    pub loopback: bool,
+    /// Whether packet payloads are captured.
+    pub payload: bool,
+}
+
+impl EffectiveConfig {
+    /// The session bounds handed to [`fragcap::CaptureSession`].
+    pub fn session_config(&self) -> SessionConfig {
+        SessionConfig {
+            acquisition_timeout: self.acquisition_timeout,
+            duration: self.duration,
+            packet_bound: self.max_packets,
+            byte_bound: self.max_bytes,
+        }
+    }
+
+    /// The interface names to declare, defaulting to one stable name.
+    pub fn interface_names(&self) -> Vec<String> {
+        if self.interfaces.is_empty() {
+            vec![DEFAULT_INTERFACE.to_string()]
+        } else {
+            self.interfaces.clone()
+        }
+    }
+}
+
+/// Build the effective configuration from `run` arguments and a resolved
+/// profile, refusing the options this slice does not yet support.
+pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveConfig, CliError> {
+    reject_unsupported(args, profile)?;
+
+    let defaults = profile.capture();
+    let payload = if args.no_payload {
+        false
+    } else {
+        defaults.payload().unwrap_or(true)
+    };
+    let roles = args
+        .roles
+        .clone()
+        .or_else(|| defaults.roles().map(|r| r.to_vec()));
+    let loopback = args.loopback || defaults.loopback().unwrap_or(false);
+    let duration = args.duration.or_else(|| defaults.duration());
+
+    Ok(EffectiveConfig {
+        out: args.out.clone(),
+        sinks: args.sink.clone(),
+        duration,
+        acquisition_timeout: args.wait,
+        max_packets: args.max_packets,
+        max_bytes: args.max_bytes,
+        roles,
+        direction: args.direction.unwrap_or(Direction::Both),
+        interfaces: args.interface.clone(),
+        loopback,
+        payload,
+    })
+}
+
+/// Build the effective configuration for `tap` from a synthesized profile.
+///
+/// `tap` accepts only the process name, a duration, and the shared output flags,
+/// so there is nothing to reject: the not-yet-supported modes, ring, launch, and
+/// transports have no `tap` flag to carry them.
+pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -> EffectiveConfig {
+    let defaults = profile.capture();
+    let payload = if args.no_payload {
+        false
+    } else {
+        defaults.payload().unwrap_or(true)
+    };
+    EffectiveConfig {
+        out: args.out.clone(),
+        sinks: args.sink.clone(),
+        duration: args.duration.or_else(|| defaults.duration()),
+        acquisition_timeout: None,
+        max_packets: None,
+        max_bytes: None,
+        roles: defaults.roles().map(|r| r.to_vec()),
+        direction: Direction::Both,
+        interfaces: Vec::new(),
+        loopback: defaults.loopback().unwrap_or(false),
+        payload,
+    }
+}
+
+/// Refuse the modes, sinks, and options deferred to later slices.
+///
+/// The capture mode is resolved as the command line over the profile's
+/// `[capture]` default (specification FR-007): an explicit `--mode` wins, and a
+/// mode absent from the command line falls back to the profile. A profile that
+/// declares `mode = "stream"` or `mode = "ring"` with no `--mode` override is
+/// therefore refused here naming its slice, rather than silently treated as a
+/// file capture the operator did not ask for.
+fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError> {
+    let effective_mode = match args.mode {
+        Some(ModeArg::File) => Some(CaptureMode::File),
+        Some(ModeArg::Stream) => Some(CaptureMode::Stream),
+        Some(ModeArg::Ring) => Some(CaptureMode::Ring),
+        None => profile.capture().mode(),
+    };
+    match effective_mode {
+        Some(CaptureMode::Stream) => {
+            return Err(CliError::usage(
+                "capture mode `stream` is not yet supported (slice S15)",
+            ))
+        }
+        Some(CaptureMode::Ring) => {
+            return Err(CliError::usage(
+                "capture mode `ring` is not yet supported (slice S16)",
+            ))
+        }
+        Some(CaptureMode::File) | None => {}
+    }
+    if args.ring.is_some() {
+        return Err(CliError::usage(
+            "ring capture is not yet supported (slice S16)",
+        ));
+    }
+    if args.launch {
+        return Err(CliError::usage(
+            "managed launch (--launch) is not yet supported (slice S17)",
+        ));
+    }
+    for sink in &args.sink {
+        match sink {
+            SinkSpec::Pipe(_) => {
+                return Err(CliError::usage(
+                    "named-pipe sinks are not yet supported (slice S15)",
+                ))
+            }
+            SinkSpec::Tcp(_) => {
+                return Err(CliError::usage(
+                    "TCP sinks are not yet supported (slice S15)",
+                ))
+            }
+            SinkSpec::File(_) | SinkSpec::JsonLines(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Where the capture's process events come from.
+///
+/// Offline, a pre-collected timeline the scripted watcher produced and the
+/// orchestrator folds in two phases. Live, a channel the ETW watcher streams
+/// onto as processes start and exit. The two reach the same session driver; the
+/// difference is that the live stream has no end the driver can read ahead to,
+/// so the two are folded differently (the orchestrator's two paths).
+pub enum EventStream {
+    /// The offline timeline, in timestamp order. Unchanged behavior from before
+    /// the live path existed.
+    Prerecorded(Vec<ProcessEvent>),
+    /// The live process event stream from the ETW watcher. The watcher itself is
+    /// kept alive on [`CaptureComponents::watcher`] so this receiver stays
+    /// connected for the run.
+    #[cfg(all(feature = "etw", windows))]
+    Live(std::sync::mpsc::Receiver<ProcessEvent>),
+}
+
+/// Everything a capture runs on, assembled from the offline substrate or, on a
+/// feature-gated build, from the live capture backends.
+pub struct CaptureComponents {
+    /// The bound packet sources.
+    pub sources: Vec<SourceBinding>,
+    /// One `(name, link type)` per selected interface, in selection order, for
+    /// declaring interfaces on the sinks. The pipeline assigns each source its
+    /// `InterfaceId` from selection position, so this list is in the same order
+    /// and of the same length as [`sources`](Self::sources); a sink declares one
+    /// interface per source, each with its own link type, so a packet from any
+    /// selected interface references a declared one rather than being refused as
+    /// undeclared.
+    pub interfaces: Vec<(String, LinkType)>,
+    /// The inner attributor, kept for polling active endpoints for the
+    /// filter-narrowed event.
+    pub inner_attributor: Arc<dyn FlowAttributor>,
+    /// The role-stamping decorator handed to the pipeline.
+    pub stamper: Option<RoleStampingAttributor>,
+    /// The handle that publishes bindings to the stamper.
+    pub publisher: BindingPublisher,
+    /// The process events, offline or live.
+    pub events: EventStream,
+    /// The live process watcher, kept alive for the duration of the run so the
+    /// ETW session it owns is not torn down while its receiver is still being
+    /// drained. `None` on the offline path, which owns no watcher.
+    #[cfg(all(feature = "etw", windows))]
+    pub watcher: Option<fragcap::EtwWatcher>,
+    /// The socket-table refresh control thread, kept alive for the duration of
+    /// the run so the shared published index the pipeline resolves against is
+    /// refreshed on the section 11.2 cadence. `None` on the offline path and on
+    /// a live build without the socket table, neither of which owns a mutable
+    /// attributor to refresh.
+    #[cfg(all(feature = "socket-table", windows))]
+    pub refresh_driver: Option<RefreshDriver>,
+}
+
+/// A control thread that owns the mutable [`SocketTableAttributor`] and refreshes
+/// it on the specification section 11.2 cadence.
+///
+/// This is the write half of the section 11.6 read/write split. The pipeline
+/// resolves against a [`PublishedResolver`](fragcap::attr::PublishedResolver)
+/// cloned from the same attributor, which shares its published index and its
+/// schedule; this thread reads the real socket table and republishes the index
+/// the resolver reads. `refresh` takes `&mut self`, so the mutable attributor
+/// cannot be shared with the capture threads, which is the whole reason the
+/// mutable side lives here on a thread of its own.
+///
+/// The loop does an initial refresh so the first snapshot is available promptly,
+/// then refreshes whenever the attributor reports it wants one (by the interval
+/// or by a triggered request the resolver recorded), polling on a short
+/// interval. A failed refresh leaves the previously published index intact by
+/// design and is ignored rather than fatal.
+#[cfg(all(feature = "socket-table", windows))]
+pub struct RefreshDriver {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// How often the control thread wakes to check whether a refresh is wanted.
+///
+/// Shorter than the section 11.2 interval so a triggered request (an
+/// unattributed packet on an unseen endpoint) is serviced promptly, and short
+/// enough that a requested stop is observed without a perceptible teardown
+/// delay.
+#[cfg(all(feature = "socket-table", windows))]
+const REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+#[cfg(all(feature = "socket-table", windows))]
+impl RefreshDriver {
+    /// Spawn the control thread, moving the mutable attributor onto it.
+    fn spawn(mut attributor: fragcap::SocketTableAttributor) -> Self {
+        use std::sync::atomic::Ordering;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            // An initial refresh so the first snapshot is available promptly,
+            // rather than the pipeline resolving against an empty index until
+            // the first interval elapses. A failure leaves the empty index in
+            // place, which the next iteration retries.
+            let _ = attributor.refresh();
+            while !stop_flag.load(Ordering::Relaxed) {
+                if attributor.wants_refresh() {
+                    // A failed read leaves the previously published index intact
+                    // by design (specification section 11, FR-030), so ignoring
+                    // the error is correct rather than lossy.
+                    let _ = attributor.refresh();
+                }
+                std::thread::sleep(REFRESH_POLL_INTERVAL);
+            }
+        });
+        RefreshDriver {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// Signal the control thread to stop and join it. Idempotent: a second call,
+    /// including the one in [`Drop`], finds the handle already taken and returns.
+    pub fn stop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(all(feature = "socket-table", windows))]
+impl Drop for RefreshDriver {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Assemble the capture components.
+///
+/// An offline replay source, when one is given, drives the tier-1 substrate: a
+/// replayed capture, a scripted attributor, and a scripted process timeline.
+/// Otherwise, on a `live` build, the real interface, socket-table, and ETW
+/// backends are assembled instead. On a build with neither, there is no packet
+/// source, which is reported as a usable-interface-absent failure.
+pub fn components(
+    offline: &OfflineArgs,
+    config: &EffectiveConfig,
+) -> Result<CaptureComponents, CliError> {
+    match &offline.replay_source {
+        Some(replay) => offline_components(replay, offline, config),
+        None => live_or_absent(config),
+    }
+}
+
+/// Assemble the offline substrate. Unchanged from before the live path existed,
+/// beyond wrapping the events in [`EventStream::Prerecorded`].
+fn offline_components(
+    replay: &PathBuf,
+    offline: &OfflineArgs,
+    config: &EffectiveConfig,
+) -> Result<CaptureComponents, CliError> {
+    let source = ReplaySource::open(replay)?;
+    let link = source.link_type();
+    let addrs = InterfaceAddrs::new(offline.local_addr.iter().copied());
+    let sources = vec![SourceBinding::new(
+        InterfaceId::default(),
+        Box::new(source),
+        addrs,
+    )];
+    // The single replay interface, declared under every configured name against
+    // the one replay link type. With no `-i` this is the single stable
+    // "capture" name, so the offline sink bytes are unchanged.
+    let interfaces: Vec<(String, LinkType)> = config
+        .interface_names()
+        .into_iter()
+        .map(|name| (name, link))
+        .collect();
+
+    let script = match &offline.attr_script {
+        Some(path) => AttributionScript::load(path)
+            .map_err(|e| CliError::failure(format!("attribution script: {e}")))?,
+        None => AttributionScript::parse("").expect("an empty script is valid"),
+    };
+    let inner: Arc<dyn FlowAttributor> = Arc::new(ScriptedAttributor::new(script));
+    let stamper = RoleStampingAttributor::new(Arc::clone(&inner));
+    let publisher = stamper.publisher();
+
+    let events = process_events(&offline.process_script)?;
+
+    Ok(CaptureComponents {
+        sources,
+        interfaces,
+        inner_attributor: inner,
+        stamper: Some(stamper),
+        publisher,
+        events: EventStream::Prerecorded(events),
+        #[cfg(all(feature = "etw", windows))]
+        watcher: None,
+        #[cfg(all(feature = "socket-table", windows))]
+        refresh_driver: None,
+    })
+}
+
+/// The live path, or the no-backend failure on a build without it.
+fn live_or_absent(config: &EffectiveConfig) -> Result<CaptureComponents, CliError> {
+    #[cfg(all(feature = "live", windows))]
+    {
+        live_components(config)
+    }
+    #[cfg(not(all(feature = "live", windows)))]
+    {
+        let _ = config;
+        Err(CliError::failure(
+            "no capture source: this build has no live capture backend, and no offline replay \
+             source was given",
+        ))
+    }
+}
+
+/// Assemble the live capture backends: real interface enumeration and
+/// selection, a [`LiveSource`](fragcap::LiveSource) per selected interface, the
+/// socket-table attributor, and the ETW process event stream.
+///
+/// Requires the `etw` feature: without a live process event source no target
+/// can ever be acquired, so a live build lacking it fails here naming the
+/// missing feature rather than starting a capture that could never bind a stage.
+#[cfg(all(feature = "live", windows))]
+fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliError> {
+    #[cfg(not(feature = "etw"))]
+    {
+        let _ = config;
+        Err(CliError::failure(
+            "live capture needs the `etw` feature so a live process event source exists; \
+             without it no target can ever be acquired",
+        ))
+    }
+
+    #[cfg(feature = "etw")]
+    {
+        use fragcap::capture::{enumerate, LiveOptions, LiveSource};
+        use fragcap::{select, PipelineConfig, SelectionSettings};
+
+        // What the machine has, then the section 12.1 precedence over it. Broad
+        // capture is requested when the operator named no interface; the
+        // default-route rule still applies inside select.
+        let inventory =
+            enumerate().map_err(|e| CliError::failure(format!("interface enumeration: {e}")))?;
+        let settings = SelectionSettings {
+            explicit: config.interfaces.clone(),
+            loopback: config.loopback,
+            broad: config.interfaces.is_empty(),
+        };
+        let outcome = select(&inventory, &settings)
+            .map_err(|e| CliError::failure(format!("interface selection: {e}")))?;
+
+        // A live handle per selected interface. The read timeout matches the
+        // pipeline's own so a requested stop is observed promptly. Each
+        // interface carries its own name and link type into the declarations, so
+        // a capture spanning interfaces of different link types declares each
+        // correctly rather than assuming the first one's.
+        let read_timeout = PipelineConfig::default().read_timeout;
+        let mut sources: Vec<SourceBinding> = Vec::new();
+        let mut interfaces: Vec<(String, LinkType)> = Vec::new();
+        for sel in &outcome.selected {
+            let source = LiveSource::open(&sel.record, LiveOptions::for_pipeline(read_timeout))?;
+            interfaces.push((sel.record.name.to_string(), source.link_type()));
+            let addrs = InterfaceAddrs::new(sel.record.addresses.iter().copied());
+            sources.push(SourceBinding::new(sel.id, Box::new(source), addrs));
+        }
+        // select already errors on NothingSelected, so at least one source was
+        // opened and its declaration recorded.
+        if interfaces.is_empty() {
+            return Err(CliError::failure("no interface was opened for capture"));
+        }
+
+        // The inner attributor the pipeline resolves against, and, on the
+        // socket-table path, the control thread that keeps its published index
+        // current. The read side (a PublishedResolver) is handed to the
+        // pipeline; the write side (the mutable SocketTableAttributor) is moved
+        // onto the RefreshDriver, so a &mut refresh never crosses the capture
+        // threads. Without the socket table, an empty scripted attributor and no
+        // driver: packets are retained unattributed rather than having an owner
+        // fabricated (P-4 permits the first, P-9 forbids the second).
+        #[cfg(feature = "socket-table")]
+        let (inner, refresh_driver): (Arc<dyn FlowAttributor>, Option<RefreshDriver>) = {
+            use fragcap::attr::{IpHelperTable, ToolhelpNamer};
+            use fragcap::{AttributorConfig, Clock, SocketTableAttributor, SystemClock};
+            let attributor = SocketTableAttributor::new(
+                Box::new(IpHelperTable::new()),
+                Box::new(ToolhelpNamer::new()),
+                Arc::new(SystemClock) as Arc<dyn Clock>,
+                AttributorConfig::default(),
+            );
+            let inner: Arc<dyn FlowAttributor> = Arc::new(attributor.resolver());
+            let driver = RefreshDriver::spawn(attributor);
+            (inner, Some(driver))
+        };
+        #[cfg(not(feature = "socket-table"))]
+        let inner: Arc<dyn FlowAttributor> = Arc::new(ScriptedAttributor::new(
+            AttributionScript::parse("").expect("an empty script is valid"),
+        ));
+
+        let stamper = RoleStampingAttributor::new(Arc::clone(&inner));
+        let publisher = stamper.publisher();
+
+        // The live process event stream, from an ETW session of its own. Kept
+        // alive on the components so the receiver stays connected.
+        let watcher = fragcap::EtwWatcher::start("fragcap-cli")
+            .map_err(|e| CliError::failure(format!("process trace session: {e}")))?;
+        let rx = watcher.subscribe();
+
+        Ok(CaptureComponents {
+            sources,
+            interfaces,
+            inner_attributor: inner,
+            stamper: Some(stamper),
+            publisher,
+            events: EventStream::Live(rx),
+            watcher: Some(watcher),
+            #[cfg(feature = "socket-table")]
+            refresh_driver,
+        })
+    }
+}
+
+/// Read the process events from the offline process script, in timestamp order.
+///
+/// Uses a [`ScriptedWatcher`] to publish the parsed script, which is the same
+/// watcher the process-tree tests drive, so the offline events reach the session
+/// through the same path a live watcher's would.
+fn process_events(path: &Option<PathBuf>) -> Result<Vec<ProcessEvent>, CliError> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| CliError::failure(format!("process script {}: {e}", path.display())))?;
+    let script = parse_process_script(&text)
+        .map_err(|e| CliError::failure(format!("process script {}: {e}", path.display())))?;
+    let watcher = ScriptedWatcher::new(script);
+    let rx = watcher.subscribe();
+    watcher.play();
+    let mut events: Vec<ProcessEvent> = rx.try_iter().collect();
+    events.sort_by_key(|e| e.at().as_nanos());
+    Ok(events)
+}
+
+/// Parse the offline process-script grammar into a [`ProcessScript`].
+///
+/// A test seam, not an operator-facing format. Each line is one event, tokens
+/// separated by whitespace, so an image path or command line carries no spaces:
+///
+/// ```text
+/// # comment
+/// start <pid> <parent> <image> <cmdline> <at>
+/// exit <pid> <at>
+/// ```
+///
+/// A `cmdline` of `-` records an unavailable command line, so the
+/// `cmdline_contains` predicate's handling of an unobserved command line stays
+/// testable.
+pub fn parse_process_script(text: &str) -> Result<ProcessScript, String> {
+    let mut script = ProcessScript::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = index + 1;
+        let content = raw.trim();
+        if content.is_empty() || content.starts_with('#') {
+            continue;
+        }
+        let words: Vec<&str> = content.split_whitespace().collect();
+        match words[0] {
+            "start" => {
+                if words.len() != 6 {
+                    return Err(format!(
+                        "line {line}: start expects <pid> <parent> <image> <cmdline> <at>"
+                    ));
+                }
+                let pid = parse_u32(line, words[1])?;
+                let parent = parse_u32(line, words[2])?;
+                let at = parse_i64(line, words[5])?;
+                script = if words[4] == "-" {
+                    push_started_without_cmdline(script, pid, parent, words[3], at)
+                } else {
+                    script.started(pid, parent, words[3], words[4], at)
+                };
+            }
+            "exit" => {
+                if words.len() != 3 {
+                    return Err(format!("line {line}: exit expects <pid> <at>"));
+                }
+                let pid = parse_u32(line, words[1])?;
+                let at = parse_i64(line, words[2])?;
+                script = script.exited(pid, at);
+            }
+            other => return Err(format!("line {line}: unknown statement `{other}`")),
+        }
+    }
+    Ok(script)
+}
+
+/// A start event whose command line the platform did not supply.
+fn push_started_without_cmdline(
+    script: ProcessScript,
+    pid: u32,
+    parent: u32,
+    image: &str,
+    at: i64,
+) -> ProcessScript {
+    // The builder's `started_without_cmdline` records `CommandLine::Unavailable`
+    // exactly as a snapshot process would. Named here through the import so the
+    // intent is legible.
+    let _ = CommandLine::Unavailable;
+    script.started_without_cmdline(pid, parent, image, at)
+}
+
+fn parse_u32(line: usize, word: &str) -> Result<u32, String> {
+    word.parse()
+        .map_err(|_| format!("line {line}: `{word}` is not a process identifier"))
+}
+
+fn parse_i64(line: usize, word: &str) -> Result<i64, String> {
+    word.parse()
+        .map_err(|_| format!("line {line}: `{word}` is not a timestamp"))
+}
+
+/// The image file name from a start event, for the `stage.matched` event.
+pub fn image_name(event: &ProcessEvent) -> String {
+    match event {
+        ProcessEvent::Started { image, .. } => image
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(image)
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Build the output sinks from the effective configuration.
+///
+/// The pcapng writer for `--out` (and any `file:` sink) declares its interface
+/// up front; the JSON Lines writer carries the payload mode. Transport sinks
+/// were already refused in [`effective_config`]. The tee that feeds the session
+/// is prepended by the orchestrator, not here.
+pub fn build_sinks(
+    config: &EffectiveConfig,
+    interfaces: &[(String, LinkType)],
+) -> Result<Vec<Box<dyn Sink>>, CliError> {
+    let mode = if config.payload {
+        PayloadMode::WithPayload
+    } else {
+        PayloadMode::MetadataOnly
+    };
+    let name_refs: Vec<&str> = interfaces.iter().map(|(n, _)| n.as_str()).collect();
+
+    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
+
+    // The primary capture file, from --out, is a pcapng file sink.
+    let mut file_targets: Vec<PathBuf> = Vec::new();
+    if let Some(out) = &config.out {
+        file_targets.push(out.clone());
+    }
+    for spec in &config.sinks {
+        match spec {
+            SinkSpec::File(path) => file_targets.push(path.clone()),
+            SinkSpec::JsonLines(path) => {
+                let file = create(path)?;
+                let writer = JsonLinesWriter::new(file, &name_refs, mode)
+                    .map_err(|e| CliError::failure(e.to_string()))?;
+                sinks.push(Box::new(writer));
+            }
+            // Refused already in effective_config; unreachable here.
+            SinkSpec::Pipe(_) | SinkSpec::Tcp(_) => {}
+        }
+    }
+
+    for path in file_targets {
+        let file = create(&path)?;
+        let mut writer = PcapngWriter::new(file).map_err(|e| CliError::failure(e.to_string()))?;
+        for (name, link) in interfaces {
+            writer
+                .declare_interface(&InterfaceDeclaration::new(*link, SNAP_LEN, name.as_str()))
+                .map_err(|e| CliError::failure(e.to_string()))?;
+        }
+        sinks.push(Box::new(writer));
+    }
+
+    Ok(sinks)
+}
+
+fn create(path: &PathBuf) -> Result<File, CliError> {
+    File::create(path)
+        .map_err(|e| CliError::failure(format!("cannot create {}: {e}", path.display())))
+}
+
+/// The arm instant used for the offline session clock.
+pub const ARMED_AT: Timestamp = Timestamp::from_nanos(0);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_process_script_parses_starts_and_exits() {
+        let script = parse_process_script(
+            "# a comment\nstart 4242 100 C:\\Games\\game.exe game.exe 0\nexit 4242 9999\n",
+        )
+        .expect("the script parses");
+        assert_eq!(script.events().len(), 2);
+        assert_eq!(script.events()[0].pid(), 4242);
+        assert_eq!(script.events()[1].pid(), 4242);
+    }
+
+    #[test]
+    fn a_dash_command_line_is_unavailable() {
+        let script = parse_process_script("start 1 0 C:\\a.exe - 5\n").expect("the script parses");
+        match &script.events()[0] {
+            ProcessEvent::Started { command_line, .. } => {
+                assert_eq!(*command_line, CommandLine::Unavailable);
+            }
+            _ => panic!("expected a start event"),
+        }
+    }
+
+    #[test]
+    fn a_malformed_process_line_reports_its_line() {
+        assert!(parse_process_script("start 1 0\n")
+            .unwrap_err()
+            .contains("line 1"));
+        assert!(parse_process_script("wat\n")
+            .unwrap_err()
+            .contains("unknown statement"));
+    }
+
+    // Tier 2 by specification section 25.2. Gated behind the feature and target
+    // so the --all-features gate compiles it, and #[ignore]d so a runner with no
+    // capture driver, no elevation, and no game does not run it. It mirrors the
+    // fragcap-attr tier-2 pattern: the socket-table attributor assembles from the
+    // real IP Helper table and toolhelp namer and reads the machine's own table.
+    #[cfg(all(feature = "socket-table", windows))]
+    #[test]
+    #[ignore = "tier 2: reads the machine's real socket table"]
+    fn the_socket_table_attributor_assembles_and_reads_the_real_table() {
+        use fragcap::attr::{IpHelperTable, ToolhelpNamer};
+        use fragcap::core::FlowAttributor;
+        use fragcap::{AttributorConfig, Clock, SocketTableAttributor, SystemClock};
+
+        let mut attributor = SocketTableAttributor::new(
+            Box::new(IpHelperTable::new()),
+            Box::new(ToolhelpNamer::new()),
+            Arc::new(SystemClock) as Arc<dyn Clock>,
+            AttributorConfig::default(),
+        );
+        // The read/write split assembles: a resolver cloned from the attributor
+        // is what the pipeline holds while the mutable attributor is refreshed.
+        let resolver = attributor.resolver();
+        attributor
+            .refresh()
+            .expect("the machine's socket table reads");
+        // The resolver reads the same publication the refresh just wrote.
+        let _endpoints = resolver.active_endpoints();
+    }
+
+    // Tier 2. The ETW process watcher starts a kernel trace session, which needs
+    // elevation, so this is #[ignore]d. It exists to keep the live event-stream
+    // construction compiled under the --all-features gate.
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    #[ignore = "tier 2: starts an ETW session, which needs elevation"]
+    fn the_etw_watcher_starts_and_yields_a_receiver() {
+        let watcher =
+            fragcap::EtwWatcher::start("fragcap-cli-test").expect("an elevated trace session");
+        let _rx = watcher.subscribe();
+    }
+}

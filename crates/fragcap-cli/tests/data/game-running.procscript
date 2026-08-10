@@ -1,0 +1,2 @@
+# game.exe starts and stays running (no exit), so an interrupt is the stop
+start 4242 100 C:\Games\game.exe game.exe 0
