@@ -15,5 +15,14 @@ readme                 = "README.md"
 [dependencies]
 fragcap-core.workspace = true
 
+# The Windows named-pipe transport (slice S15, specification section 14.2).
+# Windows only, so it enters the graph under cfg(windows) alone and adds no
+# package to Cargo.lock: the workspace already pins windows-sys at 0.36 for the
+# attribution socket table. The file and TCP transports need no dependency, and
+# the Unix domain socket transport is std::os::unix under cfg(unix).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true

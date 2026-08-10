@@ -237,7 +237,7 @@ fn capture_prerecorded(
     if zero_volume_bound(config) {
         session.on_volume_reached();
     }
-    let (handle, stop) = spawn_pipeline(config, &mut components, gate)?;
+    let (handle, stop, stream_reports) = spawn_pipeline(config, &mut components, gate)?;
 
     drive(
         &rx,
@@ -251,6 +251,7 @@ fn capture_prerecorded(
     );
 
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
+    emit_stream_reports(&stream_reports, emitter);
 
     // Fold the events past the last packet (the exits that decide the stop
     // reason a script implies).
@@ -291,8 +292,15 @@ fn spawn_pipeline(
     config: &EffectiveConfig,
     components: &mut CaptureComponents,
     gate: SessionGate,
-) -> Result<(std::thread::JoinHandle<PipelineReport>, StopHandle), CliError> {
-    let sinks = assemble::build_sinks(config, &components.interfaces)?;
+) -> Result<
+    (
+        std::thread::JoinHandle<PipelineReport>,
+        StopHandle,
+        Vec<assemble::StreamReports>,
+    ),
+    CliError,
+> {
+    let built = assemble::build_sinks(config, &components.interfaces)?;
     let stamper = components
         .stamper
         .take()
@@ -304,12 +312,32 @@ fn spawn_pipeline(
         PipelineConfig::default(),
     )?;
     pipeline.set_write_gate(Arc::new(gate));
-    for sink in sinks {
+    for sink in built.sinks {
         pipeline.add_sink(sink);
     }
     let stop = pipeline.stop_handle();
     let handle = std::thread::spawn(move || pipeline.run());
-    Ok((handle, stop))
+    Ok((handle, stop, built.stream_reports))
+}
+
+/// Surface each streaming consumer's per-consumer accounting after the run, so
+/// a dropped or disconnected consumer is reported (specification 14.4, P-4).
+/// The streaming sink owns these counters, distinct from the capture-wide
+/// `sink_dropped`.
+fn emit_stream_reports(reports: &[assemble::StreamReports], emitter: &mut Emitter) {
+    for stream in reports {
+        let consumers = stream.handle.lock().expect("reports mutex not poisoned");
+        for consumer in consumers.iter() {
+            emitter.progress(&format!(
+                "stream {} consumer {}: {} written, {} dropped, {}",
+                stream.transport,
+                consumer.id,
+                consumer.written,
+                consumer.dropped,
+                consumer.reason.as_str()
+            ));
+        }
+    }
 }
 
 /// The driver loop over the tee's packets, interleaving the pending events by
@@ -400,7 +428,7 @@ fn capture_live(
     let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
     let (gate, gate_handle) = SessionGate::new(&config.session_config(), tee_tx);
     let stamper_reader = components.stamper.clone();
-    let (handle, stop) = spawn_pipeline(config, &mut components, gate)?;
+    let (handle, stop, stream_reports) = spawn_pipeline(config, &mut components, gate)?;
 
     // Acquisition: fold live events until a terminal stage acquires the target,
     // or acquisition ends for another reason (the acquisition timeout, a
@@ -465,6 +493,7 @@ fn capture_live(
         stop.stop();
         let _ = components.watcher.take();
         let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
+        emit_stream_reports(&stream_reports, emitter);
         // Fire the acquisition timeout, if set and the session is still watching,
         // so the summary can name it; an interrupt or a duration bound has
         // already stopped the session and set its reason.
@@ -572,6 +601,7 @@ fn capture_live(
     // of window; an interrupt or duration stop left the window open, keeping what
     // was captured before it (specification FR-005).
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
+    emit_stream_reports(&stream_reports, emitter);
 
     // Slice 015: the socket-table refresh is driven by the pipeline's own
     // section 8.6 control thread and ends with the pipeline, so there is no

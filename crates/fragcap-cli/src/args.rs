@@ -69,52 +69,145 @@ pub fn parse_roles(raw: &str) -> Result<Vec<String>, String> {
     Ok(roles)
 }
 
-/// A parsed `--sink` value.
-///
-/// The transport variants parse here and are refused later as configuration
-/// errors naming the slice that delivers them (specification FR-011), rather
-/// than at parse time, so the message can name the slice rather than reject the
-/// syntax as unknown.
+/// The transport half of a `--sink` value: where the bytes go.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SinkSpec {
-    /// A pcapng capture file. `file:` or `pcapng:`.
+pub enum SinkTransport {
+    /// A capture file. `file:` or `pcapng:`.
     File(PathBuf),
-    /// A JSON Lines metadata file. `jsonl:`.
+    /// A JSON Lines file. `jsonl:`.
     JsonLines(PathBuf),
-    /// A named pipe transport. `pipe:`. Deferred to slice S15.
+    /// A Windows named pipe. `pipe:`.
     Pipe(String),
-    /// A TCP transport. `tcp://host:port`. Deferred to slice S15.
+    /// A Unix domain socket. `unix:`.
+    Unix(PathBuf),
+    /// A TCP listener. `tcp://host:port`.
     Tcp(String),
 }
 
-/// Parse a `--sink` specification.
+/// An explicit output format qualifier, from `format=`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SinkFormat {
+    Pcapng,
+    JsonLines,
+}
+
+/// A parsed `--sink` value: a transport destination plus its resolved options
+/// (specification section 14.1). Format is orthogonal to transport; the file
+/// rotation options apply to file destinations, and the streaming options to
+/// the network transports. Which combinations are valid is checked when the
+/// sinks are built, so the message can name the mismatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SinkSpec {
+    pub transport: SinkTransport,
+    pub format: Option<SinkFormat>,
+    pub payload: Option<bool>,
+    pub rotate_size: Option<u64>,
+    pub rotate_duration: Option<Duration>,
+    pub queue: Option<usize>,
+    pub timeout: Option<Duration>,
+}
+
+impl SinkSpec {
+    fn new(transport: SinkTransport) -> Self {
+        SinkSpec {
+            transport,
+            format: None,
+            payload: None,
+            rotate_size: None,
+            rotate_duration: None,
+            queue: None,
+            timeout: None,
+        }
+    }
+}
+
+/// Parse a `--sink` specification: `<destination>[,<key>=<value>]...`.
 ///
-/// The form is `<scheme>:<target>`, with `tcp://` carrying the authority form.
-/// A missing or unknown scheme is a usage error, because guessing one from the
-/// target would route a capture to a destination the operator did not name.
+/// The destination is `<scheme>:<target>`, with `tcp://` carrying the authority
+/// form. A missing or unknown scheme is a usage error, because guessing one
+/// from the target would route a capture to a destination the operator did not
+/// name.
 pub fn parse_sink(raw: &str) -> Result<SinkSpec, String> {
+    let (destination, options) = match raw.split_once(',') {
+        Some((dest, opts)) => (dest, Some(opts)),
+        None => (raw, None),
+    };
+
+    let transport = parse_destination(destination)?;
+    let mut spec = SinkSpec::new(transport);
+
+    if let Some(options) = options {
+        for pair in options.split(',') {
+            let Some((key, value)) = pair.split_once('=') else {
+                return Err(format!("sink option `{pair}` is not `key=value`"));
+            };
+            apply_option(&mut spec, key.trim(), value.trim())?;
+        }
+    }
+    Ok(spec)
+}
+
+/// Parse the destination (scheme and target) of a sink specification.
+fn parse_destination(raw: &str) -> Result<SinkTransport, String> {
     if let Some(rest) = raw.strip_prefix("tcp://") {
         if rest.is_empty() {
             return Err("`tcp://` needs a host and port".to_string());
         }
-        return Ok(SinkSpec::Tcp(rest.to_string()));
+        return Ok(SinkTransport::Tcp(rest.to_string()));
     }
     let Some((scheme, target)) = raw.split_once(':') else {
         return Err(format!(
-            "`{raw}` has no sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, tcp://"
+            "`{raw}` has no sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, unix:, \
+             tcp://"
         ));
     };
     if target.is_empty() {
         return Err(format!("`{raw}` names a scheme but no target"));
     }
     match scheme {
-        "file" | "pcapng" => Ok(SinkSpec::File(PathBuf::from(target))),
-        "jsonl" => Ok(SinkSpec::JsonLines(PathBuf::from(target))),
-        "pipe" => Ok(SinkSpec::Pipe(target.to_string())),
+        "file" | "pcapng" => Ok(SinkTransport::File(PathBuf::from(target))),
+        "jsonl" => Ok(SinkTransport::JsonLines(PathBuf::from(target))),
+        "pipe" => Ok(SinkTransport::Pipe(target.to_string())),
+        "unix" => Ok(SinkTransport::Unix(PathBuf::from(target))),
         other => Err(format!(
-            "`{other}:` is not a sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, tcp://"
+            "`{other}:` is not a sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, \
+             unix:, tcp://"
         )),
     }
+}
+
+/// Apply one `key=value` sink option to the spec.
+fn apply_option(spec: &mut SinkSpec, key: &str, value: &str) -> Result<(), String> {
+    match key {
+        "format" => {
+            spec.format = Some(match value {
+                "pcapng" => SinkFormat::Pcapng,
+                "jsonl" => SinkFormat::JsonLines,
+                other => return Err(format!("format `{other}` is not `pcapng` or `jsonl`")),
+            });
+        }
+        "payload" => {
+            spec.payload = Some(match value {
+                "true" => true,
+                "false" => false,
+                other => return Err(format!("payload `{other}` is not `true` or `false`")),
+            });
+        }
+        "rotate-size" => spec.rotate_size = Some(size::parse(value).map_err(|e| e.to_string())?),
+        "rotate-duration" => {
+            spec.rotate_duration = Some(duration::parse(value).map_err(|e| e.to_string())?)
+        }
+        "queue" => {
+            spec.queue = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| format!("queue `{value}` is not a whole number"))?,
+            )
+        }
+        "timeout" => spec.timeout = Some(duration::parse(value).map_err(|e| e.to_string())?),
+        other => return Err(format!("`{other}` is not a sink option")),
+    }
+    Ok(())
 }
 
 /// A ring window, either a duration or a size.
@@ -169,32 +262,57 @@ mod tests {
     }
 
     #[test]
-    fn sink_schemes_parse_to_their_kinds() {
+    fn sink_schemes_parse_to_their_transports() {
         assert_eq!(
-            parse_sink("file:out.fcapng"),
-            Ok(SinkSpec::File(PathBuf::from("out.fcapng")))
+            parse_sink("file:out.fcapng").unwrap().transport,
+            SinkTransport::File(PathBuf::from("out.fcapng"))
         );
         assert_eq!(
-            parse_sink("pcapng:out.fcapng"),
-            Ok(SinkSpec::File(PathBuf::from("out.fcapng")))
+            parse_sink("pcapng:out.fcapng").unwrap().transport,
+            SinkTransport::File(PathBuf::from("out.fcapng"))
         );
         assert_eq!(
-            parse_sink("jsonl:out.jsonl"),
-            Ok(SinkSpec::JsonLines(PathBuf::from("out.jsonl")))
+            parse_sink("jsonl:out.jsonl").unwrap().transport,
+            SinkTransport::JsonLines(PathBuf::from("out.jsonl"))
         );
         assert_eq!(
-            parse_sink("pipe:fragcap"),
-            Ok(SinkSpec::Pipe("fragcap".to_string()))
+            parse_sink("pipe:fragcap").unwrap().transport,
+            SinkTransport::Pipe("fragcap".to_string())
         );
         assert_eq!(
-            parse_sink("tcp://127.0.0.1:9000"),
-            Ok(SinkSpec::Tcp("127.0.0.1:9000".to_string()))
+            parse_sink("unix:/tmp/fragcap.sock").unwrap().transport,
+            SinkTransport::Unix(PathBuf::from("/tmp/fragcap.sock"))
+        );
+        assert_eq!(
+            parse_sink("tcp://127.0.0.1:9000").unwrap().transport,
+            SinkTransport::Tcp("127.0.0.1:9000".to_string())
         );
         assert!(
             parse_sink("out.fcapng").is_err(),
             "a bare path has no scheme"
         );
         assert!(parse_sink("bogus:x").is_err());
+    }
+
+    #[test]
+    fn sink_options_parse_after_the_destination() {
+        let spec = parse_sink("tcp://127.0.0.1:9999,format=jsonl,payload=false").unwrap();
+        assert_eq!(
+            spec.transport,
+            SinkTransport::Tcp("127.0.0.1:9999".to_string())
+        );
+        assert_eq!(spec.format, Some(SinkFormat::JsonLines));
+        assert_eq!(spec.payload, Some(false));
+
+        let file = parse_sink("file:s.fcapng,rotate-size=100mb").unwrap();
+        assert_eq!(file.rotate_size, Some(100 * 1024 * 1024));
+
+        let streamed = parse_sink("pipe:fragcap,queue=4096,timeout=10s").unwrap();
+        assert_eq!(streamed.queue, Some(4096));
+        assert_eq!(streamed.timeout, Some(Duration::from_secs(10)));
+
+        assert!(parse_sink("tcp://x:1,bogus=1").is_err());
+        assert!(parse_sink("file:x,format=yaml").is_err());
     }
 
     #[test]

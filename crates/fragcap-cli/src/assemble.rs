@@ -14,22 +14,21 @@
 //! sinks, and managed launch are refused here as configuration errors naming
 //! the slice that delivers them (FR-010, FR-011).
 
-use std::fs::File;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fragcap::core::SourceBinding;
 use fragcap::profile::CaptureMode;
 use fragcap::{
-    AttributionScript, BindingPublisher, CommandLine, FlowAttributor, InterfaceAddrs, InterfaceId,
-    JsonLinesWriter, LinkType, PacketSource, PayloadMode, PcapngWriter, ProcessEvent,
-    ProcessScript, ProcessWatcher, Profile, ReplaySource, RoleStampingAttributor,
-    ScriptedAttributor, ScriptedWatcher, Sink, Timestamp,
+    AttributionScript, BindingPublisher, CommandLine, ConsumerReport, FlowAttributor, Format,
+    InterfaceAddrs, InterfaceId, InterfaceSpec, LinkType, PacketSource, PayloadMode, ProcessEvent,
+    ProcessScript, ProcessWatcher, Profile, ReplaySource, RoleStampingAttributor, RotatingFileSink,
+    RotationPolicy, ScriptedAttributor, ScriptedWatcher, SinkFactory, StreamSink, Timestamp,
 };
-use fragcap::{InterfaceDeclaration, SessionConfig};
+use fragcap::{SessionConfig, Sink};
 
-use crate::args::{Direction, SinkSpec};
+use crate::args::{Direction, SinkFormat, SinkSpec, SinkTransport};
 use crate::cli::{ModeArg, OfflineArgs, RunArgs};
 use crate::exit::CliError;
 
@@ -165,17 +164,14 @@ fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError>
         None => profile.capture().mode(),
     };
     match effective_mode {
-        Some(CaptureMode::Stream) => {
-            return Err(CliError::usage(
-                "capture mode `stream` is not yet supported (slice S15)",
-            ))
-        }
+        // Stream mode is delivered by slice S15 (this slice). File and stream
+        // are both valid; ring is still S16.
         Some(CaptureMode::Ring) => {
             return Err(CliError::usage(
                 "capture mode `ring` is not yet supported (slice S16)",
             ))
         }
-        Some(CaptureMode::File) | None => {}
+        Some(CaptureMode::Stream) | Some(CaptureMode::File) | None => {}
     }
     if args.ring.is_some() {
         return Err(CliError::usage(
@@ -186,21 +182,6 @@ fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError>
         return Err(CliError::usage(
             "managed launch (--launch) is not yet supported (slice S17)",
         ));
-    }
-    for sink in &args.sink {
-        match sink {
-            SinkSpec::Pipe(_) => {
-                return Err(CliError::usage(
-                    "named-pipe sinks are not yet supported (slice S15)",
-                ))
-            }
-            SinkSpec::Tcp(_) => {
-                return Err(CliError::usage(
-                    "TCP sinks are not yet supported (slice S15)",
-                ))
-            }
-            SinkSpec::File(_) | SinkSpec::JsonLines(_) => {}
-        }
     }
     Ok(())
 }
@@ -549,61 +530,286 @@ pub fn image_name(event: &ProcessEvent) -> String {
     }
 }
 
+/// The output sinks plus the per-consumer report handles of any streaming
+/// sinks, which the orchestrator reads after the run finishes.
+pub struct BuiltSinks {
+    pub sinks: Vec<Box<dyn Sink>>,
+    pub stream_reports: Vec<StreamReports>,
+}
+
+/// One streaming sink's transport description and its report handle.
+pub struct StreamReports {
+    pub transport: String,
+    pub handle: Arc<Mutex<Vec<ConsumerReport>>>,
+}
+
 /// Build the output sinks from the effective configuration.
 ///
-/// The pcapng writer for `--out` (and any `file:` sink) declares its interface
-/// up front; the JSON Lines writer carries the payload mode. Transport sinks
-/// were already refused in [`effective_config`]. The tee that feeds the session
-/// is prepended by the orchestrator, not here.
+/// Format is orthogonal to transport (specification 14.1): a `SinkFactory`
+/// builds a fresh encoder per file segment and per streaming consumer. File
+/// destinations become rotating file sinks (a single segment when no rotation
+/// is asked, byte identical to before); the named pipe, Unix socket, and TCP
+/// destinations become streaming sinks over their acceptors. A mismatched
+/// option, an unresolvable format, or a platform-unavailable transport is a
+/// configuration error naming the cause (FR-014). The tee that feeds the
+/// session is prepended by the orchestrator, not here.
 pub fn build_sinks(
     config: &EffectiveConfig,
     interfaces: &[(String, LinkType)],
-) -> Result<Vec<Box<dyn Sink>>, CliError> {
-    let mode = if config.payload {
+) -> Result<BuiltSinks, CliError> {
+    let iface_specs: Vec<InterfaceSpec> = interfaces
+        .iter()
+        .map(|(name, link)| InterfaceSpec::new(name, *link, SNAP_LEN))
+        .collect();
+
+    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
+    let mut stream_reports: Vec<StreamReports> = Vec::new();
+
+    // The primary capture file, from --out, is a pcapng file sink with no
+    // rotation and the global payload mode.
+    if let Some(out) = &config.out {
+        let factory = SinkFactory::new(pcapng_or_jsonl(out, config.payload), iface_specs.clone());
+        sinks.push(Box::new(
+            RotatingFileSink::create(out, RotationPolicy::None, factory)
+                .map_err(|e| CliError::failure(e.to_string()))?,
+        ));
+    }
+
+    for spec in &config.sinks {
+        build_one_sink(spec, config, &iface_specs, &mut sinks, &mut stream_reports)?;
+    }
+
+    Ok(BuiltSinks {
+        sinks,
+        stream_reports,
+    })
+}
+
+/// The pcapng-or-JSON-Lines format for a file path, inferred from its extension
+/// and the global payload mode. `.jsonl` is JSON Lines; anything else is pcapng.
+fn pcapng_or_jsonl(path: &std::path::Path, payload: bool) -> Format {
+    let is_jsonl = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("jsonl"))
+        .unwrap_or(false);
+    if is_jsonl {
+        Format::JsonLines(payload_mode(payload))
+    } else {
+        Format::Pcapng
+    }
+}
+
+fn payload_mode(payload: bool) -> PayloadMode {
+    if payload {
         PayloadMode::WithPayload
     } else {
         PayloadMode::MetadataOnly
-    };
-    let name_refs: Vec<&str> = interfaces.iter().map(|(n, _)| n.as_str()).collect();
-
-    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
-
-    // The primary capture file, from --out, is a pcapng file sink.
-    let mut file_targets: Vec<PathBuf> = Vec::new();
-    if let Some(out) = &config.out {
-        file_targets.push(out.clone());
     }
-    for spec in &config.sinks {
-        match spec {
-            SinkSpec::File(path) => file_targets.push(path.clone()),
-            SinkSpec::JsonLines(path) => {
-                let file = create(path)?;
-                let writer = JsonLinesWriter::new(file, &name_refs, mode)
-                    .map_err(|e| CliError::failure(e.to_string()))?;
-                sinks.push(Box::new(writer));
-            }
-            // Refused already in effective_config; unreachable here.
-            SinkSpec::Pipe(_) | SinkSpec::Tcp(_) => {}
-        }
-    }
-
-    for path in file_targets {
-        let file = create(&path)?;
-        let mut writer = PcapngWriter::new(file).map_err(|e| CliError::failure(e.to_string()))?;
-        for (name, link) in interfaces {
-            writer
-                .declare_interface(&InterfaceDeclaration::new(*link, SNAP_LEN, name.as_str()))
-                .map_err(|e| CliError::failure(e.to_string()))?;
-        }
-        sinks.push(Box::new(writer));
-    }
-
-    Ok(sinks)
 }
 
-fn create(path: &PathBuf) -> Result<File, CliError> {
-    File::create(path)
-        .map_err(|e| CliError::failure(format!("cannot create {}: {e}", path.display())))
+/// Resolve the format for a streaming or explicit sink: the `format=` qualifier
+/// wins; otherwise a file path is inferred from its extension, and a network
+/// transport (with no extension) defaults to pcapng.
+fn resolve_format(
+    spec: &SinkSpec,
+    config: &EffectiveConfig,
+    path: Option<&std::path::Path>,
+) -> Format {
+    let payload = spec.payload.unwrap_or(config.payload);
+    match spec.format {
+        Some(SinkFormat::Pcapng) => Format::Pcapng,
+        Some(SinkFormat::JsonLines) => Format::JsonLines(payload_mode(payload)),
+        None => match path {
+            Some(path) => pcapng_or_jsonl(path, payload),
+            None => Format::Pcapng,
+        },
+    }
+}
+
+/// The rotation policy from a file sink's options, refusing both at once.
+fn rotation_policy(spec: &SinkSpec) -> Result<RotationPolicy, CliError> {
+    match (spec.rotate_size, spec.rotate_duration) {
+        (Some(_), Some(_)) => Err(CliError::usage(
+            "a sink takes at most one of rotate-size and rotate-duration",
+        )),
+        (Some(bytes), None) => Ok(RotationPolicy::Size(bytes)),
+        (None, Some(window)) => Ok(RotationPolicy::Duration(window)),
+        (None, None) => Ok(RotationPolicy::None),
+    }
+}
+
+/// Reject streaming options on a file sink.
+fn no_stream_options(spec: &SinkSpec) -> Result<(), CliError> {
+    if spec.queue.is_some() || spec.timeout.is_some() {
+        return Err(CliError::usage(
+            "queue and timeout apply to streaming sinks, not a file sink",
+        ));
+    }
+    Ok(())
+}
+
+/// Reject file rotation options on a streaming sink.
+fn no_rotation_options(spec: &SinkSpec) -> Result<(), CliError> {
+    if spec.rotate_size.is_some() || spec.rotate_duration.is_some() {
+        return Err(CliError::usage(
+            "rotate-size and rotate-duration apply to file sinks, not a streaming sink",
+        ));
+    }
+    Ok(())
+}
+
+/// The default per-consumer queue depth and disconnect timeout, matching the
+/// streaming sink's own defaults.
+const DEFAULT_QUEUE: usize = 1024;
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn make_stream_sink(
+    factory: SinkFactory,
+    acceptor: Box<dyn fragcap::Acceptor>,
+    spec: &SinkSpec,
+    stream_reports: &mut Vec<StreamReports>,
+) -> Box<dyn Sink> {
+    let sink = StreamSink::with_settings(
+        factory,
+        acceptor,
+        spec.queue.unwrap_or(DEFAULT_QUEUE),
+        spec.timeout.unwrap_or(DEFAULT_TIMEOUT),
+    );
+    stream_reports.push(StreamReports {
+        transport: sink.transport().to_string(),
+        handle: sink.reports_handle(),
+    });
+    Box::new(sink)
+}
+
+fn build_one_sink(
+    spec: &SinkSpec,
+    config: &EffectiveConfig,
+    iface_specs: &[InterfaceSpec],
+    sinks: &mut Vec<Box<dyn Sink>>,
+    stream_reports: &mut Vec<StreamReports>,
+) -> Result<(), CliError> {
+    match &spec.transport {
+        SinkTransport::File(path) => {
+            no_stream_options(spec)?;
+            let format = resolve_format(spec, config, Some(path));
+            let policy = rotation_policy(spec)?;
+            let factory = SinkFactory::new(format, iface_specs.to_vec());
+            sinks.push(Box::new(
+                RotatingFileSink::create(path, policy, factory)
+                    .map_err(|e| CliError::failure(e.to_string()))?,
+            ));
+        }
+        SinkTransport::JsonLines(path) => {
+            no_stream_options(spec)?;
+            // The jsonl: scheme fixes the format unless a format= says otherwise.
+            let format = match spec.format {
+                Some(SinkFormat::Pcapng) => Format::Pcapng,
+                _ => Format::JsonLines(payload_mode(spec.payload.unwrap_or(config.payload))),
+            };
+            let policy = rotation_policy(spec)?;
+            let factory = SinkFactory::new(format, iface_specs.to_vec());
+            sinks.push(Box::new(
+                RotatingFileSink::create(path, policy, factory)
+                    .map_err(|e| CliError::failure(e.to_string()))?,
+            ));
+        }
+        SinkTransport::Tcp(authority) => {
+            no_rotation_options(spec)?;
+            let format = resolve_format(spec, config, None);
+            let factory = SinkFactory::new(format, iface_specs.to_vec());
+            let acceptor = fragcap::TcpAcceptor::bind(authority)
+                .map_err(|e| CliError::failure(format!("cannot bind {authority}: {e}")))?;
+            sinks.push(make_stream_sink(
+                factory,
+                Box::new(acceptor),
+                spec,
+                stream_reports,
+            ));
+        }
+        SinkTransport::Pipe(name) => {
+            no_rotation_options(spec)?;
+            build_pipe_sink(name, spec, config, iface_specs, sinks, stream_reports)?;
+        }
+        SinkTransport::Unix(path) => {
+            no_rotation_options(spec)?;
+            build_unix_sink(path, spec, config, iface_specs, sinks, stream_reports)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn build_pipe_sink(
+    name: &str,
+    spec: &SinkSpec,
+    config: &EffectiveConfig,
+    iface_specs: &[InterfaceSpec],
+    sinks: &mut Vec<Box<dyn Sink>>,
+    stream_reports: &mut Vec<StreamReports>,
+) -> Result<(), CliError> {
+    let format = resolve_format(spec, config, None);
+    let factory = SinkFactory::new(format, iface_specs.to_vec());
+    let acceptor = fragcap::NamedPipeAcceptor::bind(name)
+        .map_err(|e| CliError::failure(format!("cannot create pipe {name}: {e}")))?;
+    sinks.push(make_stream_sink(
+        factory,
+        Box::new(acceptor),
+        spec,
+        stream_reports,
+    ));
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn build_pipe_sink(
+    _name: &str,
+    _spec: &SinkSpec,
+    _config: &EffectiveConfig,
+    _iface_specs: &[InterfaceSpec],
+    _sinks: &mut Vec<Box<dyn Sink>>,
+    _stream_reports: &mut Vec<StreamReports>,
+) -> Result<(), CliError> {
+    Err(CliError::usage(
+        "named-pipe sinks (pipe:) are available on Windows only",
+    ))
+}
+
+#[cfg(unix)]
+fn build_unix_sink(
+    path: &std::path::Path,
+    spec: &SinkSpec,
+    config: &EffectiveConfig,
+    iface_specs: &[InterfaceSpec],
+    sinks: &mut Vec<Box<dyn Sink>>,
+    stream_reports: &mut Vec<StreamReports>,
+) -> Result<(), CliError> {
+    let format = resolve_format(spec, config, None);
+    let factory = SinkFactory::new(format, iface_specs.to_vec());
+    let acceptor = fragcap::UnixAcceptor::bind(path)
+        .map_err(|e| CliError::failure(format!("cannot bind {}: {e}", path.display())))?;
+    sinks.push(make_stream_sink(
+        factory,
+        Box::new(acceptor),
+        spec,
+        stream_reports,
+    ));
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn build_unix_sink(
+    _path: &std::path::Path,
+    _spec: &SinkSpec,
+    _config: &EffectiveConfig,
+    _iface_specs: &[InterfaceSpec],
+    _sinks: &mut Vec<Box<dyn Sink>>,
+    _stream_reports: &mut Vec<StreamReports>,
+) -> Result<(), CliError> {
+    Err(CliError::usage(
+        "Unix domain socket sinks (unix:) are available on Unix targets only",
+    ))
 }
 
 /// The arm instant used for the offline session clock.
@@ -612,6 +818,83 @@ pub const ARMED_AT: Timestamp = Timestamp::from_nanos(0);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::parse_sink;
+
+    fn base_config() -> EffectiveConfig {
+        EffectiveConfig {
+            out: None,
+            sinks: Vec::new(),
+            duration: None,
+            acquisition_timeout: None,
+            max_packets: None,
+            max_bytes: None,
+            roles: None,
+            direction: Direction::Both,
+            interfaces: vec!["eth0".to_string()],
+            loopback: false,
+            payload: true,
+        }
+    }
+
+    fn one_interface() -> Vec<(String, LinkType)> {
+        vec![("eth0".to_string(), LinkType::ETHERNET)]
+    }
+
+    fn finish_all(built: BuiltSinks) {
+        use fragcap::CaptureStats;
+        for sink in built.sinks {
+            let _ = sink.finish(&CaptureStats::default());
+        }
+    }
+
+    #[test]
+    fn a_tcp_sink_builds_a_streaming_sink_with_a_report_handle() {
+        let mut config = base_config();
+        config.sinks = vec![parse_sink("tcp://127.0.0.1:0").unwrap()];
+        let built = build_sinks(&config, &one_interface()).expect("build");
+        assert_eq!(built.sinks.len(), 1);
+        assert_eq!(built.stream_reports.len(), 1);
+        assert!(built.stream_reports[0].transport.starts_with("tcp://"));
+        finish_all(built);
+    }
+
+    #[test]
+    fn a_file_sink_with_rotation_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.fcapng");
+        let mut config = base_config();
+        config.sinks =
+            vec![parse_sink(&format!("file:{},rotate-size=1mb", path.display())).unwrap()];
+        let built = build_sinks(&config, &one_interface()).expect("build");
+        assert_eq!(built.sinks.len(), 1);
+        assert!(built.stream_reports.is_empty());
+        finish_all(built);
+    }
+
+    #[test]
+    fn rotation_options_on_a_streaming_sink_are_refused() {
+        let mut config = base_config();
+        config.sinks = vec![parse_sink("tcp://127.0.0.1:0,rotate-size=1mb").unwrap()];
+        assert!(build_sinks(&config, &one_interface()).is_err());
+    }
+
+    #[test]
+    fn streaming_options_on_a_file_sink_are_refused() {
+        let mut config = base_config();
+        config.sinks = vec![parse_sink("file:out.fcapng,queue=8").unwrap()];
+        assert!(build_sinks(&config, &one_interface()).is_err());
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn a_unix_sink_off_unix_is_refused_naming_the_platform() {
+        let mut config = base_config();
+        config.sinks = vec![parse_sink("unix:/tmp/fragcap.sock").unwrap()];
+        match build_sinks(&config, &one_interface()) {
+            Err(e) => assert!(e.to_string().to_lowercase().contains("unix")),
+            Ok(_) => panic!("a unix sink off unix must be refused"),
+        }
+    }
 
     #[test]
     fn the_process_script_parses_starts_and_exits() {

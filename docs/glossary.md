@@ -460,6 +460,86 @@ short.
 **See also:** [Sink](#sink), [Sink thread](#sink-thread),
 [Pipeline](#pipeline)
 
+### Transport
+
+Where a [sink](#sink) writes its bytes, as opposed to the format those bytes
+take. fragcap has four: a file (with optional rotation), a [named
+pipe](#named-pipe), a Unix domain socket, and TCP. Format and transport are
+orthogonal, so any format writes to any transport.
+
+{: .matters }
+> The orthogonality is a design choice, not an accident: a single factory builds
+> a fresh format encoder over any transport connection, so a Wireshark-ready
+> pcapng stream and a line-oriented JSON stream reach a pipe, a socket, or a file
+> through the same seam. See specification section 14.1.
+
+**See also:** [Streaming sink](#streaming-sink), [Named pipe](#named-pipe),
+[Rotation segment](#rotation-segment)
+
+### Streaming sink
+
+A [sink](#sink) that serves any number of live [consumers](#stream-consumer)
+over a [transport](#transport) that accepts connections (a named pipe or TCP).
+Each connected consumer receives its own complete, independently valid stream,
+including its own header preamble replayed on connect, so a consumer that joins
+mid-capture still opens cleanly in an unmodified analyzer.
+
+{: .matters }
+> A streaming sink never blocks the capture and never returns a refusal to the
+> [pipeline](#pipeline): it accepts every packet and drops per consumer, so the
+> pipeline conservation identity is preserved and the sink is never retired for a
+> slow downstream reader. Its per-consumer drops are its own accounting, distinct
+> from the capture-wide `sink_dropped`. See specification sections 14.3 and 14.4.
+
+**See also:** [Transport](#transport), [Stream consumer](#stream-consumer),
+[Per-consumer queue](#per-consumer-queue)
+
+### Stream consumer
+
+One connected reader of a [streaming sink](#streaming-sink), with its own
+[per-consumer queue](#per-consumer-queue), its own encoder writing to its
+connection, and its own drop and disconnect accounting.
+
+{: .matters }
+> A consumer is isolated: its slowness degrades only itself. A consumer whose
+> queue stays full past a timeout is disconnected and the disconnection reported,
+> so a dead reader never holds capture buffer indefinitely.
+
+**See also:** [Streaming sink](#streaming-sink),
+[Per-consumer queue](#per-consumer-queue), [Backpressure](#backpressure)
+
+### Per-consumer queue
+
+The bounded, drop-when-full buffer standing between the capture path and one
+[stream consumer](#stream-consumer)'s connection. It isolates that consumer's
+speed from the capture and from every other consumer: a full queue drops packets
+on that connection only, counted and reported for that consumer.
+
+{: .matters }
+> This is the [backpressure](#backpressure) of section 14.4 made per consumer:
+> unlike the capture-wide [bounded buffer](#bounded-buffer), which is drop-oldest,
+> a per-consumer queue refuses the newest packet when full, because a live reader
+> that has fallen behind gains nothing from the sink spending work evicting its
+> backlog, and every dropped packet is counted regardless.
+
+**See also:** [Backpressure](#backpressure), [Stream consumer](#stream-consumer),
+[Bounded buffer](#bounded-buffer)
+
+### Rotation segment
+
+One numbered output file produced when a file [transport](#transport) rotates by
+size or by duration. Each segment is closed at a clean section boundary and
+opens on its own in an unmodified analyzer; the union of a run's segments is the
+capture, with no packet lost, duplicated, or reordered across the joins.
+
+{: .matters }
+> Rotation happens only at a section boundary, never mid-block, which is what
+> makes every segment independently readable. A capture with no rotation policy
+> is a single segment, byte identical to a non-rotating file. See specification
+> section 14.2.
+
+**See also:** [Transport](#transport), [Sink](#sink), [Pipeline](#pipeline)
+
 ### Write gate
 
 A decision the [sink thread](#sink-thread) consults, synchronously, before the

@@ -295,6 +295,8 @@ version = "0.1.0"
 dependencies = [
  "fragcap-core",
  "serde_json",
+ "tempfile",
+ "windows-sys 0.36.1",
 ]
 
 [[package]]
