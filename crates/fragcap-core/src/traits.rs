@@ -149,7 +149,7 @@ pub trait Sink: Send {
 /// Protocol dissection.
 ///
 /// Declared with no implementations, deliberately. Specification section 8.5
-/// fixes this seam's shape in v0.1.0 so that the eventual dissector layer is
+/// fixes this seam's shape in v0.2.0 so that the eventual dissector layer is
 /// not retrofitted against types that were not designed for it.
 ///
 /// The method set is provisional and will be settled by the slice that first

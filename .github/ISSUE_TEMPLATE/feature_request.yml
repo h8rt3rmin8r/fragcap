@@ -13,7 +13,7 @@ body:
 
         Check `docs/plans/README.md` too. The capability may already be a
         planned slice, and specification section 28 records what is
-        deliberately deferred past v0.1.0.
+        deliberately deferred past v0.3.0.
 
   - type: textarea
     id: problem

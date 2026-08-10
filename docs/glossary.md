@@ -1143,7 +1143,7 @@ the pipeline counts it in a named counter rather than aborting the capture.
 
 ### Dissector
 
-The seam for protocol dissection, declared in v0.1.0 with no implementations.
+The seam for protocol dissection, declared in v0.2.0 with no implementations.
 
 Fixing the shape before any protocol work begins prevents the eventual
 dissector layer from being retrofitted against types that were not designed for
