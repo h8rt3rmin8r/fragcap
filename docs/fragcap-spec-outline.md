@@ -12,7 +12,7 @@ contain, with a short annotation describing that section's job and the
 decisions it must resolve. Annotations are scaffolding for review and do
 not survive into the specification itself. Sections marked **(gate)**
 block downstream work until resolved; sections marked **(deferrable)**
-may ship as a stub in v0.1.0.
+may ship as a stub in v0.2.0.
 
 ## Table of Contents
 
@@ -43,7 +43,7 @@ may ship as a stub in v0.1.0.
 - [25. Testing Strategy](#25-testing-strategy)
 - [26. Observability and Diagnostics](#26-observability-and-diagnostics)
 - [27. Spec Kit Decomposition](#27-spec-kit-decomposition)
-- [28. Roadmap Beyond v0.1.0](#28-roadmap-beyond-v010)
+- [28. Roadmap Beyond v0.3.0](#28-roadmap-beyond-v030)
 - [29. Open Questions](#29-open-questions)
 - [30. Appendices](#30-appendices)
 
@@ -80,7 +80,8 @@ more than usual here and deserve equal prominence:
   seam, not a core concern).
 - Not a cheat, not a proxy, not a latency optimizer.
 
-Success criteria for v0.1.0 should be concrete enough to test, for
+Success criteria for the functional releases should be concrete enough
+to test, for
 example: capture a complete ESO session from launcher start through
 client exit, with every packet correctly attributed to a named role, and
 the resulting file opening cleanly in an unmodified Wireshark.
@@ -145,7 +146,7 @@ nothing platform-specific), and the plugin seam for dissectors.
 
 ## 9. Platform Strategy
 
-Windows 11 is the v0.1.0 target. Documents why the capture binary must
+Windows 11 is the v0.2.0 target. Documents why the capture binary must
 be a native `x86_64-pc-windows-msvc` build and why WSL2 cannot host it
 (NAT'd virtual NIC, and no access to Windows PIDs or socket tables from
 a Linux kernel, which makes attribution structurally impossible rather
@@ -166,7 +167,7 @@ launchers and persistent platform services are handled differently.
 ## 11. Flow Attribution
 
 The join between captured packets and owning processes. Specifies the
-v0.1.0 mechanism (periodic socket-table snapshots via `netstat2`), the
+v0.2.0 mechanism (periodic socket-table snapshots via `netstat2`), the
 known race window, why that window is acceptable for long-lived game
 sessions, and the upgrade path if it proves otherwise. Defines the
 `FlowKey` type, the handling of unattributed packets (retained and
@@ -293,7 +294,7 @@ regeneration of the alphabetical index.
 ## 23. Website and Brand
 
 **(deferrable)** Site structure, hosting, custom domain configuration,
-and the brand guardrails. Brand is a placeholder in v0.1.0 pending a
+and the brand guardrails. Brand is a placeholder in v0.2.0 pending a
 dedicated session, but the guardrails belong in the specification
 because they constrain the site build.
 
@@ -330,10 +331,11 @@ requirement) and which become numbered feature slices, with a proposed
 slice ordering and the dependency edges between slices. This section is
 what turns the specification into executable work.
 
-## 28. Roadmap Beyond v0.1.0
+## 28. Roadmap Beyond v0.3.0
 
 Explicitly deferred capability, recorded so that scope pressure during
-v0.1.0 has somewhere to go: additional platforms, richer attribution
+the functional releases has somewhere to go: additional platforms,
+richer attribution
 backends, dissector plugins, additional platform integrations, and the
 analysis tooling that consumes fragcap output.
 

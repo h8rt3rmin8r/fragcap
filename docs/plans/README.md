@@ -76,31 +76,48 @@ arrives with S18. Until then these rules are kept by hand, which is a weaker
 guarantee than the constitution assumes. **P-6 is satisfiable now, but not yet
 enforced.**
 
+## Release milestones
+
+The eighteen slices ship across three releases. `v0.1.0` is the crates.io
+namespace-reservation stub already published; it carries no functionality. The
+first functional release is `v0.2.0`, the usable capture-to-file CLI, reached at
+the end of S14. `v0.3.0` completes the remaining slices.
+
+| Release | Scope | Slices |
+| --- | --- | --- |
+| v0.1.0 | crates.io namespace reservation; no functionality | published stub |
+| v0.2.0 | First functional release; capture-to-file CLI | S01 through S14 |
+| v0.3.0 | Streaming, ring mode, managed launch, extcap, docs | S15 through S18 |
+
+The workspace stays at `0.1.0` through S13; the bump to `0.2.0` is a release-time
+`cargo release minor` action taken when S14 lands. See specification section
+27.3.
+
 ## Slice ordering
 
 Eighteen slices, from specification section 27.3. Each is sized to complete
 within a single autopilot run.
 
-| ID | Slice | Depends on | Spec sections | Gated by |
-| --- | --- | --- | --- | --- |
-| S01 | Workspace scaffold, licensing, CI skeleton | none | 20, 21, 24 | **done** |
-| S02 | Core types and traits | S01 | 8.4, 8.5 | |
-| S03 | Header parsing and flow keys | S02 | 12.5, 12.6 | |
-| S04 | Replay source and fixture corpus | S03 | 25.1, 25.3 | |
-| S05 | Profile schema, parsing, validation | S02 | 15 | |
-| S06 | pcapng writer and annotation encoding | S03 | 13.1 to 13.4 | |
-| S07 | JSON Lines writer | S03 | 13.5 | |
-| S08 | Pipeline, buffering, drop accounting | S04, S06 | 8.6, 12.4 | |
-| S09 | Live capture source and interfaces | S03 | 12.1, 12.2 | Q-5 resolved |
-| S10 | Socket table attributor | S02 | 11 | Q-1..3 resolved |
-| S11 | ETW process watcher and tree | S02 | 10 | |
-| S12 | Stage matching and session lifecycle | S05, S11 | 10.3 to 10.6 | |
-| S13 | Filter management | S09, S10 | 12.2, 12.3 | |
-| S14 | CLI: run, tap, doctor, profile | S08, S12, S13 | 17, 26.3 | |
-| S15 | Transports and streaming sinks | S08 | 14.1 to 14.4 | |
-| S16 | Ring mode and triggers | S08 | 7.2 | |
-| S17 | Steam integration and managed launch | S05, S12 | 16 | Q-4 resolved |
-| S18 | Extcap, wrappers, documentation site | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 |
+| ID | Slice | Release | Depends on | Spec sections | Gated by |
+| --- | --- | --- | --- | --- | --- |
+| S01 | Workspace scaffold, licensing, CI skeleton | v0.2.0 | none | 20, 21, 24 | **done** |
+| S02 | Core types and traits | v0.2.0 | S01 | 8.4, 8.5 | |
+| S03 | Header parsing and flow keys | v0.2.0 | S02 | 12.5, 12.6 | |
+| S04 | Replay source and fixture corpus | v0.2.0 | S03 | 25.1, 25.3 | |
+| S05 | Profile schema, parsing, validation | v0.2.0 | S02 | 15 | |
+| S06 | pcapng writer and annotation encoding | v0.2.0 | S03 | 13.1 to 13.4 | |
+| S07 | JSON Lines writer | v0.2.0 | S03 | 13.5 | |
+| S08 | Pipeline, buffering, drop accounting | v0.2.0 | S04, S06 | 8.6, 12.4 | |
+| S09 | Live capture source and interfaces | v0.2.0 | S03 | 12.1, 12.2 | Q-5 resolved |
+| S10 | Socket table attributor | v0.2.0 | S02 | 11 | Q-1..3 resolved |
+| S11 | ETW process watcher and tree | v0.2.0 | S02 | 10 | |
+| S12 | Stage matching and session lifecycle | v0.2.0 | S05, S11 | 10.3 to 10.6 | |
+| S13 | Filter management | v0.2.0 | S09, S10 | 12.2, 12.3 | |
+| S14 | CLI: run, tap, doctor, profile | v0.2.0 | S08, S12, S13 | 17, 26.3 | |
+| S15 | Transports and streaming sinks | v0.3.0 | S08 | 14.1 to 14.4 | |
+| S16 | Ring mode and triggers | v0.3.0 | S08 | 7.2 | |
+| S17 | Steam integration and managed launch | v0.3.0 | S05, S12 | 16 | Q-4 resolved |
+| S18 | Extcap, wrappers, documentation site | v0.3.0 | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 |
 
 ## Critical path
 
@@ -142,8 +159,8 @@ A reasonable order:
 2. ~~S01.~~ Done 2026-08-06. Crate name reservation (Q-9) still open.
 3. S02 through S08, the offline-testable pipeline.
 4. S09 through S13, the platform-specific work, now against evidence.
-5. S14, the first genuinely usable build.
-6. S15 through S18.
+5. S14, the first genuinely usable build, released as v0.2.0.
+6. S15 through S18, released as v0.3.0.
 
 ## Recording deviations
 

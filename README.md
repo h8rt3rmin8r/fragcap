@@ -3,12 +3,14 @@
 Passive, process-attributed network capture for game clients on Windows.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-pre--implementation-orange.svg)](docs/plans/README.md)
+[![Status](https://img.shields.io/badge/status-in--development-yellow.svg)](docs/plans/README.md)
 
-> **Status: early. The workspace exists; the capability does not.** Slice S01
-> has established the Cargo workspace, the crate graph, and the check set.
-> Every crate is a skeleton: nothing captures, attributes, or writes anything
-> yet. fragcap is not installable or runnable as a capture tool. See
+> **Status: in development, not yet runnable.** Slices S01 through S11 are
+> complete: the crate graph, the offline capture pipeline, both output writers,
+> the profile schema, the socket-table attributor, and the ETW process watcher
+> exist and are tested. There is no command-line interface yet, so fragcap is
+> not installable or runnable as a capture tool; the first functional release is
+> v0.2.0, reached at the end of slice S14. See
 > [`docs/plans/README.md`](docs/plans/README.md) for what is being built and in
 > what order.
 

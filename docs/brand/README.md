@@ -11,7 +11,7 @@ Two open questions remain, both from specification section 29:
 | Q-7 | Monospace face selection | S18 |
 | Q-8 | Parent brand visual relationship | S18 |
 
-Brand is not on the critical path and is deliberately not a v0.1.0 priority.
+Brand is not on the critical path and is deliberately not a v0.2.0 priority.
 It is also not forgettable: S18 ships the documentation site, and a site cannot
 be built against an undecided identity. Resolve it before S18 starts, not
 during.

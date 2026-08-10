@@ -38,13 +38,14 @@
 - [25. Testing Strategy](#25-testing-strategy)
 - [26. Observability and Diagnostics](#26-observability-and-diagnostics)
 - [27. Spec Kit Decomposition](#27-spec-kit-decomposition)
-- [28. Roadmap Beyond v0.1.0](#28-roadmap-beyond-v010)
+- [28. Roadmap Beyond v0.3.0](#28-roadmap-beyond-v030)
 - [29. Open Questions](#29-open-questions)
 - [30. Appendices](#30-appendices)
 
 ## 1. Document Control
 
-This document specifies fragcap version 0.1.0. It defines the product's
+This document specifies fragcap across its functional releases, v0.2.0
+and v0.3.0. It defines the product's
 purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
@@ -85,6 +86,7 @@ enforcement.
 | 0.1.1-draft | 2026-08-06 | W. Thompson | Reconnaissance findings applied. A-1 through A-4 confirmed, **A-5 refuted**. Changes to 5.4, 6.2, 8.4, 10.2, 10.3, 11.2, 12.1, 12.2, 15.2, 15.4, 22.3, 28, 29, Appendix D. Adds command line handling rules in 10.2. |
 | 0.1.2-draft | 2026-08-06 | W. Thompson | **Withdraws a claim.** 0.1.1-draft asserted that a focal title passes a live credential on its client's command line, and described it as documented. That was inference from a parameter name and was not supported by the capture. An entropy scan of 3,694 command lines found no credential in either title. Sections 6.2, 10.2, 29, and Appendix D corrected. A-5's fallback now cites an observed named pipe instead. |
 | 0.1.3-draft | 2026-08-06 | W. Thompson | **Withdraws the redaction rules.** 0.1.1-draft made command line capture opt-in, masked profile paths, redacted parameters by name at the source, and barred command lines from output. All four alter what the instrument reports, contrary to section 2.3 and to the project's stated purpose. Command lines are recorded verbatim, as the original 10.2 specified. Scope remains the operator's control; preparation for publication becomes an explicit downstream operation on a copy. Removes the 15.4 and 10.3 rules that existed only to manage the invented default. Adds constitution principle **P-9, The Instrument Does Not Lie** (constitution 1.1.0), so the reasoning that produced those rules is blocked rather than merely reverted. |
+| 0.1.4-draft | 2026-08-10 | W. Thompson | Codifies the release-versioning scheme. v0.1.0 is the crates.io namespace-reservation stub; the first functional release is v0.2.0 (slices through S14); v0.3.0 completes S15 through S18. Partitions the 3.3 success criteria across the two functional releases, retitles section 28, and updates 9.1, 27.3, and scope prose throughout. |
 
 ## 2. Purpose and Problem Statement
 
@@ -202,7 +204,7 @@ drivers, not filtering or interception drivers. Section 19 defines the
 allowlist.
 
 **NG-4. No game-specific protocol logic in core.** Protocol dissection
-is a declared plugin seam, deferred past v0.1.0. No dissector ships in
+is a declared plugin seam, deferred past v0.3.0. No dissector ships in
 the core crates at any version.
 
 **NG-5. Not a proxy, accelerator, or optimizer.** fragcap is not
@@ -215,7 +217,12 @@ and stored as ciphertext.
 
 ### 3.3 Success Criteria
 
-v0.1.0 is complete when all of the following hold.
+The first functional release is v0.2.0; v0.1.0 is a crates.io
+namespace-reservation stub carrying no functionality (section 27.3).
+The success criteria are partitioned across the two functional
+releases.
+
+**v0.2.0 is complete when SC-1 through SC-4 hold.**
 
 **SC-1.** A single `fragcap run --profile eso` invocation, issued
 before the game starts, produces one capture file covering launcher
@@ -233,6 +240,8 @@ when npcap is absent.
 **SC-4.** The full pipeline, from packet source through sink, runs in
 continuous integration on a runner with no capture driver installed and
 no game present, using the replay source and scripted attributor.
+
+**v0.3.0 is complete when SC-5 through SC-7 also hold.**
 
 **SC-5.** A downstream process consumes a live stream over a named pipe
 and over TCP, and Wireshark attaches to a running capture through the
@@ -490,7 +499,8 @@ unremarkable. The second overlaps directly with cheat tooling. Section
 ### 6.1 Hard Constraints
 
 Constraints are properties of the environment that fragcap accepts and
-designs around. They are not negotiable within v0.1.0.
+designs around. They are not negotiable within the functional
+releases.
 
 **C-1. Windows 11 is the target platform.** The capture binary is built
 for the `x86_64-pc-windows-msvc` target and runs natively on Windows.
@@ -887,7 +897,7 @@ pub trait Sink: Send {
 ```
 
 `Dissector` is declared as a public trait in `fragcap-core` with no
-implementations. Declaring the seam in v0.1.0 fixes its shape before
+implementations. Declaring the seam in v0.2.0 fixes its shape before
 any protocol work begins, and prevents the eventual dissector layer
 from being retrofitted against types that were not designed for it.
 
@@ -921,7 +931,7 @@ packet acquisition.
 
 ### 8.7 Extension Seams
 
-Three extension points are public and stable in v0.1.0.
+Three extension points are public and stable from v0.2.0.
 
 `PacketSource` accepts new acquisition backends. `FlowAttributor`
 accepts new attribution backends. `Sink` accepts new output formats and
@@ -933,9 +943,9 @@ analysis in a later version.
 
 ## 9. Platform Strategy
 
-### 9.1 v0.1.0 Target
+### 9.1 v0.2.0 Target
 
-fragcap v0.1.0 targets Windows 11 on `x86_64-pc-windows-msvc`. The
+fragcap v0.2.0 targets Windows 11 on `x86_64-pc-windows-msvc`. The
 capture backend uses npcap through the libpcap API. The attribution
 backend uses the IP Helper API socket tables. The process watcher uses
 the Event Tracing for Windows kernel process provider.
@@ -966,7 +976,7 @@ specifies this.
 
 ### 9.3 Portability Discipline
 
-`fragcap-core` compiles for Linux and macOS in v0.1.0 and is verified
+`fragcap-core` compiles for Linux and macOS from v0.2.0 and is verified
 to do so in continuous integration. No usable backend exists for those
 platforms yet, and none is claimed.
 
@@ -980,7 +990,7 @@ to a named interface.
 ### 9.4 Future Backends
 
 Backends named here to constrain trait design, not scheduled for
-v0.1.0.
+any functional release.
 
 | Platform | PacketSource | FlowAttributor | ProcessWatcher |
 | --- | --- | --- | --- |
@@ -1515,7 +1525,7 @@ reader can misinterpret the payload. Custom options require a Private
 Enterprise Number that this project does not hold.
 
 The cost is parsing overhead in consumers and a modest size increase.
-Both are accepted for v0.1.0. Section 28 records binary custom options
+Both are accepted for v0.2.0. Section 28 records binary custom options
 as a deferred optimization contingent on measurement.
 
 ### 13.4 Attribution Fidelity
@@ -1819,7 +1829,7 @@ validation produces exit code 2 and no capture attempt.
 
 ### 15.5 Bundled Profiles
 
-v0.1.0 ships profiles for the two focal titles used in development.
+v0.2.0 ships profiles for the two focal titles used in development.
 Bundled profiles are correct at release and are expected to drift as
 games update, which is why section 15.3 places them last in resolution
 order.
@@ -2356,7 +2366,8 @@ fragcap-core    = { version = "0.1.0", path = "crates/fragcap-core" }
 fragcap-profile = { version = "0.1.0", path = "crates/fragcap-profile" }
 ```
 
-All crates share one version number in v0.1.0. Independent versioning
+All crates share one version number across the functional releases.
+Independent versioning
 is deferred until the public API stabilizes, because coordinated
 releases are simpler while the trait definitions are still moving.
 
@@ -2907,6 +2918,19 @@ within a single autopilot run.
 | S17 | Steam integration and managed launch | S05, S12 | 16 |
 | S18 | Extcap, wrappers, documentation site | S14, S15 | 14.5, 18, 22 |
 
+The eighteen slices ship across three releases. v0.1.0 is a crates.io
+namespace-reservation stub carrying no functionality. The first
+functional release is v0.2.0, comprising S01 through S14, a usable
+capture-to-file CLI. v0.3.0 completes S15 through S18: streaming
+transports, ring mode, managed launch, and the extcap and documentation
+surfaces.
+
+| Release | Scope | Slices |
+| --- | --- | --- |
+| v0.1.0 | crates.io namespace reservation; no functionality | published stub |
+| v0.2.0 | First functional release; capture-to-file CLI | S01 through S14 |
+| v0.3.0 | Streaming, ring mode, managed launch, extcap, docs | S15 through S18 |
+
 ### 27.4 Critical Path
 
 ```mermaid
@@ -2939,10 +2963,10 @@ specification sections it implements, and any deviation discovered
 during implementation is recorded in the slice and promoted to section
 29 of this document at the next version.
 
-## 28. Roadmap Beyond v0.1.0
+## 28. Roadmap Beyond v0.3.0
 
-Recorded so that scope pressure during v0.1.0 has a destination. None
-of the following is in v0.1.0.
+Recorded so that scope pressure during the functional releases has a
+destination. None of the following is in v0.2.0 or v0.3.0.
 
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
@@ -3009,7 +3033,8 @@ requirement. Building attribution machinery first would have produced a
 loopback strategy aimed at traffic that does not exist and a process
 watcher that recorded credentials by default.
 
-New questions raised by the reconnaissance, none of which block v0.1.0:
+New questions raised by the reconnaissance, none of which block the
+functional releases:
 
 | ID | Question | Method | Blocks |
 | --- | --- | --- | --- |

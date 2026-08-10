@@ -43,19 +43,21 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S10 are complete. The Cargo workspace exists with the eight
+Slices S01 through S11 are complete. The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
 vocabulary from specification sections 8.4 and 8.5, a `parse` module
 implementing sections 12.5 and 12.6, a `pipeline` module implementing
-sections 8.6 and 12.4, and a `duration` module carrying the literal grammar
-three later slices share. `fragcap-profile` carries section 15 in full: the
-schema, the validation set, and the resolution order. `fragcap-capture` reads
-classic pcap and replays it as a `PacketSource`. `fragcap-attr` answers
-attribution from a declared script and, since S10, from the operating system
-socket table. `fragcap-sink` writes both output formats: pcapng carrying
-attribution in packet comments, and JSON Lines. `fixtures/` holds the committed
-corpus of section 25.3 and, since S06, a golden per fixture per format.
+sections 8.6 and 12.4, a `duration` module carrying the literal grammar three
+later slices share, and, since S11, a `process` module carrying the process tree
+of section 10. `fragcap-profile` carries section 15 in full: the schema, the
+validation set, and the resolution order. `fragcap-capture` reads classic pcap
+and replays it as a `PacketSource`. `fragcap-attr` answers attribution from a
+declared script and, since S10, from the operating system socket table, and
+since S11 watches process start and exit through Event Tracing for Windows.
+`fragcap-sink` writes both output formats: pcapng carrying attribution in packet
+comments, and JSON Lines. `fixtures/` holds the committed corpus of section 25.3
+and, since S06, a golden per fixture per format.
 
 **fragcap attributes flows to processes.** S10 filled in specification section
 11. `SocketTableAttributor` snapshots the socket table, joins captured flows
@@ -480,9 +482,8 @@ authoritative; this list is the one to keep in working memory.
   `release.toml`, `scripts/**`, and release documentation. Write the decision
   as a `changelog.d/<key>.decisions.md` fragment; `CHANGELOG.md` is assembled
   from those fragments at release time, and editing it from a feature branch
-  conflicts with every other concurrent pull request. `release.toml` does not
-  exist yet; it arrives with the release process. The rule binds it from the
-  moment it lands.
+  conflicts with every other concurrent pull request. `release.toml` now exists
+  (added 2026-08-08 with the release automation), so the rule binds it.
 - **All text files are UTF-8 without BOM with LF line endings. No em-dashes or
   en-dashes anywhere, including code comments.**
 
