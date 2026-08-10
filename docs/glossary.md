@@ -1052,6 +1052,76 @@ literals either can match a common name or cannot.
 **See also:** [Match predicate](#match-predicate), [Stage](#stage),
 [Launcher chain](#launcher-chain)
 
+### Stage matching
+
+The decision that binds an observed process to a [stage](#stage). Each process
+start event is evaluated against every stage in the active
+[game profile](#game-profile), and the process binds to the first stage, in
+declaration order, all of whose [match predicates](#match-predicate) hold.
+Binding assigns the stage's role. Slice S12.
+
+{: .matters }
+> Matching is a decision over the [process tree](#process-tree) and the profile.
+> It opens nothing and touches no platform interface, so the whole of section
+> 10.3 is tested against a scripted event stream with no capture driver, no
+> elevation, and no game.
+
+**See also:** [Match predicate](#match-predicate),
+[Stage binding](#stage-binding), [Capture session](#capture-session)
+
+### Stage binding
+
+The association of a [process node](#process-node) with the [stage](#stage) it
+matched and the role that stage assigns, recorded on the node. A node binds to at
+most one stage.
+
+**See also:** [Stage matching](#stage-matching), [Stage](#stage),
+[Process node](#process-node)
+
+### Capture session
+
+The run of one capture, moving through five states: **Arming** (opening the
+capture handle and attaching the [process watcher](#process-watcher) before any
+target exists), **Watching** (armed, no target matched, discarding packets),
+**Capturing** (a stage has matched, packets retained), **Draining** (a
+[stop condition](#stop-condition) met, buffer draining and sinks finishing), and
+**Complete**. Slice S12.
+
+{: .matters }
+> Arming before the target is what keeps the launcher authentication exchange,
+> which precedes the client, from being missed. The Watching to Capturing
+> transition costs no setup because the handle is already open, so no traffic is
+> lost at the boundary.
+
+**See also:** [Stop condition](#stop-condition),
+[Acquisition timeout](#acquisition-timeout), [Stage matching](#stage-matching)
+
+### Acquisition timeout
+
+The optional bound on how long a [capture session](#capture-session) waits in
+Watching for a target before completing without having captured. Measured from
+the instant the session was armed. When unset, the session ends instead by the
+duration bound or an operator interrupt.
+
+**See also:** [Capture session](#capture-session),
+[Stop condition](#stop-condition)
+
+### Stop condition
+
+Any of the six events that ends a [capture session](#capture-session): the
+elapsed duration bound, the byte or packet bound, the
+[terminal stage](#terminal-stage) exiting, all matched non-service processes
+having exited with no stage still awaited, an operator interrupt, or an
+unrecoverable sink error. The first to occur wins.
+
+{: .matters }
+> Every stop condition produces the same orderly shutdown and a valid capture
+> file. Uniform shutdown is what lets an operator read any capture the same way,
+> including one they interrupted; an interrupt is a normal stop, not an abort.
+
+**See also:** [Capture session](#capture-session),
+[Terminal stage](#terminal-stage), [Lifecycle class](#lifecycle-class)
+
 ### Profile schema version
 
 The `schema` key at the top of a [game profile](#game-profile), declaring which

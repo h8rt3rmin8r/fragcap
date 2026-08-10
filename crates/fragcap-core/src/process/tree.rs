@@ -517,6 +517,26 @@ impl ProcessTree {
         false
     }
 
+    // -- binding ----------------------------------------------------------
+
+    /// Bind a node to a profile stage, per specification sections 10.3 and 10.4.
+    ///
+    /// Writes the `stage` field reserved on the node in slice S11. A node binds
+    /// to at most one stage: a call against a node already bound, or against an
+    /// identifier no node carries, changes nothing and returns `false`. Which
+    /// stage a node binds to is `fragcap-profile`'s decision; this is only where
+    /// the decision is recorded, which is what keeps the profile schema out of
+    /// `fragcap-core`.
+    pub fn bind_stage(&mut self, id: NodeId, stage: StageId) -> bool {
+        match self.nodes.get_mut(id.index()) {
+            Some(node) if node.stage.is_none() => {
+                node.stage = Some(stage);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// How many nodes are retained.
     ///
     /// Exposed because section 10.2 retains every node for the session and
@@ -864,10 +884,40 @@ mod tests {
     }
 
     #[test]
-    fn the_stage_is_reserved_and_empty_until_s12() {
+    fn a_node_binds_to_a_stage_at_most_once() {
+        use crate::attribution::StageId;
+
         let mut t = ProcessTree::new();
         start(&mut t, 1, 0, "a.exe", 1);
-        assert!(t.node(NodeId(0)).unwrap().stage().is_none());
+        let id = NodeId(0);
+        assert!(
+            t.node(id).unwrap().stage().is_none(),
+            "a fresh node is unbound"
+        );
+
+        assert!(
+            t.bind_stage(id, StageId::new("launcher")),
+            "the first bind succeeds"
+        );
+        assert_eq!(
+            t.node(id).unwrap().stage().map(StageId::as_str),
+            Some("launcher")
+        );
+
+        assert!(
+            !t.bind_stage(id, StageId::new("client")),
+            "a bound node does not rebind"
+        );
+        assert_eq!(
+            t.node(id).unwrap().stage().map(StageId::as_str),
+            Some("launcher"),
+            "the original binding stands"
+        );
+
+        assert!(
+            !t.bind_stage(NodeId(99), StageId::new("x")),
+            "an identifier no node carries binds nothing"
+        );
     }
 
     #[test]
