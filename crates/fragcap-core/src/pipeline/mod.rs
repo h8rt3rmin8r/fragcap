@@ -11,25 +11,23 @@
 //!
 //! # Threads
 //!
-//! Section 8.6 puts the pipeline on three threads. This slice builds two of
-//! them. The control thread owns the [`ProcessWatcher`](crate::traits::
-//! ProcessWatcher), the process tree, and the filter manager, none of which
-//! exist before slices S11 and S13; its seam is named at
-//! [`Pipeline::new`] and deliberately left unfilled.
+//! Section 8.6 puts the pipeline on three threads: the acquisition threads (one
+//! per interface, section 12.1), the output thread, and the control thread.
 //!
-//! Of the two that are built, the caller's own thread is the acquisition
-//! thread and the output thread is spawned. Section 8.6 does not say which is
-//! which, and the choice is forced by the seams: [`PacketSource`] carries no
-//! `Send` bound while [`FlowAttributor`], `ProcessWatcher`, and [`Sink`] all
-//! do. Moving the source to a spawned thread would mean adding `Send` to a
-//! trait that [`crate::traits`] documents as intended to reach 1.0.0 unchanged,
-//! and nothing here needs it.
+//! The caller's own thread drives acquisition and the output thread is spawned.
+//! Section 8.6 does not say which is which, and the choice is forced by the
+//! seams: [`PacketSource`] carries no `Send` bound while [`FlowAttributor`],
+//! `ProcessWatcher`, and [`Sink`] all do. (Slice S09 later added `PacketSource:
+//! Send` so several interfaces each get their own capture thread; recorded for
+//! promotion to specification section 29.)
 //!
-//! That deferral has an owner. Specification section 12.1 requires one capture
-//! handle and one capture thread per interface, which this arrangement cannot
-//! express, so slice S09 will need `PacketSource: Send` and should carry the
-//! trait change with the slice that first requires it. Recorded for promotion
-//! to specification section 29.
+//! The control thread's filter manager is built here, by slice S13: it reads the
+//! attribution map's `active_endpoints`, runs the section 12.2 narrowing policy,
+//! and hands each capture thread its current filter over a private channel. The
+//! other work section 8.6 assigns the control thread, owning the
+//! [`ProcessWatcher`](crate::traits::ProcessWatcher) and the process tree, is
+//! driven by the capture session (slice S12) in the facade, not by this module;
+//! the pipeline composes the seams and the session sequences them.
 //!
 //! # Accounting
 //!
@@ -75,7 +73,11 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use std::sync::mpsc::{self, Receiver};
+use std::time::Instant;
+
 use crate::error::{SinkError, SourceError};
+use crate::filter::{FilterConfig, FilterManager, FilterProgram};
 use crate::interface::{InterfaceId, InterfaceRetirement, RetirementReason};
 use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
@@ -94,6 +96,12 @@ pub const DEFAULT_CAPACITY: usize = 65_536;
 /// for every test in slice S08. It matters to S09, and it is the bound on stop
 /// latency, which is why it is stated rather than hidden.
 pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// How often the control thread re-reads the attribution map and reconsiders the
+/// filter. Well below the section 12.2 two-second debounce, so it bounds how
+/// promptly a settled endpoint set is narrowed without itself thrashing; it also
+/// bounds how long the control thread lingers after the run stops.
+const FILTER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// What an operator can vary without changing which components are attached.
 #[derive(Clone, Debug)]
@@ -328,6 +336,7 @@ pub struct Pipeline {
     attributor: Box<dyn FlowAttributor>,
     sinks: Vec<Box<dyn Sink>>,
     config: PipelineConfig,
+    filter_config: FilterConfig,
     stop: StopHandle,
 }
 
@@ -390,20 +399,17 @@ impl fmt::Debug for Pipeline {
 impl Pipeline {
     /// Build a pipeline. Starts no thread, opens no file, and reads no packet.
     ///
-    /// # The control thread seam
+    /// # The control thread
     ///
-    /// Specification section 8.6 has a control thread owning the process
-    /// watcher, the process tree, and the filter manager, and publishing an
-    /// attribution snapshot that the acquisition thread reads without blocking.
-    /// None of those exist before slices S11 and S13, and building the
-    /// publication mechanism now would fix the snapshot's shape before S10
-    /// knows what a socket table snapshot costs to publish.
-    ///
-    /// So the attributor is owned outright by the acquisition side for now.
-    /// [`FlowAttributor`] is `Send`, which is exactly the bound that permits
-    /// it, and no `Sync` bound is implied or required. When the control thread
-    /// arrives, what changes is where the attributor lives, not what this
-    /// pipeline does with the answers.
+    /// Specification section 8.6 has a control thread that reads the attribution
+    /// map and maintains the capture filter. [`Pipeline::run`] spawns it: it
+    /// shares the attributor as an `Arc<dyn FlowAttributor>` (which is `Send +
+    /// Sync` since slice S10, so both the acquisition threads and the control
+    /// thread read the published snapshot without blocking, section 11.6) and
+    /// runs the section 12.2 narrowing policy, handing each capture thread its
+    /// current filter over a private channel. The maintenance timings default to
+    /// [`FilterConfig::PRODUCTION`] and are overridable with
+    /// [`Pipeline::set_filter_config`].
     /// # Several sources
     ///
     /// Specification section 12.1 captures each interface on its own handle and
@@ -432,6 +438,7 @@ impl Pipeline {
             attributor,
             sinks: Vec::new(),
             config,
+            filter_config: FilterConfig::default(),
             stop: StopHandle::default(),
         })
     }
@@ -439,6 +446,17 @@ impl Pipeline {
     /// Attach a sink. Its index in the report is the order it was added.
     pub fn add_sink(&mut self, sink: Box<dyn Sink>) {
         self.sinks.push(sink);
+    }
+
+    /// Override the filter maintenance timings the control thread uses. Defaults
+    /// to [`FilterConfig::PRODUCTION`], the specification section 12.2 constants.
+    ///
+    /// A setter rather than a [`Pipeline::new`] parameter or a [`PipelineConfig`]
+    /// field, so no existing caller or struct-literal construction changes; a
+    /// test that needs the narrowing to happen without waiting two seconds sets a
+    /// zero-debounce config here.
+    pub fn set_filter_config(&mut self, config: FilterConfig) {
+        self.filter_config = config;
     }
 
     /// A handle that ends the run. Valid for the whole run, and obtainable
@@ -472,8 +490,10 @@ impl Pipeline {
             attributor,
             sinks,
             config,
+            filter_config,
             stop,
         } = self;
+        let source_count = sources.len();
 
         let (tx, rx) = buffer::channel(config.capacity);
         let output_stop = stop.clone();
@@ -514,13 +534,24 @@ impl Pipeline {
         // `Pipeline::new` still takes.
         let attributor: Arc<dyn FlowAttributor> = Arc::from(attributor);
 
-        let mut threads = Vec::with_capacity(sources.len());
+        // The control thread, specification section 8.6, filled in by slice S13.
+        // It reads the attribution map and hands each capture thread its current
+        // filter over a private channel; the capture thread installs it on its
+        // own handle, which is the only thread that may touch it (a `pcap` handle
+        // is not `Sync`, so nothing here shares one). The manager and the
+        // compilation are pure and platform-neutral; only the source knows the
+        // program text is npcap syntax.
+        let mut filter_senders = Vec::with_capacity(source_count);
+
+        let mut threads = Vec::with_capacity(source_count);
         for SourceBinding {
             id,
             mut source,
             addrs,
         } in sources
         {
+            let (filter_tx, filter_rx) = mpsc::channel::<FilterProgram>();
+            filter_senders.push(filter_tx);
             let attributor = Arc::clone(&attributor);
             let tx = Arc::clone(guard.producer());
             let stop = stop.clone();
@@ -545,12 +576,46 @@ impl Pipeline {
                     id,
                     link,
                     read_timeout,
+                    &filter_rx,
                 );
                 stats.parse = *parser.stats();
                 stats.set_source(id, source.stats());
                 AcquisitionOutcome { id, stats, ended }
             }));
         }
+
+        // The control thread runs the section 12.2 narrowing policy. It reads
+        // `active_endpoints` without locking (section 11.6, slice S10), decides
+        // what to install under the debounce and the per-handle rate limit, and
+        // sends each program to its handle. It ends on `control_stop`, which the
+        // run sets once every capture thread has finished, so it never blocks
+        // shutdown; it holds no producer, so it cannot keep the buffer open.
+        let control_stop = Arc::new(AtomicBool::new(false));
+        let control = {
+            let attributor = Arc::clone(&attributor);
+            let control_stop = Arc::clone(&control_stop);
+            std::thread::spawn(move || {
+                let mut manager = FilterManager::new(source_count, filter_config);
+                while !control_stop.load(Ordering::Relaxed) {
+                    let wanted = attributor.active_endpoints();
+                    for install in manager.poll(&wanted, Instant::now()) {
+                        let handle = install.handle;
+                        // A send fails only once the capture thread has ended and
+                        // dropped its receiver. Retire the handle so it accrues no
+                        // more gaps and is asked to reinstall no more: a dead
+                        // interface cannot fabricate loss it did not observe.
+                        if filter_senders[handle].send(install.program).is_err() {
+                            manager.retire(handle);
+                        }
+                    }
+                    std::thread::sleep(FILTER_POLL_INTERVAL);
+                }
+                CaptureStats {
+                    filter_gaps: manager.filter_gaps(),
+                    ..CaptureStats::default()
+                }
+            })
+        };
 
         let mut merged = CaptureStats::default();
         let mut retirements = Vec::new();
@@ -581,6 +646,26 @@ impl Pipeline {
                     if panicked.is_none() {
                         panicked = Some(payload);
                     }
+                }
+            }
+        }
+
+        // Every capture thread has finished, so no handle needs another filter.
+        // End the control thread and fold in the filter gaps it counted. It is
+        // joined on every path out, including the panic path below, so it never
+        // outlives the run.
+        control_stop.store(true, Ordering::Relaxed);
+        match control.join() {
+            Ok(control_stats) => merged.absorb(control_stats),
+            // A control-thread panic is a defect, not an accounting outcome, and
+            // is carried to the caller the same as a capture-thread panic:
+            // resumed after the buffer is closed and the sinks are flushed and
+            // finished, rather than presented as a completed report. Section
+            // 8.6's control thread gets the same contract the acquisition threads
+            // already have.
+            Err(payload) => {
+                if panicked.is_none() {
+                    panicked = Some(payload);
                 }
             }
         }
@@ -694,11 +779,30 @@ fn acquire(
     interface: InterfaceId,
     link: crate::link::LinkType,
     timeout: Duration,
+    filter_rx: &Receiver<FilterProgram>,
 ) -> EndReason {
     loop {
         if stop.is_stopped() {
             return EndReason::Stopped;
         }
+
+        // Install the latest filter the control thread published, if any. This is
+        // the only thread that touches this handle. Draining to the last value
+        // collapses a burst of updates into a single install.
+        let mut latest: Option<FilterProgram> = None;
+        while let Ok(program) = filter_rx.try_recv() {
+            latest = Some(program);
+        }
+        if let Some(program) = latest {
+            // A maintenance reinstall the backend rejects is non-fatal: the prior
+            // program is still installed and still captures correctly, because
+            // section 12.3 makes correctness independent of filter freshness.
+            // Retiring the interface to spare a failed optimization would lose all
+            // its later traffic, the worse outcome. The generated program is valid
+            // by construction, so this path is defensive.
+            let _ = source.set_filter(&program);
+        }
+
         let raw = match source.next_packet(timeout) {
             Ok(Some(raw)) => raw,
             // A timeout the backend chose to report as success. Nothing
@@ -1064,15 +1168,18 @@ mod tests {
     }
 
     /// T016. Answers from a map keyed by flow, so one run can produce resolved,
-    /// unresolved, and never-attempted packets.
+    /// unresolved, and never-attempted packets. Also reports a fixed active
+    /// endpoint set, which slice S13's control thread narrows the filter from.
     struct StubAttributor {
         answers: HashMap<FlowKey, Attribution>,
+        endpoints: Vec<Endpoint>,
     }
 
     impl StubAttributor {
         fn empty() -> Self {
             StubAttributor {
                 answers: HashMap::new(),
+                endpoints: Vec::new(),
             }
         }
 
@@ -1085,7 +1192,16 @@ mod tests {
                     Attribution::new(4242, "game.exe", Fidelity::Live),
                 );
             }
-            StubAttributor { answers }
+            StubAttributor {
+                answers,
+                endpoints: Vec::new(),
+            }
+        }
+
+        /// The active endpoint set the control thread reads to narrow the filter.
+        fn with_endpoints(mut self, endpoints: Vec<Endpoint>) -> Self {
+            self.endpoints = endpoints;
+            self
         }
     }
 
@@ -1105,7 +1221,87 @@ mod tests {
             Ok(())
         }
         fn active_endpoints(&self) -> Vec<Endpoint> {
-            Vec::new()
+            self.endpoints.clone()
+        }
+    }
+
+    /// S13. A source that records every filter it is asked to install and then
+    /// closes, so a test can drive the control thread and read back the sequence
+    /// of programs. It delivers its scripted frames, then waits on recoverable
+    /// timeouts until a filter arrives, then closes: the run therefore cannot end
+    /// before the control thread has installed, which makes the wiring test
+    /// deterministic without a sleep.
+    struct RecordingSource {
+        queued: std::collections::VecDeque<RawPacket>,
+        installed: Arc<Mutex<Vec<FilterProgram>>>,
+        delivered: u64,
+        /// Whether to wait for a filter before closing. `true` orders a narrowing
+        /// test (the run cannot end before the control thread installs); `false`
+        /// closes as soon as the frames run out, for a run that narrows nothing.
+        wait_for_filter: bool,
+    }
+
+    impl RecordingSource {
+        fn new(frames: Vec<Vec<u8>>, installed: &Arc<Mutex<Vec<FilterProgram>>>) -> Self {
+            RecordingSource {
+                queued: frames.into_iter().map(raw).collect(),
+                installed: Arc::clone(installed),
+                delivered: 0,
+                wait_for_filter: true,
+            }
+        }
+
+        /// A recording source that closes when its frames run out, without
+        /// waiting for a filter. For a run whose attributor reports no endpoints,
+        /// so no filter is ever installed and waiting would never end.
+        fn closing(frames: Vec<Vec<u8>>, installed: &Arc<Mutex<Vec<FilterProgram>>>) -> Self {
+            RecordingSource {
+                wait_for_filter: false,
+                ..RecordingSource::new(frames, installed)
+            }
+        }
+    }
+
+    impl PacketSource for RecordingSource {
+        fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+            if let Some(packet) = self.queued.pop_front() {
+                self.delivered = self.delivered.saturating_add(1);
+                return Ok(Some(packet));
+            }
+            // Drained. When ordering a narrowing test, hold on recoverable
+            // timeouts until a filter has been installed, then close. Correctness
+            // never depends on the filter, so this only orders the test; it does
+            // not change what is captured.
+            if self.wait_for_filter
+                && self
+                    .installed
+                    .lock()
+                    .expect("the install log mutex is never poisoned")
+                    .is_empty()
+            {
+                Err(SourceError::Timeout)
+            } else {
+                Err(SourceError::Closed)
+            }
+        }
+
+        fn set_filter(&mut self, filter: &FilterProgram) -> Result<(), SourceError> {
+            self.installed
+                .lock()
+                .expect("the install log mutex is never poisoned")
+                .push(filter.clone());
+            Ok(())
+        }
+
+        fn stats(&self) -> SourceStats {
+            SourceStats {
+                received: self.delivered,
+                ..SourceStats::default()
+            }
+        }
+
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
         }
     }
 
@@ -2035,5 +2231,211 @@ mod tests {
             "and the retirement is still reported, just not as the reason"
         );
         assert_conserved(&report, &log, report.stats.sink_dropped);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 6: filter management (S13)
+    // ------------------------------------------------------------------
+
+    /// The endpoint the recording tests narrow to. It is the remote of every flow
+    /// the resolving attributor answers, so the same run also attributes packets.
+    fn narrow_endpoint() -> Endpoint {
+        Endpoint::new("198.51.100.5:5055".parse().expect("parses"), Proto::Udp)
+    }
+
+    /// A pipeline whose source records installed filters and whose attributor
+    /// reports one active endpoint, with a zero-debounce filter config so the
+    /// control thread narrows on its first poll rather than after two seconds.
+    fn recording_pipeline(installed: &Arc<Mutex<Vec<FilterProgram>>>, frame_count: u8) -> Pipeline {
+        let source = RecordingSource::new(frames(frame_count), installed);
+        let attributor = StubAttributor::resolving().with_endpoints(vec![narrow_endpoint()]);
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(attributor),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        p.set_filter_config(FilterConfig {
+            debounce: Duration::from_millis(0),
+            min_reinstall_interval: Duration::from_millis(0),
+        });
+        p
+    }
+
+    // S13. The control thread narrows the filter from bootstrap to the profiled
+    // endpoints and installs it on the handle.
+    #[test]
+    fn the_control_thread_narrows_the_filter_to_the_active_endpoints() {
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let log = log();
+        let mut p = recording_pipeline(&installed, 4);
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        let programs = installed
+            .lock()
+            .expect("the install log mutex is never poisoned")
+            .clone();
+        assert!(
+            !programs.is_empty(),
+            "the control thread installed at least one narrowed program"
+        );
+        assert_eq!(
+            programs.last().expect("at least one program"),
+            &FilterProgram::narrowed(&[narrow_endpoint()]),
+            "the installed program admits exactly the active endpoint"
+        );
+        assert_eq!(report.ended, EndReason::SourceClosed);
+    }
+
+    // S13, FR-005. Userspace attribution runs on every packet regardless of the
+    // installed filter; the filter is never the scope authority.
+    #[test]
+    fn attribution_runs_regardless_of_the_installed_filter() {
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let log = log();
+        let mut p = recording_pipeline(&installed, 8);
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        assert_eq!(report.stats.packets_captured, 8);
+        assert_eq!(
+            report.stats.packets_attributed, 8,
+            "every captured packet was attributed, filter notwithstanding"
+        );
+        assert_conserved(&report, &log, 0);
+    }
+
+    // S13, FR-013. filter_gaps is surfaced, distinct from the drop counters, and
+    // outside the conservation identity. A single narrowing from bootstrap opens
+    // no gap, so the count is zero here; the count itself is unit-tested on the
+    // manager. This asserts the field is wired through the run and kept separate.
+    #[test]
+    fn filter_gaps_is_surfaced_separately_and_conservation_holds() {
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let log = log();
+        let mut p = recording_pipeline(&installed, 6);
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        assert_eq!(
+            report.stats.filter_gaps, 0,
+            "the first narrowing after bootstrap opens no gap"
+        );
+        assert_eq!(report.stats.buffer_dropped, 0);
+        assert_eq!(report.stats.sink_dropped, 0);
+        assert_conserved(&report, &log, 0);
+    }
+
+    // S13. A capture whose attributor reports no endpoints stays on bootstrap:
+    // the control thread installs nothing, which is the existing behavior every
+    // pre-S13 pipeline test already depends on.
+    #[test]
+    fn no_active_endpoints_installs_no_filter() {
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        // Empty attributor: no active endpoints, so the control thread narrows
+        // nothing. The source closes when its frames run out, without waiting.
+        let source = RecordingSource::closing(frames(4), &installed);
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(StubAttributor::empty()),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        let log = log();
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        assert_eq!(report.stats.filter_gaps, 0);
+        assert_eq!(report.stats.packets_captured, 4);
+        assert!(
+            installed
+                .lock()
+                .expect("the install log mutex is never poisoned")
+                .is_empty(),
+            "nothing was narrowed with no active endpoints"
+        );
+    }
+
+    /// An attributor that panics when the control thread reads its endpoints,
+    /// signalling first so the source can close deterministically after.
+    struct PanicOnEndpoints {
+        ready: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl FlowAttributor for PanicOnEndpoints {
+        fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            None
+        }
+        fn refresh(&mut self) -> Result<(), crate::error::AttrError> {
+            Ok(())
+        }
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            self.ready.store(true, std::sync::atomic::Ordering::Relaxed);
+            panic!("the control thread failed");
+        }
+    }
+
+    /// A source that closes once the shared flag is set, and otherwise waits on
+    /// recoverable timeouts. Paired with `PanicOnEndpoints`, the run cannot end
+    /// before the control thread has panicked, so the test is deterministic.
+    struct CloseWhenReady {
+        ready: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl PacketSource for CloseWhenReady {
+        fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+            if self.ready.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(SourceError::Closed)
+            } else {
+                Err(SourceError::Timeout)
+            }
+        }
+        fn set_filter(&mut self, _filter: &FilterProgram) -> Result<(), SourceError> {
+            Ok(())
+        }
+        fn stats(&self) -> SourceStats {
+            SourceStats::default()
+        }
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    // S13, review of pull request 17. A control-thread panic is a defect and must
+    // escape rather than be presented as a completed capture, the same contract
+    // the acquisition threads have.
+    #[test]
+    #[should_panic(expected = "the control thread failed")]
+    fn a_control_thread_panic_propagates_rather_than_completing_the_run() {
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = CloseWhenReady {
+            ready: Arc::clone(&ready),
+        };
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(PanicOnEndpoints { ready }),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        p.set_filter_config(FilterConfig {
+            debounce: Duration::from_millis(0),
+            min_reinstall_interval: Duration::from_millis(0),
+        });
+        let log = log();
+        p.add_sink(StubSink::recording(&log));
+        let _ = p.run();
     }
 }

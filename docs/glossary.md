@@ -501,6 +501,89 @@ are discarded in userspace, because no attribution exists yet to decide with.
 
 **See also:** [Filter gap](#filter-gap), [Interface inventory](#interface-inventory)
 
+### Narrowing
+
+**Also known as:** phase two filter
+
+The second phase of the specification section 12.2 filter lifecycle. Once the
+attribution map holds endpoints belonging to profiled processes, fragcap compiles
+a filter admitting only those endpoints and installs it on each live handle,
+dropping the volume crossing the kernel boundary to the target's traffic plus
+whatever shares its ports.
+
+The endpoint set comes from the attribution map, never from observed name
+resolution, because gameplay endpoints are reached by address with no preceding
+lookup in both focal titles. Over-admission of shared-port traffic is accepted and
+resolved by userspace attribution, not tightened in the kernel.
+
+**See also:** [Bootstrap filter](#bootstrap-filter), [Maintenance](#maintenance),
+[Filter gap](#filter-gap)
+
+### Maintenance
+
+**Also known as:** phase three filter
+
+The third phase of the specification section 12.2 filter lifecycle. As the
+endpoint set changes, fragcap recompiles and reinstalls, debounced by two seconds
+and rate limited to one reinstallation per five seconds per handle, because
+installing a filter briefly interrupts capture on that handle and endpoint sets
+churn during connection establishment.
+
+**See also:** [Narrowing](#narrowing), [Filter gap](#filter-gap),
+[Filter manager](#filter-manager)
+
+### Filter program
+
+The compiled kernel filter fragcap hands to a capture handle, in the backend's own
+syntax (libpcap, for the npcap backend). The bootstrap program admits `ip or ip6`;
+a narrowed program admits only the profiled endpoints.
+
+Modeled as `FilterProgram` in `fragcap-core`, which treats it as opaque text. Only
+`fragcap-capture` compiles it onto a handle, which is what keeps core
+platform-neutral (constitution P-2): a filter expression is just a string until a
+backend compiles it.
+
+**See also:** [Bootstrap filter](#bootstrap-filter),
+[Filter manager](#filter-manager), [Narrowing](#narrowing)
+
+### Filter manager
+
+The control-thread component that reads the attribution map's active endpoints,
+runs the narrowing and maintenance policy, and hands each capture thread its
+current [filter program](#filter-program) over a private channel.
+
+It bridges the packet source and the flow attributor without merging them
+(constitution P-3): it names neither trait in a signature, adds no `Sync` bound to
+the source, and lives on the control thread, which is the one place that already
+holds both. Compilation and the debounce-and-rate-limit policy are pure over core
+types, so the whole strategy is tested with synthetic instants and no capture
+driver.
+
+**See also:** [Narrowing](#narrowing), [Maintenance](#maintenance),
+[Filter program](#filter-program)
+
+### Filter gap
+
+An endpoint active in the attribution map while a narrowed kernel filter that does
+not admit it is installed on a handle, for the interval from the endpoint appearing
+until the reinstall that admits it.
+
+Counted in the `filter_gaps` statistic and surfaced (specification section 12.3).
+Because correctness never depends on filter freshness, a stale filter that briefly
+excludes wanted traffic is not a silent loss: userspace attribution still runs on
+every packet, and the gap is reported.
+
+{: .matters }
+> The count is of gap occurrences, not of packets. A packet the kernel filter
+> excludes is never delivered to fragcap, so a packet count would be fabricated,
+> and constitution P-9 forbids reporting a number the instrument did not observe.
+> A bootstrap-to-first-narrowing transition opens no gap, because bootstrap
+> admitted everything and the narrowing excludes only unwanted traffic; gaps arise
+> only when an endpoint appears while a strictly narrowed filter is installed.
+
+**See also:** [Bootstrap filter](#bootstrap-filter), [Narrowing](#narrowing),
+[Maintenance](#maintenance)
+
 ### Interface identifier
 
 The identity fragcap assigns to a capture interface for the duration of one
