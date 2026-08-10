@@ -6,8 +6,8 @@
 **Domain:** `fragcap.com`\
 **Last updated:** 2026-08-10
 
-fragcap is a passive, process-attributed network capture instrument for games.
-Its identity combines packet structure, capture framing, and controlled
+fragcap provides passive process-attributed network capture for games. Its
+identity combines packet structure, capture framing, and controlled
 fragmentation without borrowing the visual language of cheat tooling.
 
 ## Contents

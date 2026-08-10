@@ -4,11 +4,11 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 12923
+      "bytes": 12915
     },
     {
       "path": "brand-guide.pdf",
-      "bytes": 133618
+      "bytes": 134122
     },
     {
       "path": "favicons/android-chrome-192x192.png",
@@ -128,7 +128,7 @@
     },
     {
       "path": "logos/png/fragcap-social-preview-1280x640.png",
-      "bytes": 161769
+      "bytes": 162657
     },
     {
       "path": "logos/png/fragcap-stacked-dark-2048.png",
@@ -176,7 +176,7 @@
     },
     {
       "path": "logos/svg/fragcap-social-preview.svg",
-      "bytes": 1982
+      "bytes": 2031
     },
     {
       "path": "logos/svg/fragcap-stacked-dark.svg",
@@ -200,11 +200,11 @@
     },
     {
       "path": "specimens/fragcap-type-specimen.png",
-      "bytes": 67354
+      "bytes": 68729
     },
     {
       "path": "specimens/fragcap-type-specimen.svg",
-      "bytes": 1461
+      "bytes": 1458
     },
     {
       "path": "tokens/brand.tokens.json",

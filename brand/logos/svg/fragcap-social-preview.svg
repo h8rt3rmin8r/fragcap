@@ -36,6 +36,6 @@
   <path d="M516 82l12-12h45v80h-48l-13-13v-24l13-13h48"/>
   <path d="M621 174V70h45l13 13v44l-13 13h-45"/>
 </g></g>
-<text x="568" y="405" fill="#F2F7F8" font-family="Geist,Arial,sans-serif" font-size="22">Passive process-attributed network capture for games.</text>
-<text x="568" y="456" fill="#94A8B0" font-family="Geist Mono,monospace" font-size="17" letter-spacing="2">A SHRUGGIETECH PROJECT</text>
+<text x="559" y="405" fill="#F2F7F8" font-family="Geist,Arial,sans-serif" font-size="23" textLength="608" lengthAdjust="spacingAndGlyphs">Passive process-attributed network capture for games.</text>
+<text x="559" y="456" fill="#94A8B0" font-family="Geist Mono,monospace" font-size="17" letter-spacing="2">A SHRUGGIETECH PROJECT</text>
 </svg>

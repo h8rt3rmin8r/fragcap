@@ -2,7 +2,7 @@
   <rect width="1600" height="1000" fill="#050708"/>
   <text x="100" y="110" fill="#27C7E7" font-family="Space Grotesk" font-size="28" font-weight="500" letter-spacing="4">FRAGCAP TYPOGRAPHY</text>
   <text x="100" y="220" fill="#F2F7F8" font-family="Space Grotesk" font-size="76" font-weight="700">Observe the traffic.</text>
-  <text x="100" y="286" fill="#94A8B0" font-family="Geist" font-size="30">Precise instrumentation for passive game packet capture.</text>
+  <text x="100" y="286" fill="#94A8B0" font-family="Geist" font-size="30">Passive process-attributed network capture for games.</text>
   <text x="100" y="390" fill="#FF5300" font-family="Geist Mono" font-size="23" letter-spacing="2">HEX READABILITY TEST</text>
   <text x="100" y="465" fill="#F2F7F8" font-family="Geist Mono" font-size="34">00000000  45 00 00 3C 1C 46 40 00 40 06 B1 E6</text>
   <text x="100" y="525" fill="#F2F7F8" font-family="Geist Mono" font-size="34">00000010  AC 10 0A 63 AC 10 0A 0C C2 03 00 50</text>
