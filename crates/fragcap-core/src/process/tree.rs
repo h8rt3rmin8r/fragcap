@@ -187,6 +187,11 @@ pub struct ProcessTree {
     /// several buffers and does not order events by timestamp across them, so
     /// an exit before its start is ordinary rather than pathological.
     pending_exits: HashMap<ProcessId, Vec<Timestamp>>,
+    /// The instant the startup snapshot reflects, when it is known. It bounds
+    /// reconciliation: a process alive at this instant started at or before it,
+    /// so a later start event for the same identifier is a different process
+    /// that reused the identifier rather than the snapshot's own creation.
+    snapshot_at: Option<Timestamp>,
     events_lost: u64,
 }
 
@@ -211,13 +216,38 @@ impl ProcessTree {
         }
     }
 
-    /// Fold the startup snapshot.
+    /// Fold the startup snapshot, without a timestamp for it.
     ///
     /// Reconciles against nodes already present rather than adding a second
     /// node for a process the event stream has already reported. The watcher
     /// subscribes before it snapshots, so a process created during startup
     /// appears in both, and one node is the required outcome.
+    ///
+    /// Prefer [`apply_snapshot_at`](Self::apply_snapshot_at) where the instant
+    /// the snapshot reflects is known. Without it, a start event arriving later
+    /// for a snapshot process is assumed to be that same process finally
+    /// reporting its creation, which is right during the startup overlap and
+    /// wrong once an identifier has been reused. The timestamped form tells the
+    /// two apart; this form cannot, and is for callers, chiefly the offline
+    /// tests, that never exercise identifier reuse against a snapshot.
     pub fn apply_snapshot(&mut self, records: &[ProcessRecord]) {
+        self.fold_snapshot(records);
+    }
+
+    /// Fold the startup snapshot, recording the instant it reflects.
+    ///
+    /// The instant is what lets reconciliation tell the startup overlap from an
+    /// identifier reused later. A process the snapshot found was alive at
+    /// `taken_at`, so it started at or before it; a start event whose own time
+    /// is after `taken_at` therefore cannot be that process's creation and is a
+    /// different process that reused the identifier. See
+    /// [`apply`](Self::apply)'s handling of the start event.
+    pub fn apply_snapshot_at(&mut self, records: &[ProcessRecord], taken_at: Timestamp) {
+        self.snapshot_at = Some(taken_at);
+        self.fold_snapshot(records);
+    }
+
+    fn fold_snapshot(&mut self, records: &[ProcessRecord]) {
         for r in records {
             let pid = ProcessId(r.pid);
             if self.live_node_for(pid).is_some() {
@@ -237,8 +267,9 @@ impl ProcessTree {
             } else {
                 Ancestry::Unresolved
             };
+            let id = NodeId(self.nodes.len() as u32);
             self.push(ProcessNode {
-                id: NodeId(self.nodes.len() as u32),
+                id,
                 pid,
                 parent_pid,
                 parent,
@@ -249,7 +280,7 @@ impl ProcessTree {
                 exited: None,
                 stage: None,
             });
-            self.join_pending_exit(pid);
+            self.join_pending_exit(id);
         }
     }
 
@@ -272,11 +303,22 @@ impl ProcessTree {
     ) {
         // Reconciliation in the other arrival order: the snapshot got here
         // first and its node is weaker in every field. Upgrade it in place
-        // rather than adding a second node for one process.
+        // rather than adding a second node for one process, but only when this
+        // start could be that process's own creation.
+        //
+        // The snapshot node was alive when the snapshot was taken, so its
+        // process started at or before that instant. A start event whose time
+        // is after the snapshot instant therefore cannot be that process, only
+        // a different one that reused the identifier; upgrading would collapse
+        // two processes into one node and hand every descendant of the second
+        // the ancestry of the first. Without a snapshot instant the tree cannot
+        // tell the two apart and assumes the overlap, which is
+        // [`apply_snapshot`](Self::apply_snapshot)'s documented limitation.
         if let Some(existing) = self.live_node_for(pid) {
-            if self.nodes[existing.index()].ancestry == Ancestry::Snapshot
-                || self.nodes[existing.index()].started.is_none()
-            {
+            let node = &self.nodes[existing.index()];
+            let from_snapshot = node.ancestry == Ancestry::Snapshot || node.started.is_none();
+            let could_be_same = self.snapshot_at.is_none_or(|taken| at <= taken);
+            if from_snapshot && could_be_same {
                 let parent = self.resolve_parent_for(existing, parent_pid, at);
                 let n = &mut self.nodes[existing.index()];
                 n.parent_pid = parent_pid;
@@ -291,6 +333,10 @@ impl ProcessTree {
                 n.started = Some(at);
                 return;
             }
+            // A reused identifier. The snapshot node's process is gone, but no
+            // exit was observed for it, so its exit stays unknown rather than
+            // being fabricated to make room. The new node below is a second,
+            // distinct node; resolution keeps them apart by lifetime.
         }
 
         let id = NodeId(self.nodes.len() as u32);
@@ -312,11 +358,17 @@ impl ProcessTree {
             exited: None,
             stage: None,
         });
-        self.join_pending_exit(pid);
+        self.join_pending_exit(id);
     }
 
     fn apply_exited(&mut self, pid: ProcessId, at: Timestamp) {
-        match self.live_node_for(pid) {
+        // Match the exit to the process whose lifetime contains it, not merely
+        // to the newest live node with this identifier. When an identifier is
+        // reused and the new process's start arrives before the old process's
+        // exit, the newest live node is the new process, and closing it would
+        // hand it an exit earlier than its own start while leaving the old
+        // process open forever. `live_node_covering` selects by `at` instead.
+        match self.live_node_covering(pid, at) {
             Some(id) => self.nodes[id.index()].exited = Some(at),
             // Held, not counted. The start may still arrive.
             None => self.pending_exits.entry(pid).or_default().push(at),
@@ -330,11 +382,16 @@ impl ProcessTree {
         self.by_pid.entry(pid).or_default().push(id);
     }
 
-    /// Attach the earliest held exit that is not before this process's start.
-    fn join_pending_exit(&mut self, pid: ProcessId) {
-        let Some(id) = self.live_node_for(pid) else {
-            return;
-        };
+    /// Attach the earliest held exit that is not before this node's start, to
+    /// the node just created.
+    ///
+    /// Keyed to a specific node rather than to the newest live one with its
+    /// identifier. When an identifier has been reused, several nodes share it,
+    /// and a held exit belongs to whichever node's lifetime it falls in; the
+    /// node this fold just created is the one whose start might now match a
+    /// held exit, so it is the only candidate considered here.
+    fn join_pending_exit(&mut self, id: NodeId) {
+        let pid = self.nodes[id.index()].pid;
         let started = self.nodes[id.index()].started;
         let Some(held) = self.pending_exits.get_mut(&pid) else {
             return;
@@ -495,6 +552,12 @@ impl ProcessTree {
         self.pending_exits.values().map(|v| v.len() as u64).sum()
     }
 
+    /// The newest live node with this identifier, ignoring timestamps.
+    ///
+    /// Used only where the caller wants "the current holder of this identifier"
+    /// rather than "the holder at a given instant": snapshot reconciliation,
+    /// where a live node means the event stream already reported the process,
+    /// and parent resolution for a snapshot record whose own time is unknown.
     fn live_node_for(&self, pid: ProcessId) -> Option<NodeId> {
         self.by_pid
             .get(&pid)?
@@ -502,6 +565,32 @@ impl ProcessTree {
             .rev()
             .copied()
             .find(|id| self.nodes[id.index()].is_live())
+    }
+
+    /// The live node with this identifier whose lifetime contains `at`.
+    ///
+    /// Where several nodes have shared one recycled identifier, at most one is
+    /// live and started at or before `at`; that is the one an exit at `at`
+    /// belongs to. A node with an unknown start time is treated as having
+    /// started before anything observed, so it qualifies only when no
+    /// known-start node covers `at`, matching [`resolve`](Self::resolve).
+    fn live_node_covering(&self, pid: ProcessId, at: Timestamp) -> Option<NodeId> {
+        let ids = self.by_pid.get(&pid)?;
+        let known = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                let n = &self.nodes[id.index()];
+                n.is_live() && n.started.is_some() && n.contains(at)
+            })
+            .max_by_key(|id| self.nodes[id.index()].started);
+        if known.is_some() {
+            return known;
+        }
+        ids.iter().copied().find(|id| {
+            let n = &self.nodes[id.index()];
+            n.is_live() && n.started.is_none() && n.contains(at)
+        })
     }
 }
 
@@ -798,6 +887,99 @@ mod tests {
         assert_eq!(t.len(), N as usize, "every observed process is retained");
         assert_eq!(t.unmatched_exits(), 0);
         assert!(t.is_complete());
+    }
+
+    #[test]
+    fn an_exit_closes_the_process_alive_at_its_time_not_the_newest() {
+        // The identifier is reused, and the old process's exit arrives after
+        // the new process's start, out of order. Closing the newest live node
+        // would give the new process an exit before its own start and leave the
+        // old one open forever.
+        let mut t = ProcessTree::new();
+        start(&mut t, 100, 1, "old.exe", 10);
+        start(&mut t, 100, 1, "new.exe", 30); // reused pid, old must be gone
+        exit(&mut t, 100, 20); // the OLD process's exit, delivered late
+
+        let old = NodeId(0);
+        let new = NodeId(1);
+        assert_eq!(t.node(old).unwrap().exited(), Some(at(20)), "old closed");
+        assert!(t.node(new).unwrap().is_live(), "new stays live");
+        // And resolution is intact in both eras.
+        assert_eq!(t.resolve(ProcessId(100), at(15)), Some(old));
+        assert_eq!(t.resolve(ProcessId(100), at(35)), Some(new));
+    }
+
+    #[test]
+    fn a_held_exit_joins_the_node_whose_lifetime_it_falls_in() {
+        // The exit is held first, then two starts arrive sharing the
+        // identifier. It belongs to the one whose lifetime contains it.
+        let mut t = ProcessTree::new();
+        exit(&mut t, 100, 20);
+        start(&mut t, 100, 1, "new.exe", 30); // does not contain 20
+        assert!(
+            t.node(NodeId(0)).unwrap().is_live(),
+            "new is not closed by it"
+        );
+        assert_eq!(t.unmatched_exits(), 1, "still held");
+
+        start(&mut t, 100, 1, "old.exe", 10); // contains 20
+                                              // The join runs for the node just created; its start (10) precedes the
+                                              // held exit (20), so it takes it.
+        assert_eq!(t.node(NodeId(1)).unwrap().exited(), Some(at(20)));
+        assert_eq!(t.unmatched_exits(), 0);
+        assert!(t.node(NodeId(0)).unwrap().is_live());
+    }
+
+    #[test]
+    fn a_reused_identifier_after_the_snapshot_is_a_new_node_not_a_merge() {
+        // A pre-existing process is in the snapshot with an unknown start. Its
+        // identifier is reused after the snapshot instant. The reused process's
+        // start must not overwrite the snapshot node in place, which would
+        // collapse two distinct processes into one identity.
+        let mut t = ProcessTree::new();
+        t.apply_snapshot_at(
+            &[
+                ProcessRecord::new(4, 0, "explorer.exe"),
+                ProcessRecord::new(100, 4, "preexisting.exe"),
+            ],
+            at(50),
+        );
+        // A start after the snapshot instant: a different process, reused pid.
+        start(&mut t, 100, 4, "reused.exe", 60);
+
+        assert_eq!(t.len(), 3, "the two snapshot nodes plus one new node");
+        let pre = t.node(NodeId(1)).unwrap();
+        let reused = t.node(NodeId(2)).unwrap();
+        assert_eq!(pre.ancestry(), Ancestry::Snapshot);
+        assert_eq!(pre.started(), None, "the snapshot node is untouched");
+        assert_eq!(pre.image(), "preexisting.exe");
+        assert_eq!(reused.ancestry(), Ancestry::Observed);
+        assert_eq!(reused.started(), Some(at(60)));
+        assert_eq!(reused.image(), "reused.exe");
+        // Resolution keeps them apart: the reused process wins once it starts.
+        assert_eq!(t.resolve(ProcessId(100), at(70)), Some(NodeId(2)));
+    }
+
+    #[test]
+    fn a_start_within_the_snapshot_window_still_upgrades_the_snapshot_node() {
+        // The overlap case the ordering exists for: a process created just
+        // before the snapshot appears in both, and its start event, whose time
+        // is at or before the snapshot instant, is its own creation. One node.
+        let mut t = ProcessTree::new();
+        t.apply_snapshot_at(
+            &[
+                ProcessRecord::new(4, 0, "explorer.exe"),
+                ProcessRecord::new(100, 4, "overlap.exe"),
+            ],
+            at(50),
+        );
+        start(&mut t, 100, 4, "C:\\overlap.exe", 48); // at <= snapshot instant
+
+        assert_eq!(t.len(), 2, "one process, one node, plus its parent");
+        let n = t.node(NodeId(1)).unwrap();
+        assert_eq!(n.ancestry(), Ancestry::Observed);
+        assert_eq!(n.started(), Some(at(48)));
+        assert_eq!(n.image(), "C:\\overlap.exe");
     }
 
     #[test]

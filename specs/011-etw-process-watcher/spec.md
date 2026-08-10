@@ -587,6 +587,33 @@ the count is surfaced and the tree reports itself incomplete.
   control thread. Section 8.6's control thread arrives with the slices that own
   its other occupants.
 
+**Found in review of pull request 14**
+
+- **FR-051**: An exit event MUST close the process whose lifetime contains its
+  timestamp, not merely the newest live node sharing its identifier. When an
+  identifier is reused and the new process's start is delivered before the old
+  process's exit, the newest live node is the new process; closing it would give
+  it an exit earlier than its own start and leave the old process open forever,
+  corrupting every later resolution and ancestry query for that identifier.
+- **FR-052**: The events the watcher consumes before any caller subscribes MUST
+  reach the first subscriber rather than being discarded. Consumption begins
+  when the trace opens, inside the watcher's construction, before a caller can
+  subscribe, so the startup burst the snapshot is meant to overlap with would
+  otherwise be published to nobody. This is the same gap FR-007's ordering
+  exists to close, at the delivery layer rather than the ordering layer.
+- **FR-053**: Reconciliation of a snapshot process with a later start event for
+  its identifier MUST distinguish that process's own late creation event from a
+  different process that reused the identifier after the snapshot. Where the
+  instant the snapshot reflects is known, a start whose time is after it is a
+  reused identifier and MUST become a distinct node, because a process alive at
+  the snapshot instant started at or before it. Where that instant is not
+  provided the tree assumes the overlap and merges, which is a documented
+  limitation of the untimestamped path rather than of the mechanism.
+- **FR-054**: A failed query of the trace session's loss counters MUST return
+  the last figures a query did read, not zero. A transient query failure MUST
+  NOT make an incomplete trace appear lossless, which is the same silent-loss
+  failure P-4 and P-9 forbid one layer down.
+
 ### Key Entities
 
 - **Process event**: An observed change in the set of running processes. A start

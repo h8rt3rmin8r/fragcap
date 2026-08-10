@@ -1,5 +1,48 @@
 ### Decisions
 
+**2026-08-09, in review of pull request 14. Five findings, all fixed.** An
+automated review raised two correctness bugs and three lower ones, and each was
+a real defect rather than a false positive.
+
+The tree closed an exit against the newest live node sharing an identifier
+rather than the node whose lifetime contained the exit's time. When an
+identifier is reused and the old process's exit arrives after the new process's
+start, that gave the new process an exit before its own start and left the old
+one open forever. Exit matching now selects by lifetime; `live_node_covering`
+replaces `live_node_for` on that path, and `join_pending_exit` is keyed to the
+specific node a fold just created rather than to whichever node is newest.
+
+The ETW watcher began consuming when the trace opened, inside `start`, but a
+caller can only subscribe after `start` returns, so every event in that window,
+the whole startup burst, was published to nobody. That is the gap the
+subscribe-before-snapshot ordering exists to close, reopened at the delivery
+layer. The consumer now holds a backlog from the moment it opens and delivers it
+to the first subscriber, under the same lock a publish takes so nothing slips
+between the two.
+
+Snapshot reconciliation could collapse two processes into one node: a start
+event for an identifier a snapshot process held would overwrite the snapshot
+node in place, even when the start was a different process that reused the
+identifier. The tree now takes the instant the snapshot reflects
+(`apply_snapshot_at`), and a start after that instant is a distinct node,
+because a process alive at the snapshot instant started at or before it. The ETW
+watcher stamps that instant from the system clock and exposes it. The
+untimestamped `apply_snapshot` keeps merging, which is correct for the offline
+tests that never reuse an identifier against a snapshot, and its limitation is
+documented.
+
+`Session::lost` returned a sentinel on a failed query and the report treated it
+as zero losses, so a transient query failure could make an incomplete trace look
+lossless, the silent loss P-4 and P-9 both forbid. The session now caches the
+last figures a query did read and returns those on failure; zero appears only
+before any successful read, meaning none observed rather than none suffered.
+
+The ETW properties buffer was a `Vec<u8>` cast to `EVENT_TRACE_PROPERTIES`,
+which is undefined behaviour because a `Vec<u8>` guarantees only byte alignment
+and the structure needs more. It is now a `#[repr(C)]` type carrying the
+structure and its trailing name bytes, so the compiler provides the alignment,
+across all three call sites.
+
 **2026-08-09. `windows-sys` supplies the platform binding, not `ferrisetw`.**
 Specification Appendix A names `ferrisetw` and `sysinfo`. Neither is taken, and
 the measurements are in the slice's research document. `windows-sys` 0.61.2

@@ -12,6 +12,8 @@
 //! Nothing here stops, reconfigures, or reuses a session fragcap did not
 //! create. `ERROR_ALREADY_EXISTS` is reported, not worked around.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use windows_sys::core::GUID;
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SUCCESS};
 use windows_sys::Win32::System::Diagnostics::Etw::{
@@ -52,17 +54,55 @@ const KW_GENERAL: u64 = 0x0000_0000_0000_0001;
 const CLIENT_CONTEXT_SYSTEM_TIME: u32 = 2;
 
 /// Room for the logger name and the (unused) log file name, after the fixed
-/// structure. Both are counted in `Wnode.BufferSize`, which is why the buffer
-/// is allocated as bytes rather than as the structure alone.
+/// structure. Both are counted in `Wnode.BufferSize`.
 const NAME_BYTES: usize = 512;
+
+/// The properties structure the ETW control calls take, with room after it for
+/// the logger name they write at `LoggerNameOffset`.
+///
+/// A single `#[repr(C)]` type rather than a `Vec<u8>` cast so that the
+/// allocation carries the alignment `EVENT_TRACE_PROPERTIES` requires. A
+/// `Vec<u8>` guarantees only byte alignment, and a custom global allocator is
+/// permitted to hand back a merely byte-aligned address, which would make the
+/// reference formed from the cast undefined behaviour. Giving the buffer this
+/// type moves the alignment guarantee to the compiler. The trailing bytes are
+/// contiguous with the structure and hold the name, exactly as the API expects.
+#[repr(C)]
+struct TraceProps {
+    props: EVENT_TRACE_PROPERTIES,
+    tail: [u8; NAME_BYTES],
+}
+
+impl TraceProps {
+    /// A zeroed buffer with `BufferSize` and `LoggerNameOffset` set. All-zero is
+    /// a valid `TraceProps`: it is plain data with no invariant a bit pattern
+    /// could break.
+    fn boxed() -> Box<TraceProps> {
+        // SAFETY: `TraceProps` is `repr(C)` over integer and array fields, so an
+        // all-zero value is valid and initialized.
+        let mut b: Box<TraceProps> = Box::new(unsafe { std::mem::zeroed() });
+        b.props.Wnode.BufferSize = std::mem::size_of::<TraceProps>() as u32;
+        b.props.LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
+        b
+    }
+
+    /// A pointer to the properties structure, aligned by construction.
+    fn as_ptr(b: &mut TraceProps) -> *mut EVENT_TRACE_PROPERTIES {
+        &mut b.props as *mut EVENT_TRACE_PROPERTIES
+    }
+}
 
 /// A running trace session, stopped on drop.
 pub struct Session {
     /// A session handle. Plain `u64` on this binding line.
     handle: u64,
     name: Vec<u16>,
-    /// The properties buffer must outlive every call that reads it back.
-    buffer: Vec<u8>,
+    /// The last loss counts a successful query returned. Held so that a later
+    /// query which fails does not make an incomplete trace look lossless: the
+    /// last known figures are returned instead of zero. Zero before any
+    /// successful read means "none observed yet", not "known lossless".
+    last_events: AtomicU64,
+    last_buffers: AtomicU64,
 }
 
 impl std::fmt::Debug for Session {
@@ -91,39 +131,24 @@ impl Session {
             });
         }
 
-        let props_size = std::mem::size_of::<EVENT_TRACE_PROPERTIES>();
-        let total = props_size + NAME_BYTES;
-        let mut buffer = vec![0u8; total];
-
-        // SAFETY: `buffer` is at least `props_size` bytes and is aligned for
-        // the structure, because `Vec<u8>`'s allocation is aligned to at least
-        // the maximum fundamental alignment on every supported target and the
-        // structure contains no over-aligned member. The reference does not
-        // outlive `buffer`.
-        let props = unsafe { &mut *(buffer.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
-        props.Wnode.BufferSize = total as u32;
-        props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-        props.Wnode.ClientContext = CLIENT_CONTEXT_SYSTEM_TIME;
-        props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
-        props.LoggerNameOffset = props_size as u32;
+        let mut props = TraceProps::boxed();
+        props.props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+        props.props.Wnode.ClientContext = CLIENT_CONTEXT_SYSTEM_TIME;
+        props.props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
         // Deliberately zero: this session never writes a file. A real-time
         // session with a log file name would put captured process command
         // lines on disk without the operator having asked for it.
-        props.LogFileNameOffset = 0;
+        props.props.LogFileNameOffset = 0;
 
         let mut handle: u64 = 0;
 
-        // SAFETY: `handle` and `buffer` are live for the call, the name is
-        // null-terminated, and `Wnode.BufferSize` describes the buffer's real
-        // length. `StartTraceW` copies the name into the buffer at
-        // `LoggerNameOffset`, which is why the buffer is oversized.
-        let rc = unsafe {
-            StartTraceW(
-                &mut handle,
-                wide.as_ptr(),
-                buffer.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
-            )
-        };
+        // SAFETY: `handle` and `props` are live for the call, the name is
+        // null-terminated, and `BufferSize` describes the buffer's real length.
+        // `StartTraceW` copies the name into the buffer at `LoggerNameOffset`,
+        // which is why the buffer carries the trailing bytes. The buffer need
+        // not outlive the call: the returned handle is what the session is
+        // driven by afterwards.
+        let rc = unsafe { StartTraceW(&mut handle, wide.as_ptr(), TraceProps::as_ptr(&mut props)) };
         if rc != ERROR_SUCCESS {
             return Err(if rc == ERROR_ACCESS_DENIED {
                 // The one condition with a remedy the operator can act on, so
@@ -140,7 +165,8 @@ impl Session {
         let session = Session {
             handle,
             name: wide,
-            buffer,
+            last_events: AtomicU64::new(0),
+            last_buffers: AtomicU64::new(0),
         };
 
         // SAFETY: the session started, so the handle is valid. The provider
@@ -176,35 +202,38 @@ impl Session {
     /// Relayed, never accumulated: the query returns counters from the start of
     /// the session, so fragcap copies a cumulative value rather than summing
     /// deltas, and there is no arithmetic in which an alteration could hide.
+    ///
+    /// A failed query returns the last figures a query did succeed in reading,
+    /// not zero. Reporting zero losses because the question could not be asked
+    /// would be the comfortable untruth P-9 forbids, and it would make a
+    /// transient failure erase a loss the trace really suffered. Before any
+    /// successful read the cached figures are zero, which is honest: none has
+    /// been observed.
     pub fn lost(&self) -> (u64, u64) {
-        let props_size = std::mem::size_of::<EVENT_TRACE_PROPERTIES>();
-        let mut buf = vec![0u8; props_size + NAME_BYTES];
+        let mut props = TraceProps::boxed();
 
-        // SAFETY: as in `start`, the buffer is large enough and aligned.
-        let props = unsafe { &mut *(buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
-        props.Wnode.BufferSize = (props_size + NAME_BYTES) as u32;
-        props.LoggerNameOffset = props_size as u32;
-
-        // SAFETY: the handle is valid for the lifetime of `self`, and the
-        // buffer is live for the call.
+        // SAFETY: the handle is valid for the lifetime of `self`, and `props`
+        // is live and correctly sized and aligned for the call.
         let rc = unsafe {
             ControlTraceW(
                 self.handle,
                 std::ptr::null(),
-                buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                TraceProps::as_ptr(&mut props),
                 EVENT_TRACE_CONTROL_QUERY,
             )
         };
         if rc != ERROR_SUCCESS {
-            // Nothing is claimed when nothing could be read. Reporting zero
-            // losses because the query failed would be the comfortable untruth
-            // P-9 forbids, so the caller keeps whatever it last knew.
-            return (u64::MAX, u64::MAX);
+            return (
+                self.last_events.load(Ordering::Relaxed),
+                self.last_buffers.load(Ordering::Relaxed),
+            );
         }
 
-        // SAFETY: the call succeeded, so the structure is populated.
-        let props = unsafe { &*(buf.as_ptr() as *const EVENT_TRACE_PROPERTIES) };
-        (props.EventsLost as u64, props.RealTimeBuffersLost as u64)
+        let events = props.props.EventsLost as u64;
+        let buffers = props.props.RealTimeBuffersLost as u64;
+        self.last_events.store(events, Ordering::Relaxed);
+        self.last_buffers.store(buffers, Ordering::Relaxed);
+        (events, buffers)
     }
 }
 
@@ -231,23 +260,17 @@ impl Drop for Session {
             );
         }
 
-        let props_size = std::mem::size_of::<EVENT_TRACE_PROPERTIES>();
-        let mut buf = vec![0u8; props_size + NAME_BYTES];
-        // SAFETY: as above.
-        let props = unsafe { &mut *(buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES) };
-        props.Wnode.BufferSize = (props_size + NAME_BYTES) as u32;
-        props.LoggerNameOffset = props_size as u32;
-
-        // SAFETY: the handle is valid and the buffer is live for the call.
+        let mut props = TraceProps::boxed();
+        // SAFETY: the handle is valid and `props` is live and correctly sized
+        // and aligned for the call.
         unsafe {
             ControlTraceW(
                 self.handle,
                 self.name.as_ptr(),
-                buf.as_mut_ptr() as *mut EVENT_TRACE_PROPERTIES,
+                TraceProps::as_ptr(&mut props),
                 EVENT_TRACE_CONTROL_STOP,
             );
         }
-        let _ = &self.buffer;
     }
 }
 

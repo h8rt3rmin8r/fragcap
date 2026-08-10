@@ -84,6 +84,7 @@ impl ProcessTree {
 
     pub fn apply(&mut self, event: ProcessEvent);
     pub fn apply_snapshot(&mut self, records: &[ProcessRecord]);
+    pub fn apply_snapshot_at(&mut self, records: &[ProcessRecord], taken_at: Timestamp);
     pub fn note_lost(&mut self, events: u64);
 
     pub fn resolve(&self, pid: ProcessId, at: Timestamp) -> Option<NodeId>;
@@ -104,6 +105,15 @@ predicate resolves a stage name to a node and then asks this question, and the
 name half is S12's. Providing the relation here and the naming there is what
 keeps the profile schema out of `fragcap-core`.
 
+`apply_snapshot_at` is `apply_snapshot` plus the instant the snapshot reflects.
+The instant is what lets the tree tell a snapshot process's own late start event
+from a different process that reused its identifier: a process alive at the
+instant started at or before it, so a start after it is a reuse. Without the
+instant (`apply_snapshot`) the tree assumes the overlap and merges, which is
+right during the startup window and wrong once an identifier has been reused
+against a snapshot; the untimestamped form is for the offline tests, which never
+exercise that.
+
 ### Invariants the tests assert
 
 1. `NodeId` values issued in one tree are distinct, always. Recycling a
@@ -121,6 +131,11 @@ keeps the profile schema out of `fragcap-core`.
    and false forever after.
 7. Applying the same events in a different order, where the platform could have
    delivered them in that order, yields the same tree.
+8. An exit closes the node whose lifetime contains its timestamp, not the newest
+   live node sharing the identifier. A reused identifier whose old exit arrives
+   after the new start closes the old process and leaves the new one live.
+9. A start event after `apply_snapshot_at`'s instant, for a snapshot process's
+   identifier, becomes a second node rather than overwriting the snapshot node.
 
 ## 4. The watcher report, `fragcap-core::process`
 
@@ -145,6 +160,7 @@ pub struct EtwWatcher { /* private */ }
 impl EtwWatcher {
     pub fn start(session_name: &str) -> Result<Self, WatcherError>;
     pub fn report(&self) -> WatcherReport;
+    pub fn snapshot_taken_at(&self) -> Option<Timestamp>;
     pub fn stop(self) -> WatcherReport;
 }
 
@@ -160,12 +176,22 @@ pub enum WatcherError {
 
 ### Behavioral requirements
 
-- `start` subscribes before it snapshots (FR-007).
+- `start` begins consuming before it snapshots (FR-007). Events consumed before
+  a caller subscribes are held in a backlog and delivered to the first
+  subscriber, so the window between consumption starting and the caller
+  subscribing loses nothing (FR-052).
 - `start` creates its own session with the system logger mode set. It never
   names the machine-wide kernel logger, and never stops a session it did not
   create (FR-005).
 - The session's client context is set to system time, so event timestamps are
   `FILETIME` and convert exactly into `Timestamp` (research R-6).
+- `snapshot_taken_at` returns the instant the snapshot reflects, from the same
+  system clock the event timestamps use. A consumer folding the snapshot into a
+  tree passes it to `apply_snapshot_at` so a reused identifier is a distinct
+  node rather than a merge (FR-053).
+- `report`'s loss figures come from `Session::lost`, which returns the last
+  figures a successful query read when a later query fails, so a transient
+  failure cannot make an incomplete trace look lossless (FR-054).
 - `Drop` stops the session it created. A session left running after the process
   exits is a resource leak the operator cannot see.
 

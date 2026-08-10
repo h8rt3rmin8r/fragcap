@@ -48,9 +48,34 @@ const OPCODE_END: u8 = 2;
 const OPCODE_DC_START: u8 = 3;
 const OPCODE_DC_END: u8 = 4;
 
+/// The subscriber set and the startup backlog, under one lock so that a publish
+/// and a subscribe cannot interleave to drop an event between them.
+struct Fan {
+    subscribers: Vec<Sender<ProcessEvent>>,
+    /// Events published before the first subscriber attached.
+    ///
+    /// The consumer begins delivering the moment `OpenTraceW` returns, which is
+    /// inside `EtwWatcher::start`, before the caller can subscribe: a caller
+    /// subscribes only after `start` returns. Without this backlog, every event
+    /// in that window, including the whole startup burst the snapshot is meant
+    /// to overlap with, would be published to nobody and lost, recreating the
+    /// gap the subscribe-before-snapshot ordering exists to prevent. The
+    /// backlog holds those events until the first subscriber claims them.
+    ///
+    /// Unbounded, like the live channel and for the same reason (module docs):
+    /// losing a start event costs a subtree, so there is no discard path here
+    /// to count under P-4.
+    backlog: Vec<ProcessEvent>,
+    /// Set once the first subscriber has drained the backlog. After that the
+    /// backlog is neither filled nor delivered again: later subscribers see
+    /// live events only, which is the trait's documented per-subscriber
+    /// contract. The bridge is for the first consumer, which is the tree.
+    backlog_claimed: bool,
+}
+
 /// Shared between the consumer thread's callback and the watcher.
 pub(super) struct Fanout {
-    subscribers: Mutex<Vec<Sender<ProcessEvent>>>,
+    fan: Mutex<Fan>,
     /// Records that arrived tagged as process events and did not parse. Counted
     /// because a record fragcap could not read is an observation it failed to
     /// make, and P-4 does not let one go unmentioned merely because it was the
@@ -70,7 +95,11 @@ pub(super) struct Fanout {
 impl Fanout {
     pub(super) fn new() -> Self {
         Fanout {
-            subscribers: Mutex::new(Vec::new()),
+            fan: Mutex::new(Fan {
+                subscribers: Vec::new(),
+                backlog: Vec::new(),
+                backlog_claimed: false,
+            }),
             unparsed: AtomicU64::new(0),
             rundown_ignored: AtomicU64::new(0),
         }
@@ -78,18 +107,32 @@ impl Fanout {
 
     pub(super) fn subscribe(&self) -> Receiver<ProcessEvent> {
         let (tx, rx) = channel();
-        if let Ok(mut subs) = self.subscribers.lock() {
-            subs.push(tx);
+        if let Ok(mut fan) = self.fan.lock() {
+            // The first subscriber inherits every event published since the
+            // consumer opened. Draining under the same lock that publish holds
+            // means an event published concurrently is either in the backlog
+            // (drained here) or sent to the now-registered subscriber, never
+            // lost between the two.
+            if !fan.backlog_claimed {
+                for event in std::mem::take(&mut fan.backlog) {
+                    let _ = tx.send(event);
+                }
+                fan.backlog_claimed = true;
+            }
+            fan.subscribers.push(tx);
         }
         rx
     }
 
     fn publish(&self, event: ProcessEvent) {
-        if let Ok(mut subs) = self.subscribers.lock() {
+        if let Ok(mut fan) = self.fan.lock() {
+            if !fan.backlog_claimed {
+                fan.backlog.push(event.clone());
+            }
             // A subscriber whose receiver has been dropped is removed. Nothing
             // is discarded by that: an event nobody is listening for was never
             // received, which is not the same as one received and thrown away.
-            subs.retain(|s| s.send(event.clone()).is_ok());
+            fan.subscribers.retain(|s| s.send(event.clone()).is_ok());
         }
     }
 }
@@ -238,5 +281,74 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
                 fanout.unparsed.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn started(pid: u32) -> ProcessEvent {
+        ProcessEvent::started(
+            pid,
+            1,
+            "C:\\a.exe",
+            "a.exe",
+            Timestamp::from_nanos(pid as i64),
+        )
+    }
+
+    #[test]
+    fn the_first_subscriber_inherits_events_published_before_it_attached() {
+        // This is the startup gap: the consumer begins publishing the moment
+        // the trace opens, inside `EtwWatcher::start`, before any caller can
+        // subscribe. Those events must reach the first subscriber rather than
+        // being lost.
+        let fanout = Fanout::new();
+        fanout.publish(started(10));
+        fanout.publish(started(20));
+
+        let rx = fanout.subscribe();
+        let got: Vec<_> = rx.try_iter().map(|e| e.pid()).collect();
+        assert_eq!(
+            got,
+            vec![10, 20],
+            "the backlog reaches the first subscriber"
+        );
+    }
+
+    #[test]
+    fn a_late_second_subscriber_gets_live_events_only() {
+        // The backlog bridges the gap for the first consumer, which is the
+        // tree. A second subscriber sees only what is published after it, which
+        // is the trait's per-subscriber contract, so that two subscribers
+        // feeding one tree cannot double-apply the startup burst.
+        let fanout = Fanout::new();
+        fanout.publish(started(10));
+        let first = fanout.subscribe();
+        let second = fanout.subscribe();
+
+        fanout.publish(started(20));
+
+        let a: Vec<_> = first.try_iter().map(|e| e.pid()).collect();
+        let b: Vec<_> = second.try_iter().map(|e| e.pid()).collect();
+        assert_eq!(
+            a,
+            vec![10, 20],
+            "the first sees the backlog and the live event"
+        );
+        assert_eq!(b, vec![20], "the second sees the live event only");
+    }
+
+    #[test]
+    fn with_no_subscriber_the_backlog_retains_rather_than_discards() {
+        // Unbounded, like the live channel: losing a start event costs a
+        // subtree, so nothing here is dropped while waiting for a subscriber.
+        let fanout = Fanout::new();
+        for pid in 0..1000 {
+            fanout.publish(started(pid));
+        }
+        let rx = fanout.subscribe();
+        assert_eq!(rx.try_iter().count(), 1000);
     }
 }
