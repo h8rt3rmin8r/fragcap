@@ -38,14 +38,14 @@
 - [25. Testing Strategy](#25-testing-strategy)
 - [26. Observability and Diagnostics](#26-observability-and-diagnostics)
 - [27. Spec Kit Decomposition](#27-spec-kit-decomposition)
-- [28. Roadmap Beyond v0.3.0](#28-roadmap-beyond-v030)
+- [28. Roadmap Beyond v0.2.0](#28-roadmap-beyond-v020)
 - [29. Open Questions](#29-open-questions)
 - [30. Appendices](#30-appendices)
 
 ## 1. Document Control
 
-This document specifies fragcap across its functional releases, v0.2.0
-and v0.3.0. It defines the product's
+This document specifies fragcap for its first public release, v0.2.0,
+which comprises the whole roadmap. It defines the product's
 purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
@@ -87,6 +87,7 @@ enforcement.
 | 0.1.2-draft | 2026-08-06 | W. Thompson | **Withdraws a claim.** 0.1.1-draft asserted that a focal title passes a live credential on its client's command line, and described it as documented. That was inference from a parameter name and was not supported by the capture. An entropy scan of 3,694 command lines found no credential in either title. Sections 6.2, 10.2, 29, and Appendix D corrected. A-5's fallback now cites an observed named pipe instead. |
 | 0.1.3-draft | 2026-08-06 | W. Thompson | **Withdraws the redaction rules.** 0.1.1-draft made command line capture opt-in, masked profile paths, redacted parameters by name at the source, and barred command lines from output. All four alter what the instrument reports, contrary to section 2.3 and to the project's stated purpose. Command lines are recorded verbatim, as the original 10.2 specified. Scope remains the operator's control; preparation for publication becomes an explicit downstream operation on a copy. Removes the 15.4 and 10.3 rules that existed only to manage the invented default. Adds constitution principle **P-9, The Instrument Does Not Lie** (constitution 1.1.0), so the reasoning that produced those rules is blocked rather than merely reverted. |
 | 0.1.4-draft | 2026-08-10 | W. Thompson | Codifies the release-versioning scheme. v0.1.0 is the crates.io namespace-reservation stub; the first functional release is v0.2.0 (slices through S14); v0.3.0 completes S15 through S18. Partitions the 3.3 success criteria across the two functional releases, retitles section 28, and updates 9.1, 27.3, and scope prose throughout. |
+| 0.1.5-draft | 2026-08-10 | W. Thompson | **Reverses the two-release split.** There is now one first public release, v0.2.0, comprising the whole roadmap (S01 through S18); it and the crates.io publication of the functional crates happen only after every slice is complete. Un-partitions the 3.3 success criteria (v0.2.0 is complete when SC-1 through SC-7 hold), collapses the 27.3 release table to a single functional release, retitles section 28 "Beyond v0.2.0", and updates the scope prose. v0.1.0 remains the already-published name-reservation stub. |
 
 ## 2. Purpose and Problem Statement
 
@@ -204,8 +205,8 @@ drivers, not filtering or interception drivers. Section 19 defines the
 allowlist.
 
 **NG-4. No game-specific protocol logic in core.** Protocol dissection
-is a declared plugin seam, deferred past v0.3.0. No dissector ships in
-the core crates at any version.
+is a declared plugin seam, deferred beyond v0.2.0 (section 28). No
+dissector ships in the core crates at any version.
 
 **NG-5. Not a proxy, accelerator, or optimizer.** fragcap is not
 positioned on the path between client and server, and does not affect
@@ -217,12 +218,12 @@ and stored as ciphertext.
 
 ### 3.3 Success Criteria
 
-The first functional release is v0.2.0; v0.1.0 is a crates.io
-namespace-reservation stub carrying no functionality (section 27.3).
-The success criteria are partitioned across the two functional
-releases.
+The first public release is v0.2.0, comprising the whole roadmap; v0.1.0
+is a crates.io namespace-reservation stub carrying no functionality
+(section 27.3). The release is complete only when every success
+criterion holds.
 
-**v0.2.0 is complete when SC-1 through SC-4 hold.**
+**v0.2.0 is complete when SC-1 through SC-7 hold.**
 
 **SC-1.** A single `fragcap run --profile eso` invocation, issued
 before the game starts, produces one capture file covering launcher
@@ -241,7 +242,8 @@ when npcap is absent.
 continuous integration on a runner with no capture driver installed and
 no game present, using the replay source and scripted attributor.
 
-**v0.3.0 is complete when SC-5 through SC-7 also hold.**
+SC-5 through SC-7 complete the remaining roadmap capabilities and are
+part of the same v0.2.0 release.
 
 **SC-5.** A downstream process consumes a live stream over a named pipe
 and over TCP, and Wireshark attaches to a running capture through the
@@ -2918,18 +2920,20 @@ within a single autopilot run.
 | S17 | Steam integration and managed launch | S05, S12 | 16 |
 | S18 | Extcap, wrappers, documentation site | S14, S15 | 14.5, 18, 22 |
 
-The eighteen slices ship across three releases. v0.1.0 is a crates.io
-namespace-reservation stub carrying no functionality. The first
-functional release is v0.2.0, comprising S01 through S14, a usable
-capture-to-file CLI. v0.3.0 completes S15 through S18: streaming
-transports, ring mode, managed launch, and the extcap and documentation
-surfaces.
+The eighteen slices ship in one first public release, v0.2.0, cut only
+once every slice is complete and operational. v0.1.0 is a crates.io
+namespace-reservation stub carrying no functionality and is not a
+functional release; the crates.io publication of the functional crates
+happens at v0.2.0, that is, only after all slices are complete. There is
+no earlier functional release: the capture-to-file CLI (through S14) and
+the remaining capabilities (streaming transports, ring mode, managed
+launch, and the extcap and documentation surfaces, S15 through S18) ship
+together as v0.2.0.
 
 | Release | Scope | Slices |
 | --- | --- | --- |
 | v0.1.0 | crates.io namespace reservation; no functionality | published stub |
-| v0.2.0 | First functional release; capture-to-file CLI | S01 through S14 |
-| v0.3.0 | Streaming, ring mode, managed launch, extcap, docs | S15 through S18 |
+| v0.2.0 | First public release; the complete roadmap | S01 through S18 |
 
 ### 27.4 Critical Path
 
@@ -2963,10 +2967,10 @@ specification sections it implements, and any deviation discovered
 during implementation is recorded in the slice and promoted to section
 29 of this document at the next version.
 
-## 28. Roadmap Beyond v0.3.0
+## 28. Roadmap Beyond v0.2.0
 
-Recorded so that scope pressure during the functional releases has a
-destination. None of the following is in v0.2.0 or v0.3.0.
+Recorded so that scope pressure during the roadmap has a destination.
+None of the following is in v0.2.0.
 
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
