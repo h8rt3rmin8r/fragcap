@@ -22,10 +22,18 @@
 
 /// Types, traits, and the header parser.
 pub mod core {
+    /// The shared duration and size literal grammars, so the command line
+    /// parses `30m` and `4mb` through the same code a profile does.
+    pub use fragcap_core::{duration, size};
+
     pub use fragcap_core::attribution::{Attribution, StageId};
     pub use fragcap_core::duration::DurationError;
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
     pub use fragcap_core::flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
+    pub use fragcap_core::interface::{
+        select, InterfaceId, InterfaceInventory, InterfaceRecord, SelectedInterface,
+        SelectionError, SelectionOutcome, SelectionSettings,
+    };
     pub use fragcap_core::link::LinkType;
     pub use fragcap_core::packet::{
         AttributionState, CapturedPacket, Payload, RawPacket, Timestamp,
@@ -33,12 +41,13 @@ pub mod core {
     pub use fragcap_core::parse::{HeaderParser, InterfaceAddrs, ParseOutcome, ParseReject};
     pub use fragcap_core::pipeline::{
         ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport,
-        SinkFailure, StopHandle, DEFAULT_CAPACITY, DEFAULT_READ_TIMEOUT,
+        SinkFailure, SourceBinding, StopHandle, DEFAULT_CAPACITY, DEFAULT_READ_TIMEOUT,
     };
     pub use fragcap_core::process::tree::NodeId;
     pub use fragcap_core::process::{
         Ancestry, CommandLine, ProcessEvent, ProcessId, ProcessNode, ProcessRecord, ProcessTree,
     };
+    pub use fragcap_core::size::SizeError;
     pub use fragcap_core::stats::{CaptureStats, ParseStats, SourceStats};
     pub use fragcap_core::traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};
 }
@@ -47,6 +56,12 @@ pub mod core {
 pub mod capture {
     pub use fragcap_capture::pcap::{PcapReader, ReplayStats};
     pub use fragcap_capture::replay::ReplaySource;
+
+    /// The live capture backend and interface enumeration, behind the `live`
+    /// feature on Windows. The replay source above is the offline stand-in that
+    /// drives every tier-1 test.
+    #[cfg(all(feature = "live", windows))]
+    pub use fragcap_capture::live::{detect_driver, enumerate, LiveOptions, LiveSource};
 }
 
 /// Flow attribution.
@@ -54,6 +69,8 @@ pub mod attr {
     pub use fragcap_attr::index::{
         AttributionIndex, MatchRank, PublishedIndex, RetainedEntry, RetentionMap,
     };
+    pub use fragcap_attr::proc_script::{ProcessScript, ScriptedWatcher};
+    pub use fragcap_attr::resolver::PublishedResolver;
     pub use fragcap_attr::schedule::RefreshSchedule;
     pub use fragcap_attr::script::{AttributionScript, ScriptEntry, ScriptError, Window};
     pub use fragcap_attr::scripted::ScriptedAttributor;
@@ -67,6 +84,11 @@ pub mod attr {
     /// The Windows socket table backends, behind the `socket-table` feature.
     #[cfg(all(feature = "socket-table", windows))]
     pub use fragcap_attr::platform::{IpHelperTable, ToolhelpNamer};
+
+    /// The ETW process watcher, behind the `etw` feature. The scripted watcher
+    /// above is the offline stand-in that drives every tier-1 test.
+    #[cfg(all(feature = "etw", windows))]
+    pub use fragcap_attr::etw::EtwWatcher;
 }
 
 /// Game profiles: schema, validation, resolution, and stage matching.
@@ -90,7 +112,9 @@ pub mod sink {
         AnnotatedDirection, Annotation, AnnotationError, Fidelity, SENTINEL,
     };
     pub use fragcap_sink::error::WriteError;
-    pub use fragcap_sink::json::{JsonLinesWriter, PayloadMode, VERSION as JSONL_VERSION};
+    pub use fragcap_sink::json::{
+        write_json_string, JsonLinesWriter, PayloadMode, VERSION as JSONL_VERSION,
+    };
     pub use fragcap_sink::pcapng::interface::InterfaceDeclaration;
     pub use fragcap_sink::pcapng::{PcapngWriter, PROFILE_COMMENT, USER_APPL};
 }
@@ -102,18 +126,26 @@ pub mod session;
 pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
 pub use crate::session::{
-    CaptureSession, PacketDisposition, SessionConfig, SessionState, SessionStats, StopReason,
+    BindingPublisher, CaptureSession, PacketDisposition, RoleStampingAttributor, SessionConfig,
+    SessionState, SessionStats, StopReason,
 };
+#[cfg(all(feature = "etw", windows))]
+pub use attr::EtwWatcher;
 pub use attr::{
-    AttributionScript, AttributorConfig, Clock, DeclaredNames, DeclaredTable, ScriptedAttributor,
-    SocketTable, SocketTableAttributor, SocketTableEntry, SystemClock, TestClock,
+    AttributionScript, AttributorConfig, Clock, DeclaredNames, DeclaredTable, ProcessScript,
+    ScriptedAttributor, ScriptedWatcher, SocketTable, SocketTableAttributor, SocketTableEntry,
+    SystemClock, TestClock,
 };
+#[cfg(all(feature = "socket-table", windows))]
+pub use attr::{IpHelperTable, ToolhelpNamer};
+#[cfg(all(feature = "live", windows))]
+pub use capture::{detect_driver, enumerate, LiveOptions, LiveSource};
 pub use capture::{PcapReader, ReplaySource, ReplayStats};
 pub use profile::{
     resolve, BundledSet, Diagnostic, DiagnosticCode, Diagnostics, Profile, ProfileSource,
     ResolveError, SearchPath,
 };
 pub use sink::{
-    AnnotatedDirection, Annotation, AnnotationError, Fidelity, InterfaceDeclaration,
-    JsonLinesWriter, PayloadMode, PcapngWriter, WriteError,
+    write_json_string, AnnotatedDirection, Annotation, AnnotationError, Fidelity,
+    InterfaceDeclaration, JsonLinesWriter, PayloadMode, PcapngWriter, WriteError,
 };

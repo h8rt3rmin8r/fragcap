@@ -31,8 +31,12 @@ use fragcap_core::SinkError;
 
 use crate::annotation::{fidelity_str, Annotation};
 use crate::error::WriteError;
-use escape::{write_hex_string, write_json_string};
+use escape::write_hex_string;
 use number::render_timestamp;
+
+/// The JSON string escaper, re-exported so the command line's structured-event
+/// stream (slice S14) can hand-roll NDJSON over the same escaper the sinks use.
+pub use escape::write_json_string;
 
 /// The version string declared in the header record.
 pub const VERSION: &str = concat!("fragcap/", env!("CARGO_PKG_VERSION"));

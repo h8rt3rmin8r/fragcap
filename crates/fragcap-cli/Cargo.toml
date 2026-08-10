@@ -12,8 +12,30 @@ keywords.workspace     = true
 readme                 = "README.md"
 categories             = ["command-line-utilities", "network-programming"]
 
-[dependencies]
-fragcap.workspace = true
+[features]
+# Passed through to the facade so the tier-2 backends compile under the
+# --all-features clippy gate. All off by default: the whole tier-1 surface runs
+# with no capture driver, no elevation, and no game. Slice S14.
+default      = []
+live         = ["fragcap/live"]
+socket-table = ["fragcap/socket-table"]
+etw          = ["fragcap/etw"]
+
+# The library is the testable product: `fragcap_cli::run` drives the whole
+# command surface without spawning a process. The binary is a shim over it.
+[lib]
+name = "fragcap_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "fragcap"
 path = "src/main.rs"
+
+[dependencies]
+fragcap.workspace = true
+clap.workspace    = true
+ctrlc.workspace   = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace   = true

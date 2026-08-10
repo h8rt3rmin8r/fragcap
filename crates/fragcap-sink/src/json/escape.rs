@@ -28,7 +28,11 @@ fn push_hex_byte(b: u8, out: &mut String) {
 /// Characters above 0x7F are emitted as UTF-8: JSON permits them, every parser
 /// handles them, and escaping them would mean encoding surrogate pairs by hand
 /// for no benefit to any consumer.
-pub(crate) fn write_json_string(value: &str, out: &mut String) {
+///
+/// Public since slice S14: the command line's structured-event stream
+/// hand-rolls NDJSON over this same escaper rather than adding a second one, so
+/// its strings and the sinks' agree by construction.
+pub fn write_json_string(value: &str, out: &mut String) {
     out.push('"');
     for c in value.chars() {
         match c {

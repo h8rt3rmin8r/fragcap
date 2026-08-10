@@ -47,6 +47,7 @@
 pub mod etw;
 pub mod index;
 pub mod proc_script;
+pub mod resolver;
 pub mod schedule;
 pub mod script;
 pub mod scripted;
@@ -60,6 +61,7 @@ pub mod platform;
 pub use etw::WatcherError;
 pub use index::{AttributionIndex, MatchRank, PublishedIndex, RetainedEntry, RetentionMap};
 pub use proc_script::{ProcessScript, ScriptedWatcher};
+pub use resolver::PublishedResolver;
 pub use schedule::RefreshSchedule;
 pub use script::{AttributionScript, ScriptEntry, ScriptError, Window};
 pub use scripted::ScriptedAttributor;

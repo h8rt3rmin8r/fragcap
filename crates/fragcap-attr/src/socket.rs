@@ -38,6 +38,7 @@ use fragcap_core::packet::Timestamp;
 use fragcap_core::traits::FlowAttributor;
 
 use crate::index::{AttributionIndex, PublishedIndex, RetainedEntry, RetainedKey, RetentionMap};
+use crate::resolver::PublishedResolver;
 use crate::schedule::RefreshSchedule;
 use crate::seam::{Clock, ProcessNamer, SocketTableSource};
 
@@ -126,6 +127,24 @@ impl SocketTableAttributor {
 
     pub fn config(&self) -> &AttributorConfig {
         &self.config
+    }
+
+    /// A read-only resolver over this attributor's shared publication.
+    ///
+    /// The read side of the section 11.6 split. The returned
+    /// [`PublishedResolver`] shares this attributor's publication cell, its
+    /// refresh schedule, and its clock, so a refresh on this attributor is
+    /// visible to the resolver and an unseen-endpoint lookup on the resolver
+    /// records a request this attributor's owner acts on. It is what the capture
+    /// pipeline resolves against while a control thread keeps the mutable
+    /// attributor and refreshes it.
+    pub fn resolver(&self) -> PublishedResolver {
+        PublishedResolver::new(
+            Arc::clone(&self.published),
+            Arc::clone(&self.schedule),
+            Arc::clone(&self.clock),
+            self.config.trigger_limit,
+        )
     }
 
     /// Whether a refresh is due by the interval, or has been requested by

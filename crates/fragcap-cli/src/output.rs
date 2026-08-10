@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! The completion summary of specification section 17.5 and FR-021.
+//!
+//! The end-of-run accounting an operator reads. It surfaces the captured and
+//! attributed counts and every existing discard counter, the ones the pipeline
+//! and the session already maintain, and invents none: a bare success that hid a
+//! buffer drop or a watch-time discard is exactly what FR-021 forbids.
+
+use fragcap::StopReason;
+
+use crate::events::Event;
+
+/// The end-of-run accounting, assembled from the pipeline report and the
+/// session statistics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompletionSummary {
+    /// Whether a target was ever acquired. `false` is the target-never-appeared
+    /// outcome that exits 1.
+    pub acquired: bool,
+    /// Why capture stopped, once it has.
+    pub stop_reason: Option<StopReason>,
+    /// Packets fragcap accepted from the source.
+    pub packets_captured: u64,
+    /// Packets that resolved to a process.
+    pub packets_attributed: u64,
+    /// Packets retained and marked because attribution did not resolve.
+    pub packets_unattributed: u64,
+    /// Packets discarded while watching, before a target was acquired.
+    pub watching_discarded: u64,
+    /// Packets discarded out of the capture window (offered after a stop or
+    /// before arm).
+    pub discarded_out_of_window: u64,
+    /// Packets fragcap's bounded buffer dropped.
+    pub buffer_dropped: u64,
+    /// Packets a sink could not accept.
+    pub sink_dropped: u64,
+}
+
+impl CompletionSummary {
+    /// The stop reason as a stable word, for both the human line and any future
+    /// machine field.
+    pub fn stop_word(&self) -> &'static str {
+        match self.stop_reason {
+            Some(StopReason::DurationReached) => "duration-reached",
+            Some(StopReason::VolumeReached) => "volume-reached",
+            Some(StopReason::TerminalStageExited) => "terminal-stage-exited",
+            Some(StopReason::AllProcessesExited) => "all-processes-exited",
+            Some(StopReason::Interrupt) => "interrupt",
+            Some(StopReason::SinkError) => "sink-error",
+            Some(StopReason::AcquisitionTimeout) => "acquisition-timeout",
+            None => "source-exhausted",
+        }
+    }
+
+    /// The `session.complete` event carrying the headline counters.
+    ///
+    /// `dropped` is fragcap's own drops (buffer plus sink), the discards inside
+    /// the pipeline's conservation identity. The watch-time and out-of-window
+    /// discards are the session's and appear in the human summary.
+    pub fn complete_event(&self) -> Event {
+        Event::SessionComplete {
+            packets: self.packets_captured,
+            attributed: self.packets_attributed,
+            dropped: self.buffer_dropped.saturating_add(self.sink_dropped),
+        }
+    }
+
+    /// Render the human-readable summary, one field per line, to `out`.
+    pub fn render(&self, out: &mut String) {
+        out.push_str("capture complete\n");
+        if !self.acquired {
+            out.push_str("  target:               never acquired\n");
+        }
+        push_field(out, "stop reason", self.stop_word());
+        push_count(out, "packets captured", self.packets_captured);
+        push_count(out, "attributed", self.packets_attributed);
+        push_count(out, "unattributed", self.packets_unattributed);
+        push_count(out, "watching discarded", self.watching_discarded);
+        push_count(out, "out of window", self.discarded_out_of_window);
+        push_count(out, "buffer dropped", self.buffer_dropped);
+        push_count(out, "sink dropped", self.sink_dropped);
+    }
+}
+
+fn push_field(out: &mut String, label: &str, value: &str) {
+    out.push_str(&format!("  {label:<21} {value}\n"));
+}
+
+fn push_count(out: &mut String, label: &str, value: u64) {
+    out.push_str(&format!("  {label:<21} {value}\n"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stop_word_is_stable_per_reason() {
+        let mut s = CompletionSummary {
+            acquired: true,
+            stop_reason: Some(StopReason::DurationReached),
+            ..CompletionSummary::default()
+        };
+        assert_eq!(s.stop_word(), "duration-reached");
+        s.stop_reason = Some(StopReason::Interrupt);
+        assert_eq!(s.stop_word(), "interrupt");
+        s.stop_reason = None;
+        assert_eq!(s.stop_word(), "source-exhausted");
+    }
+
+    #[test]
+    fn the_complete_event_reports_fragcap_drops_only() {
+        let s = CompletionSummary {
+            packets_captured: 100,
+            packets_attributed: 90,
+            buffer_dropped: 2,
+            sink_dropped: 1,
+            ..CompletionSummary::default()
+        };
+        assert_eq!(
+            s.complete_event(),
+            Event::SessionComplete {
+                packets: 100,
+                attributed: 90,
+                dropped: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unacquired_summary_says_so() {
+        let s = CompletionSummary {
+            acquired: false,
+            stop_reason: Some(StopReason::AcquisitionTimeout),
+            ..CompletionSummary::default()
+        };
+        let mut out = String::new();
+        s.render(&mut out);
+        assert!(out.contains("never acquired"));
+        assert!(out.contains("acquisition-timeout"));
+    }
+}

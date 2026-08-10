@@ -1,0 +1,17 @@
+Platform
+  os                     ok    Windows 11
+  subsystem              ok    native
+  privilege              ok    elevated
+Capture driver
+  npcap                  ok    version 1.79
+  loopback adapter       ok    loopback capture supported
+  winpcap api mode       ok    WinPcap API compatible
+Tracing
+  process events         ok    process-event session available
+Interfaces
+  adapter                ok    192.0.2.10
+Integration
+  analyzer extcap        ok    installed
+Profiles
+  profiles               ok    bundled: 0, user: 2
+Ready to capture.

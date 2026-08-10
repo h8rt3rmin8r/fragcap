@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! `doctor`: gather the environment, classify it, render, and exit.
+//!
+//! The command is a thin shell over the pure classifier. It gathers real inputs
+//! from the machine (read-only, never installing), runs the section 26.3
+//! classifiers, renders as aligned columns or as one JSON record per check, and
+//! returns the report's exit code, which is 1 if any check failed and 0
+//! otherwise.
+
+use std::io::Write;
+
+use crate::doctor::{checks, probe};
+use crate::exit::{CliError, Exit};
+
+/// Run `doctor`, writing the report to `out`.
+pub fn run(json: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let inputs = probe::gather();
+    let report = checks::run(&inputs);
+    let text = if json {
+        report.render_json()
+    } else {
+        report.render_human()
+    };
+    let _ = write!(out, "{text}");
+    Ok(report.exit())
+}

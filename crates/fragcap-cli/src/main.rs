@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-//! fragcap command line interface.
+
+//! fragcap command line binary.
 //!
-//! Skeleton only. The command surface arrives in S14.
+//! A shim over [`fragcap_cli::run`]. Every behavior and every test lives in the
+//! library, so the whole command surface is driven from `run` without spawning
+//! a process; this file only turns the library's [`fragcap_cli::Exit`] into the
+//! process exit code.
+
+use std::process::exit;
 
 fn main() {
-    println!("fragcap 0.1.0 (skeleton; the command surface arrives in S14)");
+    exit(fragcap_cli::run(std::env::args_os()).code() as i32);
 }

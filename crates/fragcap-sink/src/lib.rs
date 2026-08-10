@@ -49,6 +49,6 @@ pub mod pcapng;
 
 pub use annotation::{AnnotatedDirection, Annotation, AnnotationError, Fidelity};
 pub use error::WriteError;
-pub use json::{JsonLinesWriter, PayloadMode};
+pub use json::{write_json_string, JsonLinesWriter, PayloadMode};
 pub use pcapng::interface::InterfaceDeclaration;
 pub use pcapng::PcapngWriter;

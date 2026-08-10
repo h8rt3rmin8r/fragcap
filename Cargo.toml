@@ -113,11 +113,41 @@ windows-sys     = { version = "0.36", default-features = false, features = [
     "Win32_System_Time",
 ] }
 
+# External. Slice S14, research D-a: the command line argument grammar of
+# specification section 17.2, with the `derive` feature so the typed structs
+# produce the flags, defaults, subcommands, and help text rather than a
+# hand-maintained parser that would drift from the help the spec prints. It
+# sits on `fragcap-cli` alone, at the top of the dependency graph where nothing
+# reaches it, which `cargo xtask deps` enforces. MIT or Apache-2.0.
+#
+# Pinned exactly to 4.5.32. clap 4.6 declares edition 2024 and rust-version
+# 1.85, and later 4.5 patches (4.5.61) pull `clap_lex` 1.0, which also declares
+# edition 2024 and 1.85, both above this workspace's 1.82 minimum. Either breaks
+# `cargo xtask msrv` in a check most contributors cannot run locally. 4.5.32 is
+# edition 2021, rust-version 1.74, on `clap_lex` 0.7. An exact pin because the
+# incompatibility is in a transitive patch, which a range cannot exclude. Slice
+# S14; raise the pin only alongside a workspace MSRV bump.
+clap            = { version = "=4.5.32", features = ["derive"] }
+
+# External. Slice S14, research D-b: a portable console-interrupt hook so an
+# operator interrupt during a capture becomes a clean `StopReason::Interrupt`
+# and an exit-0 success, rather than a killed process. The standard library has
+# no portable equivalent. Uses `SetConsoleCtrlHandler` on Windows. On
+# `fragcap-cli` alone. MIT or Apache-2.0.
+ctrlc           = "3.4"
+
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is
 # hand-rolled because its exact byte shape is the deliverable, and this parses
 # every line it emits so validity is judged by something other than the writer.
 # Never a runtime dependency; it appears only under [dev-dependencies].
 serde_json      = "1.0"
+
+# External, test-only. Slice S14: the CLI tests write profiles and capture
+# output into a scratch directory the test constructs and cleans up, for
+# `profile list` over a user directory and `run`/`tap` output files. Never a
+# runtime dependency; it appears only under [dev-dependencies]. MIT or
+# Apache-2.0.
+tempfile        = "3.10"
 
 fragcap-core    = { version = "0.1.0", path = "crates/fragcap-core" }
 fragcap-profile = { version = "0.1.0", path = "crates/fragcap-profile" }

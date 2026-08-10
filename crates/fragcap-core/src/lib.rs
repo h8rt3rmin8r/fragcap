@@ -30,6 +30,12 @@
 //! sibling, and two implementations of `30m` that disagree would produce a
 //! capture of the wrong length.
 //!
+//! [`size`] arrived in slice S14 and is the size counterpart of [`duration`].
+//! It parses a byte-count literal, binary (1024-based), for `--max-bytes` and
+//! the ring window, and lives here for the same reasons [`duration`] does: two
+//! consumers reach one grammar, and it is pure arithmetic over a string with no
+//! platform surface for constitution P-2 to object to.
+//!
 //! # Platform neutrality
 //!
 //! Constitution P-2: this crate takes no platform-specific dependency, no I/O
@@ -86,6 +92,7 @@ pub mod packet;
 pub mod parse;
 pub mod pipeline;
 pub mod process;
+pub mod size;
 pub mod stats;
 pub mod traits;
 
@@ -111,5 +118,6 @@ pub use process::{
     Ancestry, CommandLine, ProcessEvent, ProcessId, ProcessNode, ProcessRecord, ProcessTree,
     WatcherReport,
 };
+pub use size::SizeError;
 pub use stats::{CaptureStats, ParseStats, SourceStats};
 pub use traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};
