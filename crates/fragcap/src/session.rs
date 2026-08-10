@@ -571,16 +571,56 @@ impl FlowAttributor for RoleStampingAttributor {
         Some(attribution)
     }
 
-    /// A no-op. The pipeline never calls this: the socket-table attributor's
-    /// own refresh is driven by its retention schedule, and the inner
-    /// attributor is held shared here so there is no `&mut` to forward to. The
-    /// method exists only to satisfy the trait.
-    fn refresh(&mut self) -> Result<(), AttrError> {
-        Ok(())
+    /// Forwards to the inner attributor. Slice 015: the pipeline control thread
+    /// drives the refresh through the shared `Arc<dyn FlowAttributor>`, which is
+    /// this decorator, so the refresh must reach the real attributor it wraps
+    /// rather than stopping here. Before 015 `refresh` was `&mut self` and could
+    /// not be forwarded, which is why the CLI kept a separate refresh thread.
+    fn refresh(&self) -> Result<(), AttrError> {
+        self.inner.refresh()
     }
 
+    /// Forwards to the inner attributor, so the control thread learns the
+    /// section 11.2 cadence of whatever real attributor this wraps.
+    fn wants_refresh(&self) -> bool {
+        self.inner.wants_refresh()
+    }
+
+    /// The active endpoints restricted to those belonging to profiled processes.
+    ///
+    /// Specification section 12.2 narrows the kernel filter to endpoints owned by
+    /// profiled processes. This decorator holds the session's binding snapshot,
+    /// whose keys are exactly the stage-bound (profiled) process identifiers, so
+    /// it is the one place that can perform the join. It asks the inner attributor
+    /// for owner-carrying endpoints and keeps an endpoint when its owner is a
+    /// profiled process.
+    ///
+    /// An endpoint whose owner is not known is kept rather than dropped: on the
+    /// live socket-table backend every endpoint carries an owning identifier, so
+    /// this reduces to admitting only profiled endpoints; on the offline scripted
+    /// substrate no endpoint carries one, and dropping them would narrow a
+    /// declared capture to nothing. "Restrict to profiled processes" is therefore
+    /// read as "exclude endpoints known to belong to a non-profiled process,"
+    /// which is exactly the live-backend behavior and a pass-through offline.
     fn active_endpoints(&self) -> Vec<Endpoint> {
-        self.inner.active_endpoints()
+        let snapshot = self.publisher.snapshot();
+        let mut endpoints: Vec<Endpoint> = self
+            .inner
+            .active_endpoints_owned()
+            .into_iter()
+            .filter(|owned| match owned.owner {
+                Some(pid) => snapshot.contains_key(&pid),
+                None => true,
+            })
+            .map(|owned| owned.endpoint)
+            .collect();
+        // One endpoint can arrive as several owner candidates (a profiled owner
+        // and, after port reuse, an unprofiled one), and more than one profiled
+        // candidate is possible; deduplicate the endpoints that survive the
+        // filter so a reused port is admitted once rather than compiled twice.
+        endpoints.sort();
+        endpoints.dedup();
+        endpoints
     }
 }
 
@@ -610,7 +650,7 @@ mod stamping_tests {
         fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
             Some(Attribution::new(self.0, "game.exe", Fidelity::Live))
         }
-        fn refresh(&mut self) -> Result<(), AttrError> {
+        fn refresh(&self) -> Result<(), AttrError> {
             Ok(())
         }
         fn active_endpoints(&self) -> Vec<Endpoint> {
@@ -655,6 +695,111 @@ mod stamping_tests {
         let a = stamper.resolve(&key(), at()).expect("resolves");
         assert_eq!(a.pid, 7);
         assert!(a.role.is_none(), "only the bound pid is stamped");
+    }
+
+    // --- Slice 015: narrowing restricted to profiled processes -----------
+
+    use fragcap_core::flow::OwnedEndpoint;
+
+    /// An inner attributor reporting a fixed set of owner-carrying endpoints.
+    struct OwnedInner(Vec<OwnedEndpoint>);
+
+    impl FlowAttributor for OwnedInner {
+        fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            None
+        }
+        fn refresh(&self) -> Result<(), AttrError> {
+            Ok(())
+        }
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            self.0.iter().map(|o| o.endpoint).collect()
+        }
+        fn active_endpoints_owned(&self) -> Vec<OwnedEndpoint> {
+            self.0.clone()
+        }
+    }
+
+    fn owned(addr_s: &str, proto: Proto, owner: Option<u32>) -> OwnedEndpoint {
+        OwnedEndpoint::new(Endpoint::new(addr(addr_s), proto), owner)
+    }
+
+    // Slice 015, SC-002. The narrowed endpoint set admits only endpoints owned
+    // by a profiled process, across IPv4, IPv6, and a wildcard UDP bind, and
+    // excludes an unprofiled process's endpoints sharing the same source.
+    #[test]
+    fn active_endpoints_admits_only_profiled_process_endpoints() {
+        let profiled_v4 = owned("192.0.2.10:30000", Proto::Udp, Some(7));
+        let profiled_v6 = owned("[2001:db8::10]:30000", Proto::Udp, Some(7));
+        let profiled_wild = owned("0.0.0.0:40000", Proto::Udp, Some(7));
+        let unprofiled = owned("192.0.2.10:50000", Proto::Tcp, Some(9));
+        let inner = OwnedInner(vec![profiled_v4, profiled_v6, profiled_wild, unprofiled]);
+        let stamper = RoleStampingAttributor::new(Arc::new(inner));
+        // Only pid 7 is stage-bound (profiled).
+        stamper.publisher().publish(vec![(
+            7,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+
+        let got = stamper.active_endpoints();
+        assert!(
+            got.contains(&profiled_v4.endpoint),
+            "IPv4 profiled admitted"
+        );
+        assert!(
+            got.contains(&profiled_v6.endpoint),
+            "IPv6 profiled admitted"
+        );
+        assert!(
+            got.contains(&profiled_wild.endpoint),
+            "wildcard UDP bind admitted by its owning module"
+        );
+        assert!(
+            !got.contains(&unprofiled.endpoint),
+            "an unprofiled process's endpoint is excluded"
+        );
+        assert_eq!(got.len(), 3);
+    }
+
+    // An endpoint whose owner is not known is kept (the offline scripted
+    // substrate reports none), so narrowing does not empty a declared capture.
+    #[test]
+    fn an_endpoint_with_no_known_owner_is_kept() {
+        let unknown = owned("192.0.2.10:60000", Proto::Udp, None);
+        let unprofiled = owned("192.0.2.10:50000", Proto::Tcp, Some(9));
+        let stamper = RoleStampingAttributor::new(Arc::new(OwnedInner(vec![unknown, unprofiled])));
+        // No bindings at all: nothing is profiled.
+        let got = stamper.active_endpoints();
+        assert_eq!(
+            got,
+            vec![unknown.endpoint],
+            "the unknown-owner endpoint survives, the known unprofiled one does not"
+        );
+    }
+
+    // Review of pull request 24. One endpoint arriving as two owner candidates,
+    // a live unprofiled reuse and a retained profiled owner, is admitted once
+    // via the profiled owner rather than dropped because the unprofiled owner
+    // was listed first.
+    #[test]
+    fn a_profiled_owner_admits_a_reused_endpoint_once() {
+        let live_unprofiled = owned("192.0.2.10:30000", Proto::Udp, Some(9));
+        let retained_profiled = owned("192.0.2.10:30000", Proto::Udp, Some(7));
+        let stamper = RoleStampingAttributor::new(Arc::new(OwnedInner(vec![
+            live_unprofiled,
+            retained_profiled,
+        ])));
+        stamper.publisher().publish(vec![(
+            7,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        let got = stamper.active_endpoints();
+        assert_eq!(
+            got,
+            vec![Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp)],
+            "the endpoint is admitted once, via its profiled owner"
+        );
     }
 
     #[test]

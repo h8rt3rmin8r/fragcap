@@ -66,7 +66,7 @@ impl FlowAttributor for ScriptedAttributor {
     }
 
     /// Succeeds and does nothing. There is no table behind this to re-read.
-    fn refresh(&mut self) -> Result<(), AttrError> {
+    fn refresh(&self) -> Result<(), AttrError> {
         Ok(())
     }
 
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn refreshing_succeeds_and_changes_nothing() {
-        let mut a = attributor("flow tcp 192.0.2.10:51000 198.51.100.5:443 always owner 1 a.exe");
+        let a = attributor("flow tcp 192.0.2.10:51000 198.51.100.5:443 always owner 1 a.exe");
         let before = a.resolve(&tcp_key(), at(0));
         assert!(a.refresh().is_ok());
         assert_eq!(a.resolve(&tcp_key(), at(0)), before);

@@ -597,6 +597,21 @@ impl Pipeline {
             std::thread::spawn(move || {
                 let mut manager = FilterManager::new(source_count, filter_config);
                 while !control_stop.load(Ordering::Relaxed) {
+                    // Drive the attribution refresh here, on the section 8.6
+                    // control thread, whenever the attributor reports it wants
+                    // one (by the section 11.2 interval or a triggered request a
+                    // capture thread recorded). A failed read leaves the
+                    // previously published index intact by design (section 11,
+                    // FR-030), so the error is ignored rather than fatal. An
+                    // attributor with nothing to re-read reports `false` and is
+                    // never refreshed, which keeps the offline path unchanged.
+                    // This is what slice 015 collapsed the CLI `RefreshDriver`
+                    // into, now that `refresh` takes `&self` and can be driven
+                    // through the shared `Arc` the capture threads resolve
+                    // against.
+                    if attributor.wants_refresh() {
+                        let _ = attributor.refresh();
+                    }
                     let wanted = attributor.active_endpoints();
                     for install in manager.poll(&wanted, Instant::now()) {
                         let handle = install.handle;
@@ -1217,7 +1232,7 @@ mod tests {
         fn resolve(&self, key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
             self.answers.get(key).cloned()
         }
-        fn refresh(&mut self) -> Result<(), crate::error::AttrError> {
+        fn refresh(&self) -> Result<(), crate::error::AttrError> {
             Ok(())
         }
         fn active_endpoints(&self) -> Vec<Endpoint> {
@@ -2365,6 +2380,103 @@ mod tests {
         );
     }
 
+    /// Slice 015. An attributor whose snapshot is empty until its `refresh`
+    /// flips it: it resolves nothing and reports no endpoints until refreshed,
+    /// then resolves and reports one endpoint. It stands in for the live
+    /// socket-table attributor, whose snapshot is likewise empty until the
+    /// control thread reads the table.
+    struct RefreshFlipAttributor {
+        endpoint: Endpoint,
+        refreshed: Arc<std::sync::atomic::AtomicBool>,
+        refresh_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FlowAttributor for RefreshFlipAttributor {
+        fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
+            if self.refreshed.load(std::sync::atomic::Ordering::SeqCst) {
+                Some(Attribution::new(4242, "game.exe", Fidelity::Live))
+            } else {
+                None
+            }
+        }
+        fn refresh(&self) -> Result<(), crate::error::AttrError> {
+            self.refresh_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.refreshed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn wants_refresh(&self) -> bool {
+            !self.refreshed.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn active_endpoints(&self) -> Vec<Endpoint> {
+            if self.refreshed.load(std::sync::atomic::Ordering::SeqCst) {
+                vec![self.endpoint]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    // Slice 015, SC-001. The section 8.6 control thread drives the attribution
+    // refresh: an endpoint absent from the initial snapshot is resolvable and
+    // enters the narrowed filter only after the control thread has refreshed.
+    // Deterministic without a sleep: the recording source waits for a filter
+    // before closing, and a filter can only be installed once the refresh has
+    // made the endpoint set non-empty, so the run cannot end before the refresh.
+    #[test]
+    fn the_control_thread_drives_the_attribution_refresh() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let log = log();
+        let refreshed = Arc::new(AtomicBool::new(false));
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let attributor = RefreshFlipAttributor {
+            endpoint: narrow_endpoint(),
+            refreshed: Arc::clone(&refreshed),
+            refresh_calls: Arc::clone(&refresh_calls),
+        };
+        let source = RecordingSource::new(frames(4), &installed);
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(attributor),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        p.set_filter_config(FilterConfig {
+            debounce: Duration::from_millis(0),
+            min_reinstall_interval: Duration::from_millis(0),
+        });
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        assert!(
+            refreshed.load(Ordering::SeqCst),
+            "the control thread drove the attributor's refresh"
+        );
+        assert_eq!(
+            refresh_calls.load(Ordering::SeqCst),
+            1,
+            "wants_refresh gated it: exactly one refresh, not a read every poll"
+        );
+        let programs = installed
+            .lock()
+            .expect("the install log mutex is never poisoned")
+            .clone();
+        assert_eq!(
+            programs.last().expect("a program was installed"),
+            &FilterProgram::narrowed(&[narrow_endpoint()]),
+            "the endpoint that appears only after the refresh entered the filter"
+        );
+        assert_eq!(report.ended, EndReason::SourceClosed);
+        assert_conserved(&report, &log, 0);
+    }
+
     /// An attributor that panics when the control thread reads its endpoints,
     /// signalling first so the source can close deterministically after.
     struct PanicOnEndpoints {
@@ -2375,7 +2487,7 @@ mod tests {
         fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
             None
         }
-        fn refresh(&mut self) -> Result<(), crate::error::AttrError> {
+        fn refresh(&self) -> Result<(), crate::error::AttrError> {
             Ok(())
         }
         fn active_endpoints(&self) -> Vec<Endpoint> {

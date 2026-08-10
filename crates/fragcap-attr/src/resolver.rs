@@ -9,15 +9,17 @@
 //! publication cell and the shared refresh schedule, resolves against them, and
 //! owns no mutable state of its own.
 //!
-//! It exists because [`crate::socket::SocketTableAttributor::refresh`] takes
-//! `&mut self`, so an attributor shared across the capture threads cannot be
-//! refreshed through the pointer they hold. A live capture therefore keeps the
-//! mutable attributor on a control thread that refreshes it on the section 11.2
-//! cadence, and hands the capture pipeline a [`PublishedResolver`] cloned from
-//! it. Both read the same [`PublishedIndex`] and the same [`RefreshSchedule`],
-//! so a refresh on the control thread is visible to every resolving thread, and
-//! an unseen-endpoint lookup on a resolving thread records a request the control
-//! thread acts on.
+//! It was introduced because [`crate::socket::SocketTableAttributor::refresh`]
+//! once took `&mut self`, so an attributor shared across the capture threads
+//! could not be refreshed through the pointer they held, and a live capture kept
+//! the mutable attributor on a separate control thread and handed the pipeline a
+//! [`PublishedResolver`] cloned from it. Slice 015 changed `refresh` to `&self`,
+//! so the pipeline can now share and refresh one attributor directly and this
+//! split is no longer required; it is retained as a valid read-only view over a
+//! publication (both sides read the same [`PublishedIndex`] and the same
+//! [`RefreshSchedule`], so a refresh is visible to every resolving thread and an
+//! unseen-endpoint lookup records a request the refreshing side acts on). Fully
+//! removing the split is a separable cleanup.
 //!
 //! This type is platform neutral. It names no operating system interface, which
 //! is why it lives here rather than behind the `socket-table` feature: the read
@@ -93,10 +95,10 @@ impl FlowAttributor for PublishedResolver {
         None
     }
 
-    /// A no-op. The mutable attributor this resolver was cloned from is owned by
-    /// the control thread, which is the only side that reads a table; a resolver
-    /// holds no source to refresh. The method exists to satisfy the trait.
-    fn refresh(&mut self) -> Result<(), AttrError> {
+    /// A no-op. The attributor this resolver was cloned from owns the socket
+    /// table and the refresh that reads it; a resolver holds no source to
+    /// refresh. The method exists to satisfy the trait.
+    fn refresh(&self) -> Result<(), AttrError> {
         Ok(())
     }
 
@@ -148,13 +150,13 @@ mod tests {
     #[test]
     fn a_resolver_answers_from_the_index_the_attributor_publishes() {
         let clock = Arc::new(TestClock::at(at(0)));
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(DeclaredTable::once(one_entry(4242))),
             Box::new(DeclaredNames::from([(4242, "eso64.exe")])),
             Arc::clone(&clock) as Arc<dyn Clock>,
             AttributorConfig::default(),
         );
-        let mut resolver = attributor.resolver();
+        let resolver = attributor.resolver();
 
         // Before any refresh the shared index is empty, so both resolve nothing.
         assert_eq!(resolver.resolve(&udp_key(), at(100)), None);

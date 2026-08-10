@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use fragcap_core::attribution::{Attribution, Fidelity};
-use fragcap_core::flow::{AttributionKey, Endpoint, FlowKey, Proto};
+use fragcap_core::flow::{AttributionKey, Endpoint, FlowKey, OwnedEndpoint, Proto};
 use fragcap_core::packet::Timestamp;
 
 use crate::table::{SocketTable, SocketTableEntry};
@@ -346,6 +346,48 @@ impl AttributionIndex {
             }
         }
         out.sort_by_key(|e| (e.proto, e.addr));
+        out
+    }
+
+    /// Every active endpoint at `at`, each paired with the process identifier
+    /// that owns it. Slice 015.
+    ///
+    /// Mirrors [`Self::endpoints`] but keeps the owning identifier the plain
+    /// endpoint list drops, so the phase-two narrowing of specification section
+    /// 12.2 can restrict the filter to endpoints belonging to profiled
+    /// processes. The owner is the table entry's or retained record's `pid`,
+    /// which for UDP is the owning module the socket table reports (specification
+    /// appendix D), the only identifier a wildcard-bound datagram socket can be
+    /// joined by.
+    pub fn endpoints_owned(&self, at: Timestamp) -> Vec<OwnedEndpoint> {
+        let mut out: Vec<OwnedEndpoint> = self
+            .table
+            .entries()
+            .iter()
+            .map(|e| OwnedEndpoint::new(e.endpoint(), Some(e.pid)))
+            .collect();
+        for r in self.retained.values() {
+            if !self.within_retention(r, at) {
+                continue;
+            }
+            // Deduplicate on the whole (endpoint, owner) pair, not the endpoint
+            // alone. A socket retained under one owner and a live socket that has
+            // reused the same local endpoint under a different owner are distinct
+            // candidates and both must survive: if a profiled connection is
+            // retained on a port an unprofiled process now holds, collapsing by
+            // endpoint would keep only the live unprofiled owner, the profiled
+            // owner would be filtered out of the narrowed set, and late packets
+            // from the retained connection would leave the filter with no
+            // filter_gaps recorded, because the endpoint left the wanted set
+            // rather than being briefly excluded from it. Found in review of pull
+            // request 24. The profile filter (RoleStampingAttributor) keeps the
+            // profiled owner and deduplicates the endpoints that survive.
+            let owned = OwnedEndpoint::new(r.entry.endpoint(), Some(r.entry.pid));
+            if !out.contains(&owned) {
+                out.push(owned);
+            }
+        }
+        out.sort_by_key(|o| (o.endpoint.proto, o.endpoint.addr, o.owner));
         out
     }
 
@@ -1049,6 +1091,92 @@ mod tests {
             i.endpoints(at(500)).len(),
             1,
             "an expired retained endpoint is no longer active"
+        );
+    }
+
+    // Slice 015. endpoints_owned reports the same endpoints as endpoints, each
+    // carrying the owning identifier the plain list drops, over table, retained,
+    // and a wildcard UDP bind.
+    #[test]
+    fn endpoints_owned_pairs_each_endpoint_with_its_owner() {
+        let mut map = RetentionMap::new();
+        let r = retained(
+            SocketTableEntry::tcp_listening(addr("192.0.2.99:1234"), 5),
+            100,
+            None,
+        );
+        map.insert(r.key(), r);
+        let i = AttributionIndex::new(
+            SocketTable::new(
+                at(100),
+                vec![
+                    SocketTableEntry::udp(addr("0.0.0.0:30000"), 6),
+                    SocketTableEntry::udp(addr("192.0.2.10:40000"), 7),
+                ],
+            ),
+            HashMap::new(),
+            map,
+            30,
+        );
+        let owned = i.endpoints_owned(at(110));
+        assert_eq!(owned.len(), 3, "two table entries plus one retained");
+        // The plain and owned lists agree on the endpoint set.
+        let plain = i.endpoints(at(110));
+        assert_eq!(owned.len(), plain.len());
+        for o in &owned {
+            assert!(plain.contains(&o.endpoint));
+        }
+        // Owners are the entry pids, including the wildcard UDP bind (owned by
+        // its module, the only identifier it can be joined by).
+        let owner_of = |addr_s: &str, proto| {
+            owned
+                .iter()
+                .find(|o| o.endpoint == Endpoint::new(addr(addr_s), proto))
+                .and_then(|o| o.owner)
+        };
+        assert_eq!(owner_of("0.0.0.0:30000", Proto::Udp), Some(6));
+        assert_eq!(owner_of("192.0.2.10:40000", Proto::Udp), Some(7));
+        assert_eq!(owner_of("192.0.2.99:1234", Proto::Tcp), Some(5));
+    }
+
+    // Review of pull request 24. A socket retained under one owner and a live
+    // socket that reused the same local endpoint under a different owner are
+    // distinct candidates, and both must survive endpoints_owned. Collapsing by
+    // endpoint would keep only the live owner, so a profiled connection retained
+    // on a port an unprofiled process now holds would be filtered out of the
+    // narrowed set and lose its late packets.
+    #[test]
+    fn endpoints_owned_keeps_both_owners_when_a_live_entry_reuses_a_retained_endpoint() {
+        let mut map = RetentionMap::new();
+        // Retained, owned by pid 7 (the profiled connection, in this scenario).
+        let r = retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 7),
+            100,
+            None,
+        );
+        map.insert(r.key(), r);
+        // Live, the same local endpoint reused by pid 9.
+        let i = AttributionIndex::new(
+            SocketTable::new(
+                at(100),
+                vec![SocketTableEntry::udp(addr("192.0.2.10:30000"), 9)],
+            ),
+            HashMap::new(),
+            map,
+            30_000_000_000,
+        );
+
+        let ep = Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp);
+        let owners: Vec<Option<u32>> = i
+            .endpoints_owned(at(110))
+            .into_iter()
+            .filter(|o| o.endpoint == ep)
+            .map(|o| o.owner)
+            .collect();
+        assert!(owners.contains(&Some(9)), "the live reusing owner");
+        assert!(
+            owners.contains(&Some(7)),
+            "the retained owner is not masked by the live reuse"
         );
     }
 

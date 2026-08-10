@@ -122,6 +122,18 @@ within a single autopilot run.
 | S17 | Steam integration and managed launch | v0.3.0 | S05, S12 | 16 | Q-4 resolved |
 | S18 | Extcap, wrappers, documentation site | v0.3.0 | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 |
 
+### Follow-up slices and directory numbering
+
+The roadmap slices above keep their S-numbers. Follow-up slices that refine an
+already-merged slice (rather than adding a roadmap capability) take the next free
+`specs/NNN-slug` directory ordinals as they are written, which decouples the
+directory number from the roadmap S-number. The first is
+`specs/015-attribution-pipeline-integration` (the S13 attribution follow-ups,
+issues #18 and #19). Because these occupy ordinals starting at 015, the roadmap's
+own future slices S15 through S18 take the later directory ordinals 018 through
+021 when they are specified. The S-number is the roadmap identity; the directory
+ordinal is only a filesystem sequence.
+
 ## Critical path
 
 ```mermaid
