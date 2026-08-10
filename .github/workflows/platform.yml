@@ -28,6 +28,7 @@ on:
     branches: [main]
     paths:
       - "crates/fragcap-capture/**"
+      - "crates/fragcap-attr/**"
       - "crates/fragcap-core/**"
       - "crates/fragcap-attr/**"
       - ".github/workflows/platform.yml"
@@ -35,6 +36,7 @@ on:
   pull_request:
     paths:
       - "crates/fragcap-capture/**"
+      - "crates/fragcap-attr/**"
       - "crates/fragcap-core/**"
       - "crates/fragcap-attr/**"
       - ".github/workflows/platform.yml"
@@ -100,6 +102,40 @@ jobs:
       # tests never gets a chance to execute. Enabling the feature
       # unconditionally here would make this workflow permanently red for a
       # reason that has nothing to do with the code.
+      # Slice S11. The same shape as the step above and for the same reason:
+      # `cargo check` does not link, so a build is what proves the ETW binding
+      # resolves. Unlike npcap this needs no software development kit, because
+      # `windows-sys` links against libraries the toolchain already has.
+      - name: Build the ETW process watcher
+        run: cargo build -p fragcap-attr --features etw --locked
+
+      # Slice S11. Consuming a kernel trace session needs administrative
+      # privilege (constraint C-4, section 19.5), and whether a hosted runner
+      # has it is a property of the runner rather than of the code. Checked
+      # rather than assumed, for the reason the note above this job records: a
+      # workflow that assumes its precondition goes red for a reason that has
+      # nothing to do with the change under test.
+      - name: Check whether this runner is elevated
+        id: elevated
+        shell: pwsh
+        run: |
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $p = New-Object Security.Principal.WindowsPrincipal($id)
+          $admin = $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          "elevated=$($admin.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if ($admin) {
+            Write-Host "This runner is elevated; the tier 2 process tests will run."
+          } else {
+            Write-Host "This runner is NOT elevated."
+            Write-Host "The ETW watcher was built and linked, which is what the step above proves."
+            Write-Host "Tier 2 process tests need an elevated session and will NOT run."
+            Write-Host "Nothing here has exercised live process observation."
+          }
+
+      - name: Tier 2 process tests
+        if: steps.elevated.outputs.elevated == 'true'
+        run: cargo test -p fragcap-attr --features etw --locked -- --ignored
+
       - name: Look for an installed capture driver
         id: driver
         shell: pwsh
