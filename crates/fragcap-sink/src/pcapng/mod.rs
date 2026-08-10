@@ -25,6 +25,7 @@ pub mod interface;
 
 use std::io::Write;
 
+use fragcap_core::interface::InterfaceId;
 use fragcap_core::packet::CapturedPacket;
 use fragcap_core::stats::CaptureStats;
 use fragcap_core::traits::Sink;
@@ -53,6 +54,9 @@ const TSRESOL_MICROS: u8 = 6;
 pub struct PcapngWriter<W: Write> {
     out: W,
     interfaces: Vec<DeclaredInterface>,
+    /// Whether any packet block has been written. Once true, no further
+    /// interface may be declared.
+    wrote_a_packet: bool,
 }
 
 impl<W: Write> PcapngWriter<W> {
@@ -76,6 +80,7 @@ impl<W: Write> PcapngWriter<W> {
         Ok(PcapngWriter {
             out,
             interfaces: Vec::new(),
+            wrote_a_packet: false,
         })
     }
 
@@ -86,9 +91,13 @@ impl<W: Write> PcapngWriter<W> {
     /// cannot disagree. Declaring the same interface twice produces two
     /// identifiers; deduplicating would silently repoint packets the caller
     /// attributed to the second.
+    /// Every interface must be declared before the first packet is written.
+    /// Section 13.3 decides the annotation `iface` key from whether the capture
+    /// holds more than one, and a block already written cannot be revised, so
+    /// the question has to be answerable once rather than per packet.
     pub fn declare_interface(&mut self, decl: &InterfaceDeclaration) -> Result<u32, WriteError> {
-        if !self.interfaces.is_empty() {
-            return Err(WriteError::SecondInterface);
+        if self.wrote_a_packet {
+            return Err(WriteError::InterfaceAfterPacket);
         }
         let mut body = Vec::new();
         body.extend_from_slice(&decl.link_type.code().to_le_bytes());
@@ -101,7 +110,10 @@ impl<W: Write> PcapngWriter<W> {
         body.extend_from_slice(&options.finish());
 
         write_block(&mut self.out, block_type::INTERFACE_DESCRIPTION, &body)?;
-        self.interfaces.push(DeclaredInterface::default());
+        self.interfaces.push(DeclaredInterface {
+            name: decl.name.clone(),
+            ..DeclaredInterface::default()
+        });
         Ok((self.interfaces.len() - 1) as u32)
     }
 
@@ -123,14 +135,17 @@ impl<W: Write> PcapngWriter<W> {
 
         let micros = to_micros(packet.ts.as_nanos())?;
 
-        // Section 13.3 writes `iface` only in a multi-interface capture, and
-        // this writer records one, so the key never appears. Deciding it here
-        // per packet was the earlier shape and was wrong: a second interface
-        // declared after packets had been written would have left the earlier
-        // blocks without the key, unrevisable, in a file that had become
-        // multi-interface. The grammar keeps the key for the slice that can
-        // supply it; see `WriteError::SecondInterface`.
-        let annotation = Annotation::from_packet(packet, None).encode();
+        // Section 13.3 writes `iface` only in a multi-interface capture. The
+        // decision is safe to make here now because `declare_interface` refuses
+        // to run after this point, so the count cannot change under packets
+        // already written. That refusal is the whole reason this is a lookup
+        // rather than a constant; see `WriteError::InterfaceAfterPacket`.
+        let name = if self.interfaces.len() > 1 {
+            Some(self.interfaces[idx].name.as_ref())
+        } else {
+            None
+        };
+        let annotation = Annotation::from_packet(packet, name).encode();
 
         let data = packet.data.as_ref();
         let mut body = Vec::with_capacity(data.len() + 64);
@@ -151,6 +166,7 @@ impl<W: Write> PcapngWriter<W> {
 
         write_block(&mut self.out, block_type::ENHANCED_PACKET, &body)?;
         self.interfaces[idx].last_ts_micros = Some(micros);
+        self.wrote_a_packet = true;
         Ok(())
     }
 
@@ -165,9 +181,20 @@ impl<W: Write> PcapngWriter<W> {
             body.extend_from_slice(&((ts & 0xFFFF_FFFF) as u32).to_le_bytes());
 
             let mut options = Options::new();
-            options.push_u64(opt::ISB_IFRECV, stats.source.received)?;
-            options.push_u64(opt::ISB_IFDROP, stats.source.interface_dropped)?;
-            options.push_u64(opt::ISB_OSDROP, stats.source.kernel_dropped)?;
+            // This interface's own report, not the capture-wide sum. Each
+            // handle has its own driver buffer, and an Interface Statistics
+            // Block that carried the total would tell anyone summing the blocks
+            // that the capture lost several times what it lost.
+            //
+            // An interface with no report is written as zeroes rather than
+            // omitted: it was declared, so it was watched, and saying nothing
+            // about it would be a gap where a measurement belongs.
+            let reported = stats
+                .source_for(InterfaceId::new(idx as u32))
+                .unwrap_or_default();
+            options.push_u64(opt::ISB_IFRECV, reported.received)?;
+            options.push_u64(opt::ISB_IFDROP, reported.interface_dropped)?;
+            options.push_u64(opt::ISB_OSDROP, reported.kernel_dropped)?;
 
             // Correct because there is exactly one interface: a capture-wide
             // `SourceStats` is that interface's stats. With two, copying this
@@ -217,14 +244,14 @@ fn to_micros(nanos: i64) -> Result<u64, WriteError> {
 }
 
 impl<W: Write + Send> Sink for PcapngWriter<W> {
-    /// Writes against interface 0.
+    /// Writes against the interface the packet says it arrived on.
     ///
-    /// A `CapturedPacket` carries no interface identifier, so a single-source
-    /// capture is all this seam can express today. S09 brings multi-interface
-    /// capture and the packet type gains the field then; `write_packet` already
-    /// takes the identifier so that change does not reach this file.
+    /// S09 gave `CapturedPacket` that field, so this seam no longer has to
+    /// assume. A packet naming an interface that was never declared is still
+    /// refused rather than written against a fabricated declaration.
     fn write(&mut self, packet: &CapturedPacket) -> Result<(), SinkError> {
-        self.write_packet(0, packet).map_err(Into::into)
+        self.write_packet(packet.interface.index(), packet)
+            .map_err(Into::into)
     }
 
     fn flush(&mut self) -> Result<(), SinkError> {
@@ -257,7 +284,7 @@ mod tests {
             Payload::from(vec![0x41u8; len]),
             len as u32,
         );
-        CapturedPacket::from_raw(raw)
+        CapturedPacket::from_raw(raw, InterfaceId::default())
     }
 
     fn le16(b: &[u8], at: usize) -> u16 {
@@ -365,19 +392,32 @@ mod tests {
     }
 
     #[test]
-    fn a_second_interface_is_refused_rather_than_written_wrongly() {
-        // Accepting one would put two false statements in the file: packets
-        // already written could not gain the `iface` key they now need, and
-        // the capture-wide statistics snapshot would be copied into both
-        // interface blocks, doubling the totals for anyone summing them.
+    fn a_second_interface_is_accepted_before_the_first_packet() {
+        // S06 refused every second interface. S09 replaces that with the
+        // narrower rule that was actually needed, because `CapturedPacket` now
+        // carries the identifier that made the refusal necessary.
+        let mut buf = Vec::new();
+        let mut w = PcapngWriter::new(&mut buf).unwrap();
+        assert_eq!(w.declare_interface(&decl("eth0")).unwrap(), 0);
+        assert_eq!(w.declare_interface(&decl("eth1")).unwrap(), 1);
+        assert_eq!(w.interface_count(), 2);
+    }
+
+    #[test]
+    fn an_interface_declared_after_a_packet_is_refused() {
+        // The real constraint. Section 13.3 decides the `iface` key from the
+        // interface count, and a block already written cannot be revised, so a
+        // late declaration would leave earlier packets without a key they
+        // retrospectively needed.
         let mut buf = Vec::new();
         let mut w = PcapngWriter::new(&mut buf).unwrap();
         w.declare_interface(&decl("eth0")).unwrap();
+        w.write_packet(0, &packet(0, 4)).unwrap();
 
         let before = w.out.len();
         assert_eq!(
             w.declare_interface(&decl("eth1")),
-            Err(WriteError::SecondInterface)
+            Err(WriteError::InterfaceAfterPacket)
         );
         assert_eq!(w.out.len(), before, "nothing was written for the refusal");
         assert_eq!(w.interface_count(), 1);
@@ -492,7 +532,8 @@ mod tests {
         let mut w = PcapngWriter::new(&mut buf).unwrap();
         w.declare_interface(&decl("eth0")).unwrap();
         let raw = RawPacket::new(Timestamp::from_nanos(0), Payload::from(vec![0u8; 40]), 8);
-        w.write_packet(0, &CapturedPacket::from_raw(raw)).unwrap();
+        w.write_packet(0, &CapturedPacket::from_raw(raw, InterfaceId::default()))
+            .unwrap();
 
         let epb = find_block(&buf, block_type::ENHANCED_PACKET).unwrap();
         let body = &epb[8..epb.len() - 4];
@@ -561,11 +602,14 @@ mod tests {
 
     fn stats_with_everything() -> CaptureStats {
         CaptureStats {
-            source: SourceStats {
-                received: 1_000,
-                interface_dropped: 7,
-                kernel_dropped: 13,
-            },
+            sources: vec![(
+                InterfaceId::default(),
+                SourceStats {
+                    received: 1_000,
+                    interface_dropped: 7,
+                    kernel_dropped: 13,
+                },
+            )],
             buffer_dropped: 5,
             sink_dropped: 3,
             ..Default::default()

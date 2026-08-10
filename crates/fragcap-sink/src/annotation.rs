@@ -341,11 +341,12 @@ mod tests {
     use super::*;
     use fragcap_core::attribution::Attribution;
     use fragcap_core::flow::{FlowKey, Proto};
+    use fragcap_core::interface::InterfaceId;
     use fragcap_core::packet::{Payload, RawPacket, Timestamp};
 
     fn packet(attr: Option<Attribution>, dir: Option<Direction>, flow: bool) -> CapturedPacket {
         let raw = RawPacket::new(Timestamp::from_parts(1, 0), Payload::from(vec![0u8; 4]), 4);
-        let mut p = CapturedPacket::from_raw(raw);
+        let mut p = CapturedPacket::from_raw(raw, InterfaceId::default());
         if flow {
             p.flow = Some(FlowKey::new(
                 Proto::Tcp,

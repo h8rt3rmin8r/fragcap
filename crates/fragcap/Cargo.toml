@@ -12,6 +12,12 @@ keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
 
+[features]
+# Passed through to `fragcap-capture`, off by default for the same reason it is
+# off there. Slice S09, plan decision D-2.
+default = []
+live    = ["fragcap-capture/live"]
+
 [dependencies]
 fragcap-core.workspace = true
 fragcap-profile.workspace = true

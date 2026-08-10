@@ -80,9 +80,6 @@ impl<W: Write> JsonLinesWriter<W> {
     /// `Ethernet` on every record, which is a false statement about every
     /// packet in it rather than a missing field.
     pub fn new(mut out: W, interfaces: &[&str], mode: PayloadMode) -> Result<Self, WriteError> {
-        if interfaces.len() > 1 {
-            return Err(WriteError::SecondInterface);
-        }
         let interfaces: Vec<String> = interfaces.iter().map(|s| (*s).to_owned()).collect();
 
         let mut line = String::from("{\"type\":\"header\",\"version\":");
@@ -210,6 +207,7 @@ impl<W: Write> JsonLinesWriter<W> {
 
     /// Write the trailer and consume the writer.
     fn write_trailer(mut self, stats: &CaptureStats) -> Result<(), WriteError> {
+        let source = stats.source();
         // Every counter comes from the supplied snapshot. Nothing here samples
         // or recomputes, which is what keeps the writer a pure function of its
         // input.
@@ -221,8 +219,11 @@ impl<W: Write> JsonLinesWriter<W> {
             ("packets", stats.packets_captured),
             ("attributed", stats.packets_attributed),
             ("unattributed", stats.packets_unattributed),
-            ("kernel_dropped", stats.source.kernel_dropped),
-            ("interface_dropped", stats.source.interface_dropped),
+            // The capture-wide sum. This trailer describes the run, and the
+            // per-interface breakdown lives in the pcapng writer's Interface
+            // Statistics Blocks where the format has somewhere to put it.
+            ("kernel_dropped", source.kernel_dropped),
+            ("interface_dropped", source.interface_dropped),
             ("buffer_dropped", stats.buffer_dropped),
             ("sink_dropped", stats.sink_dropped),
             ("filter_gaps", stats.filter_gaps),
@@ -250,7 +251,8 @@ impl<W: Write + Send> Sink for JsonLinesWriter<W> {
     /// Writes against interface 0, as the pcapng writer does and for the same
     /// reason: a `CapturedPacket` carries no interface identifier yet.
     fn write(&mut self, packet: &CapturedPacket) -> Result<(), SinkError> {
-        self.write_packet(0, packet).map_err(Into::into)
+        self.write_packet(packet.interface.index(), packet)
+            .map_err(Into::into)
     }
 
     fn flush(&mut self) -> Result<(), SinkError> {
@@ -270,6 +272,7 @@ mod tests {
     use super::*;
     use fragcap_core::attribution::{Attribution, Fidelity, StageId};
     use fragcap_core::flow::{FlowKey, Proto};
+    use fragcap_core::interface::InterfaceId;
     use fragcap_core::packet::{Payload, RawPacket, Timestamp};
     use fragcap_core::stats::SourceStats;
     use serde_json::Value;
@@ -280,7 +283,7 @@ mod tests {
             Payload::from(vec![0x3fu8; len]),
             len as u32,
         );
-        CapturedPacket::from_raw(raw)
+        CapturedPacket::from_raw(raw, InterfaceId::default())
     }
 
     fn flow() -> FlowKey {
@@ -395,21 +398,42 @@ mod tests {
     }
 
     #[test]
-    fn a_second_interface_is_refused_rather_than_mislabelled() {
-        // Accepting one would declare both in the header and then label every
-        // packet with the first, because `Sink::write` has no interface to
-        // pass and `CapturedPacket` carries none.
+    fn a_second_interface_is_accepted_and_each_packet_labelled_with_its_own() {
+        // S06 and S07 refused this, and the reason was real at the time:
+        // `CapturedPacket` carried no interface identifier, so every packet
+        // would have routed to the first declaration and been labelled with it.
+        // S09 supplied the identifier, so the refusal is replaced by working
+        // support rather than by deleting a check.
         let mut buf = Vec::new();
-        assert_eq!(
-            JsonLinesWriter::new(
-                &mut buf,
-                &["Ethernet", "NPF_Loopback"],
-                PayloadMode::WithPayload
-            )
-            .err(),
-            Some(WriteError::SecondInterface)
+        let mut w = JsonLinesWriter::new(
+            &mut buf,
+            &["Ethernet", "NPF_Loopback"],
+            PayloadMode::MetadataOnly,
+        )
+        .expect("two interfaces are now legitimate");
+
+        for id in [0u32, 1] {
+            let mut packet = CapturedPacket::from_raw(
+                RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+                InterfaceId::new(id),
+            );
+            packet.flow = None;
+            w.write(&packet).expect("both interfaces are declared");
+        }
+        drop(w);
+
+        let out = String::from_utf8(buf).expect("the writer emits UTF-8");
+        let rows: Vec<&str> = out.lines().collect();
+        assert!(
+            rows[1].contains("\"iface\":\"Ethernet\""),
+            "got {}",
+            rows[1]
         );
-        assert!(buf.is_empty(), "not even a header for a refused stream");
+        assert!(
+            rows[2].contains("\"iface\":\"NPF_Loopback\""),
+            "got {}",
+            rows[2]
+        );
     }
 
     #[test]
@@ -576,7 +600,7 @@ mod tests {
     fn lengths_are_written_exactly_as_recorded() {
         let raw = RawPacket::new(Timestamp::from_nanos(0), Payload::from(vec![0u8; 40]), 8);
         let v = &lines(&render(
-            &[CapturedPacket::from_raw(raw)],
+            &[CapturedPacket::from_raw(raw, InterfaceId::default())],
             PayloadMode::WithPayload,
         ))[1];
         assert_eq!(v["len"], 40);
@@ -626,11 +650,14 @@ mod tests {
             buffer_dropped: 5,
             sink_dropped: 3,
             filter_gaps: 2,
-            source: SourceStats {
-                received: 1_010,
-                kernel_dropped: 7,
-                interface_dropped: 3,
-            },
+            sources: vec![(
+                InterfaceId::default(),
+                SourceStats {
+                    received: 1_010,
+                    kernel_dropped: 7,
+                    interface_dropped: 3,
+                },
+            )],
             ..Default::default()
         }
     }

@@ -12,5 +12,18 @@ keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
 
+[features]
+# Off by default, deliberately. Enabling this compiles the live capture source,
+# which links against the npcap software development kit on Windows. Leaving it
+# off is what lets `cargo xtask ci` pass on a machine with neither the kit nor
+# the driver installed, which is slice S09 success criterion SC-011.
+#
+# Named for the capability rather than for the tests that need it. A feature
+# named `platform-tests` invites someone to enable it in order to run tests and
+# be surprised that it changed what the library does.
+default = []
+live    = ["dep:pcap"]
+
 [dependencies]
 fragcap-core.workspace = true
+pcap                   = { workspace = true, optional = true }

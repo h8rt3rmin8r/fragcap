@@ -17,6 +17,7 @@
 //! No stored totals. Every aggregate is a method over the named counters, so a
 //! total cannot drift from its parts.
 
+use crate::interface::InterfaceId;
 use crate::parse::ParseReject;
 
 /// One counter per way header parsing declined to produce a flow key, plus the
@@ -119,6 +120,30 @@ impl ParseStats {
         *slot = slot.saturating_add(1);
     }
 
+    /// Fold another parser's counters into these, for a run whose capture
+    /// threads each own a parser.
+    pub fn absorb(&mut self, other: ParseStats) {
+        let mut fields: [&mut u64; 14] = [
+            &mut self.unsupported_link_type,
+            &mut self.unsupported_ether_type,
+            &mut self.unsupported_address_family,
+            &mut self.unsupported_ip_version,
+            &mut self.malformed_network_header,
+            &mut self.extension_chain_too_long,
+            &mut self.no_next_header,
+            &mut self.unsupported_transport,
+            &mut self.malformed_transport_header,
+            &mut self.short_header,
+            &mut self.unmatched_fragment,
+            &mut self.no_local_endpoint,
+            &mut self.direction_ambiguous,
+            &mut self.fragment_evicted,
+        ];
+        for (slot, value) in fields.iter_mut().zip(other.counters()) {
+            **slot = slot.saturating_add(value);
+        }
+    }
+
     /// Every counter in a fixed order, the twelve rejections first.
     ///
     /// Exists so a test can diff the whole set and assert that exactly one
@@ -172,7 +197,7 @@ impl SourceStats {
 ///
 /// Holds the backend's report by value rather than merging its fields, so an
 /// operator can tell where loss happened and therefore what to change.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CaptureStats {
     /// Packets fragcap accepted from the source.
     pub packets_captured: u64,
@@ -190,8 +215,22 @@ pub struct CaptureStats {
     /// Packets that passed while a filter was being narrowed, per the summary
     /// output in specification section 13.
     pub filter_gaps: u64,
-    /// The backend's own report, unaltered.
-    pub source: SourceStats,
+    /// Each capture backend's own report, unaltered, one entry per interface.
+    ///
+    /// Per-interface rather than capture-wide because each handle has its own
+    /// driver buffer, so `kernel_dropped` was always a per-interface quantity;
+    /// there was simply never a second interface to reveal it. Folding them
+    /// would tell an operator that a driver buffer is undersized without saying
+    /// which, and choosing the remedy is the entire reason constitution P-4
+    /// separates counters by cause.
+    ///
+    /// The capture-wide view is [`CaptureStats::source`], a method rather than
+    /// a field, so it cannot drift from the entries it sums. That follows this
+    /// module's standing rule against stored totals.
+    ///
+    /// **A recorded deviation**, found while planning slice S09 rather than
+    /// before it. Promoted to specification section 29.
+    pub sources: Vec<(InterfaceId, SourceStats)>,
     /// What header parsing concluded, per slice S03.
     ///
     /// No field of this contributes to any drop total. A packet that produced
@@ -201,6 +240,60 @@ pub struct CaptureStats {
 }
 
 impl CaptureStats {
+    /// Every backend's report summed into one, for the capture-wide view.
+    ///
+    /// Computed, never stored, so it cannot disagree with the per-interface
+    /// entries. Each backend reports `u32` counts which widen to `u64` here
+    /// before summing, so a long capture across several busy interfaces cannot
+    /// total to a number smaller than one of its parts.
+    pub fn source(&self) -> SourceStats {
+        self.sources
+            .iter()
+            .fold(SourceStats::default(), |acc, (_, s)| SourceStats {
+                received: acc.received.saturating_add(s.received),
+                kernel_dropped: acc.kernel_dropped.saturating_add(s.kernel_dropped),
+                interface_dropped: acc.interface_dropped.saturating_add(s.interface_dropped),
+            })
+    }
+
+    /// One interface's report, for an operator deciding which driver buffer to
+    /// enlarge.
+    pub fn source_for(&self, id: InterfaceId) -> Option<SourceStats> {
+        self.sources.iter().find(|(i, _)| *i == id).map(|(_, s)| *s)
+    }
+
+    /// Record a backend's report against its interface, replacing any earlier
+    /// one. The backend's counts are cumulative from the start of its run, so
+    /// the latest report supersedes rather than adds to the previous.
+    pub fn set_source(&mut self, id: InterfaceId, stats: SourceStats) {
+        match self.sources.iter_mut().find(|(i, _)| *i == id) {
+            Some((_, slot)) => *slot = stats,
+            None => self.sources.push((id, stats)),
+        }
+    }
+
+    /// Fold another capture thread's counters into these.
+    ///
+    /// Every counter here is a count of events, so several capture threads'
+    /// counts add. `buffer_dropped` and `sink_dropped` are deliberately not
+    /// touched: the buffer and the sinks are capture-wide, the output side owns
+    /// both counters, and adding them per thread would multiply one eviction by
+    /// the number of interfaces running.
+    pub fn absorb(&mut self, other: CaptureStats) {
+        self.packets_captured = self.packets_captured.saturating_add(other.packets_captured);
+        self.packets_attributed = self
+            .packets_attributed
+            .saturating_add(other.packets_attributed);
+        self.packets_unattributed = self
+            .packets_unattributed
+            .saturating_add(other.packets_unattributed);
+        self.filter_gaps = self.filter_gaps.saturating_add(other.filter_gaps);
+        self.parse.absorb(other.parse);
+        for (id, stats) in other.sources {
+            self.set_source(id, stats);
+        }
+    }
+
     /// What fragcap itself discarded. Computed, not stored.
     pub fn fragcap_dropped(&self) -> u64 {
         self.buffer_dropped.saturating_add(self.sink_dropped)
@@ -210,7 +303,7 @@ impl CaptureStats {
     /// so it cannot disagree with the named counters it sums.
     pub fn total_dropped(&self) -> u64 {
         self.fragcap_dropped()
-            .saturating_add(self.source.total_dropped())
+            .saturating_add(self.source().total_dropped())
     }
 
     /// Whether anything was lost at all. The question an operator asks first.
@@ -231,11 +324,14 @@ mod tests {
             buffer_dropped: 5,
             sink_dropped: 2,
             filter_gaps: 2,
-            source: SourceStats {
-                received: 184_240,
-                kernel_dropped: 11,
-                interface_dropped: 3,
-            },
+            sources: vec![(
+                InterfaceId::default(),
+                SourceStats {
+                    received: 184_240,
+                    kernel_dropped: 11,
+                    interface_dropped: 3,
+                },
+            )],
             parse: ParseStats {
                 short_header: 4,
                 unsupported_transport: 12,
@@ -254,15 +350,15 @@ mod tests {
         let s = sample();
         assert_eq!(s.buffer_dropped, 5);
         assert_eq!(s.sink_dropped, 2);
-        assert_eq!(s.source.kernel_dropped, 11);
-        assert_eq!(s.source.interface_dropped, 3);
+        assert_eq!(s.source().kernel_dropped, 11);
+        assert_eq!(s.source().interface_dropped, 3);
     }
 
     #[test]
     fn totals_are_computed_from_the_named_counters() {
         let s = sample();
         assert_eq!(s.fragcap_dropped(), 7);
-        assert_eq!(s.source.total_dropped(), 14);
+        assert_eq!(s.source().total_dropped(), 14);
         assert_eq!(s.total_dropped(), 21);
     }
 
@@ -283,7 +379,7 @@ mod tests {
             s.total_dropped(),
             "fragcap's own drops must exclude the backend's"
         );
-        assert_eq!(s.source.received, 184_240);
+        assert_eq!(s.source().received, 184_240);
     }
 
     #[test]
@@ -296,8 +392,24 @@ mod tests {
         for set in [
             |s: &mut CaptureStats| s.buffer_dropped = 1,
             |s: &mut CaptureStats| s.sink_dropped = 1,
-            |s: &mut CaptureStats| s.source.kernel_dropped = 1,
-            |s: &mut CaptureStats| s.source.interface_dropped = 1,
+            |s: &mut CaptureStats| {
+                s.set_source(
+                    InterfaceId::default(),
+                    SourceStats {
+                        kernel_dropped: 1,
+                        ..SourceStats::default()
+                    },
+                )
+            },
+            |s: &mut CaptureStats| {
+                s.set_source(
+                    InterfaceId::default(),
+                    SourceStats {
+                        interface_dropped: 1,
+                        ..SourceStats::default()
+                    },
+                )
+            },
         ] {
             let mut s = CaptureStats::default();
             set(&mut s);
@@ -308,6 +420,90 @@ mod tests {
     // FR-036 and SC-008. No parse outcome is a drop, so no parse counter may
     // reach either drop total. Asserted at the type level, before any parser
     // exists to get it wrong.
+    // T015, FR-029. The capture-wide view is a sum of its parts and cannot
+    // drift from them, and one interface's report is readable on its own, which
+    // is what lets an operator tell which driver buffer is undersized.
+    #[test]
+    fn the_capture_wide_source_view_is_the_sum_of_its_interfaces() {
+        let mut s = CaptureStats::default();
+        s.set_source(
+            InterfaceId::new(0),
+            SourceStats {
+                received: 100,
+                kernel_dropped: 7,
+                interface_dropped: 1,
+            },
+        );
+        s.set_source(
+            InterfaceId::new(1),
+            SourceStats {
+                received: 50,
+                kernel_dropped: 2,
+                interface_dropped: 0,
+            },
+        );
+        assert_eq!(s.source().received, 150);
+        assert_eq!(s.source().kernel_dropped, 9);
+        assert_eq!(s.source().interface_dropped, 1);
+    }
+
+    #[test]
+    fn one_interfaces_report_is_readable_on_its_own() {
+        let mut s = CaptureStats::default();
+        s.set_source(
+            InterfaceId::new(0),
+            SourceStats {
+                kernel_dropped: 7,
+                ..SourceStats::default()
+            },
+        );
+        s.set_source(InterfaceId::new(1), SourceStats::default());
+        assert_eq!(s.source_for(InterfaceId::new(0)).unwrap().kernel_dropped, 7);
+        assert_eq!(s.source_for(InterfaceId::new(1)).unwrap().kernel_dropped, 0);
+        assert_eq!(s.source_for(InterfaceId::new(9)), None);
+    }
+
+    #[test]
+    fn changing_one_interfaces_report_changes_the_capture_wide_view() {
+        // The assertion a stored total would fail: it would not move.
+        let mut s = CaptureStats::default();
+        s.set_source(InterfaceId::new(0), SourceStats::default());
+        let before = s.source().kernel_dropped;
+        s.set_source(
+            InterfaceId::new(0),
+            SourceStats {
+                kernel_dropped: 12,
+                ..SourceStats::default()
+            },
+        );
+        assert_eq!(s.source().kernel_dropped, before + 12);
+    }
+
+    // SC-007. The backend's counts and fragcap's own must stay separable, so
+    // that an operator can tell an undersized driver buffer from a slow sink.
+    #[test]
+    fn a_driver_count_never_reaches_a_fragcap_counter() {
+        let mut s = CaptureStats::default();
+        s.set_source(
+            InterfaceId::new(0),
+            SourceStats {
+                received: 900,
+                kernel_dropped: 40,
+                interface_dropped: 5,
+            },
+        );
+        assert_eq!(s.fragcap_dropped(), 0, "no driver count is fragcap's own");
+        assert_eq!(s.total_dropped(), 45);
+
+        s.buffer_dropped = 3;
+        assert_eq!(s.fragcap_dropped(), 3);
+        assert_eq!(
+            s.source().kernel_dropped,
+            40,
+            "a fragcap counter must not alter what the backend reported"
+        );
+    }
+
     #[test]
     fn no_parse_counter_contributes_to_any_drop_total() {
         let mut s = CaptureStats::default();

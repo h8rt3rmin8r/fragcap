@@ -144,11 +144,26 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
 
-            if cargo(&["build", "-p", "fragcap-core", "--target", NEUTRAL_TARGET]) {
-                println!("neutral: fragcap-core builds for {NEUTRAL_TARGET} (constitution P-2)");
+            // Both crates, not just core. Until slice S09 this built
+            // `fragcap-core` alone, while the specification claimed that
+            // `fragcap-capture` also builds for a target with no capture
+            // backend. That claim was true and nothing checked it, which the
+            // S09 analyze gate caught. `fragcap-capture` is built with default
+            // features, which is what leaves the live source compiled out.
+            let mut ok = true;
+            for crate_name in ["fragcap-core", "fragcap-capture"] {
+                if cargo(&["build", "-p", crate_name, "--target", NEUTRAL_TARGET]) {
+                    println!(
+                        "neutral: {crate_name} builds for {NEUTRAL_TARGET} (constitution P-2)"
+                    );
+                } else {
+                    eprintln!("neutral: {crate_name} does NOT build for {NEUTRAL_TARGET}");
+                    ok = false;
+                }
+            }
+            if ok {
                 ExitCode::SUCCESS
             } else {
-                eprintln!("neutral: fragcap-core does NOT build for {NEUTRAL_TARGET}");
                 ExitCode::from(1)
             }
         }

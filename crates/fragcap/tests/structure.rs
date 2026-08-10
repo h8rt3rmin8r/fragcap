@@ -15,6 +15,7 @@
 mod common;
 
 use common::{render, CORPUS};
+use fragcap_core::interface::InterfaceId;
 
 const SECTION_HEADER: u32 = 0x0A0D_0D0A;
 const INTERFACE_DESCRIPTION: u32 = 0x0000_0001;
@@ -260,7 +261,8 @@ fn a_writer_dropped_without_finishing_leaves_a_readable_prefix() {
         ))
         .unwrap();
         let raw = RawPacket::new(Timestamp::from_nanos(1_000), Payload::from(vec![0u8; 8]), 8);
-        w.write(&CapturedPacket::from_raw(raw)).unwrap();
+        w.write(&CapturedPacket::from_raw(raw, InterfaceId::default()))
+            .unwrap();
         // Dropped here, deliberately: no `finish`.
     }
 

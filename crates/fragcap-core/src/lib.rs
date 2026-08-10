@@ -80,6 +80,7 @@ pub mod duration;
 pub mod error;
 pub mod filter;
 pub mod flow;
+pub mod interface;
 pub mod link;
 pub mod packet;
 pub mod parse;
@@ -93,12 +94,17 @@ pub use duration::DurationError;
 pub use error::{AttrError, SinkError, SourceError};
 pub use filter::FilterProgram;
 pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
+pub use interface::{
+    select, DriverReport, ExclusionReason, InterfaceId, InterfaceInventory, InterfaceRecord,
+    InterfaceRetirement, RetirementReason, SelectedInterface, SelectionError, SelectionOutcome,
+    SelectionReason, SelectionSettings, VirtualVerdict,
+};
 pub use link::LinkType;
 pub use packet::{AttributionState, CapturedPacket, Payload, RawPacket, Timestamp};
 pub use parse::{HeaderParser, InterfaceAddrs, ParseOutcome, ParseReject};
 pub use pipeline::{
     ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport, SinkFailure,
-    StopHandle,
+    SourceBinding, StopHandle,
 };
 pub use process::{ProcessEvent, ProcessRecord};
 pub use stats::{CaptureStats, ParseStats, SourceStats};

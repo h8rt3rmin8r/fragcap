@@ -13,7 +13,7 @@
 //! two apart.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 /// Directories never linted: build output, version control internals, and
 /// vendored third-party content. Listed explicitly rather than inferred, so
@@ -171,12 +171,62 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<(
 }
 
 /// Walk the repository and report every violation. Returns the finding count.
+/// Capture-binding calls fragcap must never make.
+///
+/// Constitution P-1 permits the NDIS capture driver and nothing that modifies
+/// traffic. The `pcap` crate binds a library that can also transmit, and slice
+/// S09 plan decision D-8 concluded that transmission is not on the section 19.3
+/// denylist, so the dependency is acceptable. That argument is correct and it
+/// is also exactly the kind of argument that decays, so this makes it
+/// mechanical: fragcap's own source may not name a transmit call, and a change
+/// that wants to has to delete this list deliberately.
+const FORBIDDEN_CALLS: &[(&str, &str)] = &[
+    (
+        "sendpacket",
+        "transmits a frame; fragcap observes and never modifies traffic (P-1)",
+    ),
+    (
+        "inject(",
+        "transmits a frame; fragcap observes and never modifies traffic (P-1)",
+    ),
+];
+
+/// Files that must never appear in the repository.
+///
+/// The npcap software development kit and driver are not redistributable. The
+/// constitution's licensing section forbids vendoring or bundling either, and
+/// slice S09 success criterion SC-010 says the rule is verified mechanically
+/// rather than remembered.
+const FORBIDDEN_ARTIFACTS: &[&str] = &[
+    "wpcap.lib",
+    "packet.lib",
+    "wpcap.dll",
+    "packet.dll",
+    "npcap-sdk",
+];
+
 pub fn run(root: &Path) -> std::io::Result<usize> {
     let mut files = Vec::new();
     collect(root, root, &mut files)?;
     files.sort();
 
     let mut total = 0usize;
+    for path in &files {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        let shown = rel.to_string_lossy().replace(MAIN_SEPARATOR, "/");
+        let lowered = shown.to_lowercase();
+        for artifact in FORBIDDEN_ARTIFACTS {
+            if lowered.contains(artifact) {
+                println!(
+                    "{shown}: capture-driver-artifact: npcap binaries and its \
+                     software development kit are never vendored (constitution \
+                     licensing section)"
+                );
+                total += 1;
+            }
+        }
+    }
+
     for path in files {
         let bytes = match fs::read(&path) {
             Ok(b) => b,
@@ -193,6 +243,23 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
         for f in check_bytes(&bytes, is_source) {
             println!("{}:{}: {}: {}", shown, f.line, f.rule, f.detail);
             total += 1;
+        }
+
+        // P-1, mechanically. Only fragcap's own Rust source is checked: this
+        // file names the calls it forbids, and the specification and the plan
+        // discuss them, so matching prose would report itself.
+        if is_source && ext == "rs" && !shown.starts_with("xtask/") {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                for (line_no, line) in text.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or("");
+                    for (call, why) in FORBIDDEN_CALLS {
+                        if code.contains(call) {
+                            println!("{}:{}: forbidden-call: {call} {why}", shown, line_no + 1);
+                            total += 1;
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(total)

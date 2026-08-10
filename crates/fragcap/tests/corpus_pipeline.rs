@@ -31,6 +31,9 @@ use std::fs;
 
 use common::{goldens_dir, render_via_pipeline, CORPUS};
 use fragcap::{EndReason, InterfaceDeclaration, LinkType, PcapngWriter};
+use fragcap_core::interface::InterfaceId;
+use fragcap_core::packet::{CapturedPacket, Payload, RawPacket, Timestamp};
+use fragcap_core::traits::Sink;
 
 /// The default capacity, which no fixture comes close to filling. The goldens
 /// therefore test the composition rather than the eviction policy, which is
@@ -196,7 +199,8 @@ fn the_conservation_identity_holds_across_the_corpus() {
         );
         assert_eq!(stats.sink_dropped, 0, "{name}: no sink refused anything");
         assert_eq!(
-            stats.source.received, stats.packets_captured,
+            stats.source().received,
+            stats.packets_captured,
             "{name}: every frame the backend delivered was accepted"
         );
         assert!(
@@ -232,9 +236,26 @@ fn the_corpus_exercises_more_than_one_attribution_state() {
     );
 }
 
-// T076a. FR-043. The S09 restriction must not be liftable by accident.
+// T031. FR-031, FR-032. S08 asserted here that a second interface was refused,
+// with a comment saying S09 lifts it. This is that lift, written as the same
+// kind of assertion so the replacement is visible in the diff rather than the
+// old test simply disappearing.
 #[test]
-fn a_writer_driven_by_the_pipeline_still_refuses_a_second_interface() {
+fn a_writer_driven_by_the_pipeline_now_accepts_a_second_interface() {
+    let mut writer = PcapngWriter::new(Vec::new()).expect("in-memory write cannot fail");
+    for name in ["first", "second"] {
+        writer
+            .declare_interface(&InterfaceDeclaration::new(LinkType::ETHERNET, 65_535, name))
+            .unwrap_or_else(|e| panic!("interface {name} must be accepted: {e}"));
+    }
+    assert_eq!(writer.interface_count(), 2);
+}
+
+// The narrower rule that replaced the blanket refusal. Section 13.3 settles the
+// `iface` key from the interface count, and a written block cannot be revised,
+// so the count has to be final before the first packet.
+#[test]
+fn an_interface_declared_after_a_packet_is_still_refused() {
     let mut writer = PcapngWriter::new(Vec::new()).expect("in-memory write cannot fail");
     writer
         .declare_interface(&InterfaceDeclaration::new(
@@ -243,6 +264,13 @@ fn a_writer_driven_by_the_pipeline_still_refuses_a_second_interface() {
             "first",
         ))
         .expect("the first interface is accepted");
+
+    let packet = CapturedPacket::from_raw(
+        RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+        InterfaceId::default(),
+    );
+    writer.write(&packet).expect("interface 0 is declared");
+
     assert!(
         writer
             .declare_interface(&InterfaceDeclaration::new(
@@ -251,7 +279,6 @@ fn a_writer_driven_by_the_pipeline_still_refuses_a_second_interface() {
                 "second",
             ))
             .is_err(),
-        "CapturedPacket still carries no interface identifier, so a second \
-         interface would label every packet with the first. S09 lifts this."
+        "packets already written could not gain an iface key they now need"
     );
 }
