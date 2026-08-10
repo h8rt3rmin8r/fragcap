@@ -35,6 +35,10 @@ pub mod core {
         ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport,
         SinkFailure, StopHandle, DEFAULT_CAPACITY, DEFAULT_READ_TIMEOUT,
     };
+    pub use fragcap_core::process::tree::NodeId;
+    pub use fragcap_core::process::{
+        Ancestry, CommandLine, ProcessEvent, ProcessId, ProcessNode, ProcessRecord, ProcessTree,
+    };
     pub use fragcap_core::stats::{CaptureStats, ParseStats, SourceStats};
     pub use fragcap_core::traits::{Dissector, FlowAttributor, PacketSource, ProcessWatcher, Sink};
 }
@@ -65,10 +69,11 @@ pub mod attr {
     pub use fragcap_attr::platform::{IpHelperTable, ToolhelpNamer};
 }
 
-/// Game profiles: schema, validation, and resolution.
+/// Game profiles: schema, validation, resolution, and stage matching.
 pub mod profile {
     pub use fragcap_profile::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
     pub use fragcap_profile::glob::{ImagePattern, PatternError};
+    pub use fragcap_profile::matching::{bind_stages, stage_for};
     pub use fragcap_profile::parse::{load, LoadError, MAX_PROFILE_BYTES};
     pub use fragcap_profile::resolve::{
         resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
@@ -90,8 +95,15 @@ pub mod sink {
     pub use fragcap_sink::pcapng::{PcapngWriter, PROFILE_COMMENT, USER_APPL};
 }
 
+/// The capture session lifecycle: stage matching drives the five-state machine
+/// of specification sections 10.5 and 10.6.
+pub mod session;
+
 pub use crate::core::*;
 pub use crate::core::{EndReason, Pipeline, PipelineConfig, PipelineReport, StopHandle};
+pub use crate::session::{
+    CaptureSession, PacketDisposition, SessionConfig, SessionState, SessionStats, StopReason,
+};
 pub use attr::{
     AttributionScript, AttributorConfig, Clock, DeclaredNames, DeclaredTable, ScriptedAttributor,
     SocketTable, SocketTableAttributor, SocketTableEntry, SystemClock, TestClock,

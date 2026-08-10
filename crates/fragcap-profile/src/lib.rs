@@ -9,8 +9,9 @@
 //! Rust.
 //!
 //! Slice S05 built the schema (section 15.2), the resolution order (section
-//! 15.3), and the validation set (section 15.4). Stage matching against real
-//! process events is S12's; nothing here evaluates a predicate.
+//! 15.3), and the validation set (section 15.4). Slice S12 added [`matching`],
+//! which evaluates a profile's stage predicates against an observed process tree
+//! and binds each process to its stage.
 //!
 //! # Being wrong well
 //!
@@ -58,6 +59,7 @@
 
 pub mod diagnostic;
 pub mod glob;
+pub mod matching;
 pub mod parse;
 pub mod resolve;
 pub mod schema;

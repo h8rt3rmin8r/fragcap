@@ -1,0 +1,282 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Tier-1 tests for the capture session lifecycle, specification sections 10.4
+//! through 10.6. Driven by scripted process events and packets, with no capture
+//! driver, no elevation, and no game.
+
+use std::time::Duration;
+
+use fragcap::{
+    CaptureSession, PacketDisposition, ProcessEvent, Profile, SessionConfig, SessionState,
+    StopReason, Timestamp,
+};
+
+fn at(n: i64) -> Timestamp {
+    Timestamp::from_nanos(n)
+}
+
+fn profile(body: &str) -> Profile {
+    let text = format!("schema = 1\n[game]\nid = \"t\"\nname = \"T\"\n{body}");
+    Profile::parse(&text).unwrap_or_else(|d| {
+        panic!(
+            "test profile did not validate: {:?}",
+            d.iter().map(|x| x.message.clone()).collect::<Vec<_>>()
+        )
+    })
+}
+
+/// Launcher (transient) then client (session, terminal, descended from launcher).
+fn terminal_chain() -> Profile {
+    profile(
+        "[[stage]]\nrole = \"launcher\"\nlifecycle = \"transient\"\n\
+         match = { exe = \"launcher.exe\" }\n\
+         [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
+         match = { exe = \"game.exe\", descends_from = \"launcher\" }\n",
+    )
+}
+
+/// Launcher (transient) then client (session, not terminal).
+fn nonterminal_chain() -> Profile {
+    profile(
+        "[[stage]]\nrole = \"launcher\"\nlifecycle = \"transient\"\n\
+         match = { exe = \"launcher.exe\" }\n\
+         [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
+         match = { exe = \"game.exe\", descends_from = \"launcher\" }\n",
+    )
+}
+
+fn start(pid: u32, parent: u32, image: &str, when: i64) -> ProcessEvent {
+    ProcessEvent::started(pid, parent, image, "cmd", at(when))
+}
+
+fn exit(pid: u32, when: i64) -> ProcessEvent {
+    ProcessEvent::Exited { pid, at: at(when) }
+}
+
+#[test]
+fn a_session_arms_before_any_target() {
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    assert_eq!(s.state(), SessionState::Arming);
+    s.attach(at(0));
+    assert_eq!(
+        s.state(),
+        SessionState::Watching,
+        "the handle is open and the watcher attached before any process exists"
+    );
+}
+
+#[test]
+fn packets_before_a_match_are_discarded_and_counted() {
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    assert_eq!(s.on_packet(100), PacketDisposition::Discarded);
+    assert_eq!(s.on_packet(200), PacketDisposition::Discarded);
+    assert_eq!(
+        s.stats().watching_discarded,
+        2,
+        "P-4: the discard is counted"
+    );
+    assert_eq!(s.stats().retained, 0);
+}
+
+#[test]
+fn the_first_match_begins_capturing_with_no_traffic_lost_at_the_boundary() {
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+
+    // Before any match: discarded.
+    assert_eq!(s.on_packet(100), PacketDisposition::Discarded);
+
+    // The launcher matches; the first match moves Watching to Capturing.
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1));
+    assert_eq!(s.state(), SessionState::Capturing);
+
+    // From here packets are retained. The handle was already open, so the packet
+    // that coincides with the transition is not lost.
+    assert_eq!(s.on_packet(100), PacketDisposition::Retained);
+    assert_eq!(s.on_packet(100), PacketDisposition::Retained);
+    assert_eq!(s.stats().watching_discarded, 1);
+    assert_eq!(s.stats().retained, 2);
+    assert_eq!(s.stats().retained_bytes, 200);
+}
+
+#[test]
+fn every_packet_offered_while_armed_is_accounted_for() {
+    // Session conservation: observed equals retained plus watching-discards, and
+    // every packet is one or the other. Nothing offered while armed is lost.
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    let mut offered = 0u64;
+
+    for _ in 0..5 {
+        s.on_packet(64);
+        offered += 1;
+    }
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // -> Capturing
+    for _ in 0..7 {
+        s.on_packet(64);
+        offered += 1;
+    }
+
+    assert_eq!(s.stats().observed(), offered);
+    assert_eq!(
+        s.stats().watching_discarded + s.stats().retained,
+        offered,
+        "conservation: every packet is retained or a counted discard"
+    );
+    assert_eq!(s.stats().watching_discarded, 5);
+    assert_eq!(s.stats().retained, 7);
+}
+
+#[test]
+fn no_target_by_the_acquisition_timeout_completes_without_capturing() {
+    let cfg = SessionConfig {
+        acquisition_timeout: Some(Duration::from_secs(30)),
+        ..SessionConfig::default()
+    };
+    let mut s = CaptureSession::new(terminal_chain(), cfg);
+    s.attach(at(0));
+    s.on_packet(100); // discarded while watching
+    s.on_tick(at(30_000_000_000)); // 30s later, still no match
+
+    assert_eq!(s.state(), SessionState::Complete);
+    assert_eq!(s.stop_reason(), Some(StopReason::AcquisitionTimeout));
+    assert_eq!(s.stats().retained, 0);
+}
+
+#[test]
+fn the_duration_bound_stops_capture() {
+    let cfg = SessionConfig {
+        duration: Some(Duration::from_secs(10)),
+        ..SessionConfig::default()
+    };
+    let mut s = CaptureSession::new(terminal_chain(), cfg);
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // -> Capturing
+    s.on_tick(at(10_000_000_000));
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(s.stop_reason(), Some(StopReason::DurationReached));
+    s.finalize();
+    assert_eq!(s.state(), SessionState::Complete);
+}
+
+#[test]
+fn a_volume_bound_stops_capture() {
+    let cfg = SessionConfig {
+        packet_bound: Some(2),
+        ..SessionConfig::default()
+    };
+    let mut s = CaptureSession::new(terminal_chain(), cfg);
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // -> Capturing
+    assert_eq!(s.on_packet(100), PacketDisposition::Retained);
+    assert_eq!(
+        s.on_packet(100),
+        PacketDisposition::Retained,
+        "the packet that reaches the bound is still retained"
+    );
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(s.stop_reason(), Some(StopReason::VolumeReached));
+}
+
+#[test]
+fn the_terminal_stage_exit_stops_capture() {
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // launcher -> Capturing
+    s.on_process_event(start(200, 100, "C:\\G\\game.exe", 2)); // client (terminal), under launcher
+    s.on_process_event(exit(200, 3)); // terminal exits
+    assert_eq!(s.stop_reason(), Some(StopReason::TerminalStageExited));
+    assert_eq!(s.state(), SessionState::Draining);
+}
+
+#[test]
+fn all_matched_processes_exiting_stops_capture() {
+    let mut s = CaptureSession::new(nonterminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // launcher (transient)
+    s.on_process_event(start(200, 100, "C:\\G\\game.exe", 2)); // client (session, not terminal)
+    s.on_process_event(exit(100, 3)); // launcher exits: transient, normal
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "a transient launcher exit does not end capture on its own"
+    );
+    s.on_process_event(exit(200, 4)); // last non-service process exits
+    assert_eq!(s.stop_reason(), Some(StopReason::AllProcessesExited));
+}
+
+#[test]
+fn an_interrupt_is_a_normal_stop() {
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1));
+    s.on_interrupt();
+    assert_eq!(s.stop_reason(), Some(StopReason::Interrupt));
+    assert_eq!(s.state(), SessionState::Draining);
+    s.finalize();
+    assert_eq!(
+        s.state(),
+        SessionState::Complete,
+        "an interrupt yields a complete, valid capture, not an abort"
+    );
+}
+
+#[test]
+fn a_sink_error_stops_capture() {
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1));
+    s.on_sink_error();
+    assert_eq!(s.stop_reason(), Some(StopReason::SinkError));
+    s.finalize();
+    assert_eq!(s.state(), SessionState::Complete);
+}
+
+#[test]
+fn every_stop_condition_reaches_complete_through_draining() {
+    // The uniform-shutdown property: whatever the reason, the session drains to
+    // Complete after finalize. The two reasons an operator raises directly stand
+    // in for the set; the timed and event-driven reasons are covered by their
+    // own tests above.
+    for reason in [StopReason::Interrupt, StopReason::SinkError] {
+        let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+        s.attach(at(0));
+        s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1));
+        match reason {
+            StopReason::Interrupt => s.on_interrupt(),
+            StopReason::SinkError => s.on_sink_error(),
+            _ => unreachable!(),
+        }
+        assert_eq!(s.stop_reason(), Some(reason), "{reason:?}");
+        s.finalize();
+        assert_eq!(
+            s.state(),
+            SessionState::Complete,
+            "{reason:?} reaches Complete"
+        );
+    }
+}
+
+#[test]
+fn a_service_process_does_not_keep_the_all_exited_condition_from_firing() {
+    // A profile with a service stage that outlives the session. The client is
+    // the only non-service stage; when it exits, capture stops even though the
+    // service is still live (section 10.4: a service is never awaited).
+    let p = profile(
+        "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
+         match = { exe = \"game.exe\" }\n\
+         [[stage]]\nrole = \"platform\"\nlifecycle = \"service\"\n\
+         match = { exe = \"platform.exe\" }\n",
+    );
+    let mut s = CaptureSession::new(p, SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\G\\game.exe", 1)); // client -> Capturing
+    s.on_process_event(start(200, 0, "C:\\P\\platform.exe", 2)); // service, still live
+    s.on_process_event(exit(100, 3)); // the only non-service process exits
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::AllProcessesExited),
+        "a live service does not keep the session alive"
+    );
+}
