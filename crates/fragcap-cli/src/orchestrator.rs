@@ -218,6 +218,18 @@ fn capture_prerecorded(
     }
 
     publisher.publish(session.role_bindings());
+    // Drive an initial refresh so the count reflects the first real snapshot.
+    // On the live socket-table path the pipeline control thread performs the
+    // refreshes during the run, but it has not started yet at this point, so
+    // without this the attributor still holds its empty initial publication and
+    // the count would always be reported as zero (found in review of pull
+    // request 24). Offline the scripted attributor reports it wants no refresh,
+    // so this is a no-op and the count is unchanged.
+    if let Some(s) = components.stamper.as_ref() {
+        if s.wants_refresh() {
+            let _ = s.refresh();
+        }
+    }
     // The count of endpoints actually narrowed to: the stamper reports only
     // endpoints owned by profiled processes (slice 015), not the full
     // socket-table set the inner attributor holds. Offline this is the scripted
@@ -446,6 +458,18 @@ fn capture_live(
     }
 
     publisher.publish(session.role_bindings());
+    // Drive an initial refresh so the count reflects the first real snapshot.
+    // On the live socket-table path the pipeline control thread performs the
+    // refreshes during the run, but it has not started yet at this point, so
+    // without this the attributor still holds its empty initial publication and
+    // the count would always be reported as zero (found in review of pull
+    // request 24). Offline the scripted attributor reports it wants no refresh,
+    // so this is a no-op and the count is unchanged.
+    if let Some(s) = components.stamper.as_ref() {
+        if s.wants_refresh() {
+            let _ = s.refresh();
+        }
+    }
     // The count of endpoints actually narrowed to: the stamper reports only
     // endpoints owned by profiled processes (slice 015), not the full
     // socket-table set the inner attributor holds. Offline this is the scripted

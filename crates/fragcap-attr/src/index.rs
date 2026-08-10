@@ -367,12 +367,27 @@ impl AttributionIndex {
             .map(|e| OwnedEndpoint::new(e.endpoint(), Some(e.pid)))
             .collect();
         for r in self.retained.values() {
-            let endpoint = r.entry.endpoint();
-            if self.within_retention(r, at) && !out.iter().any(|o| o.endpoint == endpoint) {
-                out.push(OwnedEndpoint::new(endpoint, Some(r.entry.pid)));
+            if !self.within_retention(r, at) {
+                continue;
+            }
+            // Deduplicate on the whole (endpoint, owner) pair, not the endpoint
+            // alone. A socket retained under one owner and a live socket that has
+            // reused the same local endpoint under a different owner are distinct
+            // candidates and both must survive: if a profiled connection is
+            // retained on a port an unprofiled process now holds, collapsing by
+            // endpoint would keep only the live unprofiled owner, the profiled
+            // owner would be filtered out of the narrowed set, and late packets
+            // from the retained connection would leave the filter with no
+            // filter_gaps recorded, because the endpoint left the wanted set
+            // rather than being briefly excluded from it. Found in review of pull
+            // request 24. The profile filter (RoleStampingAttributor) keeps the
+            // profiled owner and deduplicates the endpoints that survive.
+            let owned = OwnedEndpoint::new(r.entry.endpoint(), Some(r.entry.pid));
+            if !out.contains(&owned) {
+                out.push(owned);
             }
         }
-        out.sort_by_key(|o| (o.endpoint.proto, o.endpoint.addr));
+        out.sort_by_key(|o| (o.endpoint.proto, o.endpoint.addr, o.owner));
         out
     }
 
@@ -1122,6 +1137,47 @@ mod tests {
         assert_eq!(owner_of("0.0.0.0:30000", Proto::Udp), Some(6));
         assert_eq!(owner_of("192.0.2.10:40000", Proto::Udp), Some(7));
         assert_eq!(owner_of("192.0.2.99:1234", Proto::Tcp), Some(5));
+    }
+
+    // Review of pull request 24. A socket retained under one owner and a live
+    // socket that reused the same local endpoint under a different owner are
+    // distinct candidates, and both must survive endpoints_owned. Collapsing by
+    // endpoint would keep only the live owner, so a profiled connection retained
+    // on a port an unprofiled process now holds would be filtered out of the
+    // narrowed set and lose its late packets.
+    #[test]
+    fn endpoints_owned_keeps_both_owners_when_a_live_entry_reuses_a_retained_endpoint() {
+        let mut map = RetentionMap::new();
+        // Retained, owned by pid 7 (the profiled connection, in this scenario).
+        let r = retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 7),
+            100,
+            None,
+        );
+        map.insert(r.key(), r);
+        // Live, the same local endpoint reused by pid 9.
+        let i = AttributionIndex::new(
+            SocketTable::new(
+                at(100),
+                vec![SocketTableEntry::udp(addr("192.0.2.10:30000"), 9)],
+            ),
+            HashMap::new(),
+            map,
+            30_000_000_000,
+        );
+
+        let ep = Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp);
+        let owners: Vec<Option<u32>> = i
+            .endpoints_owned(at(110))
+            .into_iter()
+            .filter(|o| o.endpoint == ep)
+            .map(|o| o.owner)
+            .collect();
+        assert!(owners.contains(&Some(9)), "the live reusing owner");
+        assert!(
+            owners.contains(&Some(7)),
+            "the retained owner is not masked by the live reuse"
+        );
     }
 
     #[test]

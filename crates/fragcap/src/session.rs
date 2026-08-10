@@ -604,7 +604,8 @@ impl FlowAttributor for RoleStampingAttributor {
     /// which is exactly the live-backend behavior and a pass-through offline.
     fn active_endpoints(&self) -> Vec<Endpoint> {
         let snapshot = self.publisher.snapshot();
-        self.inner
+        let mut endpoints: Vec<Endpoint> = self
+            .inner
             .active_endpoints_owned()
             .into_iter()
             .filter(|owned| match owned.owner {
@@ -612,7 +613,14 @@ impl FlowAttributor for RoleStampingAttributor {
                 None => true,
             })
             .map(|owned| owned.endpoint)
-            .collect()
+            .collect();
+        // One endpoint can arrive as several owner candidates (a profiled owner
+        // and, after port reuse, an unprofiled one), and more than one profiled
+        // candidate is possible; deduplicate the endpoints that survive the
+        // filter so a reused port is admitted once rather than compiled twice.
+        endpoints.sort();
+        endpoints.dedup();
+        endpoints
     }
 }
 
@@ -766,6 +774,31 @@ mod stamping_tests {
             got,
             vec![unknown.endpoint],
             "the unknown-owner endpoint survives, the known unprofiled one does not"
+        );
+    }
+
+    // Review of pull request 24. One endpoint arriving as two owner candidates,
+    // a live unprofiled reuse and a retained profiled owner, is admitted once
+    // via the profiled owner rather than dropped because the unprofiled owner
+    // was listed first.
+    #[test]
+    fn a_profiled_owner_admits_a_reused_endpoint_once() {
+        let live_unprofiled = owned("192.0.2.10:30000", Proto::Udp, Some(9));
+        let retained_profiled = owned("192.0.2.10:30000", Proto::Udp, Some(7));
+        let stamper = RoleStampingAttributor::new(Arc::new(OwnedInner(vec![
+            live_unprofiled,
+            retained_profiled,
+        ])));
+        stamper.publisher().publish(vec![(
+            7,
+            Some(Arc::from("client")),
+            Some(StageId::new("client")),
+        )]);
+        let got = stamper.active_endpoints();
+        assert_eq!(
+            got,
+            vec![Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp)],
+            "the endpoint is admitted once, via its profiled owner"
         );
     }
 
