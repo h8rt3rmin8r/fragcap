@@ -4,13 +4,36 @@ Flow attribution and process tree watching for fragcap.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
+**Attribution works. Process watching does not exist yet.**
 
-Version 0.1.0 reserves the name and fixes the crate boundary.
-The socket table attributor arrives in slice S10 and the process watcher in
-slice S11.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+`SocketTableAttributor` implements specification section 11: it snapshots the
+operating system socket table, joins captured flows against it by 5-tuple,
+keeps a closing connection's tail attributed through a retention window, and
+publishes each snapshot as an immutable value that any number of capture
+threads read without locking.
+
+`ScriptedAttributor` remains, and remains useful: it answers from a declared
+script rather than a socket table, which is what makes the whole pipeline
+testable with no capture driver, no elevation, and no game.
+
+The process watcher arrives in slice S11 and profile stage matching in S12, so
+an attribution from here carries a process identifier and an image name and no
+role.
+
+Depending on this version is reasonable if you want the attributor and can live
+with the surface still moving. Follow [the repository][repo] for progress.
+
+## Features
+
+| Feature | Default | What it gates |
+| --- | --- | --- |
+| `socket-table` | off | The Windows backends: the IP Helper socket table and query-only process enumeration |
+
+The feature is off by default so the ordinary check set passes on any machine.
+It is deliberately not named `live`, which is `fragcap-capture`'s feature and
+means "links against the npcap import library". This one needs no npcap at all:
+the IP Helper API ships with the operating system, so the backend builds and
+runs on a bare Windows machine with no capture driver installed.
 
 ## About fragcap
 
@@ -32,6 +55,12 @@ Attribution reads the system socket table and watches process lifetime
 events. It never opens a process handle carrying memory-read rights, never
 injects code, and never hooks a function; the technique denylist in
 constitution principle P-1 is absolute.
+
+In this crate that is stronger than it sounds. Image names come from a toolhelp
+process enumeration, which returns them in the snapshot, so no process handle
+is opened at all and there are no access rights to audit. `cargo xtask lint`
+fails if any fragcap source names a process-opening call, which makes the
+argument mechanical rather than remembered.
 
 ## License
 

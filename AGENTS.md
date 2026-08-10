@@ -43,7 +43,7 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S09 are complete. The Cargo workspace exists with the eight
+Slices S01 through S10 are complete. The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
 vocabulary from specification sections 8.4 and 8.5, a `parse` module
@@ -52,10 +52,65 @@ sections 8.6 and 12.4, and a `duration` module carrying the literal grammar
 three later slices share. `fragcap-profile` carries section 15 in full: the
 schema, the validation set, and the resolution order. `fragcap-capture` reads
 classic pcap and replays it as a `PacketSource`. `fragcap-attr` answers
-attribution from a declared script. `fragcap-sink` writes both output formats:
-pcapng carrying attribution in packet comments, and JSON Lines. `fixtures/`
-holds the committed corpus of section 25.3 and, since S06, a golden per fixture
-per format.
+attribution from a declared script and, since S10, from the operating system
+socket table. `fragcap-sink` writes both output formats: pcapng carrying
+attribution in packet comments, and JSON Lines. `fixtures/` holds the committed
+corpus of section 25.3 and, since S06, a golden per fixture per format.
+
+**fragcap attributes flows to processes.** S10 filled in specification section
+11. `SocketTableAttributor` snapshots the socket table, joins captured flows
+against it by 5-tuple, keeps a closing connection's tail attributed through a
+thirty second retention window, and publishes each snapshot as an immutable
+value every capture thread reads without locking. Every attributor before it
+answered from a text file a test wrote.
+
+**The join's order is total, and that is load-bearing rather than tidy.**
+Competing entries rank by exactness, then by the latest socket creation instant
+at or before the packet, then by a declared tiebreak whose only job is to make
+the order total. An implementation that iterates the platform's rows and takes
+the first hit passes an ordinary test and produces answers that change between
+runs over identical traffic; the permutation test in `index.rs` is what fails
+it. Do not replace that test with one that resolves a single unambiguous flow.
+
+**A socket created after a packet cannot have owned it**, and that filter is
+the only mechanism available that distinguishes the previous owner of a reused
+port from the current one. Both tables are therefore read by owning module
+rather than by owning process identifier, which is the class that carries a
+creation instant. Appendix D attributes the timestamp to TCP alone; it is on
+both, and the correction is in the S10 decisions fragment. It matters more for
+UDP, whose key is the local endpoint alone.
+
+**A retained answer is marked, and the window's origin is exact.** Retention
+runs from the instant an endpoint was last observed present in a table, not
+from the refresh that noticed it gone; those differ by up to one interval, and
+measuring from the later one would make thirty seconds silently thirty-one. A
+retained answer can be wrong in exactly one way, a port reassigned inside the
+window, which is why `Fidelity::Retained` exists and why widening the window
+quietly is a P-9 problem rather than a tuning question.
+
+**The pipeline no longer locks per packet.** S08 held the attributor behind a
+mutex and said in `pipeline/mod.rs` that the lock was not the destination; S10
+is where it went. `FlowAttributor` gained `Sync` through the deviation process,
+the pipeline holds `Arc<dyn FlowAttributor>`, and `Pipeline::new` kept its
+`Box` parameter because `Arc<dyn T>` is constructible from one, so no caller
+changed.
+
+**The socket table backend has actually run**, which the live capture source of
+S09 still has not. A real socket was opened, found in this machine's real
+socket table, attributed to the process that opened it, then closed and
+observed to survive as a retained attribution. That was possible because the
+backend needs no capture driver and no elevation: the IP Helper API ships with
+the operating system. Its feature is `socket-table` and deliberately not
+`live`, and folding the two together would make attribution unavailable to
+anyone without an npcap software development kit it never calls.
+
+**Nothing in this project opens a process handle.** Image names come from a
+toolhelp enumeration, which returns them in the snapshot. `OpenProcess` with
+query-limited rights would also satisfy P-1, and the point of choosing
+otherwise is that a handle request is a thing a reviewer has to check while
+having no handle is a thing `cargo xtask lint` can assert. It now does, for
+`OpenProcess`, `ReadProcessMemory`, and `WriteProcessMemory`, case
+insensitively.
 
 **The section 25.1 claim is now demonstrated rather than asserted.**
 `crates/fragcap/tests/pipeline.rs` reads a fixture, parses every packet, and
@@ -181,6 +236,8 @@ optional runtime dependency, and one dev-dependency, and the distinction is load
 | `pcap` | runtime, optional | S09 | The capture driver binding, behind the `live` feature |
 | `toml-span` | runtime | S05 | Profile parsing with byte spans on every value |
 | `regex` | runtime | S05 | Compiles the `path_regex` match predicate |
+| `arc-swap` | runtime | S10 | Lock-free publication of the attribution snapshot |
+| `windows-sys` | runtime, optional | S10 | The IP Helper socket table, behind the `socket-table` feature |
 | `serde_json` | dev only | S07 | Parses every line the JSON writer emits, in tests |
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
@@ -237,6 +294,39 @@ cannot run locally. And **`pcap` can transmit, and fragcap never does**: `cargo
 xtask lint` fails if any fragcap source names a transmit call, so the P-1
 argument is mechanical rather than remembered.
 
+S10 added two and both need their argument kept.
+
+**`arc-swap` supplies one property: a reader that a writer cannot block.**
+Specification section 11.6 requires the capture thread to read the current
+attribution snapshot without locking while the control thread replaces it. The
+tempting alternative is `RwLock<Arc<Index>>`, and it is a lock: a reader can
+block behind a writer, and the reader here is the acquisition path section 11.6
+exists to keep unblocked. It would satisfy a test and not the requirement,
+which is worse than failing both because it looks like the requirement was met.
+A hand-rolled `AtomicPtr` is correct and needs a reclamation scheme in `unsafe`,
+in a workspace that has none outside a platform binding. A proposal to drop it
+should answer whether a reader may be blocked at all, not whether a read lock is
+fast enough.
+
+Note that it adds **two** packages, not one: it has a build dependency on
+`rustversion`. The planning research said one, from reading an empty
+`[dependencies]` table without looking at `[build-dependencies]`. Recorded
+because an audit that makes that mistake under-reports every proc macro in the
+graph.
+
+**`windows-sys` is pinned to 0.36 because `pcap` already resolves it there**, so
+it adds no package to `Cargo.lock` at all. Taking the current line would put a
+second complete `windows-sys` tree in the graph for declarations that have not
+changed. If `pcap` later requires a newer line the graph gains a second copy,
+which is Cargo working correctly rather than a defect.
+
+Two further things about it. It is **unrelated to npcap**: the IP Helper API
+ships with the operating system, which is why its feature is `socket-table`
+rather than `live` and why that backend runs on a machine with no capture
+driver. And the alternative to it is the same C ABI transcription S09 rejected:
+a wrong offset in `MIB_TCPROW_OWNER_MODULE` yields a plausible process
+identifier that is wrong.
+
 S07's writer is hand-rolled and its `serde_json` is test-only on purpose:
 verification is worth more the less it shares with what it verifies. Anything
 proposing to move it into `[dependencies]` is changing that argument and should
@@ -284,7 +374,17 @@ passing checks:
   and dispatch-only. S09 added the first dependency with a platform surface and
   a transitive graph worth checking, so the check now has a real subject. Its
   licenses were verified by hand against the allowlist; nobody has watched
-  `cargo deny` confirm it.
+  `cargo deny` confirm it. S10 added two more, verified the same way.
+- **The socket table backend has run, and it is the exception on this list.**
+  S10's tier 2 tests were executed to completion on a Windows developer machine:
+  a real socket opened, found in the real socket table, attributed to the
+  process that opened it, and then closed and observed as a retained
+  attribution. That is a stronger claim than anything else here, and it was
+  cheap for one reason worth remembering: the backend needs no capture driver
+  and no elevation, so there is no external dependency between the test and the
+  machine. Its workflow step is likewise the first in `platform.yml` that can go
+  green on a bare runner. **This says nothing about live capture**, which
+  remains unexecuted for the reasons above.
 
 ## Spec-driven development workflow (spec-kit)
 

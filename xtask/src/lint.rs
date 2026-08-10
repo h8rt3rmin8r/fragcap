@@ -25,6 +25,15 @@ const EXCLUDED: &[&str] = &[
     "captures",
     ".agents/skills",
     ".claude/skills",
+    // Machine-local git worktrees. A worktree here is a complete second
+    // checkout of this repository, so linting it from the main checkout reports
+    // every finding twice and reports the vendored content the exclusions above
+    // exist to skip, because the exclusion paths no longer match once they are
+    // nested. A worktree lints itself correctly when the linter is run inside
+    // it, which is where the checking belongs. Added by slice S10, which found
+    // it when a parallel worktree turned a clean run into 1306 violations
+    // without a line of the slice's own code being involved.
+    ".claude/worktrees",
     ".cursor/skills",
     ".opencode",
     ".specify",
@@ -180,6 +189,18 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<(
 /// is also exactly the kind of argument that decays, so this makes it
 /// mechanical: fragcap's own source may not name a transmit call, and a change
 /// that wants to has to delete this list deliberately.
+///
+/// Slice S10 added the second group for the same reason. Constitution P-1
+/// requires that any process handle state its access rights explicitly at the
+/// call site, and a request carrying memory rights fails review. Naming a
+/// process is the classic reason to open one, and S10 research R-2 chose the
+/// toolhelp enumeration path specifically because it opens no handle against
+/// any target process at all. That removes the thing a reviewer has to check
+/// rather than documenting it, and this list is what keeps it removed: fragcap
+/// opens no process, so there are no access rights to audit.
+///
+/// A slice that genuinely needs a process handle deletes the relevant entry
+/// deliberately and argues for it, which is the point.
 const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     (
         "sendpacket",
@@ -188,6 +209,18 @@ const FORBIDDEN_CALLS: &[(&str, &str)] = &[
     (
         "inject(",
         "transmits a frame; fragcap observes and never modifies traffic (P-1)",
+    ),
+    (
+        "openprocess",
+        "opens a handle against a target process; fragcap names processes by query-only enumeration (P-1)",
+    ),
+    (
+        "readprocessmemory",
+        "reads another process's memory; on the section 19.3 denylist (P-1)",
+    ),
+    (
+        "writeprocessmemory",
+        "writes another process's memory; on the section 19.3 denylist (P-1)",
     ),
 ];
 
@@ -251,7 +284,12 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
         if is_source && ext == "rs" && !shown.starts_with("xtask/") {
             if let Ok(text) = std::str::from_utf8(&bytes) {
                 for (line_no, line) in text.lines().enumerate() {
-                    let code = line.split("//").next().unwrap_or("");
+                    // Case-insensitive since slice S10. The `pcap` binding
+                    // names its calls in snake case and the platform bindings
+                    // name theirs in Pascal case, so a list written in one
+                    // casing would silently miss the other. Every entry in
+                    // FORBIDDEN_CALLS is therefore written lowercase.
+                    let code = line.split("//").next().unwrap_or("").to_ascii_lowercase();
                     for (call, why) in FORBIDDEN_CALLS {
                         if code.contains(call) {
                             println!("{}:{}: forbidden-call: {call} {why}", shown, line_no + 1);

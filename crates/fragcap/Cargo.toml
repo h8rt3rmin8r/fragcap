@@ -13,10 +13,19 @@ categories.workspace   = true
 readme                 = "README.md"
 
 [features]
-# Passed through to `fragcap-capture`, off by default for the same reason it is
-# off there. Slice S09, plan decision D-2.
-default = []
-live    = ["fragcap-capture/live"]
+# Passed through, both off by default for the same reason they are off in the
+# crates that declare them. Slice S09 plan decision D-2, and slice S10 task
+# T002.
+#
+# They are separate features and not one, because they gate separate
+# capabilities with separate requirements. `live` needs the npcap import
+# library at link time and the driver at load time; `socket-table` needs
+# neither, because the IP Helper API ships with the operating system. A single
+# feature would make attribution unavailable to anyone without a capture driver
+# software development kit.
+default      = []
+live         = ["fragcap-capture/live"]
+socket-table = ["fragcap-attr/socket-table"]
 
 [dependencies]
 fragcap-core.workspace = true
