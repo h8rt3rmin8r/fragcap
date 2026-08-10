@@ -104,12 +104,23 @@ arc-swap        = "1.9"
 #
 # `Win32_System_Time` is in the list and is not obvious: it gates
 # `EVENT_TRACE_LOGFILEW` and `OpenTraceW`, not the ETW feature group.
+#
+# The named-pipe transport of slice S15 (specification section 14.2) adds
+# `Win32_System_Pipes` (CreateNamedPipeW, ConnectNamedPipe, DisconnectNamedPipe),
+# `Win32_Storage_FileSystem` (WriteFile, CreateFileW, the PIPE_ACCESS constants),
+# `Win32_System_IO` (the OVERLAPPED type WriteFile names), and `Win32_Security`
+# (the SECURITY_ATTRIBUTES type the pipe and file calls name; passed null). All
+# are additive and change no resolved version; the pin stays at 0.36.
 windows-sys     = { version = "0.36", default-features = false, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_Etw",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_System_Time",
 ] }
 

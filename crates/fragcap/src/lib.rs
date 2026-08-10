@@ -119,6 +119,16 @@ pub mod sink {
     };
     pub use fragcap_sink::pcapng::interface::InterfaceDeclaration;
     pub use fragcap_sink::pcapng::{PcapngWriter, PROFILE_COMMENT, USER_APPL};
+    pub use fragcap_sink::transport::file::{RotatingFileSink, RotationPolicy};
+    #[cfg(windows)]
+    pub use fragcap_sink::transport::pipe::NamedPipeAcceptor;
+    pub use fragcap_sink::transport::stream::{ConsumerReport, DisconnectReason, StreamSink};
+    pub use fragcap_sink::transport::tcp::TcpAcceptor;
+    #[cfg(unix)]
+    pub use fragcap_sink::transport::unix::UnixAcceptor;
+    pub use fragcap_sink::transport::{
+        Acceptor, ConnShutdown, Connection, Format, InterfaceSpec, SinkFactory,
+    };
 }
 
 /// The capture session lifecycle: stage matching drives the five-state machine
@@ -147,7 +157,13 @@ pub use profile::{
     resolve, BundledSet, Diagnostic, DiagnosticCode, Diagnostics, Profile, ProfileSource,
     ResolveError, SearchPath,
 };
+#[cfg(windows)]
+pub use sink::NamedPipeAcceptor;
+#[cfg(unix)]
+pub use sink::UnixAcceptor;
 pub use sink::{
-    write_json_string, AnnotatedDirection, Annotation, AnnotationError, Fidelity,
-    InterfaceDeclaration, JsonLinesWriter, PayloadMode, PcapngWriter, WriteError,
+    write_json_string, Acceptor, AnnotatedDirection, Annotation, AnnotationError, ConnShutdown,
+    Connection, ConsumerReport, DisconnectReason, Fidelity, Format, InterfaceDeclaration,
+    InterfaceSpec, JsonLinesWriter, PayloadMode, PcapngWriter, RotatingFileSink, RotationPolicy,
+    SinkFactory, StreamSink, TcpAcceptor, WriteError,
 };

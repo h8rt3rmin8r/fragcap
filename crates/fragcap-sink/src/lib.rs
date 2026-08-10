@@ -23,8 +23,17 @@
 //! it: `iface` on every JSON record because a line is self-contained, lowercase
 //! hex, and endpoints named for what is known about them.
 //!
-//! What this crate still does not do: transports and streaming sinks arrive in
-//! S15, and ring mode in S16.
+//! Slice S15 added the transport half in [`transport`]: a [`RotatingFileSink`]
+//! that closes each segment at a clean section boundary and opens the next
+//! numbered one, and a [`StreamSink`] that serves any number of live consumers
+//! over TCP, a Windows named pipe, or a Unix domain socket. Format stays
+//! orthogonal to transport: a [`SinkFactory`] builds a fresh encoder (either
+//! writer above) over any connection, so a mid-capture consumer and a fresh
+//! rotation segment each begin with their own valid header. Per-consumer
+//! backpressure is counted and reported and never stalls the capture, which is
+//! the practical form of P-4 for a streaming sink.
+//!
+//! What this crate still does not do: ring mode arrives in S16.
 //!
 //! The pipeline that drives these arrived in S08 and lives in
 //! `fragcap_core::pipeline`. Both writers are now fed by it over the whole
@@ -46,9 +55,22 @@ pub mod annotation;
 pub mod error;
 pub mod json;
 pub mod pcapng;
+pub mod transport;
 
 pub use annotation::{AnnotatedDirection, Annotation, AnnotationError, Fidelity};
 pub use error::WriteError;
 pub use json::{write_json_string, JsonLinesWriter, PayloadMode};
 pub use pcapng::interface::InterfaceDeclaration;
 pub use pcapng::PcapngWriter;
+pub use transport::file::{RotatingFileSink, RotationPolicy};
+pub use transport::stream::{ConsumerReport, DisconnectReason, StreamSink};
+pub use transport::tcp::TcpAcceptor;
+pub use transport::{
+    Acceptor, ConnShutdown, Connection, Format, InterfaceSpec, SinkFactory, Stopper,
+};
+
+#[cfg(windows)]
+pub use transport::pipe::NamedPipeAcceptor;
+
+#[cfg(unix)]
+pub use transport::unix::UnixAcceptor;
