@@ -179,6 +179,31 @@ fn a_volume_bound_stops_capture() {
     assert_eq!(s.stop_reason(), Some(StopReason::VolumeReached));
 }
 
+// Review of PR #26 (Codex P2). A zero volume bound (`--max-packets 0` /
+// `--max-bytes 0`) is met before any packet is retained, so the per-packet volume
+// check never fires it. The session must still rest in Capturing after
+// acquisition (the offline driver detects acquisition by that state), and
+// on_volume_reached then produces the promised VolumeReached stop rather than a
+// later source-exhausted reason.
+#[test]
+fn a_zero_volume_bound_stops_via_on_volume_reached() {
+    let cfg = SessionConfig {
+        packet_bound: Some(0),
+        ..SessionConfig::default()
+    };
+    let mut s = CaptureSession::new(terminal_chain(), cfg);
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // -> Capturing
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "acquisition rests in Capturing so the offline driver detects it"
+    );
+    s.on_volume_reached();
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(s.stop_reason(), Some(StopReason::VolumeReached));
+}
+
 #[test]
 fn the_terminal_stage_exit_stops_capture() {
     let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());

@@ -24,7 +24,7 @@
 //! S14.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -298,6 +298,23 @@ impl CaptureSession {
     /// A sink failed unrecoverably.
     pub fn on_sink_error(&mut self) {
         self.stop(StopReason::SinkError);
+    }
+
+    /// Stop for a volume bound that was already met.
+    ///
+    /// The volume bound is normally reached through [`on_packet`](Self::on_packet)
+    /// as retained packets accumulate. A zero bound (`--max-packets 0` or
+    /// `--max-bytes 0`) is met before any packet is retained, so no `on_packet`
+    /// ever runs to fire it; the write gate rejects every packet and forwards no
+    /// receipt. The driver calls this once, immediately after acquisition, when a
+    /// zero bound is configured, so the stop reason is the promised
+    /// [`VolumeReached`](StopReason::VolumeReached) rather than a later
+    /// source-exhausted reason. It cannot be folded into the acquisition
+    /// transition, because the offline driver detects acquisition by the session
+    /// resting in [`Capturing`](SessionState::Capturing), which an immediate stop
+    /// would skip past. A no-op once the session is no longer active.
+    pub fn on_volume_reached(&mut self) {
+        self.stop(StopReason::VolumeReached);
     }
 
     /// Finish draining: Draining to Complete. A no-op in any other state.
@@ -632,31 +649,55 @@ impl FlowAttributor for RoleStampingAttributor {
     }
 }
 
-/// The window a [`SessionGate`] reads to decide whether a packet is admitted.
+/// The capture window a [`SessionGate`] reads to decide whether a packet is
+/// admitted, expressed as the half-open interval of capture instants
+/// `[admit_from, admit_until)`.
 ///
-/// Encoded in an [`AtomicU8`] so the output thread reads it without locking
-/// (specification section 11.6's discipline, applied to the write decision).
-/// Only the driver writes it, so there is a single writer and no race between a
-/// transition and a gate close.
-const WINDOW_WATCHING: u8 = 0;
-const WINDOW_CAPTURING: u8 = 1;
-const WINDOW_OTHER: u8 = 2;
+/// A packet is classified by its own capture timestamp, not by the window state
+/// at the moment the output thread happens to process it. That distinction is
+/// load-bearing: the bounded buffer sits between capture and the gate, so a frame
+/// captured while watching can be processed after the target is acquired, and a
+/// frame captured after a stop can still be draining. Comparing the packet's own
+/// instant against the acquisition and stop instants classifies each frame by
+/// when it was captured, so a buffered pre-acquisition frame stays a watch-time
+/// discard and a post-stop frame stays out of window regardless of how the drain
+/// races the transition. On the live path both the packet instant (the pcap
+/// header) and the event instant that opens or closes the window (the ETW event
+/// header) are Unix wall-clock, so they are directly comparable. Offline the
+/// interval opens at `i64::MIN` before the pipeline starts, so every replayed
+/// frame is in window and the classification reduces to the bound alone.
+///
+/// The two bounds are single-writer atomics (only the driver writes them, through
+/// the handle), read lock-free by the output thread (specification section 11.6's
+/// discipline, applied to the write decision).
+const NANOS_WATCHING: i64 = i64::MAX;
+const NANOS_NO_STOP: i64 = i64::MAX;
 
 /// The atomics a [`SessionGate`] and its [`GateHandle`] share.
 ///
 /// Every field is either immutable after construction (the bounds) or an atomic
-/// with a single writer: the driver writes `window` (through the handle), and the
-/// output thread (the only caller of [`WriteGate::admit`]) writes the tallies and
-/// `bound_hit`. The driver reads the tallies after the pipeline has joined, which
-/// is a happens-before point, so `Relaxed` ordering suffices throughout.
+/// with a single writer: the driver writes `admit_from` and `admit_until` (through
+/// the handle), and the output thread (the only caller of [`WriteGate::admit`])
+/// writes the tallies and `bound_hit`. The driver reads the tallies after the
+/// pipeline has joined, which is a happens-before point, so `Relaxed` ordering
+/// suffices throughout.
 ///
 /// The tee sender is deliberately NOT here: it lives on the [`SessionGate`] alone,
 /// so it is dropped when the pipeline finishes and the driver's read loop, which
 /// waits on the receiver, ends. Sharing it would keep the channel open for as long
 /// as the driver held its handle, which is the whole run.
 struct GateShared {
-    /// The published window state. Written only by the driver, through the handle.
-    window: AtomicU8,
+    /// The first capture instant admitted (the acquisition instant, in nanos).
+    /// A packet captured before it is a watch-time frame. `NANOS_WATCHING`
+    /// (`i64::MAX`) before acquisition, so every frame is watch-time; the driver
+    /// sets it to the acquisition instant (or `i64::MIN` offline, admitting all).
+    admit_from: AtomicI64,
+    /// The first capture instant no longer admitted (the stop instant, in nanos).
+    /// A packet captured at or after it is out of window. `NANOS_NO_STOP`
+    /// (`i64::MAX`) until a stop with a known capture instant closes the window
+    /// (a terminal-stage exit); an interrupt or duration stop leaves it open, so
+    /// what was captured before the stop is kept (specification FR-005).
+    admit_until: AtomicI64,
     /// The retained-packet bound, if any.
     packet_bound: Option<u64>,
     /// The retained-byte bound, if any.
@@ -666,10 +707,11 @@ struct GateShared {
     /// Bytes admitted to the sinks (captured length, matching what the sinks
     /// write and what the S14 tee forwarded).
     admitted_bytes: AtomicU64,
-    /// Packets discarded while the window was `Watching`.
+    /// Packets discarded because they were captured before the acquisition
+    /// instant (watch-time frames).
     watch_discarded: AtomicU64,
-    /// Packets discarded while the window was `Other` (arming or draining) or
-    /// beyond the bound.
+    /// Packets discarded because they were captured at or after the stop instant,
+    /// or beyond the bound.
     out_of_window_discarded: AtomicU64,
     /// Set the moment a bound is reached. Informational: beyond-bound packets are
     /// already rejected by the admitted-count comparison.
@@ -679,7 +721,8 @@ struct GateShared {
 impl GateShared {
     fn new(config: &SessionConfig) -> Self {
         GateShared {
-            window: AtomicU8::new(WINDOW_WATCHING),
+            admit_from: AtomicI64::new(NANOS_WATCHING),
+            admit_until: AtomicI64::new(NANOS_NO_STOP),
             packet_bound: config.packet_bound,
             byte_bound: config.byte_bound,
             admitted: AtomicU64::new(0),
@@ -734,10 +777,12 @@ impl SessionGate {
     /// A new gate over a session's bounds, forwarding admitted packets on `tee`,
     /// together with the driver's handle onto the same state.
     ///
-    /// The window starts `Watching`: on the live path the pipeline runs from arm,
-    /// so the gate discards and counts frames until the driver opens the window on
-    /// acquisition. The offline driver opens the window before it starts the
-    /// pipeline, so the gate never sees a watch-time packet there.
+    /// The window starts empty (`admit_from` at `i64::MAX`), so on the live path,
+    /// where the pipeline runs from arm, every frame captured before acquisition is
+    /// a watch-time discard until the driver opens the window from the acquisition
+    /// instant. The offline driver opens the window from `i64::MIN` before it starts
+    /// the pipeline, so every replayed frame is in window and the classification
+    /// reduces to the bound alone.
     pub fn new(config: &SessionConfig, tee: Sender<(u32, Timestamp)>) -> (Self, GateHandle) {
         let shared = Arc::new(GateShared::new(config));
         let gate = SessionGate {
@@ -749,17 +794,27 @@ impl SessionGate {
 }
 
 impl GateHandle {
-    /// Open the window: the session has acquired a target and is capturing.
-    pub fn open(&self) {
+    /// Open the window from `from`: the session has acquired a target, and a
+    /// packet captured at or after `from` is admitted (subject to the bound). A
+    /// packet captured before it stays a watch-time discard even if the output
+    /// thread processes it after this call, which is what keeps a buffered
+    /// pre-acquisition frame off disk. Offline the driver passes `i64::MIN`, so
+    /// every replayed frame is in window.
+    pub fn open_from(&self, from: Timestamp) {
         self.shared
-            .window
-            .store(WINDOW_CAPTURING, Ordering::Relaxed);
+            .admit_from
+            .store(from.as_nanos(), Ordering::Relaxed);
     }
 
-    /// Close the window: the session has left the capturing state (draining, or
-    /// never acquired). Subsequent packets are discarded out of window.
-    pub fn close(&self) {
-        self.shared.window.store(WINDOW_OTHER, Ordering::Relaxed);
+    /// Close the window at `until`: a packet captured at or after `until` is out
+    /// of window. Used for a stop whose capture instant is known (a terminal-stage
+    /// exit); a packet captured before `until` and still draining is kept. An
+    /// interrupt or duration stop does not call this, so what was captured before
+    /// the stop is retained (specification FR-005).
+    pub fn close_at(&self, until: Timestamp) {
+        self.shared
+            .admit_until
+            .store(until.as_nanos(), Ordering::Relaxed);
     }
 
     /// Packets admitted to the sinks. Equal to the packet records on disk.
@@ -792,52 +847,53 @@ impl GateHandle {
 impl WriteGate for SessionGate {
     fn admit(&self, packet: &CapturedPacket) -> bool {
         let len = packet.data.as_ref().len() as u64;
+        let ts = packet.ts.as_nanos();
         let shared = &self.shared;
-        match shared.window.load(Ordering::Relaxed) {
-            WINDOW_CAPTURING => {
-                // Beyond the bound: the session's `check_volume_bounds` fires
-                // `VolumeReached` when `retained >= packet_bound` or
-                // `retained_bytes >= byte_bound`, so the gate stops admitting the
-                // moment either is met and the file and the stop reason agree.
-                let at_packet_bound = shared
-                    .packet_bound
-                    .is_some_and(|b| shared.admitted.load(Ordering::Relaxed) >= b);
-                let at_byte_bound = shared
-                    .byte_bound
-                    .is_some_and(|b| shared.admitted_bytes.load(Ordering::Relaxed) >= b);
-                if at_packet_bound || at_byte_bound {
-                    shared
-                        .out_of_window_discarded
-                        .fetch_add(1, Ordering::Relaxed);
-                    return false;
-                }
-                let n = shared.admitted.fetch_add(1, Ordering::Relaxed) + 1;
-                let bytes = shared.admitted_bytes.fetch_add(len, Ordering::Relaxed) + len;
-                // A byte bound admits the crossing packet (retained-inclusive),
-                // then closes on the next packet via the comparison above.
-                if shared.packet_bound.is_some_and(|b| n >= b)
-                    || shared.byte_bound.is_some_and(|b| bytes >= b)
-                {
-                    shared.bound_hit.store(true, Ordering::Relaxed);
-                }
-                // A send fails only once the driver has dropped its receiver,
-                // which happens only as the run tears down; nothing the session
-                // needs is lost, so the failure is ignored.
-                let _ = self.tee.send((len as u32, packet.ts));
-                true
-            }
-            WINDOW_WATCHING => {
-                shared.watch_discarded.fetch_add(1, Ordering::Relaxed);
-                false
-            }
-            // WINDOW_OTHER and any unexpected value: arming or draining.
-            _ => {
-                shared
-                    .out_of_window_discarded
-                    .fetch_add(1, Ordering::Relaxed);
-                false
-            }
+        // Classify by the packet's own capture instant, not the window state at
+        // this moment: a frame captured before acquisition is a watch-time discard
+        // even if it was buffered and is only now being processed.
+        if ts < shared.admit_from.load(Ordering::Relaxed) {
+            shared.watch_discarded.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
+        // A frame captured at or after the stop instant is out of window even if
+        // it is still draining.
+        if ts >= shared.admit_until.load(Ordering::Relaxed) {
+            shared
+                .out_of_window_discarded
+                .fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        // Beyond the bound: the session's `check_volume_bounds` fires
+        // `VolumeReached` when `retained >= packet_bound` or `retained_bytes >=
+        // byte_bound`, so the gate stops admitting the moment either is met and
+        // the file and the stop reason agree.
+        let at_packet_bound = shared
+            .packet_bound
+            .is_some_and(|b| shared.admitted.load(Ordering::Relaxed) >= b);
+        let at_byte_bound = shared
+            .byte_bound
+            .is_some_and(|b| shared.admitted_bytes.load(Ordering::Relaxed) >= b);
+        if at_packet_bound || at_byte_bound {
+            shared
+                .out_of_window_discarded
+                .fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        let n = shared.admitted.fetch_add(1, Ordering::Relaxed) + 1;
+        let bytes = shared.admitted_bytes.fetch_add(len, Ordering::Relaxed) + len;
+        // A byte bound admits the crossing packet (retained-inclusive), then
+        // closes on the next packet via the comparison above.
+        if shared.packet_bound.is_some_and(|b| n >= b)
+            || shared.byte_bound.is_some_and(|b| bytes >= b)
+        {
+            shared.bound_hit.store(true, Ordering::Relaxed);
+        }
+        // A send fails only once the driver has dropped its receiver, which
+        // happens only as the run tears down; nothing the session needs is lost,
+        // so the failure is ignored.
+        let _ = self.tee.send((len as u32, packet.ts));
+        true
     }
 }
 
@@ -894,7 +950,7 @@ mod gate_tests {
             packet_bound: Some(3),
             ..SessionConfig::default()
         });
-        handle.open();
+        handle.open_from(Timestamp::from_nanos(0));
         let admitted: Vec<bool> = (0..6).map(|i| gate.admit(&packet(10, i))).collect();
         assert_eq!(admitted, vec![true, true, true, false, false, false]);
         assert_eq!(handle.admitted(), 3);
@@ -913,7 +969,7 @@ mod gate_tests {
             byte_bound: Some(100),
             ..SessionConfig::default()
         });
-        handle.open();
+        handle.open_from(Timestamp::from_nanos(0));
         // 40 + 40 = 80 (under), + 40 = 120 (crosses, admitted), then closed.
         assert!(gate.admit(&packet(40, 0)));
         assert!(gate.admit(&packet(40, 1)));
@@ -939,7 +995,7 @@ mod gate_tests {
         // Two watch-time discards before the window opens.
         gate.admit(&packet(10, 0));
         gate.admit(&packet(10, 1));
-        handle.open();
+        handle.open_from(Timestamp::from_nanos(0));
         // Two admitted, then two beyond the bound.
         for i in 2..6 {
             gate.admit(&packet(10, i));
@@ -959,7 +1015,7 @@ mod gate_tests {
     #[test]
     fn an_unbounded_open_window_is_a_pass_through() {
         let (gate, handle, rx) = gate(SessionConfig::default());
-        handle.open();
+        handle.open_from(Timestamp::from_nanos(0));
         for i in 0..10 {
             assert!(
                 gate.admit(&packet(50, i)),
@@ -971,6 +1027,61 @@ mod gate_tests {
         assert!(!handle.bound_hit());
         let forwarded: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert_eq!(forwarded.len(), 10);
+    }
+
+    // Review of PR #26 (Codex C2). A frame captured before acquisition but still
+    // buffered when the window opens must stay a watch-time discard: the gate
+    // classifies by the packet's own capture instant, not the window state at the
+    // moment the output thread processes it. Without this a whole pre-acquisition
+    // buffer would land on disk after acquisition and be omitted from
+    // watching_discarded.
+    #[test]
+    fn a_buffered_pre_acquisition_frame_stays_a_watch_discard() {
+        let (gate, handle, rx) = gate(SessionConfig::default());
+        // Acquisition happened at instant 100.
+        handle.open_from(Timestamp::from_nanos(100));
+        // A frame captured at 50 (before acquisition) that was buffered and is only
+        // now processed, after the window opened.
+        assert!(
+            !gate.admit(&packet(64, 50)),
+            "a pre-acquisition frame is not admitted even with the window open"
+        );
+        // A frame captured at 150 (after acquisition) is admitted.
+        assert!(
+            gate.admit(&packet(64, 150)),
+            "a post-acquisition frame is admitted"
+        );
+        assert_eq!(
+            handle.watch_discarded(),
+            1,
+            "the buffered frame is a watch discard"
+        );
+        assert_eq!(handle.admitted(), 1);
+        let forwarded: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            forwarded.len(),
+            1,
+            "only the in-window frame reaches the driver"
+        );
+    }
+
+    // Review of PR #26 (Codex C1). A frame captured at or after a stop with a known
+    // capture instant (a terminal-stage exit) must stay out of window even if it is
+    // still draining when the pipeline is torn down, so post-stop traffic is not
+    // written and miscounted as retained. A frame captured before the stop is kept.
+    #[test]
+    fn a_frame_captured_after_the_stop_is_out_of_window() {
+        let (gate, handle, _rx) = gate(SessionConfig::default());
+        handle.open_from(Timestamp::from_nanos(0));
+        // A terminal-stage exit closed the window at instant 200.
+        handle.close_at(Timestamp::from_nanos(200));
+        assert!(gate.admit(&packet(64, 150)), "a pre-stop frame is admitted");
+        assert!(
+            !gate.admit(&packet(64, 250)),
+            "a frame captured after the stop is out of window even while draining"
+        );
+        assert_eq!(handle.admitted(), 1);
+        assert_eq!(handle.out_of_window_discarded(), 1);
     }
 }
 

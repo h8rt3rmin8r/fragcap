@@ -53,62 +53,65 @@ pub trait WriteGate: Send + Sync {
 
 ## Facade (`fragcap`, `session.rs`)
 
-### `WindowState` (new, published to the gate)
+### Capture window (published to the gate)
 
-```rust
-enum WindowState { Watching, Capturing, Other } // encoded in an AtomicU8
-```
+The window is the half-open interval of capture instants `[admit_from, admit_until)`,
+two single-writer `AtomicI64` values keyed on the packet's own capture timestamp
+rather than a coarse write-time state (review of PR #26; see research D-5).
 
-- `Watching`: the initial state; the gate discards and counts a watch-time discard.
-- `Capturing`: the window is open; the gate admits within the bound.
-- `Other`: arming (before the pipeline starts) or draining (after a stop); the gate
-  discards and counts an out-of-window discard.
+- `admit_from` (init `i64::MAX`): the acquisition instant. A packet captured before it
+  is a watch-time discard, even one buffered before acquisition and processed after.
+- `admit_until` (init `i64::MAX`): the stop instant. A packet captured at or after it
+  is out of window, even one still draining. Left at the sentinel for an interrupt or
+  duration stop, keeping what was captured before it (FR-005).
 
-### `SessionGate` (new type implementing `WriteGate`)
+### `SessionGate` (new type implementing `WriteGate`) and `GateHandle` (driver side)
 
-Fields (all shared, atomics or immutable):
+`GateShared` (behind an `Arc`, all single-writer atomics or immutable):
 
-- `window: Arc<AtomicU8>` - the published window state; only the driver writes it.
-- `packet_bound: Option<u64>`, `byte_bound: Option<u64>` - immutable after
-  construction, from `SessionConfig`.
+- `admit_from: AtomicI64`, `admit_until: AtomicI64` - the capture window; written only
+  by the driver through the handle.
+- `packet_bound: Option<u64>`, `byte_bound: Option<u64>` - immutable, from
+  `SessionConfig`.
 - `admitted: AtomicU64`, `admitted_bytes: AtomicU64` - what reached the sinks.
-- `watch_discarded: AtomicU64` - packets discarded while `Watching`.
-- `out_of_window_discarded: AtomicU64` - packets discarded while `Other` or beyond the
-  bound.
-- `bound_hit: AtomicBool` - set the moment a bound is reached; informational
-  (beyond-bound packets are already rejected by the admitted-count comparison).
-- `tee: Sender<(u32, Timestamp)>` - the channel to the driver, carrying an admitted
-  packet's captured length and instant (the S14 tee channel, now driven by the gate).
+- `watch_discarded: AtomicU64` - packets captured before `admit_from`.
+- `out_of_window_discarded: AtomicU64` - packets captured at or after `admit_until`, or
+  beyond the bound.
+- `bound_hit: AtomicBool` - set the moment a bound is reached; informational.
 
-`admit(&self, packet)` (called only on the output thread):
+`SessionGate` additionally owns `tee: Sender<(u32, Timestamp)>` (NOT in `GateShared`,
+so it drops when the pipeline finishes and the driver's read loop ends). `GateHandle`
+holds only the `Arc<GateShared>`.
 
-1. `len = packet.data.as_ref().len() as u64`.
-2. Match `window`:
-   - `Watching`: `watch_discarded += 1`; return `false`.
-   - `Other`: `out_of_window_discarded += 1`; return `false`.
-   - `Capturing`:
-     - If `packet_bound` is set and `admitted >= packet_bound`, or `byte_bound` is set
-       and `admitted_bytes >= byte_bound`: `out_of_window_discarded += 1`; return
-       `false` (beyond the bound).
-     - Else admit: `admitted += 1`; `admitted_bytes += len`; if the bound is now
-       reached, set `bound_hit`; `tee.send((len as u32, packet.ts))` (ignore a closed
-       receiver); return `true`.
+`admit(&self, packet)` (called only on the output thread), classifying by `ts =
+packet.ts`:
 
-Handles (driver-side):
+1. `ts < admit_from`: `watch_discarded += 1`; return `false`.
+2. `ts >= admit_until`: `out_of_window_discarded += 1`; return `false`.
+3. At the bound (`admitted >= packet_bound` or `admitted_bytes >= byte_bound`):
+   `out_of_window_discarded += 1`; return `false`.
+4. Else admit: `admitted += 1`; `admitted_bytes += len`; set `bound_hit` if the bound
+   is now reached; `tee.send((len as u32, packet.ts))`; return `true`.
 
-- `window_handle() -> Arc<AtomicU8>` and helpers to set `Capturing`/`Other`.
+`GateHandle` methods (driver-side):
+
+- `open_from(from: Timestamp)` and `close_at(until: Timestamp)` publish the interval.
 - Accessors for the tallies (`admitted`, `admitted_bytes`, `watch_discarded`,
-  `out_of_window_discarded`) the driver reads to build the summary.
+  `out_of_window_discarded`, `bound_hit`) the driver reads to build the summary.
 
 ## Orchestrator (`fragcap-cli`, `orchestrator.rs`)
 
 - `TeeCountingSink` is removed; the `SessionGate` forwards admitted receipts instead.
 - `spawn_pipeline` attaches the gate with `set_write_gate` and no longer prepends a
   tee sink; the sink list is the user sinks only.
-- The offline driver sets the gate window to `Capturing` before spawning the pipeline
-  (it is already capturing) and to `Other` when the session drains.
-- The live driver spawns the pipeline at arm with the window `Watching`, sets it to
-  `Capturing` when a stage acquires, and to `Other` on drain.
+- The offline driver opens the window from `i64::MIN` before spawning the pipeline (it
+  is already capturing; every replayed frame is in window). A zero volume bound is
+  stopped explicitly via `CaptureSession::on_volume_reached` (research D-8).
+- The live driver spawns the pipeline at arm (window empty, so pre-acquisition frames
+  are watch discards), opens the window from the acquiring event's instant on
+  acquisition, and closes it at a terminal-stage exit's instant in `drive_live`. Its
+  acquisition loop observes tee-channel disconnect so a pipeline that ends before
+  acquisition does not hang the run (review of PR #26).
 - `drive` and `drive_live` still feed `session.on_packet(len)` and `on_tick(ts)` from
   the channel for admitted receipts, so `VolumeReached` and the duration bound fire in
   the session as before.

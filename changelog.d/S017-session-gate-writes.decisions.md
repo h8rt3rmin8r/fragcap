@@ -53,3 +53,27 @@ implementing the CLI capture engine's write gating.**
 
 These are behavioral reversals confined to this slice; they are promoted to
 `docs/fragcap-specification.md` only at release, not per slice.
+
+**2026-08-10. Review of PR #26 (four Codex findings) tightened the gate.**
+
+- **The gate classifies by the packet's own capture instant, not the window state at
+  write time.** The window became a half-open capture interval `[admit_from,
+  admit_until)` of two single-writer `AtomicI64` values, replacing the `AtomicU8`
+  window state. Because the bounded buffer sits between capture and the gate, a coarse
+  state read at write time misclassified buffered frames crossing a transition: a
+  pre-acquisition frame still buffered when the window opened was written and omitted
+  from `watching_discarded` (C2), and a post-stop frame still draining was written and
+  miscounted as retained (C1). Keying on the packet instant fixes both; on the live
+  path the packet instant (pcap header) and the opening or closing event instant (ETW
+  header) are both Unix wall-clock and directly comparable. Offline opens the interval
+  at `i64::MIN` (all replayed frames in window, goldens unchanged); live opens it at
+  the acquiring event's instant and closes it at a terminal-stage exit's instant. An
+  interrupt or duration stop leaves it open, keeping what was captured before the stop
+  (FR-005).
+- **The live acquisition loop observes pipeline termination.** Spawning the pipeline
+  from arm means it can end before a target is acquired (the sole interface closes or
+  fails). The loop now polls the tee channel for disconnect, the signal that no source
+  remains, and ends the run instead of waiting forever on a still-running watcher (C3).
+- **A zero volume bound stops for `VolumeReached`.** See D-8 in the slice research.
+  `CaptureSession::on_volume_reached` is called by the driver after acquisition when a
+  zero bound is configured, so `--max-packets 0` reports the promised stop reason (P2).

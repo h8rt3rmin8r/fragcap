@@ -228,7 +228,15 @@ fn capture_prerecorded(
     // decision D-6).
     let (tx, rx) = mpsc::channel::<(u32, Timestamp)>();
     let (gate, gate_handle) = SessionGate::new(&config.session_config(), tx);
-    gate_handle.open();
+    // Offline is two-phase: acquisition is already complete, so the window admits
+    // every replayed frame from the earliest instant and there is no watch-time
+    // frame; the bound alone does the bounding.
+    gate_handle.open_from(Timestamp::from_nanos(i64::MIN));
+    // A zero volume bound is met before any packet is retained, so no on_packet
+    // fires it; stop for it now so the reason is volume-reached (review of PR #26).
+    if zero_volume_bound(config) {
+        session.on_volume_reached();
+    }
     let (handle, stop) = spawn_pipeline(config, &mut components, gate)?;
 
     drive(
@@ -243,9 +251,6 @@ fn capture_prerecorded(
     );
 
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
-    // The session leaves the capturing window; a packet still draining in is out
-    // of window, not retained.
-    gate_handle.close();
 
     // Fold the events past the last packet (the exits that decide the stop
     // reason a script implies).
@@ -399,11 +404,24 @@ fn capture_live(
 
     // Acquisition: fold live events until a terminal stage acquires the target,
     // or acquisition ends for another reason (the acquisition timeout, a
-    // duration bound reached while still watching, an operator interrupt, or the
-    // watcher disconnecting). The pipeline is already running; watch-time frames
-    // are discarded and counted by the gate as this loop turns.
+    // duration bound reached while still watching, an operator interrupt, the
+    // watcher disconnecting, or the pipeline itself ending). The pipeline is
+    // already running; watch-time frames are discarded and counted by the gate as
+    // this loop turns. `acquired_at` records the capture instant of the acquiring
+    // event, so the gate can classify a buffered pre-acquisition frame by its own
+    // instant rather than by the window state at write time (review of PR #26).
+    let mut acquired_at: Option<Timestamp> = None;
     loop {
         if session.state() == SessionState::Capturing {
+            break;
+        }
+        // The pipeline was spawned from arm, so it can end before a target is
+        // acquired: the sole capture interface may close or fail. Its tee channel
+        // disconnects when the output thread ends, which is the signal that no
+        // source remains; without observing it here the command would wait forever
+        // on a still-running watcher (review of PR #26). No receipt is ever sent
+        // while watching, so this only ever observes empty or disconnected.
+        if let Err(mpsc::TryRecvError::Disconnected) = tee_rx.try_recv() {
             break;
         }
         // An operator interrupt during acquisition is a clean cancellation, not
@@ -424,8 +442,12 @@ fn capture_live(
         }
         match rx.recv_timeout(tick) {
             Ok(event) => {
+                let event_at = event.at();
                 apply_event(event, &mut session, &mut bound, emitter);
                 publisher.publish(session.role_bindings());
+                if session.state() == SessionState::Capturing {
+                    acquired_at = Some(event_at);
+                }
             }
             // No event arrived; advance the session clock so a tick-based
             // acquisition timeout or duration bound can still fire.
@@ -453,7 +475,9 @@ fn capture_live(
                 ));
             }
         }
-        gate_handle.close();
+        // The window was never opened (admit_from stayed at its watching sentinel),
+        // so every frame the pipeline read is already a watch-time discard in the
+        // gate's tallies; there is nothing to close.
         session.finalize();
         let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
         emitter.summary(&summary);
@@ -467,8 +491,18 @@ fn capture_live(
         });
     }
 
-    // Acquired: open the gate so subsequent packets are admitted to the sinks.
-    gate_handle.open();
+    // Acquired: open the window from the acquiring event's capture instant, so a
+    // frame captured before it (a buffered pre-acquisition frame) stays a
+    // watch-time discard even though the window is now open (review of PR #26).
+    // The acquiring event set `acquired_at`; fall back to the arm instant if it is
+    // somehow unset (it never is once the session is Capturing).
+    gate_handle.open_from(acquired_at.unwrap_or(ARMED_AT));
+    // A zero volume bound is met before any packet is retained; stop for it now so
+    // the reason is volume-reached (review of PR #26). drive_live observes the
+    // inactive session and stops the pipeline within a tick.
+    if zero_volume_bound(config) {
+        session.on_volume_reached();
+    }
 
     publisher.publish(session.role_bindings());
     // Drive an initial refresh so the count reflects the first real snapshot.
@@ -524,6 +558,7 @@ fn capture_live(
         &mut session,
         &mut bound,
         &publisher,
+        &gate_handle,
         emitter,
         interrupt,
         &stop,
@@ -532,11 +567,11 @@ fn capture_live(
     );
 
     // The pipeline observed the stop and returns; its tee channel closes and the
-    // packet forwarder ends.
+    // packet forwarder ends. A terminal-stage exit closed the window at its own
+    // capture instant inside drive_live, so a post-stop frame still draining is out
+    // of window; an interrupt or duration stop left the window open, keeping what
+    // was captured before it (specification FR-005).
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
-    // The session leaves the capturing window; a packet still draining in is out
-    // of window, not retained.
-    gate_handle.close();
 
     // Slice 015: the socket-table refresh is driven by the pipeline's own
     // section 8.6 control thread and ends with the pipeline, so there is no
@@ -577,6 +612,7 @@ fn drive_live(
     session: &mut CaptureSession,
     bound: &mut HashMap<u32, String>,
     publisher: &BindingPublisher,
+    gate_handle: &GateHandle,
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     stop: &StopHandle,
@@ -590,8 +626,19 @@ fn drive_live(
                 session.on_tick(ts);
             }
             Ok(DriverMsg::Proc(event)) => {
+                // A process event carries its own capture instant. If applying it
+                // stops the session (a terminal-stage or all-processes exit), close
+                // the window at that instant, so a frame captured at or after the
+                // exit is out of window even while the pipeline drains (review of
+                // PR #26). An interrupt or duration stop has no such instant and
+                // does not close the window, keeping what was captured before it.
+                let event_at = event.at();
+                let was_active = is_active(session);
                 apply_event(event, session, bound, emitter);
                 publisher.publish(session.role_bindings());
+                if was_active && !is_active(session) {
+                    gate_handle.close_at(event_at);
+                }
             }
             // Nothing arrived. Advance the clock so a duration bound can fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
@@ -665,6 +712,14 @@ fn is_active(session: &CaptureSession) -> bool {
         session.state(),
         SessionState::Arming | SessionState::Watching | SessionState::Capturing
     )
+}
+
+/// Whether a zero volume bound is configured (`--max-packets 0` or
+/// `--max-bytes 0`). Such a bound is met before any packet is retained, so the
+/// session's per-packet volume check never fires it; the driver stops for it
+/// explicitly after acquisition (review of PR #26).
+fn zero_volume_bound(config: &EffectiveConfig) -> bool {
+    config.max_packets == Some(0) || config.max_bytes == Some(0)
 }
 
 fn build_summary(

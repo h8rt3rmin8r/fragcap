@@ -111,27 +111,59 @@ packet short of what the session reports); counting on-wire length rather than
 captured length (would disagree with the tee's precedent and with what the sinks
 actually write).
 
-## D-5. The window is a lock-free published state; only the driver writes it
+## D-5. The window is a lock-free published capture interval, keyed on the packet's own instant
 
-**Decision**: the `SessionGate` holds an atomic window state (an `AtomicU8` over
-`Watching`, `Capturing`, `Other`). The driver writes it as the session transitions
-(set `Capturing` when a stage acquires the target, `Other` when the session leaves an
-active state), and the gate reads it on the output thread without locking. The gate
-never writes the window; a bound reached is a separate `bound_hit` flag the gate sets,
-and beyond-bound packets are rejected by the gate's own admitted-count comparison, so
-the window has exactly one writer.
+**Decision**: the `SessionGate` holds the capture window as the half-open interval of
+capture instants `[admit_from, admit_until)`, two single-writer `AtomicI64` values the
+driver publishes, read lock-free on the output thread. A packet is classified by its
+own capture timestamp: `ts < admit_from` is a watch-time discard, `ts >= admit_until`
+is out of window, otherwise it is subject to the bound. Offline the driver opens the
+interval at `i64::MIN` before the pipeline starts, so every replayed frame is in
+window; live the driver opens it at the acquiring event's instant and closes it at a
+terminal-stage exit's instant. A bound reached is a separate `bound_hit` flag; the
+window has exactly one writer.
 
-**Rationale**: the gate runs on the output thread and the session on the driver
-thread, so the gate cannot call the session per packet. A published lock-free state is
-the same discipline section 11.6 already requires of the attribution snapshot: the
-reader (output thread) never blocks the writer (driver thread). Keeping the window
-single-writer (driver only) avoids a race between the driver's transition writes and a
-gate close, which is why a bound is a separate flag rather than a window transition.
+**Rationale**: the bounded buffer sits between capture and the gate, so a coarse
+open/close window state read at write time misclassifies buffered frames that cross a
+transition. A pre-acquisition frame still buffered when the window opens would be
+written and omitted from `watching_discarded`, and a post-stop frame still draining
+would be written and miscounted as retained (both found in review of PR #26). Keying
+on the packet's own instant fixes both, because the instant records when the frame was
+captured regardless of how the drain races the transition. On the live path the packet
+instant (the pcap header) and the event instant that opens or closes the window (the
+ETW event header) are both Unix wall-clock, so they are directly comparable. A
+lock-free single-writer atomic is the same discipline section 11.6 already requires of
+the attribution snapshot: the reader never blocks the writer.
 
-**Alternatives considered**: an `RwLock<WindowState>` (a lock on the per-packet read
-path, which section 11.6 forbids for the acquisition-adjacent path); letting the gate
-close the window on a bound (two writers to the window, a race for no benefit since a
-count comparison rejects beyond-bound packets already).
+**Alternatives considered**: an `AtomicU8` window state read at write time (the first
+implementation; misclassifies buffered frames at a transition, review of PR #26); an
+`RwLock<WindowState>` (a lock on the per-packet read path, which section 11.6 forbids);
+closing the window by state on a stop rather than by instant (drops valid pre-stop
+frames still draining, or keeps invalid post-stop ones, depending on the drain race).
+An interrupt or duration stop deliberately does not set `admit_until`, so what was
+captured before the stop is kept (specification FR-005).
+
+## D-8. A zero volume bound stops for `VolumeReached` explicitly
+
+**Decision**: a zero bound (`--max-packets 0` or `--max-bytes 0`) is met before any
+packet is retained, so the per-packet `check_volume_bounds` never runs to fire it and
+the gate forwards no receipt. `CaptureSession::on_volume_reached` is added, and the
+driver calls it once immediately after acquisition when a zero bound is configured, so
+the stop reason is the promised `VolumeReached` rather than a later source-exhausted
+one. It is not folded into the acquisition transition, because the offline driver
+detects acquisition by the session resting in `Capturing`, which an immediate stop
+would skip past.
+
+**Rationale**: found in review of PR #26. The gate correctly writes zero packets for a
+zero bound, but without this the run reported the wrong stop reason. Firing it from the
+driver after acquisition keeps the session's "acquisition rests in Capturing" contract
+the offline two-phase driver depends on.
+
+**Alternatives considered**: firing `VolumeReached` inside `match_and_bind` on the
+Capturing transition (breaks the offline acquisition detection, which checks for the
+`Capturing` state); special-casing the gate to set `bound_hit` for a zero bound (the
+gate is not the owner of the stop conditions, and the driver would still need to fire
+the session stop).
 
 ## D-6. Only the live driver runs from arm; the offline driver stays two-phase
 

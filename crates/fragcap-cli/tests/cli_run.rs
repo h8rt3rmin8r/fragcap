@@ -217,6 +217,30 @@ fn a_packet_bound_produces_an_exactly_bounded_file() {
     );
 }
 
+// Review of PR #26 (Codex P2). A zero packet bound produces an empty but
+// well-formed capture and stops for volume-reached, not a later source-exhausted
+// reason. The run still acquired a target, so it exits zero.
+#[test]
+fn a_zero_packet_bound_produces_an_empty_capture_and_stops_for_volume() {
+    let (code, err, fcapng, jsonl) = run_offline_to_files(&["--max-packets".into(), "0".into()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("volume-reached"),
+        "a zero bound stops for volume-reached: {err}"
+    );
+    assert_eq!(jsonl_packet_count(&jsonl), 0, "no packet is written");
+    assert_eq!(
+        pcapng_epb_count(&fcapng),
+        0,
+        "the pcapng holds no packet block"
+    );
+    assert!(
+        err.lines()
+            .any(|l| l.contains("retained") && l.contains('0')),
+        "the summary reports zero retained: {err}"
+    );
+}
+
 // FR-006, D-4. A byte bound produces the first prefix of packets whose cumulative
 // captured length reaches or crosses the bound, identically in both writers.
 #[test]
