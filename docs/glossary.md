@@ -584,6 +584,25 @@ every packet, and the gap is reported.
 **See also:** [Bootstrap filter](#bootstrap-filter), [Narrowing](#narrowing),
 [Maintenance](#maintenance)
 
+### Install acknowledgement
+
+The report a capture thread sends back to the control thread after calling
+`set_filter`, saying whether the backend accepted the maintenance filter program.
+The filter manager commits a handle's installed program, and clears its gap set,
+only on a success acknowledgement; a rejection leaves the prior program in place
+and the install is retried.
+
+Carried as a `(handle, installed_ok)` message over the reverse of the per-source
+filter channel. It exists because the manager otherwise marked a program installed
+the moment it decided to install it, before the capture thread had applied it, so a
+rejected install left the manager's model diverged from the real handle with the
+divergence recorded nowhere. A program the manager has issued and not yet seen
+acknowledged is a **pending install**, and while one is pending the manager issues
+no new install for that handle, so a bare acknowledgement is unambiguous.
+
+**See also:** [Filter manager](#filter-manager), [Filter gap](#filter-gap),
+[Maintenance](#maintenance)
+
 ### OwnedEndpoint
 
 An active endpoint paired with the process identifier that owns it, when the
