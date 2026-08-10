@@ -43,7 +43,7 @@ may ship as a stub in v0.2.0.
 - [25. Testing Strategy](#25-testing-strategy)
 - [26. Observability and Diagnostics](#26-observability-and-diagnostics)
 - [27. Spec Kit Decomposition](#27-spec-kit-decomposition)
-- [28. Roadmap Beyond v0.3.0](#28-roadmap-beyond-v030)
+- [28. Roadmap Beyond v0.2.0](#28-roadmap-beyond-v020)
 - [29. Open Questions](#29-open-questions)
 - [30. Appendices](#30-appendices)
 
@@ -331,10 +331,10 @@ requirement) and which become numbered feature slices, with a proposed
 slice ordering and the dependency edges between slices. This section is
 what turns the specification into executable work.
 
-## 28. Roadmap Beyond v0.3.0
+## 28. Roadmap Beyond v0.2.0
 
 Explicitly deferred capability, recorded so that scope pressure during
-the functional releases has somewhere to go: additional platforms,
+the roadmap has somewhere to go: additional platforms,
 richer attribution
 backends, dissector plugins, additional platform integrations, and the
 analysis tooling that consumes fragcap output.

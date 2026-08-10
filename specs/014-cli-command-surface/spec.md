@@ -15,9 +15,9 @@ Line Interface) and section 26.3 (the `doctor` diagnostic).
 fragcap has been a library with no operator-facing entry point: every capability
 proven so far (parsing, attribution, profiles, pipeline, sinks) is reachable only
 from Rust. This slice adds the command surface that turns the library into a
-usable tool. It is the final slice of v0.2.0, the first functional release, after
-which an operator can capture a game's traffic to a file, attributed to the
-process that produced it, without writing code.
+usable tool. It completes the capture-to-file CLI (the last of slices S01 through
+S14), after which an operator can capture a game's traffic to a file, attributed to
+the process that produced it, without writing code.
 
 The command surface is `run`, `tap`, `doctor`, and `profile`. Three further
 commands named in the specification (`replay`, `steam`, `extcap`) are registered

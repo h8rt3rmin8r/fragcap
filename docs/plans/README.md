@@ -78,23 +78,25 @@ enforced.**
 
 ## Release milestones
 
-The eighteen slices ship across three releases. `v0.1.0` is the crates.io
-namespace-reservation stub already published; it carries no functionality. The
-first functional release is `v0.2.0`, the usable capture-to-file CLI, reached at
-the end of S14. `v0.3.0` completes the remaining slices.
+There is one first public release, `v0.2.0`, and it comprises the whole roadmap:
+all eighteen slices, S01 through S18. It is cut only once every slice is complete
+and operational; there is no earlier functional release. `v0.1.0` is the crates.io
+namespace-reservation stub already published, carrying no functionality, and it is
+not a functional release. The crates.io publication of the functional crates
+happens at `v0.2.0`, that is, only after all slices are complete.
 
 | Release | Scope | Slices |
 | --- | --- | --- |
 | v0.1.0 | crates.io namespace reservation; no functionality | published stub |
-| v0.2.0 | First functional release; capture-to-file CLI | S01 through S14 |
-| v0.3.0 | Streaming, ring mode, managed launch, extcap, docs | S15 through S18 |
+| v0.2.0 | First public release; the complete roadmap | S01 through S18 |
 
-The workspace stays at `0.1.0` through S13; the bump to `0.2.0` is a release-time
-`cargo release minor` action taken when S14 lands. That bump is necessary but not
-sufficient: the pcapng `USER_APPL` and JSON Lines `VERSION` strings derive from
-`CARGO_PKG_VERSION`, so the release commit must also regenerate the golden corpus
-and update the two version assertions in `fragcap-sink`, or the release branch
-fails `cargo xtask ci`. See specification section 27.3.
+The workspace stays at `0.1.0` through S18; the bump to `0.2.0` is the final
+release action, a `cargo release minor` taken only once every slice is complete.
+That bump is necessary but not sufficient: the pcapng `USER_APPL` and JSON Lines
+`VERSION` strings derive from `CARGO_PKG_VERSION`, so the release commit must also
+regenerate the golden corpus and update the two version assertions in
+`fragcap-sink`, or the release branch fails `cargo xtask ci`. See specification
+section 27.3.
 
 ## Slice ordering
 
@@ -117,10 +119,10 @@ within a single autopilot run.
 | S12 | Stage matching and session lifecycle | v0.2.0 | S05, S11 | 10.3 to 10.6 | |
 | S13 | Filter management | v0.2.0 | S09, S10 | 12.2, 12.3 | |
 | S14 | CLI: run, tap, doctor, profile | v0.2.0 | S08, S12, S13 | 17, 26.3 | |
-| S15 | Transports and streaming sinks | v0.3.0 | S08 | 14.1 to 14.4 | |
-| S16 | Ring mode and triggers | v0.3.0 | S08 | 7.2 | |
-| S17 | Steam integration and managed launch | v0.3.0 | S05, S12 | 16 | Q-4 resolved |
-| S18 | Extcap, wrappers, documentation site | v0.3.0 | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 |
+| S15 | Transports and streaming sinks | v0.2.0 | S08 | 14.1 to 14.4 | |
+| S16 | Ring mode and triggers | v0.2.0 | S08 | 7.2 | |
+| S17 | Steam integration and managed launch | v0.2.0 | S05, S12 | 16 | Q-4 resolved |
+| S18 | Extcap, wrappers, documentation site | v0.2.0 | S14, S15 | 14.5, 18, 22 | Q-7, Q-8 |
 
 ### Follow-up slices and directory numbering
 
@@ -174,8 +176,10 @@ A reasonable order:
 2. ~~S01.~~ Done 2026-08-06. Crate name reservation (Q-9) still open.
 3. S02 through S08, the offline-testable pipeline.
 4. S09 through S13, the platform-specific work, now against evidence.
-5. S14, the first genuinely usable build, released as v0.2.0.
-6. S15 through S18, released as v0.3.0.
+5. S14, the first genuinely usable build.
+6. S15 through S18, the remaining roadmap capabilities.
+7. Release `v0.2.0` once every slice is complete: the single first public
+   release, comprising all of S01 through S18.
 
 ## Recording deviations
 

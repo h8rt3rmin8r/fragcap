@@ -5,12 +5,16 @@ Passive, process-attributed network capture for game clients on Windows.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-in--development-yellow.svg)](docs/plans/README.md)
 
-> **Status: in development, not yet runnable.** Slices S01 through S11 are
-> complete: the crate graph, the offline capture pipeline, both output writers,
-> the profile schema, the socket-table attributor, and the ETW process watcher
-> exist and are tested. There is no command-line interface yet, so fragcap is
-> not installable or runnable as a capture tool; the first functional release is
-> v0.2.0, reached at the end of slice S14. See
+> **Status: in development, not yet released.** Slices S01 through S14 are
+> complete, with follow-up refinements through 017: the crate graph, the capture
+> pipeline, both output writers, the profile schema, the socket-table attributor,
+> the ETW process watcher, and the command-line interface (`run`, `tap`, `doctor`,
+> `profile`) exist and are tested. The tool runs today against the offline replay
+> substrate; the live capture path is compiled but not yet exercised end to end.
+> Remaining roadmap slices S15 through S18 (streaming sinks, ring mode, Steam and
+> managed launch, extcap and the documentation site) are not yet built. The first
+> public release is v0.2.0, and it is cut only after all eighteen slices (S01
+> through S18) are complete. See
 > [`docs/plans/README.md`](docs/plans/README.md) for what is being built and in
 > what order.
 
