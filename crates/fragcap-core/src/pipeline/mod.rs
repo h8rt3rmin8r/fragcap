@@ -73,7 +73,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use crate::error::{SinkError, SourceError};
@@ -543,12 +543,23 @@ impl Pipeline {
         // program text is npcap syntax.
         let mut filter_senders = Vec::with_capacity(source_count);
 
+        // The reverse of the per-source filter channel (slice 016): each capture
+        // thread reports the result of its `set_filter` calls here, tagged with
+        // its handle index, and the control thread applies each acknowledgement to
+        // the manager so an install the backend rejected is never recorded as
+        // installed. One shared channel suffices because the control thread is the
+        // single consumer.
+        let (ack_tx, ack_rx) = mpsc::channel::<(usize, bool)>();
+
         let mut threads = Vec::with_capacity(source_count);
-        for SourceBinding {
-            id,
-            mut source,
-            addrs,
-        } in sources
+        for (
+            handle,
+            SourceBinding {
+                id,
+                mut source,
+                addrs,
+            },
+        ) in sources.into_iter().enumerate()
         {
             let (filter_tx, filter_rx) = mpsc::channel::<FilterProgram>();
             filter_senders.push(filter_tx);
@@ -556,6 +567,7 @@ impl Pipeline {
             let tx = Arc::clone(guard.producer());
             let stop = stop.clone();
             let read_timeout = config.read_timeout;
+            let ack_tx = ack_tx.clone();
             threads.push(std::thread::spawn(move || {
                 // Winds the other capture threads down the moment this one
                 // unwinds, rather than when the main thread gets around to
@@ -577,6 +589,8 @@ impl Pipeline {
                     link,
                     read_timeout,
                     &filter_rx,
+                    handle,
+                    &ack_tx,
                 );
                 stats.parse = *parser.stats();
                 stats.set_source(id, source.stats());
@@ -597,6 +611,15 @@ impl Pipeline {
             std::thread::spawn(move || {
                 let mut manager = FilterManager::new(source_count, filter_config);
                 while !control_stop.load(Ordering::Relaxed) {
+                    // Apply the install acknowledgements the capture threads sent
+                    // back (slice 016). The manager commits a handle's installed
+                    // program only on a confirmed install and retries a rejected
+                    // one, so its model never diverges from the real handle. Drain
+                    // fully each iteration; the channel is bounded by the number of
+                    // in-flight installs, which is at most one per handle.
+                    while let Ok((handle, installed_ok)) = ack_rx.try_recv() {
+                        manager.acknowledge(handle, installed_ok);
+                    }
                     // Drive the attribution refresh here, on the section 8.6
                     // control thread, whenever the attributor reports it wants
                     // one (by the section 11.2 interval or a triggered request a
@@ -795,6 +818,8 @@ fn acquire(
     link: crate::link::LinkType,
     timeout: Duration,
     filter_rx: &Receiver<FilterProgram>,
+    handle: usize,
+    ack_tx: &Sender<(usize, bool)>,
 ) -> EndReason {
     loop {
         if stop.is_stopped() {
@@ -815,7 +840,15 @@ fn acquire(
             // Retiring the interface to spare a failed optimization would lose all
             // its later traffic, the worse outcome. The generated program is valid
             // by construction, so this path is defensive.
-            let _ = source.set_filter(&program);
+            //
+            // The result is reported to the control thread (slice 016), which
+            // acknowledges it to the filter manager: on success the manager
+            // commits the program as installed, and on a rejection it keeps the
+            // prior program and retries rather than believing the rejected one is
+            // current. A failed send means the control thread has already ended,
+            // which is harmless here.
+            let installed_ok = source.set_filter(&program).is_ok();
+            let _ = ack_tx.send((handle, installed_ok));
         }
 
         let raw = match source.next_packet(timeout) {
@@ -1306,6 +1339,71 @@ mod tests {
                 .expect("the install log mutex is never poisoned")
                 .push(filter.clone());
             Ok(())
+        }
+
+        fn stats(&self) -> SourceStats {
+            SourceStats {
+                received: self.delivered,
+                ..SourceStats::default()
+            }
+        }
+
+        fn link_type(&self) -> LinkType {
+            LinkType::ETHERNET
+        }
+    }
+
+    /// Slice 016. A source that rejects every maintenance `set_filter`, recording
+    /// each attempt, and closes once it has been asked at least twice, so the run
+    /// cannot end before the control thread has retried a rejected install. It
+    /// proves the acknowledgement path: without a retry the manager would treat
+    /// the first rejected install as done and ask for no second one.
+    struct RejectingSource {
+        queued: std::collections::VecDeque<RawPacket>,
+        attempts: Arc<Mutex<Vec<FilterProgram>>>,
+        delivered: u64,
+    }
+
+    impl RejectingSource {
+        fn new(frames: Vec<Vec<u8>>, attempts: &Arc<Mutex<Vec<FilterProgram>>>) -> Self {
+            RejectingSource {
+                queued: frames.into_iter().map(raw).collect(),
+                attempts: Arc::clone(attempts),
+                delivered: 0,
+            }
+        }
+    }
+
+    impl PacketSource for RejectingSource {
+        fn next_packet(&mut self, _timeout: Duration) -> Result<Option<RawPacket>, SourceError> {
+            if let Some(packet) = self.queued.pop_front() {
+                self.delivered = self.delivered.saturating_add(1);
+                return Ok(Some(packet));
+            }
+            // Hold on recoverable timeouts until the control thread has retried the
+            // rejected install at least twice, then close. The retry can only
+            // happen if the manager did not treat the first rejection as installed.
+            if self
+                .attempts
+                .lock()
+                .expect("the attempt log mutex is never poisoned")
+                .len()
+                < 2
+            {
+                Err(SourceError::Timeout)
+            } else {
+                Err(SourceError::Closed)
+            }
+        }
+
+        fn set_filter(&mut self, filter: &FilterProgram) -> Result<(), SourceError> {
+            self.attempts
+                .lock()
+                .expect("the attempt log mutex is never poisoned")
+                .push(filter.clone());
+            Err(SourceError::FilterRejected {
+                detail: "the source double rejects every maintenance install".to_string(),
+            })
         }
 
         fn stats(&self) -> SourceStats {
@@ -2474,6 +2572,54 @@ mod tests {
             "the endpoint that appears only after the refresh entered the filter"
         );
         assert_eq!(report.ended, EndReason::SourceClosed);
+        assert_conserved(&report, &log, 0);
+    }
+
+    // Slice 016, SC-003. A maintenance install the source rejects is retried
+    // through the pipeline: the control thread learns of the rejection over the
+    // acknowledgement channel, does not treat it as installed, and reissues. The
+    // run cannot end before the source has been asked twice, so a manager that
+    // treated the first rejection as done would hang the source's close and fail.
+    #[test]
+    fn a_rejected_maintenance_install_is_retried_through_the_pipeline() {
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let source = RejectingSource::new(frames(4), &attempts);
+        let attributor = StubAttributor::resolving().with_endpoints(vec![narrow_endpoint()]);
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
+            Box::new(attributor),
+            PipelineConfig::default(),
+        )
+        .expect("the default capacity builds");
+        p.set_filter_config(FilterConfig {
+            debounce: Duration::from_millis(0),
+            min_reinstall_interval: Duration::from_millis(0),
+        });
+        let log = log();
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        let attempts = attempts
+            .lock()
+            .expect("the attempt log mutex is never poisoned")
+            .clone();
+        assert!(
+            attempts.len() >= 2,
+            "the rejected install was retried; got {} attempt(s)",
+            attempts.len()
+        );
+        assert!(
+            attempts
+                .iter()
+                .all(|program| *program == FilterProgram::narrowed(&[narrow_endpoint()])),
+            "every attempt is the same narrowed program"
+        );
+        assert_eq!(report.ended, EndReason::SourceClosed);
+        assert_eq!(report.stats.packets_captured, 4, "the frames were captured");
         assert_conserved(&report, &log, 0);
     }
 

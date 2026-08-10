@@ -168,6 +168,13 @@ struct HandleState {
     /// A handle whose capture thread has ended. It installs nothing more and
     /// accrues no more gaps, so a dead interface cannot fabricate future loss.
     retired: bool,
+    /// A program issued to the capture thread and not yet acknowledged. While it
+    /// is set, `poll` issues no new install for this handle, so at most one
+    /// install is in flight at a time and a bare acknowledgement refers to exactly
+    /// this program. It becomes `installed` on a success acknowledgement and is
+    /// dropped on a failure one, so `installed` always reflects the program the
+    /// handle actually holds rather than one the backend may have rejected.
+    pending: Option<BTreeSet<Endpoint>>,
 }
 
 /// The phase-two and phase-three policy of specification section 12.2, as a pure
@@ -198,6 +205,7 @@ impl FilterManager {
                 last_install: None,
                 gapped: BTreeSet::new(),
                 retired: false,
+                pending: None,
             })
             .collect();
         FilterManager {
@@ -289,23 +297,68 @@ impl FilterManager {
                     continue;
                 }
             }
+            // One install in flight per handle: a program is already issued and
+            // awaiting acknowledgement, so issue no new one until it resolves.
+            // This is what makes a bare acknowledgement unambiguous.
+            if handle.pending.is_some() {
+                continue;
+            }
             // Rate limit: defer to a later poll rather than reinstall too soon.
+            // last_install is set when an install is issued (below), so this also
+            // spaces the retries of a rejected install rather than reissuing it
+            // every poll.
             if let Some(t) = handle.last_install {
                 if now.saturating_duration_since(t) < self.config.min_reinstall_interval {
                     continue;
                 }
             }
-            handle.installed = Installed::Narrowed(wanted.clone());
+            // Issue the install, but do not commit it: `installed` and the gap set
+            // are updated only when the capture thread acknowledges the install
+            // succeeded (see `acknowledge`), so a program the backend rejects is
+            // never recorded as installed. `last_install` is set now so a retry is
+            // rate limited.
+            handle.pending = Some(wanted.clone());
             handle.last_install = Some(now);
-            // The new program admits every wanted endpoint, so no gap remains
-            // open on this handle.
-            handle.gapped.clear();
             installs.push(Install {
                 handle: idx,
                 program: FilterProgram::narrowed(&ordered),
             });
         }
         installs
+    }
+
+    /// Record the result of the install [`poll`](Self::poll) issued for `handle`.
+    ///
+    /// The capture thread, the only thread that may touch the handle, reports
+    /// whether its `set_filter` call succeeded. On success the pending program
+    /// becomes the installed one and the handle's gap set clears, because the new
+    /// program admits every wanted endpoint. On failure the pending program is
+    /// dropped and the handle keeps its prior program, its timing, and its gap
+    /// set, so the next eligible poll retries: a rejected maintenance install is
+    /// never treated as installed, which is the divergence this closes. A
+    /// rejecting handle is not retired, because correctness never depends on the
+    /// filter being fresh (section 12.3) and it is still capturing on its prior
+    /// program; retirement stays reserved for a handle whose capture thread has
+    /// ended.
+    ///
+    /// An acknowledgement for a handle with no pending install (a stale or
+    /// duplicate acknowledgement) is ignored.
+    pub fn acknowledge(&mut self, handle: usize, installed_ok: bool) {
+        let Some(h) = self.handles.get_mut(handle) else {
+            return;
+        };
+        let Some(pending) = h.pending.take() else {
+            return;
+        };
+        if installed_ok {
+            // The install took effect; commit it and clear the gap set, since the
+            // new program admits every wanted endpoint.
+            h.installed = Installed::Narrowed(pending);
+            h.gapped.clear();
+        }
+        // On failure the prior program, its timing, and its gap set are left
+        // exactly as they were, so the gap accounting keeps measuring against what
+        // the handle actually holds and the next poll reissues.
     }
 
     /// The running total of filter gaps, for the capture statistics.
@@ -324,6 +377,10 @@ impl FilterManager {
         if let Some(h) = self.handles.get_mut(handle) {
             h.retired = true;
             h.gapped.clear();
+            // A handle whose capture thread has ended has no install in flight to
+            // wait on; drop any pending one so nothing is left awaiting an
+            // acknowledgement that will never come.
+            h.pending = None;
         }
     }
 }
@@ -471,6 +528,7 @@ mod tests {
         ];
 
         assert_eq!(mgr.poll(&first, t0).len(), 1, "first install");
+        mgr.acknowledge(0, true);
         // A new endpoint four seconds later is deferred by the five-second limit.
         assert!(
             mgr.poll(&second, t0 + Duration::from_millis(4000))
@@ -488,6 +546,7 @@ mod tests {
         let t0 = Instant::now();
         let want = [ep("198.51.100.5:443", Proto::Tcp)];
         assert_eq!(mgr.poll(&want, t0).len(), 1, "first install");
+        mgr.acknowledge(0, true);
         assert!(
             mgr.poll(&want, t0 + Duration::from_millis(10)).is_empty(),
             "idempotent: no reinstall when nothing changed"
@@ -500,6 +559,7 @@ mod tests {
         let t0 = Instant::now();
         let want = [ep("198.51.100.5:443", Proto::Tcp)];
         assert_eq!(mgr.poll(&want, t0).len(), 1);
+        mgr.acknowledge(0, true);
         // The set empties; nothing is installed, the handle keeps its narrowed
         // program, and no gap is charged.
         assert!(mgr.poll(&[], t0 + Duration::from_millis(10)).is_empty());
@@ -537,10 +597,13 @@ mod tests {
             ep("[2001:db8::1]:80", Proto::Tcp),
         ];
         assert_eq!(mgr.poll(&first, t0).len(), 1);
+        mgr.acknowledge(0, true);
         assert_eq!(mgr.filter_gaps(), 0);
         assert_eq!(mgr.poll(&second, t0 + Duration::from_millis(10)).len(), 1);
+        mgr.acknowledge(0, true);
         assert_eq!(mgr.filter_gaps(), 1, "one endpoint newly admitted");
         assert_eq!(mgr.poll(&third, t0 + Duration::from_millis(20)).len(), 1);
+        mgr.acknowledge(0, true);
         assert_eq!(mgr.filter_gaps(), 2, "a second endpoint newly admitted");
     }
 
@@ -568,6 +631,7 @@ mod tests {
         ];
 
         assert_eq!(mgr.poll(&a, t0).len(), 1, "narrow to A");
+        mgr.acknowledge(0, true);
         assert_eq!(mgr.filter_gaps(), 0);
 
         // B appears while A's program is installed and the rate limit blocks a
@@ -597,5 +661,106 @@ mod tests {
         // charges no gap: a dead interface cannot fabricate loss.
         assert!(mgr.poll(&ab, t0 + Duration::from_millis(10)).is_empty());
         assert_eq!(mgr.filter_gaps(), 0);
+    }
+
+    // --------------------------------------------------------------
+    // Slice 016: install acknowledgement (issue #20).
+    // --------------------------------------------------------------
+
+    // SC-001. A rejected install is not recorded as installed, and the manager
+    // retries it rather than treating it as done.
+    #[test]
+    fn a_rejected_install_is_not_recorded_and_is_retried() {
+        let mut mgr = FilterManager::new(1, cfg(0, 0));
+        let t0 = Instant::now();
+        let want = [ep("198.51.100.5:443", Proto::Tcp)];
+
+        assert_eq!(mgr.poll(&want, t0).len(), 1, "issued");
+        // The capture thread rejects it. The manager must not record it.
+        mgr.acknowledge(0, false);
+        // The very next poll re-issues the same program (rate limit is zero here),
+        // rather than believing it is already installed.
+        let retry = mgr.poll(&want, t0 + Duration::from_millis(1));
+        assert_eq!(
+            retry.len(),
+            1,
+            "the rejected install is retried, not skipped"
+        );
+        assert_eq!(retry[0].program, FilterProgram::narrowed(&want));
+        // Once it is confirmed, it is recorded and no longer reissued.
+        mgr.acknowledge(0, true);
+        assert!(
+            mgr.poll(&want, t0 + Duration::from_millis(2)).is_empty(),
+            "a confirmed install is idempotent"
+        );
+    }
+
+    // SC-001, FR-006. A handle that keeps rejecting retries on the rate-limit
+    // interval, not once per poll.
+    #[test]
+    fn a_persistently_rejecting_handle_retries_on_the_rate_limit() {
+        let mut mgr = FilterManager::new(1, cfg(0, 5000));
+        let t0 = Instant::now();
+        let want = [ep("198.51.100.5:443", Proto::Tcp)];
+
+        assert_eq!(mgr.poll(&want, t0).len(), 1, "first attempt");
+        mgr.acknowledge(0, false);
+        // One second later is inside the five-second window: no retry yet.
+        assert!(
+            mgr.poll(&want, t0 + Duration::from_millis(1000)).is_empty(),
+            "the retry is rate limited, not attempted every poll"
+        );
+        // After the interval it retries.
+        assert_eq!(
+            mgr.poll(&want, t0 + Duration::from_millis(5000)).len(),
+            1,
+            "retried once the rate-limit interval elapsed"
+        );
+    }
+
+    // SC-002. A confirmed install commits and clears the handle's gap set, so a
+    // gap opened against the prior program does not survive a successful reinstall.
+    #[test]
+    fn a_confirmed_install_commits_and_clears_the_gap_set() {
+        let mut mgr = FilterManager::new(1, cfg(0, 0));
+        let t0 = Instant::now();
+        let a = [ep("198.51.100.5:443", Proto::Tcp)];
+        let ab = [
+            ep("198.51.100.5:443", Proto::Tcp),
+            ep("203.0.113.9:5055", Proto::Udp),
+        ];
+
+        assert_eq!(mgr.poll(&a, t0).len(), 1);
+        mgr.acknowledge(0, true);
+        // B is added: a gap opens against the installed A program.
+        assert_eq!(mgr.poll(&ab, t0 + Duration::from_millis(10)).len(), 1);
+        assert_eq!(
+            mgr.filter_gaps(),
+            1,
+            "B is excluded by the installed A program"
+        );
+        // Confirming the AB install clears the gap set; the program now admits B.
+        mgr.acknowledge(0, true);
+        assert!(mgr.poll(&ab, t0 + Duration::from_millis(20)).is_empty());
+        assert_eq!(mgr.filter_gaps(), 1, "no new gap once AB is installed");
+    }
+
+    // FR-003. An acknowledgement for a handle with no install in flight is a
+    // stale or duplicate ack and is ignored rather than corrupting state.
+    #[test]
+    fn an_acknowledgement_with_no_pending_install_is_ignored() {
+        let mut mgr = FilterManager::new(1, cfg(0, 0));
+        let t0 = Instant::now();
+        let want = [ep("198.51.100.5:443", Proto::Tcp)];
+        // No install issued yet: acknowledgements do nothing.
+        mgr.acknowledge(0, true);
+        mgr.acknowledge(0, false);
+        mgr.acknowledge(9, true); // out of range, also ignored
+                                  // The manager still narrows normally.
+        assert_eq!(mgr.poll(&want, t0).len(), 1);
+        mgr.acknowledge(0, true);
+        // A duplicate ack after the commit changes nothing.
+        mgr.acknowledge(0, true);
+        assert!(mgr.poll(&want, t0 + Duration::from_millis(1)).is_empty());
     }
 }
