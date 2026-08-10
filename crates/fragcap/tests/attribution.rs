@@ -115,7 +115,7 @@ fn run_with_table(
     }
 
     let clock = Arc::new(TestClock::at(Timestamp::from_nanos(0)));
-    let mut attributor = SocketTableAttributor::new(
+    let attributor = SocketTableAttributor::new(
         Box::new(DeclaredTable::once(table)),
         Box::new(names),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -301,7 +301,7 @@ fn several_capture_threads_share_one_attributor() {
     );
 
     let clock = Arc::new(TestClock::at(Timestamp::from_nanos(0)));
-    let mut attributor = SocketTableAttributor::new(
+    let attributor = SocketTableAttributor::new(
         Box::new(DeclaredTable::once(table)),
         Box::new(DeclaredNames::from([(4242, "game.exe")])),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -381,7 +381,7 @@ fn a_flow_stays_attributed_after_its_socket_leaves_the_table() {
     const ERA: i64 = 1_700_000_000_000_000_000;
 
     let clock = Arc::new(TestClock::at(Timestamp::from_nanos(ERA)));
-    let mut attributor = SocketTableAttributor::new(
+    let attributor = SocketTableAttributor::new(
         Box::new(DeclaredTable::sequence(vec![
             Ok(SocketTable::new(Timestamp::from_nanos(ERA), entries)),
             // One second later, and the endpoint has gone.

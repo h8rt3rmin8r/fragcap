@@ -28,12 +28,12 @@
 //! than restructures an attributor. Role and stage stay absent; S12 fills them.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fragcap_core::attribution::Attribution;
 use fragcap_core::error::AttrError;
-use fragcap_core::flow::{Endpoint, FlowKey};
+use fragcap_core::flow::{Endpoint, FlowKey, OwnedEndpoint};
 use fragcap_core::packet::Timestamp;
 use fragcap_core::traits::FlowAttributor;
 
@@ -78,12 +78,27 @@ impl Default for AttributorConfig {
 /// clock would let a test that meant to control time pass while measuring
 /// nothing.
 pub struct SocketTableAttributor {
-    source: Box<dyn SocketTableSource>,
-    namer: Box<dyn ProcessNamer>,
+    /// The refresh-only state, behind interior mutability so `refresh` can take
+    /// `&self` and be driven through the shared `Arc` the capture threads
+    /// resolve against (slice 015). Only the control thread's `refresh` touches
+    /// it; the lock-free `resolve`, `wants_refresh`, and endpoint paths read
+    /// only `published`, `schedule`, and `clock`, so the section 11.6 promise
+    /// that attribution lookup never blocks packet acquisition is preserved:
+    /// this lock is never taken on the resolve path.
+    refresh_state: Mutex<RefreshState>,
     clock: Arc<dyn Clock>,
     config: AttributorConfig,
     published: Arc<PublishedIndex>,
     schedule: Arc<RefreshSchedule>,
+}
+
+/// The state `refresh` mutates: the table source, the process namer, and the
+/// retention map carried between refreshes. Grouped behind one [`Mutex`] because
+/// all three are touched only by `refresh` and only by the single control thread
+/// that drives it.
+struct RefreshState {
+    source: Box<dyn SocketTableSource>,
+    namer: Box<dyn ProcessNamer>,
     /// The retention map carried between refreshes. Owned by the refreshing
     /// side; the published index gets a copy.
     retained: RetentionMap,
@@ -98,8 +113,11 @@ impl SocketTableAttributor {
     ) -> Self {
         let retention = nanos(config.retention);
         SocketTableAttributor {
-            source,
-            namer,
+            refresh_state: Mutex::new(RefreshState {
+                source,
+                namer,
+                retained: RetentionMap::new(),
+            }),
             clock,
             config,
             published: Arc::new(PublishedIndex::new(AttributionIndex::new(
@@ -109,7 +127,6 @@ impl SocketTableAttributor {
                 retention,
             ))),
             schedule: Arc::new(RefreshSchedule::new()),
-            retained: RetentionMap::new(),
         }
     }
 
@@ -145,13 +162,6 @@ impl SocketTableAttributor {
             Arc::clone(&self.clock),
             self.config.trigger_limit,
         )
-    }
-
-    /// Whether a refresh is due by the interval, or has been requested by
-    /// either trigger. Specification section 11.2.
-    pub fn wants_refresh(&self) -> bool {
-        let now = self.clock.now();
-        self.schedule.is_due(now, self.config.interval) || self.schedule.is_requested()
     }
 
     /// Ask for a refresh because a process matching a profile stage started.
@@ -199,8 +209,12 @@ impl FlowAttributor for SocketTableAttributor {
     /// silently unattribute every packet after it, which is the configuration
     /// side of the loss constitution principle P-4 forbids: every packet lost,
     /// none counted.
-    fn refresh(&mut self) -> Result<(), AttrError> {
-        let table = self.source.read()?;
+    fn refresh(&self) -> Result<(), AttrError> {
+        // The single control thread holds this for the duration of a refresh.
+        // The resolve path never takes it, so a refresh never blocks a lookup
+        // (section 11.6).
+        let mut state = self.refresh_state.lock().expect("refresh state lock");
+        let table = state.source.read()?;
         let taken_at = table.taken_at();
         let retention = nanos(self.config.retention);
 
@@ -217,11 +231,12 @@ impl FlowAttributor for SocketTableAttributor {
         let mut pids: Vec<u32> = table.entries().iter().map(|e| e.pid).collect();
         pids.sort_unstable();
         pids.dedup();
-        let names = self.namer.names(&pids);
+        let names = state.namer.names(&pids);
 
         // Age the retention map against the new table, before adding to it, so
         // that a socket present in both is refreshed rather than expired.
-        self.retained
+        state
+            .retained
             .retain(|_, r| taken_at.nanos_since(r.last_seen) < retention);
 
         // Every row the table reports is present now, so it either enters the
@@ -236,8 +251,8 @@ impl FlowAttributor for SocketTableAttributor {
             let name = names
                 .get(&entry.pid)
                 .cloned()
-                .or_else(|| self.retained.get(&key).and_then(|r| r.name.clone()));
-            self.retained.insert(
+                .or_else(|| state.retained.get(&key).and_then(|r| r.name.clone()));
+            state.retained.insert(
                 key,
                 RetainedEntry {
                     entry: *entry,
@@ -262,10 +277,22 @@ impl FlowAttributor for SocketTableAttributor {
         self.published.publish(AttributionIndex::new(
             table,
             names,
-            self.retained.clone(),
+            state.retained.clone(),
             retention,
         ));
         Ok(())
+    }
+
+    /// Whether a refresh is due by the interval, or has been requested by
+    /// either trigger. Specification section 11.2.
+    ///
+    /// Reads only the schedule and the clock, never the refresh-state lock, so
+    /// the control thread can ask this cheaply between polls. Slice 015 promotes
+    /// it to the trait so the pipeline control thread can gate `refresh` without
+    /// this crate's schedule type crossing into `fragcap-core`.
+    fn wants_refresh(&self) -> bool {
+        let now = self.clock.now();
+        self.schedule.is_due(now, self.config.interval) || self.schedule.is_requested()
     }
 
     /// Every endpoint believed active, including the retention window.
@@ -276,6 +303,14 @@ impl FlowAttributor for SocketTableAttributor {
     /// is what specification section 11.4 warns against.
     fn active_endpoints(&self) -> Vec<Endpoint> {
         self.published.load().endpoints(self.clock.now())
+    }
+
+    /// The same active endpoints, each carrying the owning process identifier
+    /// the plain list drops, so the section 12.2 narrowing can restrict the
+    /// filter to profiled processes. Slice 015. Reads the published index only,
+    /// so it stays off the refresh lock.
+    fn active_endpoints_owned(&self) -> Vec<OwnedEndpoint> {
+        self.published.load().endpoints_owned(self.clock.now())
     }
 }
 
@@ -432,7 +467,7 @@ mod tests {
 
     #[test]
     fn a_refresh_publishes_an_index_that_resolves() {
-        let mut f = fixture(vec![Ok(one_entry(0, 4242))], &[(4242, "eso64.exe")]);
+        let f = fixture(vec![Ok(one_entry(0, 4242))], &[(4242, "eso64.exe")]);
         f.attributor.refresh().expect("the declared table reads");
         let a = f.attributor.resolve(&udp_key(), at(100)).expect("resolves");
         assert_eq!(a.pid, 4242);
@@ -447,7 +482,7 @@ mod tests {
     // them were wrong.
     #[test]
     fn one_endpoint_goes_live_then_retained_then_gone() {
-        let mut f = fixture(
+        let f = fixture(
             vec![
                 Ok(one_entry(1_000, 5)),
                 Ok(SocketTable::empty(at(2_000_000_000))),
@@ -483,7 +518,7 @@ mod tests {
     // SC-003. Port reuse inside the retention window.
     #[test]
     fn a_reused_port_resolves_to_the_new_owner() {
-        let mut f = fixture(
+        let f = fixture(
             vec![Ok(one_entry(1_000, 5)), Ok(one_entry(2_000, 6))],
             &[(5, "old.exe"), (6, "new.exe")],
         );
@@ -502,7 +537,7 @@ mod tests {
     // FR-022. Retention does not grow without bound.
     #[test]
     fn entries_past_the_grace_period_are_discarded_on_refresh() {
-        let mut f = fixture(
+        let f = fixture(
             vec![
                 Ok(one_entry(0, 1)),
                 Ok(SocketTable::empty(at(1_000_000_000))),
@@ -528,7 +563,7 @@ mod tests {
     // FR-030 and SC-008. A failed read leaves the published index alone.
     #[test]
     fn a_failed_refresh_leaves_the_previous_index_resolving_exactly_as_before() {
-        let mut f = fixture(
+        let f = fixture(
             vec![
                 Ok(one_entry(0, 7)),
                 Err(AttrError::RefreshFailed {
@@ -559,7 +594,7 @@ mod tests {
     #[test]
     fn a_failure_on_the_first_refresh_leaves_an_empty_index_rather_than_a_panic() {
         let clock = Arc::new(TestClock::at(at(0)));
-        let mut a = SocketTableAttributor::new(
+        let a = SocketTableAttributor::new(
             Box::new(DeclaredTable::always_failing("no platform")),
             Box::new(DeclaredNames::new()),
             clock as Arc<dyn Clock>,
@@ -573,7 +608,7 @@ mod tests {
     // FR-014, FR-015, FR-017. The trigger arrives through the lookup path.
     #[test]
     fn an_unresolved_lookup_on_an_unseen_endpoint_requests_a_refresh() {
-        let mut f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
+        let f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
         f.attributor.refresh().expect("reads");
         let schedule = f.attributor.schedule();
         assert!(!schedule.take_request(), "nothing requested yet");
@@ -584,7 +619,7 @@ mod tests {
 
     #[test]
     fn a_burst_of_unresolved_lookups_requests_one_refresh() {
-        let mut f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
+        let f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
         f.attributor.refresh().expect("reads");
         let schedule = f.attributor.schedule();
         schedule.take_request();
@@ -607,7 +642,7 @@ mod tests {
             at(0),
             vec![SocketTableEntry::udp(addr("192.0.2.10:30000"), 1).created_at(at(500))],
         );
-        let mut f = fixture(vec![Ok(table)], &[]);
+        let f = fixture(vec![Ok(table)], &[]);
         f.attributor.refresh().expect("reads");
         let schedule = f.attributor.schedule();
         schedule.take_request();
@@ -619,7 +654,7 @@ mod tests {
     // FR-013, FR-016.
     #[test]
     fn a_matched_process_start_requests_a_refresh_regardless_of_the_limit() {
-        let mut f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
+        let f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
         f.attributor.refresh().expect("reads");
         let schedule = f.attributor.schedule();
 
@@ -637,7 +672,7 @@ mod tests {
     // FR-011, FR-012 through the attributor rather than the schedule.
     #[test]
     fn the_interval_governs_wants_refresh() {
-        let mut f = fixture(vec![Ok(one_entry(0, 1))], &[]);
+        let f = fixture(vec![Ok(one_entry(0, 1))], &[]);
         assert!(f.attributor.wants_refresh(), "nothing read yet");
         f.attributor.refresh().expect("reads");
         assert!(!f.attributor.wants_refresh());
@@ -651,7 +686,7 @@ mod tests {
     // FR-023.
     #[test]
     fn active_endpoints_reports_current_plus_retained() {
-        let mut f = fixture(
+        let f = fixture(
             vec![Ok(one_entry(0, 1)), Ok(SocketTable::empty(at(1_000)))],
             &[],
         );
@@ -676,7 +711,7 @@ mod tests {
     // FR-024, FR-025. An unresolved lookup is not an error and drops nothing.
     #[test]
     fn an_unresolved_lookup_is_not_an_error() {
-        let mut f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
+        let f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
         f.attributor.refresh().expect("reads");
         assert_eq!(
             f.attributor.resolve(&udp_key(), at(100)),
@@ -690,11 +725,14 @@ mod tests {
     // reach it.
     #[test]
     fn the_whole_sequence_is_drivable_through_the_seam_alone() {
-        let mut f = fixture(
+        let f = fixture(
             vec![Ok(one_entry(1_000, 5)), Ok(SocketTable::empty(at(2_000)))],
             &[(5, "g.exe")],
         );
-        let seam: &mut dyn FlowAttributor = &mut f.attributor;
+        // A shared reference now suffices: slice 015 made `refresh` take
+        // `&self`, so the whole sequence is drivable through `&dyn` exactly as
+        // the pipeline drives it through `Arc<dyn FlowAttributor>`.
+        let seam: &dyn FlowAttributor = &f.attributor;
 
         seam.refresh().expect("first");
         assert_eq!(
@@ -720,7 +758,7 @@ mod tests {
     #[test]
     fn a_name_survives_the_process_that_owned_the_socket() {
         let clock = Arc::new(TestClock::at(at(0)));
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(DeclaredTable::sequence(vec![
                 Ok(one_entry(1_000, 5)),
                 Ok(SocketTable::empty(at(2_000))),
@@ -757,7 +795,7 @@ mod tests {
     #[test]
     fn a_recycled_identifier_does_not_rename_a_closed_connection() {
         let clock = Arc::new(TestClock::at(at(0)));
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(DeclaredTable::sequence(vec![
                 Ok(one_entry(1_000, 5)),
                 Ok(SocketTable::empty(at(2_000))),
@@ -788,7 +826,7 @@ mod tests {
     // for two hundred milliseconds.
     #[test]
     fn a_request_made_after_publication_survives_the_refresh() {
-        let mut f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
+        let f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
         let schedule = f.attributor.schedule();
 
         f.attributor.refresh().expect("reads");
@@ -827,7 +865,7 @@ mod tests {
         use std::thread;
 
         let clock = Arc::new(TestClock::at(at(0)));
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(DeclaredTable::once(one_entry(0, 1))),
             Box::new(DeclaredNames::from([(1, "one.exe")])),
             Arc::clone(&clock) as Arc<dyn Clock>,
@@ -872,5 +910,70 @@ mod tests {
         for r in readers {
             r.join().expect("a reader finishes");
         }
+    }
+
+    // Slice 015, SC-003. `refresh` is driven through the shared
+    // `Arc<dyn FlowAttributor>` the capture threads resolve through, exactly as
+    // the pipeline control thread drives it, and the resolve path is never
+    // blocked by it: several readers resolve while one thread refreshes the same
+    // shared attributor. The pre-015 arrangement could not express this at all,
+    // because a `&mut self` refresh cannot be called through a shared pointer.
+    #[test]
+    fn refresh_through_a_shared_arc_does_not_block_concurrent_resolves() {
+        use std::thread;
+
+        let clock = Arc::new(TestClock::at(at(0)));
+        let attributor = SocketTableAttributor::new(
+            // `once` repeats its table on every read, so the refresher can drive
+            // many refreshes through the shared pointer.
+            Box::new(DeclaredTable::once(one_entry(0, 1))),
+            Box::new(DeclaredNames::from([(1, "one.exe")])),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            AttributorConfig::default(),
+        );
+        let shared: Arc<dyn FlowAttributor> =
+            Arc::from(Box::new(attributor) as Box<dyn FlowAttributor>);
+
+        let refresher = {
+            let shared = Arc::clone(&shared);
+            thread::spawn(move || {
+                for _ in 0..2_000 {
+                    // Through the shared trait object, taking no lock the readers
+                    // contend for on the resolve path.
+                    let _ = shared.refresh();
+                }
+            })
+        };
+
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let shared = Arc::clone(&shared);
+                thread::spawn(move || {
+                    for _ in 0..5_000 {
+                        // Either the pre-refresh empty index or a refreshed one;
+                        // both are whole, and no resolve blocks behind a refresh.
+                        if let Some(a) = shared.resolve(&udp_key(), at(100)) {
+                            assert_eq!(a.pid, 1);
+                            assert_eq!(&*a.process, "one.exe");
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        refresher.join().expect("the refresher finishes");
+        for r in readers {
+            r.join().expect("a reader finishes");
+        }
+
+        // After refreshing through the shared pointer, the declared entry
+        // resolves: the refresh reached the same publication the readers read.
+        assert_eq!(
+            shared
+                .resolve(&udp_key(), at(100))
+                .expect("resolves after a refresh through the shared pointer")
+                .pid,
+            1
+        );
     }
 }

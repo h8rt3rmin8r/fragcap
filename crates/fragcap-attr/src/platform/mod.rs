@@ -68,7 +68,7 @@ mod tests {
         let socket = UdpSocket::bind("127.0.0.1:0").expect("binding a loopback socket");
         let local: SocketAddr = socket.local_addr().expect("the socket reports its address");
 
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(IpHelperTable::new()),
             Box::new(ToolhelpNamer::new()),
             Arc::new(SystemClock) as Arc<dyn Clock>,
@@ -129,7 +129,7 @@ mod tests {
         let socket = UdpSocket::bind("127.0.0.1:0").expect("binding a loopback socket");
         let local: SocketAddr = socket.local_addr().expect("the socket reports its address");
 
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(IpHelperTable::new()),
             Box::new(ToolhelpNamer::new()),
             Arc::new(SystemClock) as Arc<dyn Clock>,

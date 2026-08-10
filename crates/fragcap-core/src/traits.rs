@@ -26,7 +26,7 @@ use std::time::Duration;
 use crate::attribution::Attribution;
 use crate::error::{AttrError, SinkError, SourceError};
 use crate::filter::FilterProgram;
-use crate::flow::{Endpoint, FlowKey};
+use crate::flow::{Endpoint, FlowKey, OwnedEndpoint};
 use crate::link::LinkType;
 use crate::packet::{CapturedPacket, RawPacket, Timestamp};
 use crate::process::{ProcessEvent, ProcessRecord};
@@ -108,11 +108,57 @@ pub trait FlowAttributor: Send + Sync {
     fn resolve(&self, key: &FlowKey, at: Timestamp) -> Option<Attribution>;
 
     /// Re-read the underlying table.
-    fn refresh(&mut self) -> Result<(), AttrError>;
+    ///
+    /// **`&self` is a recorded deviation.** Specification section 8.5 declared
+    /// this `&mut self`, and slices S10 through S14 relied on that: the mutable
+    /// attributor lived on a control thread of its own (the CLI `RefreshDriver`)
+    /// and the capture pipeline resolved against a separate read-only view
+    /// cloned from it, because a `&mut` method cannot be called through the
+    /// `Arc<dyn FlowAttributor>` the capture threads share. Specification section
+    /// 8.6 places the socket-table refresh on the pipeline control thread, and
+    /// there is no arrangement of a `&mut self` refresh that the control thread
+    /// can drive through the same shared pointer the capture threads resolve
+    /// through. An implementor with refresh-mutable state carries it behind
+    /// interior mutability that the lock-free `resolve` path (section 11.6) never
+    /// touches. Changed by slice 015 and promoted to specification section 29.
+    fn refresh(&self) -> Result<(), AttrError>;
+
+    /// Whether a refresh is due or has been requested, so the control thread can
+    /// gate [`Self::refresh`] on the section 11.2 cadence without this crate
+    /// naming the schedule type that lives in `fragcap-attr` (P-2).
+    ///
+    /// Defaults to `false`: an attributor with nothing to re-read is never asked
+    /// to refresh, which is correct for the scripted and stub attributors and for
+    /// the read-only resolver. Added by slice 015 with the `refresh` change and
+    /// promoted to specification section 29.
+    fn wants_refresh(&self) -> bool {
+        false
+    }
 
     /// Endpoints currently believed active, including the retention window in
     /// specification section 11.4.
     fn active_endpoints(&self) -> Vec<Endpoint>;
+
+    /// The same active endpoints, each paired with the process identifier that
+    /// owns it when the source can supply one.
+    ///
+    /// Specification section 12.2 narrows the kernel filter to endpoints
+    /// belonging to profiled processes, a decision the owning identifier is
+    /// needed to make; [`Self::active_endpoints`] has dropped it. A decorator
+    /// that holds the profiled-process set (the session's role-stamping
+    /// attributor) filters this by owner and reports the result through
+    /// `active_endpoints`.
+    ///
+    /// Defaults to mapping [`Self::active_endpoints`] to unowned endpoints, so an
+    /// attributor that does not track ownership needs no change and a consumer
+    /// that does not filter by owner sees the same endpoints as before. Added by
+    /// slice 015 and promoted to specification section 29.
+    fn active_endpoints_owned(&self) -> Vec<OwnedEndpoint> {
+        self.active_endpoints()
+            .into_iter()
+            .map(OwnedEndpoint::unowned)
+            .collect()
+    }
 }
 
 /// Watches process lifecycle. Implemented over ETW kernel providers in slice
@@ -208,7 +254,7 @@ mod tests {
         fn resolve(&self, _key: &FlowKey, _at: Timestamp) -> Option<Attribution> {
             self.answer.clone()
         }
-        fn refresh(&mut self) -> Result<(), AttrError> {
+        fn refresh(&self) -> Result<(), AttrError> {
             Ok(())
         }
         fn active_endpoints(&self) -> Vec<Endpoint> {

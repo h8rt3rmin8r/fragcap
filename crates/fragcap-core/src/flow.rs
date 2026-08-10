@@ -54,6 +54,41 @@ impl Endpoint {
     }
 }
 
+/// An active [`Endpoint`] paired with the process identifier that owns it, when
+/// the source can supply one.
+///
+/// Returned by [`crate::traits::FlowAttributor::active_endpoints_owned`]. It
+/// exists because [`crate::traits::FlowAttributor::active_endpoints`] reports
+/// only the endpoint, having dropped the owner the socket table carried, and the
+/// phase-two narrowing of specification section 12.2 admits only endpoints
+/// belonging to profiled processes, which is a decision the owning identifier is
+/// needed to make. Kept to endpoint plus owner deliberately: the narrowing needs
+/// no name and no role, only which process a socket belongs to.
+///
+/// `owner` is `None` for a source that does not track ownership (the scripted
+/// attributor, the stubs), which is why the trait's default implementation maps
+/// every endpoint to an unowned one: a consumer that does not filter by owner
+/// then sees exactly the endpoints it saw before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnedEndpoint {
+    pub endpoint: Endpoint,
+    pub owner: Option<u32>,
+}
+
+impl OwnedEndpoint {
+    pub fn new(endpoint: Endpoint, owner: Option<u32>) -> Self {
+        OwnedEndpoint { endpoint, owner }
+    }
+
+    /// An endpoint whose owner is not known, for sources that do not track it.
+    pub fn unowned(endpoint: Endpoint) -> Self {
+        OwnedEndpoint {
+            endpoint,
+            owner: None,
+        }
+    }
+}
+
 /// The identity of one conversation.
 ///
 /// `local` is always the endpoint on the capturing host. That normalization is
@@ -258,5 +293,17 @@ mod tests {
     fn local_is_available_from_either_variant() {
         assert_eq!(tcp().attribution_key().local(), tcp().local);
         assert_eq!(udp().attribution_key().local(), udp().local);
+    }
+
+    #[test]
+    fn an_owned_endpoint_carries_its_owner_and_an_unowned_one_does_not() {
+        let e = Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp);
+        let owned = OwnedEndpoint::new(e, Some(4242));
+        assert_eq!(owned.endpoint, e);
+        assert_eq!(owned.owner, Some(4242));
+
+        let unowned = OwnedEndpoint::unowned(e);
+        assert_eq!(unowned.endpoint, e);
+        assert_eq!(unowned.owner, None, "an unowned endpoint names no process");
     }
 }

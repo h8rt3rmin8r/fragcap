@@ -584,6 +584,36 @@ every packet, and the gap is reported.
 **See also:** [Bootstrap filter](#bootstrap-filter), [Narrowing](#narrowing),
 [Maintenance](#maintenance)
 
+### OwnedEndpoint
+
+An active endpoint paired with the process identifier that owns it, when the
+source can supply one. Modeled as `OwnedEndpoint` in `fragcap-core::flow` and
+returned by `FlowAttributor::active_endpoints_owned`.
+
+The plain endpoint list drops the owner the socket table carried; the owned form
+keeps it so the section 12.2 narrowing can restrict the kernel filter to endpoints
+belonging to profiled processes. The owner is optional: the live socket-table
+backend always supplies one, while the scripted attributor supplies none, in which
+case the endpoint is treated as not known to belong to any particular process.
+
+**See also:** [Profiled endpoint set](#profiled-endpoint-set),
+[Narrowing](#narrowing)
+
+### Profiled endpoint set
+
+The endpoints owned by a profiled process: the input the section 12.2 narrowing
+actually compiles into the kernel filter. Derived by joining the active endpoints
+(each carrying its owner) against the session's stage bindings, whose process
+identifiers are the profiled ones.
+
+The join runs in the role-stamping attributor, the one seam above both the socket
+table and the session, so neither the pipeline nor the attribution crate learns
+about profiles (constitution P-3). An endpoint whose owner is not known is kept
+rather than excluded, so on the live backend the set is exactly the profiled
+endpoints while on the offline scripted substrate it is a pass-through.
+
+**See also:** [OwnedEndpoint](#ownedendpoint), [Narrowing](#narrowing)
+
 ### Interface identifier
 
 The identity fragcap assigns to a capture interface for the duration of one

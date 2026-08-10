@@ -28,6 +28,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Once;
 
 use fragcap::core::CaptureStats;
+// The stamper's active_endpoints (profiled-filtered, slice 015) is read for the
+// filter-narrowed event; the trait brings the method into scope.
+use fragcap::core::FlowAttributor;
 #[cfg(all(feature = "etw", windows))]
 use fragcap::StopReason;
 use fragcap::{
@@ -215,7 +218,16 @@ fn capture_prerecorded(
     }
 
     publisher.publish(session.role_bindings());
-    let endpoints = components.inner_attributor.active_endpoints().len();
+    // The count of endpoints actually narrowed to: the stamper reports only
+    // endpoints owned by profiled processes (slice 015), not the full
+    // socket-table set the inner attributor holds. Offline this is the scripted
+    // set unchanged (those endpoints carry no owner and are kept); live it is
+    // the profiled subset.
+    let endpoints = components
+        .stamper
+        .as_ref()
+        .map(|s| s.active_endpoints().len())
+        .unwrap_or(0);
     emitter.event(&Event::FilterNarrowed { endpoints });
     emitter.progress(&format!("filter narrowed to {endpoints} endpoint(s)"));
 
@@ -434,7 +446,16 @@ fn capture_live(
     }
 
     publisher.publish(session.role_bindings());
-    let endpoints = components.inner_attributor.active_endpoints().len();
+    // The count of endpoints actually narrowed to: the stamper reports only
+    // endpoints owned by profiled processes (slice 015), not the full
+    // socket-table set the inner attributor holds. Offline this is the scripted
+    // set unchanged (those endpoints carry no owner and are kept); live it is
+    // the profiled subset.
+    let endpoints = components
+        .stamper
+        .as_ref()
+        .map(|s| s.active_endpoints().len())
+        .unwrap_or(0);
     emitter.event(&Event::FilterNarrowed { endpoints });
     emitter.progress(&format!("filter narrowed to {endpoints} endpoint(s)"));
 
@@ -485,15 +506,9 @@ fn capture_live(
     // packet forwarder ends.
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
 
-    // Stop the socket-table refresh control thread, if this build has one. The
-    // published index it maintained is no longer read once the pipeline has
-    // ended. It reads only the socket table and never touches the pipeline or
-    // the forwarders, so stopping it here deadlocks against nothing: it observes
-    // the flag within one poll interval and joins.
-    #[cfg(feature = "socket-table")]
-    if let Some(mut driver) = components.refresh_driver.take() {
-        driver.stop();
-    }
+    // Slice 015: the socket-table refresh is driven by the pipeline's own
+    // section 8.6 control thread and ends with the pipeline, so there is no
+    // separate refresh thread to stop here.
 
     // Dropping the watcher stops its ETW session, which disconnects the live
     // receiver and ends the event forwarder. Done before joining so the join

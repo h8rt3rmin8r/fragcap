@@ -236,10 +236,9 @@ pub struct CaptureComponents {
     /// selected interface references a declared one rather than being refused as
     /// undeclared.
     pub interfaces: Vec<(String, LinkType)>,
-    /// The inner attributor, kept for polling active endpoints for the
-    /// filter-narrowed event.
-    pub inner_attributor: Arc<dyn FlowAttributor>,
-    /// The role-stamping decorator handed to the pipeline.
+    /// The role-stamping decorator handed to the pipeline. Slice 015: the
+    /// filter-narrowed event reads its profiled-filtered active endpoints, so the
+    /// unfiltered inner attributor is no longer kept separately.
     pub stamper: Option<RoleStampingAttributor>,
     /// The handle that publishes bindings to the stamper.
     pub publisher: BindingPublisher,
@@ -250,92 +249,14 @@ pub struct CaptureComponents {
     /// drained. `None` on the offline path, which owns no watcher.
     #[cfg(all(feature = "etw", windows))]
     pub watcher: Option<fragcap::EtwWatcher>,
-    /// The socket-table refresh control thread, kept alive for the duration of
-    /// the run so the shared published index the pipeline resolves against is
-    /// refreshed on the section 11.2 cadence. `None` on the offline path and on
-    /// a live build without the socket table, neither of which owns a mutable
-    /// attributor to refresh.
-    #[cfg(all(feature = "socket-table", windows))]
-    pub refresh_driver: Option<RefreshDriver>,
 }
 
-/// A control thread that owns the mutable [`SocketTableAttributor`] and refreshes
-/// it on the specification section 11.2 cadence.
-///
-/// This is the write half of the section 11.6 read/write split. The pipeline
-/// resolves against a [`PublishedResolver`](fragcap::attr::PublishedResolver)
-/// cloned from the same attributor, which shares its published index and its
-/// schedule; this thread reads the real socket table and republishes the index
-/// the resolver reads. `refresh` takes `&mut self`, so the mutable attributor
-/// cannot be shared with the capture threads, which is the whole reason the
-/// mutable side lives here on a thread of its own.
-///
-/// The loop does an initial refresh so the first snapshot is available promptly,
-/// then refreshes whenever the attributor reports it wants one (by the interval
-/// or by a triggered request the resolver recorded), polling on a short
-/// interval. A failed refresh leaves the previously published index intact by
-/// design and is ignored rather than fatal.
-#[cfg(all(feature = "socket-table", windows))]
-pub struct RefreshDriver {
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-/// How often the control thread wakes to check whether a refresh is wanted.
-///
-/// Shorter than the section 11.2 interval so a triggered request (an
-/// unattributed packet on an unseen endpoint) is serviced promptly, and short
-/// enough that a requested stop is observed without a perceptible teardown
-/// delay.
-#[cfg(all(feature = "socket-table", windows))]
-const REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-#[cfg(all(feature = "socket-table", windows))]
-impl RefreshDriver {
-    /// Spawn the control thread, moving the mutable attributor onto it.
-    fn spawn(mut attributor: fragcap::SocketTableAttributor) -> Self {
-        use std::sync::atomic::Ordering;
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_flag = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || {
-            // An initial refresh so the first snapshot is available promptly,
-            // rather than the pipeline resolving against an empty index until
-            // the first interval elapses. A failure leaves the empty index in
-            // place, which the next iteration retries.
-            let _ = attributor.refresh();
-            while !stop_flag.load(Ordering::Relaxed) {
-                if attributor.wants_refresh() {
-                    // A failed read leaves the previously published index intact
-                    // by design (specification section 11, FR-030), so ignoring
-                    // the error is correct rather than lossy.
-                    let _ = attributor.refresh();
-                }
-                std::thread::sleep(REFRESH_POLL_INTERVAL);
-            }
-        });
-        RefreshDriver {
-            stop,
-            handle: Some(handle),
-        }
-    }
-
-    /// Signal the control thread to stop and join it. Idempotent: a second call,
-    /// including the one in [`Drop`], finds the handle already taken and returns.
-    pub fn stop(&mut self) {
-        use std::sync::atomic::Ordering;
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-#[cfg(all(feature = "socket-table", windows))]
-impl Drop for RefreshDriver {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
+// Slice 015 removed `RefreshDriver`. `FlowAttributor::refresh` now takes `&self`,
+// so the socket-table refresh is driven by the pipeline's own section 8.6
+// control thread through the shared `Arc<dyn FlowAttributor>` the capture threads
+// resolve against, rather than by a separate control thread here that owned a
+// mutable attributor. The read/write split (`PublishedResolver`) is no longer
+// needed on this path either.
 
 /// Assemble the capture components.
 ///
@@ -392,14 +313,11 @@ fn offline_components(
     Ok(CaptureComponents {
         sources,
         interfaces,
-        inner_attributor: inner,
         stamper: Some(stamper),
         publisher,
         events: EventStream::Prerecorded(events),
         #[cfg(all(feature = "etw", windows))]
         watcher: None,
-        #[cfg(all(feature = "socket-table", windows))]
-        refresh_driver: None,
     })
 }
 
@@ -475,16 +393,16 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
             return Err(CliError::failure("no interface was opened for capture"));
         }
 
-        // The inner attributor the pipeline resolves against, and, on the
-        // socket-table path, the control thread that keeps its published index
-        // current. The read side (a PublishedResolver) is handed to the
-        // pipeline; the write side (the mutable SocketTableAttributor) is moved
-        // onto the RefreshDriver, so a &mut refresh never crosses the capture
-        // threads. Without the socket table, an empty scripted attributor and no
-        // driver: packets are retained unattributed rather than having an owner
-        // fabricated (P-4 permits the first, P-9 forbids the second).
+        // The inner attributor the pipeline resolves against. Slice 015: with
+        // `refresh(&self)` the pipeline shares and refreshes the real socket-table
+        // attributor directly through the shared `Arc<dyn FlowAttributor>` its
+        // section 8.6 control thread drives, so there is no separate refresh
+        // thread and no read/write split to clone. Without the socket table, an
+        // empty scripted attributor: packets are retained unattributed rather
+        // than having an owner fabricated (P-4 permits the first, P-9 forbids the
+        // second).
         #[cfg(feature = "socket-table")]
-        let (inner, refresh_driver): (Arc<dyn FlowAttributor>, Option<RefreshDriver>) = {
+        let inner: Arc<dyn FlowAttributor> = {
             use fragcap::attr::{IpHelperTable, ToolhelpNamer};
             use fragcap::{AttributorConfig, Clock, SocketTableAttributor, SystemClock};
             let attributor = SocketTableAttributor::new(
@@ -493,9 +411,7 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
                 Arc::new(SystemClock) as Arc<dyn Clock>,
                 AttributorConfig::default(),
             );
-            let inner: Arc<dyn FlowAttributor> = Arc::new(attributor.resolver());
-            let driver = RefreshDriver::spawn(attributor);
-            (inner, Some(driver))
+            Arc::new(attributor)
         };
         #[cfg(not(feature = "socket-table"))]
         let inner: Arc<dyn FlowAttributor> = Arc::new(ScriptedAttributor::new(
@@ -514,13 +430,10 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
         Ok(CaptureComponents {
             sources,
             interfaces,
-            inner_attributor: inner,
             stamper: Some(stamper),
             publisher,
             events: EventStream::Live(rx),
             watcher: Some(watcher),
-            #[cfg(feature = "socket-table")]
-            refresh_driver,
         })
     }
 }
@@ -745,7 +658,7 @@ mod tests {
         use fragcap::core::FlowAttributor;
         use fragcap::{AttributorConfig, Clock, SocketTableAttributor, SystemClock};
 
-        let mut attributor = SocketTableAttributor::new(
+        let attributor = SocketTableAttributor::new(
             Box::new(IpHelperTable::new()),
             Box::new(ToolhelpNamer::new()),
             Arc::new(SystemClock) as Arc<dyn Clock>,
