@@ -41,11 +41,32 @@ a process holds and again on every packet of every flow it owns.
 
 ### `RetentionMap`
 
-`HashMap<Endpoint, RetainedEntry>`, where a `RetainedEntry` carries the owner,
-the process identifier, the socket's creation instant, and `last_seen`, the
-instant the endpoint was last observed present in a table. FR-018a measures the
-grace period from `last_seen` and not from the refresh that noticed the
-absence.
+`HashMap<RetainedKey, RetainedEntry>`, where a `RetainedEntry` carries the whole
+table row, `last_seen` (the instant the socket was last observed present), and
+the image name captured while it was live.
+
+**Keyed by socket identity, not by endpoint**, and the review of pull request 13
+is why. An endpoint is a protocol, an address, and a port, and several sockets
+can occupy one: a server holds a row per client on a single local port, and a
+reused port is two sockets in sequence. Keying by endpoint kept exactly one of
+them, chosen by whichever row the platform reported last. `RetainedKey` is the
+protocol, local endpoint, remote endpoint, and owning identifier.
+
+**Carrying the whole row, not a summary**, for the same reason. Retention
+resolves through the same `rank_of` and the same ordering as the live path, so a
+socket bound to a wildcard address is matched by the concrete local addresses it
+matched while live. The first version stored a summary and looked up the
+packet's own address, so wildcard binds became unresolvable the moment they
+closed.
+
+**Carrying a captured name.** The owning process may have exited, in which case
+a later enumeration finds nothing and a name once known is lost; or the platform
+may have reused the identifier, in which case a later enumeration finds a
+different process and would attach its name to this connection. Neither is
+acceptable under P-9, so the name is captured while live and never re-resolved.
+
+FR-018a measures the grace period from `last_seen` and not from the refresh that
+noticed the absence.
 
 ### `AttributionIndex`
 

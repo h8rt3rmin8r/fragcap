@@ -115,6 +115,29 @@ struct Candidate<'a> {
     rank: MatchRank,
 }
 
+/// An attribution for an observed identifier, named if a name was known.
+///
+/// A free function rather than a method, because the retained path takes its
+/// name from the retained record and the live path takes it from the current
+/// name map, and neither should be able to reach the other's source by
+/// accident.
+fn attribution(pid: u32, name: Option<Arc<str>>, fidelity: Fidelity) -> Attribution {
+    match name {
+        Some(name) => Attribution {
+            pid,
+            process: name,
+            role: None,
+            stage: None,
+            fidelity,
+        },
+        // No name was resolved. The attribution is produced anyway, carrying
+        // the identifier, because the identifier is what was observed.
+        // Constitution P-9 and requirement FR-032: reporting nothing here would
+        // discard an observation because a convenience could not be supplied.
+        None => Attribution::new(pid, "", fidelity),
+    }
+}
+
 /// The total order over candidates. Smaller is better.
 ///
 /// Three terms, applied in order:
@@ -141,23 +164,67 @@ fn better(a: &Candidate<'_>, b: &Candidate<'_>) -> std::cmp::Ordering {
         (None, None) => Ordering::Equal,
     };
     match by_created {
-        Ordering::Equal => a.entry.pid.cmp(&b.entry.pid),
+        Ordering::Equal => {}
+        other => return other,
+    }
+    match a.entry.pid.cmp(&b.entry.pid) {
+        // Both arbitrary, and both here only so the order is total. The remote
+        // is the last discriminator two otherwise identical rows can have, and
+        // it matters because retained candidates are iterated from a hash map:
+        // an order that merely happens to be total in practice would leave the
+        // answer dependent on hash iteration order in the case where it is not.
+        Ordering::Equal => a.entry.remote.cmp(&b.entry.remote),
         other => other,
     }
 }
 
-/// An endpoint that has left the table but is still resolvable.
+/// The identity of one socket, for retention purposes.
+///
+/// Not the endpoint. An endpoint is a protocol, an address, and a port, and
+/// several sockets can occupy one: a server holds a row per client on a single
+/// local port, and a reused port is two sockets in sequence. Keying retention
+/// by endpoint would keep exactly one of them, chosen by whichever row the
+/// platform happened to report last, and lose the rest.
+///
+/// The remote participates so that concurrent TCP connections on one local port
+/// are distinct. The owner participates so that a port reused by a different
+/// process is two records rather than one overwriting the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RetainedKey {
+    pub proto: Proto,
+    pub local: SocketAddr,
+    pub remote: Option<SocketAddr>,
+    pub pid: u32,
+}
+
+impl RetainedKey {
+    pub fn of(entry: &SocketTableEntry) -> Self {
+        RetainedKey {
+            proto: entry.proto,
+            local: entry.local,
+            remote: entry.remote,
+            pid: entry.pid,
+        }
+    }
+}
+
+/// A socket that has left the table but is still resolvable.
 ///
 /// Specification section 11.4. Retention exists because capture and socket
 /// table observation are not synchronized: a connection closing produces final
 /// packets processed after the socket has gone, and discarding attribution at
 /// that instant would leave the tail of every connection unattributed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Carries the whole table row rather than a summary of it. That is what lets
+/// retention resolve by exactly the rules the live path uses, including the
+/// wildcard and dual-stack allowances: a socket bound to `0.0.0.0:30000` is
+/// retained under that bind, and a packet on `192.0.2.10:30000` has to reach it
+/// through the same matcher that reached it while the socket was live.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedEntry {
-    pub pid: u32,
-    pub created: Option<Timestamp>,
-    pub remote: Option<SocketAddr>,
-    /// When this endpoint was last observed *present* in a table.
+    /// The row as the table last reported it.
+    pub entry: SocketTableEntry,
+    /// When this socket was last observed *present* in a table.
     ///
     /// Not the instant of the refresh that noticed it gone. Those differ by up
     /// to one interval, and measuring from the later one would make a thirty
@@ -165,10 +232,26 @@ pub struct RetainedEntry {
     /// marked risk of being wrong, and quietly widening the window that
     /// produces them widens that risk without saying so.
     pub last_seen: Timestamp,
+    /// The image name as it was known while the socket was live.
+    ///
+    /// Captured rather than looked up later, and this is load-bearing twice
+    /// over. A process that has exited is no longer in an enumeration, so a
+    /// later lookup would find nothing and the retained attribution would lose
+    /// a name it once had. Worse, the platform reuses process identifiers, so a
+    /// later lookup could find a *different* process and attach its name to
+    /// this connection, which is a confidently wrong report of the kind
+    /// constitution P-9 exists to prevent.
+    pub name: Option<Arc<str>>,
 }
 
-/// Endpoints that have left the table, with their last known owner.
-pub type RetentionMap = HashMap<Endpoint, RetainedEntry>;
+impl RetainedEntry {
+    pub fn key(&self) -> RetainedKey {
+        RetainedKey::of(&self.entry)
+    }
+}
+
+/// Sockets that have left the table, with their last known owner and name.
+pub type RetentionMap = HashMap<RetainedKey, RetainedEntry>;
 
 /// The published value a lookup reads.
 ///
@@ -217,58 +300,53 @@ impl AttributionIndex {
         // retention is inference, and the case where they disagree is exactly
         // the port-reuse case where the inference is wrong.
         if let Some(entry) = self.best_live(key, at) {
-            return Some(self.attribution(entry.pid, Fidelity::Live));
+            let name = self.names.get(&entry.pid).cloned();
+            return Some(attribution(entry.pid, name, Fidelity::Live));
         }
+        // The retained answer takes its name from the record rather than from
+        // the current name map, because the process may be gone and its
+        // identifier may already belong to something else.
         self.best_retained(key, at)
-            .map(|r| self.attribution(r.pid, Fidelity::Retained))
+            .map(|r| attribution(r.entry.pid, r.name.clone(), Fidelity::Retained))
     }
 
-    /// Whether the index carries any entry, live or retained, on this key's
-    /// local endpoint.
+    /// Whether the index carries any socket, live or retained, that this flow
+    /// could match.
     ///
     /// Requirement FR-014: an unresolved lookup on an endpoint the index does
     /// not carry is what triggers a refresh, and a lookup on an endpoint the
     /// index does carry is a flow that is simply not attributable, which
     /// triggers nothing.
+    ///
+    /// Asked through the same matcher both resolution paths use, so a wildcard
+    /// bind counts as carrying the flows it would answer for.
     pub fn carries(&self, key: &FlowKey) -> bool {
-        let endpoint = Endpoint::new(key.attribution_key().local(), key.proto);
-        if self.retained.contains_key(&endpoint) {
-            return true;
-        }
         self.table
             .entries()
             .iter()
             .any(|e| rank_of(e, key).is_some())
+            || self
+                .retained
+                .values()
+                .any(|r| rank_of(&r.entry, key).is_some())
     }
 
     /// Every endpoint believed active at `at`: those in the table, plus those
     /// still inside the retention window. Requirement FR-023.
+    ///
+    /// Sorted, because the retained half is iterated from a hash map and a
+    /// report whose order changes between runs over identical state is a report
+    /// that cannot be diffed.
     pub fn endpoints(&self, at: Timestamp) -> Vec<Endpoint> {
         let mut out: Vec<Endpoint> = self.table.entries().iter().map(|e| e.endpoint()).collect();
-        for (endpoint, r) in self.retained.iter() {
-            if self.within_retention(r, at) && !out.contains(endpoint) {
-                out.push(*endpoint);
+        for r in self.retained.values() {
+            let endpoint = r.entry.endpoint();
+            if self.within_retention(r, at) && !out.contains(&endpoint) {
+                out.push(endpoint);
             }
         }
+        out.sort_by_key(|e| (e.proto, e.addr));
         out
-    }
-
-    fn attribution(&self, pid: u32, fidelity: Fidelity) -> Attribution {
-        match self.names.get(&pid) {
-            Some(name) => Attribution {
-                pid,
-                process: Arc::clone(name),
-                role: None,
-                stage: None,
-                fidelity,
-            },
-            // No name was resolved. The attribution is produced anyway,
-            // carrying the identifier, because the identifier is what was
-            // observed. Constitution P-9 and requirement FR-032: reporting
-            // nothing here would discard an observation because a convenience
-            // could not be supplied.
-            None => Attribution::new(pid, "", fidelity),
-        }
     }
 
     fn best_live(&self, key: &FlowKey, at: Timestamp) -> Option<&SocketTableEntry> {
@@ -281,29 +359,54 @@ impl AttributionIndex {
             .map(|c| c.entry)
     }
 
+    /// The best retained socket for this flow, by exactly the rules the live
+    /// path uses.
+    ///
+    /// This deliberately mirrors [`Self::best_live`] rather than implementing a
+    /// simpler lookup, and the review of pull request 13 is why. The first
+    /// version keyed retention by endpoint and looked up the packet's own local
+    /// address, which quietly did two wrong things. A socket bound to a
+    /// wildcard address was retained under the wildcard and looked up under the
+    /// concrete address, so every flow that resolved through the section 8.4
+    /// wildcard allowance while live became unattributable the instant the
+    /// socket closed, which is the whole class of UDP game sockets. And a local
+    /// endpoint held by more than one socket kept only whichever row the
+    /// platform reported last, so the tails of the others were lost and the
+    /// creation-time ordering that FR-008a establishes did not survive into
+    /// retention at all.
+    ///
+    /// Retention differs from the live table in two ways and no others: the
+    /// answer is marked `Retained`, and an entry past its grace period is not a
+    /// candidate.
     fn best_retained(&self, key: &FlowKey, at: Timestamp) -> Option<&RetainedEntry> {
-        let endpoint = Endpoint::new(key.attribution_key().local(), key.proto);
-        let r = self.retained.get(&endpoint)?;
-        if !self.within_retention(r, at) {
-            return None;
-        }
-        if !Self::existed_by(r.created, at) {
-            return None;
-        }
-        // A retained TCP entry still has to agree on the remote, when it
-        // recorded one. The flow's identity is both endpoints for TCP, and a
-        // retained entry that answered about any peer would be a broader claim
-        // than the live path makes.
-        if key.proto == Proto::Tcp {
-            if let (Some(recorded), AttributionKey::Pair(_, remote)) =
-                (r.remote, key.attribution_key())
-            {
-                if recorded != remote {
-                    return None;
+        let mut best: Option<(&RetainedEntry, MatchRank)> = None;
+        for r in self.retained.values() {
+            if !self.within_retention(r, at) || !Self::existed_by(r.entry.created, at) {
+                continue;
+            }
+            let rank = match rank_of(&r.entry, key) {
+                Some(rank) => rank,
+                None => continue,
+            };
+            let candidate = Candidate {
+                entry: &r.entry,
+                rank,
+            };
+            let replace = match best {
+                None => true,
+                Some((current, current_rank)) => {
+                    let incumbent = Candidate {
+                        entry: &current.entry,
+                        rank: current_rank,
+                    };
+                    better(&candidate, &incumbent) == std::cmp::Ordering::Less
                 }
+            };
+            if replace {
+                best = Some((r, rank));
             }
         }
-        Some(r)
+        best.map(|(r, _)| r)
     }
 
     fn within_retention(&self, r: &RetainedEntry, at: Timestamp) -> bool {
@@ -689,25 +792,34 @@ mod tests {
 
     // --- FR-018 through FR-022: retention and fidelity -------------------
 
-    fn retained_index(r: RetainedEntry, endpoint: Endpoint) -> AttributionIndex {
+    /// A retained record for one table row, last seen at `last_seen`.
+    fn retained(entry: SocketTableEntry, last_seen: i64, name: Option<&str>) -> RetainedEntry {
+        RetainedEntry {
+            entry,
+            last_seen: at(last_seen),
+            name: name.map(Arc::from),
+        }
+    }
+
+    /// An index holding only retained records, with a thirty nanosecond window.
+    fn retained_index(entries: Vec<RetainedEntry>) -> AttributionIndex {
         let mut map = RetentionMap::new();
-        map.insert(endpoint, r);
+        for r in entries {
+            map.insert(r.key(), r);
+        }
         AttributionIndex::new(SocketTable::empty(at(0)), HashMap::new(), map, 30)
     }
 
     #[test]
     fn a_retained_endpoint_resolves_and_is_marked_retained() {
-        let i = retained_index(
-            RetainedEntry {
-                pid: 5,
-                created: None,
-                remote: None,
-                last_seen: at(100),
-            },
-            Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp),
-        );
+        let i = retained_index(vec![retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5),
+            100,
+            Some("g.exe"),
+        )]);
         let a = i.resolve(&udp_key(), at(110)).expect("inside the window");
         assert_eq!(a.pid, 5);
+        assert_eq!(&*a.process, "g.exe");
         assert_eq!(
             a.fidelity,
             Fidelity::Retained,
@@ -717,15 +829,11 @@ mod tests {
 
     #[test]
     fn a_retained_endpoint_expires() {
-        let i = retained_index(
-            RetainedEntry {
-                pid: 5,
-                created: None,
-                remote: None,
-                last_seen: at(100),
-            },
-            Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp),
-        );
+        let i = retained_index(vec![retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5),
+            100,
+            None,
+        )]);
         assert!(i.resolve(&udp_key(), at(129)).is_some(), "just inside");
         assert_eq!(i.resolve(&udp_key(), at(130)), None, "at the boundary");
         assert_eq!(i.resolve(&udp_key(), at(500)), None, "well past");
@@ -733,16 +841,13 @@ mod tests {
 
     #[test]
     fn a_live_entry_beats_a_retained_one() {
-        let mut map = RetentionMap::new();
-        map.insert(
-            Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp),
-            RetainedEntry {
-                pid: 5,
-                created: None,
-                remote: None,
-                last_seen: at(100),
-            },
+        let old = retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5),
+            100,
+            Some("old.exe"),
         );
+        let mut map = RetentionMap::new();
+        map.insert(old.key(), old);
         let i = AttributionIndex::new(
             SocketTable::new(
                 at(110),
@@ -759,17 +864,11 @@ mod tests {
 
     #[test]
     fn a_retained_tcp_entry_still_has_to_agree_on_the_remote() {
-        let mut map = RetentionMap::new();
-        map.insert(
-            Endpoint::new(addr("192.0.2.10:51000"), Proto::Tcp),
-            RetainedEntry {
-                pid: 5,
-                created: None,
-                remote: Some(addr("203.0.113.9:443")),
-                last_seen: at(100),
-            },
-        );
-        let i = AttributionIndex::new(SocketTable::empty(at(0)), HashMap::new(), map, 30);
+        let i = retained_index(vec![retained(
+            SocketTableEntry::tcp(addr("192.0.2.10:51000"), addr("203.0.113.9:443"), 5),
+            100,
+            None,
+        )]);
         assert_eq!(
             i.resolve(&tcp_key(), at(110)),
             None,
@@ -779,17 +878,146 @@ mod tests {
 
     #[test]
     fn a_retained_socket_created_after_the_packet_still_does_not_match() {
-        let i = retained_index(
-            RetainedEntry {
-                pid: 5,
-                created: Some(at(200)),
-                remote: None,
-                last_seen: at(210),
-            },
-            Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp),
-        );
+        let i = retained_index(vec![retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5).created_at(at(200)),
+            210,
+            None,
+        )]);
         assert_eq!(i.resolve(&udp_key(), at(150)), None);
         assert!(i.resolve(&udp_key(), at(215)).is_some());
+    }
+
+    // --- Review of pull request 13: retention resolves like the live path ---
+
+    // A wildcard bind is retained under the wildcard and asked about under a
+    // concrete address. The first version keyed retention by endpoint and
+    // looked up the packet's own local address, so every UDP socket bound to
+    // `0.0.0.0` became unattributable the instant it closed. That is the whole
+    // class of game sockets, and the tail of every one of their flows.
+    #[test]
+    fn a_retained_wildcard_bind_still_matches_a_concrete_local_address() {
+        for bind in ["0.0.0.0:30000", "[::]:30000"] {
+            let i = retained_index(vec![retained(
+                SocketTableEntry::udp(addr(bind), 9),
+                100,
+                Some("g.exe"),
+            )]);
+            let a = i
+                .resolve(&udp_key(), at(110))
+                .unwrap_or_else(|| panic!("{bind} must still match while retained"));
+            assert_eq!(a.pid, 9, "{bind}");
+            assert_eq!(a.fidelity, Fidelity::Retained, "{bind}");
+        }
+    }
+
+    // The live path and the retained path agree on which socket owns a flow.
+    // If they can disagree, a connection changes owner at the instant its
+    // socket closes, which is a fabricated event.
+    #[test]
+    fn retention_answers_exactly_what_the_live_table_would_have() {
+        let entries = vec![
+            SocketTableEntry::udp(addr("[::]:30000"), 40),
+            SocketTableEntry::udp(addr("0.0.0.0:30000"), 30),
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 20).created_at(at(50)),
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 25).created_at(at(60)),
+        ];
+        let live = index(entries.clone(), &[]).resolve(&udp_key(), at(100));
+        let retained_answer = retained_index(
+            entries
+                .iter()
+                .map(|e| retained(*e, 99, None))
+                .collect::<Vec<_>>(),
+        )
+        .resolve(&udp_key(), at(100));
+
+        assert_eq!(live.as_ref().map(|a| a.pid), Some(25));
+        assert_eq!(
+            retained_answer.as_ref().map(|a| a.pid),
+            live.as_ref().map(|a| a.pid),
+            "retention must rank candidates the way the live table does"
+        );
+        assert_eq!(retained_answer.unwrap().fidelity, Fidelity::Retained);
+    }
+
+    // Several sockets on one local endpoint. A server holds a row per client on
+    // a single port, and keying retention by endpoint kept whichever the
+    // platform reported last, losing every other connection's tail.
+    #[test]
+    fn concurrent_connections_on_one_local_port_are_retained_separately() {
+        let local = addr("192.0.2.10:443");
+        let peers = ["198.51.100.5:51000", "198.51.100.6:51001", "203.0.113.9:9"];
+        let i = retained_index(
+            peers
+                .iter()
+                .enumerate()
+                .map(|(n, peer)| {
+                    retained(
+                        SocketTableEntry::tcp(local, addr(peer), 100 + n as u32),
+                        100,
+                        None,
+                    )
+                })
+                .collect(),
+        );
+
+        for (n, peer) in peers.iter().enumerate() {
+            let key = FlowKey::new(Proto::Tcp, local, addr(peer));
+            let a = i
+                .resolve(&key, at(110))
+                .unwrap_or_else(|| panic!("the tail of the connection to {peer} must resolve"));
+            assert_eq!(a.pid, 100 + n as u32, "{peer}");
+        }
+    }
+
+    // A name known while the socket was live survives into retention, and is
+    // not replaced by whatever the identifier belongs to afterwards.
+    #[test]
+    fn a_retained_record_keeps_the_name_it_was_captured_with() {
+        let mut map = RetentionMap::new();
+        let r = retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5),
+            100,
+            Some("the-game.exe"),
+        );
+        map.insert(r.key(), r);
+        // The name map now says identifier 5 is something else entirely, which
+        // is what an enumeration reports after the platform reuses it.
+        let i = AttributionIndex::new(
+            SocketTable::empty(at(0)),
+            names(&[(5, "some-other-process.exe")]),
+            map,
+            30,
+        );
+        let a = i.resolve(&udp_key(), at(110)).expect("retained");
+        assert_eq!(
+            &*a.process, "the-game.exe",
+            "a recycled identifier must not rename a closed connection"
+        );
+    }
+
+    #[test]
+    fn a_retained_record_with_no_captured_name_still_attributes() {
+        let i = retained_index(vec![retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 4242),
+            100,
+            None,
+        )]);
+        let a = i.resolve(&udp_key(), at(110)).expect("retained");
+        assert_eq!(a.pid, 4242, "the identifier is what was observed");
+        assert_eq!(&*a.process, "");
+    }
+
+    #[test]
+    fn carries_sees_a_retained_wildcard_bind() {
+        let i = retained_index(vec![retained(
+            SocketTableEntry::udp(addr("0.0.0.0:30000"), 9),
+            100,
+            None,
+        )]);
+        assert!(
+            i.carries(&udp_key()),
+            "a retained wildcard bind covers this flow, so it is not an unseen endpoint"
+        );
     }
 
     // --- FR-023, FR-014 --------------------------------------------------
@@ -797,15 +1025,12 @@ mod tests {
     #[test]
     fn endpoints_reports_current_plus_retained() {
         let mut map = RetentionMap::new();
-        map.insert(
-            Endpoint::new(addr("192.0.2.99:1234"), Proto::Tcp),
-            RetainedEntry {
-                pid: 5,
-                created: None,
-                remote: None,
-                last_seen: at(100),
-            },
+        let r = retained(
+            SocketTableEntry::tcp_listening(addr("192.0.2.99:1234"), 5),
+            100,
+            None,
         );
+        map.insert(r.key(), r);
         let i = AttributionIndex::new(
             SocketTable::new(
                 at(100),
@@ -815,8 +1040,7 @@ mod tests {
             map,
             30,
         );
-        let mut got = i.endpoints(at(110));
-        got.sort_by_key(|e| e.addr.port());
+        let got = i.endpoints(at(110));
         assert_eq!(got.len(), 2);
         assert!(got.contains(&Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp)));
         assert!(got.contains(&Endpoint::new(addr("192.0.2.99:1234"), Proto::Tcp)));
@@ -855,15 +1079,12 @@ mod tests {
     #[test]
     fn a_retention_of_zero_makes_an_absent_endpoint_immediately_unresolvable() {
         let mut map = RetentionMap::new();
-        map.insert(
-            Endpoint::new(addr("192.0.2.10:30000"), Proto::Udp),
-            RetainedEntry {
-                pid: 5,
-                created: None,
-                remote: None,
-                last_seen: at(100),
-            },
+        let r = retained(
+            SocketTableEntry::udp(addr("192.0.2.10:30000"), 5),
+            100,
+            None,
         );
+        map.insert(r.key(), r);
         let i = AttributionIndex::new(SocketTable::empty(at(0)), HashMap::new(), map, 0);
         assert_eq!(i.resolve(&udp_key(), at(100)), None);
         assert_eq!(i.resolve(&udp_key(), at(101)), None);

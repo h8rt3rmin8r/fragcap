@@ -410,6 +410,11 @@ Windows-only build inputs.
   snapshot MUST request a refresh.
 - **FR-015**: Refresh requests arising from FR-014 MUST be rate limited to at
   most one per two hundred milliseconds, and the limit MUST be configurable.
+  The limit MUST hold under concurrent requests from several capture threads:
+  exactly one caller may claim each window.
+- **FR-015a**: A refresh MUST NOT discard a request recorded against the index
+  that refresh published. Where the two cannot be distinguished, an extra
+  refresh is preferred to a missed one.
 - **FR-016**: The rate limit MUST NOT apply to requests arising from FR-013.
 - **FR-017**: A lookup MUST NOT read the socket table, enumerate a process, or
   open a handle. Requesting a refresh records a request and performs none of
@@ -425,6 +430,17 @@ Windows-only build inputs.
 - **FR-018a**: The grace period MUST be measured from the instant the endpoint
   was last observed present in a table, and MUST NOT be measured from the
   refresh that first observed its absence.
+- **FR-018b**: Retention MUST resolve a flow by the same matching rules and the
+  same order as the current table, including the wildcard and dual-stack
+  allowances of FR-007. A socket retained under a wildcard bind MUST still match
+  the concrete local addresses it matched while live.
+- **FR-018c**: Retention MUST record every socket separately rather than one per
+  endpoint. Several sockets can occupy one local endpoint, and keeping only one
+  would discard the others' attribution when they close.
+- **FR-018d**: A retained record MUST carry the image name resolved while the
+  socket was live, and that name MUST NOT be re-resolved from the process
+  identifier afterwards. The owning process may have exited, and the platform
+  reuses identifiers.
 - **FR-019**: An answer resolved from a retained endpoint MUST carry fidelity
   `Retained`; an answer resolved from the current table MUST carry `Live`.
 - **FR-020**: A live entry MUST take precedence over a retained entry for the
@@ -554,6 +570,19 @@ Windows-only build inputs.
 - **SC-014**: A table whose rows are presented in a different order produces an
   identical answer for every flow, verified by resolving against the same
   declared entries permuted.
+- **SC-016**: A socket bound to a wildcard address, including an IPv6 wildcard
+  answering IPv4 traffic, resolves the same flows after it leaves the table as
+  it did while present, differing only in fidelity.
+- **SC-017**: Given the same set of sockets, the retained path and the live path
+  select the same owner for a flow. A connection does not change owner at the
+  instant its socket closes.
+- **SC-018**: Several concurrent connections sharing one local endpoint each
+  resolve to their own owner after all of them close.
+- **SC-019**: An image name known while a socket was live survives the exit of
+  the process that held it, and is not replaced when the platform reuses that
+  process identifier.
+- **SC-020**: Under concurrent requests from several threads, exactly one is
+  accepted per rate-limit window.
 - **SC-015**: No lookup reads the socket table, enumerates a process, or opens
   a handle. Every name, owner, and instant a lookup can return is present in
   the published snapshot before the lookup begins. The one exception is the

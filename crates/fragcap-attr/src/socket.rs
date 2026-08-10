@@ -37,7 +37,7 @@ use fragcap_core::flow::{Endpoint, FlowKey};
 use fragcap_core::packet::Timestamp;
 use fragcap_core::traits::FlowAttributor;
 
-use crate::index::{AttributionIndex, PublishedIndex, RetainedEntry, RetentionMap};
+use crate::index::{AttributionIndex, PublishedIndex, RetainedEntry, RetainedKey, RetentionMap};
 use crate::schedule::RefreshSchedule;
 use crate::seam::{Clock, ProcessNamer, SocketTableSource};
 
@@ -183,43 +183,69 @@ impl FlowAttributor for SocketTableAttributor {
     fn refresh(&mut self) -> Result<(), AttrError> {
         let table = self.source.read()?;
         let taken_at = table.taken_at();
-
-        // Age the retention map against the new table, before adding to it, so
-        // that an endpoint present in both is refreshed rather than expired.
         let retention = nanos(self.config.retention);
-        self.retained
-            .retain(|_, r| taken_at.nanos_since(r.last_seen) < retention);
 
-        // Every endpoint the table reports is present now, so it either leaves
-        // the retention map or has its last-seen instant renewed. Renewing
-        // rather than removing is what makes FR-018a's origin correct: the
-        // grace period runs from the last instant the endpoint was observed
-        // present, not from the refresh that first noticed it gone.
-        for entry in table.entries() {
-            self.retained.insert(
-                entry.endpoint(),
-                RetainedEntry {
-                    pid: entry.pid,
-                    created: entry.created,
-                    remote: entry.remote,
-                    last_seen: taken_at,
-                },
-            );
-        }
-
+        // Names for the identifiers this table reports, and only those.
+        //
+        // Retained records are deliberately not re-queried. Their process may
+        // have exited, in which case an enumeration returns nothing and a name
+        // once known would be lost; or the platform may have reused the
+        // identifier, in which case an enumeration returns a different
+        // process's name and attaching it here would report a connection as
+        // belonging to something that never opened it. Each record keeps the
+        // name it was captured with instead. Found by review of pull request
+        // 13.
         let mut pids: Vec<u32> = table.entries().iter().map(|e| e.pid).collect();
-        pids.extend(self.retained.values().map(|r| r.pid));
         pids.sort_unstable();
         pids.dedup();
         let names = self.namer.names(&pids);
 
+        // Age the retention map against the new table, before adding to it, so
+        // that a socket present in both is refreshed rather than expired.
+        self.retained
+            .retain(|_, r| taken_at.nanos_since(r.last_seen) < retention);
+
+        // Every row the table reports is present now, so it either enters the
+        // retention map or has its last-seen instant renewed. Renewing rather
+        // than removing is what makes FR-018a's origin correct: the grace
+        // period runs from the last instant the socket was observed present,
+        // not from the refresh that first noticed it gone.
+        for entry in table.entries() {
+            let key = RetainedKey::of(entry);
+            // A name resolved now wins; failing that, whatever this socket was
+            // already known by is kept rather than dropped.
+            let name = names
+                .get(&entry.pid)
+                .cloned()
+                .or_else(|| self.retained.get(&key).and_then(|r| r.name.clone()));
+            self.retained.insert(
+                key,
+                RetainedEntry {
+                    entry: *entry,
+                    last_seen: taken_at,
+                    name,
+                },
+            );
+        }
+
+        // Marked before the index is published, not after, and the order is
+        // load-bearing. Publishing first opens a window in which a capture
+        // thread reads the new index, finds an endpoint it still does not
+        // carry, and records a request that this call would then erase; because
+        // recording it also consumed the rate-limit window, nothing could
+        // re-arm the request for the next two hundred milliseconds and a
+        // short-lived flow would stay unattributed until the next periodic
+        // refresh. Marking first can instead leave a request that this
+        // publication happens to satisfy, which costs one extra table read.
+        // An extra read is cheap; a missed one loses attribution. Found by
+        // review of pull request 13.
+        self.schedule.mark_refreshed(self.clock.now());
         self.published.publish(AttributionIndex::new(
             table,
             names,
             self.retained.clone(),
             retention,
         ));
-        self.schedule.mark_refreshed(self.clock.now());
         Ok(())
     }
 
@@ -290,6 +316,67 @@ mod tests {
     struct Fixture {
         attributor: SocketTableAttributor,
         clock: Arc<TestClock>,
+    }
+
+    /// Knows a name once, then forgets it. What an enumeration does when the
+    /// process it named has exited.
+    struct ForgetfulNamer {
+        pid: u32,
+        name: &'static str,
+        asked: bool,
+    }
+
+    impl ForgetfulNamer {
+        fn knowing(pid: u32, name: &'static str) -> Self {
+            ForgetfulNamer {
+                pid,
+                name,
+                asked: false,
+            }
+        }
+    }
+
+    impl crate::seam::ProcessNamer for ForgetfulNamer {
+        fn names(&mut self, pids: &[u32]) -> HashMap<u32, Arc<str>> {
+            let mut out = HashMap::new();
+            if !self.asked && pids.contains(&self.pid) {
+                out.insert(self.pid, Arc::from(self.name));
+            }
+            self.asked = true;
+            out
+        }
+    }
+
+    /// Reports one name, then a different one for the same identifier. What an
+    /// enumeration does after the platform reuses a process identifier.
+    struct RenamingNamer {
+        pid: u32,
+        first: &'static str,
+        second: &'static str,
+        asked: bool,
+    }
+
+    impl RenamingNamer {
+        fn new(pid: u32, first: &'static str, second: &'static str) -> Self {
+            RenamingNamer {
+                pid,
+                first,
+                second,
+                asked: false,
+            }
+        }
+    }
+
+    impl crate::seam::ProcessNamer for RenamingNamer {
+        fn names(&mut self, pids: &[u32]) -> HashMap<u32, Arc<str>> {
+            let name = if self.asked { self.second } else { self.first };
+            self.asked = true;
+            let mut out = HashMap::new();
+            if pids.contains(&self.pid) {
+                out.insert(self.pid, Arc::from(name));
+            }
+            out
+        }
     }
 
     fn fixture(tables: Vec<Result<SocketTable, AttrError>>, named: &[(u32, &str)]) -> Fixture {
@@ -603,6 +690,104 @@ mod tests {
             Fidelity::Retained
         );
         assert_eq!(seam.active_endpoints().len(), 1);
+    }
+
+    // --- Review of pull request 13 ---------------------------------------
+
+    // A process that exits keeps the name it was known by while it held the
+    // socket. The first version re-queried every retained identifier on each
+    // refresh, so a name was lost the moment the process was gone from the
+    // enumeration, and the tail of every connection went out unnamed.
+    #[test]
+    fn a_name_survives_the_process_that_owned_the_socket() {
+        let clock = Arc::new(TestClock::at(at(0)));
+        let mut attributor = SocketTableAttributor::new(
+            Box::new(DeclaredTable::sequence(vec![
+                Ok(one_entry(1_000, 5)),
+                Ok(SocketTable::empty(at(2_000))),
+            ])),
+            // The namer knows the process on the first refresh and forgets it
+            // afterwards, which is what an enumeration does once it exits.
+            Box::new(ForgetfulNamer::knowing(5, "the-game.exe")),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            AttributorConfig::default(),
+        );
+
+        attributor.refresh().expect("first");
+        assert_eq!(
+            &*attributor
+                .resolve(&udp_key(), at(1_000))
+                .expect("live")
+                .process,
+            "the-game.exe"
+        );
+
+        clock.set(at(2_000));
+        attributor.refresh().expect("second");
+
+        let a = attributor.resolve(&udp_key(), at(2_000)).expect("retained");
+        assert_eq!(a.fidelity, Fidelity::Retained);
+        assert_eq!(
+            &*a.process, "the-game.exe",
+            "the name was known while the socket was live and must not be lost with the process"
+        );
+    }
+
+    // The platform reuses process identifiers. A retained connection must not
+    // acquire the name of whatever now holds its old identifier.
+    #[test]
+    fn a_recycled_identifier_does_not_rename_a_closed_connection() {
+        let clock = Arc::new(TestClock::at(at(0)));
+        let mut attributor = SocketTableAttributor::new(
+            Box::new(DeclaredTable::sequence(vec![
+                Ok(one_entry(1_000, 5)),
+                Ok(SocketTable::empty(at(2_000))),
+            ])),
+            Box::new(RenamingNamer::new(5, "the-game.exe", "something-else.exe")),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            AttributorConfig::default(),
+        );
+
+        attributor.refresh().expect("first");
+        clock.set(at(2_000));
+        attributor.refresh().expect("second");
+
+        assert_eq!(
+            &*attributor
+                .resolve(&udp_key(), at(2_000))
+                .expect("retained")
+                .process,
+            "the-game.exe",
+            "the identifier now belongs to another process; the connection does not"
+        );
+    }
+
+    // A request recorded against the newly published index must survive the
+    // refresh that published it. The first version published and then marked
+    // refreshed, which erased any request made in between, and because
+    // recording one also consumes the rate-limit window nothing could re-arm it
+    // for two hundred milliseconds.
+    #[test]
+    fn a_request_made_after_publication_survives_the_refresh() {
+        let mut f = fixture(vec![Ok(SocketTable::empty(at(0)))], &[]);
+        let schedule = f.attributor.schedule();
+
+        f.attributor.refresh().expect("reads");
+        schedule.take_request();
+
+        // A capture thread reads the index this refresh published, finds an
+        // endpoint it does not carry, and asks for another.
+        f.clock.set(at(1_000_000_000));
+        f.attributor.resolve(&udp_key(), at(100));
+        assert!(schedule.is_requested(), "the lookup recorded a request");
+
+        // Whoever drives the cadence has not acted on it yet. It must still be
+        // there.
+        assert!(
+            schedule.take_request(),
+            "a request made against the published index must not be erased by the \
+             refresh that published it"
+        );
     }
 
     #[test]

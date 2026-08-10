@@ -89,14 +89,35 @@ impl RefreshSchedule {
     /// why it is measured against `now` and not against the packet's instant: a
     /// replay of an hour of traffic in one second would otherwise request
     /// thousands of refreshes, and a quiet interface would request none.
+    /// # Claiming the window
+    ///
+    /// The rate-limit window is claimed with a compare-and-exchange rather than
+    /// a load followed by a store. Specification section 12.1 puts one capture
+    /// thread on every interface and all of them share this schedule, so two
+    /// threads can read the same eligible `last_request` before either writes.
+    /// With a plain store both would be accepted, and if the owner consumed the
+    /// first request in between, the second would produce a second actionable
+    /// refresh inside a window that is supposed to permit one. Exactly one
+    /// caller wins the exchange; the loser re-reads and finds the window taken.
+    /// Found by review of pull request 13.
     pub fn request_triggered(&self, now: Timestamp, limit: Duration) -> bool {
-        let last = self.last_request.load(Ordering::SeqCst);
-        if last != NEVER && !elapsed_at_least(last, now, limit) {
-            return false;
+        loop {
+            let last = self.last_request.load(Ordering::SeqCst);
+            if last != NEVER && !elapsed_at_least(last, now, limit) {
+                return false;
+            }
+            if self
+                .last_request
+                .compare_exchange(last, now.as_nanos(), Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                self.requested.store(true, Ordering::SeqCst);
+                return true;
+            }
+            // Another thread claimed it between the load and the exchange. Go
+            // round again; the reloaded value is that thread's, so this caller
+            // now measures against a window that has just been taken.
         }
-        self.last_request.store(now.as_nanos(), Ordering::SeqCst);
-        self.requested.store(true, Ordering::SeqCst);
-        true
     }
 
     /// Ask for a refresh because a process matching a profile stage started.
@@ -255,6 +276,51 @@ mod tests {
             "the refresh satisfied the request; a second read would be for nothing"
         );
         assert!(!s.is_due(at(1_000_000_000), SECOND));
+    }
+
+    // Review of pull request 13. Many threads racing for one rate-limit
+    // window: exactly one may claim it. A load followed by a store lets two
+    // callers both pass, and if the owner consumes the first request in
+    // between, the second becomes a second actionable refresh inside a window
+    // that permits one.
+    #[test]
+    fn exactly_one_of_many_racing_threads_claims_a_rate_limit_window() {
+        use std::sync::atomic::{AtomicU32, Ordering as O};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Repeated, because a race that is lost once is not proof of anything.
+        for round in 0..200i64 {
+            let s = Arc::new(RefreshSchedule::new());
+            // Put the schedule just past a window boundary so every thread
+            // sees the window as available.
+            s.request_triggered(at(round * 1_000_000_000), LIMIT);
+            let now = at(round * 1_000_000_000 + 500_000_000);
+
+            let accepted = Arc::new(AtomicU32::new(0));
+            let gate = Arc::new(Barrier::new(8));
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let s = Arc::clone(&s);
+                    let accepted = Arc::clone(&accepted);
+                    let gate = Arc::clone(&gate);
+                    thread::spawn(move || {
+                        gate.wait();
+                        if s.request_triggered(now, LIMIT) {
+                            accepted.fetch_add(1, O::SeqCst);
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().expect("a requester finishes");
+            }
+            assert_eq!(
+                accepted.load(O::SeqCst),
+                1,
+                "round {round}: one window, one claim"
+            );
+        }
     }
 
     #[test]
