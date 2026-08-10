@@ -201,6 +201,17 @@ conservation-closed statistics record.
   ends by another condition (timeout, all-exited, duration, interrupt).
 - The Watching-to-Capturing transition must not drop or duplicate the packet that
   coincides with the first match.
+- Only a non-service match begins Capturing. A service is never awaited during
+  acquisition (section 10.4), so a persistent service that appears while Watching
+  binds for attribution but does not acquire the target or disable the
+  acquisition timeout.
+- A process whose exit is delivered before its start is bound already exited (the
+  tree joins the held exit on the start event). It is honored as the exit it is:
+  a terminal that has already gone still stops capture, and it does not inflate
+  the live count that gates the all-exited condition.
+- A packet handed to the session outside the Watching and Capturing window,
+  during Draining after a stop or before the session armed, is discarded but
+  counted, never silently dropped (P-4).
 
 ## Requirements *(mandatory)*
 
@@ -233,10 +244,12 @@ conservation-closed statistics record.
 - **FR-008**: Arming MUST open the capture handle and attach the process watcher
   before any target process exists.
 - **FR-009**: Watching MUST discard packets, and every discarded packet MUST be
-  counted in a named counter and surfaced in statistics (P-4).
-- **FR-010**: The Watching-to-Capturing transition MUST occur on the first stage
-  match, MUST retain that and every subsequent packet, and MUST lose no packet at
-  the boundary.
+  counted in a named counter and surfaced in statistics (P-4). A packet handed to
+  the session outside the Watching and Capturing window MUST likewise be counted
+  in a named counter rather than dropped silently.
+- **FR-010**: The Watching-to-Capturing transition MUST occur on the first
+  non-service stage match, MUST retain that and every subsequent packet, and MUST
+  lose no packet at the boundary. A service match MUST NOT begin Capturing.
 - **FR-011**: Acquisition timeout MUST transition Watching to Complete and report
   that no target was acquired.
 - **FR-012**: Capture MUST end on the first of these to occur: the elapsed

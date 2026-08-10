@@ -280,3 +280,73 @@ fn a_service_process_does_not_keep_the_all_exited_condition_from_firing() {
         "a live service does not keep the session alive"
     );
 }
+
+#[test]
+fn a_service_match_does_not_begin_capturing_or_disable_the_timeout() {
+    // A persistent service that appears while Watching must not acquire the
+    // target (section 10.4: a service is never awaited during acquisition), so
+    // the acquisition timeout still governs and no service noise is retained.
+    let p = profile(
+        "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
+         match = { exe = \"game.exe\" }\n\
+         [[stage]]\nrole = \"platform\"\nlifecycle = \"service\"\n\
+         match = { exe = \"platform.exe\" }\n",
+    );
+    let cfg = SessionConfig {
+        acquisition_timeout: Some(Duration::from_secs(30)),
+        ..SessionConfig::default()
+    };
+    let mut s = CaptureSession::new(p, cfg);
+    s.attach(at(0));
+    s.on_process_event(start(200, 0, "C:\\P\\platform.exe", 1)); // service appears first
+    assert_eq!(
+        s.state(),
+        SessionState::Watching,
+        "a service does not begin capturing"
+    );
+    assert_eq!(s.on_packet(100), PacketDisposition::Discarded); // still discarding
+    s.on_tick(at(30_000_000_000)); // timeout with no real target
+    assert_eq!(s.state(), SessionState::Complete);
+    assert_eq!(s.stop_reason(), Some(StopReason::AcquisitionTimeout));
+    assert_eq!(s.stats().retained, 0, "no service noise was retained");
+}
+
+#[test]
+fn an_exit_delivered_before_its_start_still_stops_a_terminal() {
+    // ETW can deliver an exit before its matching start; the tree holds the exit
+    // and joins it when the start arrives, so the process is bound already
+    // exited. A terminal in that state must still stop capture rather than being
+    // recorded as live.
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // launcher -> Capturing
+    s.on_process_event(exit(200, 5)); // the client's exit arrives first
+    s.on_process_event(start(200, 100, "C:\\G\\game.exe", 2)); // terminal, joins the held exit
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::TerminalStageExited),
+        "a terminal bound already exited still stops capture"
+    );
+}
+
+#[test]
+fn packets_offered_after_a_stop_are_counted_out_of_window() {
+    // After a stop moves the session to Draining, a packet still in flight is
+    // discarded but counted, never silently dropped (P-4).
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1)); // -> Capturing
+    assert_eq!(s.on_packet(100), PacketDisposition::Retained);
+    s.on_interrupt(); // -> Draining
+    assert_eq!(s.on_packet(100), PacketDisposition::Discarded);
+    assert_eq!(
+        s.stats().discarded_out_of_window,
+        1,
+        "P-4: the post-stop discard is counted, not silently dropped"
+    );
+    assert_eq!(
+        s.stats().observed(),
+        2,
+        "conservation holds across all three counters"
+    );
+}

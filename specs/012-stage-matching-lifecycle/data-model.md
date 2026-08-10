@@ -65,11 +65,13 @@ pub struct SessionConfig {
 }
 
 pub struct SessionStats {
-    pub watching_discarded: u64,   // P-4 named counter
+    pub watching_discarded: u64,        // P-4 named counter
     pub retained: u64,
     pub retained_bytes: u64,
+    pub discarded_out_of_window: u64,   // packets offered outside Watching/Capturing
 }
-// observed() == watching_discarded + retained (session conservation)
+// observed() == watching_discarded + retained + discarded_out_of_window
+// (session conservation: every on_packet call increments exactly one counter)
 
 pub struct CaptureSession { /* state, profile, tree, config, stats, bookkeeping */ }
 ```
@@ -80,8 +82,8 @@ Session API (event-driven, tier-1 testable):
 | --- | --- |
 | `new(profile, config)` | constructs in `Arming` |
 | `attach(at)` | Arming to Watching (watcher attached, handle open) |
-| `on_process_event(event)` | apply to tree, match and bind on Started, handle terminal/all-exited on Exited, first match moves Watching to Capturing (the event carries its own timestamp) |
-| `on_packet(len) -> PacketDisposition` | Watching discards and counts; Capturing retains, counts, and may hit a volume bound |
+| `on_process_event(event)` | apply to tree, match and bind on Started (a binding already exited is honored as an exit), handle terminal/all-exited on Exited, the first non-service match moves Watching to Capturing (the event carries its own timestamp) |
+| `on_packet(len) -> PacketDisposition` | Watching discards and counts; Capturing retains, counts, and may hit a volume bound; any other state discards into the out-of-window counter |
 | `on_tick(now)` | acquisition timeout (from Watching) and duration bound |
 | `on_interrupt()` / `on_sink_error()` | stop with the matching reason |
 | `finalize()` | Draining to Complete (flush, finish) |

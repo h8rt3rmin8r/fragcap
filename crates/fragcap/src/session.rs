@@ -109,13 +109,22 @@ pub struct SessionStats {
     pub retained: u64,
     /// Bytes retained while Capturing.
     pub retained_bytes: u64,
+    /// Packets offered while the session was neither Watching nor Capturing:
+    /// before it armed, or after a stop condition moved it to Draining. Counted
+    /// so that no packet handed to the session escapes the accounting, which is
+    /// the whole of P-4; a discard path without a counter is a defect.
+    pub discarded_out_of_window: u64,
 }
 
 impl SessionStats {
-    /// Every packet the session saw while armed. Retained plus discarded, and
-    /// nothing else, which is the session's conservation identity.
+    /// Every packet handed to the session: retained, discarded while watching,
+    /// or discarded out of window, and nothing else. This is the session's
+    /// conservation identity, and it holds for every call to
+    /// [`on_packet`](CaptureSession::on_packet) regardless of state.
     pub fn observed(&self) -> u64 {
-        self.watching_discarded.saturating_add(self.retained)
+        self.watching_discarded
+            .saturating_add(self.retained)
+            .saturating_add(self.discarded_out_of_window)
     }
 }
 
@@ -202,8 +211,9 @@ impl CaptureSession {
     }
 
     /// One packet arrived. Discard and count while Watching, retain and count
-    /// while Capturing, and drop uncounted in any other state (nothing is
-    /// captured before arm or after drain).
+    /// while Capturing, and in any other state discard into the out-of-window
+    /// counter (a packet still draining in after a stop, or one handed over
+    /// before the session armed): counted, never silently dropped, per P-4.
     pub fn on_packet(&mut self, len: u32) -> PacketDisposition {
         match self.state {
             SessionState::Watching => {
@@ -216,7 +226,11 @@ impl CaptureSession {
                 self.check_volume_bounds();
                 PacketDisposition::Retained
             }
-            _ => PacketDisposition::Discarded,
+            SessionState::Arming | SessionState::Draining | SessionState::Complete => {
+                self.stats.discarded_out_of_window =
+                    self.stats.discarded_out_of_window.saturating_add(1);
+                PacketDisposition::Discarded
+            }
         }
     }
 
@@ -304,18 +318,36 @@ impl CaptureSession {
         };
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
+            // A process whose exit was delivered before its start is bound
+            // already exited: the tree joins a held exit on the start event, so
+            // the node is not live even though this is its first appearance to
+            // the session. Such a binding must not add to the live count.
+            let already_exited = self.tree.node(id).map(|n| !n.is_live()).unwrap_or(false);
             if !service {
                 self.pending_nonservice.retain(|r| r != &role);
-                self.live_nonservice = self.live_nonservice.saturating_add(1);
+                if !already_exited {
+                    self.live_nonservice = self.live_nonservice.saturating_add(1);
+                }
             }
             self.bindings.push(Binding {
                 pid,
                 terminal,
                 service,
-                live: true,
+                live: !already_exited,
             });
-            if self.state == SessionState::Watching {
+            // Only a non-service match acquires the target. Section 10.4: a
+            // service is never awaited during acquisition, so a persistent
+            // service that appears while Watching binds for attribution but does
+            // not begin capturing, which would otherwise disable the acquisition
+            // timeout and retain service noise before any target exists.
+            if !service && self.state == SessionState::Watching {
                 self.state = SessionState::Capturing;
+            }
+            // A target already gone by the time we see it start is the exit it
+            // is: a terminal that has exited still stops capture, and a stale
+            // live count cannot otherwise block AllProcessesExited.
+            if already_exited {
+                self.note_bound_exit(terminal);
             }
         }
     }
@@ -332,6 +364,12 @@ impl CaptureSession {
         if !service {
             self.live_nonservice = self.live_nonservice.saturating_sub(1);
         }
+        self.note_bound_exit(terminal);
+    }
+
+    /// Apply the stop conditions an exit can trigger. The caller has already
+    /// adjusted the live count; this decides whether the exit ends capture.
+    fn note_bound_exit(&mut self, terminal: bool) {
         if terminal {
             self.stop(StopReason::TerminalStageExited);
             return;

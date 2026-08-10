@@ -29,3 +29,26 @@ to specification section 29.**
   Section 10.4 says a service is never awaited, because waiting on something
   already running deadlocks; a platform service that outlives the session must
   not keep it from recognizing that its gameplay processes have all exited.
+
+**2026-08-10, in review of pull request 16. Three findings, all fixed.** An
+automated review raised three real correctness defects in the session, each a
+consequence of the same simplification.
+
+- **Only a non-service match acquires the target.** The Watching to Capturing
+  transition fired on any first match, so a persistent service appearing while
+  Watching began capturing and disabled the acquisition timeout, retaining
+  service noise before any target existed. Section 10.4 says a service is never
+  awaited; the transition is now gated on a non-service binding. A service still
+  binds for attribution.
+- **A process bound already exited is honored as exited.** When ETW delivers an
+  exit before its start, the tree joins the held exit on the start event, so the
+  node is not live. The binding was nonetheless recorded live, which let a
+  terminal that had already gone enter Capturing without ever producing
+  `TerminalStageExited` and left a stale live count blocking `AllProcessesExited`
+  indefinitely. Binding now reads the node's liveness and routes an
+  already-exited bind through the same exit handling.
+- **Packets discarded outside the capture window are counted.** A packet reaching
+  the session while Draining, after a stop condition, was discarded without a
+  counter, which P-4 forbids. `SessionStats::discarded_out_of_window` now counts
+  every such packet, and the conservation identity holds for every call to
+  `on_packet` regardless of state.
