@@ -5,7 +5,8 @@
   reports environment readiness, and `profile` validates, lists, and shows
   profiles. `replay`, `steam`, and `extcap` are registered as stubs that name the
   slice delivering them and exit 2, so the help foreshadows the whole tool.
-  Specification section 17, the final slice of v0.2.0.
+  Specification section 17, the last of the capture-to-file CLI slices (S01
+  through S14).
 - **The CLI is a library plus a thin binary.** `fragcap_cli::run` is the testable
   entry, so the whole surface, the exit contract, the structured event stream,
   and the completion summary included, is driven from tests without spawning a
