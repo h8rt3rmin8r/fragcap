@@ -36,7 +36,20 @@ use crate::stats::{CaptureStats, SourceStats};
 /// source in slice S04.
 ///
 /// Contains no attribution logic, per P-3.
-pub trait PacketSource {
+///
+/// `Send` because specification section 12.1 requires one capture thread per
+/// interface, so the pipeline moves a source onto a thread it did not create
+/// it on.
+///
+/// **This bound is a recorded deviation.** Specification section 8.5 declares
+/// the trait without it, and slice S08 relied on its absence: that slice
+/// acquired on the calling thread and spawned only the sink thread, precisely
+/// so a trait intended to reach 1.0.0 unchanged did not have to change to make
+/// one slice work. Multi-interface capture ends that arrangement, because there
+/// is no arrangement of one thread that reads several handles without either
+/// this bound or a second buffer that section 12.4 does not allow. Added by
+/// S09 and promoted to specification section 29.
+pub trait PacketSource: Send {
     /// The next packet, or `None` if the timeout elapsed with nothing to
     /// report. A timeout is not an error, which is why `None` is distinct from
     /// [`SourceError::Timeout`]: the latter is for backends that signal it as a
@@ -138,6 +151,7 @@ mod tests {
     use super::*;
     use crate::attribution::Fidelity;
     use crate::flow::{Direction, Proto};
+    use crate::interface::InterfaceId;
     use crate::packet::{AttributionState, Payload, Timestamp};
     use std::net::SocketAddr;
     use std::sync::mpsc;
@@ -232,6 +246,29 @@ mod tests {
         let _sink: Box<dyn Sink> = Box::new(StubSink::default());
     }
 
+    // S09. Section 12.1 puts every source on its own thread, so all four
+    // cross-thread traits must be `Send` behind a pointer. Asserted at compile
+    // time and here rather than in the pipeline, so that an implementor which
+    // stops being `Send` fails at the trait that requires it instead of three
+    // layers up in a spawn call whose error message names neither.
+    #[test]
+    fn every_cross_thread_trait_is_send_behind_a_pointer() {
+        fn requires_send<T: Send + ?Sized>(_: &T) {}
+
+        let source: Box<dyn PacketSource> = Box::new(StubSource {
+            queued: Vec::new(),
+            stats: SourceStats::default(),
+        });
+        let attributor: Box<dyn FlowAttributor> = Box::new(StubAttributor { answer: None });
+        let watcher: Box<dyn ProcessWatcher> = Box::new(StubWatcher);
+        let sink: Box<dyn Sink> = Box::new(StubSink::default());
+
+        requires_send(&source);
+        requires_send(&attributor);
+        requires_send(&watcher);
+        requires_send(&sink);
+    }
+
     #[test]
     fn sinks_are_usable_as_a_heterogeneous_collection() {
         // The section 8.6 fan-out: a file sink, a stream sink, and a ring
@@ -241,11 +278,10 @@ mod tests {
             Box::new(StubSink::default()),
             Box::new(StubSink::default()),
         ];
-        let packet = CapturedPacket::from_raw(RawPacket::new(
-            Timestamp::from_nanos(1),
-            Payload::from_static(&[0; 4]),
-            4,
-        ));
+        let packet = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(1), Payload::from_static(&[0; 4]), 4),
+            InterfaceId::default(),
+        );
         for sink in sinks.iter_mut() {
             sink.write(&packet).expect("stub sink accepts");
         }
@@ -296,7 +332,7 @@ mod tests {
             .next_packet(Duration::from_millis(10))
             .expect("stub source succeeds")
             .expect("one packet was queued");
-        let mut packet = CapturedPacket::from_raw(raw);
+        let mut packet = CapturedPacket::from_raw(raw, InterfaceId::default());
         stats.packets_captured += 1;
 
         // Capture thread: header parsing would derive these in slice S03.
@@ -317,7 +353,7 @@ mod tests {
 
         // Sink thread: drain and fan out.
         sink.write(&packet).expect("stub sink accepts");
-        stats.source = source.stats();
+        stats.set_source(InterfaceId::default(), source.stats());
         sink.finish(&stats).expect("a boxed sink can be consumed");
 
         assert_eq!(stats.packets_captured, 1);
@@ -335,11 +371,10 @@ mod tests {
         // P-4 through the pipeline: attribution fails, the packet is retained
         // and marked rather than dropped, and it lands in its own counter.
         let attributor = StubAttributor { answer: None };
-        let mut packet = CapturedPacket::from_raw(RawPacket::new(
-            Timestamp::from_nanos(1),
-            Payload::from_static(&[0; 8]),
-            8,
-        ));
+        let mut packet = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(1), Payload::from_static(&[0; 8]), 8),
+            InterfaceId::default(),
+        );
         packet.flow = Some(FlowKey::new(
             Proto::Udp,
             addr("192.0.2.10:30000"),

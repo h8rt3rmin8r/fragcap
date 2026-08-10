@@ -15,6 +15,8 @@
 
 #![allow(dead_code)]
 
+use fragcap_core::interface::InterfaceId;
+use fragcap_core::pipeline::SourceBinding;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -95,7 +97,7 @@ pub fn render(name: &str) -> Vec<u8> {
             Err(e) => panic!("{name}: unexpected source failure: {e}"),
         };
         received += 1;
-        let mut packet = CapturedPacket::from_raw(raw);
+        let mut packet = CapturedPacket::from_raw(raw, InterfaceId::default());
         parser.apply(link, &mut packet);
         if let Some(key) = packet.flow.as_ref() {
             packet.attribution = attributor.resolve(key, packet.ts);
@@ -115,10 +117,13 @@ pub fn render(name: &str) -> Vec<u8> {
     // would not prove they were written.
     let stats = CaptureStats {
         packets_captured: received,
-        source: SourceStats {
-            received,
-            ..Default::default()
-        },
+        sources: vec![(
+            InterfaceId::default(),
+            SourceStats {
+                received,
+                ..Default::default()
+            },
+        )],
         ..Default::default()
     };
     Box::new(writer)
@@ -181,7 +186,7 @@ pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
             Err(SourceError::Closed) => break,
             Err(e) => panic!("{name}: unexpected source failure: {e}"),
         };
-        let mut packet = CapturedPacket::from_raw(raw);
+        let mut packet = CapturedPacket::from_raw(raw, InterfaceId::default());
         parser.apply(link, &mut packet);
         if let Some(key) = packet.flow.as_ref() {
             packet.attribution = attributor.resolve(key, packet.ts);
@@ -213,10 +218,13 @@ pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
         packets_captured: received,
         packets_attributed: attributed,
         packets_unattributed: unattributed,
-        source: SourceStats {
-            received,
-            ..Default::default()
-        },
+        sources: vec![(
+            InterfaceId::default(),
+            SourceStats {
+                received,
+                ..Default::default()
+            },
+        )],
         ..Default::default()
     };
     (packets, stats)
@@ -299,11 +307,14 @@ pub fn render_via_pipeline(name: &str, capacity: usize) -> PipelineRun {
         .expect("in-memory write cannot fail");
 
     let mut pipeline = Pipeline::new(
-        Box::new(source),
+        vec![SourceBinding::new(
+            InterfaceId::default(),
+            Box::new(source),
+            InterfaceAddrs::new(local.iter().copied()),
+        )],
         Box::new(fragcap::ScriptedAttributor::new(script)),
         PipelineConfig {
             capacity,
-            addrs: InterfaceAddrs::new(local.iter().copied()),
             ..PipelineConfig::default()
         },
     )

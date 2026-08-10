@@ -10,6 +10,7 @@
 
 use crate::attribution::Attribution;
 use crate::flow::{Direction, FlowKey};
+use crate::interface::InterfaceId;
 
 /// The packet payload type.
 ///
@@ -132,6 +133,23 @@ pub struct CapturedPacket {
     pub ts: Timestamp,
     pub data: Payload,
     pub orig_len: u32,
+    /// Which interface the packet was acquired on.
+    ///
+    /// Not optional, and that is the whole point. Every packet arrived
+    /// somewhere, so an absent identifier would be a claim that one came from
+    /// nowhere. Specification section 12.1 requires the identifier be preserved
+    /// into output, and an `Option` here would let a real capture ship with the
+    /// question unanswered.
+    ///
+    /// Attached by the pipeline at the lift from [`RawPacket`], not by the
+    /// source. A source knows only its own interface, so putting it on
+    /// `RawPacket` would make every source including the replay source invent
+    /// one and would repeat a per-run constant on every packet.
+    ///
+    /// **A recorded deviation.** Specification section 8.4's packet vocabulary
+    /// predates any capture holding more than one interface. Added by S09 and
+    /// promoted to specification section 29.
+    pub interface: InterfaceId,
     /// Populated by header parsing in slice S03.
     pub flow: Option<FlowKey>,
     /// Populated by header parsing in slice S03.
@@ -141,12 +159,18 @@ pub struct CapturedPacket {
 }
 
 impl CapturedPacket {
-    /// Lift a raw packet, with nothing yet resolved.
-    pub fn from_raw(raw: RawPacket) -> Self {
+    /// Lift a raw packet acquired on `interface`, with nothing yet resolved.
+    ///
+    /// There is deliberately no convenience form defaulting the interface. A
+    /// default would be right for the single-interface case and silently wrong
+    /// for every other, and the wrongness would appear in the output as a
+    /// packet attributed to an adapter it never touched.
+    pub fn from_raw(raw: RawPacket, interface: InterfaceId) -> Self {
         CapturedPacket {
             ts: raw.ts,
             data: raw.data,
             orig_len: raw.orig_len,
+            interface,
             flow: None,
             direction: None,
             attribution: None,
@@ -255,7 +279,7 @@ mod tests {
             Payload::from_static(&[9; 64]),
             1514,
         );
-        let cap = CapturedPacket::from_raw(raw);
+        let cap = CapturedPacket::from_raw(raw, InterfaceId::default());
         assert_eq!(cap.orig_len, 1514);
         assert_eq!(cap.captured_len(), 64);
         assert!(cap.is_truncated());
@@ -280,23 +304,29 @@ mod tests {
     // V-9. The three states, each constructed and read back.
     #[test]
     fn no_flow_key_reads_as_never_attempted() {
-        let p =
-            CapturedPacket::from_raw(RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0));
+        let p = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+            InterfaceId::default(),
+        );
         assert_eq!(p.attribution_state(), AttributionState::NotAttempted);
     }
 
     #[test]
     fn a_flow_key_without_attribution_reads_as_unresolved() {
-        let mut p =
-            CapturedPacket::from_raw(RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0));
+        let mut p = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+            InterfaceId::default(),
+        );
         p.flow = Some(key());
         assert_eq!(p.attribution_state(), AttributionState::Unresolved);
     }
 
     #[test]
     fn a_flow_key_with_attribution_reads_as_resolved() {
-        let mut p =
-            CapturedPacket::from_raw(RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0));
+        let mut p = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+            InterfaceId::default(),
+        );
         p.flow = Some(key());
         p.attribution = Some(Attribution::new(4242, "eso64.exe", Fidelity::Live));
         assert_eq!(p.attribution_state(), AttributionState::Resolved);
@@ -306,11 +336,15 @@ mod tests {
     fn unresolved_is_distinguishable_from_never_attempted() {
         // The distinction P-4 needs: a packet retained and marked, versus a
         // packet nobody could have attributed.
-        let mut attempted =
-            CapturedPacket::from_raw(RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0));
+        let mut attempted = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+            InterfaceId::default(),
+        );
         attempted.flow = Some(key());
-        let not_attempted =
-            CapturedPacket::from_raw(RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0));
+        let not_attempted = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(0), Payload::new(), 0),
+            InterfaceId::default(),
+        );
         assert_ne!(
             attempted.attribution_state(),
             not_attempted.attribution_state()

@@ -1,17 +1,36 @@
 # Windows platform tests that need the capture driver. Specification 24.2.
 #
-# NOTE: scaffolded and NOT exercised as of S01. No crate links against the
-# capture library until S09, so the acquisition step below has never run. The
-# software development kit is acquired at build time and never vendored, per
-# specification section 20.2.
+# NOTE: as of slice S09 this workflow has a subject, and real triggers. It had
+# neither before: no crate linked against the capture library, so the software
+# development kit acquisition step below had never run. It still has not been
+# watched to completion, and must not be reported as passing until it has.
+#
+# The kit is acquired at build time and never vendored, per specification
+# section 20.2 and the constitution's licensing section. `cargo xtask lint`
+# fails if any of its files reach the repository.
 name: platform
 
-# Manual dispatch only until slice S09. No crate links against the capture
-# library yet, so there is nothing here this workflow can verify, and running
-# it on every push spends minutes to prove nothing. S09 adds the real triggers
-# along with the code that needs them.
+# S09 gave this real triggers, replacing dispatch-only. A dated decision is
+# recorded in changelog.d, per the pinned-artifact rule.
+#
+# Only the paths that can change the answer. The live source, the crate that
+# holds it, and this file. A documentation change does not need a Windows
+# runner with a capture driver on it.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/fragcap-capture/**"
+      - "crates/fragcap-core/**"
+      - ".github/workflows/platform.yml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - "crates/fragcap-capture/**"
+      - "crates/fragcap-core/**"
+      - ".github/workflows/platform.yml"
+      - "Cargo.lock"
 
 concurrency:
   group: platform-${{ github.ref }}
@@ -41,8 +60,48 @@ jobs:
           Expand-Archive npcap-sdk.zip -DestinationPath npcap-sdk
           "LIB=$PWD\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
 
-      - name: Test
-        # No `--features platform-tests`: no crate declares that feature, so
-        # passing it fails resolution. The feature arrives with S09, which is
-        # also when this workflow gets a real trigger.
+      - name: Build the live capture source
+        # The step that proves the acquisition above worked. `cargo check` does
+        # not link, so this is a build: a missing `wpcap.lib` shows up at the
+        # link step and nowhere earlier.
+        run: cargo build -p fragcap-capture --features live --locked
+
+      # The software development kit supplies the import library, which is what
+      # the build above needs. It does NOT supply `wpcap.dll`, which ships with
+      # the npcap driver installation and which any binary linked against
+      # `wpcap.lib` needs at load time.
+      #
+      # This distinction cost slice S09 a red build, and the lesson is worth
+      # keeping: a test binary built with `--features live` does not start at
+      # all without the driver present. It fails with STATUS_DLL_NOT_FOUND
+      # before `main` runs, so the "detect at runtime and skip" design in those
+      # tests never gets a chance to execute. Enabling the feature
+      # unconditionally here would make this workflow permanently red for a
+      # reason that has nothing to do with the code.
+      - name: Look for an installed capture driver
+        id: driver
+        shell: pwsh
+        run: |
+          $dll = Join-Path $env:SystemRoot "System32\wpcap.dll"
+          $present = Test-Path -LiteralPath $dll
+          "present=$($present.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if ($present) {
+            Write-Host "npcap is installed; tier 2 tests will run."
+          } else {
+            Write-Host "npcap is NOT installed on this runner."
+            Write-Host "The live source was built and linked, which is what the step above proves."
+            Write-Host "Tier 2 tests need the driver and will NOT run. Nothing here has exercised live capture."
+          }
+
+      - name: Tier 2 tests
+        if: steps.driver.outputs.present == 'true'
+        # The feature is `live`, not `platform-tests`. It gates a capability
+        # rather than a test suite; see slice S09 plan decision D-2.
+        run: cargo test --workspace --features fragcap-capture/live --locked
+
+      - name: Tests without the capture driver
+        if: steps.driver.outputs.present != 'true'
+        # Everything that does not need a driver, on Windows, with the software
+        # development kit present. Proves the workspace is healthy here even
+        # though live capture was not exercised.
         run: cargo test --workspace --locked

@@ -16,6 +16,7 @@
 //! the edge constitution P-3 and `cargo xtask deps` exist to prevent, and which
 //! a dev-dependency would have slipped past unnoticed.
 
+use fragcap_core::interface::InterfaceId;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -76,7 +77,7 @@ fn run(name: &str, local: &[IpAddr]) -> Run {
             Err(SourceError::Closed) => break,
             Err(e) => panic!("{name}: unexpected source failure: {e}"),
         };
-        let mut packet = CapturedPacket::from_raw(raw);
+        let mut packet = CapturedPacket::from_raw(raw, InterfaceId::default());
         parser.apply(link, &mut packet);
         if let Some(key) = packet.flow.as_ref() {
             // The packet's own instant, through the seam. Specification section

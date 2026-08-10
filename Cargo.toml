@@ -41,6 +41,23 @@ regex           = { version = "1.13", default-features = false, features = [
     "unicode",
 ] }
 
+# External, optional. Slice S09, research R-1: the libpcap and npcap binding
+# the live capture source is built on. Optional and off by default, so building
+# the workspace and running the ordinary check set needs neither the capture
+# driver nor its software development kit.
+#
+# Chosen over a hand-rolled binding because the alternative here is not
+# arithmetic over a byte slice, as it was in S03 and S06, but a C ABI whose
+# struct layouts must be transcribed by hand with nothing checking them against
+# the header. A wrong offset in the packet header yields plausible timestamps
+# that are wrong, which is the P-9 failure no test over synthetic data catches.
+#
+# MIT or Apache-2.0, and so is every crate it pulls. Declares Rust 1.64 against
+# this workspace's 1.82 floor. Note that its build dependency on `libloading`
+# is pinned to the 0.8 line: `libloading` 0.9 declares Rust 1.88 and would take
+# the workspace below its own minimum.
+pcap            = "2.4"
+
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is
 # hand-rolled because its exact byte shape is the deliverable, and this parses
 # every line it emits so validity is judged by something other than the writer.

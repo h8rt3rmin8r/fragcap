@@ -479,6 +479,121 @@ command line, and ring mode all need the same one.
 **See also:** [Game profile](#game-profile),
 [Profile schema version](#profile-schema-version)
 
+### Bootstrap filter
+
+**Also known as:** phase one filter
+
+The deliberately permissive kernel filter fragcap installs on every capture
+handle before any packet is delivered: IPv4 and IPv6 traffic, and nothing else.
+
+Specification section 12.2 divides the filter lifecycle into three phases, and
+this is the first. Game endpoints are not known until a session begins, so no
+narrow filter can be installed in advance. Packets admitted during this phase
+are discarded in userspace, because no attribution exists yet to decide with.
+
+{: .matters }
+> The temptation is to narrow it early to reduce volume, and reconnaissance
+> showed the volume is real: one unrelated background process accounted for up
+> to 94 percent of captured bytes. Narrowing before attribution exists would
+> discard traffic in the kernel with no way to know what was lost, which is a
+> discard with no counter and therefore a constitution P-4 violation. The cost
+> is paid in bytes rather than in fidelity, deliberately.
+
+**See also:** [Filter gap](#filter-gap), [Interface inventory](#interface-inventory)
+
+### Interface identifier
+
+The identity fragcap assigns to a capture interface for the duration of one
+run, carried on every packet acquired from it and preserved into output.
+
+Assigned by [selection](#selection-outcome) from position, not taken from the
+platform, because platform interface names are not guaranteed unique and
+specification section 12.1 requires every packet to name where it arrived.
+
+{: .matters }
+> It is not optional on a captured packet. Every packet arrived somewhere, so
+> an absent identifier would be a claim that one came from nowhere, and a
+> default value would be right for a single-interface capture and silently
+> wrong for every other. The wrongness would appear in the output as a packet
+> attributed to an adapter it never touched.
+
+**See also:** [Interface inventory](#interface-inventory),
+[Selection outcome](#selection-outcome)
+
+### Interface inventory
+
+What a machine reports about its capture-capable interfaces at a moment in
+time, as a value: for each one a name, a description, addresses, whether it is
+up, whether it is a loopback adapter, plus the source address the routing table
+would choose for an off-link destination.
+
+{: .matters }
+> Being a value rather than a query is the whole design. A capture backend
+> produces one by enumerating a real machine; a test writes one by hand.
+> Selection cannot tell the difference, so the entire specification section
+> 12.1 precedence is testable with no capture driver, no privilege, and no
+> network.
+
+**See also:** [Interface identifier](#interface-identifier),
+[Selection outcome](#selection-outcome),
+[Virtual interface](#virtual-interface)
+
+### Interface retirement
+
+The end of one capture thread, recorded with the interface it belonged to and
+the reason it stopped.
+
+A run with several interfaces does not end when one of them fails. That
+interface retires, the others keep delivering, and the run ends when the last
+has retired or a stop was requested. This mirrors the treatment of a failed
+sink established in slice S08.
+
+{: .matters }
+> A retirement advances no drop counter, and that is deliberate rather than an
+> omission. A retired interface stops producing observations; it does not
+> discard observations fragcap already had. Counting it as loss would report
+> packets that were never observed as packets that were thrown away, which is a
+> constitution P-9 problem rather than an arithmetic one.
+
+**See also:** [Interface identifier](#interface-identifier)
+
+### Selection outcome
+
+The complete result of applying specification section 12.1's precedence to an
+[interface inventory](#interface-inventory): the interfaces chosen, in order,
+plus every interface not chosen and the named reason it was passed over.
+
+{: .matters }
+> The second half is what the type exists for. Capturing on the wrong interface
+> produces a run that exits zero, writes a well-formed capture file, and
+> contains nothing, which is invisible unless the decision is reported. The
+> chosen and the passed-over together must account for the whole inventory, and
+> a test asserts that rather than trusting it, so a future precedence rule
+> cannot drop an interface on the floor.
+
+**See also:** [Interface inventory](#interface-inventory),
+[Virtual interface](#virtual-interface)
+
+### Virtual interface
+
+An adapter created by a hypervisor, container runtime, virtual private network,
+or subsystem networking layer, which fragcap excludes from automatic interface
+selection while leaving it explicitly selectable.
+
+fragcap decides this by matching the adapter description against a documented
+list of patterns.
+
+{: .matters }
+> This is a heuristic and fragcap says so rather than presenting it as fact:
+> no platform reports a "this is a hypervisor adapter" bit. Two things keep it
+> honest. The verdict only ever excludes from **automatic** selection, so an
+> operator who names an interface gets it whatever the rule concluded. And the
+> verdict is recorded with the pattern that matched, so a misclassified adapter
+> is visible in the run's report rather than discovered as an empty capture.
+
+**See also:** [Interface inventory](#interface-inventory),
+[Selection outcome](#selection-outcome)
+
 ## Windows Internals
 
 ### ETW

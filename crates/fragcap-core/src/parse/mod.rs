@@ -473,6 +473,7 @@ mod tests {
     use super::testframe as f;
     use super::*;
     use crate::flow::Proto;
+    use crate::interface::InterfaceId;
     use crate::packet::{Payload, RawPacket, Timestamp};
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1299,11 +1300,10 @@ mod tests {
             &f::tcp(51000, 443),
         );
         let len = frame.len() as u32;
-        let mut packet = CapturedPacket::from_raw(RawPacket::new(
-            Timestamp::from_nanos(1),
-            Payload::from(frame),
-            len,
-        ));
+        let mut packet = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(1), Payload::from(frame), len),
+            InterfaceId::default(),
+        );
         let outcome = p.apply(LinkType::ETHERNET, &mut packet);
         assert_eq!(packet.flow, outcome.flow());
         assert_eq!(packet.direction, Some(Direction::Outbound));
@@ -1319,11 +1319,10 @@ mod tests {
         let mut p = local_parser();
         let frame = f::ethernet(0x8100, &[0; 40]);
         let len = frame.len() as u32;
-        let mut packet = CapturedPacket::from_raw(RawPacket::new(
-            Timestamp::from_nanos(1),
-            Payload::from(frame),
-            len,
-        ));
+        let mut packet = CapturedPacket::from_raw(
+            RawPacket::new(Timestamp::from_nanos(1), Payload::from(frame), len),
+            InterfaceId::default(),
+        );
         let outcome = p.apply(LinkType::ETHERNET, &mut packet);
         assert_eq!(outcome.reject(), Some(ParseReject::UnsupportedEtherType));
         assert_eq!(packet.flow, None);

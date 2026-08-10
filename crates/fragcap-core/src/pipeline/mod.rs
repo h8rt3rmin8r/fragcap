@@ -71,11 +71,12 @@ pub(crate) mod buffer;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::error::{SinkError, SourceError};
+use crate::interface::{InterfaceId, InterfaceRetirement, RetirementReason};
 use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
 use crate::stats::CaptureStats;
@@ -101,19 +102,18 @@ pub struct PipelineConfig {
     pub capacity: usize,
     /// Passed to [`PacketSource::next_packet`]. Bounds stop latency.
     pub read_timeout: Duration,
-    /// The capturing host's addresses, for section 12.6 direction
-    /// determination. An empty set is legal and means every packet is rejected
-    /// with `NoLocalEndpoint`, which is a configuration a test uses
-    /// deliberately.
-    pub addrs: InterfaceAddrs,
 }
+
+// The interface address set used to live here, one per run. It moved onto
+// [`SourceBinding`] in review of pull request 12: specification section 12.6
+// matches against the capturing *interface's* addresses, and one run-wide set
+// cannot say that on a multi-homed machine.
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         PipelineConfig {
             capacity: DEFAULT_CAPACITY,
             read_timeout: DEFAULT_READ_TIMEOUT,
-            addrs: InterfaceAddrs::default(),
         }
     }
 }
@@ -122,6 +122,10 @@ impl Default for PipelineConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConfigError {
+    /// No packet source was supplied. A run over no interfaces would exit
+    /// having captured nothing, which is the silent-empty-capture failure the
+    /// interface module exists to prevent, so it is refused at construction.
+    NoSources,
     /// A buffer that drops everything can only be a mistake, so it is refused
     /// rather than honored.
     ZeroCapacity,
@@ -130,6 +134,7 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ConfigError::NoSources => f.write_str("a pipeline needs at least one packet source"),
             ConfigError::ZeroCapacity => {
                 f.write_str("a buffer capacity of zero would discard every packet")
             }
@@ -173,6 +178,28 @@ pub enum EndReason {
     /// Every attached sink returned a non-countable error and was retired.
     /// Unreachable with no sinks attached.
     AllSinksRetired,
+}
+
+impl EndReason {
+    /// The same ending, said in the vocabulary a per-interface report uses.
+    ///
+    /// `Stopped` becomes `SourceClosed` rather than acquiring a variant of its
+    /// own: from the interface's point of view a stop it observed is simply
+    /// where its own stream ended, and inventing a third reason would imply
+    /// fragcap knew something about the interface that it did not.
+    pub fn as_retirement(&self) -> RetirementReason {
+        match self {
+            EndReason::SourceFailed(SourceError::DeviceLost { detail }) => {
+                RetirementReason::DeviceLost {
+                    detail: detail.clone(),
+                }
+            }
+            EndReason::SourceFailed(e) => RetirementReason::Backend {
+                detail: e.to_string(),
+            },
+            _ => RetirementReason::SourceClosed,
+        }
+    }
 }
 
 impl fmt::Display for EndReason {
@@ -231,6 +258,16 @@ pub struct PipelineReport {
     /// Every sink that failed, in the order the failures were observed. Empty
     /// on a run where no sink failed.
     pub sink_failures: Vec<SinkFailure>,
+    /// Why each capture thread ended, one entry per interface.
+    ///
+    /// Never empty on a completed run: every source retires eventually, and an
+    /// interface that ended for an unremarkable reason is still reported,
+    /// because "it was watched and produced nothing" and "it stopped being
+    /// watched" are different facts and an operator needs to tell them apart.
+    ///
+    /// A retirement advances no drop counter. See
+    /// [`crate::interface::InterfaceRetirement`] for why that is deliberate.
+    pub retirements: Vec<InterfaceRetirement>,
 }
 
 impl PipelineReport {
@@ -287,16 +324,62 @@ impl Error for PipelineError {}
 /// attributor are held side by side and neither appears in the other's
 /// signatures.
 pub struct Pipeline {
-    source: Box<dyn PacketSource>,
+    sources: Vec<SourceBinding>,
     attributor: Box<dyn FlowAttributor>,
     sinks: Vec<Box<dyn Sink>>,
     config: PipelineConfig,
     stop: StopHandle,
 }
 
+/// A packet source together with the interface identity its packets carry.
+///
+/// The pair rather than the source alone, because [`PacketSource`] answers what
+/// it produces and not where it produces it from, and the pipeline is what
+/// attaches the identity at the lift from `RawPacket` to `CapturedPacket`.
+///
+/// The link type is deliberately not carried here. [`PacketSource::link_type`]
+/// already answers it per source, and a second copy would be a second answer
+/// that could disagree with the first.
+pub struct SourceBinding {
+    pub id: InterfaceId,
+    pub source: Box<dyn PacketSource>,
+    /// The addresses configured on **this** interface.
+    ///
+    /// Per binding rather than per run, because specification section 12.6
+    /// determines direction by matching a packet's source against "the address
+    /// set of the capturing interface", and section 8.4 places the flow key's
+    /// local endpoint by the same test.
+    ///
+    /// A single run-wide set cannot express that on a multi-homed machine, and
+    /// both ways of faking it are wrong. One interface's addresses reject every
+    /// other interface's traffic as `no_local_endpoint`. Their union assigns a
+    /// direction and a local endpoint to a packet observed on an adapter that
+    /// does not hold the matched address, which is a false statement about what
+    /// was observed rather than a coarse one, and constitution P-9 does not
+    /// permit it.
+    ///
+    /// Found in review of pull request 12.
+    pub addrs: InterfaceAddrs,
+}
+
+impl SourceBinding {
+    pub fn new(id: InterfaceId, source: Box<dyn PacketSource>, addrs: InterfaceAddrs) -> Self {
+        SourceBinding { id, source, addrs }
+    }
+}
+
+impl fmt::Debug for SourceBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SourceBinding")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
 impl fmt::Debug for Pipeline {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Pipeline")
+            .field("sources", &self.sources.len())
             .field("sinks", &self.sinks.len())
             .field("config", &self.config)
             .field("stopped", &self.stop.is_stopped())
@@ -321,16 +404,31 @@ impl Pipeline {
     /// it, and no `Sync` bound is implied or required. When the control thread
     /// arrives, what changes is where the attributor lives, not what this
     /// pipeline does with the answers.
+    /// # Several sources
+    ///
+    /// Specification section 12.1 captures each interface on its own handle and
+    /// its own thread, all feeding one bounded buffer. So this takes a
+    /// collection and [`Pipeline::run`] spawns a thread per entry.
+    ///
+    /// It deliberately does not accept a multiplexing source that fans several
+    /// sources into one. That arrangement leaves this constructor untouched and
+    /// is wrong twice: it needs its own fan-in buffer where section 12.4
+    /// specifies exactly one, and `next_packet` yields a `RawPacket` carrying no
+    /// interface identity, so the multiplexer would have to invent a side
+    /// channel for the very thing this pipeline attaches one line later.
     pub fn new(
-        source: Box<dyn PacketSource>,
+        sources: Vec<SourceBinding>,
         attributor: Box<dyn FlowAttributor>,
         config: PipelineConfig,
     ) -> Result<Self, ConfigError> {
         if config.capacity == 0 {
             return Err(ConfigError::ZeroCapacity);
         }
+        if sources.is_empty() {
+            return Err(ConfigError::NoSources);
+        }
         Ok(Pipeline {
-            source,
+            sources,
             attributor,
             sinks: Vec::new(),
             config,
@@ -370,7 +468,7 @@ impl Pipeline {
     /// program that was not running correctly as though it were.
     pub fn run(self) -> PipelineReport {
         let Pipeline {
-            mut source,
+            sources,
             attributor,
             sinks,
             config,
@@ -399,27 +497,106 @@ impl Pipeline {
         // before the panic reaches the caller" true with no panic-specific
         // code path.
         let mut guard = OutputThread {
-            tx: Some(tx),
+            tx: Some(Arc::new(tx)),
             handle: Some(handle),
         };
 
-        let mut stats = CaptureStats::default();
-        let mut parser = HeaderParser::new(config.addrs.clone());
-        let link = source.link_type();
-        let ended = acquire(
-            source.as_mut(),
-            attributor.as_ref(),
-            &mut parser,
-            guard.producer(),
-            &stop,
-            &mut stats,
-            link,
-            config.read_timeout,
-        );
+        // Shared because every capture thread asks the same attributor, and
+        // `FlowAttributor` is `Send` without being `Sync`, so a shared reference
+        // is not enough on its own.
+        //
+        // A mutex on the per-packet path is not the destination. Specification
+        // section 8.6 has a control thread owning the attributor and publishing
+        // a snapshot the capture threads read without blocking, which is the
+        // arrangement that removes this lock. That thread arrives with S11 and
+        // S13. Taking it now would fix the snapshot's shape before S10 knows
+        // what a socket table snapshot costs to publish, and adding `Sync` to
+        // the trait instead would be a fourth deviation against section 8.5 to
+        // buy something the control thread makes moot.
+        let attributor = Arc::new(Mutex::new(attributor));
 
-        stats.parse = *parser.stats();
-        stats.source = source.stats();
-        let output = guard.finish(stats);
+        let mut threads = Vec::with_capacity(sources.len());
+        for SourceBinding {
+            id,
+            mut source,
+            addrs,
+        } in sources
+        {
+            let attributor = Arc::clone(&attributor);
+            let tx = Arc::clone(guard.producer());
+            let stop = stop.clone();
+            let read_timeout = config.read_timeout;
+            threads.push(std::thread::spawn(move || {
+                // Winds the other capture threads down the moment this one
+                // unwinds, rather than when the main thread gets around to
+                // joining it. Join order is arbitrary, and waiting for the
+                // join is what let a surviving source run on unbounded while
+                // the panic sat in a `JoinHandle` nobody had reached yet.
+                let _stop_the_others = StopOnPanic(stop.clone());
+                let mut parser = HeaderParser::new(addrs);
+                let mut stats = CaptureStats::default();
+                let link = source.link_type();
+                let ended = acquire(
+                    source.as_mut(),
+                    &attributor,
+                    &mut parser,
+                    &tx,
+                    &stop,
+                    &mut stats,
+                    id,
+                    link,
+                    read_timeout,
+                );
+                stats.parse = *parser.stats();
+                stats.set_source(id, source.stats());
+                AcquisitionOutcome { id, stats, ended }
+            }));
+        }
+
+        let mut merged = CaptureStats::default();
+        let mut retirements = Vec::new();
+        let mut endings = Vec::new();
+        let mut panicked: Option<Box<dyn std::any::Any + Send>> = None;
+        for thread in threads {
+            match thread.join() {
+                Ok(outcome) => {
+                    retirements.push(InterfaceRetirement {
+                        interface: outcome.id,
+                        reason: outcome.ended.as_retirement(),
+                    });
+                    endings.push(outcome.ended);
+                    merged.absorb(outcome.stats);
+                }
+                Err(payload) => {
+                    // A capture thread panicked. Resuming here would abandon
+                    // every other capture thread, and each of them holds a
+                    // producer: the buffer would never close, the output thread
+                    // would wait on it forever, and the guard's drop would join
+                    // a thread that never returns. A panic would become a hang,
+                    // which is strictly worse because it reports nothing.
+                    //
+                    // So wind the others down first and keep joining. The
+                    // payload is carried to the end and resumed once every
+                    // thread is accounted for.
+                    stop.stop();
+                    if panicked.is_none() {
+                        panicked = Some(payload);
+                    }
+                }
+            }
+        }
+
+        if let Some(payload) = panicked {
+            // Closes the buffer and joins the output thread, so the sinks are
+            // flushed and finished before the panic reaches the caller. Exactly
+            // what the single-source path already did, now reached only after
+            // every capture thread has stopped.
+            drop(guard);
+            std::panic::resume_unwind(payload);
+        }
+
+        let ended = combine_endings(endings);
+        let output = guard.finish(merged);
         PipelineReport {
             stats: output.stats,
             // Retirement outranks the stop it requested, because the stop was a
@@ -435,6 +612,61 @@ impl Pipeline {
                 ended
             },
             sink_failures: output.failures,
+            retirements,
+        }
+    }
+}
+
+/// What one capture thread produced.
+struct AcquisitionOutcome {
+    id: InterfaceId,
+    stats: CaptureStats,
+    ended: EndReason,
+}
+
+/// The run's ending, from every capture thread's.
+///
+/// A failure outranks an ordinary close, because a run in which one interface
+/// disappeared did not end cleanly even though the others did. A close outranks
+/// a stop, because a source that ran out said more about why the run ended than
+/// the stop that followed. With one source this reduces to that source's own
+/// ending, which is what every pre-S09 test asserts.
+fn combine_endings(endings: Vec<EndReason>) -> EndReason {
+    if let Some(failed) = endings
+        .iter()
+        .find(|e| matches!(e, EndReason::SourceFailed(_)))
+    {
+        return failed.clone();
+    }
+    if endings.iter().all(|e| *e == EndReason::SourceClosed) && !endings.is_empty() {
+        return EndReason::SourceClosed;
+    }
+    if endings.contains(&EndReason::SourceClosed)
+        && endings
+            .iter()
+            .all(|e| matches!(e, EndReason::SourceClosed | EndReason::Stopped))
+    {
+        return EndReason::SourceClosed;
+    }
+    EndReason::Stopped
+}
+
+/// Requests a stop only when its holder is unwinding.
+///
+/// Distinct from [`StopOnDrop`], and the distinction is the whole point: a
+/// capture thread that ends normally must leave the other interfaces running,
+/// because a source reaching its end is not a reason to abandon the rest of the
+/// capture. A capture thread that panics must not, because every capture thread
+/// holds a producer and a live one would keep the buffer open forever, turning
+/// a defect that reports itself into a hang that reports nothing.
+///
+/// Added in review of pull request 12.
+struct StopOnPanic(StopHandle);
+
+impl Drop for StopOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.stop();
         }
     }
 }
@@ -455,11 +687,12 @@ impl Drop for StopOnDrop {
 #[allow(clippy::too_many_arguments)]
 fn acquire(
     source: &mut dyn PacketSource,
-    attributor: &dyn FlowAttributor,
+    attributor: &Mutex<Box<dyn FlowAttributor>>,
     parser: &mut HeaderParser,
     tx: &buffer::Producer,
     stop: &StopHandle,
     stats: &mut CaptureStats,
+    interface: InterfaceId,
     link: crate::link::LinkType,
     timeout: Duration,
 ) -> EndReason {
@@ -477,13 +710,16 @@ fn acquire(
             Err(e) => return EndReason::SourceFailed(e),
         };
 
-        let mut packet = CapturedPacket::from_raw(raw);
+        let mut packet = CapturedPacket::from_raw(raw, interface);
         stats.packets_captured = stats.packets_captured.saturating_add(1);
         parser.apply(link, &mut packet);
         if let Some(key) = packet.flow.as_ref() {
             // The packet's own instant, not the present one. Specification
             // section 11.4: capture and socket table observation are not
             // synchronized, so the question is who owned this flow then.
+            let attributor = attributor
+                .lock()
+                .expect("the attributor mutex is never poisoned");
             packet.attribution = attributor.resolve(key, packet.ts);
         }
         match packet.attribution_state() {
@@ -516,12 +752,16 @@ struct OutputOutcome {
 /// of [`Pipeline::run`] the buffer is closed before the thread draining it is
 /// joined. Holding the two separately deadlocks while unwinding.
 struct OutputThread {
-    tx: Option<buffer::Producer>,
+    tx: Option<Arc<buffer::Producer>>,
     handle: Option<JoinHandle<OutputOutcome>>,
 }
 
 impl OutputThread {
-    fn producer(&self) -> &buffer::Producer {
+    /// The shared producer. Each capture thread holds a clone, so the buffer
+    /// closes only once the last of them and this guard have let go, which is
+    /// the same "closed when the producer is gone" rule the buffer has always
+    /// had, now counted across several holders.
+    fn producer(&self) -> &Arc<buffer::Producer> {
         self.tx
             .as_ref()
             .expect("the producer is taken only when the run ends")
@@ -997,7 +1237,7 @@ mod tests {
             let mut log = self.log.lock().expect("the log mutex is never poisoned");
             log.flushed_before_finish = log.flushes > log.finishes;
             log.finishes += 1;
-            log.finished_with = Some(*stats);
+            log.finished_with = Some(stats.clone());
             if self.script.fail_finish {
                 return Err(SinkError::Closed);
             }
@@ -1033,11 +1273,14 @@ mod tests {
 
     fn pipeline(source: Box<dyn PacketSource>, capacity: usize) -> Pipeline {
         Pipeline::new(
-            source,
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                source,
+                local_addrs(),
+            )],
             Box::new(StubAttributor::resolving()),
             PipelineConfig {
                 capacity,
-                addrs: local_addrs(),
                 ..PipelineConfig::default()
             },
         )
@@ -1090,7 +1333,11 @@ mod tests {
     #[test]
     fn a_zero_capacity_is_refused_at_construction() {
         let err = Pipeline::new(
-            Box::new(StubSource::new(Vec::new())),
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(StubSource::new(Vec::new())),
+                local_addrs(),
+            )],
             Box::new(StubAttributor::empty()),
             PipelineConfig {
                 capacity: 0,
@@ -1138,10 +1385,13 @@ mod tests {
         let source: Box<dyn PacketSource> = Box::new(StubSource::new(frames(5)));
         let attributor: Box<dyn FlowAttributor> = Box::new(StubAttributor::resolving());
         let mut p = Pipeline::new(
-            source,
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                source,
+                local_addrs(),
+            )],
             attributor,
             PipelineConfig {
-                addrs: local_addrs(),
                 ..PipelineConfig::default()
             },
         )
@@ -1251,8 +1501,8 @@ mod tests {
         p.add_sink(StubSink::recording(&log));
         let report = p.run();
 
-        assert_eq!(report.stats.source.kernel_dropped, 11);
-        assert_eq!(report.stats.source.interface_dropped, 3);
+        assert_eq!(report.stats.source().kernel_dropped, 11);
+        assert_eq!(report.stats.source().interface_dropped, 3);
         assert_eq!(
             report.stats.fragcap_dropped(),
             0,
@@ -1297,6 +1547,7 @@ mod tests {
                 .lock()
                 .expect("the log mutex is never poisoned")
                 .finished_with
+                .clone()
                 .expect("every sink is finished");
             assert_eq!(
                 seen, report.stats,
@@ -1588,10 +1839,13 @@ mod tests {
             served: 0,
         };
         let mut p = Pipeline::new(
-            Box::new(source),
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(source),
+                local_addrs(),
+            )],
             Box::new(StubAttributor::resolving()),
             PipelineConfig {
-                addrs: local_addrs(),
                 ..PipelineConfig::default()
             },
         )

@@ -33,14 +33,18 @@ impl InterfaceDeclaration {
 
 /// The state the writer keeps for a declared interface.
 ///
-/// Holds no copy of the declaration. It held one until review of pull request
-/// 8: the writer read the name back to decide the annotation `iface` key per
-/// packet, and that per-packet decision was the defect, since a second
-/// interface declared later would have left earlier packets without a key they
-/// then needed. The declaration is written into its block and not consulted
-/// again. S09 will want it back when a capture can hold more than one.
+/// The name came back in S09, having been removed in review of pull request 8.
+/// The defect then was not holding the name; it was deciding the annotation
+/// `iface` key per packet, so that a second interface declared after some
+/// packets were written left those packets without a key they retrospectively
+/// needed. S09 fixes the actual problem by refusing a declaration that arrives
+/// after the first packet, which makes the multi-interface question answerable
+/// once, before anything is written, and holding the name safe again.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeclaredInterface {
+    /// The interface's name, as declared. Written into the annotation's `iface`
+    /// key when the capture holds more than one interface.
+    pub(crate) name: std::sync::Arc<str>,
     /// The timestamp of the last packet written against this interface, in
     /// microseconds. `None` until one is.
     ///

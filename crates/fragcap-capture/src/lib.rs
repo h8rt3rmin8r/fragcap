@@ -14,9 +14,15 @@
 //! Neither crate depends on the other, and `cargo xtask deps` rejects the edge
 //! if one ever tries.
 //!
-//! Live acquisition arrives in S09 and shares nothing with this: a file is
-//! never slow, never drops, and never disappears mid-read.
 
+//! Live acquisition arrived in S09 and shares nothing with the replay path: a
+//! file is never slow, never drops, and never disappears mid-read. It is
+//! compiled only under the `live` feature, which is off by default, so building
+//! this crate and running the ordinary check set needs neither the capture
+//! driver nor its software development kit.
+
+#[cfg(all(windows, feature = "live"))]
+pub mod live;
 pub mod pcap;
 pub mod replay;
 

@@ -43,7 +43,7 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S08 are complete. The Cargo workspace exists with the eight
+Slices S01 through S09 are complete. The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
 vocabulary from specification sections 8.4 and 8.5, a `parse` module
@@ -83,20 +83,43 @@ reverses the first answer the slice wrote down, and the reasoning for the
 reversal is in the S08 decisions fragment. Do not relitigate it without reading
 that first.
 
-**The pipeline acquires on the calling thread and spawns the sink thread.**
-`PacketSource` carries no `Send` bound while the other three cross-thread
-traits do, so this arrangement avoids changing a trait intended to reach 1.0.0
-unchanged. It does not survive S09: section 12.1 requires one capture thread per
-interface, so **S09 must add `Send` to `PacketSource`** through the deviation
-process. A `Pipeline` cannot currently be moved to another thread, which its own
-tests had to work around.
+**The pipeline runs one capture thread per interface.** S09 added `Send` to
+`PacketSource` through the deviation process, which is what S08 predicted it
+would have to. All capture threads feed the single bounded buffer of section
+12.4; there is no second buffer and no multiplexing source, and a proposal to
+add either should read the S09 clarification session first.
 
-Both writers record one interface and refuse a second, for the same reason:
-`CapturedPacket` carries no interface identifier and `Sink::write` has nowhere
-to pass one, so every packet would route to the first declared interface and be
-labelled with it. S09 brings live capture and the identifier, and lifts both
-restrictions. The pcapng writer additionally cannot attribute the capture-wide
-`CaptureStats` per interface, which is a second reason it waits.
+**Selection is a pure decision over a value, and that is load-bearing.**
+`fragcap-core::interface::select` takes an inventory and returns the chosen
+interfaces plus a named reason for every interface it passed over. It opens
+nothing, so the whole section 12.1 precedence is tested on any machine. The
+accounting invariant, that chosen plus passed-over equals the inventory, is
+asserted for every case: capturing on the wrong interface produces a run that
+exits zero and contains nothing, which is invisible unless the decision is
+reported.
+
+**Both writers now record more than one interface.** S06's blanket refusal of a
+second is replaced by the narrower rule that was actually needed: every
+interface must be declared before the first packet, because section 13.3 settles
+the annotation `iface` key from the interface count and a written block cannot
+be revised. A single-interface capture is byte-identical to what S06 and S07
+produced, checked against the committed goldens.
+
+Note that the two writers differ on the single-interface case and the difference
+is deliberate: pcapng omits the `iface` key, JSON Lines always writes it. S09's
+specification initially claimed both omit it, and the goldens caught that
+during implementation.
+
+**Loss accounting is per-interface where the cause is.** `CaptureStats` holds
+one backend report per interface and computes the capture-wide view, so a kernel
+drop names the driver buffer that is undersized. `buffer_dropped` and
+`sink_dropped` stay capture-wide, because the buffer and the sinks are.
+
+**A retired interface is not a lost packet.** A capture thread that fails
+retires its interface, the run continues on the others, and the report names the
+interface and the reason. It advances no drop counter: nothing was observed and
+then discarded, and counting it as loss would report packets that were never
+observed as packets that were thrown away.
 
 **A profile cannot exist unvalidated, and being wrong well is the deliverable.**
 S05 filled in `fragcap-profile`. `Profile::parse` returns either a validated
@@ -149,12 +172,13 @@ one contains, and a drift check in the ordinary gate fails if a committed file
 stops matching it. Regenerate with `FRAGCAP_UPDATE_FIXTURES=1 cargo test -p
 fragcap-capture --test corpus`, then read the diff. See `fixtures/README.md`.
 
-**Dependency inventory.** The workspace has three runtime dependencies and one
-dev-dependency, and the distinction is load-bearing rather than bookkeeping.
+**Dependency inventory.** The workspace has three runtime dependencies, one
+optional runtime dependency, and one dev-dependency, and the distinction is load-bearing rather than bookkeeping.
 
 | Crate | Kind | Added by | Why |
 | --- | --- | --- | --- |
 | `bytes` | runtime | S02 | Reference-counted payload clones |
+| `pcap` | runtime, optional | S09 | The capture driver binding, behind the `live` feature |
 | `toml-span` | runtime | S05 | Profile parsing with byte spans on every value |
 | `regex` | runtime | S05 | Compiles the `path_regex` match predicate |
 | `serde_json` | dev only | S07 | Parses every line the JSON writer emits, in tests |
@@ -198,6 +222,21 @@ requirement. No key in schema version 1 has a datetime type, so the divergence
 is confined to profiles that are invalid anyway; it is pinned by a test rather
 than left in prose.
 
+S09 is the third worth spelling out, and it broke the project's usual pattern of
+adding nothing. The alternative to a dependency here is not arithmetic over a
+byte slice, as it was in S03 and S06, but a C ABI whose struct layouts must be
+transcribed by hand with nothing checking them against the header. A wrong
+offset in the packet header yields plausible timestamps that are wrong, which is
+the P-9 failure no test over synthetic data catches. `pcap` is MIT or Apache-2.0
+across its whole graph and declares Rust 1.64.
+
+Two things about it are worth keeping in working memory. **`libloading` is
+pinned to the 0.8 line by `pcap`, and `libloading` 0.9 declares Rust 1.88**, so
+taking it directly would break `cargo xtask msrv` in a check most contributors
+cannot run locally. And **`pcap` can transmit, and fragcap never does**: `cargo
+xtask lint` fails if any fragcap source names a transmit call, so the P-1
+argument is mechanical rather than remembered.
+
 S07's writer is hand-rolled and its `serde_json` is test-only on purpose:
 verification is worth more the less it shares with what it verifies. Anything
 proposing to move it into `[dependencies]` is changing that argument and should
@@ -222,17 +261,30 @@ passing checks:
   reason. On pull request 10 the first two ran and passed. `platform` and
   `audit` still have not: `audit` is weekly and dispatch-only, and `platform`
   did not trigger on that pull request. Neither should be treated as green
-  until watched.
+  until watched. S09 gave `platform` real triggers, which makes the next pull
+  request the first that can turn it green, and the first that can turn it red
+  for a real reason.
 - **The minimum-toolchain check now runs for real.** Until S02 it built with
   the pinned toolchain and reported success, which said nothing about the
   declared minimum. It now builds through `rustup run 1.82` and exits 2 when
   that toolchain is absent, so a check that did not run can no longer look like
   one that passed.
-- **The npcap SDK acquisition step is unexercised.** No crate links against the
-  capture library until S09.
+- **The npcap SDK acquisition step has now run, and the live source links.**
+  Both were first exercised on pull request 12, watched to completion. What that
+  proves is that the kit is acquired at build time and that
+  `fragcap-capture --features live` compiles and links against `wpcap.lib`.
+- **Live capture has still never executed.** The kit supplies the import
+  library; `wpcap.dll` ships with the npcap driver, and a binary linked against
+  `wpcap.lib` will not start without it. A runner with no npcap installed exits
+  with STATUS_DLL_NOT_FOUND before `main`, which is how S09 found this. Tier 2
+  tests therefore do not run in continuous integration today, and the workflow
+  says so rather than appearing green over nothing. Installing npcap on a runner
+  is a licensing decision for the operator.
 - **`cargo deny` has never run.** The `audit` workflow owns it and is weekly
-  and dispatch-only. The dependency graph is no longer empty, so the check now
-  has a subject; nobody has watched it pass.
+  and dispatch-only. S09 added the first dependency with a platform surface and
+  a transitive graph worth checking, so the check now has a real subject. Its
+  licenses were verified by hand against the allowlist; nobody has watched
+  `cargo deny` confirm it.
 
 ## Spec-driven development workflow (spec-kit)
 

@@ -177,14 +177,18 @@ impl Consumer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interface::InterfaceId;
     use crate::packet::{Payload, RawPacket, Timestamp};
 
     fn packet(n: u8) -> Item {
-        Item::Packet(Box::new(CapturedPacket::from_raw(RawPacket::new(
-            Timestamp::from_nanos(n as i64),
-            Payload::copy_from_slice(&[n]),
-            1,
-        ))))
+        Item::Packet(Box::new(CapturedPacket::from_raw(
+            RawPacket::new(
+                Timestamp::from_nanos(n as i64),
+                Payload::copy_from_slice(&[n]),
+                1,
+            ),
+            InterfaceId::default(),
+        )))
     }
 
     /// The marker byte a test packet was built with, so a sequence is
