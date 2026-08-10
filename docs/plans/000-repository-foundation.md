@@ -115,9 +115,10 @@ not vendored. A different Bash skill was deliberately not substituted, since
 silently swapping the standard would be worse than recording the gap. This
 must be resolved before S18.
 
-**Brand identity is a placeholder.** Guardrails are captured in
-`docs/brand/README.md`, and open questions Q-7 and Q-8 remain. Sufficient to
-build against; not sufficient to ship a site.
+**Brand identity is resolved (2026-08-10 brand session).** The approved identity
+is vendored in `brand/` and recorded in `docs/brand/README.md`; open questions
+Q-7 (Geist Mono) and Q-8 (ShruggieTech sub-brand endorsement) are closed. S18 can
+now build the site against a decided identity.
 
 ## What comes next
 

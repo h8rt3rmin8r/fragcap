@@ -23,6 +23,14 @@ const EXCLUDED: &[&str] = &[
     "target",
     "node_modules",
     "captures",
+    // Vendored brand assets (slice S18 brand session): OFL-licensed fonts,
+    // generated vector logos and favicons, a PDF guide, and design tokens. The
+    // binary files are skipped by content sniffing already; the PDF guide is
+    // text-like enough in its first bytes to be linted as prose, and the vector
+    // art is machine-generated, so the whole directory is vendored content the
+    // way the skills directories below are. Re-imported wholesale from the kit
+    // rather than edited in place.
+    "brand",
     ".agents/skills",
     ".claude/skills",
     // Machine-local git worktrees. A worktree here is a complete second

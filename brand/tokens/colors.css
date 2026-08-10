@@ -1,0 +1,14 @@
+:root {
+  --fragcap-signal-cyan: #27C7E7;
+  --fragcap-capture-orange: #FF5300;
+  --fragcap-void: #050708;
+  --fragcap-surface: #0B1115;
+  --fragcap-surface-raised: #101A20;
+  --fragcap-line: #21323A;
+  --fragcap-text: #F2F7F8;
+  --fragcap-text-muted: #94A8B0;
+  --fragcap-light-surface: #F5F8F9;
+  --fragcap-light-text: #102027;
+  --fragcap-light-cyan: #006F82;
+  --fragcap-light-orange: #C24100;
+}

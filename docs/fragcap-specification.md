@@ -3021,8 +3021,8 @@ to section 6.2.
 | Q-4 | Exact process topology and image names per title (A-4) | Process tree capture during launch | S17 profiles | **Resolved 2026-08-06.** A-4 confirmed. |
 | Q-5 | Is the launcher handoff visible on loopback? (A-5) | Loopback capture during launch | S09 | **Resolved 2026-08-06. A-5 REFUTED.** |
 | Q-6 | Transport encryption posture per title | Payload entropy inspection | Documentation | **Resolved 2026-08-06.** Encrypted throughout. |
-| Q-7 | Monospace face selection for brand | Brand session | S18 | Open |
-| Q-8 | Parent brand visual relationship | Brand session | S18 | Open |
+| Q-7 | Monospace face selection for brand | Brand session | S18 | **Resolved 2026-08-10.** Geist Mono (see `brand/`). |
+| Q-8 | Parent brand visual relationship | Brand session | S18 | **Resolved 2026-08-10.** ShruggieTech sub-brand; "A ShruggieTech project" endorsement, no combined logo (see `brand/`). |
 | Q-9 | Crate name reservation on the registry | Reserve before first release | S01 | Open |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
