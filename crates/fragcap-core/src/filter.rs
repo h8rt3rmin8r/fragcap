@@ -331,15 +331,14 @@ impl FilterManager {
     ///
     /// The capture thread, the only thread that may touch the handle, reports
     /// whether its `set_filter` call succeeded. On success the pending program
-    /// becomes the installed one and the handle's gap set clears, because the new
-    /// program admits every wanted endpoint. On failure the pending program is
-    /// dropped and the handle keeps its prior program, its timing, and its gap
-    /// set, so the next eligible poll retries: a rejected maintenance install is
-    /// never treated as installed, which is the divergence this closes. A
-    /// rejecting handle is not retired, because correctness never depends on the
-    /// filter being fresh (section 12.3) and it is still capturing on its prior
-    /// program; retirement stays reserved for a handle whose capture thread has
-    /// ended.
+    /// becomes the installed one and the endpoints it admits leave the handle's
+    /// gap set. On failure the pending program is dropped and the handle keeps its
+    /// prior program, its timing, and its gap set, so the next eligible poll
+    /// retries: a rejected maintenance install is never treated as installed,
+    /// which is the divergence this closes. A rejecting handle is not retired,
+    /// because correctness never depends on the filter being fresh (section 12.3)
+    /// and it is still capturing on its prior program; retirement stays reserved
+    /// for a handle whose capture thread has ended.
     ///
     /// An acknowledgement for a handle with no pending install (a stale or
     /// duplicate acknowledgement) is ignored.
@@ -351,10 +350,16 @@ impl FilterManager {
             return;
         };
         if installed_ok {
-            // The install took effect; commit it and clear the gap set, since the
-            // new program admits every wanted endpoint.
+            // The install took effect. Drop from the gap set only the endpoints
+            // the newly installed program admits; endpoints it still excludes stay
+            // recorded so a continuous gap episode is counted once, not again on
+            // the next poll. Clearing the whole set would be wrong when the wanted
+            // set grew while this install was pending: the pending program was
+            // compiled for the earlier set and does not admit the endpoints added
+            // since, whose gaps were already counted and must not be recounted
+            // (found in review of pull request 25).
+            h.gapped.retain(|e| !pending.contains(e));
             h.installed = Installed::Narrowed(pending);
-            h.gapped.clear();
         }
         // On failure the prior program, its timing, and its gap set are left
         // exactly as they were, so the gap accounting keeps measuring against what
@@ -743,6 +748,51 @@ mod tests {
         mgr.acknowledge(0, true);
         assert!(mgr.poll(&ab, t0 + Duration::from_millis(20)).is_empty());
         assert_eq!(mgr.filter_gaps(), 1, "no new gap once AB is installed");
+    }
+
+    // Review of pull request 25. When the wanted set grows while an install is
+    // pending, a success acknowledgement must clear only the endpoints the newly
+    // installed program admits, not the whole gap set, or an endpoint that stays
+    // excluded across the install has its continuous gap counted twice.
+    #[test]
+    fn a_confirmed_install_does_not_recount_an_endpoint_it_still_excludes() {
+        let mut mgr = FilterManager::new(1, cfg(0, 0));
+        let t0 = Instant::now();
+        let a = [ep("198.51.100.5:443", Proto::Tcp)];
+        let ab = [
+            ep("198.51.100.5:443", Proto::Tcp),
+            ep("203.0.113.9:5055", Proto::Udp),
+        ];
+        let abc = [
+            ep("198.51.100.5:443", Proto::Tcp),
+            ep("203.0.113.9:5055", Proto::Udp),
+            ep("[2001:db8::1]:80", Proto::Tcp),
+        ];
+
+        // Install A and confirm it.
+        assert_eq!(mgr.poll(&a, t0).len(), 1);
+        mgr.acknowledge(0, true);
+        // B is added: its gap opens against the installed A program, and an install
+        // for AB is issued (now pending).
+        assert_eq!(mgr.poll(&ab, t0 + Duration::from_millis(10)).len(), 1);
+        assert_eq!(mgr.filter_gaps(), 1, "B excluded by A");
+        // C is added while AB is still pending: its gap opens too (A is still
+        // installed), and no new install is issued while one is in flight.
+        assert!(
+            mgr.poll(&abc, t0 + Duration::from_millis(20)).is_empty(),
+            "AB still pending, so no new install is issued"
+        );
+        assert_eq!(mgr.filter_gaps(), 2, "C also excluded by the installed A");
+        // AB is confirmed. It admits B (that gap closes) but still excludes C.
+        mgr.acknowledge(0, true);
+        // The next poll sees C still excluded by the installed AB program. C was
+        // already counted, so its continuous gap must not be counted again.
+        let _ = mgr.poll(&abc, t0 + Duration::from_millis(30));
+        assert_eq!(
+            mgr.filter_gaps(),
+            2,
+            "C's continuous gap is counted once, not recounted at the AB install"
+        );
     }
 
     // FR-003. An acknowledgement for a handle with no install in flight is a
