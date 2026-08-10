@@ -269,12 +269,17 @@ passing checks:
   declared minimum. It now builds through `rustup run 1.82` and exits 2 when
   that toolchain is absent, so a check that did not run can no longer look like
   one that passed.
-- **The npcap SDK acquisition step has still never run.** S09 gave it a
-  subject: `fragcap-capture --features live` links against `wpcap.lib`, and the
-  `platform` workflow now has real triggers and builds it. Nobody has watched
-  that workflow complete. The live source is compile-verified and lint-clean,
-  and **has never been linked or executed**, because this workspace has no npcap
-  software development kit installed.
+- **The npcap SDK acquisition step has now run, and the live source links.**
+  Both were first exercised on pull request 12, watched to completion. What that
+  proves is that the kit is acquired at build time and that
+  `fragcap-capture --features live` compiles and links against `wpcap.lib`.
+- **Live capture has still never executed.** The kit supplies the import
+  library; `wpcap.dll` ships with the npcap driver, and a binary linked against
+  `wpcap.lib` will not start without it. A runner with no npcap installed exits
+  with STATUS_DLL_NOT_FOUND before `main`, which is how S09 found this. Tier 2
+  tests therefore do not run in continuous integration today, and the workflow
+  says so rather than appearing green over nothing. Installing npcap on a runner
+  is a licensing decision for the operator.
 - **`cargo deny` has never run.** The `audit` workflow owns it and is weekly
   and dispatch-only. S09 added the first dependency with a platform surface and
   a transitive graph worth checking, so the check now has a real subject. Its

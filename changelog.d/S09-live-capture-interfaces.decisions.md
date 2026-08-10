@@ -62,8 +62,9 @@ artifact, changed because this slice is the first to give it a subject: until
 now no crate linked against the capture library, so its software development kit
 acquisition step had never run. It now triggers on changes to the capture
 crates and builds the live source, because `cargo check` does not link and a
-missing `wpcap.lib` appears only at the link step. **It has still not been
-watched to completion and must not be reported as passing until it has.**
+missing `wpcap.lib` appears only at the link step. Its first run was watched to
+completion on pull request 12; what it found is the entry dated 2026-08-10
+below.
 
 **2026-08-09: the default route is determined with `std::net`.** A UDP socket
 bound and connected to a documentation-range address reports the source address
@@ -108,6 +109,24 @@ first declaration. S09 supplies the identifier, and what remains necessary is
 only that all interfaces be declared before the first packet: section 13.3
 settles the annotation `iface` key from the interface count, and a written block
 cannot be revised.
+
+**2026-08-10: the software development kit is enough to build and not enough to
+run, and this slice learned it the hard way.** The `platform` workflow's first
+ever run acquired the kit and built the live source successfully, then failed
+running the test suite with STATUS_DLL_NOT_FOUND. A binary linked against
+`wpcap.lib` needs `wpcap.dll` at load time, and that DLL ships with the npcap
+driver installation rather than with the kit.
+
+The consequence falsifies a claim this slice's plan made. Tier 2 tests were
+designed to detect a missing driver at runtime and print a reason rather than
+failing; on Windows the process never starts, so that design gets no chance to
+run. The workflow now checks for the driver before choosing which test command
+to issue, and says plainly when live capture was not exercised.
+
+Installing npcap on a runner would make tier 2 tests real and is a licensing
+decision rather than a technical one, so it is left to the operator. Until it is
+taken, the `platform` workflow proves that the live source compiles and links,
+and proves nothing about whether it captures.
 
 **2026-08-09: `cargo xtask neutral` now builds `fragcap-capture` as well as
 `fragcap-core`.** It only ever built core, while the specification claimed both

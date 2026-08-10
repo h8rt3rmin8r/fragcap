@@ -8,9 +8,18 @@
 //!
 //! **A test here that finds no driver prints why and returns.** Rust's harness
 //! has no skip, and a test that failed on a machine without npcap would make the
-//! `live` feature unusable for local development, which would in turn mean
-//! nobody compiles it until continuous integration does. A run that skipped
-//! everything has proved nothing, so read the output rather than the exit code.
+//! `live` feature unusable for local development. A run that skipped everything
+//! has proved nothing, so read the output rather than the exit code.
+//!
+//! **That graceful skip only helps once the process starts, and on Windows it
+//! may not.** A binary linked against `wpcap.lib` needs `wpcap.dll` at load
+//! time, and that DLL ships with the npcap driver rather than with the software
+//! development kit. Without the driver installed the test binary exits with
+//! STATUS_DLL_NOT_FOUND before `main` runs, so none of the checks below execute.
+//! Slice S09 learned this from a red `platform` workflow: the software
+//! development kit is enough to build and link, and is not enough to run.
+//! Whoever decides to install npcap on a runner is making a licensing decision,
+//! which is why the workflow detects and reports rather than installing.
 
 #![cfg(all(windows, feature = "live"))]
 
