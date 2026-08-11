@@ -9,6 +9,7 @@
 //! "print this and stop".
 
 pub mod doctor;
+pub mod extcap;
 pub mod profile;
 pub mod run;
 pub mod steam;

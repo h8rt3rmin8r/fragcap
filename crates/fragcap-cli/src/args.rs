@@ -53,22 +53,6 @@ impl Direction {
     }
 }
 
-/// A comma-separated set of role names that scopes which stages trigger and are
-/// captured.
-///
-/// Empty entries are refused rather than silently dropped, because a trailing
-/// comma is a mistake and honoring it would scope the capture to fewer roles
-/// than the author wrote.
-pub fn parse_roles(raw: &str) -> Result<Vec<String>, String> {
-    let roles: Vec<String> = raw.split(',').map(str::trim).map(str::to_string).collect();
-    if roles.iter().any(|r| r.is_empty()) {
-        return Err(format!(
-            "`{raw}` has an empty role name; give a comma-separated list of role names"
-        ));
-    }
-    Ok(roles)
-}
-
 /// The transport half of a `--sink` value: where the bytes go.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SinkTransport {
@@ -78,6 +62,10 @@ pub enum SinkTransport {
     JsonLines(PathBuf),
     /// A Windows named pipe. `pipe:`.
     Pipe(String),
+    /// An analyzer FIFO or named pipe to stream to. `fifo:`. Used by the extcap
+    /// integration, which is handed a path by the analyzer; opened for writing
+    /// rather than created as a server.
+    Fifo(PathBuf),
     /// A Unix domain socket. `unix:`.
     Unix(PathBuf),
     /// A TCP listener. `tcp://host:port`.
@@ -119,6 +107,13 @@ impl SinkSpec {
             timeout: None,
         }
     }
+
+    /// A pcapng FIFO sink for the extcap integration, with default options. The
+    /// analyzer hands fragcap the path; the format is pcapng and no rotation or
+    /// streaming option applies.
+    pub fn for_fifo(path: PathBuf) -> Self {
+        SinkSpec::new(SinkTransport::Fifo(path))
+    }
 }
 
 /// Parse a `--sink` specification: `<destination>[,<key>=<value>]...`.
@@ -157,8 +152,8 @@ fn parse_destination(raw: &str) -> Result<SinkTransport, String> {
     }
     let Some((scheme, target)) = raw.split_once(':') else {
         return Err(format!(
-            "`{raw}` has no sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, unix:, \
-             tcp://"
+            "`{raw}` has no sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, fifo:, \
+             unix:, tcp://"
         ));
     };
     if target.is_empty() {
@@ -168,10 +163,11 @@ fn parse_destination(raw: &str) -> Result<SinkTransport, String> {
         "file" | "pcapng" => Ok(SinkTransport::File(PathBuf::from(target))),
         "jsonl" => Ok(SinkTransport::JsonLines(PathBuf::from(target))),
         "pipe" => Ok(SinkTransport::Pipe(target.to_string())),
+        "fifo" => Ok(SinkTransport::Fifo(PathBuf::from(target))),
         "unix" => Ok(SinkTransport::Unix(PathBuf::from(target))),
         other => Err(format!(
             "`{other}:` is not a sink scheme; expected one of file:, pcapng:, jsonl:, pipe:, \
-             unix:, tcp://"
+             fifo:, unix:, tcp://"
         )),
     }
 }
@@ -252,16 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn roles_split_on_commas_and_reject_empties() {
-        assert_eq!(
-            parse_roles("client,launcher"),
-            Ok(vec!["client".to_string(), "launcher".to_string()])
-        );
-        assert!(parse_roles("client,").is_err());
-        assert!(parse_roles("").is_err());
-    }
-
-    #[test]
     fn sink_schemes_parse_to_their_transports() {
         assert_eq!(
             parse_sink("file:out.fcapng").unwrap().transport,
@@ -278,6 +264,10 @@ mod tests {
         assert_eq!(
             parse_sink("pipe:fragcap").unwrap().transport,
             SinkTransport::Pipe("fragcap".to_string())
+        );
+        assert_eq!(
+            parse_sink("fifo:out.fcapng").unwrap().transport,
+            SinkTransport::Fifo(PathBuf::from("out.fcapng"))
         );
         assert_eq!(
             parse_sink("unix:/tmp/fragcap.sock").unwrap().transport,

@@ -77,8 +77,13 @@ pub struct Inputs {
     pub etw_available: Option<bool>,
     /// The interfaces found.
     pub interfaces: Vec<IfaceInfo>,
-    /// Whether the analyzer extcap integration is installed.
+    /// Whether the analyzer extcap integration is installed (a fragcap binary is
+    /// present in the extcap directory).
     pub extcap_installed: bool,
+    /// The analyzer's extcap directory, when the platform location can be
+    /// determined. Reported by the integration check so an operator knows where
+    /// to copy the binary.
+    pub extcap_dir: Option<std::path::PathBuf>,
     /// How many bundled profiles ship.
     pub bundled_count: usize,
     /// How many user profiles are available.

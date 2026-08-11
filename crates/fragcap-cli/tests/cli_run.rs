@@ -60,6 +60,34 @@ fn a_run_produces_the_capture_goldens_with_stamped_role_and_stage() {
     );
 }
 
+// Regression: `run --roles client` once panicked at access time because
+// `RunArgs.roles` used a `value_parser` returning `Vec<String>` against a
+// `Vec<String>` field (clap could not downcast the element). The flag now uses
+// `value_delimiter`, so the run parses, succeeds, and scopes to the named role.
+#[test]
+fn run_with_roles_succeeds_and_scopes_to_the_named_role() {
+    let (code, _out, err) = run_offline(&["--roles".into(), "client".into()]);
+    assert_eq!(code, 0, "run --roles client parses and captures: {err}");
+    assert!(
+        err.contains("roles client (enforced)"),
+        "the capture is scoped to the named role: {err}"
+    );
+}
+
+// The comma-separated form splits into the role list, and a trailing comma is
+// harmless: the profile's `client` stage is still in the allowed set, so the run
+// succeeds and stays scoped. This documents the accepted behavior change from
+// dropping the empty-role rejection, matching the `extcap` surface.
+#[test]
+fn run_with_a_comma_separated_role_list_splits_and_scopes() {
+    let (code, _out, err) = run_offline(&["--roles".into(), "client,launcher".into()]);
+    assert_eq!(code, 0, "a comma-separated role list parses: {err}");
+    assert!(
+        err.contains("roles client,launcher (enforced)"),
+        "both roles are carried into the enforced scope: {err}"
+    );
+}
+
 #[test]
 fn the_completion_summary_counts_satisfy_the_conservation_identity() {
     let dir = tempfile::tempdir().unwrap();

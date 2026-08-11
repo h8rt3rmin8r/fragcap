@@ -170,15 +170,22 @@ fn iface_name(_name: &str) -> &'static str {
 }
 
 fn integration(inputs: &Inputs) -> Check {
+    // The analyzer extcap directory, named in both states so the operator knows
+    // where the binary belongs (specification section 14.5, FR-009).
+    let location = inputs.extcap_dir.as_ref().map(|d| d.display().to_string());
     if inputs.extcap_installed {
-        Check::ok(INTEGRATION, "analyzer extcap", "installed")
+        let detail = match &location {
+            Some(dir) => format!("installed in {dir}"),
+            None => "installed".to_string(),
+        };
+        Check::ok(INTEGRATION, "analyzer extcap", detail)
     } else {
         // Optional: a warning, never a block.
-        Check::warn(
-            INTEGRATION,
-            "analyzer extcap",
-            "not installed; the analyzer integration is optional",
-        )
+        let detail = match &location {
+            Some(dir) => format!("not installed; copy the fragcap binary into {dir} (optional)"),
+            None => "not installed; the analyzer integration is optional".to_string(),
+        };
+        Check::warn(INTEGRATION, "analyzer extcap", detail)
     }
 }
 
@@ -217,6 +224,9 @@ mod tests {
                 is_virtual: false,
             }],
             extcap_installed: true,
+            extcap_dir: Some(std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap",
+            )),
             bundled_count: 0,
             user_count: 2,
         }
@@ -309,6 +319,38 @@ mod tests {
         let report = run(&inputs);
         assert_eq!(integration(&inputs).status, Status::Warn);
         assert!(report.ready(), "an optional warning does not block");
+    }
+
+    #[test]
+    fn the_integration_check_names_the_extcap_directory() {
+        // Installed: the detail names the directory (FR-009, SC-004).
+        let inputs = ready_inputs();
+        let dir = inputs.extcap_dir.as_ref().unwrap().display().to_string();
+        let check = integration(&inputs);
+        assert_eq!(check.status, Status::Ok);
+        assert!(
+            check.detail.contains(&dir),
+            "installed names the dir: {}",
+            check.detail
+        );
+
+        // Not installed: still names the directory, and only warns.
+        let mut absent = ready_inputs();
+        absent.extcap_installed = false;
+        let check = integration(&absent);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains(&dir),
+            "not-installed names the dir: {}",
+            check.detail
+        );
+
+        // Location undetermined: the report says so rather than naming a wrong path.
+        let mut unknown = ready_inputs();
+        unknown.extcap_dir = None;
+        assert!(integration(&unknown).detail.contains("installed"));
+        unknown.extcap_installed = false;
+        assert!(integration(&unknown).detail.contains("optional"));
     }
 
     #[test]

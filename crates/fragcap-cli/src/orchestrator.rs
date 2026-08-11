@@ -85,6 +85,7 @@ pub fn capture(
     interrupt: &AtomicBool,
     fire_interrupt: bool,
     allowed_roles: Option<Vec<String>>,
+    sink_failure_is_clean: bool,
 ) -> Result<Exit, CliError> {
     let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
     session.attach(ARMED_AT);
@@ -132,6 +133,7 @@ pub fn capture(
             emitter,
             interrupt,
             fire_interrupt,
+            sink_failure_is_clean,
         ),
         #[cfg(all(feature = "etw", windows))]
         EventStream::Live(rx) => capture_live(
@@ -142,7 +144,26 @@ pub fn capture(
             emitter,
             interrupt,
             fire_interrupt,
+            sink_failure_is_clean,
         ),
+    }
+}
+
+/// Decide the run's exit from whether a sink failed.
+///
+/// A run that ended with no sink failure is a success. An unrecoverable sink
+/// failure normally ends the run at `Exit::FAILURE` (specification FR-005a). For
+/// an extcap capture, though, the single sink is the analyzer's FIFO and the
+/// analyst closing it is the defined clean stop, so `sink_failure_is_clean`
+/// reinterprets that end as a success while the summary still carries the loss
+/// accounting (constitution P-4). The FIFO is opened before capture starts (a bad
+/// path fails at assembly), so a mid-capture failure is a consumer disconnect
+/// rather than a broken destination.
+fn final_exit(had_sink_failure: bool, sink_failure_is_clean: bool) -> Exit {
+    if !had_sink_failure || sink_failure_is_clean {
+        Exit::SUCCESS
+    } else {
+        Exit::FAILURE
     }
 }
 
@@ -162,6 +183,7 @@ fn capture_prerecorded(
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     fire_interrupt: bool,
+    sink_failure_is_clean: bool,
 ) -> Result<Exit, CliError> {
     // The pid to role map, so a new binding is detected as a match and an exit
     // of a bound pid is detected as a stage exit.
@@ -272,13 +294,14 @@ fn capture_prerecorded(
     let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
     emitter.summary(&summary);
 
-    if report.sink_failures.is_empty() {
-        Ok(Exit::SUCCESS)
-    } else {
-        // An unrecoverable sink failure ended the run; the output may be partial
-        // (specification FR-005a). Not a usage error.
-        Ok(Exit::FAILURE)
-    }
+    // An unrecoverable sink failure ended the run; the output may be partial
+    // (specification FR-005a). Not a usage error. For an extcap capture, the
+    // analyzer closing its FIFO is the defined clean stop, so that end is a
+    // success (the summary still carries the accounting).
+    Ok(final_exit(
+        !report.sink_failures.is_empty(),
+        sink_failure_is_clean,
+    ))
 }
 
 /// Build the sinks, attach the write gate, and spawn the pipeline on its own
@@ -444,6 +467,7 @@ fn capture_live(
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     fire_interrupt: bool,
+    sink_failure_is_clean: bool,
 ) -> Result<Exit, CliError> {
     use std::time::{Duration, Instant};
 
@@ -688,11 +712,10 @@ fn capture_live(
     let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
     emitter.summary(&summary);
 
-    if report.sink_failures.is_empty() {
-        Ok(Exit::SUCCESS)
-    } else {
-        Ok(Exit::FAILURE)
-    }
+    Ok(final_exit(
+        !report.sink_failures.is_empty(),
+        sink_failure_is_clean,
+    ))
 }
 
 /// The live driver loop over the merged channel.
@@ -853,5 +876,35 @@ fn build_summary(
         discarded_out_of_window: out_of_window,
         buffer_dropped: stats.buffer_dropped,
         sink_dropped: stats.sink_dropped,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::final_exit;
+
+    // A run that ended with no sink failure is a success on any surface.
+    #[test]
+    fn no_sink_failure_is_always_a_success() {
+        assert_eq!(final_exit(false, false).code(), 0);
+        assert_eq!(final_exit(false, true).code(), 0);
+    }
+
+    // A sink failure is an unrecoverable end for `run` and `tap` (exit 1), but the
+    // defined clean stop for an extcap capture, whose single sink is the
+    // analyzer's FIFO: the analyst closing it ends the run at exit 0, with the
+    // loss accounting still surfaced in the summary (Codex review of PR #34).
+    #[test]
+    fn a_sink_failure_ends_cleanly_only_for_an_extcap_capture() {
+        assert_eq!(
+            final_exit(true, false).code(),
+            1,
+            "run/tap: a sink failure is a failure"
+        );
+        assert_eq!(
+            final_exit(true, true).code(),
+            0,
+            "extcap: a FIFO disconnect is a clean stop"
+        );
     }
 }

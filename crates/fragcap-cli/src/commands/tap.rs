@@ -33,6 +33,8 @@ pub fn run(args: &TapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         &orchestrator::INTERRUPT,
         args.offline.fire_interrupt,
         None,
+        // A sink failure is an unrecoverable end for `tap`, not a clean stop.
+        false,
     )
 }
 

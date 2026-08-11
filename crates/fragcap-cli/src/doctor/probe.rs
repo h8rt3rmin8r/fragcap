@@ -15,6 +15,27 @@ use std::path::PathBuf;
 
 use super::{Inputs, Privilege, Subsystem};
 
+/// The analyzer extcap directory and whether a fragcap binary is installed in
+/// it, read-only.
+///
+/// Detection only: this reads the directory to see whether the binary has been
+/// copied there and installs, downloads, and copies nothing, which is the
+/// Licensing rule and constitution P-1 made mechanical (specification 14.5).
+fn extcap_status() -> (Option<PathBuf>, bool) {
+    let dir = crate::paths::extcap_dir();
+    let installed = dir
+        .as_ref()
+        .map(|d| d.join(EXTCAP_BINARY).exists())
+        .unwrap_or(false);
+    (dir, installed)
+}
+
+/// The fragcap binary name in the analyzer's extcap directory.
+#[cfg(windows)]
+const EXTCAP_BINARY: &str = "fragcap.exe";
+#[cfg(not(windows))]
+const EXTCAP_BINARY: &str = "fragcap";
+
 /// Count the `.toml` profiles directly in a directory, or zero when it cannot
 /// be read.
 fn count_profiles(dir: &Option<PathBuf>) -> usize {
@@ -64,6 +85,7 @@ pub fn gather() -> Inputs {
     }
     #[cfg(not(windows))]
     {
+        let (extcap_dir, extcap_installed) = extcap_status();
         Inputs {
             os: format!("{} (capture is Windows-only)", std::env::consts::OS),
             subsystem: Subsystem::Native,
@@ -71,7 +93,8 @@ pub fn gather() -> Inputs {
             npcap: None,
             etw_available: tracing_availability(),
             interfaces: Vec::new(),
-            extcap_installed: false,
+            extcap_installed,
+            extcap_dir,
             bundled_count: crate::paths::bundled().len(),
             user_count,
         }
@@ -107,6 +130,7 @@ fn gather_windows(user_count: usize) -> Inputs {
         None
     };
 
+    let (extcap_dir, extcap_installed) = extcap_status();
     Inputs {
         os: "Windows".to_string(),
         subsystem: Subsystem::Native,
@@ -120,7 +144,8 @@ fn gather_windows(user_count: usize) -> Inputs {
         // Interface enumeration belongs to the capture backend, which is not
         // linked here; the check warns rather than fails on an empty set.
         interfaces: Vec::new(),
-        extcap_installed: false,
+        extcap_installed,
+        extcap_dir,
         bundled_count: crate::paths::bundled().len(),
         user_count,
     }

@@ -36,5 +36,7 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         &orchestrator::INTERRUPT,
         args.offline.fire_interrupt,
         allowed_roles,
+        // A sink failure is an unrecoverable end for `run`, not a clean stop.
+        false,
     )
 }

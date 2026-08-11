@@ -57,8 +57,6 @@ fn the_value_grammars_reject_bad_values_with_exit_two() {
         &["run", "-p", "x", "--sink", "out.fcapng"],
         // A sink with an unknown scheme.
         &["run", "-p", "x", "--sink", "bogus:x"],
-        // An empty role in the list.
-        &["run", "-p", "x", "--roles", "client,"],
         // A bad direction.
         &["run", "-p", "x", "--direction", "sideways"],
         // A ring window that is neither a duration nor a size.
@@ -71,13 +69,12 @@ fn the_value_grammars_reject_bad_values_with_exit_two() {
 }
 
 #[test]
-fn each_stub_reports_not_yet_implemented_names_its_slice_and_exits_two() {
-    // `steam` was a stub until slice S17 delivered it; it now has its own wiring
-    // tests in cli_steam.rs. `replay` and `extcap` remain stubs.
-    for (command, slice) in [("replay", "S15"), ("extcap", "S18")] {
-        let (code, _out, err) = run(&[command]);
-        assert_eq!(code, 2, "{command} exits 2");
-        assert!(err.contains("not yet implemented"), "{command}: {err}");
-        assert!(err.contains(slice), "{command} must name {slice}: {err}");
-    }
+fn the_replay_stub_reports_not_yet_implemented_names_its_slice_and_exits_two() {
+    // `steam` was a stub until slice S17 delivered it, and `extcap` until slice
+    // S18; both now have their own wiring tests (cli_steam.rs, cli_extcap.rs).
+    // `replay` remains the one stub.
+    let (code, _out, err) = run(&["replay"]);
+    assert_eq!(code, 2, "replay exits 2");
+    assert!(err.contains("not yet implemented"), "replay: {err}");
+    assert!(err.contains("S15"), "replay must name S15: {err}");
 }

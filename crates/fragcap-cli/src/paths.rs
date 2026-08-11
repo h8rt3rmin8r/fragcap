@@ -27,6 +27,39 @@ use fragcap::profile::{BundledSet, SearchPath};
 /// The environment variable that overrides the user profile directory.
 pub const PROFILE_DIR_ENV: &str = "FRAGCAP_PROFILE_DIR";
 
+/// The environment variable that overrides the analyzer extcap directory.
+pub const EXTCAP_DIR_ENV: &str = "FRAGCAP_EXTCAP_DIR";
+
+/// The analyzer's personal extcap directory, or `None` when the platform
+/// location cannot be determined.
+///
+/// This is where the fragcap binary is copied to register it as an extcap
+/// capture source (specification section 14.5). `doctor` reports it read-only and
+/// installs nothing. On Windows it is `%APPDATA%\Wireshark\extcap`; elsewhere it
+/// is the XDG or HOME Wireshark configuration location. An override,
+/// `FRAGCAP_EXTCAP_DIR`, lets a test point it at a scratch directory.
+pub fn extcap_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os(EXTCAP_DIR_ENV) {
+        return Some(PathBuf::from(dir));
+    }
+    #[cfg(windows)]
+    {
+        env::var_os("APPDATA").map(|base| PathBuf::from(base).join("Wireshark").join("extcap"))
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
+            return Some(PathBuf::from(xdg).join("wireshark").join("extcap"));
+        }
+        env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join(".config")
+                .join("wireshark")
+                .join("extcap")
+        })
+    }
+}
+
 /// The user profile directory, or `None` when the platform location cannot be
 /// determined.
 pub fn user_profile_dir() -> Option<PathBuf> {
