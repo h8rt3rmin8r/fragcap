@@ -58,8 +58,8 @@ pub enum Command {
     Replay(StubArgs),
     /// Manage and validate profiles.
     Profile(ProfileArgs),
-    /// Enumerate titles and scaffold profiles (not yet implemented; slice S17).
-    Steam(StubArgs),
+    /// Enumerate titles and scaffold profiles from a Steam installation.
+    Steam(SteamArgs),
     /// Report environment readiness.
     Doctor(DoctorArgs),
     /// Analyzer integration (not yet implemented; slice S18).
@@ -227,6 +227,23 @@ pub enum ProfileCommand {
     Show {
         /// The profile reference.
         reference: String,
+    },
+}
+
+/// Arguments to `steam`.
+#[derive(Debug, Args)]
+pub struct SteamArgs {
+    #[command(subcommand)]
+    pub command: SteamCommand,
+}
+
+/// The `steam` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SteamCommand {
+    /// Scaffold a profile skeleton for an installed title.
+    Profile {
+        /// The Steam application identifier of an installed title.
+        app_id: String,
     },
 }
 

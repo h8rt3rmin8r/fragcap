@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Steam library discovery: read `libraryfolders.vdf` and every
+//! `appmanifest_*.acf` to enumerate installed titles.
+//!
+//! The whole of this module is portable. The only Windows-specific step in
+//! discovery is finding the Steam root through the registry, which lives in
+//! [`crate::steam_root`]; everything here operates on a root directory, so it is
+//! exercised on any host against a fixture tree ([`discover_in`]).
+
+use std::path::{Path, PathBuf};
+
+use crate::vdf;
+use crate::SteamError;
+
+/// A Steam library: a directory Steam installs titles into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamLibrary {
+    /// The library root (contains `steamapps/`).
+    pub path: PathBuf,
+}
+
+/// An installed Steam title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledTitle {
+    /// The Steam application identifier. A string even when numeric, matching
+    /// the profile schema's `game.app_id`.
+    pub app_id: String,
+    /// The human title name.
+    pub name: String,
+    /// The resolved absolute installation directory.
+    pub install_dir: PathBuf,
+}
+
+/// A resolved Steam installation and the titles installed across its libraries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamInstallation {
+    /// The Steam install directory.
+    pub root: PathBuf,
+    /// Every configured library, including the root library.
+    pub libraries: Vec<SteamLibrary>,
+    /// Every installed title, deduplicated by `app_id` (first discovered wins).
+    pub titles: Vec<InstalledTitle>,
+    /// Non-fatal diagnostics: manifests skipped as malformed and duplicate
+    /// app_id collisions. Reported, never silently dropped (FR-004).
+    pub warnings: Vec<String>,
+}
+
+impl SteamInstallation {
+    /// The installed title with the given app_id, if present.
+    pub fn find(&self, app_id: &str) -> Option<&InstalledTitle> {
+        self.titles.iter().find(|t| t.app_id == app_id)
+    }
+}
+
+/// Discover libraries and installed titles under a given Steam root.
+///
+/// Portable: takes the root as a value so the whole enumeration is testable
+/// without a registry or a real Steam install. A malformed manifest is recorded
+/// in `warnings` and skipped; the well-formed ones survive (FR-004).
+pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
+    let mut warnings = Vec::new();
+    let mut libraries = vec![SteamLibrary {
+        path: root.to_path_buf(),
+    }];
+
+    for lib in read_library_folders(root, &mut warnings) {
+        if !libraries.iter().any(|l| l.path == lib) {
+            libraries.push(SteamLibrary { path: lib });
+        }
+    }
+
+    let mut titles: Vec<InstalledTitle> = Vec::new();
+    for lib in &libraries {
+        for title in read_library_titles(&lib.path, &mut warnings) {
+            if let Some(existing) = titles.iter().find(|t| t.app_id == title.app_id) {
+                warnings.push(format!(
+                    "app_id {} found in more than one library; keeping {} and ignoring {}",
+                    title.app_id,
+                    existing.install_dir.display(),
+                    title.install_dir.display()
+                ));
+            } else {
+                titles.push(title);
+            }
+        }
+    }
+
+    Ok(SteamInstallation {
+        root: root.to_path_buf(),
+        libraries,
+        titles,
+        warnings,
+    })
+}
+
+/// Read the library paths declared in `libraryfolders.vdf`.
+///
+/// Handles both the modern nested form (`"0" { "path" "..." }`) and the older
+/// flat form (`"0" "..."`). Non-numeric keys (`contentstatsid` and friends) are
+/// ignored. A missing or malformed file yields no extra libraries and a warning.
+fn read_library_folders(root: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf> {
+    let candidates = [
+        root.join("steamapps").join("libraryfolders.vdf"),
+        root.join("config").join("libraryfolders.vdf"),
+    ];
+    let Some(path) = candidates.iter().find(|p| p.exists()) else {
+        return Vec::new();
+    };
+
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            warnings.push(format!("could not read {}: {e}", path.display()));
+            return Vec::new();
+        }
+    };
+    let doc = match vdf::parse(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            warnings.push(format!("skipping malformed {}: {e}", path.display()));
+            return Vec::new();
+        }
+    };
+    let Some(folders) = doc.get("libraryfolders") else {
+        return Vec::new();
+    };
+    let Some(entries) = folders.entries() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (key, value) in entries {
+        if !key.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let path = match value {
+            vdf::VdfValue::Str(p) => Some(p.clone()),
+            vdf::VdfValue::Obj(_) => value
+                .get("path")
+                .and_then(|p| p.as_str())
+                .map(str::to_string),
+        };
+        if let Some(p) = path {
+            out.push(PathBuf::from(p));
+        }
+    }
+    out
+}
+
+/// Read every `appmanifest_*.acf` in one library's `steamapps` directory.
+fn read_library_titles(library: &Path, warnings: &mut Vec<String>) -> Vec<InstalledTitle> {
+    let steamapps = library.join("steamapps");
+    let entries = match std::fs::read_dir(&steamapps) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(), // A library with no steamapps holds no titles.
+    };
+
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("appmanifest_") && name.ends_with(".acf")) {
+            continue;
+        }
+        match read_manifest(&path, &steamapps) {
+            Ok(title) => out.push(title),
+            Err(reason) => warnings.push(format!("skipping {}: {reason}", path.display())),
+        }
+    }
+    // Deterministic order regardless of directory iteration order.
+    out.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+    out
+}
+
+/// Parse one application manifest into an [`InstalledTitle`].
+fn read_manifest(path: &Path, steamapps: &Path) -> Result<InstalledTitle, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
+    let doc = vdf::parse(&text).map_err(|e| e.to_string())?;
+    let state = doc.get("AppState").ok_or("no AppState block")?;
+
+    let app_id = state
+        .get("appid")
+        .and_then(|v| v.as_str())
+        .ok_or("no appid")?
+        .to_string();
+    let name = state
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let install_dir = state
+        .get("installdir")
+        .and_then(|v| v.as_str())
+        .ok_or("no installdir")?;
+
+    Ok(InstalledTitle {
+        app_id,
+        name,
+        install_dir: steamapps.join("common").join(install_dir),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempTree;
+
+    fn manifest(app_id: &str, name: &str, installdir: &str) -> String {
+        format!(
+            "\"AppState\"\n{{\n  \"appid\" \"{app_id}\"\n  \"name\" \"{name}\"\n  \
+             \"installdir\" \"{installdir}\"\n}}\n"
+        )
+    }
+
+    #[test]
+    fn discovers_titles_across_two_libraries() {
+        let tree = TempTree::new();
+        let root = tree.path();
+        // Library A is the steam root; library B is a second folder.
+        let lib_b = root.join("LibraryB");
+        tree.write(
+            &root
+                .join("steamapps")
+                .join("libraryfolders.vdf"),
+            &format!(
+                "\"libraryfolders\"\n{{\n  \"0\" {{ \"path\" \"{}\" }}\n  \"1\" {{ \"path\" \"{}\" }}\n}}\n",
+                root.display().to_string().replace('\\', "\\\\"),
+                lib_b.display().to_string().replace('\\', "\\\\"),
+            ),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_900883.acf"),
+            &manifest("900883", "ESO", "Zenimax Online"),
+        );
+        tree.write(
+            &lib_b.join("steamapps").join("appmanifest_2221490.acf"),
+            &manifest("2221490", "The Division 2", "Tom Clancy's The Division 2"),
+        );
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 2, "warnings: {:?}", inst.warnings);
+        let eso = inst.find("900883").unwrap();
+        assert_eq!(eso.name, "ESO");
+        assert_eq!(
+            eso.install_dir,
+            root.join("steamapps").join("common").join("Zenimax Online")
+        );
+        let div2 = inst.find("2221490").unwrap();
+        assert_eq!(
+            div2.install_dir,
+            lib_b
+                .join("steamapps")
+                .join("common")
+                .join("Tom Clancy's The Division 2")
+        );
+    }
+
+    #[test]
+    fn a_malformed_manifest_is_skipped_and_the_rest_survive() {
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_1.acf"),
+            &manifest("1", "Good", "Good"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_2.acf"),
+            "\"AppState\" { \"appid\" \"2\" ", // unterminated
+        );
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 1);
+        assert_eq!(inst.titles[0].app_id, "1");
+        assert!(
+            inst.warnings
+                .iter()
+                .any(|w| w.contains("appmanifest_2.acf")),
+            "expected a skip warning, got {:?}",
+            inst.warnings
+        );
+    }
+
+    #[test]
+    fn a_duplicate_app_id_keeps_the_first_and_reports_the_collision() {
+        let tree = TempTree::new();
+        let root = tree.path();
+        let lib_b = root.join("LibraryB");
+        tree.write(
+            &root.join("steamapps").join("libraryfolders.vdf"),
+            &format!(
+                "\"libraryfolders\" {{ \"1\" {{ \"path\" \"{}\" }} }}",
+                lib_b.display().to_string().replace('\\', "\\\\"),
+            ),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_5.acf"),
+            &manifest("5", "First", "First"),
+        );
+        tree.write(
+            &lib_b.join("steamapps").join("appmanifest_5.acf"),
+            &manifest("5", "Second", "Second"),
+        );
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 1);
+        assert_eq!(inst.find("5").unwrap().name, "First");
+        assert!(inst
+            .warnings
+            .iter()
+            .any(|w| w.contains("more than one library")));
+    }
+}

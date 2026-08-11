@@ -14,3 +14,15 @@ readme                 = "README.md"
 
 [dependencies]
 fragcap-profile.workspace = true
+
+# Windows-only. Registry read for the Steam install path
+# (Win32_System_Registry) and the steam:// protocol handler for managed launch
+# (Win32_UI_Shell). Additive features on the workspace's already-resolved 0.36
+# pin: no new package in Cargo.lock, no change to the resolved version. See the
+# S17 decisions fragment (chose windows-sys over the crate table's winreg to
+# avoid a second Windows-binding tree, mirroring S10).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+] }

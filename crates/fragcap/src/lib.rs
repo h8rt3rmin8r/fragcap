@@ -54,6 +54,21 @@ pub mod core {
     };
 }
 
+/// Steam platform integration (specification section 16).
+///
+/// Library discovery, profile scaffolding, and managed launch. Carries no
+/// capture and no attribution logic; the Windows-only internals are behind
+/// `#[cfg(windows)]` in the crate, so the facade re-export builds everywhere.
+pub mod steam {
+    pub use fragcap_steam::{
+        discover, discover_in, launch_request, scaffold, InstalledTitle, LaunchConfigError,
+        LaunchRequest, SteamError, SteamInstallation, SteamLibrary,
+    };
+
+    #[cfg(windows)]
+    pub use fragcap_steam::launch;
+}
+
 /// Packet acquisition.
 pub mod capture {
     pub use fragcap_capture::pcap::{PcapReader, ReplayStats};

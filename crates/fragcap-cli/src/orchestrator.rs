@@ -467,6 +467,19 @@ fn capture_live(
     let (handle, stop, stream_reports, ring_evicted) =
         spawn_pipeline(config, &mut components, gate)?;
 
+    // Managed launch (S17, specification 16.4): the session is already Watching
+    // (attached before this function) and the sinks are open (spawn_pipeline above),
+    // so starting the title now means every process in its launch chain produces a
+    // start event the acquisition loop below observes, including a launcher whose
+    // whole lifetime is shorter than any poll interval. This is the tier-2 path and
+    // is never asserted as run in CI.
+    if let Some(request) = &config.launch {
+        emitter.progress(&format!("launching {} through Steam", request.url));
+        if let Err(e) = fragcap::steam::launch(request) {
+            return Err(CliError::failure(e.to_string()));
+        }
+    }
+
     // Acquisition: fold live events until a terminal stage acquires the target,
     // or acquisition ends for another reason (the acquisition timeout, a
     // duration bound reached while still watching, an operator interrupt, the
