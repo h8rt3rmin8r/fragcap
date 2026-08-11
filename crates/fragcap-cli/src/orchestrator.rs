@@ -26,7 +26,7 @@
 //! same driver with events arriving on a channel instead of pre-collected.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Once};
 
@@ -237,7 +237,8 @@ fn capture_prerecorded(
     if zero_volume_bound(config) {
         session.on_volume_reached();
     }
-    let (handle, stop, stream_reports) = spawn_pipeline(config, &mut components, gate)?;
+    let (handle, stop, stream_reports, ring_evicted) =
+        spawn_pipeline(config, &mut components, gate)?;
 
     drive(
         &rx,
@@ -252,6 +253,7 @@ fn capture_prerecorded(
 
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
     emit_stream_reports(&stream_reports, emitter);
+    emit_ring_report(&ring_evicted, emitter);
 
     // Fold the events past the last packet (the exits that decide the stop
     // reason a script implies).
@@ -288,18 +290,22 @@ fn capture_prerecorded(
 /// packet's length and instant to the driver over the gate's own channel, which
 /// is what feeds `CaptureSession::on_packet` so `VolumeReached` and the duration
 /// bound still fire in the session.
+/// What [`spawn_pipeline`] hands back: the pipeline thread's join handle, its stop
+/// handle, the streaming sinks' per-consumer report handles, and the ring sink's
+/// eviction counter (present only in ring mode). The last two are the per-sink
+/// accountings the drivers surface after the run.
+type SpawnedPipeline = (
+    std::thread::JoinHandle<PipelineReport>,
+    StopHandle,
+    Vec<assemble::StreamReports>,
+    Option<Arc<AtomicU64>>,
+);
+
 fn spawn_pipeline(
     config: &EffectiveConfig,
     components: &mut CaptureComponents,
     gate: SessionGate,
-) -> Result<
-    (
-        std::thread::JoinHandle<PipelineReport>,
-        StopHandle,
-        Vec<assemble::StreamReports>,
-    ),
-    CliError,
-> {
+) -> Result<SpawnedPipeline, CliError> {
     let built = assemble::build_sinks(config, &components.interfaces)?;
     let stamper = components
         .stamper
@@ -317,7 +323,7 @@ fn spawn_pipeline(
     }
     let stop = pipeline.stop_handle();
     let handle = std::thread::spawn(move || pipeline.run());
-    Ok((handle, stop, built.stream_reports))
+    Ok((handle, stop, built.stream_reports, built.ring_evicted))
 }
 
 /// Surface each streaming consumer's per-consumer accounting after the run, so
@@ -348,6 +354,25 @@ fn emit_stream_reports(reports: &[assemble::StreamReports], emitter: &mut Emitte
                 consumer.reason.as_str()
             ));
         }
+    }
+}
+
+/// Surface the ring sink's eviction count after the run, so a ring capture that
+/// rolled its window reports how many packets it dropped from the tail rather than
+/// reporting zero loss (specification section 7.2, constitution P-4). The ring
+/// sink owns this counter, distinct from the capture-wide `sink_dropped`: an
+/// eviction is the operator's declared window scope, not a capture loss, but it is
+/// still surfaced so the omission is never silent. `None` outside ring mode.
+fn emit_ring_report(evicted: &Option<Arc<AtomicU64>>, emitter: &mut Emitter) {
+    if let Some(handle) = evicted {
+        let evicted = handle.load(Ordering::Relaxed);
+        // A structured event for a `--json` consumer and a progress line for the
+        // human summary; exactly one shape is emitted (the other call is a no-op
+        // for the active output mode).
+        emitter.event(&Event::RingEvicted { evicted });
+        emitter.progress(&format!(
+            "ring mode: {evicted} packet(s) evicted from the rolling window"
+        ));
     }
 }
 
@@ -439,7 +464,8 @@ fn capture_live(
     let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
     let (gate, gate_handle) = SessionGate::new(&config.session_config(), tee_tx);
     let stamper_reader = components.stamper.clone();
-    let (handle, stop, stream_reports) = spawn_pipeline(config, &mut components, gate)?;
+    let (handle, stop, stream_reports, ring_evicted) =
+        spawn_pipeline(config, &mut components, gate)?;
 
     // Acquisition: fold live events until a terminal stage acquires the target,
     // or acquisition ends for another reason (the acquisition timeout, a
@@ -505,6 +531,7 @@ fn capture_live(
         let _ = components.watcher.take();
         let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
         emit_stream_reports(&stream_reports, emitter);
+        emit_ring_report(&ring_evicted, emitter);
         // Fire the acquisition timeout, if set and the session is still watching,
         // so the summary can name it; an interrupt or a duration bound has
         // already stopped the session and set its reason.
@@ -613,6 +640,7 @@ fn capture_live(
     // was captured before it (specification FR-005).
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
     emit_stream_reports(&stream_reports, emitter);
+    emit_ring_report(&ring_evicted, emitter);
 
     // Slice 015: the socket-table refresh is driven by the pipeline's own
     // section 8.6 control thread and ends with the pipeline, so there is no

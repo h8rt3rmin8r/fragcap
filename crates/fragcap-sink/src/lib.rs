@@ -33,7 +33,13 @@
 //! backpressure is counted and reported and never stalls the capture, which is
 //! the practical form of P-4 for a streaming sink.
 //!
-//! What this crate still does not do: ring mode arrives in S16.
+//! Slice S16 added the third sink shape in [`transport`]: a [`RingSink`] that
+//! retains a rolling in-memory window of the most recent packets, bounded by a
+//! duration or a byte size, and dumps it to a capture file at drain (ring mode,
+//! specification section 7.2, FR-8). It reuses the same [`SinkFactory`] and
+//! pcapng writer; the retention is the only new behavior, and an eviction is the
+//! sink's own counted accounting rather than a capture loss. It is deliberately
+//! distinct from the pipeline's internal bounded ring buffer of section 12.4.
 //!
 //! The pipeline that drives these arrived in S08 and lives in
 //! `fragcap_core::pipeline`. Both writers are now fed by it over the whole
@@ -63,6 +69,7 @@ pub use json::{write_json_string, JsonLinesWriter, PayloadMode};
 pub use pcapng::interface::InterfaceDeclaration;
 pub use pcapng::PcapngWriter;
 pub use transport::file::{RotatingFileSink, RotationPolicy};
+pub use transport::ring::{RingSink, RingWindow};
 pub use transport::stream::{ConsumerReport, DisconnectReason, StreamSink};
 pub use transport::tcp::TcpAcceptor;
 pub use transport::{

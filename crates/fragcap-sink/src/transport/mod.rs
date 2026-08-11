@@ -30,6 +30,7 @@
 //! machinery is transport-agnostic above that seam.
 
 pub mod file;
+pub mod ring;
 pub mod stream;
 pub mod tcp;
 
