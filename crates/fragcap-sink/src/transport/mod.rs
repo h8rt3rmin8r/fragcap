@@ -29,6 +29,7 @@
 //! [`unix::UnixAcceptor`] on Unix. Each yields a [`Connection`]; the streaming
 //! machinery is transport-agnostic above that seam.
 
+pub mod fifo;
 pub mod file;
 pub mod ring;
 pub mod stream;

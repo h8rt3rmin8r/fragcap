@@ -6,5 +6,5 @@
 {"section":"Capture driver","name":"winpcap api mode","detail":"WinPcap API compatible","status":"ok"}
 {"section":"Tracing","name":"process events","detail":"process-event session available","status":"ok"}
 {"section":"Interfaces","name":"adapter","detail":"192.0.2.10","status":"ok"}
-{"section":"Integration","name":"analyzer extcap","detail":"installed","status":"ok"}
+{"section":"Integration","name":"analyzer extcap","detail":"installed in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok"}
 {"section":"Profiles","name":"profiles","detail":"bundled: 0, user: 2","status":"ok"}

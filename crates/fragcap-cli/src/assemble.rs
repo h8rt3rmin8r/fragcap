@@ -196,6 +196,50 @@ pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -
     }
 }
 
+/// Build the effective configuration for an extcap `--capture`, from the
+/// analyzer-supplied options and the resolved profile.
+///
+/// Mirrors [`effective_config_for_tap`]: it overlays the extcap options (roles,
+/// direction, loopback) onto the profile's `[capture]` defaults exactly as `run`
+/// does (specification FR-007, and section 14.5's "the same options `run`
+/// honors"), and carries the analyzer FIFO as its single sink. There is no ring,
+/// no managed launch, no volume bound, and no `--out` file: an extcap capture is
+/// a live stream to the analyzer, stopped by the analyzer closing the FIFO or by
+/// a session stop condition.
+pub fn effective_config_for_extcap(
+    args: &crate::cli::ExtcapArgs,
+    profile: &Profile,
+) -> EffectiveConfig {
+    let defaults = profile.capture();
+    let payload = defaults.payload().unwrap_or(true);
+    let roles = args
+        .roles
+        .clone()
+        .or_else(|| defaults.roles().map(|r| r.to_vec()));
+    let loopback = args.loopback || defaults.loopback().unwrap_or(false);
+    let fifo = SinkSpec::for_fifo(
+        args.fifo
+            .clone()
+            .expect("an extcap capture requires --fifo, validated by the command"),
+    );
+    EffectiveConfig {
+        mode: CaptureMode::File,
+        ring: None,
+        out: None,
+        sinks: vec![fifo],
+        duration: defaults.duration(),
+        acquisition_timeout: None,
+        max_packets: None,
+        max_bytes: None,
+        roles,
+        direction: args.direction.unwrap_or(Direction::Both),
+        interfaces: Vec::new(),
+        loopback,
+        payload,
+        launch: None,
+    }
+}
+
 /// The effective capture mode: the command line over the profile's `[capture]`
 /// default (specification FR-007). An explicit `--mode` wins; absent one, the
 /// profile's declared mode; absent both, `file`.
@@ -831,11 +875,45 @@ fn build_one_sink(
             no_rotation_options(spec)?;
             build_pipe_sink(name, spec, config, iface_specs, sinks, stream_reports)?;
         }
+        SinkTransport::Fifo(path) => {
+            build_fifo_sink(path, spec, iface_specs, sinks)?;
+        }
         SinkTransport::Unix(path) => {
             no_rotation_options(spec)?;
             build_unix_sink(path, spec, config, iface_specs, sinks, stream_reports)?;
         }
     }
+    Ok(())
+}
+
+/// Build the FIFO sink for the extcap integration (specification section 14.5).
+///
+/// The analyzer hands fragcap a FIFO or named-pipe path; `open_fifo` opens it for
+/// writing (a named-pipe client on Windows, an opened FIFO or file elsewhere) and
+/// a pcapng `SinkFactory` encoder writes the same bytes a file capture produces
+/// (constitution P-5). A FIFO is a single write-only stream, not a file and not a
+/// streaming server, so the file rotation options and the streaming options do
+/// not apply, and JSON Lines is not an extcap transport.
+fn build_fifo_sink(
+    path: &std::path::Path,
+    spec: &SinkSpec,
+    iface_specs: &[InterfaceSpec],
+    sinks: &mut Vec<Box<dyn Sink>>,
+) -> Result<(), CliError> {
+    no_stream_options(spec)?;
+    no_rotation_options(spec)?;
+    if matches!(spec.format, Some(SinkFormat::JsonLines)) {
+        return Err(CliError::usage(
+            "a fifo: sink streams pcapng to an analyzer; format=jsonl does not apply",
+        ));
+    }
+    let factory = SinkFactory::new(Format::Pcapng, iface_specs.to_vec());
+    let writer = fragcap::open_fifo(path)
+        .map_err(|e| CliError::failure(format!("cannot open fifo {}: {e}", path.display())))?;
+    let sink = factory
+        .build(writer)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    sinks.push(sink);
     Ok(())
 }
 

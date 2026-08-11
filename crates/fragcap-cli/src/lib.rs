@@ -115,6 +115,6 @@ fn dispatch(
         Command::Profile(args) => commands::profile::run(&args, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
-        Command::Extcap(_) => commands::stub::run(Stub::Extcap),
+        Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
     }
 }

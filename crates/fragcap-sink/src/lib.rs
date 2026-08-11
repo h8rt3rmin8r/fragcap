@@ -68,6 +68,7 @@ pub use error::WriteError;
 pub use json::{write_json_string, JsonLinesWriter, PayloadMode};
 pub use pcapng::interface::InterfaceDeclaration;
 pub use pcapng::PcapngWriter;
+pub use transport::fifo::open_fifo;
 pub use transport::file::{RotatingFileSink, RotationPolicy};
 pub use transport::ring::{RingSink, RingWindow};
 pub use transport::stream::{ConsumerReport, DisconnectReason, StreamSink};

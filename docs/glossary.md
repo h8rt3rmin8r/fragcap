@@ -173,15 +173,21 @@ happened.
 
 ### Link type
 
+**Also known as:** DLT, data link type
+
 The link layer encapsulation a capture source produces, identified by the
-standard numeric code shared by libpcap and pcapng.
+standard numeric code (the DLT number) shared by libpcap and pcapng. Ethernet is
+DLT 1.
 
 fragcap carries the code rather than a closed enumeration, so a backend
 reporting an encapsulation fragcap has never seen is representable and is
-written through unchanged rather than becoming a parse failure.
+written through unchanged rather than becoming a parse failure. The
+[extcap](#extcap) interface declares a DLT per interface; fragcap declares
+Ethernet as the default, and the pcapng stream's own interface blocks carry the
+true per-packet link type.
 
 **See also:** [pcapng](#pcapng), [EtherType](#ethertype),
-[BSD loopback encapsulation](#bsd-loopback-encapsulation)
+[BSD loopback encapsulation](#bsd-loopback-encapsulation), [extcap](#extcap)
 
 ### EtherType
 
@@ -924,9 +930,12 @@ including the tables of open TCP and UDP endpoints and their owning processes.
 
 ### Named pipe
 
+**Also known as:** FIFO
+
 A Windows inter-process communication channel identified by a path under
 `\\.\pipe\`, carrying a byte or message stream between processes on one host
-or across a network.
+or across a network. The Unix equivalent, a named FIFO, plays the same role for
+the [extcap](#extcap) stream on non-Windows hosts.
 
 {: .matters }
 > Named pipes are invisible to packet capture. Reconnaissance observed one
@@ -934,8 +943,35 @@ or across a network.
 > which is direct evidence for the fallback in specification section 6.2: a
 > handoff over a pipe is out of scope for a network capture tool, and the
 > documentation says so rather than leaving users to discover it.
+>
+> A named pipe is also the transport the extcap integration streams to: the
+> analyzer creates the pipe and hands fragcap the path, and fragcap connects as
+> a client and writes pcapng to it.
 
-**See also:** [Loopback](#loopback)
+**See also:** [Loopback](#loopback), [extcap](#extcap),
+[Streaming sink](#streaming-sink)
+
+### extcap
+
+The interface an analyzer (Wireshark and compatible tools) uses to enumerate,
+configure, and start an external program as a capture source, defined by four
+command-line invocations the analyzer makes: list interfaces, list link types,
+declare configurable options, and capture to a named pipe.
+
+fragcap implements extcap so it appears in an analyzer's interface list and is
+configured through a native dialog the analyzer renders from fragcap's option
+declaration, with no graphical code in fragcap. The capture streams pcapng to
+the analyzer's [FIFO](#named-pipe), the same bytes a file capture produces, so
+an unmodified analyzer reads a process-attributed live capture.
+
+{: .matters }
+> extcap is how fragcap reaches an analyst's existing tool without a plugin. The
+> configurable option names are the `run` command's own flag names, so the
+> analyzer's dialog and the command line select capture identically. See
+> specification section 14.5.
+
+**See also:** [Link type](#link-type), [Named pipe](#named-pipe),
+[pcapng](#pcapng), [Streaming sink](#streaming-sink)
 
 ## Process and Attribution
 

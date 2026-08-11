@@ -131,6 +131,7 @@ pub mod sink {
     };
     pub use fragcap_sink::pcapng::interface::InterfaceDeclaration;
     pub use fragcap_sink::pcapng::{PcapngWriter, PROFILE_COMMENT, USER_APPL};
+    pub use fragcap_sink::transport::fifo::open_fifo;
     pub use fragcap_sink::transport::file::{RotatingFileSink, RotationPolicy};
     #[cfg(windows)]
     pub use fragcap_sink::transport::pipe::NamedPipeAcceptor;
@@ -175,8 +176,8 @@ pub use sink::NamedPipeAcceptor;
 #[cfg(unix)]
 pub use sink::UnixAcceptor;
 pub use sink::{
-    write_json_string, Acceptor, AnnotatedDirection, Annotation, AnnotationError, ConnShutdown,
-    Connection, ConsumerReport, DisconnectReason, Fidelity, Format, InterfaceDeclaration,
-    InterfaceSpec, JsonLinesWriter, PayloadMode, PcapngWriter, RingSink, RingWindow,
-    RotatingFileSink, RotationPolicy, SinkFactory, StreamSink, TcpAcceptor, WriteError,
+    open_fifo, write_json_string, Acceptor, AnnotatedDirection, Annotation, AnnotationError,
+    ConnShutdown, Connection, ConsumerReport, DisconnectReason, Fidelity, Format,
+    InterfaceDeclaration, InterfaceSpec, JsonLinesWriter, PayloadMode, PcapngWriter, RingSink,
+    RingWindow, RotatingFileSink, RotationPolicy, SinkFactory, StreamSink, TcpAcceptor, WriteError,
 };

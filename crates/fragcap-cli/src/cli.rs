@@ -22,9 +22,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::args::{
-    parse_duration, parse_ring, parse_roles, parse_size, Direction, RingWindow, SinkSpec,
-};
+use crate::args::{parse_duration, parse_ring, parse_size, Direction, RingWindow, SinkSpec};
 
 /// Passive, process-attributed network capture for Windows.
 #[derive(Debug, Parser)]
@@ -62,8 +60,9 @@ pub enum Command {
     Steam(SteamArgs),
     /// Report environment readiness.
     Doctor(DoctorArgs),
-    /// Analyzer integration (not yet implemented; slice S18).
-    Extcap(StubArgs),
+    /// Analyzer integration: enumerate, configure, and capture as an extcap
+    /// source (specification section 14.5).
+    Extcap(Box<ExtcapArgs>),
 }
 
 /// The capture mode, specification section 17.2.
@@ -114,7 +113,13 @@ pub struct RunArgs {
     pub max_bytes: Option<u64>,
 
     /// The roles to capture, comma-separated. Scopes which stages trigger.
-    #[arg(long, value_parser = parse_roles)]
+    ///
+    /// `value_delimiter` splits one comma-separated value into the role list,
+    /// matching the `extcap` surface so the command line and the analyzer dialog
+    /// select capture identically. A custom `value_parser` returning `Vec<String>`
+    /// cannot be used here: clap derives the element type from the `Vec<String>`
+    /// field and panics at access time on the type mismatch.
+    #[arg(long, value_delimiter = ',')]
     pub roles: Option<Vec<String>>,
 
     /// The flow direction to scope to.
@@ -250,6 +255,71 @@ pub enum SteamCommand {
 /// Arguments to `doctor`.
 #[derive(Debug, Args)]
 pub struct DoctorArgs {}
+
+/// Arguments to `extcap` (specification section 14.5).
+///
+/// The extcap protocol drives this command four ways: three declaration queries
+/// that print the extcap control grammar to standard output, and a capture that
+/// streams pcapng to the analyzer's FIFO. The configurable options are declared
+/// by `--extcap-config` and passed back at capture under the same names the `run`
+/// command uses (`--profile`, `--roles`, `--direction`, `--loopback`), so the
+/// analyzer's native dialog and the command line select capture identically.
+///
+/// The hidden offline flags are flattened in for the same reason `run` carries
+/// them: the whole capture path is driven from a tier-1 test with no capture
+/// driver and no analyzer.
+#[derive(Debug, Args)]
+pub struct ExtcapArgs {
+    /// Print the available extcap interfaces and exit.
+    #[arg(long)]
+    pub extcap_interfaces: bool,
+
+    /// Print the link types for the selected interface and exit.
+    #[arg(long)]
+    pub extcap_dlts: bool,
+
+    /// Print the configurable options for the selected interface and exit.
+    #[arg(long)]
+    pub extcap_config: bool,
+
+    /// Start a capture, streaming pcapng to the `--fifo` path.
+    #[arg(long)]
+    pub capture: bool,
+
+    /// The analyzer FIFO or named-pipe path to stream the capture to.
+    #[arg(long)]
+    pub fifo: Option<PathBuf>,
+
+    /// The selected extcap interface.
+    #[arg(long)]
+    pub extcap_interface: Option<String>,
+
+    /// The analyzer protocol version query. Accepted; not acted on.
+    #[arg(long)]
+    pub extcap_version: Option<String>,
+
+    /// Config option: the profile to capture with.
+    #[arg(long)]
+    pub profile: Option<String>,
+
+    /// Config option: the roles to scope to, comma-separated.
+    ///
+    /// The analyzer sends this as one comma-separated value; `value_delimiter`
+    /// splits it into the role list the overlay expects.
+    #[arg(long, value_delimiter = ',')]
+    pub roles: Option<Vec<String>>,
+
+    /// Config option: the flow direction to scope to.
+    #[arg(long, value_enum)]
+    pub direction: Option<Direction>,
+
+    /// Config option: include the loopback adapter.
+    #[arg(long)]
+    pub loopback: bool,
+
+    #[command(flatten)]
+    pub offline: OfflineArgs,
+}
 
 /// The catch-all arguments a stub command accepts, so `fragcap replay anything`
 /// parses and the stub reports honestly rather than the parser rejecting it.

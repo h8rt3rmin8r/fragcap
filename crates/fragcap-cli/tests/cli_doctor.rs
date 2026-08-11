@@ -28,6 +28,9 @@ fn ready() -> Inputs {
             is_virtual: false,
         }],
         extcap_installed: true,
+        extcap_dir: Some(std::path::PathBuf::from(
+            "C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap",
+        )),
         bundled_count: 0,
         user_count: 2,
     }
