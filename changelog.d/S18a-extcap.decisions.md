@@ -43,6 +43,22 @@ worth recording for promotion to specification section 29.**
 - **No new dependency.** The declaration emitters are string formatting, the FIFO
   open is `std::fs`, the capture reuses the existing pipeline, and the doctor
   probe is `std::fs`, so the slice adds nothing to `Cargo.lock`.
+- **An analyzer discovers the binary and invokes it directly, with no
+  subcommand.** Wireshark runs `<binary> --extcap-interfaces` and
+  `<binary> --capture --fifo <path> ...`, not `<binary> extcap ...`. The command
+  surface is otherwise subcommand-first, so a raw extcap invocation would be
+  rejected by the parser before the command ran and no interface would be
+  discovered. The library entry now routes an invocation that leads with an
+  extcap protocol flag to the `extcap` subcommand, and a tier-1 test exercises the
+  no-subcommand form so the fix cannot regress. (Codex review of PR #34.)
+- **The analyzer closing its FIFO is a clean stop, not a failure.** A retired sink
+  normally ends a run at exit 1 (specification FR-005a). For an extcap capture the
+  single sink is the analyzer's FIFO, and the analyst closing it is the defined
+  clean stop, so that end is a success while the summary still carries the loss
+  accounting (P-4). The FIFO is opened at assembly, so a mid-capture failure is a
+  consumer disconnect rather than a broken destination. The exit decision is a
+  pure function flagged by the caller (`false` for `run`/`tap`, `true` for
+  `extcap`) and unit-tested. (Codex review of PR #34.)
 
 ### Fixed
 

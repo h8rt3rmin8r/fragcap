@@ -66,6 +66,7 @@ pub fn run_with<I>(args: I, out: &mut dyn Write, err: &mut dyn Write) -> Exit
 where
     I: IntoIterator<Item = OsString>,
 {
+    let args = route_extcap(args.into_iter().collect());
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => {
@@ -99,6 +100,49 @@ where
             error.exit()
         }
     }
+}
+
+/// Route a direct extcap protocol invocation to the `extcap` subcommand.
+///
+/// When an analyzer discovers the copied binary it invokes it directly, with no
+/// subcommand: `fragcap --extcap-interfaces`, `fragcap --capture --fifo <path>
+/// ...`, and so on (the Wireshark extcap protocol). The command surface is
+/// otherwise subcommand-first, so those invocations would be rejected by the
+/// parser before the `extcap` command ran, and no interface would ever be
+/// discovered. When the invocation leads with an extcap protocol flag rather than
+/// a subcommand, insert the `extcap` subcommand so a real analyzer reaches the
+/// implementation. An operator's explicit `fragcap extcap ...` is unaffected.
+fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
+    // args[0] is the program name; the first real token decides.
+    let first = args.get(1).map(|s| s.to_string_lossy());
+    let is_subcommand = matches!(
+        first.as_deref(),
+        Some(
+            "run"
+                | "tap"
+                | "replay"
+                | "profile"
+                | "steam"
+                | "doctor"
+                | "extcap"
+                | "help"
+                | "-h"
+                | "--help"
+                | "-V"
+                | "--version"
+        )
+    );
+    if is_subcommand {
+        return args;
+    }
+    let leads_with_extcap_flag = args.iter().skip(1).any(|a| {
+        let s = a.to_string_lossy();
+        s.starts_with("--extcap") || s == "--capture" || s == "--fifo"
+    });
+    if leads_with_extcap_flag {
+        args.insert(1, OsString::from("extcap"));
+    }
+    args
 }
 
 /// Dispatch a parsed command to its implementation.

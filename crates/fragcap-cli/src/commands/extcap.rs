@@ -171,5 +171,10 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         &orchestrator::INTERRUPT,
         args.offline.fire_interrupt,
         allowed_roles,
+        // The analyzer closing its FIFO is the defined clean stop for an extcap
+        // capture, so a sink failure ending the run is a success (the summary
+        // still carries the loss accounting). The FIFO is opened at assembly, so
+        // a mid-capture failure is a consumer disconnect, not a bad path.
+        true,
     )
 }

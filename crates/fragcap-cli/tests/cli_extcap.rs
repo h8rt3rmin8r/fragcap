@@ -179,6 +179,49 @@ fn summary_count(summary: &str, label: &str) -> u64 {
     panic!("summary has no `{label}` count: {summary}");
 }
 
+// --- US1: Wireshark invokes the binary directly, with no subcommand ---------
+
+#[test]
+fn a_direct_extcap_interfaces_invocation_is_routed() {
+    // Wireshark runs `<binary> --extcap-interfaces`, not `<binary> extcap ...`,
+    // so the protocol flags must be accepted at the top level (Codex review of
+    // PR #34). The subcommand-form tests above would hide a regression here.
+    let (code, out, err) = common::run(&["--extcap-interfaces"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("interface {value=fragcap}"), "{out}");
+    assert_all_lines_conform(&out);
+}
+
+#[test]
+fn a_direct_extcap_dlts_invocation_is_routed() {
+    let (code, out, err) = common::run(&["--extcap-interface", "fragcap", "--extcap-dlts"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("dlt {number=1}{name=EN10MB}{display=Ethernet}"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_direct_extcap_capture_without_a_subcommand_reproduces_the_golden() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("extcap.fcapng");
+    // The Wireshark capture form: no `extcap` subcommand, protocol flags first.
+    let mut args: Vec<String> = vec![
+        "--capture".into(),
+        "--extcap-interface".into(),
+        "fragcap".into(),
+        "--fifo".into(),
+        fifo.to_string_lossy().into_owned(),
+    ];
+    args.extend(offline_substrate());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _out, err) = common::run(&refs);
+    assert_eq!(code, 0, "the direct extcap capture succeeds: {err}");
+    let bytes = fs::read(&fifo).expect("the fifo stream was written");
+    common::assert_golden("run.fcapng", &bytes);
+}
+
 // --- US2: the dialog options select the capture ----------------------------
 
 /// Capture to a temp pcapng through `command`, returning the written bytes.
