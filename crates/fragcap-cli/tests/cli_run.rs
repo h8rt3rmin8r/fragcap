@@ -335,6 +335,20 @@ fn a_ring_capture_dumps_the_recent_tail_on_interrupt() {
         epbs < 24,
         "a small window holds only the tail, not all 24 packets"
     );
+    // The evictions the small window forced are surfaced in the summary, not
+    // silently dropped (Codex review of PR #30, P1; constitution P-4).
+    assert!(
+        err.contains("evicted from the rolling window"),
+        "the ring eviction count is surfaced: {err}"
+    );
+    let evicted_line = err
+        .lines()
+        .find(|l| l.contains("evicted from the rolling window"))
+        .expect("the eviction line is present");
+    assert!(
+        !evicted_line.contains("0 packet(s)"),
+        "a window smaller than the capture evicts at least one packet: {evicted_line}"
+    );
 }
 
 // Slice S16, US1, SC-002, SC-003, FR-012. A non-interrupt trigger (the terminal

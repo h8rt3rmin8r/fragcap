@@ -36,7 +36,7 @@ fn a_size_window_dumps_only_the_recent_tail() {
     // 20 packets of 48 bytes each; a 200-byte window holds the newest four
     // (4 * 48 = 192 <= 200; a fifth would be 240 > 200).
     let pkts = packets(20, 48);
-    let mut sink = RingSink::create(out.clone(), RingWindow::Size(200), factory());
+    let mut sink = RingSink::create(out.clone(), RingWindow::Size(200), factory()).expect("create");
     for p in &pkts {
         sink.write(p).expect("write");
     }
@@ -72,7 +72,7 @@ fn eviction_conserves_and_never_empties_a_seen_capture() {
     let out = dir.path().join("tiny.fcapng");
 
     let pkts = packets(8, 64);
-    let mut sink = RingSink::create(out.clone(), RingWindow::Size(1), factory());
+    let mut sink = RingSink::create(out.clone(), RingWindow::Size(1), factory()).expect("create");
     for p in &pkts {
         sink.write(p).expect("write");
     }
@@ -89,6 +89,22 @@ fn eviction_conserves_and_never_empties_a_seen_capture() {
     assert_eq!(dumped[0], expected_payloads(&pkts).last().unwrap().clone());
 }
 
+// Review of PR #30 (Codex P1). A ring dump target that cannot be created fails at
+// construction, before any capture runs, rather than at finish after the whole
+// in-memory window has been captured and would then be lost. This matches how the
+// ordinary file sink validates its destination during assembly.
+#[test]
+fn an_unwritable_dump_path_fails_at_creation_not_at_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    // A path under a directory that does not exist cannot be created.
+    let bad = dir.path().join("no-such-dir").join("ring.fcapng");
+    let result = RingSink::create(bad, RingWindow::Size(1024), factory());
+    assert!(
+        result.is_err(),
+        "an unwritable dump path is rejected before capture starts"
+    );
+}
+
 // SC-002, FR-012. A window larger than the whole input evicts nothing, and the
 // dumped file is byte-identical to a plain single-segment file capture of the
 // same input: same packets, none lost, reordered, or duplicated.
@@ -101,7 +117,8 @@ fn a_whole_input_window_equals_a_plain_file_capture() {
     let pkts = packets(12, 100);
 
     // A ring with a window far larger than the whole input.
-    let mut ring = RingSink::create(ring_out.clone(), RingWindow::Size(1_000_000), factory());
+    let mut ring =
+        RingSink::create(ring_out.clone(), RingWindow::Size(1_000_000), factory()).expect("create");
     for p in &pkts {
         ring.write(p).expect("write");
     }
@@ -144,7 +161,8 @@ fn a_duration_window_dumps_the_recent_tail_by_instant() {
         out.clone(),
         RingWindow::Duration(std::time::Duration::from_nanos(3)),
         factory(),
-    );
+    )
+    .expect("create");
     for p in &pkts {
         sink.write(p).expect("write");
     }

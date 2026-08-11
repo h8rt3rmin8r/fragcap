@@ -15,6 +15,7 @@
 //! the slice that delivers them (FR-010, FR-011).
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -571,6 +572,12 @@ pub fn image_name(event: &ProcessEvent) -> String {
 pub struct BuiltSinks {
     pub sinks: Vec<Box<dyn Sink>>,
     pub stream_reports: Vec<StreamReports>,
+    /// The ring sink's eviction counter, when the run is in ring mode. The
+    /// orchestrator reads it after the run to surface the ring's own retention
+    /// accounting (packets evicted from the rolling window) in the summary, the
+    /// way `stream_reports` surfaces a streaming sink's per-consumer drops. `None`
+    /// outside ring mode.
+    pub ring_evicted: Option<Arc<AtomicU64>>,
 }
 
 /// One streaming sink's transport description and its report handle.
@@ -600,6 +607,7 @@ pub fn build_sinks(
 
     let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
     let mut stream_reports: Vec<StreamReports> = Vec::new();
+    let mut ring_evicted: Option<Arc<AtomicU64>> = None;
 
     // The primary capture file, from --out, is a pcapng sink. `--out` is the
     // pcapng shorthand and is always pcapng regardless of the filename extension;
@@ -615,7 +623,13 @@ pub fn build_sinks(
             let window = config.ring.ok_or_else(|| {
                 CliError::usage("ring mode needs a ring window; pass --ring <DURATION|SIZE>")
             })?;
-            sinks.push(Box::new(RingSink::create(out.clone(), window, factory)));
+            // The ring dump file is opened here, before capture, so an unwritable
+            // --out fails now rather than after the whole window is captured.
+            let sink = RingSink::create(out.clone(), window, factory)
+                .map_err(|e| CliError::failure(e.to_string()))?;
+            // Keep the eviction handle so the orchestrator can surface the count.
+            ring_evicted = Some(sink.evicted_handle());
+            sinks.push(Box::new(sink));
         } else {
             sinks.push(Box::new(
                 RotatingFileSink::create(out, RotationPolicy::None, factory)
@@ -631,6 +645,7 @@ pub fn build_sinks(
     Ok(BuiltSinks {
         sinks,
         stream_reports,
+        ring_evicted,
     })
 }
 

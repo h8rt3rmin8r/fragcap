@@ -49,6 +49,11 @@ pub enum Event {
         dropped: u64,
         reason: String,
     },
+    /// A ring-mode capture finished, carrying the count of packets evicted from
+    /// the rolling window. The sink's own retention accounting, distinct from the
+    /// capture-wide `dropped`: an eviction is the operator's declared window scope,
+    /// not a capture loss, but it is surfaced so the omission is never silent.
+    RingEvicted { evicted: u64 },
 }
 
 impl Event {
@@ -61,6 +66,7 @@ impl Event {
             Event::FilterNarrowed { .. } => "filter.narrowed",
             Event::SessionComplete { .. } => "session.complete",
             Event::StreamConsumer { .. } => "stream.consumer",
+            Event::RingEvicted { .. } => "ring.evicted",
         }
     }
 
@@ -135,6 +141,10 @@ impl Event {
                 line.push_str(&dropped.to_string());
                 line.push_str(",\"reason\":");
                 write_json_string(reason, &mut line);
+            }
+            Event::RingEvicted { evicted } => {
+                line.push_str(",\"evicted\":");
+                line.push_str(&evicted.to_string());
             }
         }
         line.push('}');
@@ -233,6 +243,10 @@ mod tests {
         assert!(complete.contains("\"dropped\":0"));
         assert!(complete.contains("\"watching_discarded\":3"));
         assert!(complete.contains("\"discarded_out_of_window\":1"));
+
+        let ring = Event::RingEvicted { evicted: 17 }.render(now);
+        assert!(ring.contains("\"event\":\"ring.evicted\""));
+        assert!(ring.contains("\"evicted\":17"));
     }
 
     #[test]

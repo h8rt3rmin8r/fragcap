@@ -21,13 +21,17 @@
 //! every packet the pipeline delivers and returns `Ok`, so the pipeline's
 //! conservation accounting (received + buffer_dropped + refusals = captured) is
 //! preserved exactly as for any other sink; the count of evicted packets is the
-//! ring sink's own reported accounting, the way a streaming sink's per-consumer
-//! drops are its own (slice S15). The eviction is the operator's declared
-//! retention scope, which constitution P-9 permits as long as it is counted (P-4).
+//! ring sink's own reported accounting, published through
+//! [`RingSink::evicted_handle`] the way a streaming sink's per-consumer drops are
+//! published (slice S15), so the run's summary surfaces it (constitution P-4). The
+//! eviction is the operator's declared retention scope, which constitution P-9
+//! permits as long as it is counted.
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use fragcap_core::packet::CapturedPacket;
@@ -36,6 +40,7 @@ use fragcap_core::traits::Sink;
 use fragcap_core::SinkError;
 
 use super::SinkFactory;
+use crate::error::WriteError;
 
 /// The bound on a ring's retained set: a time window or a byte size.
 ///
@@ -54,13 +59,17 @@ pub enum RingWindow {
 
 /// A sink that retains a rolling window of recent packets and dumps it on finish.
 ///
-/// Holds no open file during capture; the dump file is created at
-/// [`finish`](Sink::finish). The retained deque is ordered oldest-at-front, which
-/// for the offline replay source is capture order, and the dump preserves it.
+/// The dump file is opened eagerly at [`create`](RingSink::create), the same way a
+/// [`RotatingFileSink`](super::file::RotatingFileSink) opens its first segment, so
+/// an unwritable destination fails before capture starts rather than after the
+/// whole in-memory window has been captured and would be lost. No bytes are
+/// written to it until [`finish`](Sink::finish); the retained deque is ordered
+/// oldest-at-front, which for the offline replay source is capture order, and the
+/// dump preserves it.
 #[derive(Debug)]
 pub struct RingSink {
-    /// The dump target (the `--out` path).
-    path: PathBuf,
+    /// The dump file, opened at creation so a bad destination fails eagerly.
+    file: File,
     /// The retention bound.
     window: RingWindow,
     /// Builds the pcapng encoder at dump time (header preamble plus one Interface
@@ -77,22 +86,37 @@ pub struct RingSink {
     /// packet arrives.
     newest_nanos: i64,
     /// Count of packets evicted from the window: the sink's own accounting,
-    /// distinct from any capture-loss counter.
-    evicted: u64,
+    /// distinct from any capture-loss counter. Shared so the orchestrator can read
+    /// it after the sink is boxed into the pipeline and consumed by `finish`.
+    evicted: Arc<AtomicU64>,
 }
 
 impl RingSink {
     /// A new ring sink over `path`, bounded by `window`, dumping through `factory`.
-    pub fn create(path: PathBuf, window: RingWindow, factory: SinkFactory) -> Self {
-        RingSink {
-            path,
+    ///
+    /// Opens the dump file immediately so an unwritable `--out` is a failure the
+    /// caller surfaces before capture starts, not after the window is captured.
+    pub fn create(
+        path: PathBuf,
+        window: RingWindow,
+        factory: SinkFactory,
+    ) -> Result<Self, WriteError> {
+        let file = Self::open(&path)?;
+        Ok(RingSink {
+            file,
             window,
             factory,
             retained: VecDeque::new(),
             retained_bytes: 0,
             newest_nanos: i64::MIN,
-            evicted: 0,
-        }
+            evicted: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    fn open(path: &Path) -> Result<File, WriteError> {
+        File::create(path).map_err(|e| WriteError::Io {
+            detail: format!("cannot create {}: {e}", path.display()),
+        })
     }
 
     /// Packets currently retained in the window.
@@ -102,7 +126,15 @@ impl RingSink {
 
     /// Packets evicted from the window so far (the sink's own accounting).
     pub fn evicted(&self) -> u64 {
-        self.evicted
+        self.evicted.load(Ordering::Relaxed)
+    }
+
+    /// A shared handle to the eviction count, read by the orchestrator after the
+    /// run to surface the ring's own retention accounting in the summary. Cloned
+    /// before the sink is boxed into the pipeline, since `finish` consumes the
+    /// sink and the accessor above is then unreachable.
+    pub fn evicted_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.evicted)
     }
 
     /// Evict from the front until the retained set is within the window, but never
@@ -118,7 +150,7 @@ impl RingSink {
                         self.retained_bytes = self
                             .retained_bytes
                             .saturating_sub(front.captured_len() as u64);
-                        self.evicted = self.evicted.saturating_add(1);
+                        self.evicted.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -129,16 +161,20 @@ impl RingSink {
                 // and evict a genuinely recent packet. In the common monotonic
                 // case the front is the oldest instant, so front eviction is exact
                 // and O(evicted); a rare out-of-order old packet not at the front
-                // is over-retained (safe) until it reaches the front.
-                let window_nanos = window.as_nanos() as i64;
+                // is over-retained (safe) until it reaches the front. The
+                // comparison is in `i128`, because a window of many years exceeds
+                // `i64` nanoseconds and an `i64` cast would wrap it negative and
+                // evict everything but the newest packet.
+                let window_nanos = window.as_nanos() as i128;
+                let newest = self.newest_nanos as i128;
                 while self.retained.len() > 1 {
-                    match self.retained.front().map(|p| p.ts.as_nanos()) {
-                        Some(front) if self.newest_nanos.saturating_sub(front) > window_nanos => {
+                    match self.retained.front().map(|p| p.ts.as_nanos() as i128) {
+                        Some(front) if newest - front > window_nanos => {
                             if let Some(front) = self.retained.pop_front() {
                                 self.retained_bytes = self
                                     .retained_bytes
                                     .saturating_sub(front.captured_len() as u64);
-                                self.evicted = self.evicted.saturating_add(1);
+                                self.evicted.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         _ => break,
@@ -168,14 +204,14 @@ impl Sink for RingSink {
     }
 
     fn finish(self: Box<Self>, stats: &CaptureStats) -> Result<(), SinkError> {
-        let file = File::create(&self.path).map_err(|e| SinkError::Write {
-            detail: format!("cannot create {}: {e}", self.path.display()),
-        })?;
-        let mut encoder = self
-            .factory
-            .build(Box::new(file))
-            .map_err(SinkError::from)?;
-        for packet in &self.retained {
+        let RingSink {
+            file,
+            factory,
+            retained,
+            ..
+        } = *self;
+        let mut encoder = factory.build(Box::new(file)).map_err(SinkError::from)?;
+        for packet in &retained {
             encoder.write(packet)?;
         }
         // The dump carries the run's real statistics trailer, exactly as the file
@@ -206,18 +242,18 @@ mod tests {
         )
     }
 
-    /// A ring sink with the given window over a throwaway pcapng factory. The
+    /// A ring sink with the given window over a throwaway pcapng factory, plus the
+    /// temp dir backing its dump file (kept alive for the sink's lifetime). The
     /// retention tests never dump, so the factory's interfaces are irrelevant.
-    fn ring(window: RingWindow) -> Box<RingSink> {
+    fn ring(window: RingWindow) -> (tempfile::TempDir, Box<RingSink>) {
+        let dir = tempfile::tempdir().unwrap();
         let factory = SinkFactory::new(
             Format::Pcapng,
             vec![InterfaceSpec::new("capture", LinkType::ETHERNET, 65_535)],
         );
-        Box::new(RingSink::create(
-            PathBuf::from("unused.fcapng"),
-            window,
-            factory,
-        ))
+        let sink =
+            RingSink::create(dir.path().join("ring.fcapng"), window, factory).expect("create");
+        (dir, Box::new(sink))
     }
 
     // FR-001, FR-002 (size), R5. A size window retains exactly the newest packets
@@ -226,7 +262,7 @@ mod tests {
     #[test]
     fn a_size_window_retains_the_newest_bytes() {
         // Window of 100 bytes, packets of 40 bytes each.
-        let mut ring = ring(RingWindow::Size(100));
+        let (_dir, mut ring) = ring(RingWindow::Size(100));
         for i in 0..6 {
             ring.write(&packet(40, i)).unwrap();
         }
@@ -241,7 +277,7 @@ mod tests {
     // that saw traffic never dumps an empty file.
     #[test]
     fn a_window_smaller_than_one_packet_keeps_one() {
-        let mut ring = ring(RingWindow::Size(10));
+        let (_dir, mut ring) = ring(RingWindow::Size(10));
         for i in 0..4 {
             ring.write(&packet(40, i)).unwrap();
         }
@@ -254,7 +290,7 @@ mod tests {
     #[test]
     fn a_duration_window_retains_the_recent_tail_by_instant() {
         // Window of 100 ns; packets at 0, 50, 100, 150, 200 ns.
-        let mut ring = ring(RingWindow::Duration(Duration::from_nanos(100)));
+        let (_dir, mut ring) = ring(RingWindow::Duration(Duration::from_nanos(100)));
         for i in 0..5 {
             ring.write(&packet(10, i * 50)).unwrap();
         }
@@ -271,7 +307,7 @@ mod tests {
     // the window.
     #[test]
     fn a_late_old_packet_does_not_evict_a_recent_one() {
-        let mut ring = ring(RingWindow::Duration(Duration::from_nanos(100)));
+        let (_dir, mut ring) = ring(RingWindow::Duration(Duration::from_nanos(100)));
         ring.write(&packet(10, 300)).unwrap(); // recent
         ring.write(&packet(10, 50)).unwrap(); // far older, arrives late
                                               // The recent packet at 300 is retained: the late old packet did not
@@ -287,11 +323,24 @@ mod tests {
     // and conservation holds trivially.
     #[test]
     fn a_large_window_retains_everything() {
-        let mut ring = ring(RingWindow::Size(1_000_000));
+        let (_dir, mut ring) = ring(RingWindow::Size(1_000_000));
         for i in 0..10 {
             ring.write(&packet(50, i)).unwrap();
         }
         assert_eq!(ring.retained(), 10);
+        assert_eq!(ring.evicted(), 0);
+    }
+
+    // Review of PR #30 (Codex P2). A duration window of many years must not wrap
+    // when converted to nanoseconds and evict everything but the newest packet. A
+    // roughly 317-year window (far beyond i64 nanoseconds) retains every packet.
+    #[test]
+    fn a_multi_century_duration_window_does_not_wrap() {
+        let (_dir, mut ring) = ring(RingWindow::Duration(Duration::from_secs(10_000_000_000)));
+        for i in 0..8 {
+            ring.write(&packet(10, i * 1_000_000)).unwrap();
+        }
+        assert_eq!(ring.retained(), 8, "an enormous window evicts nothing");
         assert_eq!(ring.evicted(), 0);
     }
 }

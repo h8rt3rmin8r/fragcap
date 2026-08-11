@@ -48,3 +48,20 @@ promotion to specification section 29.**
   a facade-level test would assert. Both an interrupt trigger and a non-interrupt
   (terminal-stage-exit) trigger are exercised, and the whole-input window is shown
   equal in packet count to a plain file capture of the same input.
+
+**2026-08-10: PR #30 review (Codex), three findings addressed.**
+
+- **The eviction count is surfaced, not merely counted (P1).** The ring sink's
+  `evicted` counter is now an `Arc<AtomicU64>` published through
+  `RingSink::evicted_handle`; `build_sinks` keeps the handle and the orchestrator
+  reads it after the run to emit a `ring.evicted` structured event and a summary
+  progress line. Counting without surfacing was the P-4 gap: a run that rolled its
+  window would otherwise report zero loss. This mirrors how a streaming sink's
+  per-consumer drops reach the summary.
+- **The dump file is opened at construction, not at finish (P1).** `RingSink::create`
+  now opens the `--out` file eagerly (returning `Result`, like `RotatingFileSink::create`),
+  so an unwritable destination fails before capture starts rather than discarding the
+  whole captured window at drain.
+- **The duration window compares in `i128` (P2).** `window.as_nanos() as i64` wrapped
+  negative for a window beyond about 292 years, making a huge `--ring` retain only the
+  newest packet; the comparison is now done in a non-wrapping representation.
