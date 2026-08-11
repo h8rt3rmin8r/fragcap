@@ -2134,6 +2134,64 @@ drops, and per-sink drops.
 
 **See also:** [Lifecycle event](#lifecycle-event)
 
+### Shell wrapper
+
+A thin script that handles the environment concerns fragcap's binary leaves
+outside itself: `Invoke-FragCap.ps1` on Windows (PowerShell) and `fragcap.sh` for
+a Linux or WSL2 shell (Bash), specification section 18.
+
+{: .matters }
+> A wrapper does privilege elevation, capture-driver detection, interface
+> enumeration, [path translation](#path-translation), and [output
+> template](#output-template) expansion, and nothing else. It reacts to the
+> [lifecycle event](#lifecycle-event) stream rather than parsing human-readable
+> output, which is what keeps it thin under constitution principle P-7. A wrapper
+> that needs to grow past those concerns is a missing capability in the binary.
+
+**See also:** [Lifecycle event](#lifecycle-event),
+[WSL2 interop](#wsl2-interop), [Path translation](#path-translation)
+
+### WSL2 interop
+
+The mechanism by which a script in a Windows Subsystem for Linux shell invokes a
+native Windows executable and exchanges data with it across the subsystem
+boundary.
+
+{: .matters }
+> The Bash wrapper's distinguishing job is this boundary: capture runs in the
+> native Windows binary, so `fragcap.sh` under WSL2 invokes it through interop and
+> translates paths in both directions. On a Linux host with no reachable Windows
+> binary it reports capture unavailable and exits 1, rather than failing
+> obscurely.
+
+**See also:** [Shell wrapper](#shell-wrapper), [Path translation](#path-translation)
+
+### Path translation
+
+Rewriting a filesystem path between the form one environment uses and the form
+another expects, here between a Linux or WSL2 path and a Windows path.
+
+{: .matters }
+> A relative output path given in a WSL2 shell must resolve to the intended
+> Windows location for the native binary, and the resulting file path must be
+> reported back in Linux form. The Bash wrapper does this with the subsystem's
+> own path tool; it is a small pure function, checkable without a capture driver.
+
+**See also:** [WSL2 interop](#wsl2-interop), [Output template](#output-template)
+
+### Output template
+
+An output-path string carrying tokens a [shell wrapper](#shell-wrapper) expands
+before capture: `{profile}` to the profile name, `{date}` to the capture date,
+and `{time}` to the capture time.
+
+{: .matters }
+> Templating and directory preparation are an environment concern the wrapper
+> handles so the binary does not have to. The expansion is pure and deterministic
+> given its inputs, which is what lets a `--dry-run` preview it with no capture.
+
+**See also:** [Shell wrapper](#shell-wrapper), [Path translation](#path-translation)
+
 ### Effective configuration
 
 The capture options actually used, formed by overlaying the command-line options

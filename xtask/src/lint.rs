@@ -160,12 +160,22 @@ pub fn check_bytes(bytes: &[u8], is_source: bool) -> Vec<Finding> {
     }
 
     if is_source && !bytes.is_empty() {
-        let first = text.lines().next().unwrap_or("");
-        if !first.contains(SPDX) {
+        // A shell script's shebang must be the first line for the kernel to
+        // honor it, which conflicts with the SPDX-first-line rule. When the
+        // first line is a shebang, the SPDX identifier is required on the second
+        // line instead, so the identifier still sits at the top of the file.
+        let mut lines = text.lines();
+        let first = lines.next().unwrap_or("");
+        let carries_spdx = if first.starts_with("#!") {
+            lines.next().unwrap_or("").contains(SPDX)
+        } else {
+            first.contains(SPDX)
+        };
+        if !carries_spdx {
             out.push(Finding::new(
                 1,
                 "spdx",
-                "first line is not the SPDX license identifier",
+                "first line is not the SPDX license identifier (or the second line, after a shebang)",
             ));
         }
     }
@@ -421,6 +431,22 @@ mod tests {
     #[test]
     fn detects_missing_spdx_in_source() {
         assert!(rules(b"fn main() {}\n", true).contains(&"spdx"));
+    }
+
+    #[test]
+    fn a_shebang_moves_the_spdx_requirement_to_the_second_line() {
+        // A shell script's shebang must be line 1, so its SPDX sits on line 2.
+        let ok = b"#!/usr/bin/env bash\n# SPDX-License-Identifier: Apache-2.0\n\necho hi\n";
+        assert!(
+            !rules(ok, true).contains(&"spdx"),
+            "shebang then SPDX is clean"
+        );
+        // A shebang with no SPDX on line 2 still fails.
+        let bad = b"#!/usr/bin/env bash\necho hi\n";
+        assert!(
+            rules(bad, true).contains(&"spdx"),
+            "shebang without SPDX fails"
+        );
     }
 
     #[test]
