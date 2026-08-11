@@ -114,7 +114,7 @@ fn dispatch(
         Command::Doctor(_) => commands::doctor::run(json, out),
         Command::Profile(args) => commands::profile::run(&args, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
-        Command::Steam(args) => commands::steam::run(&args, out),
+        Command::Steam(args) => commands::steam::run(&args, out, emitter),
         Command::Extcap(_) => commands::stub::run(Stub::Extcap),
     }
 }

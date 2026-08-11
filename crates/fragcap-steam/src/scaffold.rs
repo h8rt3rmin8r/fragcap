@@ -61,7 +61,7 @@ pub fn scaffold(title: &InstalledTitle) -> Result<String, SteamError> {
             install_dir: title.install_dir.clone(),
         });
     }
-    let proposals = classify(images);
+    let proposals = classify(images, &title.install_dir);
     let text = render(title, &proposals);
 
     // Validity by construction (D4): never emit a profile the validator rejects.
@@ -126,7 +126,7 @@ fn is_launcher(image: &ExecutableImage) -> bool {
 /// becomes the client. If every image is launcher-tokened (or there is only one
 /// image), the largest overall is still promoted to client so a client stage
 /// always exists.
-fn classify(images: Vec<ExecutableImage>) -> Vec<StageProposal> {
+fn classify(images: Vec<ExecutableImage>, install_dir: &Path) -> Vec<StageProposal> {
     let (launchers, others): (Vec<_>, Vec<_>) = images.into_iter().partition(is_launcher);
 
     // The client is the largest non-launcher, or, in the degenerate all-launcher
@@ -153,7 +153,7 @@ fn classify(images: Vec<ExecutableImage>) -> Vec<StageProposal> {
         path_disambiguator: None,
     });
 
-    disambiguate(&mut proposals);
+    disambiguate(&mut proposals, install_dir);
     proposals
 }
 
@@ -165,10 +165,30 @@ fn largest(images: &[ExecutableImage]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Give any two proposals that share a basename a `path_contains` disambiguator,
-/// so the emitted profile passes the ambiguous-image-match check (D7).
-fn disambiguate(proposals: &mut [StageProposal]) {
+/// Give any two proposals that share a basename a `path_contains` disambiguator
+/// that actually distinguishes them, so the emitted profile both passes the
+/// ambiguous-image-match check and binds each stage to only its own process
+/// (D7; Codex review of PR #31).
+///
+/// The immediate parent directory name alone is not enough:
+/// `launcher/bin/game.exe` and `client/bin/game.exe` would both get `bin`, so
+/// each stage would still match both processes. Instead each proposal takes the
+/// path of its executable relative to the install directory's parent, for
+/// example `TheGame\launcher\bin\game.exe`. That tail is distinct per file
+/// (two files with the same relative path would be the same file) and, because
+/// it is anchored above the install directory and carries the basename, a
+/// shorter tail is not a substring of a deeper sibling's path. In the rare case
+/// the anchored tail is still a substring of another proposal's path (a
+/// subdirectory named like the install directory), fall back to the full,
+/// drive-anchored path, which is unique.
+fn disambiguate(proposals: &mut [StageProposal], install_dir: &Path) {
     let n = proposals.len();
+    let anchor = install_dir.parent().unwrap_or(install_dir);
+    let paths: Vec<String> = proposals
+        .iter()
+        .map(|p| p.image.path.to_string_lossy().into_owned())
+        .collect();
+
     for i in 0..n {
         let shares = (0..n).any(|j| {
             j != i
@@ -177,17 +197,31 @@ fn disambiguate(proposals: &mut [StageProposal]) {
                     .file_name
                     .eq_ignore_ascii_case(&proposals[i].image.file_name)
         });
-        if shares {
-            proposals[i].path_disambiguator = parent_component(&proposals[i].image.path);
+        if !shares {
+            continue;
         }
-    }
-}
 
-/// The immediate parent directory name of a path, as a `path_contains` value.
-fn parent_component(path: &Path) -> Option<String> {
-    path.parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
+        let tail = proposals[i]
+            .image
+            .path
+            .strip_prefix(anchor)
+            .unwrap_or(&proposals[i].image.path)
+            .to_string_lossy()
+            .into_owned();
+        // `path_contains` matches case-insensitively (see the matcher), so the
+        // uniqueness check must too.
+        let distinguishes = |candidate: &str| {
+            !candidate.is_empty()
+                && (0..n)
+                    .all(|j| j == i || !paths[j].to_lowercase().contains(&candidate.to_lowercase()))
+        };
+        let value = if distinguishes(&tail) {
+            tail
+        } else {
+            paths[i].clone()
+        };
+        proposals[i].path_disambiguator = Some(value);
+    }
 }
 
 /// Render a profile skeleton to TOML text.
@@ -310,11 +344,14 @@ mod tests {
 
     #[test]
     fn a_launcher_token_image_is_a_launcher_and_the_largest_other_is_the_client() {
-        let props = classify(vec![
-            img("game/Bethesda.net_Launcher.exe", 10),
-            img("game/eso64.exe", 100),
-            img("game/small.exe", 5),
-        ]);
+        let props = classify(
+            vec![
+                img("game/Bethesda.net_Launcher.exe", 10),
+                img("game/eso64.exe", 100),
+                img("game/small.exe", 5),
+            ],
+            Path::new("game"),
+        );
         let client = props.iter().find(|p| p.role == Role::Client).unwrap();
         assert_eq!(client.image.file_name, "eso64.exe");
         assert!(props
@@ -324,21 +361,20 @@ mod tests {
 
     #[test]
     fn the_largest_non_launcher_wins_the_client_role() {
-        let props = classify(vec![
-            img("g/a.exe", 1),
-            img("g/b.exe", 9),
-            img("g/c.exe", 3),
-        ]);
+        let props = classify(
+            vec![img("g/a.exe", 1), img("g/b.exe", 9), img("g/c.exe", 3)],
+            Path::new("g"),
+        );
         let client = props.iter().find(|p| p.role == Role::Client).unwrap();
         assert_eq!(client.image.file_name, "b.exe");
     }
 
     #[test]
     fn an_all_launcher_scan_still_yields_a_client() {
-        let props = classify(vec![
-            img("g/launcher.exe", 5),
-            img("g/GameLauncher.exe", 20),
-        ]);
+        let props = classify(
+            vec![img("g/launcher.exe", 5), img("g/GameLauncher.exe", 20)],
+            Path::new("g"),
+        );
         assert_eq!(props.iter().filter(|p| p.role == Role::Client).count(), 1);
         let client = props.iter().find(|p| p.role == Role::Client).unwrap();
         assert_eq!(client.image.file_name, "GameLauncher.exe");
@@ -346,25 +382,43 @@ mod tests {
 
     #[test]
     fn a_single_image_becomes_the_client() {
-        let props = classify(vec![img("g/only.exe", 1)]);
+        let props = classify(vec![img("g/only.exe", 1)], Path::new("g"));
         assert_eq!(props.len(), 1);
         assert_eq!(props[0].role, Role::Client);
     }
 
     #[test]
-    fn shared_basenames_get_a_path_disambiguator() {
-        let props = classify(vec![
-            img("g/bin/TheDivision2.exe", 50),
-            img("g/launch/TheDivision2.exe", 5),
-        ]);
-        // Both share a basename; both must carry a disambiguator so the pair is
-        // pinned and passes the ambiguous-image check.
+    fn shared_basenames_get_disambiguators_that_actually_distinguish() {
+        // Codex's case: two same-basename executables under sibling `bin`
+        // directories. A disambiguator of just the parent (`bin`) would match
+        // both; each must get a value that matches its own path and not the
+        // other's.
+        let props = classify(
+            vec![
+                img("Game/launcher/bin/TheDivision2.exe", 5),
+                img("Game/client/bin/TheDivision2.exe", 50),
+            ],
+            Path::new("Game"),
+        );
+        let matches =
+            |needle: &str, path: &str| path.to_lowercase().contains(&needle.to_lowercase());
         for p in &props {
-            if p.image.file_name == "TheDivision2.exe" {
-                assert!(
-                    p.path_disambiguator.is_some(),
-                    "expected a disambiguator for {p:?}"
-                );
+            let d = p
+                .path_disambiguator
+                .as_ref()
+                .unwrap_or_else(|| panic!("expected a disambiguator for {p:?}"));
+            // The disambiguator matches this proposal's own path...
+            let own = p.image.path.to_string_lossy();
+            assert!(matches(d, &own), "{d} should match own path {own}");
+            // ...and no other same-basename proposal's path.
+            for q in &props {
+                if !std::ptr::eq(p, q) {
+                    let other = q.image.path.to_string_lossy();
+                    assert!(
+                        !matches(d, &other),
+                        "disambiguator {d} must not also match {other}"
+                    );
+                }
             }
         }
     }

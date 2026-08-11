@@ -71,8 +71,14 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
     }
 
     let mut titles: Vec<InstalledTitle> = Vec::new();
-    for lib in &libraries {
-        for title in read_library_titles(&lib.path, &mut warnings) {
+    for (i, lib) in libraries.iter().enumerate() {
+        // The implicit root (index 0) is not a configured library; a missing
+        // `steamapps` there is benign. Every other library came from
+        // `libraryfolders.vdf`, so if its `steamapps` cannot be read (a
+        // disconnected drive, a permission error) that is a title-omitting fault
+        // worth reporting rather than swallowing (Codex review of PR #31).
+        let warn_unreadable = i != 0;
+        for title in read_library_titles(&lib.path, &mut warnings, warn_unreadable) {
             if let Some(existing) = titles.iter().find(|t| t.app_id == title.app_id) {
                 warnings.push(format!(
                     "app_id {} found in more than one library; keeping {} and ignoring {}",
@@ -149,11 +155,29 @@ fn read_library_folders(root: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf>
 }
 
 /// Read every `appmanifest_*.acf` in one library's `steamapps` directory.
-fn read_library_titles(library: &Path, warnings: &mut Vec<String>) -> Vec<InstalledTitle> {
+///
+/// `warn_unreadable` reports a read failure (the library came from the manifest
+/// and should be enumerable); the implicit root passes `false`, since a root
+/// without `steamapps` is benign.
+fn read_library_titles(
+    library: &Path,
+    warnings: &mut Vec<String>,
+    warn_unreadable: bool,
+) -> Vec<InstalledTitle> {
     let steamapps = library.join("steamapps");
     let entries = match std::fs::read_dir(&steamapps) {
         Ok(e) => e,
-        Err(_) => return Vec::new(), // A library with no steamapps holds no titles.
+        Err(e) => {
+            if warn_unreadable {
+                warnings.push(format!(
+                    "skipping library {}: cannot read {}: {e}",
+                    library.display(),
+                    steamapps.display()
+                ));
+            }
+            // Nonfatal: a library with no readable steamapps holds no titles here.
+            return Vec::new();
+        }
     };
 
     let mut out = Vec::new();
@@ -278,6 +302,34 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("appmanifest_2.acf")),
             "expected a skip warning, got {:?}",
+            inst.warnings
+        );
+    }
+
+    #[test]
+    fn a_configured_library_that_cannot_be_read_is_reported() {
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_1.acf"),
+            &manifest("1", "Good", "Good"),
+        );
+        // A configured library whose directory does not exist (a disconnected
+        // drive): its titles are omitted, but the omission is reported.
+        let gone = root.join("GoneDrive");
+        tree.write(
+            &root.join("steamapps").join("libraryfolders.vdf"),
+            &format!(
+                "\"libraryfolders\" {{ \"1\" {{ \"path\" \"{}\" }} }}",
+                gone.display().to_string().replace('\\', "\\\\"),
+            ),
+        );
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 1);
+        assert!(
+            inst.warnings.iter().any(|w| w.contains("GoneDrive")),
+            "expected an unreadable-library warning, got {:?}",
             inst.warnings
         );
     }

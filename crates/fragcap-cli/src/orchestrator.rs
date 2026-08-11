@@ -476,6 +476,20 @@ fn capture_live(
     if let Some(request) = &config.launch {
         emitter.progress(&format!("launching {} through Steam", request.url));
         if let Err(e) = fragcap::steam::launch(request) {
+            // The pipeline is already running from arm. Stop and join it so the
+            // sinks finalize and no output file is left unclosed, drop the watcher
+            // to end the live receiver, and surface the run's loss accounting,
+            // before returning the launch failure (Codex review of PR #31). The
+            // window was never opened, so every frame read is a watch-time discard
+            // already in the gate's tallies.
+            stop.stop();
+            let _ = components.watcher.take();
+            let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
+            emit_stream_reports(&stream_reports, emitter);
+            emit_ring_report(&ring_evicted, emitter);
+            session.finalize();
+            let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
+            emitter.summary(&summary);
             return Err(CliError::failure(e.to_string()));
         }
     }

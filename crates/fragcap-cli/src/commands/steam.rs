@@ -15,21 +15,27 @@ use std::io::Write;
 use fragcap::steam::{self, SteamError};
 
 use crate::cli::{SteamArgs, SteamCommand};
+use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 
-/// Run a `steam` subcommand, writing its output to `out`.
-pub fn run(args: &SteamArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+/// Run a `steam` subcommand, writing its result to `out` and any diagnostics
+/// through `emitter`.
+pub fn run(args: &SteamArgs, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
     match &args.command {
-        SteamCommand::Profile { app_id } => profile(app_id, out),
+        SteamCommand::Profile { app_id } => profile(app_id, out, emitter),
     }
 }
 
 /// Scaffold a profile for one installed title.
-fn profile(app_id: &str, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn profile(app_id: &str, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let installation = steam::discover().map_err(map_steam_error)?;
 
+    // Discovery diagnostics (a skipped malformed manifest, a duplicate app_id, an
+    // unreadable library) go through the emitter so they honor the configured
+    // writer, verbosity, and output format, and never contaminate the profile on
+    // stdout (Codex review of PR #31).
     for warning in &installation.warnings {
-        eprintln!("warning: {warning}");
+        emitter.warn(warning);
     }
 
     let Some(title) = installation.find(app_id) else {

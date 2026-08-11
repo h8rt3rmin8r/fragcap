@@ -26,10 +26,13 @@ full.
   this tracked file. That keeps per-slice pointer churn out of the diff and
   stops parallel slices conflicting here. The durable artifact for the current
   slice is its `specs/NNN-slug/plan.md`, pointed to by `.specify/feature.json`.
-- S01 through S11 are complete: the workspace, the crate skeletons, the check
-  set, the core vocabulary, the header and pcap parsers, both output writers,
-  the buffered pipeline, the profile schema, the socket-table attributor, and
-  the ETW process watcher and tree all exist. Run `cargo xtask ci` before
+- S01 through S17 are complete: the workspace, the check set, the core
+  vocabulary, the header and pcap parsers, both output writers, the buffered
+  pipeline, the profile schema, the socket-table attributor, the ETW process
+  watcher and tree, stage matching, filter management, the CLI, transports and
+  streaming sinks, ring mode, and (since S17) Steam integration and managed
+  launch all exist. The detailed per-slice record for S12 through S17 lives in
+  `changelog.d/` and `specs/`, not in this file. Run `cargo xtask ci` before
   proposing any change; it is the same set the automated checks run, so the two
   cannot drift. It now includes the fixture corpus drift check, so a hand-edited
   fixture fails there.
