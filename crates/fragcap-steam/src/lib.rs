@@ -37,12 +37,9 @@ mod scaffold;
 #[cfg(test)]
 mod test_support;
 
-pub use launch::{launch_request, LaunchConfigError, LaunchRequest};
+pub use launch::{launch, launch_request, LaunchConfigError, LaunchRequest};
 pub use library::{discover_in, InstalledTitle, SteamInstallation, SteamLibrary};
 pub use scaffold::scaffold;
-
-#[cfg(windows)]
-pub use launch::launch;
 
 /// A failure in a Steam integration operation.
 ///

@@ -74,6 +74,7 @@ pub struct EffectiveConfig {
     pub payload: bool,
     /// The managed launch to issue once watching, when `--launch` was given and
     /// the profile declares a Steam platform and app_id (specification 16.4).
+    #[allow(dead_code)]
     pub launch: Option<fragcap::steam::LaunchRequest>,
 }
 

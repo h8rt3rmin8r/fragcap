@@ -61,12 +61,9 @@ pub mod core {
 /// `#[cfg(windows)]` in the crate, so the facade re-export builds everywhere.
 pub mod steam {
     pub use fragcap_steam::{
-        discover, discover_in, launch_request, scaffold, InstalledTitle, LaunchConfigError,
+        discover, discover_in, launch, launch_request, scaffold, InstalledTitle, LaunchConfigError,
         LaunchRequest, SteamError, SteamInstallation, SteamLibrary,
     };
-
-    #[cfg(windows)]
-    pub use fragcap_steam::launch;
 }
 
 /// Packet acquisition.
