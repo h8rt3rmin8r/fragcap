@@ -2,11 +2,12 @@
 
 //! The registered-but-not-yet-implemented commands.
 //!
-//! `replay`, `steam`, and `extcap` appear in the top-level help so the tool does
-//! not appear to change shape between releases (specification FR-001), but each
+//! `replay` and `extcap` appear in the top-level help so the tool does not
+//! appear to change shape between releases (specification FR-001), but each
 //! reports that it is not yet implemented, names the slice that will deliver it,
 //! and exits 2. Naming the slice is the cheap honesty of specification User
-//! Story 5: the roadmap is visible without being implemented.
+//! Story 5: the roadmap is visible without being implemented. (`steam` was such
+//! a stub until slice S17 delivered it; see [`crate::commands::steam`].)
 
 use crate::exit::{CliError, Exit};
 
@@ -15,8 +16,6 @@ use crate::exit::{CliError, Exit};
 pub enum Stub {
     /// `replay`, delivered by slice S15.
     Replay,
-    /// `steam`, delivered by slice S17.
-    Steam,
     /// `extcap`, delivered by slice S18.
     Extcap,
 }
@@ -25,7 +24,6 @@ impl Stub {
     fn name(self) -> &'static str {
         match self {
             Stub::Replay => "replay",
-            Stub::Steam => "steam",
             Stub::Extcap => "extcap",
         }
     }
@@ -33,7 +31,6 @@ impl Stub {
     fn slice(self) -> &'static str {
         match self {
             Stub::Replay => "S15",
-            Stub::Steam => "S17",
             Stub::Extcap => "S18",
         }
     }

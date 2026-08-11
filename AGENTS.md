@@ -43,7 +43,19 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S11 are complete. The Cargo workspace exists with the eight
+Slices S01 through S17 are complete (S17, Steam integration and managed launch,
+integrates through the pull request that carries this note). The detailed
+per-slice narrative for S12 through S17 lives in the changelog fragments under
+`changelog.d/` and the slice specs under `specs/`; the architectural summary
+below is written as of S11 and is extended by those records rather than
+rewritten here every slice. Notably, since S17 the `fragcap-steam` crate is no
+longer a skeleton: it reads Steam's local installation metadata to enumerate
+installed titles, scaffolds a validating profile from one (`fragcap steam
+profile <app_id>`), and starts a title through Steam's protocol handler under
+capture (`fragcap run --launch`), all with no capture logic, no attribution
+logic, and no process handle.
+
+The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
 own checks, and six workflow files. `fragcap-core` carries the type and trait
 vocabulary from specification sections 8.4 and 8.5, a `parse` module

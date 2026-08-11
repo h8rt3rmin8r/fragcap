@@ -72,7 +72,9 @@ fn the_value_grammars_reject_bad_values_with_exit_two() {
 
 #[test]
 fn each_stub_reports_not_yet_implemented_names_its_slice_and_exits_two() {
-    for (command, slice) in [("replay", "S15"), ("steam", "S17"), ("extcap", "S18")] {
+    // `steam` was a stub until slice S17 delivered it; it now has its own wiring
+    // tests in cli_steam.rs. `replay` and `extcap` remain stubs.
+    for (command, slice) in [("replay", "S15"), ("extcap", "S18")] {
         let (code, _out, err) = run(&[command]);
         assert_eq!(code, 2, "{command} exits 2");
         assert!(err.contains("not yet implemented"), "{command}: {err}");

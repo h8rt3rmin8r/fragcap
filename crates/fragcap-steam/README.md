@@ -4,12 +4,10 @@ Steam platform integration for fragcap.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
-
-Version 0.1.0 reserves the name and fixes the crate boundary.
-Integration arrives in slice S17.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Implemented as of slice S17: library discovery, profile scaffolding, and managed
+launch. The Windows-only internals (the registry read for the Steam install path
+and the `steam://` protocol handler) are behind `#[cfg(windows)]`, so the crate
+builds on every target; the parser and the scaffolding classifier are portable.
 
 ## About fragcap
 
@@ -28,7 +26,18 @@ processes it names.
 ## This crate
 
 Library discovery, profile scaffolding, and managed launch. Contains no
-capture logic and no attribution logic.
+capture logic and no attribution logic, and opens no process handle.
+
+- **Discovery** reads Steam's local metadata (`libraryfolders.vdf` and every
+  `appmanifest_*.acf`, in Valve's key-value text format) to enumerate installed
+  titles with their application identifiers and install paths.
+- **Scaffolding** (`fragcap steam profile <app_id>`) generates a profile skeleton
+  for an installed title. It is a heuristic starting point, marked as such, and
+  is validated before it is emitted.
+- **Managed launch** (`fragcap run --launch`) starts a title through Steam's
+  protocol handler once fragcap is already watching, so the launch chain is
+  observed without an acquisition race. It reads no Steam metadata that requires a
+  running Steam client and installs nothing.
 
 ## License
 

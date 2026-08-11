@@ -11,5 +11,6 @@
 pub mod doctor;
 pub mod profile;
 pub mod run;
+pub mod steam;
 pub mod stub;
 pub mod tap;

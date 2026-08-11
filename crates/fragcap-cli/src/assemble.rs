@@ -72,6 +72,10 @@ pub struct EffectiveConfig {
     pub loopback: bool,
     /// Whether packet payloads are captured.
     pub payload: bool,
+    /// The managed launch to issue once watching, when `--launch` was given and
+    /// the profile declares a Steam platform and app_id (specification 16.4).
+    #[allow(dead_code)]
+    pub launch: Option<fragcap::steam::LaunchRequest>,
 }
 
 impl EffectiveConfig {
@@ -114,6 +118,7 @@ pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveCo
     let duration = args.duration.or_else(|| defaults.duration());
     let mode = resolve_mode(args, profile);
     let ring = args.ring.map(map_ring_window);
+    let launch = build_launch(args, profile)?;
 
     Ok(EffectiveConfig {
         mode,
@@ -129,7 +134,36 @@ pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveCo
         interfaces: args.interface.clone(),
         loopback,
         payload,
+        launch,
     })
+}
+
+/// Build the managed-launch request from `--launch` and the profile.
+///
+/// Absent `--launch`, there is none. With it, the profile must declare a Steam
+/// platform and an app_id, or the launch is refused as a named configuration
+/// error before capture starts (FR-011); on a non-Windows build it is refused as
+/// unsupported, since there is no Steam protocol handler to invoke.
+fn build_launch(
+    args: &RunArgs,
+    profile: &Profile,
+) -> Result<Option<fragcap::steam::LaunchRequest>, CliError> {
+    if !args.launch {
+        return Ok(None);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = profile;
+        Err(CliError::usage(
+            "managed launch (--launch) is only supported on Windows",
+        ))
+    }
+    #[cfg(windows)]
+    {
+        fragcap::steam::launch_request(profile)
+            .map(Some)
+            .map_err(|e| CliError::usage(e.to_string()))
+    }
 }
 
 /// Build the effective configuration for `tap` from a synthesized profile.
@@ -158,6 +192,7 @@ pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -
         interfaces: Vec::new(),
         loopback: defaults.loopback().unwrap_or(false),
         payload,
+        launch: None,
     }
 }
 
@@ -213,11 +248,6 @@ fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError>
     } else if args.ring.is_some() {
         return Err(CliError::usage(
             "--ring applies only in ring mode; add --mode ring",
-        ));
-    }
-    if args.launch {
-        return Err(CliError::usage(
-            "managed launch (--launch) is not yet supported (slice S17)",
         ));
     }
     Ok(())
@@ -904,6 +934,7 @@ mod tests {
             interfaces: vec!["eth0".to_string()],
             loopback: false,
             payload: true,
+            launch: None,
         }
     }
 
@@ -954,6 +985,58 @@ mod tests {
              match = { exe = \"game.exe\" }\n",
         )
         .expect("the profile parses")
+    }
+
+    /// A minimal valid profile declaring a Steam platform and app_id.
+    fn steam_profile() -> Profile {
+        Profile::parse(
+            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\nplatform = \"steam\"\napp_id = \"900883\"\n\
+             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
+             match = { exe = \"game.exe\" }\n",
+        )
+        .expect("the profile parses")
+    }
+
+    // Managed launch (S17). Without --launch there is no managed launch.
+    #[test]
+    fn without_launch_there_is_no_managed_launch() {
+        let args = run_args(&[]);
+        let cfg = effective_config(&args, &steam_profile()).unwrap();
+        assert!(cfg.launch.is_none());
+    }
+
+    // FR-010. --launch on a Steam profile requests the run URL for its app_id.
+    #[cfg(windows)]
+    #[test]
+    fn launch_on_a_steam_profile_requests_the_run_url() {
+        let args = run_args(&["--launch"]);
+        let cfg = effective_config(&args, &steam_profile()).unwrap();
+        let req = cfg.launch.expect("a launch request");
+        assert_eq!(req.url, "steam://run/900883");
+    }
+
+    // FR-011. --launch without a declared app_id is refused before capture.
+    #[cfg(windows)]
+    #[test]
+    fn launch_without_app_id_is_refused_before_capture() {
+        let no_app_id = Profile::parse(
+            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\nplatform = \"steam\"\n\
+             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
+             match = { exe = \"game.exe\" }\n",
+        )
+        .expect("parses");
+        let args = run_args(&["--launch"]);
+        let err = effective_config(&args, &no_app_id).unwrap_err();
+        assert!(err.to_string().contains("app_id"), "{err}");
+    }
+
+    // Off Windows, --launch is refused as unsupported before capture.
+    #[cfg(not(windows))]
+    #[test]
+    fn launch_is_refused_as_windows_only_off_windows() {
+        let args = run_args(&["--launch"]);
+        let err = effective_config(&args, &steam_profile()).unwrap_err();
+        assert!(err.to_string().contains("Windows"), "{err}");
     }
 
     // FR-005. Ring mode without an output file is refused before capture.

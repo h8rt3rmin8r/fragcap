@@ -304,6 +304,7 @@ name = "fragcap-steam"
 version = "0.1.0"
 dependencies = [
  "fragcap-profile",
+ "windows-sys 0.36.1",
 ]
 
 [[package]]
