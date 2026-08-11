@@ -7,9 +7,10 @@
 //! vendored `Test-ScriptCompliance.ps1` (its POSIX twin, so only bash is
 //! needed); the Bash wrapper is checked by [`check_bash`], authored here because
 //! no Bash checker is vendored. Both scripts are then checked for syntax
-//! (`bash -n`) and for their help and dry-run seams. The exit contract is the
-//! house 0/1/2: 0 both compliant, 1 a check failed, 2 the gate could not run
-//! (bash absent), the last so a skipped gate never reads as a clean one.
+//! (`bash -n`, a PowerShell parse) and for their help and dry-run seams. The
+//! exit contract is the house 0/1/2: 0 both compliant, 1 a check failed, 2 the
+//! gate could not run (bash or pwsh absent), the last so a skipped gate never
+//! reads as a clean one.
 
 use std::fs;
 use std::io;
@@ -53,6 +54,13 @@ pub fn check_bash(bytes: &[u8]) -> Vec<&'static str> {
     if bytes.contains(&b'\r') {
         out.push("crlf");
     }
+    // Reject invalid UTF-8 rather than lossily replacing it: a malformed byte in
+    // a comment must not pass the structural checks unseen (CONVENTIONS.md
+    // requires UTF-8). The structural checks below still run over the lossy text
+    // so a file with both problems reports both.
+    if std::str::from_utf8(bytes).is_err() {
+        out.push("utf8");
+    }
 
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
@@ -75,6 +83,19 @@ pub fn check_bash(bytes: &[u8]) -> Vec<&'static str> {
     // The man-page help block, by two of its conventional headings.
     if !text.contains("# NAME") || !text.contains("# SYNOPSIS") {
         out.push("help-block");
+    }
+    // The fixtures specification section 18.3 requires of the Bash wrapper.
+    // Checking for the definitions keeps the compliance gate from passing a
+    // wrapper that has dropped a mandated idiom (Codex review of PR #35).
+    for fixture in ["print_help", "has_cmd", "safe_run", "log_"] {
+        if !text.contains(fixture) {
+            out.push(match fixture {
+                "print_help" => "fixture-print_help",
+                "has_cmd" => "fixture-has_cmd",
+                "safe_run" => "fixture-safe_run",
+                _ => "fixture-log",
+            });
+        }
     }
     // The four headings appear in order, each under a divider.
     let mut heading_idx = 0usize;
@@ -113,9 +134,10 @@ fn has_bash() -> bool {
         .unwrap_or(false)
 }
 
-/// Whether pwsh (PowerShell 7) is available for the optional PowerShell runtime
-/// checks. Its absence is a skip, not a failure: the vendored checker's POSIX
-/// twin already validates the PowerShell script's structure with bash alone.
+/// Whether pwsh (PowerShell 7) is available. It is required, not optional: the
+/// vendored POSIX twin validates the PowerShell script's structure, but only a
+/// real PowerShell parser catches a syntax-broken `.ps1`, so its absence makes
+/// the gate unable to run rather than a false pass.
 fn has_pwsh() -> bool {
     Command::new("pwsh")
         .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
@@ -143,6 +165,16 @@ pub fn run(root: &Path) -> io::Result<usize> {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "bash is required to run the wrapper compliance checkers",
+        ));
+    }
+    // pwsh is required too: the vendored POSIX twin validates the PowerShell
+    // script's structure, but only a real PowerShell parser catches a
+    // syntax-broken .ps1. Its absence is an unable-to-run (exit 2), never a
+    // false pass (Codex review of PR #35).
+    if !has_pwsh() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "pwsh (PowerShell 7) is required to parse and run the PowerShell wrapper",
         ));
     }
 
@@ -243,8 +275,25 @@ pub fn run(root: &Path) -> io::Result<usize> {
         }
     }
 
-    // 5. The PowerShell wrapper's help and dry-run seams, when pwsh is present.
-    if ps1.exists() && has_pwsh() {
+    // 5. A real PowerShell parse of the wrapper (syntax the POSIX twin cannot
+    // check), then its help and dry-run seams. pwsh is required (guarded above).
+    if ps1.exists() {
+        let parse = "$e=$null; \
+             [void][System.Management.Automation.Language.Parser]::ParseFile(\
+             (Resolve-Path 'scripts/Invoke-FragCap.ps1').Path,[ref]$null,[ref]$e); \
+             if ($e -and $e.Count -gt 0) { $e | ForEach-Object { $_.Message } | Write-Output; exit 1 }";
+        let (ok, out) =
+            run_cmd(
+                Command::new("pwsh")
+                    .current_dir(root)
+                    .args(["-NoProfile", "-Command", parse]),
+            );
+        if ok {
+            println!("wrappers: OK  Invoke-FragCap.ps1 parses (PowerShell)");
+        } else {
+            eprintln!("wrappers: FAIL Invoke-FragCap.ps1 does not parse:\n{out}");
+            fails += 1;
+        }
         let (ok, _) = run_cmd(
             Command::new("pwsh")
                 .args(["-NoProfile", "-File"])
@@ -279,8 +328,6 @@ pub fn run(root: &Path) -> io::Result<usize> {
             );
             fails += 1;
         }
-    } else if ps1.exists() {
-        println!("wrappers: SKIP Invoke-FragCap.ps1 runtime checks (pwsh not present)");
     }
 
     Ok(fails)
@@ -299,6 +346,10 @@ set -euo pipefail\n\
 IFS=$'\\n\\t'\n\
 #_______________________________________________________________________________\n\
 # Declare Functions\n\
+    print_help() { :; }\n\
+    has_cmd() { :; }\n\
+    safe_run() { :; }\n\
+    log_info() { :; }\n\
 #_______________________________________________________________________________\n\
 # Declare Variables and Arrays\n\
 #_______________________________________________________________________________\n\
@@ -345,5 +396,21 @@ IFS=$'\\n\\t'\n\
     fn end_of_script_must_be_last() {
         let bad = format!("{OK}echo trailing\n");
         assert!(check_bash(bad.as_bytes()).contains(&"end-of-script"));
+    }
+
+    #[test]
+    fn a_missing_safe_run_fixture_fails() {
+        // The `\` line continuations in OK strip the source indentation, so the
+        // fixture lines sit at column zero in the actual string.
+        let bad = OK.replacen("safe_run() { :; }\n", "", 1);
+        assert!(check_bash(bad.as_bytes()).contains(&"fixture-safe_run"));
+    }
+
+    #[test]
+    fn invalid_utf8_fails() {
+        let mut bad = OK.as_bytes().to_vec();
+        // Splice an invalid UTF-8 byte into the file.
+        bad.insert(30, 0xFF);
+        assert!(check_bash(&bad).contains(&"utf8"));
     }
 }

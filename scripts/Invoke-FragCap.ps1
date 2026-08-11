@@ -156,39 +156,52 @@ Param(
         exit 0
     }
 
-    # Assemble the fragcap invocation: the run subcommand, the profile, the
-    # expanded output path, the --json event stream this wrapper consumes, and
-    # any passed-through options.
-    $command = [System.Collections.Generic.List[string]]::new()
-    $command.Add('fragcap')
-    $command.Add('run')
-    $command.Add('--profile')
-    $command.Add($Profile)
+    # Assemble the option list once: the profile, the expanded output path, the
+    # --json event stream this wrapper consumes, and any passed-through options.
     $outPath = $null
     if ($Out) {
         $outPath = Expand-Template -Template $Out
-        $command.Add('--out')
-        $command.Add($outPath)
     }
-    $command.Add('--json')
+    $options = [System.Collections.Generic.List[string]]::new()
+    $options.Add('run')
+    $options.Add('--profile')
+    $options.Add($Profile)
+    if ($outPath) {
+        $options.Add('--out')
+        $options.Add($outPath)
+    }
+    $options.Add('--json')
     if ($Passthrough) {
-        foreach ($item in $Passthrough) { $command.Add($item) }
+        foreach ($item in $Passthrough) { $options.Add($item) }
     }
 
-    # The dry-run seam prints the assembled invocation and exits, with no
-    # elevation, driver detection, or capture.
+    # The dry-run seam prints the logical invocation and exits, with no elevation,
+    # driver detection, or capture.
     if ($DryRun) {
-        Write-Output ($command -join ' ')
+        Write-Output ('fragcap ' + ($options -join ' '))
         exit 0
     }
 
-    # Elevation: relaunch elevated when the session is not, preserving arguments.
+    # Elevation: relaunch elevated when the session is not. The child is rebuilt
+    # from the bound parameters (an elevated `$args` does not carry values already
+    # bound to declared parameters), waited on, and its exit code propagated.
     if (-not (Test-Elevated)) {
         Write-Log 'session is not elevated; relaunching elevated' 'Info'
+        $childArgs = [System.Collections.Generic.List[string]]::new()
+        $childArgs.Add('-NoProfile')
+        $childArgs.Add('-File')
+        $childArgs.Add($ThisScriptPath)
+        $childArgs.Add('-Profile')
+        $childArgs.Add($Profile)
+        if ($Out)     { $childArgs.Add('-Out'); $childArgs.Add($Out) }
+        if ($Quiet)   { $childArgs.Add('-Quiet') }
+        if ($Silent)  { $childArgs.Add('-Silent') }
+        if ($NoColor) { $childArgs.Add('-NoColor') }
+        if ($Passthrough) { foreach ($item in $Passthrough) { $childArgs.Add($item) } }
         try {
-            $argList = @('-NoProfile', '-File', $ThisScriptPath) + $args
-            Start-Process -FilePath 'pwsh' -Verb RunAs -ArgumentList $argList -ErrorAction Stop
-            exit 0
+            $child = Start-Process -FilePath 'pwsh' -Verb RunAs `
+                -ArgumentList $childArgs.ToArray() -Wait -PassThru -ErrorAction Stop
+            exit $child.ExitCode
         } catch {
             Write-Log 'elevation was declined; cannot capture without it' 'Error'
             exit 2
@@ -196,12 +209,18 @@ Param(
     }
 
     # Driver detection, read-only. The capture driver's own wpcap.dll lives in the
-    # Npcap directory; its absence means capture is not possible.
+    # Npcap directory; its absence means capture is not possible, and its version
+    # is reported so an unsuitable installation is distinguishable from a good one.
     $npcapDll = Join-Path -Path $env:SystemRoot -ChildPath 'System32\Npcap\wpcap.dll'
     if (-not (Test-Path -LiteralPath $npcapDll)) {
         Write-Log "the capture driver is not installed; download it from $NpcapUrl" 'Error'
         exit 1
     }
+    $driverVersion = (Get-Item -LiteralPath $npcapDll).VersionInfo.ProductVersion
+    if (-not $driverVersion) {
+        $driverVersion = (Get-Item -LiteralPath $npcapDll).VersionInfo.FileVersion
+    }
+    Write-Log "capture driver present (npcap wpcap.dll version $driverVersion)" 'Info'
 
     # Interface enumeration assistance: filter virtual adapters from the list.
     try {
@@ -221,8 +240,17 @@ Param(
         }
     }
 
-    Write-Log ("invoking: " + ($command -join ' ')) 'Info'
-    & $command[0] @($command[1..($command.Count - 1)])
+    # Resolve the executable: prefer a fragcap.exe bundled beside the wrapper in
+    # the release archive (the wrapper lives under scripts/, the binary at the
+    # archive root), then fall back to fragcap on the PATH.
+    $binary = 'fragcap'
+    $bundled = Join-Path -Path $PSScriptRoot -ChildPath '..\fragcap.exe'
+    if (Test-Path -LiteralPath $bundled) {
+        $binary = (Resolve-Path -LiteralPath $bundled).Path
+    }
+
+    Write-Log ("invoking: $binary " + ($options -join ' ')) 'Info'
+    & $binary @($options.ToArray())
     exit $LASTEXITCODE
 
 #_______________________________________________________________________________

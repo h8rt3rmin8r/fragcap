@@ -34,3 +34,15 @@ decisions.**
   since S09. Continuous integration verifies the compliance checkers, the syntax
   validity, the help paths, and the templating and pass-through through
   `--dry-run`.
+- **Review hardening (Codex review of PR #35).** The PowerShell wrapper
+  reconstructs the elevated child from its bound parameters (an elevated `$args`
+  drops values already bound), waits on the child and propagates its exit code,
+  resolves `fragcap.exe` beside the wrapper in the release archive before the PATH
+  fallback, and reports the capture driver's version. The Bash wrapper heads the
+  invocation with the resolved binary in every case (not only when a WSL path is
+  translated), rejects a missing option value with exit 2, and prepares the output
+  directory before capture. The `wrappers` gate now requires pwsh and adds a real
+  PowerShell parse (a missing parser is exit 2, never a false pass), the Bash
+  checker rejects invalid UTF-8 and verifies the section 18.3 fixtures including
+  `safe_run`, and the `ci.yml` step is scoped to the ubuntu leg, which carries
+  both bash and pwsh (the windows leg carries no bash on PATH).

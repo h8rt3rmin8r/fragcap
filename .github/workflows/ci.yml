@@ -60,7 +60,13 @@ jobs:
       - name: Publication licensing
         run: cargo run --package xtask -- license
 
+      # The wrapper compliance gate needs bash (for the vendored PowerShell
+      # checker's POSIX twin and bash -n) and pwsh (for the PowerShell parse).
+      # The ubuntu runner ships both; the checks are OS-independent, so running
+      # them on one leg covers both wrappers. The windows runner does not carry
+      # bash on PATH, which is why this is scoped to ubuntu.
       - name: Shell wrapper compliance
+        if: matrix.os == 'ubuntu-latest'
         run: cargo run --package xtask -- wrappers
 
   neutrality:

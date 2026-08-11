@@ -111,6 +111,25 @@ IFS=$'\n\t'
         [[ -r /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version
     }
 
+    # Run a command, reporting a non-zero exit through the logger rather than
+    # letting the strict-mode shell abort with no explanation.
+    safe_run() {
+        if ! "$@"; then
+            log_error "command failed: $(format_command "$@")"
+            return 1
+        fi
+    }
+
+    # Abort with a usage error (exit 2) when a required option value is missing
+    # or is itself another option, so a swallowed value never reaches capture.
+    need_value() {
+        local flag="$1" value="$2"
+        if [[ -z "${value}" || "${value}" == -* ]]; then
+            log_error "option ${flag} needs a value"
+            exit 2
+        fi
+    }
+
 #_______________________________________________________________________________
 # Declare Variables and Arrays
 
@@ -120,6 +139,12 @@ IFS=$'\n\t'
     PROFILE=""
     OUT_TEMPLATE=""
     PASSTHROUGH=()
+    # Initialized empty so the log fixtures are safe under `set -u` before
+    # setup_color runs; setup_color fills in the real codes after parsing.
+    C_INFO=""
+    C_WARN=""
+    C_ERROR=""
+    C_RESET=""
 
 #_______________________________________________________________________________
 # Execute Operations
@@ -153,14 +178,16 @@ IFS=$'\n\t'
                 DRY_RUN="1"
                 ;;
             --profile)
-                PROFILE="${2:-}"
+                need_value "--profile" "${2:-}"
+                PROFILE="$2"
                 shift
                 ;;
             --profile=*)
                 PROFILE="${1#*=}"
                 ;;
             -o)
-                OUT_TEMPLATE="${2:-}"
+                need_value "-o" "${2:-}"
+                OUT_TEMPLATE="$2"
                 shift
                 ;;
             -o=*)
@@ -188,28 +215,26 @@ IFS=$'\n\t'
         exit 2
     fi
 
-    # Assemble the fragcap invocation: the run subcommand, the profile, the
-    # expanded output path, the --json event stream this wrapper consumes, and
-    # any passed-through options.
-    COMMAND=(fragcap run --profile "${PROFILE}")
-    if [[ -n "${OUT_TEMPLATE}" ]]; then
-        OUT_PATH="$(expand_template "${OUT_TEMPLATE}")"
-        COMMAND+=(--out "${OUT_PATH}")
-    fi
-    COMMAND+=(--json)
-    if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
-        COMMAND+=("${PASSTHROUGH[@]}")
-    fi
-
+    # A dry run prints the assembled invocation and exits, without resolving the
+    # binary, preparing directories, translating paths, or capturing. It shows the
+    # logical `fragcap run` invocation, expanded template and passed-through
+    # options included.
     if [[ "${DRY_RUN}" == "1" ]]; then
-        printf '%s\n' "$(format_command "${COMMAND[@]}")"
+        DRY=(fragcap run --profile "${PROFILE}")
+        if [[ -n "${OUT_TEMPLATE}" ]]; then
+            DRY+=(--out "$(expand_template "${OUT_TEMPLATE}")")
+        fi
+        DRY+=(--json)
+        if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
+            DRY+=("${PASSTHROUGH[@]}")
+        fi
+        printf '%s\n' "$(format_command "${DRY[@]}")"
         exit 0
     fi
 
-    # Resolve the binary and the subsystem boundary. Under WSL2 the native
-    # Windows binary is reached through interop and the output path is translated
-    # to the Windows form; on a Linux host with no reachable binary, capture is
-    # unavailable.
+    # Resolve the binary. Prefer the native Windows binary (reached directly or
+    # through WSL2 interop); fall back to fragcap on the PATH; if neither is
+    # reachable, capture is unavailable on this platform.
     if has_cmd fragcap.exe; then
         BINARY="fragcap.exe"
     elif has_cmd fragcap; then
@@ -219,17 +244,29 @@ IFS=$'\n\t'
         exit 1
     fi
 
-    if is_wsl && [[ "${BINARY}" == "fragcap.exe" ]] && [[ -n "${OUT_TEMPLATE}" ]]; then
-        if has_cmd wslpath; then
-            OUT_WINDOWS="$(wslpath -w "${OUT_PATH}")"
-            COMMAND=(fragcap.exe run --profile "${PROFILE}" --out "${OUT_WINDOWS}" --json)
-            if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
-                COMMAND+=("${PASSTHROUGH[@]}")
-            fi
-            log_info "capturing to ${OUT_PATH} (Windows: ${OUT_WINDOWS})"
+    # Assemble the invocation, always headed by the resolved binary. Expand the
+    # output template, prepare its directory, and translate the path to the
+    # Windows form when the native binary is reached through WSL2 interop.
+    COMMAND=("${BINARY}" run --profile "${PROFILE}")
+    if [[ -n "${OUT_TEMPLATE}" ]]; then
+        OUT_PATH="$(expand_template "${OUT_TEMPLATE}")"
+        OUT_DIR="$(dirname -- "${OUT_PATH}")"
+        if [[ -n "${OUT_DIR}" && ! -d "${OUT_DIR}" ]] && ! safe_run mkdir -p -- "${OUT_DIR}"; then
+            exit 1
         fi
+        OUT_ARG="${OUT_PATH}"
+        if is_wsl && [[ "${BINARY}" == "fragcap.exe" ]] && has_cmd wslpath; then
+            OUT_ARG="$(wslpath -w -- "${OUT_PATH}")"
+            log_info "output ${OUT_PATH} (Windows: ${OUT_ARG})"
+        fi
+        COMMAND+=(--out "${OUT_ARG}")
+    fi
+    COMMAND+=(--json)
+    if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
+        COMMAND+=("${PASSTHROUGH[@]}")
     fi
 
+    # The native binary's own exit code is this wrapper's exit code.
     log_info "invoking: $(format_command "${COMMAND[@]}")"
     "${COMMAND[@]}"
 
