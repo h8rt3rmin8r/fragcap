@@ -60,6 +60,9 @@ jobs:
       - name: Publication licensing
         run: cargo run --package xtask -- license
 
+      - name: Shell wrapper compliance
+        run: cargo run --package xtask -- wrappers
+
   neutrality:
     # Constitution P-2 proven mechanically: fragcap-core must build where no
     # capture backend exists. A native Linux build is that proof, and needs no
