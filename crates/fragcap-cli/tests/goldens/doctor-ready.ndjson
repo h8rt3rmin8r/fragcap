@@ -4,6 +4,8 @@
 {"section":"Capture driver","name":"npcap","detail":"version 1.79","status":"ok"}
 {"section":"Capture driver","name":"loopback adapter","detail":"loopback capture supported","status":"ok"}
 {"section":"Capture driver","name":"winpcap api mode","detail":"WinPcap API compatible","status":"ok"}
+{"section":"Capture driver","name":"live backend","detail":"live capture backend is built in","status":"ok"}
+{"section":"Capture driver","name":"socket-table backend","detail":"socket-table attribution is built in","status":"ok"}
 {"section":"Tracing","name":"process events","detail":"process-event session available","status":"ok"}
 {"section":"Interfaces","name":"adapter","detail":"192.0.2.10","status":"ok"}
 {"section":"Integration","name":"analyzer extcap","detail":"installed in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok"}

@@ -105,3 +105,19 @@ produces a start event fragcap observes.
 
 **See also:** [Launcher chain](process-and-attribution.md#launcher-chain),
 [Acquisition timeout](process-and-attribution.md#acquisition-timeout), [Game profile](platform-and-distribution.md#game-profile)
+
+## Capability feature
+
+A compile-time Cargo feature that links one of fragcap's platform backends into
+the binary: `live` (the npcap capture source), `socket-table` (the IP Helper
+attribution backend), and `etw` (the process-event tracing source). `fragcap
+doctor` reports which are present, and a release binary ships with all three.
+
+{: .matters }
+> Presence is a property of the built binary, not the machine around it, so
+> `doctor` reports it as a first-class fact: a binary without `live` cannot
+> capture at all, a blocking failure rather than a downstream "no interfaces"
+> symptom. Shipping the binary without these features once made every capture
+> fail while the readiness report still read "ready".
+
+**See also:** [npcap](platform-and-distribution.md#npcap), [Readiness check](command-line-and-diagnostics.md#readiness-check), [Socket table](process-and-attribution.md#socket-table)

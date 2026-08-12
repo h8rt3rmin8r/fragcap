@@ -208,8 +208,8 @@ fn apply_option(spec: &mut SinkSpec, key: &str, value: &str) -> Result<(), Strin
 
 /// A ring window, either a duration or a size.
 ///
-/// Accepted and validated now; ring mode itself is refused as a configuration
-/// error naming slice S16.
+/// Accepted and validated now; ring mode itself is not yet implemented and is
+/// refused as a configuration error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RingWindow {
     /// A time window.

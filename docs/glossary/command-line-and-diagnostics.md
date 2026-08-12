@@ -123,3 +123,19 @@ said nothing remain distinguishable.
 > later override behave differently than they wrote.
 
 **See also:** [Game profile](platform-and-distribution.md#game-profile), [Completion summary](command-line-and-diagnostics.md#completion-summary)
+
+## Diagnostic record
+
+One structured `--json` record describing a single problem `fragcap profile
+validate` found in a profile: its stable `code`, the configuration key `path`, a
+`line` and `col` into the source text, and a human `message`. Validation emits
+one record per problem, followed by a terminal `summary` record, on standard
+output.
+
+{: .matters }
+> The record preserves every field the human formatter renders rather than
+> collapsing all problems into one string. A consumer keys on the `code` and
+> `path` to act on a specific problem; re-parsing a rendered line would tie the
+> automation to prose that may be reworded without notice.
+
+**See also:** [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event), [Readiness check](command-line-and-diagnostics.md#readiness-check)

@@ -31,6 +31,8 @@ pub fn run(inputs: &Inputs) -> Report {
         npcap(inputs),
         loopback(inputs),
         winpcap_api(inputs),
+        live_backend(inputs),
+        socket_table_backend(inputs),
         tracing(inputs),
     ];
     checks.extend(interfaces(inputs));
@@ -67,6 +69,10 @@ fn privilege(inputs: &Inputs) -> Check {
 
 fn npcap(inputs: &Inputs) -> Check {
     match &inputs.npcap {
+        // The probe falls back to the literal "installed" when it cannot read a
+        // real version; do not dress that up as "version installed", which would
+        // claim a version it does not have (P-9).
+        Some(info) if info.version == "installed" => Check::ok(DRIVER, "npcap", "installed"),
         Some(info) => Check::ok(DRIVER, "npcap", format!("version {}", info.version)),
         None => Check::fail(DRIVER, "npcap", "npcap is not installed", NPCAP_SOURCE),
     }
@@ -78,11 +84,51 @@ fn loopback(inputs: &Inputs) -> Check {
         Some(info) if info.loopback_adapter => {
             Check::ok(DRIVER, "loopback adapter", "loopback capture supported")
         }
-        Some(_) => Check::fail(
+        // Only needed with --loopback, so a non-blocking warning in standalone
+        // doctor rather than a blocking fail. The remediation is folded into the
+        // detail because a warn carries no separate remediation line. The
+        // run/extcap path that actually requests --loopback treats its absence
+        // as blocking on that path.
+        Some(_) => Check::warn(
             DRIVER,
             "loopback adapter",
-            "loopback capture support is not installed",
-            "reinstall npcap with the \"Support loopback traffic\" option enabled",
+            "loopback capture support is not installed; reinstall npcap with the \
+             \"Support loopback traffic\" option to enable it (only needed with --loopback)",
+        ),
+    }
+}
+
+/// Whether the live capture backend is compiled into this binary. Its absence
+/// is blocking: the binary cannot capture at all, and reporting anything softer
+/// would let the readiness verdict stay green over a binary that fails every
+/// capture (P-9, and the interfaces check's "no interfaces" symptom).
+fn live_backend(inputs: &Inputs) -> Check {
+    match inputs.live_available {
+        Some(_) => Check::ok(DRIVER, "live backend", "live capture backend is built in"),
+        None => Check::fail(
+            DRIVER,
+            "live backend",
+            "the live capture backend is not built into this binary",
+            "install a build with the `live` feature (the official release enables it); \
+             this binary cannot capture without it",
+        ),
+    }
+}
+
+/// Whether the socket-table attribution backend is compiled into this binary.
+/// Absence degrades attribution rather than preventing capture, so it warns.
+fn socket_table_backend(inputs: &Inputs) -> Check {
+    match inputs.socket_table_available {
+        Some(_) => Check::ok(
+            DRIVER,
+            "socket-table backend",
+            "socket-table attribution is built in",
+        ),
+        None => Check::warn(
+            DRIVER,
+            "socket-table backend",
+            "the socket-table attribution backend is not built into this binary; \
+             attribution is degraded",
         ),
     }
 }
@@ -135,11 +181,16 @@ fn tracing(inputs: &Inputs) -> Check {
 
 fn interfaces(inputs: &Inputs) -> Vec<Check> {
     if inputs.interfaces.is_empty() {
-        return vec![Check::warn(
-            INTERFACES,
-            "adapters",
-            "no interfaces were found",
-        )];
+        // When the live backend is absent, the empty set is a consequence of the
+        // missing backend, not an npcap/adapter fault. Name the real cause so the
+        // operator is not sent chasing an adapter red herring.
+        let detail = if inputs.live_available.is_none() {
+            "no interfaces were enumerated because the live capture backend is not built \
+             into this binary (see the live backend check above)"
+        } else {
+            "no interfaces were found"
+        };
+        return vec![Check::warn(INTERFACES, "adapters", detail)];
     }
     inputs
         .interfaces
@@ -217,6 +268,8 @@ mod tests {
                 winpcap_api_mode: true,
             }),
             etw_available: Some(true),
+            live_available: Some(true),
+            socket_table_available: Some(true),
             interfaces: vec![IfaceInfo {
                 name: "Ethernet".to_string(),
                 addr: Some("192.0.2.10".to_string()),
@@ -252,26 +305,80 @@ mod tests {
     }
 
     #[test]
-    fn the_two_npcap_options_fail_independently() {
+    fn the_two_npcap_options_are_independent_with_their_own_severities() {
+        // Loopback is only needed with --loopback, so its absence warns and does
+        // not block; the WinPcap API option is unaffected and the machine stays
+        // ready.
         let mut inputs = ready_inputs();
         if let Some(info) = inputs.npcap.as_mut() {
             info.loopback_adapter = false;
         }
         let report = run(&inputs);
-        assert_eq!(loopback(&inputs).status, Status::Fail);
+        assert_eq!(loopback(&inputs).status, Status::Warn);
         assert_eq!(
             winpcap_api(&inputs).status,
             Status::Ok,
             "the WinPcap API check is unaffected by the loopback option"
         );
-        assert_eq!(report.exit(), Exit::FAILURE);
+        assert!(
+            report.ready(),
+            "a missing loopback adapter alone does not block readiness"
+        );
 
+        // The WinPcap API option, by contrast, is a blocking fail when absent.
         let mut inputs = ready_inputs();
         if let Some(info) = inputs.npcap.as_mut() {
             info.winpcap_api_mode = false;
         }
         assert_eq!(winpcap_api(&inputs).status, Status::Fail);
         assert_eq!(loopback(&inputs).status, Status::Ok);
+        assert_eq!(run(&inputs).exit(), Exit::FAILURE);
+    }
+
+    #[test]
+    fn an_absent_live_backend_blocks_and_names_the_cause() {
+        let mut inputs = ready_inputs();
+        inputs.live_available = None;
+        let report = run(&inputs);
+        assert_eq!(live_backend(&inputs).status, Status::Fail);
+        assert_eq!(report.exit(), Exit::FAILURE);
+        // The empty-interface message points at the missing backend, not npcap.
+        inputs.interfaces.clear();
+        let ifaces = interfaces(&inputs);
+        assert!(
+            ifaces
+                .iter()
+                .any(|c| c.detail.contains("live capture backend")),
+            "the empty-interface message names the missing backend: {ifaces:?}"
+        );
+    }
+
+    #[test]
+    fn an_absent_socket_table_backend_only_warns() {
+        let mut inputs = ready_inputs();
+        inputs.socket_table_available = None;
+        let report = run(&inputs);
+        assert_eq!(socket_table_backend(&inputs).status, Status::Warn);
+        assert!(
+            report.ready(),
+            "a missing socket-table backend degrades attribution but does not block"
+        );
+    }
+
+    #[test]
+    fn a_real_npcap_version_is_shown_and_the_fallback_is_not_dressed_up() {
+        // A real version renders as "version X".
+        let inputs = ready_inputs();
+        assert!(npcap(&inputs).detail.contains("version 1.79"));
+
+        // The "installed" fallback renders plainly, never "version installed".
+        let mut inputs = ready_inputs();
+        if let Some(info) = inputs.npcap.as_mut() {
+            info.version = "installed".to_string();
+        }
+        let detail = npcap(&inputs).detail;
+        assert_eq!(detail, "installed");
+        assert!(!detail.contains("version"));
     }
 
     #[test]

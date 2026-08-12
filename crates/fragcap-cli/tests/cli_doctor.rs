@@ -21,6 +21,8 @@ fn ready() -> Inputs {
             winpcap_api_mode: true,
         }),
         etw_available: Some(true),
+        live_available: Some(true),
+        socket_table_available: Some(true),
         interfaces: vec![IfaceInfo {
             name: "Ethernet".to_string(),
             addr: Some("192.0.2.10".to_string()),
@@ -61,7 +63,9 @@ fn absent_npcap_blocks_with_a_remediation_and_exits_one() {
 }
 
 #[test]
-fn the_two_npcap_options_fail_independently() {
+fn the_two_npcap_options_have_their_own_severities() {
+    // Loopback is only needed with --loopback, so its absence warns and does not
+    // block; the WinPcap option is unaffected and the machine stays ready.
     let mut loop_absent = ready();
     if let Some(info) = loop_absent.npcap.as_mut() {
         info.loopback_adapter = false;
@@ -77,14 +81,19 @@ fn the_two_npcap_options_fail_independently() {
         .iter()
         .find(|c| c.name == "winpcap api mode")
         .unwrap();
-    assert_eq!(loopback.status, Status::Fail);
+    assert_eq!(loopback.status, Status::Warn);
     assert_eq!(
         winpcap.status,
         Status::Ok,
         "the WinPcap option is unaffected"
     );
-    assert_eq!(report.exit().code(), 1);
+    assert_eq!(
+        report.exit().code(),
+        0,
+        "a missing loopback adapter does not block"
+    );
 
+    // The WinPcap API option, by contrast, blocks when absent.
     let mut api_absent = ready();
     if let Some(info) = api_absent.npcap.as_mut() {
         info.winpcap_api_mode = false;
@@ -107,6 +116,39 @@ fn the_two_npcap_options_fail_independently() {
         "the loopback option is unaffected"
     );
     assert_eq!(report.exit().code(), 1);
+}
+
+#[test]
+fn an_absent_live_backend_blocks_and_an_absent_socket_table_only_warns() {
+    let mut no_live = ready();
+    no_live.live_available = None;
+    let report = checks::run(&no_live);
+    let live = report
+        .checks
+        .iter()
+        .find(|c| c.name == "live backend")
+        .unwrap();
+    assert_eq!(live.status, Status::Fail);
+    assert!(
+        live.remediation.is_some(),
+        "the live backend fail names a fix"
+    );
+    assert_eq!(report.exit().code(), 1, "no live backend blocks readiness");
+
+    let mut no_attr = ready();
+    no_attr.socket_table_available = None;
+    let report = checks::run(&no_attr);
+    let attr = report
+        .checks
+        .iter()
+        .find(|c| c.name == "socket-table backend")
+        .unwrap();
+    assert_eq!(attr.status, Status::Warn);
+    assert_eq!(
+        report.exit().code(),
+        0,
+        "degraded attribution does not block"
+    );
 }
 
 #[test]
@@ -150,7 +192,7 @@ fn every_failing_check_names_a_remediation() {
         .iter()
         .filter(|c| c.status == Status::Fail)
         .collect();
-    assert!(fails.len() >= 3, "several checks should fail here");
+    assert!(fails.len() >= 2, "several checks should fail here");
     for check in fails {
         assert!(
             check.remediation.as_ref().is_some_and(|r| !r.is_empty()),
