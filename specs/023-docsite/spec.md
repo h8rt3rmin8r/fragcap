@@ -59,12 +59,14 @@ operator.
 
 ### User Story 1 - A newcomer reaches a first successful capture (Priority: P1)
 
-Someone who has just found fragcap opens fragcap.com. The landing page states in
-one sentence what the tool is, shows one worked invocation with its output, names
-the capture-driver prerequisite plainly, and links to getting started, the
-repository, and the glossary. Following getting started, they install the capture
-driver with the required options, verify the install with the diagnostics
-command, run their first capture, and open the result, in that order. Before the
+Someone who has just found fragcap opens fragcap.com. The landing page leads with
+the problem fragcap solves that standard tooling does not, states what the tool
+is, shows one worked invocation with its output, presents a small number of
+capability statements each linking into the documentation, and names the
+capture-driver prerequisite plainly, linking to getting started, the repository,
+and the glossary. Following getting started, they install the capture driver with
+the required options, verify the install with the diagnostics command, obtain a
+profile, run their first capture, and open the result, in that order. Before the
 first instruction they are told that payloads are encrypted, that the launcher to
 client handoff is not in the capture, and that a loopback conversation is usually
 a process talking to itself, so the capture they get matches the capture they
@@ -77,22 +79,24 @@ the reader wanted, which is the exact failure the getting-started ordering exist
 to prevent.
 
 **Independent Test**: Build the static export and load the landing page and the
-getting-started page; confirm the landing page carries one sentence, one worked
-invocation with output, the named prerequisite, and the three links and nothing
-else (no testimonials, feature grid, or call to action); confirm getting started
-fronts the prerequisite ahead of the first usage instruction and sets the three
-expectations before the first capture step.
+getting-started page; confirm the landing page leads with the problem, states
+what fragcap is, carries one worked invocation with output, the named
+prerequisite, capability statements that link into the documentation, and the
+three links, and carries no testimonials, feature grid, or call to action;
+confirm getting started fronts the prerequisite ahead of the first usage
+instruction and sets the three expectations before the first capture step.
 
 **Acceptance Scenarios**:
 
-1. **Given** the built site, **When** the landing page renders, **Then** it
-   states what fragcap is in one sentence, shows one worked invocation with its
-   output, names the prerequisite, and links to getting started, the repository,
-   and the glossary, and carries no testimonials, feature grid, or call to
-   action.
+1. **Given** the built site, **When** the landing page renders, **Then** it leads
+   with the problem fragcap solves, states what fragcap is, shows one worked
+   invocation with its output, presents capability statements that link into the
+   documentation, names the prerequisite, and links to getting started, the
+   repository, and the glossary, and carries no testimonials, feature grid, or
+   call to action.
 2. **Given** the getting-started page, **When** it renders, **Then** the
    capture-driver prerequisite appears ahead of the first usage instruction and
-   the first-run steps are ordered install, verify, capture, open.
+   the first-run steps are ordered install, verify, get a profile, capture, open.
 3. **Given** the getting-started page, **When** it renders, **Then** the three
    expectations (encrypted payloads, the uncaptured launcher handoff, loopback as
    self-talk) are stated before the first capture instruction.
@@ -290,15 +294,17 @@ completion before being reported as passing (as `platform.yml` was).
 - **FR-003**: The site MUST carry the information architecture of specification
   section 22.3: a landing page, and documentation sections for getting started,
   guides, reference, architecture, glossary, and contributing.
-- **FR-004**: The landing page MUST state what fragcap is in one sentence, show
-  one worked invocation with its output, name the capture-driver prerequisite, and
-  link to getting started, the repository, and the glossary, and MUST carry no
+- **FR-004**: The landing page MUST lead with the problem fragcap solves that
+  standard tooling does not, state what fragcap is, show one worked invocation
+  with its output, present a small number of capability statements each linking
+  into the documentation, name the capture-driver prerequisite, and link to
+  getting started, the repository, and the glossary, and MUST carry no
   testimonials, feature grid, or call to action (specification section 23.1).
 - **FR-005**: The getting-started page MUST order the first run as install the
   capture driver with the required options, verify with the diagnostics command,
-  capture, then open the result, and MUST set the three expectations (encrypted
-  payloads, the uncaptured launcher handoff, loopback as self-talk) before the
-  first capture instruction.
+  obtain a profile, capture, then open the result, and MUST set the three
+  expectations (encrypted payloads, the uncaptured launcher handoff, loopback as
+  self-talk) before the first capture instruction.
 - **FR-006**: Every documentation page carrying a usage instruction MUST state the
   capture-driver prerequisite ahead of it (the npcap-constraint requirement S18
   carries).
@@ -406,10 +412,12 @@ completion before being reported as passing (as `platform.yml` was).
   `scripts/lint-docs.sh` passes the repository's Bash compliance checker and
   carries the required encoding (UTF-8 without BOM, LF, no em or en dashes) per the
   conventions linter.
-- **SC-006**: The landing page carries exactly one sentence of definition, one
-  worked invocation with output, the named prerequisite, and the three links, and
-  no testimonials, feature grid, or call to action; the getting-started page
-  fronts the prerequisite and orders the first run install, verify, capture, open.
+- **SC-006**: The landing page leads with the problem, states what fragcap is,
+  carries one worked invocation with output, the named prerequisite, capability
+  statements that link into the documentation, and the three links, and no
+  testimonials, feature grid, or call to action; the getting-started page fronts
+  the prerequisite and orders the first run install, verify, get a profile,
+  capture, open.
 - **SC-007**: The site applies the brand fonts, color tokens, favicons, social
   preview, and the "A ShruggieTech project" endorsement, and satisfies the
   "instrument, not weapon" acceptance test with no excluded imagery or vocabulary.

@@ -52,6 +52,11 @@ const EXCLUDED: &[&str] = &[
     // and is linted there. Linting the derived copy would double every finding
     // and depends on the site build having run. Added by slice S18c-2.
     "site/content/docs/glossary",
+    // The disclaimer module is generated from README.md by scripts/prebuild.mjs
+    // and gitignored; README.md is the single source and is linted there. The
+    // generated file carries its own SPDX header but does not exist in a fresh
+    // checkout until the site build runs. Added for issue #39.
+    "site/app/(home)/disclaimer/disclaimer.generated.ts",
     // next-env.d.ts is a Next.js-generated, gitignored declaration file with no
     // SPDX header of its own; it is a build product, not hand-authored source.
     // tsconfig.json is committed and stays under the encoding checks: .gitattributes
