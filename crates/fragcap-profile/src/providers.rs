@@ -123,10 +123,13 @@ impl TargetProvider for ObservationProvider {
 fn observe(identity: &crate::schema::MatchPredicates, tree: &ProcessTree) -> Option<Target> {
     let node_id = first_live_match(identity, tree)?;
     let node = tree.node(node_id)?;
+    // Retain the identity that selected this process, not just the current
+    // match, so the target carries its match rules (section 15.7).
     let observed = ObservedTarget::new(
         node.pid().0,
         node.image_name().to_string(),
         node.image().to_string(),
+        identity.clone(),
     );
     Some(Target::new(
         FidelityTier::Observed,
@@ -327,6 +330,9 @@ mod tests {
                 assert_eq!(o.pid(), 42);
                 assert_eq!(o.image_name(), "eso64.exe");
                 assert_eq!(o.image_path(), "C:\\Games\\ESO\\eso64.exe");
+                // The identity that selected the process is retained on the
+                // target (section 15.7), reusable for a later re-match.
+                assert_eq!(o.identity(), &id);
             }
             other => panic!("expected an observed origin, got {other:?}"),
         }

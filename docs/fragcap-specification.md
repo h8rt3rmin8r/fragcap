@@ -1924,20 +1924,31 @@ appears.
 Two properties are load-bearing. The order is **total and imposed**: when
 more than one provider can answer, the higher-precedence one wins, and it
 wins regardless of the order the providers were registered or iterated
-in. Every answer is **stamped and never overstated**: a target carries
-exactly one fidelity tier, an observed answer is `observed` and never
-verified or authored, and provider precedence never inverts the fidelity
-order (constitution P-9). When no provider answers, resolution returns a
-distinct not-resolved outcome rather than a silent empty answer
-(constitution P-4).
+in. Each precedence position holds exactly one provider, which is what
+makes the order total; a resolver built with two providers at one position
+is refused rather than resolved by registration order. Every answer is
+**stamped and never overstated**: a target carries exactly one fidelity
+tier, an observed answer is `observed` and never verified or authored, and
+provider precedence never inverts the fidelity order (constitution P-9).
+So that the top-precedence provider cannot answer below a lower one, a
+capture profile may not declare `fidelity: observed`: the `observed` tier
+is the observation provider's runtime stamp, not a trust level an author
+claims, and the profile-load path refuses it. When no provider answers,
+resolution returns a distinct not-resolved outcome rather than a silent
+empty answer (constitution P-4).
 
 A target's identity is the existing match predicates of section 10.3 (an
 executable image name plus optional path anchors); ancestry
 (`descends_from`) is reserved for genuine runtime disambiguation rather
 than being the identity's spine, because a modded launch has alien
-ancestry. Runtime observation reads only the image name and path already
-in the process snapshot; it opens no process handle and reads no process
-memory (constitution P-1).
+ancestry. A resolved target carries that identity, not only the process
+that happened to be live when it was resolved, so a later capture can
+re-match it after a restart. Runtime observation matches on the image name
+and path only (`exe`, `path_contains`, `path_regex`); it does not read the
+command line or stage ancestry, and an identity that anchors on neither
+image nor path matches nothing rather than every process. It reads only
+what is already in the process snapshot; it opens no process handle and
+reads no process memory (constitution P-1).
 
 The cascade is distinct from the profile-reference resolution order of
 section 15.3, which is a narrower, first-match lookup of a single

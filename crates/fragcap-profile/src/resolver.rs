@@ -249,6 +249,28 @@ pub trait TargetProvider {
     ) -> Result<Option<Target>, ProviderError>;
 }
 
+/// Two providers reported the same [`Precedence`].
+///
+/// Refused at construction, because two providers at one position would make the
+/// cascade's order depend on which was registered first, which is exactly the
+/// registration-order independence the cascade guarantees (section 15.7). Each
+/// precedence position holds one provider.
+#[derive(Debug)]
+pub struct DuplicatePrecedence(pub Precedence);
+
+impl fmt::Display for DuplicatePrecedence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "two providers report precedence {:?}; each position holds one provider, \
+             so the resolution order would depend on registration order",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for DuplicatePrecedence {}
+
 /// The cascade: a set of providers queried in precedence order.
 pub struct TargetResolver {
     providers: Vec<Box<dyn TargetProvider>>,
@@ -258,12 +280,22 @@ impl TargetResolver {
     /// Build a resolver, sorting the providers by [`Precedence`] so the query
     /// order is imposed rather than dependent on the order given.
     ///
-    /// The sort is stable, but two providers at the same precedence would make
-    /// the cascade ambiguous by construction; the built-in set has one provider
-    /// per position.
-    pub fn new(mut providers: Vec<Box<dyn TargetProvider>>) -> TargetResolver {
+    /// # Errors
+    ///
+    /// [`DuplicatePrecedence`] if two providers report the same position. That
+    /// is what makes the sort's stability irrelevant to the result: with one
+    /// provider per position, the order is total and the query result cannot
+    /// depend on the order the providers were passed in.
+    pub fn new(
+        mut providers: Vec<Box<dyn TargetProvider>>,
+    ) -> Result<TargetResolver, DuplicatePrecedence> {
         providers.sort_by_key(|p| p.precedence());
-        TargetResolver { providers }
+        for pair in providers.windows(2) {
+            if pair[0].precedence() == pair[1].precedence() {
+                return Err(DuplicatePrecedence(pair[0].precedence()));
+            }
+        }
+        Ok(TargetResolver { providers })
     }
 
     /// Resolve a request to the highest-precedence available target.
@@ -294,7 +326,7 @@ impl TargetResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{FidelityTier, Provenance};
+    use crate::schema::{FidelityTier, MatchPredicates, Provenance};
     use crate::target::{ObservedTarget, TargetOrigin};
 
     /// A provider that answers at a fixed precedence with a fixed tier, for
@@ -355,6 +387,7 @@ mod tests {
                         1,
                         "x.exe".to_string(),
                         "C:\\x.exe".to_string(),
+                        MatchPredicates::default(),
                     )),
                 )
             }))
@@ -372,7 +405,8 @@ mod tests {
         let resolver = TargetResolver::new(vec![
             Stub::answering(Precedence::RuntimeObservation, FidelityTier::Observed),
             Stub::answering(Precedence::Profile, FidelityTier::Verified),
-        ]);
+        ])
+        .expect("distinct precedences");
         let target = resolver
             .resolve(&empty_request(&search, &bundled))
             .expect("resolves");
@@ -396,7 +430,7 @@ mod tests {
             ],
         ];
         for providers in orders {
-            let resolver = TargetResolver::new(providers);
+            let resolver = TargetResolver::new(providers).expect("distinct precedences");
             let target = resolver
                 .resolve(&empty_request(&search, &bundled))
                 .expect("resolves");
@@ -416,7 +450,8 @@ mod tests {
             Stub::silent(Precedence::Profile),
             Stub::silent(Precedence::HintDatabase),
             Stub::answering(Precedence::RuntimeObservation, FidelityTier::Observed),
-        ]);
+        ])
+        .expect("distinct precedences");
         let target = resolver
             .resolve(&empty_request(&search, &bundled))
             .expect("resolves");
@@ -430,7 +465,8 @@ mod tests {
         let resolver = TargetResolver::new(vec![
             Stub::failing(Precedence::Profile),
             Stub::answering(Precedence::RuntimeObservation, FidelityTier::Observed),
-        ]);
+        ])
+        .expect("distinct precedences");
         match resolver.resolve(&empty_request(&search, &bundled)) {
             Err(ResolutionError::Provider(ProviderError::Profile(
                 ResolveError::InvalidReference { .. },
@@ -446,10 +482,26 @@ mod tests {
         let resolver = TargetResolver::new(vec![
             Stub::silent(Precedence::Profile),
             Stub::silent(Precedence::RuntimeObservation),
-        ]);
+        ])
+        .expect("distinct precedences");
         match resolver.resolve(&empty_request(&search, &bundled)) {
             Err(ResolutionError::Unresolved(_)) => {}
             other => panic!("expected Unresolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_providers_at_one_precedence_are_refused() {
+        // Determinism is guaranteed by one provider per position. Two at the same
+        // position would make the result depend on registration order, so the
+        // constructor refuses them rather than sorting them stably.
+        let result = TargetResolver::new(vec![
+            Stub::answering(Precedence::Profile, FidelityTier::Verified),
+            Stub::answering(Precedence::Profile, FidelityTier::Authored),
+        ]);
+        match result {
+            Err(DuplicatePrecedence(Precedence::Profile)) => {}
+            _ => panic!("expected a DuplicatePrecedence error for the Profile position"),
         }
     }
 }

@@ -23,3 +23,24 @@ reads both the profile schema and the process tree; nothing is added to
 CLI `run` path flows through the resolver and maps its outcomes onto the existing
 `CliError` classes so exit codes and messages are unchanged; capture output is
 byte-identical. MSRV stays 1.82.
+
+Four refinements landed from PR review, each tightening an invariant the first
+cut left to convention. First, a capture profile may no longer declare
+`fidelity: observed`: the profile-load path refuses it with a new
+`observed-profile-fidelity` diagnostic, because `observed` is the observation
+provider's runtime stamp and allowing it on a profile would let the
+top-precedence provider answer below a lower one's fidelity, inverting the rank
+the resolver is built to hold. Second, `TargetResolver::new` now returns a
+`Result` and refuses two providers at one `Precedence` (a `DuplicatePrecedence`
+error, mirroring `BundledSet::new`'s duplicate-`game.id` refusal); one provider
+per position is what makes the order total, so registration-order independence
+is guaranteed by construction rather than by the built-in set happening to be
+unique. Third, an observed `Target` now retains the `MatchPredicates` identity
+that selected it, not only the process that was live at resolution, so the
+target carries its match rules (section 15.7) and a later capture can re-match
+after a restart. Fourth, the observation matcher (`first_live_match`) evaluates
+the image-and-path predicates only (`exe`, `path_contains`, `path_regex`) and
+treats an identity with no image-or-path anchor as matching nothing rather than
+every process; `cmdline_contains` and `descends_from` are stage-matching
+concerns outside the section 15.7 observation identity, which reads only the
+image name and path.

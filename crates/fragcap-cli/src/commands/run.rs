@@ -32,13 +32,16 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let search = paths::search_path(&[]);
     let bundled = paths::bundled();
 
+    // The built-in providers occupy distinct precedence positions by
+    // construction, so this cannot fail; the expect documents that invariant.
     let resolver = TargetResolver::new(vec![
         Box::new(ProfileProvider::new()),
         Box::new(HintProvider::new()),
         Box::new(EngineRuleProvider::new()),
         Box::new(PlatformWalkerProvider::new()),
         Box::new(ObservationProvider::new()),
-    ]);
+    ])
+    .expect("the built-in providers have distinct precedence positions");
     let request = ResolutionRequest::for_reference(&args.profile, &search, &bundled);
     let target = resolver.resolve(&request)?;
     let profile = target.into_profile().ok_or_else(|| {

@@ -119,10 +119,14 @@ snapshot already holds (P-1): no handle, no memory read.
 ```rust
 pub struct ObservedTarget {
     pid: u32,
-    image_name: String,   // file name (from ProcessNode::image_name)
-    image_path: String,   // full path  (from ProcessNode::image)
+    image_name: String,          // file name (from ProcessNode::image_name)
+    image_path: String,          // full path  (from ProcessNode::image)
+    identity: MatchPredicates,   // the identity that selected it, retained for re-match
 }
 ```
+
+The identity is retained (not only the current match) so the target carries its
+match rules per section 15.7, reusable for a later re-match after a restart.
 
 ## The resolver (in `resolver.rs`)
 
@@ -170,13 +174,18 @@ pub trait TargetProvider {
 pub struct TargetResolver { providers: Vec<Box<dyn TargetProvider>> }
 
 impl TargetResolver {
-    pub fn new(providers: Vec<Box<dyn TargetProvider>>) -> Self; // sorts by precedence
-    pub fn resolve(&self, req: &ResolutionRequest) -> Result<Target, Unresolved>;
+    // Sorts by precedence; refuses two providers at one position, so the order
+    // is total and registration-order independence is guaranteed by construction.
+    pub fn new(providers: Vec<Box<dyn TargetProvider>>)
+        -> Result<TargetResolver, DuplicatePrecedence>;
+    pub fn resolve(&self, req: &ResolutionRequest) -> Result<Target, ResolutionError>;
 }
 ```
 
 `resolve` queries providers highest precedence first: the first `Ok(Some)` wins;
-an `Err` aborts; if all return `Ok(None)`, it returns `Unresolved`.
+an `Err` aborts (`ResolutionError::Provider`); if all return `Ok(None)`, it
+returns `ResolutionError::Unresolved`. `new` returns `DuplicatePrecedence` if two
+providers share a position (one per position keeps the order total).
 
 ### Unresolved and ProviderError
 
@@ -213,12 +222,15 @@ pub struct Unresolved {
 ## Matching reuse (in `matching.rs`)
 
 ```rust
-/// The first live node whose predicates all hold, in creation order.
+/// The first live node whose image-and-path identity holds, in creation order.
 pub fn first_live_match(preds: &MatchPredicates, tree: &ProcessTree) -> Option<NodeId>;
 ```
 
-Refactors the existing private `predicates_hold` into a callable form so the P-9
-command-line-unavailable rule stays in one place.
+Evaluates the image-and-path predicates only (`exe`, `path_contains`,
+`path_regex`), per the section 15.7 observation identity; it does not read the
+command line or stage ancestry. An identity with no image-or-path anchor matches
+nothing. Shares an `image_and_path_hold` helper with `predicates_hold` so stage
+matching and observation agree on what "image and path" means.
 
 ## Relationships and invariants
 

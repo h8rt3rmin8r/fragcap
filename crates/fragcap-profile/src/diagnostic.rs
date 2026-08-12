@@ -123,6 +123,11 @@ pub enum DiagnosticCode {
     /// Two stages can match one image name and at least one has nothing else to
     /// distinguish it.
     AmbiguousImageMatch,
+    /// A capture profile declares `fidelity: observed`. The `observed` tier is a
+    /// runtime result the observation provider stamps, not a trust level an
+    /// author can claim, and allowing it would let the top-precedence provider
+    /// answer below the fidelity of a lower one (section 15.7).
+    ObservedProfileFidelity,
 }
 
 impl DiagnosticCode {
@@ -156,6 +161,7 @@ impl DiagnosticCode {
             DiagnosticCode::UndeclaredCaptureRole => "undeclared-capture-role",
             DiagnosticCode::AllServices => "all-services",
             DiagnosticCode::AmbiguousImageMatch => "ambiguous-image-match",
+            DiagnosticCode::ObservedProfileFidelity => "observed-profile-fidelity",
         }
     }
 }

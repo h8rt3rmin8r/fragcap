@@ -195,6 +195,22 @@ impl Profile {
             _ => {}
         }
 
+        // A capture profile may not declare `fidelity: observed`. The observed
+        // tier is a runtime result the observation provider stamps, not a trust
+        // level an author claims; allowing it on a profile would let the
+        // top-precedence provider return an answer below the fidelity of a
+        // lower-precedence one, inverting the section 15.7 rank. The structural
+        // layer accepts `observed` on the shared enum, so this semantic
+        // constraint is checked here.
+        if value.get("fidelity").and_then(Value::as_str) == Some("observed") {
+            d.push(Diagnostic::located(
+                DiagnosticCode::ObservedProfileFidelity,
+                "/fidelity",
+                "fidelity `observed` is a runtime result and cannot be declared on a \
+                 capture profile; use `authored`, `verified`, or `heuristic-unverified`",
+            ));
+        }
+
         // fragcap-specific layer: extract leniently, compile, semantic-check.
         let draft = draft_from_value(&value, &mut d);
         validate::check(&draft, &mut d);
@@ -526,6 +542,7 @@ fn read_predicates(
 
 #[cfg(test)]
 mod tests {
+    use crate::diagnostic::DiagnosticCode;
     use crate::schema::{FidelityTier, Kind, Profile};
 
     fn parse(body: &str) -> Profile {
@@ -583,6 +600,22 @@ mod tests {
             err.iter()
                 .any(|d| d.message.contains("kind must be `profile`")),
             "the refusal names the kind requirement"
+        );
+    }
+
+    #[test]
+    fn a_profile_declaring_observed_fidelity_is_refused() {
+        // `observed` is the observation provider's runtime stamp, not an authored
+        // trust level. Allowing it on a profile would let the top-precedence
+        // provider answer below a lower one's fidelity, inverting the rank.
+        let err = Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"observed","game":{"id":"eso","name":"ESO"},"stage":[{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe"}}]}"#,
+        )
+        .expect_err("an observed capture profile is refused");
+        assert!(
+            err.iter()
+                .any(|d| d.code == DiagnosticCode::ObservedProfileFidelity),
+            "the refusal carries the observed-profile-fidelity code"
         );
     }
 

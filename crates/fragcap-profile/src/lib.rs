@@ -80,8 +80,8 @@ pub use resolve::{
     resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
 };
 pub use resolver::{
-    Precedence, ProviderError, ResolutionError, ResolutionNotes, ResolutionRequest, TargetProvider,
-    TargetResolver, Unresolved,
+    DuplicatePrecedence, Precedence, ProviderError, ResolutionError, ResolutionNotes,
+    ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
 };
 pub use schema::{
     CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,

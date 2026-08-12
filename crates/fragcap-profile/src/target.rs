@@ -16,29 +16,43 @@
 //! never inferred (P-9). An observation answer is [`FidelityTier::Observed`], a
 //! profile answer is whatever the profile declared.
 
-use crate::schema::{FidelityTier, Profile, Provenance};
+use crate::schema::{FidelityTier, MatchPredicates, Profile, Provenance};
 
 /// A live process the runtime-observation provider matched, recorded from what
 /// the process snapshot already holds.
 ///
-/// It carries the image name and full path (the identity anchors) and the
-/// process identifier, all of which come from a toolhelp enumeration or the
-/// process tree. No process handle is opened and no process memory is read
-/// (constitution P-1): naming a process is not the same act as reaching into it.
+/// It carries the image name and full path of the matched process, the process
+/// identifier, and the identity that selected it, all from a toolhelp
+/// enumeration or the process tree. No process handle is opened and no process
+/// memory is read (constitution P-1): naming a process is not the same act as
+/// reaching into it.
+///
+/// The identity is retained, not just the current match, so the target carries
+/// its match rules (specification section 15.7): a later capture that re-arms
+/// after a restart, or one that needs the path anchors again, has them without
+/// re-deriving the identity from the process that happened to be live now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedTarget {
     pid: u32,
     image_name: String,
     image_path: String,
+    identity: MatchPredicates,
 }
 
 impl ObservedTarget {
-    /// Build an observed target from a matched process's snapshot fields.
-    pub fn new(pid: u32, image_name: String, image_path: String) -> ObservedTarget {
+    /// Build an observed target from a matched process's snapshot fields and the
+    /// identity that selected it.
+    pub fn new(
+        pid: u32,
+        image_name: String,
+        image_path: String,
+        identity: MatchPredicates,
+    ) -> ObservedTarget {
         ObservedTarget {
             pid,
             image_name,
             image_path,
+            identity,
         }
     }
 
@@ -55,6 +69,12 @@ impl ObservedTarget {
     /// The matched process's full image path.
     pub fn image_path(&self) -> &str {
         &self.image_path
+    }
+
+    /// The identity that selected this process: the match rules the target
+    /// carries, reusable for a later re-match.
+    pub fn identity(&self) -> &MatchPredicates {
+        &self.identity
     }
 }
 

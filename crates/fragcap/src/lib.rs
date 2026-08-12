@@ -125,8 +125,8 @@ pub mod profile {
         resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
     };
     pub use fragcap_profile::resolver::{
-        Precedence, ProviderError, ResolutionError, ResolutionNotes, ResolutionRequest,
-        TargetProvider, TargetResolver, Unresolved,
+        DuplicatePrecedence, Precedence, ProviderError, ResolutionError, ResolutionNotes,
+        ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
     };
     pub use fragcap_profile::schema::{
         CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
