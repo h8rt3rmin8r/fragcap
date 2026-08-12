@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import Link from 'next/link';
+import { fragcapVersion } from '@/lib/version.generated';
 
 // The landing page, held to specification section 23.1 (as amended for issue
 // #42): it leads with the problem fragcap solves that standard tooling does not,
@@ -11,6 +12,7 @@ import Link from 'next/link';
 export default function HomePage() {
   return (
     <main
+      className="fc-page"
       style={{
         maxWidth: '48rem',
         margin: '0 auto',
@@ -45,6 +47,12 @@ export default function HomePage() {
           className="fc-wordmark-light"
           style={{ height: '2rem', width: 'auto' }}
         />
+        <a
+          href="https://github.com/h8rt3rmin8r/fragcap/releases"
+          className="fc-version"
+        >
+          v{fragcapVersion}
+        </a>
       </h1>
 
       <p style={{ fontSize: '1.125rem', lineHeight: 1.6 }}>
@@ -62,6 +70,22 @@ export default function HomePage() {
         produced it, including game clients launched indirectly through platform
         and publisher launchers.
       </p>
+
+      <aside
+        className="fc-callout"
+        style={{
+          borderLeft: '3px solid var(--color-fd-primary)',
+          padding: '0.75rem 1rem',
+          lineHeight: 1.6,
+        }}
+      >
+        Two prerequisites, up front. Live capture needs the{' '}
+        <a href="https://npcap.com/">npcap</a> driver, installed in
+        WinPcap-compatible mode; fragcap detects it and never installs, downloads,
+        or bundles it. To read a capture, open the resulting file in{' '}
+        <a href="https://www.wireshark.org/">Wireshark</a> or any pcapng-aware
+        analyzer: capture with fragcap, then inspect the result in Wireshark.
+      </aside>
 
       <figure style={{ margin: 0 }}>
         <pre
@@ -112,15 +136,11 @@ wrote capture.fcapng`}</code>
         </li>
       </ul>
 
-      <p style={{ lineHeight: 1.6 }}>
-        Capture requires the npcap driver, installed with WinPcap-compatible
-        mode. fragcap detects it and never installs it.
-      </p>
-
       <nav style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
         <Link href="/docs/getting-started">Get started</Link>
         <Link href="https://github.com/h8rt3rmin8r/fragcap">Repository</Link>
         <Link href="/docs/glossary">Glossary</Link>
+        <Link href="/docs/changelog">Changelog</Link>
       </nav>
     </main>
   );

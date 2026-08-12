@@ -117,3 +117,41 @@ article h1 {
 .dark .fc-wordmark-light {
   display: none;
 }
+
+/*
+ * The (home)-group pages (home, disclaimer, license, brand) are plain React,
+ * not Fumadocs prose, so their links carry no default affordance. Give them the
+ * accent color and an underline so they read as clickable (issue #46); Capture
+ * Orange appears only on hover, a scarce, genuine-emphasis use. The version
+ * badge and the theme wordmark opt out.
+ */
+.fc-page a {
+  color: var(--color-fd-primary);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+.fc-page a:hover {
+  color: var(--fragcap-capture-orange);
+}
+
+/* The version badge beside the wordmark (issue #45): a quiet mono pill. */
+.fc-version {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-decoration: none;
+  border: 1px solid var(--color-fd-primary);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  line-height: 1.4;
+}
+.fc-page a.fc-version:hover {
+  color: var(--color-fd-primary);
+  background: color-mix(in srgb, var(--color-fd-primary) 12%, transparent);
+}
+
+/* The homepage prerequisite callout (issue #61): a faint tinted panel so the
+ * npcap and Wireshark prerequisites read as a first-class, above-the-fold note. */
+.fc-callout {
+  background: color-mix(in srgb, var(--color-fd-primary) 7%, transparent);
+  border-radius: 0.375rem;
+}

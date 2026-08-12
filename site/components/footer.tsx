@@ -21,7 +21,9 @@ export function Footer() {
           maxWidth: '48rem',
           margin: '0 auto',
           display: 'flex',
-          gap: '1.5rem',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: '1.5rem 2.5rem',
           flexWrap: 'wrap',
           fontFamily: 'var(--font-mono)',
           fontSize: '0.75rem',
@@ -30,6 +32,12 @@ export function Footer() {
           opacity: 0.6,
         }}
       >
+        {/*
+         * The endorsement is static text and stays visually apart from the
+         * interactive links (issue #48): it anchors the left, the links group on
+         * the right, so the two never read as one run. The endorsement stays
+         * subordinate and must not grow louder for sitting beside links.
+         */}
         <span>
           A{' '}
           <a
@@ -41,7 +49,11 @@ export function Footer() {
           </a>{' '}
           project
         </span>
-        <Link href="/disclaimer">Disclaimer</Link>
+        <nav style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+          <Link href="/disclaimer">Disclaimer</Link>
+          <Link href="/license">License</Link>
+          <Link href="/brand">Brand</Link>
+        </nav>
       </div>
     </footer>
   );

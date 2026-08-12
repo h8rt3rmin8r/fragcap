@@ -13,6 +13,17 @@ below the socket layer, where the association between a packet and the process
 that produced it has already been discarded. fragcap reconstructs that
 association and records it, without touching the processes it names.
 
+## What you need first
+
+Two prerequisites, before anything else:
+
+- **[npcap](https://npcap.com/)**, installed in WinPcap-compatible mode, is
+  required for live capture. fragcap detects it and reports where to obtain it
+  when it is absent; it never installs, downloads, or bundles it.
+- **[Wireshark](https://www.wireshark.org/)** (or another pcapng-aware analyzer)
+  is how you read a capture. fragcap writes extended pcapng; you capture with
+  fragcap, then open the result in Wireshark to inspect it.
+
 ## Where to start
 
 - **[Getting started](/docs/getting-started)** walks the first-run path: install
@@ -29,9 +40,8 @@ association and records it, without touching the processes it names.
 The **[Glossary](/docs/glossary)** defines the vocabulary the rest of these pages
 assume, one term to a heading.
 
-## The one prerequisite
+## The security posture
 
-Capture requires the **npcap** driver, installed in WinPcap-compatible mode.
-fragcap detects it and reports where to obtain it when it is absent. It never
-installs, downloads, or bundles it, and it never modifies traffic or reaches
-inside the processes it names.
+fragcap observes only. It never modifies traffic, never injects or replays, and
+never reaches inside the processes it names or opens a process handle carrying
+memory-read rights against a target.
