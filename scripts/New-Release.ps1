@@ -308,10 +308,15 @@ Next steps (each is a deliberate, authorized act this script does not perform):
 
         # The bump moved fragcap/<version>, in two assertions and every golden.
         Update-EmbeddedVersion -Old $oldVersion -New $targetVersion
+        # Target the two regenerating test binaries specifically rather than the
+        # whole workspace: the corpus and extcap conservation checks read these
+        # same goldens and refuse to regenerate on principle, so running them in
+        # the same pass would race the rewrite and fail.
         Write-Log 'regenerating the golden corpus for the new version' 'Info'
         $env:FRAGCAP_UPDATE_GOLDENS = '1'
         try {
-            Invoke-Native cargo test --workspace --quiet
+            Invoke-Native cargo test -p fragcap --test goldens --quiet
+            Invoke-Native cargo test -p fragcap-cli --test cli_run --quiet
         } finally {
             Remove-Item Env:FRAGCAP_UPDATE_GOLDENS -ErrorAction SilentlyContinue
         }
