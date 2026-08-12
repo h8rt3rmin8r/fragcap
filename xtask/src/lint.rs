@@ -52,17 +52,19 @@ const EXCLUDED: &[&str] = &[
     // and is linted there. Linting the derived copy would double every finding
     // and depends on the site build having run. Added by slice S18c-2.
     "site/content/docs/glossary",
-    // Next.js rewrites these two on every build with platform-native line
-    // endings (CRLF on Windows), so they are managed generated files, not
-    // hand-authored source subject to the house encoding rule. next-env.d.ts is
-    // gitignored; tsconfig.json is committed but its final form is Next's.
+    // next-env.d.ts is a Next.js-generated, gitignored declaration file with no
+    // SPDX header of its own; it is a build product, not hand-authored source.
+    // tsconfig.json is committed and stays under the encoding checks: .gitattributes
+    // normalizes it to LF, and Next 16 does not rewrite it (it already carries the
+    // options Next wants), so excluding it would only hide a real LF violation.
     "site/next-env.d.ts",
-    "site/tsconfig.json",
 ];
 
 /// Extensions treated as source, and therefore required to carry an SPDX
-/// identifier as their first line.
-const SOURCE_EXT: &[&str] = &["rs", "sh", "ps1", "psm1"];
+/// identifier as their first line (CONVENTIONS.md). The documentation site adds
+/// the TypeScript, TSX, ES module, and CSS faces of the same rule; content files
+/// (Markdown, MDX, JSON) are not source and are exempt.
+const SOURCE_EXT: &[&str] = &["rs", "sh", "ps1", "psm1", "ts", "tsx", "mjs", "css"];
 
 /// Extensions whose files are binary regardless of content and are never linted
 /// as text. Content sniffing catches most binaries by an embedded null, but a

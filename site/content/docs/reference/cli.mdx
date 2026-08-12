@@ -41,8 +41,8 @@ fragcap run --profile eso --out capture.fcapng
 | `--wait <DUR>` | How long to wait for the target before giving up (the acquisition timeout). |
 | `--max-packets <N>` | Stop after this many captured packets. |
 | `--max-bytes <SIZE>` | Stop after this many captured bytes (integer plus `b`/`kb`/`mb`/`gb`). |
-| `--roles <A,B>` | The roles to capture, comma-separated. Scopes which stages trigger. |
-| `--direction <DIR>` | The flow direction to scope to. |
+| `--roles <A,B>` | The roles to capture, comma-separated. Scopes which stages trigger (enforced). |
+| `--direction <DIR>` | The flow direction to scope to: `in`, `out`, or `both`. Recorded but not yet enforced (see below). |
 | `-i, --interface <NAME>` | A capture interface, repeatable. |
 | `--loopback` | Include the loopback adapter. |
 | `--no-payload` | Write metadata only, no packet payloads. |
@@ -52,6 +52,14 @@ fragcap run --profile eso --out capture.fcapng
 Durations accept the same grammar throughout: an integer and a unit, such as
 `30s`, `5m`, or `2h`. See [capture modes](/docs/guides/capture-modes) for what
 `--mode` and `--ring` do.
+
+<Callout title="Directional filtering is not yet enforced">
+`--direction in` or `--direction out` is recorded on the effective configuration
+and reported, and fragcap warns that directional output filtering is deferred: a
+non-default direction does not currently scope the captured packets, so the
+output still contains both directions. `--roles` scoping, by contrast, is
+enforced.
+</Callout>
 
 ## `tap`
 

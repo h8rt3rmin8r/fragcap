@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 
 // Shared chrome for both the home and docs layouts: the wordmark, the nav, and

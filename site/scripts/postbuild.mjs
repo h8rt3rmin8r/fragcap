@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Write the static-export markers into the export root (specification section
 // 22.2). Without .nojekyll the static host strips the framework asset directory
 // and the site renders unstyled; CNAME binds the custom domain.

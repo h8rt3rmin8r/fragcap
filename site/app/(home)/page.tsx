@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import Link from 'next/link';
 
 // The landing page, held to specification section 23.1: one sentence of

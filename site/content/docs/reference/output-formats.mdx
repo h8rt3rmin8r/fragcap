@@ -20,12 +20,17 @@ per-packet comment. An analyzer that ignores comments still shows you the traffi
 
 ## JSON Lines
 
-One JSON object per line, for programs rather than analyzers. The first line is a
-header; every subsequent line is one packet.
+One JSON object per line, for programs rather than analyzers. A stream has three
+record kinds, distinguished by the `type` field: the first line is a `header`,
+every line in between is a packet (no `type` field), and the final line of a
+successfully finalized stream is a `trailer` carrying the run's counts. A consumer
+should switch on `type` and treat the trailer as end-of-stream, not as a
+malformed packet.
 
 ```json
 {"type":"header","version":"fragcap/0.2.0","interfaces":["capture"]}
 {"ts":1700000000.000000,"iface":"capture","pid":4242,"proc":"game.exe","role":"client","stage":"client","dir":"out","attr":"live","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":74,"orig_len":74,"data":"0200..."}
+{"type":"trailer","packets":24,"attributed":24,"unattributed":0,"kernel_dropped":0,"interface_dropped":0,"buffer_dropped":0,"sink_dropped":0,"filter_gaps":0}
 ```
 
 Each packet line carries:
@@ -47,6 +52,12 @@ The `attr` field distinguishes a live socket-table match from a retained one: a
 flow attributed from a connection that has since closed is marked, because a
 reused port inside the retention window is the one way that answer can be wrong.
 See [attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity).
+
+The trailer line carries the run's accounting: `packets`, `attributed`,
+`unattributed`, and the discard counters `kernel_dropped`, `interface_dropped`,
+`buffer_dropped`, `sink_dropped`, and `filter_gaps`. Every packet fragcap
+observed is accounted for across these; a stream that ends without a trailer did
+not finalize cleanly.
 
 ## What is never in the output
 

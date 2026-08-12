@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import defaultComponents from 'fumadocs-ui/mdx';
 import type { MDXComponents } from 'mdx/types';
 

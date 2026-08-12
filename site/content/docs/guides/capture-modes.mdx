@@ -31,13 +31,16 @@ Packets are streamed to a transport as they are captured, for a consumer reading
 live rather than a file read afterward. Sinks name the transport:
 
 ```text
-fragcap run --profile eso --mode stream --sink tcp://127.0.0.1:9000
+fragcap run --profile eso --mode stream --sink tcp://127.0.0.1:9000,format=pcapng
 ```
 
 A stream sink can be a TCP endpoint (`tcp://HOST:PORT`) or a named pipe
-(`pipe:NAME`). Multiple sinks may be attached at once, and each is independent: a
-consumer that falls behind or disconnects is dropped without stopping the capture,
-and the drop is counted and reported.
+(`pipe:NAME`). A file sink infers its format from the file extension, but a
+transport has no extension, so a `pipe:` or `tcp://` sink must state its format
+explicitly with `,format=pcapng` or `,format=jsonl`; omitting it is a
+configuration error. Multiple sinks may be attached at once, and each is
+independent: a consumer that falls behind or disconnects is dropped without
+stopping the capture, and the drop is counted and reported.
 
 ## `ring`
 

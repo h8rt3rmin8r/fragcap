@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { docs } from '@/.source/server';
 import { loader } from 'fumadocs-core/source';
 

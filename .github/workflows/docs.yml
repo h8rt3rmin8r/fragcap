@@ -45,24 +45,24 @@ jobs:
           cache: pnpm
           cache-dependency-path: site/pnpm-lock.yaml
 
+      # rust-toolchain.toml pins the version; this action honors it. The build
+      # goes through the same `cargo xtask docs build` entry point local
+      # development uses, so any setup or assertion added there is not bypassed
+      # by the artifact that gets deployed.
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         working-directory: site
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        working-directory: site
-        run: pnpm build
-
-      # The export is unservable on GitHub Pages without these: .nojekyll stops
-      # Jekyll from stripping the framework asset directory (the site would
-      # render unstyled), and CNAME binds the custom domain. The build writes
-      # them; this asserts they are present rather than trusting it.
-      - name: Assert static-hosting markers
-        working-directory: site
-        run: |
-          test -f out/.nojekyll || { echo "missing out/.nojekyll"; exit 1; }
-          test -f out/CNAME || { echo "missing out/CNAME"; exit 1; }
-          grep -qx 'fragcap.com' out/CNAME || { echo "out/CNAME is not fragcap.com"; exit 1; }
+      # Builds the static export (pnpm build) and asserts it carries .nojekyll
+      # and CNAME; without .nojekyll GitHub Pages strips the framework asset
+      # directory and the site renders unstyled, and CNAME binds the domain.
+      - name: Build the static export
+        run: cargo run --package xtask -- docs build
 
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Render the single-source glossary into the Fumadocs content tree
 // (specification section 22.4). The authored glossary lives once, under
 // docs/glossary/, in kramdown-flavored Markdown that GitHub renders directly.

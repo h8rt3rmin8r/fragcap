@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { createMDX } from 'fumadocs-mdx/next';
 
 const withMDX = createMDX();

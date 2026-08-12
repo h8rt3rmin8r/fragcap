@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import type { ReactNode } from 'react';
 import { source } from '@/lib/source';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { HomeLayout } from 'fumadocs-ui/layouts/home';
 import type { ReactNode } from 'react';
 import { baseOptions } from '@/lib/layout.shared';
