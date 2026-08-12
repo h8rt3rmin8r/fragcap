@@ -26,20 +26,25 @@ Expect exit 0 and, in the export root (`site/out/`):
 
 ### Run the documentation linter
 
+The scripts stay non-executable (mode 100644, like `scripts/fragcap.sh`) and are
+invoked through `bash`, which is how continuous integration and the `wrappers`
+gate call them.
+
 ```sh
-scripts/lint-docs.sh check
+bash scripts/lint-docs.sh check
 ```
 
 Expect exit 0 on the split glossary. Then introduce, one at a time:
 
-- an entry missing its references section,
+- an entry with no prose blurb or detail (only metadata markers),
+- an empty `**References:**` section,
 - a `See also` link to a non-existent entry,
-- a term in a page with no glossary entry,
+- a glossary reference in a canonical document naming an undefined term,
 
 and confirm `check` exits non-zero naming each. Restore, then:
 
 ```sh
-scripts/lint-docs.sh fix
+bash scripts/lint-docs.sh fix
 git diff --exit-code docs/glossary/index.md
 ```
 

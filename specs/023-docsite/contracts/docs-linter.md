@@ -6,9 +6,13 @@ specification section 4.6 checks and regenerating the glossary index.
 ## Invocation
 
 ```text
-lint-docs.sh <mode>
-lint-docs.sh -h | --help
+bash scripts/lint-docs.sh <mode>
+bash scripts/lint-docs.sh -h | --help
 ```
+
+The script stays non-executable (mode 100644, like `scripts/fragcap.sh`) and is
+invoked through `bash`, matching how continuous integration and the `wrappers`
+gate call the repository's shell scripts.
 
 Modes:
 
@@ -20,18 +24,27 @@ Modes:
 
 `--help` prints the self-parsing man-page help and exits 0 without validating.
 
-## check mode (the four section-4.6 checks)
+## check mode (the section-4.6 checks)
 
 1. **Entry completeness**: every entry on every `docs/glossary/<category>.md` page
-   carries a blurb, a detail paragraph, and a references section; an entry that
-   influences a design decision also carries the "why it matters here" note.
+   carries a prose blurb or detail (not merely metadata markers such as "Also
+   known as" or "See also"), and a `**References:**` section or a matters callout,
+   where present, is not empty. A references section is not mandated on every
+   entry: much of the glossary is fragcap's own internal vocabulary (for example
+   "Sink thread") for which no primary source exists, and fabricating one would
+   violate P-9. Cross-links are repository-relative sibling paths
+   (`<category>.md#<anchor>`) so entries resolve on disk and on GitHub.
 2. **Cross-link resolution**: every internal cross-link (a `See also` entry or an
    in-body glossary link) resolves to an existing entry anchor, within a page and
    across pages.
-3. **Term inventory (the Undefined Term Rule)**: every term appearing in project
-   documentation resolves to a glossary entry. The term list and the documents
-   scanned follow specification section 4.2 (spec, README, architecture docs,
-   human-facing comments, website copy), not source-code identifiers.
+3. **Glossary reference / the Undefined Term Rule**: every glossary reference in a
+   canonical document (a Markdown link into the glossary) names a defined term.
+   The documents scanned follow specification section 4.2 (README, top-level docs,
+   and the glossary itself; website copy joins with the site in S18c-2), not
+   source-code identifiers. A bare prose word that is not referenced as a glossary
+   term is not scanned: no sound rule distinguishes it from ordinary English, so
+   the enforced mechanism is the glossary reference the documents actually use to
+   mark a term.
 4. **Index reproducibility**: the committed `docs/glossary/index.md` is identical
    to the freshly generated index; any difference is a failure directing the user
    to run `fix`.

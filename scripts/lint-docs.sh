@@ -15,16 +15,19 @@
 #     over the per-category glossary pages under docs/glossary/. It has three
 #     modes:
 #
-#     check   Validate entry completeness (every entry carries a non-empty
-#             definition body), cross-link resolution (every internal
-#             /docs/glossary/<category>#<anchor> link resolves to an existing
-#             term anchor), and index reproducibility (the committed index.md
-#             matches a fresh generation). References and the matters callout are
-#             validated where present but not mandated on every entry, because
-#             the authored glossary cites a primary source only where one exists.
-#             Reports every failure it finds and exits 1 if any failed. This is
-#             the mode continuous integration runs, so P-6 is enforced on every
-#             push.
+#     check   Validate the glossary. Four checks: entry completeness (every entry
+#             carries a prose blurb or detail, not merely metadata markers, and a
+#             References section or matters callout, where present, is not empty);
+#             cross-link resolution (every sibling <category>.md#<anchor> link
+#             resolves to an existing term); the glossary-reference check (every
+#             glossary reference in the canonical documents names a defined term,
+#             enforcing the Undefined Term Rule of section 4.2); and index
+#             reproducibility (the committed index.md matches a fresh generation).
+#             References are not mandated on every entry: much of the glossary is
+#             fragcap's own vocabulary, for which no primary source exists, and
+#             fabricating one would violate P-9. Reports every failure and exits 1
+#             if any failed. This is the mode continuous integration runs, so P-6
+#             is enforced on every push.
 #
 #     fix     Regenerate docs/glossary/index.md, the alphabetical index, from the
 #             category pages, in place. Changes nothing else. On a clean tree
@@ -35,10 +38,13 @@
 #             Runs on a weekly schedule, not per commit, because link liveness
 #             depends on third parties rather than on the commit. Requires curl.
 #
-#     Scope note: check enforces the glossary's own graph (entry completeness,
-#     cross-link and see-also resolution, index reproducibility). The free-text
-#     term inventory of section 4.2 over all prose is not attempted here; the
-#     glossary graph is what this linter guards deterministically.
+#     Scope note: the Undefined Term Rule is enforced for glossary references
+#     (a Markdown link into the glossary) in the canonical documents and within
+#     the glossary itself. A bare prose word that happens to be a term but is not
+#     referenced as one is not scanned: no sound rule distinguishes it from
+#     ordinary English, and many glossary terms are fragcap's own internal
+#     vocabulary. The enforced mechanism is the one the documents actually use to
+#     mark a term.
 #
 # EXIT STATUS
 #     0   ran and passed
@@ -88,15 +94,6 @@ safe_run() {
     "$@"
 }
 
-# GitHub-style heading slug, matching the anchors the split produced: lowercase,
-# drop punctuation except word characters and hyphens, spaces to hyphens.
-slugify() {
-    printf '%s' "$1" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9_ -]//g' \
-        | sed -E 's/[[:space:]]+/-/g'
-}
-
 # The category slug for a page path (its basename without extension).
 page_slug() {
     local path="$1"
@@ -104,88 +101,144 @@ page_slug() {
     printf '%s' "${path%.md}"
 }
 
-# Emit "slug<TAB>term" for every term heading across the category pages.
+# Emit "slug<TAB>term<TAB>anchor" for every term heading across the category
+# pages. The anchor is the GitHub-style heading slug, computed inside awk in a
+# single pass so the check does not spawn a process per term (there are 125).
 all_terms() {
-    local file slug line term
+    local file slug
     for file in "$GLOSSARY_DIR"/*.md; do
-        [ "$(page_slug "$file")" = "index" ] && continue
         slug="$(page_slug "$file")"
-        while IFS= read -r line; do
-            case "$line" in
-                "## "*)
-                    term="${line#\#\# }"
-                    printf '%s\t%s\n' "$slug" "$term"
-                    ;;
-            esac
-        done <"$file"
+        [ "$slug" = "index" ] && continue
+        awk -v slug="$slug" '
+            function slugify(s,   r) {
+                r = tolower(s)
+                gsub(/[^a-z0-9_ -]/, "", r)
+                gsub(/[ \t]+/, "-", r)
+                return r
+            }
+            /^## / {
+                term = substr($0, 4)
+                printf "%s\t%s\t%s\n", slug, term, slugify(term)
+            }
+        ' "$file"
     done
 }
 
-# Generate the alphabetical index body to standard output.
+# Generate the alphabetical index body to standard output. Links are
+# repository-relative sibling paths (<category>.md#<anchor>) so they resolve on
+# disk and on GitHub, per CONVENTIONS.md.
 generate_index() {
     printf '%s\n' "$INDEX_HEADER"
     local slug term anchor
-    all_terms | sort -f -t $'\t' -k2 | while IFS=$'\t' read -r slug term; do
-        anchor="$(slugify "$term")"
-        printf -- '- [%s](/docs/glossary/%s#%s)\n' "$term" "$slug" "$anchor"
+    all_terms | sort -f -t $'\t' -k2 | while IFS=$'\t' read -r slug term anchor; do
+        printf -- '- [%s](%s.md#%s)\n' "$term" "$slug" "$anchor"
     done
 }
 
-# check: entry completeness, cross-link resolution, index reproducibility.
+# check: entry completeness, cross-link resolution, index reproducibility, and
+# the glossary-reference (undefined-term) check across the canonical documents.
 run_check() {
-    local fails=0 file slug
+    local fails=0 file
 
-    # 1. Entry completeness: each "## Term" block carries a definition body (at
-    #    least one non-blank content line). References and the matters callout are
-    #    validated where present but are not mandated on every entry: the authored
-    #    glossary carries references only where a primary source exists, and
-    #    fabricating one to satisfy the linter would violate P-9.
+    # 1. Entry completeness. Each "## Term" block must carry a definition (at
+    #    least one prose line: the blurb or detail, not merely a metadata marker
+    #    such as "Also known as" or a "See also" line). A References section or a
+    #    matters callout, where present, must not be empty. References are not
+    #    mandated on every entry: much of the glossary is fragcap's own internal
+    #    vocabulary (for example "Sink thread") for which no primary source
+    #    exists, and fabricating one to satisfy the linter would violate P-9.
     for file in "$GLOSSARY_DIR"/*.md; do
         [ "$(page_slug "$file")" = "index" ] && continue
         awk '
+            function flush() {
+                if (term == "") return
+                if (!prose) {
+                    printf "%s: entry \"%s\" has no definition blurb or detail\n", FILENAME, term
+                    rc = 1
+                }
+                if (refs_open && !refs_body) {
+                    printf "%s: entry \"%s\" has an empty References section\n", FILENAME, term
+                    rc = 1
+                }
+                if (matters_open && !matters_body) {
+                    printf "%s: entry \"%s\" has an empty matters callout\n", FILENAME, term
+                    rc = 1
+                }
+            }
             /^## / {
-                if (term != "" && !body) {
-                    printf "%s: entry \"%s\" has no definition body\n", FILENAME, term
-                    rc = 1
-                }
-                term = substr($0, 4); body = 0; next
+                flush()
+                term = substr($0, 4)
+                prose = 0; refs_open = 0; refs_body = 0; matters_open = 0; matters_body = 0
+                next
             }
-            term != "" && /^[[:space:]]*$/ { next }
-            term != "" && /^#/ { next }
-            term != "" { body = 1 }
-            END {
-                if (term != "" && !body) {
-                    printf "%s: entry \"%s\" has no definition body\n", FILENAME, term
-                    rc = 1
-                }
-                exit rc
+            term == "" { next }
+            /^\*\*References:\*\*/ { refs_open = 1; next }
+            /^\{:[[:space:]]*\.matters/ { matters_open = 1; next }
+            {
+                if (refs_open && $0 ~ /^[[:space:]]*-/) refs_body = 1
+                if (matters_open && $0 ~ /^>[[:space:]]*[^[:space:]]/) matters_body = 1
+                if ($0 ~ /^[[:space:]]*$/) next
+                if ($0 ~ /^#/) next
+                if ($0 ~ /^\*\*/) next
+                if ($0 ~ /^>/) next
+                if ($0 ~ /^\{:/) next
+                if ($0 ~ /^[[:space:]]*[-*+|]/) next
+                prose = 1
             }
+            END { flush(); exit rc }
         ' "$file" >>"$FAIL_LOG" 2>&1 || fails=1
     done
 
-    # 2. Cross-link resolution: every /docs/glossary/<slug>#<anchor> resolves.
-    local valid link linkslug linkanchor
+    # Build the set of valid glossary references: <slug>#<anchor> for every term.
+    local valid slug term anchor
     valid="$(mktemp)"
-    all_terms | while IFS=$'\t' read -r slug term; do
-        printf '%s#%s\n' "$slug" "$(slugify "$term")"
+    all_terms | while IFS=$'\t' read -r slug term anchor; do
+        printf '%s#%s\n' "$slug" "$anchor"
     done | sort -u >"$valid"
+
+    # 2. Cross-link resolution within the glossary: every sibling link
+    #    <slug>.md#<anchor> resolves to an existing term on that page.
+    local link linkslug linkanchor
     for file in "$GLOSSARY_DIR"/*.md; do
         [ "$(page_slug "$file")" = "index" ] && continue
-        { grep -oE '/docs/glossary/[a-z0-9-]+#[a-z0-9_-]+' "$file" 2>/dev/null || true; } | while read -r link; do
-            linkslug="${link#/docs/glossary/}"
-            linkslug="${linkslug%%#*}"
+        { grep -oE '\]\([a-z0-9-]+\.md#[a-z0-9_-]+\)' "$file" 2>/dev/null || true; } | while read -r link; do
+            link="${link#](}"
+            link="${link%)}"
+            linkslug="${link%.md#*}"
             linkanchor="${link##*#}"
             if ! grep -qxF "${linkslug}#${linkanchor}" "$valid"; then
                 printf '%s: cross-link does not resolve: %s\n' "$file" "$link" >>"$FAIL_LOG"
             fi
         done
     done
-    if [ -s "$FAIL_LOG" ] && grep -q 'cross-link does not resolve' "$FAIL_LOG"; then
+
+    # 3. Glossary-reference (undefined-term) check across the canonical documents.
+    #    The Undefined Term Rule (section 4.2, constitution P-6) is enforced for
+    #    the mechanism the docs use to mark a term: a link into the glossary. Any
+    #    glossary reference in a canonical document that names a term with no
+    #    entry fails here. A bare prose word is not distinguishable from ordinary
+    #    English by any sound rule, so it is not scanned; a term is caught when it
+    #    is referenced as a glossary term and the entry is missing.
+    local doc ref refslug refanchor
+    for doc in "${CANONICAL_DOCS[@]}"; do
+        [ -f "$doc" ] || continue
+        { grep -oE 'glossary/[a-z0-9-]+(\.md)?#[a-z0-9_-]+' "$doc" 2>/dev/null || true; } | while read -r ref; do
+            ref="${ref#glossary/}"
+            refslug="${ref%%#*}"
+            refslug="${refslug%.md}"
+            refanchor="${ref##*#}"
+            if ! grep -qxF "${refslug}#${refanchor}" "$valid"; then
+                printf '%s: glossary reference names an undefined term: %s\n' "$doc" "$ref" >>"$FAIL_LOG"
+            fi
+        done
+    done
+
+    if [ -s "$FAIL_LOG" ] && grep -qE 'does not resolve|undefined term' "$FAIL_LOG"; then
         fails=1
     fi
     rm -f "$valid"
 
-    # 3. Index reproducibility: committed index matches a fresh generation.
+    # 4. Index reproducibility: committed index matches a fresh generation.
     if [ ! -f "$INDEX_FILE" ]; then
         printf '%s: index is missing; run: lint-docs.sh fix\n' "$INDEX_FILE" >>"$FAIL_LOG"
         fails=1
@@ -244,6 +297,13 @@ GLOSSARY_DIR="${FRAGCAP_GLOSSARY_DIR:-$REPO_ROOT/docs/glossary}"
 INDEX_FILE="$GLOSSARY_DIR/index.md"
 FAIL_LOG="$(mktemp)"
 LINK_LOG="$(mktemp)"
+
+# The canonical documents scanned for undefined glossary references (section
+# 4.2): the top-level README and the top-level docs. The glossary pages are
+# covered by the cross-link check; process artifacts under specs/ and
+# changelog.d/ are not canonical documentation. Website copy joins this set with
+# the site in sub-slice S18c-2.
+CANONICAL_DOCS=("$REPO_ROOT/README.md" "$REPO_ROOT"/docs/*.md)
 
 # The static header of the generated index. Held here so fix and check agree and
 # the index is reproducible byte for byte.

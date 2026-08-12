@@ -146,35 +146,35 @@ here" note renders as its own element.
 ### User Story 3 - The documentation linter enforces the glossary discipline (Priority: P1)
 
 A contributor adds a term to the documentation or changes a glossary entry.
-`scripts/lint-docs.sh` in check mode confirms that every entry carries a blurb, a
-detail paragraph, and a references section (and a "why it matters here" note when
-the entry influences a design decision), that every internal cross-link resolves,
-and that every term appearing in the documentation resolves to an entry. In fix
-mode it regenerates the alphabetical index in place. In link mode, on a weekly
-schedule, it verifies that every external reference URL responds. Continuous
-integration runs the check mode on every push, so P-6 is enforced mechanically
-rather than by hand.
+`scripts/lint-docs.sh` in check mode confirms that every entry carries a prose
+blurb or detail (not merely metadata markers) and that a references section or
+matters callout, where present, is not empty, that every internal cross-link
+resolves, and that every glossary reference in the canonical documents names a
+defined term. In fix mode it regenerates the alphabetical index in place. In link
+mode, on a weekly schedule, it verifies that every external reference URL
+responds. Continuous integration runs the check mode on every push, so P-6 is
+enforced mechanically rather than by hand.
 
 **Why this priority**: Specification section 4.6 and the constitution's P-6 both
 require this linter, and until it exists P-6 is satisfiable but unenforced: a term
 can enter the documentation with no entry, or a cross-link can rot, with nothing
 catching it. The linter is what turns the rule from aspiration into a gate.
 
-**Independent Test**: Run `scripts/lint-docs.sh check` against the split glossary
-and confirm it passes; introduce an entry missing its references section, a
-dangling cross-link, and an undefined term in a page, and confirm check mode fails
-naming each; run fix mode and confirm it regenerates the index with no other
-change; confirm `cargo xtask docs check` and the `ci` aggregate run the check
-mode.
+**Independent Test**: Run `bash scripts/lint-docs.sh check` against the split
+glossary and confirm it passes; introduce an entry with no prose blurb or detail,
+an empty references section, a dangling cross-link, and a glossary reference in a
+canonical document naming an undefined term, and confirm check mode fails naming
+each; run fix mode and confirm it regenerates the index with no other change;
+confirm `cargo xtask docs check` and the `ci` aggregate run the check mode.
 
 **Acceptance Scenarios**:
 
-1. **Given** the split glossary, **When** `scripts/lint-docs.sh check` runs,
+1. **Given** the split glossary, **When** `bash scripts/lint-docs.sh check` runs,
    **Then** it validates entry completeness, cross-link resolution, and the
-   term inventory, and exits 0.
-2. **Given** an entry missing its references, a dangling cross-link, or an
-   undefined term in a page, **When** check mode runs, **Then** it exits non-zero
-   and names each failure.
+   glossary-reference check, and exits 0.
+2. **Given** an entry with no prose blurb or detail, an empty references section,
+   a dangling cross-link, or a glossary reference to an undefined term, **When**
+   check mode runs, **Then** it exits non-zero and names each failure.
 3. **Given** a stale committed index, **When** fix mode runs, **Then** it
    regenerates the index in place and changes nothing else.
 4. **Given** the linter, **When** the compliance checker runs against it, **Then**
@@ -265,9 +265,9 @@ completion before being reported as passing (as `platform.yml` was).
 - The committed alphabetical index drifts from its category sources: fix mode
   regenerates it and check mode fails on any difference, so the index cannot go
   stale silently.
-- A term appears in a documentation page with no glossary entry: the linter's
-  term inventory fails naming the undefined term (constitution P-6, the Undefined
-  Term Rule).
+- A canonical document references a glossary term that has no entry: the linter's
+  glossary-reference check fails naming the undefined term (constitution P-6, the
+  Undefined Term Rule).
 - An external reference URL rots: the weekly link mode reports it; it is not a
   per-commit failure, because link liveness depends on third parties, not on the
   commit.
@@ -318,11 +318,17 @@ completion before being reported as passing (as `platform.yml` was).
   standard, and pass the repository's Bash compliance checker; it MUST provide
   three modes: check (validate and report, non-zero on failure), fix (regenerate
   the alphabetical index in place), and link (external reference verification).
-- **FR-012**: Check mode MUST enforce the four specification section 4.6 checks:
-  entry completeness (blurb, detail paragraph, references, and the "why it matters
-  here" note where the entry influences a decision), cross-link resolution, the
-  term inventory (every documented term resolves to an entry), and, in link mode,
-  external URL liveness.
+- **FR-012**: Check mode MUST enforce the specification section 4.6 checks as they
+  apply to the authored corpus: entry completeness (a prose blurb or detail on
+  every entry, and a non-empty references section or matters callout where
+  present), cross-link resolution, the glossary-reference check (every glossary
+  reference in the canonical documents of section 4.2 names a defined term, the
+  Undefined Term Rule), and, in link mode, external URL liveness. A references
+  section is validated where present but not mandated on every entry: much of the
+  glossary is fragcap's own internal vocabulary for which no primary source
+  exists, and fabricating one would violate P-9 (recorded in the decisions
+  fragment). A bare prose word that is not referenced as a glossary term is not
+  scanned, because no sound rule distinguishes it from ordinary English.
 - **FR-013**: The generated alphabetical index MUST be reproducible: fix mode
   regenerates it from the category sources, and check mode fails if the committed
   index differs, so the index cannot drift.
@@ -390,10 +396,10 @@ completion before being reported as passing (as `platform.yml` was).
 - **SC-002**: The glossary is split into one source page per specification section
   4.4 category (eight after the amendment) plus a generated alphabetical index,
   and every glossary cross-link resolves.
-- **SC-003**: `scripts/lint-docs.sh check` exits 0 on the compliant glossary and
-  exits non-zero naming each of a missing references section, a dangling
-  cross-link, and an undefined term; fix mode regenerates the index with no other
-  change.
+- **SC-003**: `bash scripts/lint-docs.sh check` exits 0 on the compliant glossary
+  and exits non-zero naming each of an entry with no prose blurb or detail, an
+  empty references section, a dangling cross-link, and a glossary reference to an
+  undefined term; fix mode regenerates the index with no other change.
 - **SC-004**: The alphabetical index is reproducible: regenerating it with fix
   mode leaves the committed index byte-for-byte unchanged.
 - **SC-005**: `cargo xtask ci` passes with the documentation check included, and

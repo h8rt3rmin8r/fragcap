@@ -11,7 +11,7 @@ A Windows packet capture driver and library, the current successor to WinPcap.
 > compatible mode. Both are verifiable from the registry, which is how
 > `fragcap doctor` names the specific missing option.
 
-**See also:** [Loopback](/docs/glossary/capture-and-networking#loopback)
+**See also:** [Loopback](capture-and-networking.md#loopback)
 
 **References:**
 
@@ -22,8 +22,8 @@ A Windows packet capture driver and library, the current successor to WinPcap.
 
 A TOML file describing a game's process topology, stage match rules, and
 capture defaults. Versioned: every profile declares a
-[profile schema version](/docs/glossary/process-and-attribution#profile-schema-version), and a reference to one
-resolves through the [profile resolution order](/docs/glossary/process-and-attribution#profile-resolution-order).
+[profile schema version](process-and-attribution.md#profile-schema-version), and a reference to one
+resolves through the [profile resolution order](process-and-attribution.md#profile-resolution-order).
 
 {: .matters }
 > Profiles are data, not code. They carry the same license as the repository,
@@ -32,12 +32,12 @@ resolves through the [profile resolution order](/docs/glossary/process-and-attri
 > the population writing these files is not the population that can debug a
 > parser.
 
-**See also:** [Stage](/docs/glossary/process-and-attribution#stage), [Lifecycle class](/docs/glossary/process-and-attribution#lifecycle-class),
-[Terminal stage](/docs/glossary/process-and-attribution#terminal-stage), [Match predicate](/docs/glossary/process-and-attribution#match-predicate),
-[Ambiguous image match](/docs/glossary/process-and-attribution#ambiguous-image-match),
-[Profile schema version](/docs/glossary/process-and-attribution#profile-schema-version),
-[Profile resolution order](/docs/glossary/process-and-attribution#profile-resolution-order),
-[Duration literal](/docs/glossary/capture-and-networking#duration-literal)
+**See also:** [Stage](process-and-attribution.md#stage), [Lifecycle class](process-and-attribution.md#lifecycle-class),
+[Terminal stage](process-and-attribution.md#terminal-stage), [Match predicate](process-and-attribution.md#match-predicate),
+[Ambiguous image match](process-and-attribution.md#ambiguous-image-match),
+[Profile schema version](process-and-attribution.md#profile-schema-version),
+[Profile resolution order](process-and-attribution.md#profile-resolution-order),
+[Duration literal](capture-and-networking.md#duration-literal)
 
 ## VDF
 
@@ -54,7 +54,7 @@ escapes.
 > (specification section 16.2). A malformed manifest is reported and skipped, not
 > fatal, so one bad file does not hide every good one.
 
-**See also:** [Library discovery](/docs/glossary/platform-and-distribution#library-discovery)
+**See also:** [Library discovery](platform-and-distribution.md#library-discovery)
 
 ## Library discovery
 
@@ -67,14 +67,14 @@ identifier and install directory.
 {: .matters }
 > Discovery reads local files and the registry only. It installs nothing,
 > downloads nothing, and runs no Steam component, the same detection-not-bundling
-> posture the project holds toward [npcap](/docs/glossary/platform-and-distribution#npcap).
+> posture the project holds toward [npcap](platform-and-distribution.md#npcap).
 
-**See also:** [VDF](/docs/glossary/platform-and-distribution#vdf), [Profile scaffolding](/docs/glossary/platform-and-distribution#profile-scaffolding),
-[Managed launch](/docs/glossary/platform-and-distribution#managed-launch)
+**See also:** [VDF](platform-and-distribution.md#vdf), [Profile scaffolding](platform-and-distribution.md#profile-scaffolding),
+[Managed launch](platform-and-distribution.md#managed-launch)
 
 ## Profile scaffolding
 
-Generating a [game profile](/docs/glossary/platform-and-distribution#game-profile) skeleton from an installed title.
+Generating a [game profile](platform-and-distribution.md#game-profile) skeleton from an installed title.
 fragcap scans the install directory for executable images, proposes
 launcher-suggestive images as launcher stages and the largest remaining image as
 the client, and emits a profile that passes section 15.4 validation unedited.
@@ -86,9 +86,9 @@ the client, and emits a profile that passes section 15.4 validation unedited.
 > sharing one image name. The scaffold never infers process ancestry from a
 > static scan.
 
-**See also:** [Game profile](/docs/glossary/platform-and-distribution#game-profile), [Stage](/docs/glossary/process-and-attribution#stage),
-[Ambiguous image match](/docs/glossary/process-and-attribution#ambiguous-image-match),
-[Library discovery](/docs/glossary/platform-and-distribution#library-discovery)
+**See also:** [Game profile](platform-and-distribution.md#game-profile), [Stage](process-and-attribution.md#stage),
+[Ambiguous image match](process-and-attribution.md#ambiguous-image-match),
+[Library discovery](platform-and-distribution.md#library-discovery)
 
 ## Managed launch
 
@@ -103,5 +103,5 @@ produces a start event fragcap observes.
 > `game.app_id` in the profile, and it opens no process handle (constitution
 > P-1).
 
-**See also:** [Launcher chain](/docs/glossary/process-and-attribution#launcher-chain),
-[Acquisition timeout](/docs/glossary/process-and-attribution#acquisition-timeout), [Game profile](/docs/glossary/platform-and-distribution#game-profile)
+**See also:** [Launcher chain](process-and-attribution.md#launcher-chain),
+[Acquisition timeout](process-and-attribution.md#acquisition-timeout), [Game profile](platform-and-distribution.md#game-profile)

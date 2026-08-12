@@ -12,8 +12,8 @@ and per-block options.
 > Extensibility through options is what lets fragcap carry attribution in a
 > file that unmodified tools still read as an ordinary capture.
 
-**See also:** [.fcapng](/docs/glossary/file-and-wire-formats#fcapng),
-[Enhanced Packet Block](/docs/glossary/file-and-wire-formats#enhanced-packet-block)
+**See also:** [.fcapng](file-and-wire-formats.md#fcapng),
+[Enhanced Packet Block](file-and-wire-formats.md#enhanced-packet-block)
 
 **References:**
 
@@ -22,7 +22,7 @@ and per-block options.
 
 ## .fcapng
 
-fragcap's extended [pcapng](/docs/glossary/file-and-wire-formats#pcapng) profile, carrying process attribution in
+fragcap's extended [pcapng](file-and-wire-formats.md#pcapng) profile, carrying process attribution in
 Enhanced Packet Block options.
 
 {: .matters }
@@ -33,27 +33,27 @@ Enhanced Packet Block options.
 > the fragcap version, because the grammar and the software change on different
 > schedules.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng)
 
 ## Enhanced Packet Block
 
 **Also known as:** EPB
 
-The [pcapng](/docs/glossary/file-and-wire-formats#pcapng) block carrying one captured packet with its timestamp,
+The [pcapng](file-and-wire-formats.md#pcapng) block carrying one captured packet with its timestamp,
 captured length, original length, and options.
 
 {: .matters }
 > Its option area is where fragcap writes attribution, which is what makes the
 > annotation invisible to tools that do not look for it.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [.fcapng](/docs/glossary/file-and-wire-formats#fcapng),
-[Attribution annotation](/docs/glossary/file-and-wire-formats#attribution-annotation)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [.fcapng](file-and-wire-formats.md#fcapng),
+[Attribution annotation](file-and-wire-formats.md#attribution-annotation)
 
 ## Section Header Block
 
 **Also known as:** SHB
 
-The [pcapng](/docs/glossary/file-and-wire-formats#pcapng) block that opens a file, declaring byte order, format
+The [pcapng](file-and-wire-formats.md#pcapng) block that opens a file, declaring byte order, format
 version, and the application that wrote it.
 
 {: .matters }
@@ -62,14 +62,14 @@ version, and the application that wrote it.
 > order: both are valid, and only one produces the same bytes for the same
 > input on every architecture, which is what a golden comparison needs.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [Golden file](/docs/glossary/file-and-wire-formats#golden-file)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [Golden file](file-and-wire-formats.md#golden-file)
 
 ## Interface Description Block
 
 **Also known as:** IDB
 
-The [pcapng](/docs/glossary/file-and-wire-formats#pcapng) block declaring one capture interface: its
-[link type](/docs/glossary/capture-and-networking#link-type), [snapshot length](/docs/glossary/capture-and-networking#snapshot-length), name, and
+The [pcapng](file-and-wire-formats.md#pcapng) block declaring one capture interface: its
+[link type](capture-and-networking.md#link-type), [snapshot length](capture-and-networking.md#snapshot-length), name, and
 timestamp resolution.
 
 {: .matters }
@@ -78,14 +78,14 @@ timestamp resolution.
 > declaration leaves a reader with no link type, so the packet cannot be
 > dissected at all.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [Link type](/docs/glossary/capture-and-networking#link-type),
-[Snapshot length](/docs/glossary/capture-and-networking#snapshot-length)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [Link type](capture-and-networking.md#link-type),
+[Snapshot length](capture-and-networking.md#snapshot-length)
 
 ## Interface Statistics Block
 
 **Also known as:** ISB
 
-The [pcapng](/docs/glossary/file-and-wire-formats#pcapng) block carrying per-interface capture counters, written at
+The [pcapng](file-and-wire-formats.md#pcapng) block carrying per-interface capture counters, written at
 capture end.
 
 {: .matters }
@@ -96,14 +96,14 @@ capture end.
 > counters travel in a declared comment rather than being omitted or
 > overloaded onto a field that means something else.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [Backpressure](/docs/glossary/capture-and-networking#backpressure)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [Backpressure](capture-and-networking.md#backpressure)
 
 ## Attribution annotation
 
 The structured string fragcap writes into an
-[Enhanced Packet Block](/docs/glossary/file-and-wire-formats#enhanced-packet-block) comment, carrying the process
-that produced a packet, its [direction](/docs/glossary/capture-and-networking#direction), and its
-[attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity).
+[Enhanced Packet Block](file-and-wire-formats.md#enhanced-packet-block) comment, carrying the process
+that produced a packet, its [direction](capture-and-networking.md#direction), and its
+[attribution fidelity](file-and-wire-formats.md#attribution-fidelity).
 
 The grammar is a `fragcap:` sentinel followed by semicolon-separated key and
 value pairs, with values percent-encoded where they would otherwise break the
@@ -117,9 +117,9 @@ grammar or the containing format.
 > does not hold. The cost is parsing overhead in consumers and a modest size
 > increase, and both are accepted.
 
-**See also:** [.fcapng](/docs/glossary/file-and-wire-formats#fcapng),
-[Attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity),
-[Enhanced Packet Block](/docs/glossary/file-and-wire-formats#enhanced-packet-block)
+**See also:** [.fcapng](file-and-wire-formats.md#fcapng),
+[Attribution fidelity](file-and-wire-formats.md#attribution-fidelity),
+[Enhanced Packet Block](file-and-wire-formats.md#enhanced-packet-block)
 
 **References:**
 
@@ -128,10 +128,10 @@ grammar or the containing format.
 
 ## Attribution fidelity
 
-How an [attribution](/docs/glossary/process-and-attribution#attribution) was obtained: from the live
-[socket table](/docs/glossary/process-and-attribution#socket-table), from the retention window after the socket left
+How an [attribution](process-and-attribution.md#attribution) was obtained: from the live
+[socket table](process-and-attribution.md#socket-table), from the retention window after the socket left
 it, or not at all. Written as the `attr` key of an
-[attribution annotation](/docs/glossary/file-and-wire-formats#attribution-annotation).
+[attribution annotation](file-and-wire-formats.md#attribution-annotation).
 
 {: .matters }
 > Retained attribution is inferential rather than observed: an endpoint that
@@ -141,9 +141,9 @@ it, or not at all. Written as the `attr` key of an
 > distinction between an observation and an inference is precisely what a
 > reader cannot reconstruct from the data.
 
-**See also:** [Attribution](/docs/glossary/process-and-attribution#attribution),
-[Attribution annotation](/docs/glossary/file-and-wire-formats#attribution-annotation),
-[Socket table](/docs/glossary/process-and-attribution#socket-table), [PID recycling](/docs/glossary/process-and-attribution#pid-recycling)
+**See also:** [Attribution](process-and-attribution.md#attribution),
+[Attribution annotation](file-and-wire-formats.md#attribution-annotation),
+[Socket table](process-and-attribution.md#socket-table), [PID recycling](process-and-attribution.md#pid-recycling)
 
 **References:**
 
@@ -154,7 +154,7 @@ it, or not at all. Written as the `attr` key of an
 A committed file of expected output, reviewed once by a human and compared
 mechanically on every run afterward.
 
-fragcap keeps one per [fixture](/docs/glossary/capture-and-networking#fixture), holding the exact bytes the writer
+fragcap keeps one per [fixture](capture-and-networking.md#fixture), holding the exact bytes the writer
 produces for it.
 
 {: .matters }
@@ -165,7 +165,7 @@ produces for it.
 > reads no clock and fixes its byte order: a golden that legitimately varies is
 > a golden that gets deleted the first time it fails.
 
-**See also:** [Fixture corpus](/docs/glossary/capture-and-networking#fixture-corpus), [Fixture](/docs/glossary/capture-and-networking#fixture)
+**See also:** [Fixture corpus](capture-and-networking.md#fixture-corpus), [Fixture](capture-and-networking.md#fixture)
 
 ## JSON Lines
 
@@ -178,13 +178,13 @@ records.
 > The property that matters is that a line is self-contained: a stream can be
 > split, tailed, filtered, or truncated with ordinary line tools and every
 > surviving line is still a complete record. fragcap writes it for consumers
-> that do not read [pcapng](/docs/glossary/file-and-wire-formats#pcapng), and it drives the differences from the
-> [.fcapng](/docs/glossary/file-and-wire-formats#fcapng) profile. The interface name appears on every record here
+> that do not read [pcapng](file-and-wire-formats.md#pcapng), and it drives the differences from the
+> [.fcapng](file-and-wire-formats.md#fcapng) profile. The interface name appears on every record here
 > and only in multi-interface captures there, because a pcapng file holds the
 > interface in its container and a line has no container to hold it.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [Trailer record](/docs/glossary/file-and-wire-formats#trailer-record),
-[Payload-free mode](/docs/glossary/file-and-wire-formats#payload-free-mode)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [Trailer record](file-and-wire-formats.md#trailer-record),
+[Payload-free mode](file-and-wire-formats.md#payload-free-mode)
 
 **References:**
 
@@ -192,7 +192,7 @@ records.
 
 ## Trailer record
 
-The final object of a [JSON Lines](/docs/glossary/file-and-wire-formats#json-lines) stream, carrying the capture's
+The final object of a [JSON Lines](file-and-wire-formats.md#json-lines) stream, carrying the capture's
 statistics. Distinguished from a packet record by a `type` key that packet
 records never carry.
 
@@ -201,16 +201,16 @@ records never carry.
 > complete one, which makes it load-bearing rather than decorative. It carries
 > every counter even when zero, so that "nothing was lost" is distinguishable
 > from "this build does not report that": the same reasoning that puts the
-> counters in an [Interface Statistics Block](/docs/glossary/file-and-wire-formats#interface-statistics-block) for
+> counters in an [Interface Statistics Block](file-and-wire-formats.md#interface-statistics-block) for
 > the other format, and the reason constitution principle P-4 is satisfied for
 > a consumer who never sees the pcapng file.
 
-**See also:** [JSON Lines](/docs/glossary/file-and-wire-formats#json-lines),
-[Interface Statistics Block](/docs/glossary/file-and-wire-formats#interface-statistics-block)
+**See also:** [JSON Lines](file-and-wire-formats.md#json-lines),
+[Interface Statistics Block](file-and-wire-formats.md#interface-statistics-block)
 
 ## Payload-free mode
 
-A [JSON Lines](/docs/glossary/file-and-wire-formats#json-lines) stream that omits packet payloads, producing
+A [JSON Lines](file-and-wire-formats.md#json-lines) stream that omits packet payloads, producing
 metadata suitable for flow analysis at a fraction of the volume.
 
 {: .matters }
@@ -218,14 +218,14 @@ metadata suitable for flow analysis at a fraction of the volume.
 > payload is a real observation that renders as an empty string. A consumer
 > distinguishes the two by the length fields, which are present in both modes.
 
-**See also:** [JSON Lines](/docs/glossary/file-and-wire-formats#json-lines)
+**See also:** [JSON Lines](file-and-wire-formats.md#json-lines)
 
 ## Percent-encoding
 
 Representing a character as a percent sign followed by two hexadecimal digits
 per byte of its UTF-8 encoding.
 
-fragcap applies it inside an [attribution annotation](/docs/glossary/file-and-wire-formats#attribution-annotation)
+fragcap applies it inside an [attribution annotation](file-and-wire-formats.md#attribution-annotation)
 to the characters that carry meaning in the grammar, and to control characters,
 which would otherwise break the comment that contains them.
 
@@ -235,4 +235,4 @@ which would otherwise break the comment that contains them.
 > principle P-9. The alternative for a process name containing a newline would
 > be stripping or replacing it, which alters the observation.
 
-**See also:** [Attribution annotation](/docs/glossary/file-and-wire-formats#attribution-annotation)
+**See also:** [Attribution annotation](file-and-wire-formats.md#attribution-annotation)

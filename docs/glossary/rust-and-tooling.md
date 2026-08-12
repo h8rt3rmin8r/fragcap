@@ -16,7 +16,7 @@ promise to consumers; the second is a reproducibility control for the project.
 > dedicated check builds at the minimum. That check is currently vacuous, since
 > the workspace has no external dependencies, and it says so in its own output.
 
-**See also:** [xtask](/docs/glossary/rust-and-tooling#xtask)
+**See also:** [xtask](rust-and-tooling.md#xtask)
 
 ## Test tier
 
@@ -32,13 +32,13 @@ what each needs in order to run.
 
 {: .matters }
 > Tier 1 is the one the architecture was shaped to make possible. Because a
-> [replay source](/docs/glossary/process-and-attribution#replay-source) and a [scripted
-> attributor](/docs/glossary/process-and-attribution#scripted-attributor) substitute for the two platform-dependent
+> [replay source](process-and-attribution.md#replay-source) and a [scripted
+> attributor](process-and-attribution.md#scripted-attributor) substitute for the two platform-dependent
 > seams, the whole pipeline is testable on any machine with no privilege. That
 > is the return on keeping capture and attribution apart.
 
-**See also:** [Fixture corpus](/docs/glossary/capture-and-networking#fixture-corpus),
-[Replay source](/docs/glossary/process-and-attribution#replay-source)
+**See also:** [Fixture corpus](capture-and-networking.md#fixture-corpus),
+[Replay source](process-and-attribution.md#replay-source)
 
 ## xtask
 

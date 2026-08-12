@@ -16,7 +16,7 @@ integrity, and inline code modification.
 > anti-cheat launcher in one chain; fragcap records the relationship from
 > creation-time telemetry and does not interact with the process.
 
-**See also:** [Technique denylist](/docs/glossary/anti-cheat-and-security#technique-denylist)
+**See also:** [Technique denylist](anti-cheat-and-security.md#technique-denylist)
 
 ## Technique denylist
 
@@ -31,4 +31,4 @@ executable image modification.
 > as a dependency policy checked in continuous integration, and as a code
 > review gate on process handle access rights.
 
-**See also:** [Anti-cheat](/docs/glossary/anti-cheat-and-security#anti-cheat)
+**See also:** [Anti-cheat](anti-cheat-and-security.md#anti-cheat)

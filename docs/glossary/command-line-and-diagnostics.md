@@ -16,7 +16,7 @@ otherwise.
 > because attribution is then degraded. Collapsing the two would either block a
 > capture that would have worked or pass one that will not.
 
-**See also:** [npcap](/docs/glossary/platform-and-distribution#npcap), [Attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity)
+**See also:** [npcap](platform-and-distribution.md#npcap), [Attribution fidelity](file-and-wire-formats.md#attribution-fidelity)
 
 ## Lifecycle event
 
@@ -34,7 +34,7 @@ timestamp.
 > principle P-7. It is newline-delimited JSON on standard error, so capture data
 > written to a sink, even one on standard output, is never contaminated by it.
 
-**See also:** [Completion summary](/docs/glossary/command-line-and-diagnostics#completion-summary)
+**See also:** [Completion summary](command-line-and-diagnostics.md#completion-summary)
 
 ## Completion summary
 
@@ -49,7 +49,7 @@ drops, and per-sink drops.
 > success that hid a watch-time discard or a buffer drop is exactly the silent
 > loss the principle forbids.
 
-**See also:** [Lifecycle event](/docs/glossary/command-line-and-diagnostics#lifecycle-event)
+**See also:** [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event)
 
 ## Shell wrapper
 
@@ -59,14 +59,14 @@ a Linux or WSL2 shell (Bash), specification section 18.
 
 {: .matters }
 > A wrapper does privilege elevation, capture-driver detection, interface
-> enumeration, [path translation](/docs/glossary/command-line-and-diagnostics#path-translation), and [output
-> template](/docs/glossary/command-line-and-diagnostics#output-template) expansion, and nothing else. It reacts to the
-> [lifecycle event](/docs/glossary/command-line-and-diagnostics#lifecycle-event) stream rather than parsing human-readable
+> enumeration, [path translation](command-line-and-diagnostics.md#path-translation), and [output
+> template](command-line-and-diagnostics.md#output-template) expansion, and nothing else. It reacts to the
+> [lifecycle event](command-line-and-diagnostics.md#lifecycle-event) stream rather than parsing human-readable
 > output, which is what keeps it thin under constitution principle P-7. A wrapper
 > that needs to grow past those concerns is a missing capability in the binary.
 
-**See also:** [Lifecycle event](/docs/glossary/command-line-and-diagnostics#lifecycle-event),
-[WSL2 interop](/docs/glossary/command-line-and-diagnostics#wsl2-interop), [Path translation](/docs/glossary/command-line-and-diagnostics#path-translation)
+**See also:** [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event),
+[WSL2 interop](command-line-and-diagnostics.md#wsl2-interop), [Path translation](command-line-and-diagnostics.md#path-translation)
 
 ## WSL2 interop
 
@@ -81,7 +81,7 @@ boundary.
 > binary it reports capture unavailable and exits 1, rather than failing
 > obscurely.
 
-**See also:** [Shell wrapper](/docs/glossary/command-line-and-diagnostics#shell-wrapper), [Path translation](/docs/glossary/command-line-and-diagnostics#path-translation)
+**See also:** [Shell wrapper](command-line-and-diagnostics.md#shell-wrapper), [Path translation](command-line-and-diagnostics.md#path-translation)
 
 ## Path translation
 
@@ -94,11 +94,11 @@ another expects, here between a Linux or WSL2 path and a Windows path.
 > reported back in Linux form. The Bash wrapper does this with the subsystem's
 > own path tool; it is a small pure function, checkable without a capture driver.
 
-**See also:** [WSL2 interop](/docs/glossary/command-line-and-diagnostics#wsl2-interop), [Output template](/docs/glossary/command-line-and-diagnostics#output-template)
+**See also:** [WSL2 interop](command-line-and-diagnostics.md#wsl2-interop), [Output template](command-line-and-diagnostics.md#output-template)
 
 ## Output template
 
-An output-path string carrying tokens a [shell wrapper](/docs/glossary/command-line-and-diagnostics#shell-wrapper) expands
+An output-path string carrying tokens a [shell wrapper](command-line-and-diagnostics.md#shell-wrapper) expands
 before capture: `{profile}` to the profile name, `{date}` to the capture date,
 and `{time}` to the capture time.
 
@@ -107,7 +107,7 @@ and `{time}` to the capture time.
 > handles so the binary does not have to. The expansion is pure and deterministic
 > given its inputs, which is what lets a `--dry-run` preview it with no capture.
 
-**See also:** [Shell wrapper](/docs/glossary/command-line-and-diagnostics#shell-wrapper), [Path translation](/docs/glossary/command-line-and-diagnostics#path-translation)
+**See also:** [Shell wrapper](command-line-and-diagnostics.md#shell-wrapper), [Path translation](command-line-and-diagnostics.md#path-translation)
 
 ## Effective configuration
 
@@ -122,4 +122,4 @@ said nothing remain distinguishable.
 > Substituting one would destroy the information an operator supplied and make a
 > later override behave differently than they wrote.
 
-**See also:** [Game profile](/docs/glossary/platform-and-distribution#game-profile), [Completion summary](/docs/glossary/command-line-and-diagnostics#completion-summary)
+**See also:** [Game profile](platform-and-distribution.md#game-profile), [Completion summary](command-line-and-diagnostics.md#completion-summary)

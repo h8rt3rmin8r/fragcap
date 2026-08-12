@@ -13,14 +13,14 @@ natural key for anything that reasons about conversations rather than
 individual packets.
 
 {: .matters }
-> The tuple is what fragcap joins against the [socket table](/docs/glossary/process-and-attribution#socket-table) to
+> The tuple is what fragcap joins against the [socket table](process-and-attribution.md#socket-table) to
 > recover which process owns a packet. That join is the entire product.
 > Critically, it works fully only for TCP: the UDP socket table carries no
 > remote endpoint, so UDP attribution keys on the local endpoint alone. See
 > specification section 8.4.
 
-**See also:** [Flow](/docs/glossary/capture-and-networking#flow), [Socket table](/docs/glossary/process-and-attribution#socket-table),
-[Attribution](/docs/glossary/process-and-attribution#attribution)
+**See also:** [Flow](capture-and-networking.md#flow), [Socket table](process-and-attribution.md#socket-table),
+[Attribution](process-and-attribution.md#attribution)
 
 **References:**
 
@@ -30,7 +30,7 @@ individual packets.
 ## Flow
 
 One directional or bidirectional stream of packets sharing a
-[5-tuple](/docs/glossary/capture-and-networking#5-tuple).
+[5-tuple](capture-and-networking.md#5-tuple).
 
 Tools differ on whether a flow is one direction or both. fragcap normalizes to
 one key per conversation, with direction recorded per packet rather than baked
@@ -42,7 +42,7 @@ into the key, so a single conversation is one flow rather than two.
 > the one on the capturing host, determined by matching against the interface
 > address set.
 
-**See also:** [5-tuple](/docs/glossary/capture-and-networking#5-tuple), [Attribution](/docs/glossary/process-and-attribution#attribution)
+**See also:** [5-tuple](capture-and-networking.md#5-tuple), [Attribution](process-and-attribution.md#attribution)
 
 ## Loopback
 
@@ -59,7 +59,7 @@ either operating system support or a dedicated pseudo-adapter.
 > rather than for observing a handoff. A conversation on the loopback adapter
 > is **not** evidence that two processes communicated.
 
-**See also:** [npcap](/docs/glossary/platform-and-distribution#npcap), [Named pipe](/docs/glossary/windows-internals#named-pipe)
+**See also:** [npcap](platform-and-distribution.md#npcap), [Named pipe](windows-internals.md#named-pipe)
 
 ## Backpressure
 
@@ -74,8 +74,8 @@ discarding. Each choice trades a different failure: latency, memory, or data.
 > surfaced. A capture tool that loses data without saying so produces
 > conclusions the user cannot check.
 
-**See also:** [Bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer), [Drop-oldest](/docs/glossary/capture-and-networking#drop-oldest),
-[Pipeline](/docs/glossary/capture-and-networking#pipeline)
+**See also:** [Bounded buffer](capture-and-networking.md#bounded-buffer), [Drop-oldest](capture-and-networking.md#drop-oldest),
+[Pipeline](capture-and-networking.md#pipeline)
 
 ## Flow key
 
@@ -83,7 +83,7 @@ The normalized identity of one conversation: a protocol plus a local and a
 remote endpoint, where local is always the endpoint on the capturing host.
 
 Normalizing the local position is what makes a single conversation one key
-rather than two, and it is why [direction](/docs/glossary/capture-and-networking#direction) is recorded per packet
+rather than two, and it is why [direction](capture-and-networking.md#direction) is recorded per packet
 instead of being implied by which endpoint appears first.
 
 {: .matters }
@@ -91,12 +91,12 @@ instead of being implied by which endpoint appears first.
 > thread, so equality and hashing are part of its contract rather than an
 > implementation convenience. See specification section 8.4.
 
-**See also:** [Flow](/docs/glossary/capture-and-networking#flow), [5-tuple](/docs/glossary/capture-and-networking#5-tuple),
-[Attribution key](/docs/glossary/capture-and-networking#attribution-key), [Direction](/docs/glossary/capture-and-networking#direction)
+**See also:** [Flow](capture-and-networking.md#flow), [5-tuple](capture-and-networking.md#5-tuple),
+[Attribution key](capture-and-networking.md#attribution-key), [Direction](capture-and-networking.md#direction)
 
 ## Attribution key
 
-The part of a [flow key](/docs/glossary/capture-and-networking#flow-key) that a [socket table](/docs/glossary/process-and-attribution#socket-table) can
+The part of a [flow key](capture-and-networking.md#flow-key) that a [socket table](process-and-attribution.md#socket-table) can
 actually answer. It carries both endpoints for TCP and the local endpoint alone
 for UDP.
 
@@ -111,18 +111,18 @@ local endpoint and owning process only.
 > attributions rather than honest coarse ones. fragcap encodes this in the type:
 > there is no variant that could carry a UDP remote.
 
-**See also:** [Flow key](/docs/glossary/capture-and-networking#flow-key), [Socket table](/docs/glossary/process-and-attribution#socket-table),
-[Wildcard bind address](/docs/glossary/capture-and-networking#wildcard-bind-address)
+**See also:** [Flow key](capture-and-networking.md#flow-key), [Socket table](process-and-attribution.md#socket-table),
+[Wildcard bind address](capture-and-networking.md#wildcard-bind-address)
 
 ## Direction
 
 Which way an individual packet travelled, inbound or outbound.
 
-A property of the packet rather than of the [flow](/docs/glossary/capture-and-networking#flow). Because the
-[flow key](/docs/glossary/capture-and-networking#flow-key) already normalized endpoint position, direction carries no
+A property of the packet rather than of the [flow](capture-and-networking.md#flow). Because the
+[flow key](capture-and-networking.md#flow-key) already normalized endpoint position, direction carries no
 information the key duplicates and the two cannot disagree.
 
-**See also:** [Flow key](/docs/glossary/capture-and-networking#flow-key), [Flow](/docs/glossary/capture-and-networking#flow)
+**See also:** [Flow key](capture-and-networking.md#flow-key), [Flow](capture-and-networking.md#flow)
 
 ## Wildcard bind address
 
@@ -134,8 +134,8 @@ given datagram arrived on. A UDP socket bound to the wildcard therefore has to
 be matched against both the wildcard and the specific interface address, or
 attribution misses traffic it should have resolved.
 
-**See also:** [Attribution key](/docs/glossary/capture-and-networking#attribution-key),
-[Socket table](/docs/glossary/process-and-attribution#socket-table)
+**See also:** [Attribution key](capture-and-networking.md#attribution-key),
+[Socket table](process-and-attribution.md#socket-table)
 
 ## Snapshot length
 
@@ -151,7 +151,7 @@ happened.
 > payload, so a truncated capture is self-describing. A single length field
 > would have made truncation invisible after the fact.
 
-**See also:** [Backpressure](/docs/glossary/capture-and-networking#backpressure)
+**See also:** [Backpressure](capture-and-networking.md#backpressure)
 
 ## Link type
 
@@ -164,12 +164,12 @@ DLT 1.
 fragcap carries the code rather than a closed enumeration, so a backend
 reporting an encapsulation fragcap has never seen is representable and is
 written through unchanged rather than becoming a parse failure. The
-[extcap](/docs/glossary/windows-internals#extcap) interface declares a DLT per interface; fragcap declares
+[extcap](windows-internals.md#extcap) interface declares a DLT per interface; fragcap declares
 Ethernet as the default, and the pcapng stream's own interface blocks carry the
 true per-packet link type.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [EtherType](/docs/glossary/capture-and-networking#ethertype),
-[BSD loopback encapsulation](/docs/glossary/capture-and-networking#bsd-loopback-encapsulation), [extcap](/docs/glossary/windows-internals#extcap)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [EtherType](capture-and-networking.md#ethertype),
+[BSD loopback encapsulation](capture-and-networking.md#bsd-loopback-encapsulation), [extcap](windows-internals.md#extcap)
 
 ## EtherType
 
@@ -186,8 +186,8 @@ them.
 > otherwise present as traffic fragcap simply failed to attribute, with no
 > indication that the encapsulation was the reason.
 
-**See also:** [Link type](/docs/glossary/capture-and-networking#link-type),
-[Parse rejection cause](/docs/glossary/process-and-attribution#parse-rejection-cause)
+**See also:** [Link type](capture-and-networking.md#link-type),
+[Parse rejection cause](process-and-attribution.md#parse-rejection-cause)
 
 ## BSD loopback encapsulation
 
@@ -205,7 +205,7 @@ frame.
 > resolves rather than guesses: no known family value is also a known value
 > byte-swapped.
 
-**See also:** [Link type](/docs/glossary/capture-and-networking#link-type), [EtherType](/docs/glossary/capture-and-networking#ethertype)
+**See also:** [Link type](capture-and-networking.md#link-type), [EtherType](capture-and-networking.md#ethertype)
 
 ## Extension header chain
 
@@ -218,7 +218,7 @@ over attacker-controlled bytes on the capture thread would be a denial of
 service against the capture rather than merely a parse defect. Real traffic
 uses zero to two.
 
-**See also:** [IP fragment](/docs/glossary/capture-and-networking#ip-fragment), [Flow key](/docs/glossary/capture-and-networking#flow-key)
+**See also:** [IP fragment](capture-and-networking.md#ip-fragment), [Flow key](capture-and-networking.md#flow-key)
 
 ## IP fragment
 
@@ -229,10 +229,10 @@ therefore the ports.
 fragcap does not reassemble. Reassembly is an analysis concern, and performing
 it during capture would destroy the on-wire fidelity that makes the capture
 worth taking. Non-initial fragments, also called subsequent fragments, are
-attributed instead from a [fragment identity table](/docs/glossary/capture-and-networking#fragment-identity-table).
+attributed instead from a [fragment identity table](capture-and-networking.md#fragment-identity-table).
 
-**See also:** [Fragment identity](/docs/glossary/capture-and-networking#fragment-identity),
-[Fragment identity table](/docs/glossary/capture-and-networking#fragment-identity-table)
+**See also:** [Fragment identity](capture-and-networking.md#fragment-identity),
+[Fragment identity table](capture-and-networking.md#fragment-identity-table)
 
 ## Fragment identity
 
@@ -251,18 +251,18 @@ identification, and carries no protocol number.
 > UDP remote endpoints. Honest coarse attribution beats confident wrong
 > attribution.
 
-**See also:** [IP fragment](/docs/glossary/capture-and-networking#ip-fragment),
-[Fragment identity table](/docs/glossary/capture-and-networking#fragment-identity-table)
+**See also:** [IP fragment](capture-and-networking.md#ip-fragment),
+[Fragment identity table](capture-and-networking.md#fragment-identity-table)
 
 ## Fragment identity table
 
-The bounded memory from a [fragment identity](/docs/glossary/capture-and-networking#fragment-identity) to the
+The bounded memory from a [fragment identity](capture-and-networking.md#fragment-identity) to the
 protocol and ports its first fragment carried.
 
 Two hundred and fifty six entries, evicting oldest first, with the eviction
-counted. It stores ports rather than an assembled [flow key](/docs/glossary/capture-and-networking#flow-key), so
+counted. It stores ports rather than an assembled [flow key](capture-and-networking.md#flow-key), so
 that direction and the local position are recomputed for every fragment
-against the current [interface address set](/docs/glossary/capture-and-networking#interface-address-set).
+against the current [interface address set](capture-and-networking.md#interface-address-set).
 
 {: .matters }
 > Bounded by entry count rather than by age, because an age bound needs a
@@ -272,17 +272,17 @@ against the current [interface address set](/docs/glossary/capture-and-networkin
 > than claimed away, because it is not detectable from the capture and so
 > cannot be counted.
 
-**See also:** [IP fragment](/docs/glossary/capture-and-networking#ip-fragment),
-[Fragment identity](/docs/glossary/capture-and-networking#fragment-identity), [Backpressure](/docs/glossary/capture-and-networking#backpressure)
+**See also:** [IP fragment](capture-and-networking.md#ip-fragment),
+[Fragment identity](capture-and-networking.md#fragment-identity), [Backpressure](capture-and-networking.md#backpressure)
 
 ## pcap
 
 The original libpcap capture file format: a twenty-four byte file header, then
 records of a sixteen byte header and their packet bytes. Distinct from
-[pcapng](/docs/glossary/file-and-wire-formats#pcapng), which is a much larger format and the one fragcap writes.
+[pcapng](file-and-wire-formats.md#pcapng), which is a much larger format and the one fragcap writes.
 
 fragcap reads pcap and writes pcapng, and the asymmetry is deliberate. The
-[fixture corpus](/docs/glossary/capture-and-networking#fixture-corpus) is written in the small format because a
+[fixture corpus](capture-and-networking.md#fixture-corpus) is written in the small format because a
 reader for it needs no dependency and because ordinary tooling opens it. The
 output format carries attribution, which pcap cannot.
 
@@ -292,24 +292,24 @@ output format carries attribution, which pcap cannot.
 > report a nanosecond capture's timestamps a thousand times too small, or read
 > a foreign-endian file as garbage that still looked plausible.
 
-**See also:** [pcapng](/docs/glossary/file-and-wire-formats#pcapng), [Replay source](/docs/glossary/process-and-attribution#replay-source),
-[Fixture](/docs/glossary/capture-and-networking#fixture)
+**See also:** [pcapng](file-and-wire-formats.md#pcapng), [Replay source](process-and-attribution.md#replay-source),
+[Fixture](capture-and-networking.md#fixture)
 
 ## Fixture
 
 One small, committed, synthetic capture file that exists to exercise one stated
-condition, paired with an [attribution script](/docs/glossary/process-and-attribution#attribution-script).
+condition, paired with an [attribution script](process-and-attribution.md#attribution-script).
 
 Synthetic is not incidental. A capture from a real game session carries account
 identifiers, session tokens, and addresses, none of which belong in a public
 repository, so every fixture is generated from constants and every payload byte
 is filler.
 
-**See also:** [Fixture corpus](/docs/glossary/capture-and-networking#fixture-corpus), [pcap](/docs/glossary/capture-and-networking#pcap)
+**See also:** [Fixture corpus](capture-and-networking.md#fixture-corpus), [pcap](capture-and-networking.md#pcap)
 
 ## Fixture corpus
 
-The eight [fixtures](/docs/glossary/capture-and-networking#fixture) of specification section 25.3 together, with
+The eight [fixtures](capture-and-networking.md#fixture) of specification section 25.3 together, with
 their scripts, the generator that produces them, and the check that proves the
 committed bytes still match it.
 
@@ -319,18 +319,18 @@ committed bytes still match it.
 > nobody can review, and the drift check is what stops a hand-edited fixture
 > passing quietly.
 
-**See also:** [Fixture](/docs/glossary/capture-and-networking#fixture),
-[Attribution script](/docs/glossary/process-and-attribution#attribution-script), [Test tier](/docs/glossary/rust-and-tooling#test-tier)
+**See also:** [Fixture](capture-and-networking.md#fixture),
+[Attribution script](process-and-attribution.md#attribution-script), [Test tier](rust-and-tooling.md#test-tier)
 
 ## Interface address set
 
 The addresses belonging to the capturing host, against which a packet's
-endpoints are tested to decide [direction](/docs/glossary/capture-and-networking#direction).
+endpoints are tested to decide [direction](capture-and-networking.md#direction).
 
 Supplied to the parser by its caller and replaced wholesale on an address
 change notification, never polled and never queried from inside
 `fragcap-core`. A local source is outbound and a local destination is inbound.
-Both local is [loopback](/docs/glossary/capture-and-networking#loopback), which leaves direction undetermined.
+Both local is [loopback](capture-and-networking.md#loopback), which leaves direction undetermined.
 Neither local yields no flow key at all, because a flow key's local field is
 defined as the endpoint on the capturing host and there is not one.
 
@@ -340,51 +340,51 @@ defined as the endpoint on the capturing host and there is not one.
 > set now announces itself: every packet lands in the no-local-endpoint
 > counter, rather than yielding keys that no socket table lookup could resolve.
 
-**See also:** [Direction](/docs/glossary/capture-and-networking#direction), [Flow key](/docs/glossary/capture-and-networking#flow-key),
-[Loopback](/docs/glossary/capture-and-networking#loopback)
+**See also:** [Direction](capture-and-networking.md#direction), [Flow key](capture-and-networking.md#flow-key),
+[Loopback](capture-and-networking.md#loopback)
 
 ## Pipeline
 
-The composition that reads packets from a [packet source](/docs/glossary/process-and-attribution#packet-source),
-derives a [flow key](/docs/glossary/capture-and-networking#flow-key), resolves attribution through a
-[flow attributor](/docs/glossary/process-and-attribution#flow-attributor), and writes the result to a set of
-[sinks](/docs/glossary/process-and-attribution#sink).
+The composition that reads packets from a [packet source](process-and-attribution.md#packet-source),
+derives a [flow key](capture-and-networking.md#flow-key), resolves attribution through a
+[flow attributor](process-and-attribution.md#flow-attributor), and writes the result to a set of
+[sinks](process-and-attribution.md#sink).
 
 Specification section 8.6 places it in `fragcap-core` and puts it on three
-threads: a [capture thread](/docs/glossary/capture-and-networking#capture-thread), a control thread owning the
-process watcher and the filter manager, and a [sink thread](/docs/glossary/capture-and-networking#sink-thread). A
-[bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer) sits between the first and the last.
+threads: a [capture thread](capture-and-networking.md#capture-thread), a control thread owning the
+process watcher and the filter manager, and a [sink thread](capture-and-networking.md#sink-thread). A
+[bounded buffer](capture-and-networking.md#bounded-buffer) sits between the first and the last.
 
 {: .matters }
 > The pipeline is the only thing that produces fragcap's own loss counters.
 > Until slice S08 built it, `CaptureStats` had named fields and no producer,
 > and every value written into a capture file was composed by hand in a test.
 
-**See also:** [Bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer),
-[Capture thread](/docs/glossary/capture-and-networking#capture-thread), [Sink thread](/docs/glossary/capture-and-networking#sink-thread),
-[Fan-out](/docs/glossary/capture-and-networking#fan-out)
+**See also:** [Bounded buffer](capture-and-networking.md#bounded-buffer),
+[Capture thread](capture-and-networking.md#capture-thread), [Sink thread](capture-and-networking.md#sink-thread),
+[Fan-out](capture-and-networking.md#fan-out)
 
 ## Bounded buffer
 
-The fixed-capacity queue between the [capture thread](/docs/glossary/capture-and-networking#capture-thread) and the
-[sink thread](/docs/glossary/capture-and-networking#sink-thread), holding 65,536 packets by default per
+The fixed-capacity queue between the [capture thread](capture-and-networking.md#capture-thread) and the
+[sink thread](capture-and-networking.md#sink-thread), holding 65,536 packets by default per
 specification section 12.4.
 
-It applies no [backpressure](/docs/glossary/capture-and-networking#backpressure). When full it evicts rather than
-blocking, per [drop-oldest](/docs/glossary/capture-and-networking#drop-oldest), and each eviction advances the
+It applies no [backpressure](capture-and-networking.md#backpressure). When full it evicts rather than
+blocking, per [drop-oldest](capture-and-networking.md#drop-oldest), and each eviction advances the
 `buffer_dropped` counter.
 
 {: .matters }
-> The capacity is the whole budget for a slow [sink](/docs/glossary/process-and-attribution#sink). A buffer drop
+> The capacity is the whole budget for a slow [sink](process-and-attribution.md#sink). A buffer drop
 > means the sink could not keep up, which is a different remedy from a kernel
 > drop, and section 12.4 keeps the two counters apart for exactly that reason.
 
-**See also:** [Backpressure](/docs/glossary/capture-and-networking#backpressure), [Drop-oldest](/docs/glossary/capture-and-networking#drop-oldest),
-[Pipeline](/docs/glossary/capture-and-networking#pipeline)
+**See also:** [Backpressure](capture-and-networking.md#backpressure), [Drop-oldest](capture-and-networking.md#drop-oldest),
+[Pipeline](capture-and-networking.md#pipeline)
 
 ## Drop-oldest
 
-The eviction policy of the [bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer): when full, the
+The eviction policy of the [bounded buffer](capture-and-networking.md#bounded-buffer): when full, the
 oldest buffered packet is discarded to admit the newest, and the discard is
 counted.
 
@@ -399,43 +399,43 @@ traffic keeps the capture aligned with whatever caused the stall.
 > principle P-9. The instrument does not lie about it: the packets are counted
 > and the count is written into the output.
 
-**See also:** [Bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer),
-[Backpressure](/docs/glossary/capture-and-networking#backpressure)
+**See also:** [Bounded buffer](capture-and-networking.md#bounded-buffer),
+[Backpressure](capture-and-networking.md#backpressure)
 
 ## Capture thread
 
-The thread that acquires packets from a [packet source](/docs/glossary/process-and-attribution#packet-source),
+The thread that acquires packets from a [packet source](process-and-attribution.md#packet-source),
 parses their headers, and looks up attribution, then pushes into the
-[bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer).
+[bounded buffer](capture-and-networking.md#bounded-buffer).
 
-It never waits for a [sink](/docs/glossary/process-and-attribution#sink) to make progress. Specification section 12.1
+It never waits for a [sink](process-and-attribution.md#sink) to make progress. Specification section 12.1
 gives each captured interface its own handle and its own capture thread.
 
 {: .matters }
 > Anything that blocks this thread stalls the capture driver's buffer behind
-> it. That is why the [bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer) evicts rather than
-> applying [backpressure](/docs/glossary/capture-and-networking#backpressure).
+> it. That is why the [bounded buffer](capture-and-networking.md#bounded-buffer) evicts rather than
+> applying [backpressure](capture-and-networking.md#backpressure).
 
-**See also:** [Sink thread](/docs/glossary/capture-and-networking#sink-thread), [Pipeline](/docs/glossary/capture-and-networking#pipeline),
-[Bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer)
+**See also:** [Sink thread](capture-and-networking.md#sink-thread), [Pipeline](capture-and-networking.md#pipeline),
+[Bounded buffer](capture-and-networking.md#bounded-buffer)
 
 ## Sink thread
 
-The thread that drains the [bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer) and performs the
-[fan-out](/docs/glossary/capture-and-networking#fan-out) to every attached [sink](/docs/glossary/process-and-attribution#sink), then flushes and finishes
+The thread that drains the [bounded buffer](capture-and-networking.md#bounded-buffer) and performs the
+[fan-out](capture-and-networking.md#fan-out) to every attached [sink](process-and-attribution.md#sink), then flushes and finishes
 each one with the run's final statistics.
 
 {: .matters }
 > Trailing statistics are written by this thread after the buffer is drained,
 > so the last packet is in the file before the counters that describe it.
 
-**See also:** [Capture thread](/docs/glossary/capture-and-networking#capture-thread), [Fan-out](/docs/glossary/capture-and-networking#fan-out),
-[Pipeline](/docs/glossary/capture-and-networking#pipeline)
+**See also:** [Capture thread](capture-and-networking.md#capture-thread), [Fan-out](capture-and-networking.md#fan-out),
+[Pipeline](capture-and-networking.md#pipeline)
 
 ## Fan-out
 
-Offering each captured packet to every attached [sink](/docs/glossary/process-and-attribution#sink), so that one pass
-over a [packet source](/docs/glossary/process-and-attribution#packet-source) produces every configured output.
+Offering each captured packet to every attached [sink](process-and-attribution.md#sink), so that one pass
+over a [packet source](process-and-attribution.md#packet-source) produces every configured output.
 
 A sink that cannot accept a packet advances the `sink_dropped` counter, once
 per sink rather than once per packet, because each refusal is one output left
@@ -445,14 +445,14 @@ short.
 > Counting per packet would report one loss where three files are short, and
 > the number would shrink as more outputs were attached, which is backwards.
 
-**See also:** [Sink](/docs/glossary/process-and-attribution#sink), [Sink thread](/docs/glossary/capture-and-networking#sink-thread),
-[Pipeline](/docs/glossary/capture-and-networking#pipeline)
+**See also:** [Sink](process-and-attribution.md#sink), [Sink thread](capture-and-networking.md#sink-thread),
+[Pipeline](capture-and-networking.md#pipeline)
 
 ## Transport
 
-Where a [sink](/docs/glossary/process-and-attribution#sink) writes its bytes, as opposed to the format those bytes
+Where a [sink](process-and-attribution.md#sink) writes its bytes, as opposed to the format those bytes
 take. fragcap has four: a file (with optional rotation), a [named
-pipe](/docs/glossary/windows-internals#named-pipe), a Unix domain socket, and TCP. Format and transport are
+pipe](windows-internals.md#named-pipe), a Unix domain socket, and TCP. Format and transport are
 orthogonal, so any format writes to any transport.
 
 {: .matters }
@@ -461,31 +461,31 @@ orthogonal, so any format writes to any transport.
 > pcapng stream and a line-oriented JSON stream reach a pipe, a socket, or a file
 > through the same seam. See specification section 14.1.
 
-**See also:** [Streaming sink](/docs/glossary/capture-and-networking#streaming-sink), [Named pipe](/docs/glossary/windows-internals#named-pipe),
-[Rotation segment](/docs/glossary/capture-and-networking#rotation-segment)
+**See also:** [Streaming sink](capture-and-networking.md#streaming-sink), [Named pipe](windows-internals.md#named-pipe),
+[Rotation segment](capture-and-networking.md#rotation-segment)
 
 ## Streaming sink
 
-A [sink](/docs/glossary/process-and-attribution#sink) that serves any number of live [consumers](/docs/glossary/capture-and-networking#stream-consumer)
-over a [transport](/docs/glossary/capture-and-networking#transport) that accepts connections (a named pipe or TCP).
+A [sink](process-and-attribution.md#sink) that serves any number of live [consumers](capture-and-networking.md#stream-consumer)
+over a [transport](capture-and-networking.md#transport) that accepts connections (a named pipe or TCP).
 Each connected consumer receives its own complete, independently valid stream,
 including its own header preamble replayed on connect, so a consumer that joins
 mid-capture still opens cleanly in an unmodified analyzer.
 
 {: .matters }
 > A streaming sink never blocks the capture and never returns a refusal to the
-> [pipeline](/docs/glossary/capture-and-networking#pipeline): it accepts every packet and drops per consumer, so the
+> [pipeline](capture-and-networking.md#pipeline): it accepts every packet and drops per consumer, so the
 > pipeline conservation identity is preserved and the sink is never retired for a
 > slow downstream reader. Its per-consumer drops are its own accounting, distinct
 > from the capture-wide `sink_dropped`. See specification sections 14.3 and 14.4.
 
-**See also:** [Transport](/docs/glossary/capture-and-networking#transport), [Stream consumer](/docs/glossary/capture-and-networking#stream-consumer),
-[Per-consumer queue](/docs/glossary/capture-and-networking#per-consumer-queue)
+**See also:** [Transport](capture-and-networking.md#transport), [Stream consumer](capture-and-networking.md#stream-consumer),
+[Per-consumer queue](capture-and-networking.md#per-consumer-queue)
 
 ## Stream consumer
 
-One connected reader of a [streaming sink](/docs/glossary/capture-and-networking#streaming-sink), with its own
-[per-consumer queue](/docs/glossary/capture-and-networking#per-consumer-queue), its own encoder writing to its
+One connected reader of a [streaming sink](capture-and-networking.md#streaming-sink), with its own
+[per-consumer queue](capture-and-networking.md#per-consumer-queue), its own encoder writing to its
 connection, and its own drop and disconnect accounting.
 
 {: .matters }
@@ -493,29 +493,29 @@ connection, and its own drop and disconnect accounting.
 > queue stays full past a timeout is disconnected and the disconnection reported,
 > so a dead reader never holds capture buffer indefinitely.
 
-**See also:** [Streaming sink](/docs/glossary/capture-and-networking#streaming-sink),
-[Per-consumer queue](/docs/glossary/capture-and-networking#per-consumer-queue), [Backpressure](/docs/glossary/capture-and-networking#backpressure)
+**See also:** [Streaming sink](capture-and-networking.md#streaming-sink),
+[Per-consumer queue](capture-and-networking.md#per-consumer-queue), [Backpressure](capture-and-networking.md#backpressure)
 
 ## Per-consumer queue
 
 The bounded, drop-when-full buffer standing between the capture path and one
-[stream consumer](/docs/glossary/capture-and-networking#stream-consumer)'s connection. It isolates that consumer's
+[stream consumer](capture-and-networking.md#stream-consumer)'s connection. It isolates that consumer's
 speed from the capture and from every other consumer: a full queue drops packets
 on that connection only, counted and reported for that consumer.
 
 {: .matters }
-> This is the [backpressure](/docs/glossary/capture-and-networking#backpressure) of section 14.4 made per consumer:
-> unlike the capture-wide [bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer), which is drop-oldest,
+> This is the [backpressure](capture-and-networking.md#backpressure) of section 14.4 made per consumer:
+> unlike the capture-wide [bounded buffer](capture-and-networking.md#bounded-buffer), which is drop-oldest,
 > a per-consumer queue refuses the newest packet when full, because a live reader
 > that has fallen behind gains nothing from the sink spending work evicting its
 > backlog, and every dropped packet is counted regardless.
 
-**See also:** [Backpressure](/docs/glossary/capture-and-networking#backpressure), [Stream consumer](/docs/glossary/capture-and-networking#stream-consumer),
-[Bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer)
+**See also:** [Backpressure](capture-and-networking.md#backpressure), [Stream consumer](capture-and-networking.md#stream-consumer),
+[Bounded buffer](capture-and-networking.md#bounded-buffer)
 
 ## Rotation segment
 
-One numbered output file produced when a file [transport](/docs/glossary/capture-and-networking#transport) rotates by
+One numbered output file produced when a file [transport](capture-and-networking.md#transport) rotates by
 size or by duration. Each segment is closed at a clean section boundary and
 opens on its own in an unmodified analyzer; the union of a run's segments is the
 capture, with no packet lost, duplicated, or reordered across the joins.
@@ -526,31 +526,31 @@ capture, with no packet lost, duplicated, or reordered across the joins.
 > is a single segment, byte identical to a non-rotating file. See specification
 > section 14.2.
 
-**See also:** [Transport](/docs/glossary/capture-and-networking#transport), [Sink](/docs/glossary/process-and-attribution#sink), [Pipeline](/docs/glossary/capture-and-networking#pipeline)
+**See also:** [Transport](capture-and-networking.md#transport), [Sink](process-and-attribution.md#sink), [Pipeline](capture-and-networking.md#pipeline)
 
 ## Ring mode
 
 The capture mode in which fragcap retains a rolling in-memory window of the most
-recently captured packets, bounded by a [ring window](/docs/glossary/capture-and-networking#ring-window), discarding
+recently captured packets, bounded by a [ring window](capture-and-networking.md#ring-window), discarding
 the oldest as new ones arrive, and writes the retained window to a capture file
-when the capture ends. The dump fires on any [stop condition](/docs/glossary/process-and-attribution#stop-condition),
+when the capture ends. The dump fires on any [stop condition](process-and-attribution.md#stop-condition),
 the operator interrupt being the headline one; ring mode adds no stop condition of
 its own. See specification section 7.2 (FR-8).
 
 {: .matters }
-> Ring mode is not the [bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer) of section 12.4, which is
+> Ring mode is not the [bounded buffer](capture-and-networking.md#bounded-buffer) of section 12.4, which is
 > also a bounded, drop-oldest ring. That buffer is the internal backpressure stage
-> between the [capture thread](/docs/glossary/capture-and-networking#capture-thread) and the [sink thread](/docs/glossary/capture-and-networking#sink-thread);
+> between the [capture thread](capture-and-networking.md#capture-thread) and the [sink thread](capture-and-networking.md#sink-thread);
 > ring mode is an output mode an operator selects, and its evictions are the
 > operator's declared retention scope, counted rather than lost (constitution P-4,
 > P-9). Confusing the two conflates an internal mechanism with a user-facing mode.
 
-**See also:** [Ring window](/docs/glossary/capture-and-networking#ring-window), [Bounded buffer](/docs/glossary/capture-and-networking#bounded-buffer),
-[Sink](/docs/glossary/process-and-attribution#sink), [Stop condition](/docs/glossary/process-and-attribution#stop-condition)
+**See also:** [Ring window](capture-and-networking.md#ring-window), [Bounded buffer](capture-and-networking.md#bounded-buffer),
+[Sink](process-and-attribution.md#sink), [Stop condition](process-and-attribution.md#stop-condition)
 
 ## Ring window
 
-The bound on a [ring mode](/docs/glossary/capture-and-networking#ring-mode) capture's retained set: either a duration or
+The bound on a [ring mode](capture-and-networking.md#ring-mode) capture's retained set: either a duration or
 a byte size, from the `--ring` option. A duration window keeps the packets whose
 capture instant is within the window measured back from the newest instant
 observed; a size window keeps the newest packets whose total captured length is
@@ -562,16 +562,16 @@ within the window, the same per-packet quantity the `--max-bytes` bound sums.
 > `--max-bytes`. A window smaller than one packet still retains that one packet, so
 > a capture that observed traffic never dumps an empty file.
 
-**See also:** [Ring mode](/docs/glossary/capture-and-networking#ring-mode), [Duration literal](/docs/glossary/capture-and-networking#duration-literal),
-[Write gate](/docs/glossary/capture-and-networking#write-gate)
+**See also:** [Ring mode](capture-and-networking.md#ring-mode), [Duration literal](capture-and-networking.md#duration-literal),
+[Write gate](capture-and-networking.md#write-gate)
 
 ## Write gate
 
-A decision the [sink thread](/docs/glossary/capture-and-networking#sink-thread) consults, synchronously, before the
-[fan-out](/docs/glossary/capture-and-networking#fan-out): whether a captured packet is admitted to the sinks at all. A
+A decision the [sink thread](capture-and-networking.md#sink-thread) consults, synchronously, before the
+[fan-out](capture-and-networking.md#fan-out): whether a captured packet is admitted to the sinks at all. A
 generic `WriteGate` seam in `fragcap-core` answers admit-or-discard for a packet; a
 session-driven implementation in the facade admits only while the session is
-[capturing](/docs/glossary/capture-and-networking#capture-window) and the configured volume bound has not been reached.
+[capturing](capture-and-networking.md#capture-window) and the configured volume bound has not been reached.
 A packet the gate withholds is written to no sink and counted in the `gate_dropped`
 counter, a term of the pipeline conservation identity distinct from a buffer drop
 and a sink drop.
@@ -583,13 +583,13 @@ and a sink drop.
 > accounting are the same set by construction. A `gate_dropped` counter keeps that
 > synchronous discard inside the P-4 accounting rather than letting it escape.
 
-**See also:** [Fan-out](/docs/glossary/capture-and-networking#fan-out), [Capture window](/docs/glossary/capture-and-networking#capture-window),
-[Completion summary](/docs/glossary/command-line-and-diagnostics#completion-summary), [Stop condition](/docs/glossary/process-and-attribution#stop-condition)
+**See also:** [Fan-out](capture-and-networking.md#fan-out), [Capture window](capture-and-networking.md#capture-window),
+[Completion summary](command-line-and-diagnostics.md#completion-summary), [Stop condition](process-and-attribution.md#stop-condition)
 
 ## Capture window
 
-The state a [write gate](/docs/glossary/capture-and-networking#write-gate) reads to decide whether a packet is
-admitted: open while the [capture session](/docs/glossary/process-and-attribution#capture-session) is capturing, closed
+The state a [write gate](capture-and-networking.md#write-gate) reads to decide whether a packet is
+admitted: open while the [capture session](process-and-attribution.md#capture-session) is capturing, closed
 while it is watching for a target or draining after a stop. A live capture holds
 its handle open from arm, so frames arrive while the window is still closed for
 watching; the gate discards and counts those rather than letting them go
@@ -601,8 +601,8 @@ watch-time frame is seen and an unbounded run is a pass-through.
 > discipline the attribution snapshot uses (section 11.6), so the sink thread
 > reads it without ever blocking the thread that advances the session.
 
-**See also:** [Write gate](/docs/glossary/capture-and-networking#write-gate), [Capture session](/docs/glossary/process-and-attribution#capture-session),
-[Completion summary](/docs/glossary/command-line-and-diagnostics#completion-summary)
+**See also:** [Write gate](capture-and-networking.md#write-gate), [Capture session](process-and-attribution.md#capture-session),
+[Completion summary](command-line-and-diagnostics.md#completion-summary)
 
 ## Duration literal
 
@@ -611,7 +611,7 @@ followed by one unit from `ms`, `s`, `m`, or `h`. `30m` is thirty minutes.
 
 A bare integer is refused rather than given a default unit, zero is refused, and
 compound forms such as `1h30m` are not accepted in this schema version. The
-grammar lives in `fragcap-core` because a [game profile](/docs/glossary/platform-and-distribution#game-profile), the
+grammar lives in `fragcap-core` because a [game profile](platform-and-distribution.md#game-profile), the
 command line, and ring mode all need the same one.
 
 {: .matters }
@@ -620,8 +620,8 @@ command line, and ring mode all need the same one.
 > length. Widening the accepted syntax later keeps every profile written today
 > valid; narrowing it does not, so the narrow form ships first.
 
-**See also:** [Game profile](/docs/glossary/platform-and-distribution#game-profile),
-[Profile schema version](/docs/glossary/process-and-attribution#profile-schema-version)
+**See also:** [Game profile](platform-and-distribution.md#game-profile),
+[Profile schema version](process-and-attribution.md#profile-schema-version)
 
 ## Bootstrap filter
 
@@ -643,7 +643,7 @@ are discarded in userspace, because no attribution exists yet to decide with.
 > discard with no counter and therefore a constitution P-4 violation. The cost
 > is paid in bytes rather than in fidelity, deliberately.
 
-**See also:** [Filter gap](/docs/glossary/capture-and-networking#filter-gap), [Interface inventory](/docs/glossary/capture-and-networking#interface-inventory)
+**See also:** [Filter gap](capture-and-networking.md#filter-gap), [Interface inventory](capture-and-networking.md#interface-inventory)
 
 ## Narrowing
 
@@ -660,8 +660,8 @@ resolution, because gameplay endpoints are reached by address with no preceding
 lookup in both focal titles. Over-admission of shared-port traffic is accepted and
 resolved by userspace attribution, not tightened in the kernel.
 
-**See also:** [Bootstrap filter](/docs/glossary/capture-and-networking#bootstrap-filter), [Maintenance](/docs/glossary/capture-and-networking#maintenance),
-[Filter gap](/docs/glossary/capture-and-networking#filter-gap)
+**See also:** [Bootstrap filter](capture-and-networking.md#bootstrap-filter), [Maintenance](capture-and-networking.md#maintenance),
+[Filter gap](capture-and-networking.md#filter-gap)
 
 ## Maintenance
 
@@ -673,8 +673,8 @@ and rate limited to one reinstallation per five seconds per handle, because
 installing a filter briefly interrupts capture on that handle and endpoint sets
 churn during connection establishment.
 
-**See also:** [Narrowing](/docs/glossary/capture-and-networking#narrowing), [Filter gap](/docs/glossary/capture-and-networking#filter-gap),
-[Filter manager](/docs/glossary/capture-and-networking#filter-manager)
+**See also:** [Narrowing](capture-and-networking.md#narrowing), [Filter gap](capture-and-networking.md#filter-gap),
+[Filter manager](capture-and-networking.md#filter-manager)
 
 ## Filter program
 
@@ -687,14 +687,14 @@ Modeled as `FilterProgram` in `fragcap-core`, which treats it as opaque text. On
 platform-neutral (constitution P-2): a filter expression is just a string until a
 backend compiles it.
 
-**See also:** [Bootstrap filter](/docs/glossary/capture-and-networking#bootstrap-filter),
-[Filter manager](/docs/glossary/capture-and-networking#filter-manager), [Narrowing](/docs/glossary/capture-and-networking#narrowing)
+**See also:** [Bootstrap filter](capture-and-networking.md#bootstrap-filter),
+[Filter manager](capture-and-networking.md#filter-manager), [Narrowing](capture-and-networking.md#narrowing)
 
 ## Filter manager
 
 The control-thread component that reads the attribution map's active endpoints,
 runs the narrowing and maintenance policy, and hands each capture thread its
-current [filter program](/docs/glossary/capture-and-networking#filter-program) over a private channel.
+current [filter program](capture-and-networking.md#filter-program) over a private channel.
 
 It bridges the packet source and the flow attributor without merging them
 (constitution P-3): it names neither trait in a signature, adds no `Sync` bound to
@@ -703,8 +703,8 @@ holds both. Compilation and the debounce-and-rate-limit policy are pure over cor
 types, so the whole strategy is tested with synthetic instants and no capture
 driver.
 
-**See also:** [Narrowing](/docs/glossary/capture-and-networking#narrowing), [Maintenance](/docs/glossary/capture-and-networking#maintenance),
-[Filter program](/docs/glossary/capture-and-networking#filter-program)
+**See also:** [Narrowing](capture-and-networking.md#narrowing), [Maintenance](capture-and-networking.md#maintenance),
+[Filter program](capture-and-networking.md#filter-program)
 
 ## Filter gap
 
@@ -725,8 +725,8 @@ every packet, and the gap is reported.
 > admitted everything and the narrowing excludes only unwanted traffic; gaps arise
 > only when an endpoint appears while a strictly narrowed filter is installed.
 
-**See also:** [Bootstrap filter](/docs/glossary/capture-and-networking#bootstrap-filter), [Narrowing](/docs/glossary/capture-and-networking#narrowing),
-[Maintenance](/docs/glossary/capture-and-networking#maintenance)
+**See also:** [Bootstrap filter](capture-and-networking.md#bootstrap-filter), [Narrowing](capture-and-networking.md#narrowing),
+[Maintenance](capture-and-networking.md#maintenance)
 
 ## Install acknowledgement
 
@@ -744,8 +744,8 @@ divergence recorded nowhere. A program the manager has issued and not yet seen
 acknowledged is a **pending install**, and while one is pending the manager issues
 no new install for that handle, so a bare acknowledgement is unambiguous.
 
-**See also:** [Filter manager](/docs/glossary/capture-and-networking#filter-manager), [Filter gap](/docs/glossary/capture-and-networking#filter-gap),
-[Maintenance](/docs/glossary/capture-and-networking#maintenance)
+**See also:** [Filter manager](capture-and-networking.md#filter-manager), [Filter gap](capture-and-networking.md#filter-gap),
+[Maintenance](capture-and-networking.md#maintenance)
 
 ## OwnedEndpoint
 
@@ -759,8 +759,8 @@ belonging to profiled processes. The owner is optional: the live socket-table
 backend always supplies one, while the scripted attributor supplies none, in which
 case the endpoint is treated as not known to belong to any particular process.
 
-**See also:** [Profiled endpoint set](/docs/glossary/capture-and-networking#profiled-endpoint-set),
-[Narrowing](/docs/glossary/capture-and-networking#narrowing)
+**See also:** [Profiled endpoint set](capture-and-networking.md#profiled-endpoint-set),
+[Narrowing](capture-and-networking.md#narrowing)
 
 ## Profiled endpoint set
 
@@ -775,14 +775,14 @@ about profiles (constitution P-3). An endpoint whose owner is not known is kept
 rather than excluded, so on the live backend the set is exactly the profiled
 endpoints while on the offline scripted substrate it is a pass-through.
 
-**See also:** [OwnedEndpoint](/docs/glossary/capture-and-networking#ownedendpoint), [Narrowing](/docs/glossary/capture-and-networking#narrowing)
+**See also:** [OwnedEndpoint](capture-and-networking.md#ownedendpoint), [Narrowing](capture-and-networking.md#narrowing)
 
 ## Interface identifier
 
 The identity fragcap assigns to a capture interface for the duration of one
 run, carried on every packet acquired from it and preserved into output.
 
-Assigned by [selection](/docs/glossary/capture-and-networking#selection-outcome) from position, not taken from the
+Assigned by [selection](capture-and-networking.md#selection-outcome) from position, not taken from the
 platform, because platform interface names are not guaranteed unique and
 specification section 12.1 requires every packet to name where it arrived.
 
@@ -793,8 +793,8 @@ specification section 12.1 requires every packet to name where it arrived.
 > wrong for every other. The wrongness would appear in the output as a packet
 > attributed to an adapter it never touched.
 
-**See also:** [Interface inventory](/docs/glossary/capture-and-networking#interface-inventory),
-[Selection outcome](/docs/glossary/capture-and-networking#selection-outcome)
+**See also:** [Interface inventory](capture-and-networking.md#interface-inventory),
+[Selection outcome](capture-and-networking.md#selection-outcome)
 
 ## Interface inventory
 
@@ -810,9 +810,9 @@ would choose for an off-link destination.
 > 12.1 precedence is testable with no capture driver, no privilege, and no
 > network.
 
-**See also:** [Interface identifier](/docs/glossary/capture-and-networking#interface-identifier),
-[Selection outcome](/docs/glossary/capture-and-networking#selection-outcome),
-[Virtual interface](/docs/glossary/capture-and-networking#virtual-interface)
+**See also:** [Interface identifier](capture-and-networking.md#interface-identifier),
+[Selection outcome](capture-and-networking.md#selection-outcome),
+[Virtual interface](capture-and-networking.md#virtual-interface)
 
 ## Interface retirement
 
@@ -831,12 +831,12 @@ sink established in slice S08.
 > packets that were never observed as packets that were thrown away, which is a
 > constitution P-9 problem rather than an arithmetic one.
 
-**See also:** [Interface identifier](/docs/glossary/capture-and-networking#interface-identifier)
+**See also:** [Interface identifier](capture-and-networking.md#interface-identifier)
 
 ## Selection outcome
 
 The complete result of applying specification section 12.1's precedence to an
-[interface inventory](/docs/glossary/capture-and-networking#interface-inventory): the interfaces chosen, in order,
+[interface inventory](capture-and-networking.md#interface-inventory): the interfaces chosen, in order,
 plus every interface not chosen and the named reason it was passed over.
 
 {: .matters }
@@ -847,8 +847,8 @@ plus every interface not chosen and the named reason it was passed over.
 > a test asserts that rather than trusting it, so a future precedence rule
 > cannot drop an interface on the floor.
 
-**See also:** [Interface inventory](/docs/glossary/capture-and-networking#interface-inventory),
-[Virtual interface](/docs/glossary/capture-and-networking#virtual-interface)
+**See also:** [Interface inventory](capture-and-networking.md#interface-inventory),
+[Virtual interface](capture-and-networking.md#virtual-interface)
 
 ## Virtual interface
 
@@ -867,5 +867,5 @@ list of patterns.
 > verdict is recorded with the pattern that matched, so a misclassified adapter
 > is visible in the run's report rather than discovered as an empty capture.
 
-**See also:** [Interface inventory](/docs/glossary/capture-and-networking#interface-inventory),
-[Selection outcome](/docs/glossary/capture-and-networking#selection-outcome)
+**See also:** [Interface inventory](capture-and-networking.md#interface-inventory),
+[Selection outcome](capture-and-networking.md#selection-outcome)

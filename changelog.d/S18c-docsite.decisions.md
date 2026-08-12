@@ -30,16 +30,33 @@ Pinned-artifact, specification, and design decisions.**
   continuous integration and `wrangler` is not a dependency. The Cloudflare DNS
   records and the GitHub Pages settings are an operator runbook applied by hand
   after merge, out of scope for the code slice.
-- **The completeness check enforces a definition body, not a references section
-  on every entry.** Specification section 4.6 lists a references section among
-  entry completeness, but the authored glossary carries references only where a
-  primary source exists (14 of 125 entries), and fabricating a reference to
-  satisfy the linter would violate P-9. The linter therefore requires a non-empty
-  definition body per entry and validates references and the "why it matters
-  here" callout where present, rather than mandating them on every entry.
-- **The free-text term inventory of section 4.2 is not attempted; the glossary
-  graph is.** The linter's `check` guards the glossary's own integrity (entry
-  completeness, cross-link and see-also resolution, index reproducibility)
-  deterministically. A full undefined-term scan over all prose would need a term
-  list the project does not maintain and would false-positive on ordinary
-  English; it is left out rather than shipped unreliable.
+- **The completeness check requires a prose blurb or detail and rejects empty
+  sections, but does not mandate references on every entry.** Specification
+  section 4.6 lists a references section among entry completeness, but the
+  authored glossary carries references only where a primary source exists (14 of
+  125 entries): much of the glossary is fragcap's own internal vocabulary (for
+  example "Sink thread") for which no primary source exists, and fabricating one
+  would violate P-9. The linter therefore requires a prose blurb or detail on
+  every entry (not merely a metadata marker), and validates that a references
+  section or matters callout, where present, is not empty, rather than mandating
+  references on every entry. Tightened from an earlier "one non-blank line" rule
+  in response to the Codex review.
+- **The Undefined Term Rule is enforced for glossary references, not by a
+  free-text scan.** The linter's `check` verifies that every glossary reference (a
+  Markdown link into the glossary) in the canonical documents of section 4.2 names
+  a defined term, in addition to the glossary's own cross-link graph. A full
+  undefined-term scan over all prose would need a marked-term list the project
+  does not maintain and would false-positive on ordinary English; the enforced
+  mechanism is the glossary reference the documents actually use to mark a term.
+  The canonical-document scan was added in response to the Codex review.
+- **Glossary cross-links are repository-relative sibling paths.** CONVENTIONS.md
+  requires relative links between repository documents so they resolve on disk and
+  on GitHub. The split emits `<category>.md#<anchor>` sibling links rather than the
+  site-absolute `/docs/glossary/...` form (which resolved outside the repository
+  when a source page is read on GitHub). The site build maps these to routes in
+  sub-slice S18c-2. Corrected in response to the Codex review.
+- **The linter stays non-executable and is invoked through bash.** It is committed
+  mode 100644, like `scripts/fragcap.sh`, and every documented invocation uses
+  `bash scripts/lint-docs.sh`, which is how continuous integration and the
+  `wrappers` gate call the repository's shell scripts. Adding an executable bit
+  would diverge from the sibling wrapper.
