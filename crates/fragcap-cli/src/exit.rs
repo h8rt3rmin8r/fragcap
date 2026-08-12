@@ -13,7 +13,7 @@
 use std::fmt;
 
 use fragcap::core::{ConfigError, PipelineError};
-use fragcap::profile::{LoadError, ResolveError};
+use fragcap::profile::{LoadError, ProviderError, ResolutionError, ResolveError};
 use fragcap::{Diagnostics, DurationError, SizeError, SourceError};
 
 /// A process exit code, constrained to the three the contract defines.
@@ -144,6 +144,25 @@ impl From<ResolveError> for CliError {
                 ..
             } => CliError::Usage(e.to_string()),
             ResolveError::Load { .. } => CliError::Failure(e.to_string()),
+        }
+    }
+}
+
+impl From<ResolutionError> for CliError {
+    /// The cascade's failure maps to the same classes as the profile lookup it
+    /// wraps, so `run` exits exactly as it did before the resolver was
+    /// introduced. A hard provider error and a not-found outcome both reduce to
+    /// the underlying [`ResolveError`] and reuse its mapping; a not-resolved
+    /// outcome with no profile detail (no provider answered and none recorded a
+    /// reason) is an expected failure (exit 1).
+    fn from(e: ResolutionError) -> CliError {
+        let inner = match e {
+            ResolutionError::Provider(ProviderError::Profile(inner)) => Some(inner),
+            ResolutionError::Unresolved(u) => u.into_profile_not_found(),
+        };
+        match inner {
+            Some(re) => CliError::from(re),
+            None => CliError::Failure("no target could be resolved".to_string()),
         }
     }
 }

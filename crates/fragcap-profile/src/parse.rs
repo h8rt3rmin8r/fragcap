@@ -51,8 +51,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::glob::ImagePattern;
 use crate::jsonschema::{self, SchemaCode, SchemaDiagnostic};
 use crate::schema::{
-    CaptureDefaults, CaptureMode, Game, GameId, Lifecycle, MatchPredicates, PathRegex, Profile,
-    Stage,
+    CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
+    PathRegex, Profile, Provenance, Stage,
 };
 use crate::validate;
 
@@ -219,6 +219,26 @@ impl Profile {
                 )
             })
             .collect();
+
+        // The section 15.6 metadata. `kind` and `fidelity` are required by the
+        // schema, so validation passing means both are present and in their
+        // domain; `provenance` and `notes` are optional and read as declared.
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .and_then(Kind::parse)
+            .expect("kind present and valid after validation");
+        let fidelity = value
+            .get("fidelity")
+            .and_then(Value::as_str)
+            .and_then(FidelityTier::parse)
+            .expect("fidelity present and valid after validation");
+        let provenance = read_provenance(&value);
+        let notes = value
+            .get("notes")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
         Ok(Profile::new(
             Game::new(
                 game.id.expect("game.id present after validation"),
@@ -228,8 +248,27 @@ impl Profile {
             ),
             draft.capture,
             stages,
+            kind,
+            fidelity,
+            provenance,
+            notes,
         ))
     }
+}
+
+/// Read the optional top-level `provenance` object.
+///
+/// Structural validity is the schema's job: when `provenance` is present it
+/// requires a non-empty `source`, so a present object always yields a source.
+/// `seeded_at` is optional.
+fn read_provenance(value: &Value) -> Option<Provenance> {
+    let obj = value.get("provenance")?.as_object()?;
+    let source = obj.get("source").and_then(Value::as_str)?.to_string();
+    let seeded_at = obj
+        .get("seeded_at")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(Provenance::new(source, seeded_at))
 }
 
 /// Map one structural diagnostic from the schema validator into this crate's
@@ -482,5 +521,81 @@ fn read_predicates(
     }
     if let Some(s) = table.get("descends_from").and_then(Value::as_str) {
         out.predicates.set_descends_from(s.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::schema::{FidelityTier, Kind, Profile};
+
+    fn parse(body: &str) -> Profile {
+        Profile::parse(body).unwrap_or_else(|d| {
+            panic!(
+                "profile did not validate: {:?}",
+                d.iter().map(|x| x.message.clone()).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    #[test]
+    fn a_loaded_profile_exposes_its_kind_and_fidelity() {
+        let p = parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"eso","name":"ESO"},"stage":[{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe"}}]}"#,
+        );
+        assert_eq!(p.kind(), Kind::Profile);
+        assert_eq!(p.fidelity(), FidelityTier::Verified);
+        assert!(p.provenance().is_none(), "no provenance was declared");
+        assert!(p.notes().is_none(), "no notes were declared");
+        // The pre-existing fields are unchanged by the metadata surfacing.
+        assert_eq!(p.game().id().as_str(), "eso");
+        assert_eq!(p.stages().len(), 1);
+    }
+
+    #[test]
+    fn a_loaded_profile_exposes_declared_provenance_and_notes() {
+        let p = parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"heuristic-unverified","notes":"verify against a live capture","provenance":{"source":"steam-appinfo","seeded_at":"2026-08-12"},"game":{"id":"eso","name":"ESO"},"stage":[{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe"}}]}"#,
+        );
+        assert_eq!(p.fidelity(), FidelityTier::HeuristicUnverified);
+        assert_eq!(p.notes(), Some("verify against a live capture"));
+        let prov = p.provenance().expect("provenance declared");
+        assert_eq!(prov.source(), "steam-appinfo");
+        assert_eq!(prov.seeded_at(), Some("2026-08-12"));
+    }
+
+    #[test]
+    fn a_package_loads_as_a_capture_profile() {
+        let p = parse(
+            r#"{"schema":1,"kind":"package","fidelity":"authored","game":{"id":"eso","name":"ESO"},"stage":[{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe"}}]}"#,
+        );
+        assert_eq!(p.kind(), Kind::Package);
+        assert_eq!(p.fidelity(), FidelityTier::Authored);
+    }
+
+    #[test]
+    fn a_hint_is_refused_as_a_capture_profile() {
+        // A structurally valid hint is not a capture profile; parse refuses it.
+        let err = Profile::parse(
+            r#"{"schema":1,"kind":"hint","fidelity":"heuristic-unverified","provenance":{"source":"steam-appinfo"},"game":{"id":"eso","name":"ESO"},"stage":[{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe"}}]}"#,
+        )
+        .expect_err("a hint is not a capture profile");
+        assert!(
+            err.iter()
+                .any(|d| d.message.contains("kind must be `profile`")),
+            "the refusal names the kind requirement"
+        );
+    }
+
+    #[test]
+    fn targeting_fidelity_is_distinct_from_attribution_fidelity() {
+        // FR-010: the targeting FidelityTier and the attribution Fidelity are
+        // different types on different axes. The compiler enforces the
+        // separation: a `targeting == attribution` comparison does not compile.
+        // Observed targeting is not the same as a live attribution.
+        use fragcap_core::attribution::Fidelity as AttributionFidelity;
+        let targeting = FidelityTier::Observed;
+        let attribution = AttributionFidelity::Live;
+        assert_eq!(targeting.as_str(), "observed");
+        assert_eq!(format!("{attribution:?}"), "Live");
     }
 }

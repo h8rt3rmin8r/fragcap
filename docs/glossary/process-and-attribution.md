@@ -736,3 +736,61 @@ Required on a [target hint record](#target-hint-record) and on a hint-database
 export, so an unverified artifact always names its origin.
 
 **See also:** [Fidelity tier](#fidelity-tier), [Target hint record](#target-hint-record)
+
+## Provider
+
+A source that can answer "what is this game's target identity?" within the
+[resolution cascade](#resolution-cascade). Each provider yields either a
+[target](#target) stamped with its [fidelity tier](#fidelity-tier) and
+[provenance](#provenance), or no answer, and occupies a fixed position in the
+cascade's precedence order. Introduced by issue #77. The built-in providers are
+the profile lookup, the hint database, the engine rule, the platform walker, and
+runtime observation.
+
+**See also:** [Resolution cascade](#resolution-cascade), [Target resolver](#target-resolver),
+[Target](#target), [Fidelity tier](#fidelity-tier)
+
+## Target
+
+The resolved answer the [resolution cascade](#resolution-cascade) hands to the
+capture pipeline: an identity to capture (an executable image name plus optional
+path anchors, per the [match predicate](#match-predicate) set), the
+[fidelity tier](#fidelity-tier) of the source that produced it, and its
+[provenance](#provenance). Distinct from a
+[game profile](platform-and-distribution.md#game-profile): a profile is one way
+to back a target, the authored or verified way, but runtime observation produces
+a target with no profile behind it at all.
+
+**See also:** [Resolution cascade](#resolution-cascade), [Provider](#provider),
+[Fidelity tier](#fidelity-tier), [Match predicate](#match-predicate)
+
+## Target resolver
+
+The component that consults its [providers](#provider) in a fixed precedence
+order and returns the highest-precedence available [target](#target), or a
+distinct not-resolved outcome when none answers. The order is total and imposed:
+when more than one provider can answer, the higher-precedence one wins regardless
+of the order the providers were registered in.
+
+{: .matters }
+> The resolver ranks by trust, not by which provider happened to be consulted
+> first. An observed answer is never presented above a verified one, and a
+> not-resolved outcome is named rather than silent, so a capture is never armed
+> against nothing (constitution principles P-9 and P-4).
+
+**See also:** [Resolution cascade](#resolution-cascade), [Provider](#provider),
+[Fidelity tier](#fidelity-tier)
+
+## Resolution cascade
+
+The launch-agnostic mechanism by which fragcap decides what to capture for a
+game: a set of [providers](#provider) of varying trust, consulted by the
+[target resolver](#target-resolver) in precedence order, each answer stamped by
+[fidelity tier](#fidelity-tier). Introduced by issue #77. It separates the
+question of what to capture from how a game is launched, because the only durable
+fact is that at runtime a process exists that is the game and holds the sockets.
+Distinct from the [profile resolution order](#profile-resolution-order), which is
+the narrower first-match lookup of a single profile inside the profile provider.
+
+**See also:** [Provider](#provider), [Target resolver](#target-resolver),
+[Target](#target), [Profile resolution order](#profile-resolution-order)

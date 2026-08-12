@@ -62,17 +62,29 @@ pub mod glob;
 pub mod jsonschema;
 pub mod matching;
 pub mod parse;
+pub mod providers;
 pub mod resolve;
+pub mod resolver;
 pub mod schema;
+pub mod target;
 pub mod validate;
 
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
 pub use glob::{ImagePattern, PatternError, MAX_PATTERN_CHARS};
+pub use matching::first_live_match;
 pub use parse::{load, LoadError, MAX_PROFILE_BYTES, MAX_STAGES};
+pub use providers::{
+    EngineRuleProvider, HintProvider, ObservationProvider, PlatformWalkerProvider, ProfileProvider,
+};
 pub use resolve::{
     resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
 };
-pub use schema::{
-    CaptureDefaults, CaptureMode, Game, GameId, Lifecycle, MatchPredicates, PathRegex, Profile,
-    Stage, SCHEMA_VERSION,
+pub use resolver::{
+    Precedence, ProviderError, ResolutionError, ResolutionNotes, ResolutionRequest, TargetProvider,
+    TargetResolver, Unresolved,
 };
+pub use schema::{
+    CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
+    PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
+};
+pub use target::{ObservedTarget, Target, TargetOrigin};

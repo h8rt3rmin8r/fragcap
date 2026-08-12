@@ -113,15 +113,26 @@ pub mod profile {
     pub use fragcap_profile::jsonschema::{
         schema_document, validate_json, SchemaCode, SchemaDiagnostic, SchemaDiagnostics, Validation,
     };
-    pub use fragcap_profile::matching::{bind_stages, stage_for};
+    pub use fragcap_profile::matching::{bind_stages, first_live_match, stage_for};
     pub use fragcap_profile::parse::{load, LoadError, MAX_PROFILE_BYTES};
+    /// The target resolution cascade: providers, precedence, and the resolver
+    /// (issue #77, section 15.7).
+    pub use fragcap_profile::providers::{
+        EngineRuleProvider, HintProvider, ObservationProvider, PlatformWalkerProvider,
+        ProfileProvider,
+    };
     pub use fragcap_profile::resolve::{
         resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
     };
-    pub use fragcap_profile::schema::{
-        CaptureDefaults, CaptureMode, Game, GameId, Lifecycle, MatchPredicates, PathRegex, Profile,
-        Stage, SCHEMA_VERSION,
+    pub use fragcap_profile::resolver::{
+        Precedence, ProviderError, ResolutionError, ResolutionNotes, ResolutionRequest,
+        TargetProvider, TargetResolver, Unresolved,
     };
+    pub use fragcap_profile::schema::{
+        CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
+        PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
+    };
+    pub use fragcap_profile::target::{ObservedTarget, Target, TargetOrigin};
 }
 
 /// Output sinks.

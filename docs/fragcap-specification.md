@@ -1889,6 +1889,66 @@ parser's move from TOML onto JSON (issue #76) has landed; the runtime
 profile form is the JSON of section 15.2, structurally validated against
 this schema and semantically validated by the checks of section 15.4.
 
+### 15.7 Target Resolution Cascade
+
+Deciding what to capture for a given game is a separate question from how
+the game is launched (section 7.1). A game may start from a storefront,
+from a desktop shortcut, or from a mod manager through a script extender,
+and in every case the durable fact is the same: at runtime a process
+exists that is the game and holds the sockets. The resolution cascade
+(issue #77) is the launch-agnostic mechanism that answers "what is this
+game's target identity?" from many sources of varying trust.
+
+Each source is a **provider**. The **target resolver** consults its
+providers in a fixed **precedence** order and returns the first available
+answer, a **target**, stamped with the source's fidelity tier (section
+15.6) and provenance. The precedence, highest trust first, is:
+
+| Precedence | Provider | Fidelity it stamps |
+| --- | --- | --- |
+| 1 | Profile (an authored package or a curated profile) | `authored`, `verified`, or `heuristic-unverified` |
+| 2 | Hint database (issue #78) | `heuristic-unverified` |
+| 3 | Engine rule (a general install-layout rule) | `heuristic-unverified` |
+| 4 | Platform walker (a storefront library walk) | `heuristic-unverified` |
+| 5 | Runtime observation | `observed` |
+
+The profile provider occupies the top band alone: an authored package and
+a verified profile are both profiles, and the section 15.3 file
+precedence already selects one, so the distinction is carried by the
+fidelity the file declares rather than by two providers. Runtime
+observation sits at the bottom as the arbiter that assumes nothing about
+origin, so it resolves a modded install, a standalone game, and a plain
+storefront title alike, once a process matching the target identity
+appears.
+
+Two properties are load-bearing. The order is **total and imposed**: when
+more than one provider can answer, the higher-precedence one wins, and it
+wins regardless of the order the providers were registered or iterated
+in. Every answer is **stamped and never overstated**: a target carries
+exactly one fidelity tier, an observed answer is `observed` and never
+verified or authored, and provider precedence never inverts the fidelity
+order (constitution P-9). When no provider answers, resolution returns a
+distinct not-resolved outcome rather than a silent empty answer
+(constitution P-4).
+
+A target's identity is the existing match predicates of section 10.3 (an
+executable image name plus optional path anchors); ancestry
+(`descends_from`) is reserved for genuine runtime disambiguation rather
+than being the identity's spine, because a modded launch has alien
+ancestry. Runtime observation reads only the image name and path already
+in the process snapshot; it opens no process handle and reads no process
+memory (constitution P-1).
+
+The cascade is distinct from the profile-reference resolution order of
+section 15.3, which is a narrower, first-match lookup of a single
+profile by name or path within the profile provider. The cascade sits
+above it, choosing which provider answers at all.
+
+The engine-rule provider, the platform walker, and the hint-database
+provider are defined here but filled in by later slices (S029, S030, and
+issue #78); until then they are registered providers that return no
+answer, so adding their data does not change the resolver's ordering.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope

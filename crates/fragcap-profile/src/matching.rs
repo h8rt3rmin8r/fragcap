@@ -52,6 +52,31 @@ pub fn stage_for<'p>(profile: &'p Profile, tree: &ProcessTree, node: NodeId) -> 
         .find(|stage| predicates_hold(stage.predicates(), tree, node, n))
 }
 
+/// The first live node whose predicates all hold, in creation order, or `None`.
+///
+/// The runtime-observation provider of specification section 15.7 uses this to
+/// turn a target identity (an exe glob plus optional path anchors) into a live
+/// process, without a profile behind it. It reads only what the process snapshot
+/// already holds and shares [`predicates_hold`] with stage matching, so the P-9
+/// rule that an unavailable command line never matches is enforced in one place
+/// rather than two. It opens nothing and mutates nothing.
+///
+/// `descends_from` in an observation identity resolves against whatever stage
+/// bindings the tree already carries, exactly as in stage matching; an identity
+/// that keys on the process itself (the common case) does not use it.
+pub fn first_live_match(preds: &MatchPredicates, tree: &ProcessTree) -> Option<NodeId> {
+    let mut ids: Vec<NodeId> = tree
+        .nodes()
+        .filter(|n| n.is_live())
+        .map(|n| n.id())
+        .collect();
+    ids.sort_by_key(|id| id.get());
+    ids.into_iter().find(|&id| {
+        tree.node(id)
+            .is_some_and(|n| predicates_hold(preds, tree, id, n))
+    })
+}
+
 /// Bind every node to its matching stage, in creation order.
 ///
 /// `NodeId` is assigned as events are folded, so iterating in identifier order
@@ -348,6 +373,83 @@ mod tests {
         t.apply(ProcessEvent::started(200, 9, "C:\\G\\game.exe", "g", at(1)));
         bind_stages(&p, &mut t);
         assert_eq!(role_of(&t, ids(&t)[0]), None);
+    }
+
+    /// The match predicates of a one-stage profile, for exercising
+    /// `first_live_match` without a public `MatchPredicates` constructor.
+    fn identity(match_body: &str) -> MatchPredicates {
+        let p = profile(&format!(
+            r#"{{"role":"target","lifecycle":"session","match":{match_body}}}"#
+        ));
+        p.stages()[0].predicates().clone()
+    }
+
+    #[test]
+    fn first_live_match_finds_a_live_process_by_exe() {
+        let id = identity(r#"{"exe":"eso64.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(
+            1,
+            0,
+            "C:\\Games\\ESO\\ESO64.EXE",
+            "ESO64.EXE",
+            at(1),
+        ));
+        let found = first_live_match(&id, &t).expect("a live match");
+        assert_eq!(found, ids(&t)[0]);
+    }
+
+    #[test]
+    fn first_live_match_returns_none_when_nothing_matches() {
+        let id = identity(r#"{"exe":"other.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(
+            1,
+            0,
+            "C:\\G\\eso64.exe",
+            "eso64.exe",
+            at(1),
+        ));
+        assert_eq!(first_live_match(&id, &t), None);
+    }
+
+    #[test]
+    fn first_live_match_never_matches_an_unavailable_command_line() {
+        // P-9 parity with bind_stages: an unavailable command line was not
+        // observed, so it cannot be reported as containing anything.
+        let id = identity(r#"{"cmdline_contains":"-sessionid"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::Started {
+            pid: 1,
+            parent: 0,
+            image: "C:\\G\\eso64.exe".into(),
+            command_line: CommandLine::Unavailable,
+            at: at(1),
+        });
+        assert_eq!(first_live_match(&id, &t), None);
+    }
+
+    #[test]
+    fn first_live_match_takes_the_first_in_creation_order() {
+        let id = identity(r#"{"exe":"game.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(10, 0, "C:\\A\\game.exe", "g", at(1)));
+        t.apply(ProcessEvent::started(20, 0, "C:\\B\\game.exe", "g", at(2)));
+        let found = first_live_match(&id, &t).expect("a live match");
+        assert_eq!(found, ids(&t)[0], "the earlier-created match wins");
+    }
+
+    #[test]
+    fn first_live_match_skips_an_exited_process() {
+        let id = identity(r#"{"exe":"game.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(10, 0, "C:\\A\\game.exe", "g", at(1)));
+        t.apply(ProcessEvent::Exited { pid: 10, at: at(2) });
+        assert_eq!(
+            first_live_match(&id, &t),
+            None,
+            "an exited process is not a live match"
+        );
     }
 
     #[test]
