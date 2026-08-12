@@ -63,6 +63,24 @@ jobs:
         # ship these features is recorded in changelog.d/release-features.decisions.md.
         run: cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
 
+      - name: Assert the featured binary starts without npcap
+        shell: pwsh
+        run: |
+          # The runner has no npcap installed. Linking `live` makes wpcap.dll an
+          # import; without delay-loading the binary would exit STATUS_DLL_NOT_FOUND
+          # before main, so `doctor` could never run to say "install npcap".
+          # crates/fragcap-cli/build.rs delay-loads wpcap.dll to prevent exactly
+          # that. This proves it on the real artifact: doctor must RUN (it reports
+          # npcap absent and exits 1) rather than fail to start.
+          & target/release/fragcap.exe doctor
+          $code = $LASTEXITCODE
+          Write-Output "doctor exit code: $code"
+          if ($code -ne 0 -and $code -ne 1) {
+            Write-Error "fragcap.exe did not start without npcap (exit $code); wpcap.dll delay-load may be broken."
+            exit 1
+          }
+          Write-Output "OK: the featured binary starts and runs doctor without npcap installed."
+
       - name: Assert no npcap component is present in any artifact
         shell: pwsh
         run: |
