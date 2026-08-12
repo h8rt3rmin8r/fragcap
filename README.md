@@ -1,41 +1,76 @@
-# fragcap
+<p align="center">
+  <a href="https://fragcap.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="brand/logos/png/fragcap-horizontal-dark-2400.png">
+      <source media="(prefers-color-scheme: light)" srcset="brand/logos/png/fragcap-horizontal-light-2400.png">
+      <img alt="fragcap" src="brand/logos/png/fragcap-horizontal-dark-2400.png" width="620">
+    </picture>
+  </a>
+</p>
 
-Passive, process-attributed network capture for game clients on Windows.
+<p align="center">
+  <em>Passive, process-attributed network capture for game clients on Windows.</em>
+</p>
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-in--development-yellow.svg)](docs/plans/README.md)
+<p align="center">
+  <a href="https://github.com/h8rt3rmin8r/fragcap/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/h8rt3rmin8r/fragcap/ci.yml?branch=main&label=CI&logo=github"></a>
+  <a href="https://github.com/h8rt3rmin8r/fragcap/releases"><img alt="Release" src="https://img.shields.io/github/v/release/h8rt3rmin8r/fragcap?label=release&color=27C7E7&sort=semver"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="rust-toolchain.toml"><img alt="Rust 1.82+" src="https://img.shields.io/badge/rust-1.82%2B-dea584?logo=rust&logoColor=white"></a>
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white">
+  <a href="https://fragcap.com"><img alt="Docs: fragcap.com" src="https://img.shields.io/badge/docs-fragcap.com-27C7E7"></a>
+</p>
 
-> **Status: in development, not yet released.** Slices S01 through S14 are
-> complete, with follow-up refinements through 017: the crate graph, the capture
-> pipeline, both output writers, the profile schema, the socket-table attributor,
-> the ETW process watcher, and the command-line interface (`run`, `tap`, `doctor`,
-> `profile`) exist and are tested. The tool runs today against the offline replay
-> substrate; the live capture path is compiled but not yet exercised end to end.
-> Remaining roadmap slices S15 through S18 (streaming sinks, ring mode, Steam and
-> managed launch, extcap and the documentation site) are not yet built. The first
-> public release is v0.2.0, and it is cut only after all eighteen slices (S01
-> through S18) are complete. See
-> [`docs/plans/README.md`](docs/plans/README.md) for what is being built and in
-> what order.
+---
 
-## Building
+fragcap watches the network traffic leaving and entering your machine and labels
+every connection with the program that made it. Ordinary capture tools can tell
+you a conversation happened; fragcap tells you which process on your machine had
+it, even when that process is a game client started indirectly by a launcher.
 
-```bash
-cargo build --workspace
-cargo test --workspace --locked
-cargo xtask ci          # the full local check set, same as CI runs
-```
+It only observes. It never modifies, injects, or replays traffic, and it never
+reads or attaches to the memory of another process. It writes an extended
+[pcapng](https://pcapng.com) file that unmodified analyzers such as Wireshark
+read as an ordinary packet trace.
 
-`rustup` is the only prerequisite; the repository names the toolchain it needs
-and `rustup` fetches it on first build. **npcap is not required to build**, and
-no crate links against it yet.
+**The full documentation, including a first-run guide, lives at
+[fragcap.com](https://fragcap.com).**
 
-To verify platform neutrality locally you need one extra target:
+## Who is this for?
 
-```bash
-rustup target add x86_64-unknown-linux-gnu
-cargo xtask neutral
-```
+- **Curious players and tinkerers** who want to see what a game client actually
+  talks to. Start at [the getting-started guide](https://fragcap.com/docs/getting-started);
+  it walks the whole first capture. You do not need to read Rust to use the tool.
+- **Network and security researchers** who need attribution-grade captures:
+  every packet tied to its owning process and role, in a format existing
+  analysis tooling already understands.
+- **Rust developers and contributors.** The library is the product; the
+  command-line tool is one consumer of it. See [Building](#building) and
+  [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Quick links
+
+| | |
+| --- | --- |
+| Documentation and first-run guide | [fragcap.com](https://fragcap.com) |
+| Glossary of every term | [fragcap.com/docs/glossary](https://fragcap.com/docs/glossary) |
+| Architecture of record | [`docs/fragcap-specification.md`](docs/fragcap-specification.md) |
+| Contributor workflow | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Releases | [github.com/h8rt3rmin8r/fragcap/releases](https://github.com/h8rt3rmin8r/fragcap/releases) |
+
+## Status
+
+All eighteen roadmap slices (**S01 through S18**) are complete and merged: the
+crate graph, the capture pipeline, both output writers, the profile schema, the
+socket-table attributor, the ETW process watcher, transports and streaming
+sinks, ring mode, Steam integration and managed launch, the extcap analyzer
+integration, the shell wrappers, and the documentation site. **v0.2.0 is the
+first public release** and packages the whole roadmap; see the
+[Releases](https://github.com/h8rt3rmin8r/fragcap/releases) page.
+
+Live capture requires the npcap driver (below) and administrative privilege; the
+socket-table attribution path and the offline replay substrate run without
+either.
 
 ## The problem
 
@@ -75,42 +110,46 @@ creation-time process tree so the launcher is attached before it hands off,
 socket-table attribution that survives identifier recycling, and profile-driven
 roles that separate launcher, client, and platform-service traffic.
 
-## What it will do
+## What it does
 
-- Attribute every captured packet to the process that produced it, from
+- Attributes every captured packet to the process that produced it, from
   launcher start through client exit.
-- Write `.fcapng`, an extended pcapng profile carrying attribution in Enhanced
-  Packet Block options. **Unmodified analyzers read it as ordinary pcapng** and
-  ignore the annotations. Compatibility is never traded for richness.
-- Stream live to named pipes, Unix domain sockets, or TCP, including directly
-  into an analyzer through the extcap interface.
-- Maintain a rolling in-memory window and dump it on trigger, so you do not
+- Writes `.fcapng`, an extended pcapng profile carrying attribution in packet
+  comments. **Unmodified analyzers read it as ordinary pcapng** and ignore the
+  annotations. Compatibility is never traded for richness.
+- Streams live to named pipes or TCP, including directly into an analyzer
+  through the extcap interface.
+- Maintains a rolling in-memory window and dumps it on trigger, so you do not
   have to predict when the interesting event happens.
-- Distinguish launcher, client, and platform-service traffic by role, and let
-  you capture a subset.
-- Count every discarded packet in a named counter and surface it. A capture
+- Distinguishes launcher, client, and platform-service traffic by role, and
+  lets you capture a subset.
+- Counts every discarded packet in a named counter and surfaces it. A capture
   tool that loses data without saying so produces conclusions the user cannot
   check.
 
-The library is the product. The command line tool is one consumer of it, and
-the shell wrappers are consumers of the tool. Anything reachable through the
-CLI is reachable through the public Rust API.
+The command-line tool exposes `run`, `tap`, `profile`, `steam`, `doctor`, and
+`extcap`. Anything reachable through the CLI is reachable through the public Rust
+API.
 
-Planned invocations, from specification section 17.3:
+Some worked invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
+for the full surface):
 
 ```bash
-# Bounded capture, launched by fragcap, written to a dated file
-fragcap run --profile eso --launch --duration 30m
+# Bounded capture, launched by fragcap, written to a file
+fragcap run --profile eso --launch --duration 30m --out capture.fcapng
 
 # Client traffic only, streamed to an analyzer through a named pipe
-fragcap run --profile div2 --mode stream --roles client --sink pipe:fragcap
+fragcap run --profile div2 --mode stream --roles client --sink pipe:fragcap,format=pcapng
 
 # Rolling ten-minute window, dumped on interrupt
 fragcap run --profile eso --mode ring --ring 10m --out captures/eso.fcapng
 
 # Ad-hoc capture of a running process, no profile
-fragcap tap --process eso64.exe --duration 5m
+fragcap tap --process eso64.exe --duration 5m --out capture.fcapng
 ```
+
+Non-file sinks (`pipe:`, `tcp://`) have no extension to infer a format from, so
+they name it explicitly with `,format=pcapng` or `,format=jsonl`.
 
 ## What it will not do
 
@@ -131,7 +170,8 @@ expectations are correct before you install anything.
 ## Prerequisite: npcap
 
 **fragcap requires [npcap](https://npcap.com) to be installed separately,
-before any other step.**
+before any capture.** Run `fragcap doctor` to check your environment; it reports
+npcap's presence and names any missing option, and captures nothing.
 
 npcap is not redistributable under its standard license, so fragcap does not
 and will not bundle it. fragcap detects it and reports its absence with the
@@ -144,26 +184,50 @@ Two installation options are required and **not both default**:
 | Support loopback traffic capture | The launcher-to-client handoff and platform service chatter are local, and invisible on a normal adapter |
 | Install in WinPcap API-compatible mode | The `pcap` crate links against the WinPcap-compatible interface |
 
-`fragcap doctor` will verify each and name the specific option when it is
-missing.
+Building fragcap with the live capture backend additionally requires the npcap
+Software Development Kit, which is likewise not redistributed and is acquired at
+build time. Capture requires administrative privilege.
 
-Building fragcap additionally requires the npcap Software Development Kit,
-which is likewise not redistributed and is acquired at build time.
+## Building
 
-Capture requires administrative privilege.
+fragcap is a Rust workspace. `rustup` is the only prerequisite; the repository
+names the toolchain it needs and `rustup` fetches it on first build. **npcap is
+not required to build** the workspace, and the capture backend is behind a
+feature flag, so the logic is tested on any platform.
+
+```bash
+cargo build --workspace
+cargo test --workspace --locked
+cargo xtask ci          # the full local check set, same as CI runs
+```
+
+To verify platform neutrality locally you need one extra target:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+cargo xtask neutral
+```
+
+The documentation site under [`site/`](site/) is a separate build:
+
+```bash
+cargo xtask docs build  # static export into site/out
+cargo xtask docs        # local dev server with hot reload
+```
 
 ## Repository map
 
 ```text
-.specify/memory/constitution.md   Governing principles, versioned
+site/                             Documentation website (fragcap.com), Fumadocs
 docs/fragcap-specification.md     Architecture of record
 docs/fragcap-spec-outline.md      Navigable map of the specification
+docs/glossary/                    Glossary, one page per category (single source)
 docs/plans/README.md              Slice ordering S01 to S18
-docs/plans/reconnaissance.md      Protocol for open questions Q-1 to Q-6
-docs/brand/README.md              Brand guardrails, identity pending
+brand/                            Brand identity kit (fonts, logos, tokens)
 specs/                            Spec Kit feature slices
+scripts/                          Shell wrappers and the documentation linter
+.specify/memory/constitution.md   Governing principles, versioned
 .agents/skills/                   Vendored portable agent skills
-skills/                           First-party agent skills
 AGENTS.md                         Canonical agent instructions
 CONVENTIONS.md                    Mechanical rules for every file
 CONTRIBUTING.md                   Contributor workflow
@@ -171,14 +235,15 @@ CONTRIBUTING.md                   Contributor workflow
 
 ## Documentation and development
 
-The specification is the architecture of record, and every feature traces to
-it. Development runs through [GitHub Spec Kit](https://github.com/github/spec-kit):
-each slice is spec'd, planned, and analyzed before implementation, and lands as
-a numbered `specs/NNN-slug/` directory.
+User-facing documentation is at [fragcap.com](https://fragcap.com). The
+[specification](docs/fragcap-specification.md) is the architecture of record,
+and every feature traces to it. Development runs through
+[GitHub Spec Kit](https://github.com/github/spec-kit): each slice is spec'd,
+planned, and analyzed before implementation, and lands as a numbered
+`specs/NNN-slug/` directory.
 
 Four agent surfaces are installed (Claude Code, Codex, Cursor, opencode), all
-driving the same agent-neutral `.specify/` engine. See
-[`AGENTS.md`](AGENTS.md).
+driving the same agent-neutral `.specify/` engine. See [`AGENTS.md`](AGENTS.md).
 
 Contributions are welcome under the Apache-2.0 inbound-equals-outbound model;
 no contributor license agreement is required. See
@@ -201,6 +266,9 @@ Apache-2.0 is chosen over the Rust ecosystem's conventional
 `MIT OR Apache-2.0` deliberately: the express patent grant has real value in a
 domain where technique patents exist, and the attribution requirements are
 appropriate for a project whose correctness claims matter.
+
+The brand assets under [`brand/`](brand/) are project marks rather than code;
+the bundled fonts carry their own SIL Open Font License texts.
 
 ## Disclaimer
 
