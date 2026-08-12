@@ -10,15 +10,22 @@
 #
 # The release sequence is therefore:
 #
-#   1. git checkout -b release/0.2.0
-#   2. cargo release minor --execute     # bump and commit, nothing else
-#   3. open a pull request, operator reviews and merges
-#   4. git tag v0.2.0 && git push origin v0.2.0
-#   5. the release workflow builds artifacts, then waits on the `crates-io`
+#   1. scripts/cut-release.sh minor      # or, on Windows, New-Release.ps1 minor
+#        Prepares a release/X.Y.Z branch: bumps the version (via the command
+#        below), assembles CHANGELOG.md from changelog.d/ fragments, corrects
+#        the embedded-version assertions and golden corpus the bump moves, and
+#        runs the full check set. It performs no tag, push, or publish. Run it
+#        with --dry-run first to preview. It wraps, and does not replace:
+#          cargo release minor --execute   # bump and commit, nothing else
+#   2. open a pull request, operator reviews and merges
+#   3. git tag v0.2.0 && git push origin v0.2.0
+#   4. the release workflow builds artifacts, then waits on the `crates-io`
 #      environment gate before running `cargo xtask publish --execute`
 #
-# Step 4 is the authorization point required by the constitution. Step 5 is
+# Step 3 is the authorization point required by the constitution. Step 4 is
 # the second one, because the environment gate needs a human to approve it.
+# The script consolidates the fiddly local half (step 1); it deliberately does
+# not touch either authorization gate.
 #
 # cargo-release defaults to a dry run. `--execute` is required to change
 # anything, which is the same contract `cargo xtask publish` uses.

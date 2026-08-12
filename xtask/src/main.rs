@@ -13,6 +13,7 @@
 //! facts, and collapsing them lets a broken check masquerade as a clean
 //! repository.
 
+mod changelog;
 mod deps;
 mod docs;
 mod license;
@@ -41,6 +42,7 @@ cargo xtask <command>
   docs       Documentation site: docs (dev), docs build, docs check
   publish    Registry publication in dependency order (--execute to publish)
   notes      Print release notes for a version, from CHANGELOG.md
+  changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
 ";
 
 fn repo_root() -> PathBuf {
@@ -373,6 +375,43 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+
+        // Fold the `changelog.d/` fragments into `CHANGELOG.md`. `--check`
+        // previews the assembled body; `--release <version> <date>` rewrites
+        // the file and removes the consumed fragments. Both share one tested
+        // transform in `changelog`.
+        "changelog" => {
+            let sub = std::env::args().nth(2);
+            let mode = match sub.as_deref() {
+                Some("--check") | None => Some(changelog::Mode::Check),
+                Some("--release") => match (std::env::args().nth(3), std::env::args().nth(4)) {
+                    (Some(version), Some(date)) => Some(changelog::Mode::Release { version, date }),
+                    _ => {
+                        eprintln!(
+                            "changelog: --release needs a version and a date, for example: \
+                                 changelog --release 0.2.0 2026-08-12"
+                        );
+                        return ExitCode::from(2);
+                    }
+                },
+                Some(other) => {
+                    eprintln!(
+                        "changelog: unknown argument: {other}\n\n\
+                         Use: changelog [--check] | changelog --release <version> <date>"
+                    );
+                    return ExitCode::from(2);
+                }
+            };
+            match mode.map(|m| changelog::run(&root, m)) {
+                Some(Ok(0)) => ExitCode::SUCCESS,
+                Some(Ok(_)) => ExitCode::from(1),
+                Some(Err(e)) => {
+                    eprintln!("changelog: could not run: {e}");
+                    ExitCode::from(2)
+                }
+                None => ExitCode::from(2),
+            }
+        }
 
         // Publishing changes the outside world and cannot be undone, so
         // `--execute` is required. Without it this prints the plan.
