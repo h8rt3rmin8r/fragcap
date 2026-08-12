@@ -16,6 +16,38 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
+### Highlights
+
+- **fragcap v0.2.0 is the first functional release.** A passive,
+  process-attributed network capture tool for Windows: it reconstructs which
+  process produced each packet, an association that capture below the socket
+  layer has already discarded, and writes it into an extended pcapng that
+  unmodified analyzers still read as ordinary pcapng.
+- **Attribution survives indirect launches.** Flows are attributed to the owning
+  process even when a game client is started through a platform or publisher
+  launcher, joining captured traffic against the operating system socket table
+  by 5-tuple (with a retention window for closing connections) and against Event
+  Tracing for Windows process ancestry.
+- **Capture is live or replayed, and never loses silently.** Live capture runs
+  over npcap (detected, never bundled or installed); offline replay reads
+  classic pcap. Every discarded packet is counted and named, per interface.
+- **Profiles are validated before they run**, reporting every diagnostic at
+  once, and stage matching binds capture to the right process among several
+  sharing an image name.
+- **Two output formats, both readable by unmodified tooling:** pcapng carrying
+  attribution in packet comments, and JSON Lines.
+- **Steam integration and managed launch** discover installed titles, scaffold a
+  validating profile, and start a title under capture through Steam's protocol
+  handler, without ever opening a process handle.
+- **Also included:** Wireshark extcap integration, ring mode with triggers,
+  transports and streaming sinks, shell wrappers for both shells, and a
+  documentation site.
+- **The security posture is absolute.** fragcap observes: it never modifies,
+  injects, or replays traffic, and never opens a process handle carrying
+  memory-read rights against a target.
+
 ### Added
 
 - Repository foundation: git, licensing, conventions, agent context,
@@ -27,6 +59,1049 @@ change pinned artifacts, as required by the constitution.
 - GitHub Spec Kit initialized with four agent surfaces (Claude Code, Codex,
   Cursor, opencode) over one shared, agent-neutral `.specify/` engine.
 - Vendored agent skills under `.agents/skills/` with `skills-lock.json`.
+
+Cargo workspace with the eight crates from the architecture of record, a
+repository task runner carrying the project's own checks, and the six
+continuous integration workflows. Contributors go from clone to a built,
+tested workspace with `cargo build --workspace`, and run the full local check
+set with `cargo xtask ci`.
+
+- **The attribution refresh is driven by the pipeline.** `Pipeline::run`'s
+  section 8.6 control thread now drives `FlowAttributor::refresh` on the section
+  11.2 cadence, so a connection opened after capture starts is re-read into the
+  published snapshot and becomes attributable, and enters the narrowed filter,
+  rather than the snapshot staying frozen at construction. Resolves issue #19.
+- **Phase-two narrowing is restricted to profiled processes.** The kernel filter
+  now admits only endpoints owned by a profiled process (specification section
+  12.2), not every socket on the machine. `FlowAttributor::active_endpoints_owned`
+  carries the owning identifier the plain endpoint list drops, and the session's
+  `RoleStampingAttributor` joins it against the stage bindings it already holds to
+  filter the narrowing input. Resolves issue #18.
+- **The CLI refresh stopgap is gone.** `FlowAttributor::refresh` now takes
+  `&self`, so the pipeline shares and refreshes one attributor through the
+  `Arc<dyn FlowAttributor>` the capture threads resolve against; the CLI
+  `RefreshDriver` control thread and the read/write `PublishedResolver` split it
+  depended on are no longer needed on the live path. The resolve path stays
+  lock-free (section 11.6).
+- **`OwnedEndpoint` and glossary entries.** `fragcap-core::flow` gains
+  `OwnedEndpoint` (an endpoint paired with its owning process identifier), and
+  `docs/glossary.md` gains `OwnedEndpoint` and `Profiled endpoint set`
+  (constitution P-6).
+
+- **The filter manager commits an install only when the capture thread confirms
+  it.** `FilterManager::poll` no longer marks a handle's program as installed
+  optimistically; it records a pending install (one in flight per handle) and a
+  new `FilterManager::acknowledge` commits the program, and clears the handle's
+  gap set, only on a success acknowledgement. A rejected maintenance `set_filter`
+  is not treated as installed: the handle keeps its prior program and the install
+  is retried, rate limited, rather than the manager's model silently diverging
+  from the real handle. Resolves issue #20 (the deferred half of the S13 review
+  finding P2).
+- **The acknowledgement flows over the reverse of the S13 filter channel.** Each
+  capture thread reports the result of its `set_filter` calls to the control
+  thread over a shared `std::sync::mpsc` channel tagged with its handle index,
+  mirroring the forward per-source filter-program channel; the control thread
+  applies each acknowledgement to the manager before it polls. No new dependency,
+  and `PacketSource` gains no bound (constitution P-3). A rejecting handle is
+  retried, never retired: retirement stays reserved for a capture thread that has
+  ended, because correctness never depends on the kernel filter being fresh
+  (section 12.3).
+
+- **The session decision now gates the sink writes, so a volume bound produces an
+  exactly-bounded file.** A generic `WriteGate` seam in `fragcap-core` is consulted
+  by the pipeline output loop before the per-sink fan-out; a facade `SessionGate`
+  admits a packet only while the capture session is capturing and the configured
+  `--max-packets` or `--max-bytes` bound has not been reached, discarding and
+  counting every other packet by cause. Because the admit-or-discard decision is
+  made synchronously on the write path, the produced pcapng and JSON Lines contain
+  exactly the bound and the completion summary matches what is on disk, rather than
+  the S14 soft bound that could write more than the bound while counting the
+  overflow as discarded. A new `retained` line on the summary reports the packets on
+  disk. Resolves issue #22 (the deferred half of the PR #21 review, findings C2 and
+  C3).
+- **A packet the gate withholds is counted in a new `gate_dropped` counter, folded
+  into the pipeline conservation identity.** `CaptureStats` gains `gate_dropped`,
+  and the identity checked in every pipeline test is now, for every sink,
+  `received + buffer_dropped + gate_dropped + refusals == packets_captured`. The
+  counter is distinct from the two loss counters because a gate drop is an intended
+  discard (outside the capture window or beyond the bound), not loss to be remedied,
+  so it does not reach `fragcap_dropped`, `total_dropped`, or `lost_anything`. A run
+  with no gate attached leaves the term zero and the identity in its prior form.
+- **The live driver runs the packet path from arm, so watch-time frames are read and
+  counted.** On a live capture the handle is open from arm; the pipeline is now
+  spawned before acquisition and the gate discards and counts the pre-acquisition
+  frames in `watching_discarded` rather than never observing them. The offline
+  driver keeps its two-phase shape (acquire, then start the pipeline), so its
+  behavior and the committed goldens are byte-identical. The live path is compiled
+  and linked in CI but not executed there (tier 2).
+
+`fragcap-core` carries the type and trait vocabulary from specification
+sections 8.4 and 8.5: flow keys and the socket table matching key derived from
+them, packets before and after attribution, attributions, timestamps,
+statistics, three error types, and the five seams the rest of the workspace is
+built against. Nothing captures, attributes, parses, or writes yet; this fixes
+the shape those slices are written to.
+
+Three constitution principles are now enforced by the types rather than by
+documentation. A UDP attribution key carrying a remote endpoint is
+unrepresentable, so the confident-wrong-attribution failure specification
+section 8.4 warns about cannot be written. Every discard cause has its own named
+counter and every total is computed, so a counter cannot drift from its parts.
+An unattributed packet is distinguishable from one nobody tried to attribute.
+
+`fragcap-core` parses link, network, and transport headers into a flow key and
+a direction, per specification sections 12.5 and 12.6. Ethernet, raw IP, and
+BSD loopback encapsulations; IPv4 and IPv6 including the extension header
+chain; TCP and UDP. Zero-copy, and asserted allocation-free under a counting
+allocator rather than merely intended.
+
+This is the first behavior in the workspace. Everything before it declared
+shapes.
+
+The accounting is the half worth reading. Twelve named rejection causes, each
+with its own counter and each separated from the others exactly where the
+remedy differs: a short header means raise the snapshot length, a malformed
+header means a broken sender or a defect here, an unsupported EtherType means
+unexpected traffic, an unsupported link type means an unexpected capture
+backend. The enumeration is closed, so adding a way to decline without adding a
+counter does not compile. No parse outcome is a drop, and a test asserts that
+every parse counter leaves both drop totals at zero.
+
+Two cases are reported rather than resolved, on purpose. Loopback traffic has a
+local source and a local destination, so section 12.6's rule returns two
+answers; fragcap produces the flow key, leaves the direction undetermined, and
+counts it, because guessing would be right half the time with no indication of
+which half. A packet with no local endpoint at all produces no flow key,
+because a flow key's local field is defined as the endpoint on the capturing
+host and there is not one.
+
+IP fragments are attributed without reassembly, from a 256 entry table of what
+each datagram's first fragment said. fragcap does not reassemble and will not:
+doing it during capture would destroy the on-wire fidelity that makes the
+capture worth taking.
+
+Reads are bounded by the datagram's extent rather than by the captured frame.
+The two differ in both directions and each needs its own answer. A declared
+length longer than the capture is truncation, usually a snapshot length, and
+the capture wins. A declared length shorter than the capture means the frame
+carries bytes that are not the datagram, because Ethernet pads anything below
+sixty bytes, and the declared length wins. A declared length of zero is neither
+and is not an error: large send offload leaves the field for the adapter to
+fill in after the capture point, which is ordinary for outbound traffic
+captured on the sending host.
+
+The tier 1 test substrate. `fragcap-capture` gains a classic pcap reader and a
+`ReplaySource`; `fragcap-attr` gains a `ScriptedAttributor` driven by a declared
+script; and `fragcap/tests/pipeline.rs` puts them together with the S03 parser
+over a committed corpus of eight fixtures.
+
+That last file is the point of the slice. Specification section 25.1 has
+claimed since S01 that the whole pipeline runs with no capture driver, no
+elevated privilege, and no game. It now does, and there is a test that proves
+it rather than an architecture that permits it.
+
+No new dependency. A pcap file is a twenty-four byte header and a run of
+sixteen-byte records, and the script format is deliberately trivial so that S05
+can choose a parser for the profile schema on the profile's merits rather than
+inheriting one picked for a test fixture.
+
+Reading is deterministic and says what it skipped. Byte order and timestamp
+resolution come from the file's magic number in all four combinations, never
+from the host. Four named counters cover the ways a record is not what the file
+described: two mean the bytes are absent and stop reading, and two mean the file
+contradicts itself about bytes that are present, where the record is delivered
+anyway with both its lengths exactly as recorded. Repairing that contradiction
+would hide a defect in whatever wrote the file.
+
+The scripted attributor makes port reuse testable, which nothing in the project
+could express before: one local endpoint, two processes, two windows of time.
+It matches through the same key derivation and wildcard bind rule the real
+attributor will use, so it cannot express an attribution the socket table could
+never supply, and a test written against it is one S10 has to satisfy. The
+attributor seam is unchanged: the clock is a method on the double, not a new
+parameter on a trait meant to reach 1.0.0 untouched.
+
+The corpus is generated rather than hand-made, and the generator is the readable
+record of what each fixture holds. A drift check runs in the ordinary gate and
+fails if a committed file stops matching it, if a capture has no script, if
+anything exceeds its size ceiling, or if a fixture stops exercising the
+condition section 25.3 states for it. Every address is documentation or
+loopback and every payload byte is filler, which is what turns "contains no
+session token" from a judgment into an assertion.
+
+### Profile schema, parsing, and validation (S05)
+
+`fragcap-profile` gains specification section 15 in full: the schema version 1
+TOML format, the four-step resolution order, and a validation set that reports
+every problem found rather than stopping at the first. `fragcap-core` gains the
+duration grammar three later slices need.
+
+**`Profile::parse`** returns either a validated profile or every diagnostic
+found, and it is the only way to obtain a `Profile`. There is no public
+constructor, no public field, and no `Default`, so section 15.4's requirement
+that validation run before every capture cannot be forgotten by a later caller.
+
+**Every problem in one report.** A profile with four mistakes yields four
+diagnostics from one call. Each carries a code from a closed enumeration, a
+dotted key path such as `stage[1].match.descends_from`, the byte offset the
+parser reported, and the one-based line and column derived from it. The set is
+sorted so an author reads it in the order they read their file, and so two runs
+produce identical output. Two things stop accumulation: a TOML syntax fault
+yields one diagnostic, because a document that did not parse has no tables to
+check, and an unsupported schema version yields one, because every other fault
+is then likely a consequence of reading a later format under this one's rules.
+
+**Validation is the section 15.4 set plus three checks in the same failure
+class.** Structural: schema version support, required field presence, type
+correctness, and closed key sets for all five tables. Semantic: role name
+uniqueness, at most one terminal stage, `descends_from` resolving within the
+profile, regular expression compilation, glob well-formedness, duration parsing,
+and at least one non-service stage. Added: a terminal stage must be a `session`
+stage, the `descends_from` relation must be acyclic, and every role named in
+`capture.roles` must be declared.
+
+**The ambiguous image match check is exact.** For every pair of stages whose
+`exe` patterns can match a common image name, the profile is refused unless both
+stages carry a further predicate. The intersection decision is a reachability
+walk over the two patterns rather than an approximation, because a false
+negative admits the failure the check exists to prevent: a stage bound to the
+wrong process among several sharing an image name produces a capture that exits
+zero, is well formed, and contains no gameplay. One focal title runs three
+processes under one image name and only the last holds sockets.
+
+**Unknown keys are refused rather than ignored.** An author who writes
+`payloads = false` intending `payload = false` is told so, rather than receiving
+a capture containing contents they meant to exclude. The schema version is what
+makes that safe: a profile written for a later fragcap says so and is told so.
+
+**Resolution takes its search path from the caller.** The resolver implements
+section 15.3's order over directories it is given and a bundled set it is given,
+and never asks the operating system where a user's configuration lives. A
+reference used in steps two through four must be a valid identifier and is
+refused before any path is joined to it, so a traversal-shaped reference cannot
+reach outside the search directories. A search directory that is absent is
+skipped; a candidate file that has won its step and cannot be read is an error
+rather than a fall-through, because falling through would silently substitute a
+profile the operator did not choose. A successful resolution reports which of
+the four steps supplied the profile.
+
+**Duration literals** are one unsigned integer and one required unit from `ms`,
+`s`, `m`, `h`. A bare integer, a zero, a fraction, a sign, a compound form such
+as `1h30m`, and an overflowing value are all refused. The grammar lives in
+`fragcap-core` because the profile schema, the command line, and ring mode all
+need the same one.
+
+Nothing here observes a process. A profile describes process topology; this
+crate reads the description. Predicate evaluation against real process events
+arrives with S12, which uses the same regular expression engine that validated
+the patterns.
+
+The pcapng writer. `fragcap-sink` gains `PcapngWriter`, implementing the core
+`Sink` trait over any `std::io::Write`, and an `Annotation` type carrying the
+attribution grammar of specification section 13.3 with an encoder and a decoder
+that round-trip.
+
+This is the first slice that produces a file. Everything before it built the
+vocabulary, the parser, and the substrate to feed them; nothing wrote a byte
+that outlived the process.
+
+The output is ordinary pcapng. An analyzer that has never heard of fragcap
+opens the capture, reads every packet, and displays attribution in its comment
+column with no plugin and no configuration. That is not asserted here: the
+goldens under `fixtures/goldens/` were read with Wireshark 4.6.3, which
+reported the interface, the microsecond timestamp resolution, `fragcap/0.1.0`
+as the capture application, and one `fragcap:pid=4242;proc=game.exe;dir=out;
+attr=live` per packet. The pcapng block structures were verified the same way
+before the plan committed to them, using a hand-built probe file, so the
+implementation started from a table known to be correct rather than one recited
+from a specification.
+
+Four block types, per section 13.2. A Section Header Block declaring the
+application and the annotation profile version, an Interface Description Block
+per declared interface carrying link type, snap length, name, and microsecond
+resolution, an Enhanced Packet Block per packet, and an Interface Statistics
+Block per interface at capture end.
+
+Every loss is in the file. `isb_ifrecv`, `isb_ifdrop`, and `isb_osdrop` carry
+what they are defined to carry, and fragcap's own `buffer_dropped` and
+`sink_dropped`, which pcapng has no field for, travel in a declared comment
+beside them. Writing only the three that fit would have satisfied section 13.2
+as written and violated P-4; putting them in `isb_osdrop` would have reported a
+fragcap loss as an operating system loss, which P-9 forbids. Both counters are
+recoverable from the file alone.
+
+Nothing is inferred and nothing is repaired. A packet that could not be
+attributed is written, marked `attr=none`, and carries no identity keys rather
+than empty ones. A capture whose declared lengths contradict each other is
+written exactly as recorded, because repairing it would hide a defect in
+whatever produced it. A timestamp that predates the Unix epoch is refused with
+a named error rather than clamped or wrapped, since pcapng cannot represent it
+and both workarounds record a time that was not observed. The single lossy
+conversion in the codebase, nanoseconds to the declared microsecond resolution,
+lives here and floors rather than truncating, so it cannot reorder two
+observations.
+
+Output is byte-identical across runs and across architectures. The writer reads
+no clock, no environment, and no host property: byte order is little-endian
+unconditionally, annotation keys appear in a fixed order, percent-encoded
+digits are uppercase, and the Interface Statistics Block timestamp comes from
+the last packet written rather than from the current time. That last one is the
+defect that would have been hardest to see, because the obvious implementation
+passes on the first run and fails on every run after.
+
+A golden per fixture, all eight, generated by a committed generator with a
+drift check in the ordinary gate. A structural validator walks each file the
+way a conforming reader would, by declared block lengths, and calls none of the
+writer's encoding functions, because a writer verified by its own encoder has
+proven that two functions agree rather than that the file is valid.
+
+No new dependency. The workspace stays at one.
+
+The JSON Lines writer of specification section 13.5. `fragcap-sink` gains
+`JsonLinesWriter`, emitting a header object, one object per packet, and a
+trailer object, with a payload-free mode for metadata-only streams.
+
+This is the second output format, and the interesting part is not that it
+exists but that it agrees with the first. Section 13.3's pcapng annotation and
+section 13.5's JSON object answer the same question about the same packet, and
+two independent derivations of "which keys are present" would drift silently,
+because each would be internally consistent. S06 split deriving an annotation
+from rendering it so there would be one derivation; this slice is the first
+consumer of that split, and `crates/fragcap/tests/agreement.rs` checks it over
+every packet of every fixture. The goldens catch a format that changed; only
+that test catches two formats that drifted apart.
+
+Three differences from the pcapng profile, all deliberate and all confined to
+rendering. The interface name appears on every record, because a JSON line is
+self-contained by design and a consumer that split the stream would otherwise
+lose it, where a pcapng file holds the interface in its container. Hex is
+lowercase, following the section 13.5 example, where the annotation
+percent-encodes in uppercase following that encoding's convention. And
+endpoints are named for what is known about them.
+
+That last one is the slice's one real disagreement with the specification.
+Section 13.5's example shows `src` and `dst`, but `FlowKey` normalized endpoint
+position to `local` and `remote` so it would be stable across both directions
+of a conversation, which means wire order is recoverable only in combination
+with the direction. When the direction is undetermined, which is every loopback
+packet, wire order is not merely unavailable but unknown to the whole pipeline,
+and emitting `src` and `dst` anyway would present a coin flip as an
+observation. A record carries `src` and `dst` when direction is known and
+`local` and `remote` when it is not, never both, so the key names themselves
+say which claim is being made.
+
+Timestamps are exact, and the reasoning was measured rather than assumed. A
+float path renders whole-microsecond present-era timestamps correctly, so the
+usual argument for avoiding one does not apply as stated. What does apply is
+rounding: a capture driver reports nanoseconds, the declared resolution is
+microseconds, and this writer floors as the pcapng writer does while dividing
+into an `f64` and printing to six places rounds. For 1754500000.123456789 the
+two disagree by a microsecond, today, on ordinary input, which would have meant
+the two output formats describing one packet differently. The timestamp is
+built by integer arithmetic and never passes through a float.
+
+Every counter is in the trailer, present even at zero, so a consumer who never
+sees the pcapng file can still tell whether the capture is short and where it
+was lost.
+
+No runtime dependency. `serde_json` is added as a dev-dependency and parses
+every line the writer emits, which is a stronger independent check than S06
+could have for pcapng, where the structural validator had to be hand-written.
+The writer itself is hand-rolled because the exact byte shape is the
+deliverable: fixed key order and an exact decimal number both require
+non-default `serde_json` features that change the crate's behavior globally.
+
+### Pipeline, buffering, and drop accounting (S08)
+
+`fragcap-core` gains a `pipeline` module implementing specification sections
+8.6 and 8.6's data flow together with section 12.4's bounded buffer. It is the
+first thing in the project that runs the whole capture path, and the first
+producer of fragcap's own loss counters.
+
+**`Pipeline`** composes a `PacketSource`, a `FlowAttributor`, the S03 header
+parser, and any number of `Sink` values, all as trait objects. One pass over a
+source produces every configured output. Construction validates the
+configuration and starts nothing; `run` consumes the pipeline and blocks until
+the run ends.
+
+**The bounded buffer** holds 65,536 packets by default, evicts the oldest to
+admit the newest, and never waits for a sink to make progress. Section 12.4's
+reason is the one that governs: blocking the acquisition side stalls the kernel
+buffer behind it and converts a visible fragcap drop into a less visible kernel
+drop.
+
+**Drop accounting is real.** `buffer_dropped` advances once per eviction.
+`sink_dropped` advances once per write that did not happen, counted per sink
+rather than per packet. `kernel_dropped` and `interface_dropped` are relayed
+from the backend unaltered. The parser's own counters are collected into the
+run. The `CaptureStats` handed to `Sink::finish` is the run's own final value,
+and the same value the report carries.
+
+The property asserted throughout is conservation rather than reachability: for
+every sink, the packets it received plus the buffer's evictions plus its
+refusals equal the packets the pipeline accepted. That identity holds under
+every thread interleaving, and it is checked in every pipeline test. A discard
+path added later with no counter fails there rather than passing quietly.
+
+**Ending is explicit.** `PipelineReport` carries the statistics, an
+`EndReason` naming source exhaustion, an operator stop, a terminal source
+failure, or every sink having retired, and a list of sink failures. It is
+`#[must_use]` and carries the accounting on the failure path as well as the
+clean one, so there is no way to learn the outcome without also being handed
+the numbers. `into_result` supplies the ordinary `Result` shape for callers
+that want failure to propagate.
+
+**A failed sink is retired, not fatal.** A sink returning an error that
+`SinkError::is_countable` rejects stops receiving packets; every subsequent
+packet advances `sink_dropped` for it, exactly as a refusal would. Other sinks
+keep working, and the run ends only when every sink has retired. Every sink is
+flushed and finished regardless, so its output is terminated and carries the
+final accounting.
+
+**`StopHandle`** ends a run cooperatively. It is observed between packets, so
+stop latency is bounded by the configured read timeout rather than being
+unbounded or hidden.
+
+The whole fixture corpus now runs end to end through the real pipeline with
+both writers attached, reproducing the committed goldens. `cargo xtask ci`
+covers it.
+
+No runtime dependency was added. The workspace still has exactly one.
+
+- **Live packet capture.** `fragcap-capture` gains a `PacketSource` backed by
+  the platform capture driver, behind a `live` feature that is off by default.
+  Specification sections 12.1 and 12.2. The feature being off is what keeps
+  `cargo xtask ci` passing on a machine with neither npcap nor its software
+  development kit installed.
+- **Interface enumeration and selection.** `fragcap-core::interface` carries the
+  whole section 12.1 precedence as a pure decision over an inventory value:
+  explicitly named interfaces first, otherwise the default-route interface plus
+  the loopback adapter when requested, otherwise every interface that is up,
+  addressed, and not virtual. It opens nothing and touches no platform surface,
+  so the entire precedence is tested on any machine with no capture driver.
+- **Every interface is accounted for.** A selection reports each interface it
+  passed over with a named reason, and a test asserts that the chosen and the
+  passed-over together account for the whole inventory. Choosing the wrong
+  interface produces a run that exits zero and captures nothing, which is
+  invisible unless the decision is reported.
+- **Multi-interface capture.** The pipeline takes several sources and runs each
+  on its own thread, all feeding the single bounded buffer of section 12.4.
+  Every packet carries the identity of the interface it arrived on, from
+  acquisition through to both writers.
+- **Both writers record more than one interface.** The pcapng writer declares
+  each with its own link type and references the correct one from every packet
+  block; the JSON Lines writer names the interface on every record. A
+  single-interface capture produces byte-identical output to before, checked
+  against the committed goldens.
+- **Per-interface loss accounting.** `CaptureStats` holds one backend report per
+  interface, and the capture-wide view is a computed sum. A kernel drop now
+  names the driver buffer that is undersized rather than reporting that one of
+  several is.
+- **Interface retirement.** A capture thread that fails retires its interface
+  and the run continues on the others, ending when the last has retired. The
+  report names the interface and the reason. It advances no drop counter,
+  because nothing was observed and then discarded.
+- **Capture driver detection.** Presence and the loopback installation option
+  are detected at runtime and reported with the official download location when
+  absent. fragcap never downloads, installs, or invokes an installer.
+- **A mechanical P-1 check.** `cargo xtask lint` fails if any fragcap source
+  names a transmit call, and if any capture driver binary or software
+  development kit file reaches the repository.
+
+- **fragcap attributes flows to processes.** `fragcap-attr` gains
+  `SocketTableAttributor`, the production `FlowAttributor` of specification
+  section 11: a socket table snapshot joined against captured flows by 5-tuple,
+  resolving each to the process that owns it. Every attributor before this one
+  answered from a text file a test wrote.
+- **The join is total and documented.** Competing table entries are ranked by
+  exactness, then by the latest socket creation instant at or before the
+  packet, then by a declared tiebreak that exists only to make the order total.
+  A test resolves the same flow against the same entries in every rotation and
+  reversal and asserts one answer, so an implementation that iterates the
+  platform's rows and takes the first hit fails rather than producing results
+  that change between runs over identical traffic.
+- **A socket created after a packet cannot own it.** Both socket tables are read
+  by owning module, which carries a creation instant, and an entry that
+  postdates the packet is not a candidate. This is what tells the previous owner
+  of a reused port from the current one.
+- **Dual-stack sockets resolve.** An IPv6 wildcard bind matches IPv4 traffic on
+  the same port, for UDP, which is the protocol that takes the wildcard
+  allowance at all. `AttributionKey::local_matches_bind` has named this slice as
+  the owner of that case since S02.
+- **The tail of a connection stays attributed.** An endpoint that leaves the
+  table remains resolvable for a grace period defaulting to thirty seconds,
+  measured from the instant it was last observed present. Answers resolved that
+  way carry `Fidelity::Retained`, so a consumer can see which attributions are
+  inference and which are observation. A live entry always beats a retained one.
+- **The refresh cadence, with both triggers.** A one second interval, an
+  immediate refresh on a process start matching a profile stage, and a refresh
+  on an unattributed packet from a previously unseen endpoint, rate limited to
+  one per two hundred milliseconds. The whole of it is driven by an injected
+  clock, so it is exercised in microseconds and no test in the slice sleeps.
+- **Attribution lookup no longer takes a lock.** The attributor publishes an
+  immutable index atomically and every capture thread reads it without blocking,
+  which is specification section 11.6. S08 held the attributor behind a mutex
+  taken once per packet and deferred the mechanism to this slice by name.
+- **The Windows socket table backend.** `IpHelperTable` reads the extended TCP
+  and UDP tables over both address families, and `ToolhelpNamer` resolves image
+  names by query-only enumeration. Both are behind a `socket-table` feature that
+  is off by default, so `cargo xtask ci` still passes on any machine.
+- **The backend has actually run.** Unlike the live capture source added in S09,
+  which has linked but never executed, this one was driven end to end on a
+  Windows machine: a real socket opened, found in the machine's real socket
+  table, attributed to the process that opened it, and then closed and observed
+  to survive as a retained attribution. It needs no capture driver and no
+  elevation, which is why it could be.
+- **`cargo xtask lint` refuses process handles.** Naming a process is the
+  classic reason to open one, and this slice opens none. The linter now fails on
+  any fragcap source naming `OpenProcess`, `ReadProcessMemory`, or
+  `WriteProcessMemory`, and its matching became case-insensitive so a Pascal
+  case platform call cannot slip past a lowercase list.
+- **`cargo xtask neutral` covers `fragcap-attr`.** For the same reason S09
+  extended it to `fragcap-capture`: the crate now has a platform backend, and
+  nothing otherwise checked that it still builds where that backend does not
+  exist.
+
+- **Process observation.** `fragcap-attr` gains a `ProcessWatcher` backed by an
+  ETW kernel session, behind an `etw` feature that is off by default.
+  Specification section 10.1. The feature being off is what keeps
+  `cargo xtask ci` passing on a machine with no elevation and no Windows.
+- **The process tree.** `fragcap-core::process::tree` carries the whole of
+  specification section 10.2 as a fold over process events: synthetic
+  session-local identifiers that are never reused, resolution by the pair of
+  operating system identifier and timestamp, exited nodes retained for the
+  session, and ancestry answerable after the entire parent chain has gone. It
+  opens nothing and names no platform type, so all of section 10.2 is tested at
+  tier 1 on any machine.
+- **The chains reconnaissance observed, as tests.** Both focal titles' launcher
+  chains from Appendix D replay through a scripted watcher.
+  `crates/fragcap-attr/tests/chains.rs` asserts the ESO chain's five levels and,
+  for The Division 2, that the three processes sharing the image name
+  `TheDivision2.exe` are three distinct nodes told apart by ancestry. This is
+  the case specification section 15.4 makes a validation error and section
+  10.3's `descends_from` exists for, and it now has a test rather than a
+  paragraph.
+- **A scripted process watcher.** `fragcap-attr::proc_script` publishes a
+  declared sequence of process events, mirroring the scripted attributor S04
+  built for the same reason. Not behind any feature, so it works everywhere.
+  Both watchers feed one `ProcessTree::apply`, so a test that passes against a
+  script states something the ETW watcher must also satisfy.
+- **Ancestry provenance.** Every node records whether its parent was observed at
+  creation, read from the startup snapshot, or unresolved. Specification section
+  5.3 says the first is unambiguous and the second may name an unrelated
+  process; carrying the difference is what stops a consumer treating a guess as
+  a measurement.
+- **A command line is either observed or declared unavailable.** Never an empty
+  string standing in for either. A process the startup snapshot finds cannot
+  yield one without a memory-read right constitution P-1 forbids, so its absence
+  is recorded as an absence.
+- **Loss that a packet counter cannot express.** A `WatcherReport` carries the
+  events and buffers the kernel itself reported dropping, separately from
+  `CaptureStats`, and a tree built while anything was lost reports itself
+  incomplete. A lost start event removes a node and orphans everything beneath
+  it, which a packet's loss never does.
+- **The P-1 claim is mechanical.** `cargo xtask lint` now fails if any fragcap
+  source names `PROCESS_VM_READ`, `PROCESS_VM_WRITE`, `PROCESS_VM_OPERATION`, or
+  `PROCESS_ALL_ACCESS`, alongside the transmit-call check S09 added. The one
+  handle this slice opens asks for `PROCESS_QUERY_LIMITED_INFORMATION` and names
+  it literally at the call site.
+- **`cargo xtask neutral` builds `fragcap-attr`.** It already built
+  `fragcap-core` and, since S09, `fragcap-capture`. The claim that
+  `fragcap-attr` builds for a target with no process telemetry backend was
+  equally unchecked until now.
+
+- **Stage matching.** `fragcap-profile::matching` evaluates a profile's stage
+  predicates against an observed process tree and binds each process to the
+  first stage, in declaration order, all of whose predicates hold. Specification
+  section 10.3. The five predicates behave as the section defines: `exe` a
+  case-insensitive file-name glob, `path_contains` and `path_regex` over the
+  full image path, `cmdline_contains` which never matches a command line that was
+  not observed, and `descends_from` resolved over the synthetic process tree
+  rather than the operating system parent chain. It opens nothing and names no
+  platform type, so section 10.3 is tested at tier 1 against a scripted event
+  stream.
+- **A stage binding is recorded on the node.** `fragcap-core` gains
+  `ProcessTree::bind_stage`, which writes the stage field slice S11 reserved. A
+  node binds to at most one stage. The decision of which stage a node binds to
+  stays in `fragcap-profile`; only the recording is in core, which keeps the
+  profile schema out of `fragcap-core`.
+- **The capture session lifecycle.** The `fragcap` facade gains a `session`
+  module carrying the five-state machine of specification section 10.5: it arms
+  before any target exists, discards and counts packets while watching, retains
+  on the first stage match with nothing lost at the boundary because the handle
+  is already open, and drains to a valid capture on any stop condition.
+- **Every stop condition, and one shutdown.** Specification section 10.6's six
+  conditions (the duration bound, the volume bound, a terminal-stage exit, all
+  matched processes having exited, an operator interrupt, and a sink error) each
+  end capture through the same drain, and an acquisition timeout completes a
+  session that never acquired a target.
+- **Packets discarded before acquisition are counted.** A
+  `SessionStats::watching_discarded` counter records every packet dropped while
+  watching, and the session's conservation identity, that observed equals
+  retained plus watching-discards, is asserted in the tests. Constitution P-4.
+
+- **Kernel filter narrowing.** `fragcap-core::filter` gains
+  `FilterProgram::narrowed`, which compiles a set of endpoints into a libpcap
+  expression admitting only those endpoints, across IPv4 and IPv6. Specification
+  section 12.2, phase two. It is a pure function over core types, so the whole
+  strategy is tested at tier 1 with no capture driver.
+- **The maintenance policy.** `FilterManager` runs specification section 12.2's
+  phase three: it debounces recompilation by two seconds and rate limits
+  reinstallation to one per five seconds per handle, coalescing the endpoint churn
+  of connection establishment. It is a pure decision over a wanted endpoint set
+  and a supplied instant, tested against synthetic instants.
+- **The control thread.** `Pipeline::run` now spawns the section 8.6 control
+  thread's filter manager: it reads the attribution map's `active_endpoints`
+  (slice S10), narrows the filter, and hands each capture thread its current
+  program over a private channel, which the capture thread installs on its own
+  handle. `Pipeline::set_filter_config` overrides the section 12.2 timings for
+  tests without changing any existing caller.
+- **Filter gaps are counted and surfaced.** `CaptureStats::filter_gaps` is
+  populated per specification section 12.3: an endpoint briefly excluded by a
+  stale narrowed filter is counted as a gap occurrence, distinct from the three
+  drop counters and outside the pipeline conservation identity, because it counts
+  no packet fragcap observed and discarded.
+- **Filter-lifecycle glossary entries.** `docs/glossary.md` gains `Narrowing`,
+  `Maintenance`, `Filter program`, `Filter manager`, and `Filter gap`, the last
+  resolving a dangling reference the `Bootstrap filter` entry already carried
+  (constitution P-6).
+
+- **The command surface.** `fragcap` now exposes seven commands. `run` captures
+  a game with a profile, `tap` captures a named running process ad hoc, `doctor`
+  reports environment readiness, and `profile` validates, lists, and shows
+  profiles. `replay`, `steam`, and `extcap` are registered as stubs that name the
+  slice delivering them and exit 2, so the help foreshadows the whole tool.
+  Specification section 17, the last of the capture-to-file CLI slices (S01
+  through S14).
+- **The CLI is a library plus a thin binary.** `fragcap_cli::run` is the testable
+  entry, so the whole surface, the exit contract, the structured event stream,
+  and the completion summary included, is driven from tests without spawning a
+  process. The binary is a shim that exits with its code.
+- **`run` captures end to end offline.** It resolves a profile, overlays the
+  command-line options onto the profile's `[capture]` defaults, arms before the
+  target exists, waits for it, captures while it runs, and stops on the first of a
+  duration, packet, or byte bound, a terminal stage exit, all targets exiting, or
+  an operator interrupt. Each attributed packet carries the role and stage of the
+  process that owned its flow. Interrupt handling through `ctrlc` makes an
+  operator interrupt a clean exit-0 stop rather than a killed process.
+- **`doctor` classifies readiness without ever installing.** A pure `Inputs` to
+  `Report` classifier over a thin, read-only probe reports platform, capture
+  driver, tracing, interfaces, integration, and profiles, naming the two
+  non-default npcap options (loopback capture support and WinPcap API
+  compatibility mode) individually with their exact remediations, and exits 1
+  only when a blocking problem exists.
+- **`profile validate` reports every diagnostic in one pass** and exits 2 on an
+  invalid profile; `list` reports the bundled and per-directory counts; `show`
+  reports the resolved profile and its source, exiting 1 on a well-formed
+  reference that resolves to nothing.
+- **The size-literal grammar.** `fragcap-core::size` parses an integer plus a
+  required binary unit (`b`, `kb`, `mb`, `gb`), rejecting zero and a missing or
+  unknown unit, mirroring the existing duration grammar so `--max-bytes` and the
+  ring window (slice S16) share one grammar with a profile.
+- **The role-stamping bridge.** `fragcap::session::RoleStampingAttributor`, a
+  `FlowAttributor` decorator holding a published `pid` to role and stage snapshot,
+  populates the role and stage fields `Attribution` already carries, joining the
+  session's profile knowledge to the packet path without either the pipeline or
+  the attribution crate learning about profiles.
+- **Facade re-exports** of `ScriptedWatcher`, `ProcessScript`, `EtwWatcher`
+  (behind `etw`), and the sink crate's JSON string escaper, and the promotion of
+  `write_json_string` to `pub`, so the command line reaches the offline substrate
+  and hand-rolls its event JSON over the one escaper the sinks use.
+- **Two new dependencies**, both on `fragcap-cli` only: `clap` (derive) for the
+  argument grammar and `ctrlc` for the interrupt hook.
+- **CLI glossary entries.** `docs/glossary.md` gains `Readiness check`,
+  `Lifecycle event`, `Completion summary`, and `Effective configuration`
+  (constitution P-6).
+
+- **The sink model gained its transports: file rotation, a Windows named pipe, a
+  Unix domain socket, and TCP** (specification sections 14.1 to 14.4, roadmap
+  slice S15). Format stays orthogonal to transport: a `SinkFactory` builds a
+  fresh format encoder (pcapng or JSON Lines) over any connection, so any format
+  writes to any transport.
+- **A file sink rotates into numbered segments** by size or duration, closing
+  each at a clean pcapng section boundary so every segment opens on its own in an
+  unmodified analyzer. A capture with no rotation policy is a single segment,
+  byte identical to before.
+- **A streaming sink serves any number of live consumers** over the named pipe
+  or TCP. Each consumer receives its own complete, independently valid stream,
+  with its own header preamble replayed on connect, so a Wireshark client that
+  opens `\\.\pipe\fragcap` mid-capture sees a valid capture from the connection
+  point onward.
+- **Per-consumer backpressure isolates a slow or dead reader.** Each consumer has
+  an independent bounded queue; a full queue drops packets on that connection
+  only, counted per consumer and surfaced, and never stalls the capture or any
+  other sink. A consumer whose queue stays full past a timeout is disconnected
+  and the disconnection reported. The file sink is unaffected by a stalled
+  network consumer, which is what makes concurrent file-and-stream capture safe.
+- **The command surface wires every `--sink` scheme to its transport** (`file:`,
+  `pcapng:`, `jsonl:`, `pipe:`, `unix:`, `tcp://`), parses per-sink options
+  (`format=`, `payload=`, `rotate-size=`, `rotate-duration=`, `queue=`,
+  `timeout=`), and enables `--mode stream`. A streaming-only run with no capture
+  file is valid. A sink whose format cannot be resolved, whose transport is
+  unavailable on the current platform, or whose options mismatch its transport is
+  a configuration error naming the cause, before capture starts.
+
+- **Ring mode: a rolling in-memory window dumped on trigger** (specification
+  section 7.2, FR-8, roadmap slice S16). `fragcap run --mode ring --ring <window>
+  --out <file>` retains the most recently captured packets, bounded by a duration
+  or a byte size, discarding the oldest as new ones arrive, and writes the
+  retained window to the output file when the capture ends. The worked headline
+  is a rolling ten-minute window dumped on interrupt.
+- **The dump fires on every stop condition, by one path.** Ring mode reuses the
+  six session stop conditions already in place (operator interrupt, duration
+  bound, terminal-stage exit, all-non-service-processes-exited, source
+  exhaustion, unrecoverable sink error) through the sink's finish seam; it adds no
+  stop condition of its own. The dumped file is a single, independently valid
+  pcapng an unmodified analyzer opens, byte-comparable to a plain file capture
+  when the window is larger than the whole input.
+- **A size ring window is measured by captured length**, the same quantity the
+  `--max-bytes` bound sums, so an operator reasons about one notion of capture
+  size across `--ring 64mb` and `--max-bytes 64mb`. A window smaller than one
+  packet still retains that one packet, so a capture that saw traffic never dumps
+  an empty file.
+- **The command surface wires `--mode ring` and `--ring`**, replacing the earlier
+  stub refusals. Ring mode requires both `--out` and `--ring`; a volume stop bound
+  (`--max-bytes`, `--max-packets`) is refused in ring mode because a rolling window
+  does not stop on accumulated volume; and a `--ring` window given outside ring
+  mode is refused rather than silently ignored. Each is a configuration error
+  naming the cause, before capture starts. `--duration` remains valid in ring mode.
+- **A ring eviction is the sink's own counted accounting, never a capture loss.**
+  The ring sink accepts every packet the pipeline delivers, so the pipeline
+  conservation identity (received + buffer_dropped + refusals = captured) is
+  preserved; the evicted count is reported by the sink, the way a streaming sink's
+  per-consumer drops are (constitution P-4, P-9).
+
+- **Steam integration: library discovery, profile scaffolding, and managed
+  launch** (specification section 16, roadmap slice S17). The `fragcap-steam`
+  crate, previously a skeleton, now reads Steam's local installation metadata to
+  enumerate installed titles, scaffolds a profile from one, and starts a title
+  under capture. It contains no capture and no attribution logic, and
+  `fragcap-core` gains no notion of Steam.
+- **`fragcap steam profile <app_id>` scaffolds a validating profile.** It locates
+  the Steam installation through its Windows registry entry, resolves the app_id
+  to an installed title, scans the install directory for executable images,
+  proposes launcher-suggestive images as launcher stages and the largest
+  remaining image as the client, and prints a profile skeleton to standard
+  output. The skeleton is built as TOML and parsed back through the section 15.4
+  validator before it is emitted, so a scaffold that would fail validation is a
+  bug caught in-process rather than shipped. A header comment states the
+  classification is heuristic and must be verified against an observed session.
+  This replaces the earlier `steam` stub.
+- **`fragcap run --profile <ref> --launch` starts a title without the acquisition
+  race.** The title is started through Steam's protocol handler
+  (`steam://run/<app_id>`) only after the session is watching and the sinks are
+  open, so every process in the launch chain, including a launcher shorter-lived
+  than any poll interval, produces a start event fragcap observes. Managed launch
+  requires `game.platform` and `game.app_id`; absent either, or on a non-Windows
+  build, `--launch` is refused as a named configuration error before capture
+  starts. This replaces the earlier "not yet supported" refusal.
+- **A hand-rolled VDF parser** for the Valve key-value text format covers the
+  subset `libraryfolders.vdf` and `appmanifest_*.acf` use. A malformed manifest
+  is reported and skipped rather than aborting discovery of the well-formed ones,
+  and a duplicate app_id across libraries keeps the first and reports the
+  collision.
+- **The integration opens no process handle.** Section 16.5 (environment
+  inheritance), which would require a handle carrying memory-read rights, is
+  deferred; it is a corroborating signal only, and section 10 ancestry already
+  attributes reliably. The `OpenProcess`/`ReadProcessMemory`/`WriteProcessMemory`
+  lint stays green.
+
+- **Extcap analyzer integration: fragcap is a capture source in Wireshark**
+  (specification section 14.5, roadmap slice S18). `fragcap extcap` implements the
+  four-invocation extcap contract: `--extcap-interfaces` lists the one `fragcap`
+  interface, `--extcap-dlts` its link type, `--extcap-config` the configurable
+  options, and `--capture --fifo <path>` streams pcapng to the analyzer's FIFO.
+  The analyzer renders a native configuration dialog from the declaration, so a
+  full graphical interface exists with no graphical code in fragcap.
+- **The configurable options are profile, roles, direction, and loopback**, and
+  they select the capture through the same overlay the `run` command uses: the
+  option call names are the `run` flag names, so the analyzer's dialog and the
+  command line select capture identically. A profile that fails to validate is a
+  configuration error reported before any capture starts, not a started-but-empty
+  stream.
+- **The extcap stream is the same bytes a file capture produces.** The FIFO sink
+  reuses the pcapng writer through the existing sink factory, so an unmodified
+  analyzer reads a process-attributed live capture; a single-interface extcap
+  stream is byte-comparable to a plain `--out` file capture of the same input, and
+  the pipeline conservation identity (received + buffer_dropped + refusals =
+  captured) holds exactly as for a file capture.
+- **`fragcap doctor` reports the analyzer extcap integration.** It names the
+  analyzer's extcap directory and reports whether a fragcap binary is installed
+  there, in both the installed and not-installed states. The probe reads the
+  directory read-only and installs, downloads, and copies nothing; installation
+  is an operator action (copy the binary into the reported directory).
+- **A `fifo:` sink scheme** streams pcapng to a FIFO or named-pipe path, opened
+  for writing (a named-pipe client on Windows, an opened FIFO elsewhere). It is
+  the transport the extcap capture uses and is available to `--sink` as well.
+
+- **Shell wrappers: `Invoke-FragCap.ps1` and `fragcap.sh`** (specification section
+  18, roadmap slice S18). Two thin wrappers handle the environment concerns that
+  belong outside the binary: the PowerShell wrapper verifies elevation and
+  relaunches elevated when needed, detects the capture driver and reports the
+  download location when it is absent (installing nothing), filters virtual
+  adapters from the interface list, and expands an output-path template; the Bash
+  wrapper bridges the WSL2 subsystem boundary, invoking the native Windows binary
+  through interop and translating paths in both directions, and reports capture
+  unavailable and exits 1 on a Linux host with no reachable binary.
+- **The wrappers are thin and honest** (constitution P-7). They contain no capture
+  logic and never parse fragcap's human-readable output; they react to the
+  section 17.5 structured event stream, which they add (`--json`) to every
+  invocation, and pass unrecognized options through to fragcap unchanged. A
+  `--dry-run` (`-DryRun`) seam prints the assembled invocation and exits without
+  capturing, which previews the expanded template and the pass-through.
+- **Both wrappers are held to their ShruggieTech house standards in CI.** A new
+  `cargo xtask wrappers` gate runs the vendored PowerShell compliance checker on
+  `Invoke-FragCap.ps1`, an authored Bash structural checker on `fragcap.sh`, a
+  syntax check of each, and each script's help and dry-run, returning the 0/1/2
+  contract. It is part of `cargo xtask ci` and the `ci.yml` workflow, so a wrapper
+  that drifts from its standard fails the build. This is the section 18.4 gate,
+  previously unmet: no shell-lint ran before.
+
+- **The documentation website exists** (specification sections 22 and 23,
+  roadmap slice S18). It is a Fumadocs static export served from the domain root
+  at fragcap.com: a landing page held to section 23.1, a first-run getting
+  started guide, guides for writing a profile and choosing a capture mode, a
+  reference set (the command line, the profile schema, the output formats), an
+  architecture overview, a contributing page, and the glossary rendered as
+  browsable pages. Unmodified analyzers were always the compatibility target for
+  the output; this is the same principle for the documentation, which reads as
+  ordinary static HTML with no server behind it.
+- **The single-source glossary renders into the site** (specification section
+  22.4). The authored glossary lives once, under `docs/glossary/`; a prebuild
+  step renders each category page into the site's content tree, turning the
+  kramdown "why it matters here" note into a distinct callout and rewriting each
+  relative cross-link into a site route, so a link that resolves on GitHub also
+  resolves as a page. The rendered tree is generated at build time and never
+  committed, so the two copies cannot drift.
+- **Static search over the whole documentation set** (specification section 22,
+  FR-009). The search index is exported as a static file the browser downloads
+  and searches with no server, indexed by heading so each glossary term is an
+  independent result. A query splits on whitespace, underscores, and hyphens, so
+  `path_regex` and `5-tuple` find their terms.
+- **The brand identity is applied** (specification section 23.3): the vendored
+  Space Grotesk, Geist, and Geist Mono faces are served locally with their OFL
+  license texts, the Signal Cyan accent sits on a dark-first neutral ground,
+  favicons and a web manifest and a social preview are wired into the page head,
+  and the footer carries the "A ShruggieTech project" endorsement.
+- **`cargo xtask docs build` produces the real export.** The sub-slice S18c-1
+  command reported the site application absent and exited 2; the application now
+  exists, so `docs build` builds the static export and asserts it carries the
+  `.nojekyll` marker and `CNAME`, and `docs` starts the site's dev server.
+
+- **The glossary is split into per-category pages with a generated index**
+  (specification section 22.4, roadmap slice S18). The interim `docs/glossary.md`
+  is now one authored page per section-4.4 category under `docs/glossary/` (eight
+  pages, 125 terms), and `docs/glossary/index.md` is a generated alphabetical
+  index of every term linking to its definition on the owning category page.
+- **The documentation linter `scripts/lint-docs.sh` enforces P-6 mechanically**
+  (specification sections 4.6 and 22.5). It has three modes: `check` validates
+  entry completeness (every entry carries a definition body), cross-link
+  resolution (every internal glossary link resolves to an existing term anchor),
+  and index reproducibility (the committed index matches a fresh generation);
+  `fix` regenerates the index in place; `link` verifies external reference URLs
+  respond (for the weekly schedule). It is built to the ShruggieTech Bash
+  standard and passes the repository's Bash compliance checker. Before this,
+  constitution P-6 was satisfiable but kept by hand; it is now enforced on every
+  push.
+- **`cargo xtask docs` is a real command** (specification section 22.6),
+  replacing the stub: `docs check` runs the linter, `docs build` produces the
+  static export and asserts it carries the `.nojekyll` marker and `CNAME`, and
+  `docs` (no argument) starts the site's dev server. Each returns the 0/1/2 exit
+  contract. The documentation check is part of `cargo xtask ci` and a step in the
+  `ci.yml` workflow. The `docs build` and `docs` subcommands report the site
+  application absent and exit 2 until it lands with sub-slice S18c-2.
+- **Specification section 4.4 gains an eighth glossary category**, "Command Line
+  and Diagnostics", legitimizing the eight CLI and diagnostics terms the glossary
+  had already accumulated. The generated index and the per-category split follow
+  from it.
+
+- **The approved fragcap brand identity (version 1.0.0) is vendored in `brand/`.**
+  The brand session resolved the two open questions from specification section 29
+  that gated S18: Q-7 (the monospace face is Geist Mono) and Q-8 (fragcap is an
+  independent ShruggieTech sub-brand carrying an "A ShruggieTech project"
+  endorsement rather than a combined parent-product logo). The directory holds the
+  full brand system (`brand/README.md`), the logo lockups in SVG and PNG
+  (`brand/logos/`), favicons, the fonts with their OFL licenses (`brand/fonts/`),
+  design tokens as CSS and JSON (`brand/tokens/`), a type and hex-readability
+  specimen (`brand/specimens/`), and the printable guide. `docs/brand/README.md`
+  is updated from a placeholder to the resolved record and keeps the
+  repository-specific notes the kit does not carry: the security-posture framing
+  that governs acceptance and the `fragcap.com` GitHub Pages deployment target for
+  S18. With Q-7 and Q-8 closed, S18 (the documentation site) is unblocked.
+
+Every publishable crate now carries its own `LICENSE`, `NOTICE`, and
+`README.md`, along with the homepage, keyword, and category metadata a registry
+listing needs. A crate fetched from crates.io arrives with its license text
+rather than a bare SPDX identifier, and its listing says plainly that 0.1.0 is
+a skeleton with no functionality.
+
+`docs/glossary.md`, seeded with 22 entries covering the vocabulary already in
+use across the project. Constitution principle P-6 requires a glossary entry in
+the same change that introduces a term, and until now the glossary was
+scheduled to arrive with the documentation site in S18, leaving seventeen
+slices with nowhere to write. Slice S18 splits this into the per-category pages
+of specification section 22.4. The documentation linter that enforces entry
+completeness mechanically still arrives with S18, so P-6 is satisfiable now but
+not yet enforced.
+
+`cargo xtask publish` publishes the workspace to crates.io in dependency
+order, asserts that order against the dependency graph before uploading
+anything, and skips a crate whose version is already on the registry so an
+interrupted release can be resumed by rerunning it. It prints the plan and
+changes nothing unless `--execute` is passed.
+
+`cargo xtask notes <version>` prints that version's release notes from
+`CHANGELOG.md`, falling back to the `Unreleased` section.
+
+A tagged release now builds a checksummed Windows archive carrying the binary,
+the license, and the notice, and creates a GitHub release with notes derived
+from the changelog. `release.toml` configures the version bump that precedes
+all of it.
+
+- **A single release-preparation command, `scripts/cut-release.sh` and its
+  PowerShell twin `scripts/New-Release.ps1`.** It prepares a `release/X.Y.Z`
+  branch in one step: it bumps the workspace version through `cargo release`,
+  assembles `CHANGELOG.md` from the `changelog.d/` fragments, corrects the two
+  embedded-version assertions and the golden corpus that the bump moves, and
+  runs the full check set. It performs no tag, push, or publish, so the two
+  authorizations the constitution requires (pushing the tag, approving the
+  crates-io environment) remain manual. A `--dry-run` previews the plan and the
+  assembled changelog without writing anything. Both scripts are held to the
+  ShruggieTech shell standards by `cargo xtask wrappers`.
+- **`cargo xtask changelog`, which folds the `changelog.d/` fragments into
+  `CHANGELOG.md`.** `--check` prints the assembled body and changes nothing;
+  `--release <version> <date>` rewrites the changelog, moving the assembled body
+  into a dated version section, resetting `[Unreleased]`, and removing the
+  consumed fragments. The section order is canonical, existing `[Unreleased]`
+  content is preserved, and an unknown section name fails loudly rather than
+  dropping the entry.
+
+The `shruggie-graph-memory` skill is vendored under `.agents/skills/`, with
+provenance and an integrity hash in `skills-lock.json`. It captures durable
+knowledge from a working session into a ShruggieGraph memory and recalls it in
+later ones, across agents.
+
+- **The legal disclaimer is published on the site** (issue #39). A `/disclaimer`
+  page carries the vetted "## Disclaimer" section of the root `README.md`, and a
+  site-wide footer links to it from every page. The site copy is generated from
+  the README at build time and never committed, the same single-source discipline
+  the glossary uses, so the two cannot drift.
+- **The site carries its brand identity in the chrome** (issue #41,
+  specification section 23.3). The navigation title and the landing masthead use
+  the vendored fragcap wordmark and mark rather than plain text: the white
+  wordmark on the dark ground and the cyan wordmark on light surfaces, swapped by
+  theme with no flash, and the marks are used as vendored without recoloring.
+- **The "A ShruggieTech project" endorsement links to the parent site** (issue
+  #40). In the footer the endorsement now links to `shruggie.tech` in a new tab,
+  while staying subordinate: Geist Mono, uppercase, low emphasis, no combined
+  parent-product logo.
+
+`cargo xtask license` checks that every publishable crate carries the license
+text a published package needs, comparing each copy against the repository root
+original byte for byte. It runs as part of `cargo xtask ci`, so a copy that
+drifts fails the build rather than reaching a published version that can be
+yanked but never corrected.
+
+### Changed
+
+The agent context file records the reconnaissance gate as closed, names the
+remote, and states which continuous integration jobs have actually completed.
+It previously told an agent that questions Q-1 through Q-6 were open and that
+the repository had no remote, both of which would have halted work that is in
+fact unblocked.
+
+Withdraws the capture-time redaction rules introduced in specification
+0.1.1-draft. Process command lines are recorded verbatim again, as
+originally specified. Scope remains the operator's control and
+preparation for publication becomes an explicit downstream operation on
+a copy. Adds constitution principle P-9, The Instrument Does Not Lie
+(constitution 1.1.0): what fragcap reports is what fragcap observed, and
+no capture path alters an observation to produce a safer result.
+
+Specification revised to 0.1.1-draft with the reconnaissance findings for
+both focal titles. Assumptions A-1 through A-4 are confirmed by
+measurement and A-5 is refuted: the launcher-to-client handoff is a
+command line argument rather than loopback traffic. Command lines are
+consequently treated as credential-bearing and are off by default, never
+entering capture output. Appendix D is populated.
+
+- **`cargo xtask notes` now stops at the `### Decisions` section.** Release notes
+  are derived from `CHANGELOG.md`, and the decisions section records verbose
+  internal rationale for changing pinned artifacts; a single decision fragment
+  runs to kilobytes. Excluding it keeps the release page to the curated
+  Highlights and the user-facing Added, Changed, and Fixed sections, while the
+  full detail, decisions included, stays in `CHANGELOG.md`.
+
+- **The landing page presents the value proposition** (issue #42, specification
+  section 23.1 as amended). It leads with the problem fragcap solves that standard
+  tooling does not: capture below the socket layer has already discarded the
+  packet-to-process association, and for a client started indirectly through a
+  launcher the owning process is not the launcher. It keeps the one worked
+  invocation and the prerequisite honesty ("detects npcap, never installs it"),
+  and adds a small number of concrete capability statements, each a plain fact
+  linking into the documentation that proves it rather than an adjective. It still
+  carries no testimonials, no feature grid, and no call to action.
+
+### Fixed
+
+Found by automated review of pull request 13, before the slice merged. All five
+are in code this slice introduced, so nothing shipped with them; they are
+recorded because the reasoning is worth keeping and because three of them were
+invisible to the tests as written.
+
+- **A retained wildcard bind stopped matching.** Retention was keyed by
+  endpoint and looked up the packet's own local address, while a socket bound
+  to `0.0.0.0:30000` was retained under the wildcard. Every flow that resolved
+  through the section 8.4 wildcard allowance while live therefore became
+  unattributable the instant its socket closed, which is the whole class of UDP
+  game sockets and the tail of every one of their flows. Retention now resolves
+  through the same matcher as the live path.
+- **Retention kept one socket per local endpoint.** Several sockets can occupy
+  one: a server holds a row per client on a single port, and a reused port is
+  two sockets in sequence. The map overwrote, so only whichever row the platform
+  reported last survived, the others' tails were lost, and the creation-time
+  ordering of FR-008a did not reach retention at all. Retention is now keyed by
+  socket identity rather than by endpoint.
+- **Retained attributions lost their image name, or gained the wrong one.**
+  Every refresh re-resolved every retained process identifier. A process that
+  had exited was no longer in an enumeration, so a name once known was dropped;
+  worse, an identifier the platform had reused resolved to a different
+  process, attaching its name to a connection it never opened. That is a
+  confidently wrong report of the kind constitution P-9 exists to prevent. A
+  retained record now carries the name it was captured with and is never
+  re-resolved.
+- **A refresh could erase a request made against the index it had just
+  published.** The index was published before the schedule was marked
+  refreshed, leaving a window in which a capture thread could read the new
+  index, find an endpoint it still did not carry, and record a request that the
+  mark then cleared. Because recording it also consumed the rate-limit window,
+  nothing could re-arm for two hundred milliseconds and a short-lived flow
+  would stay unattributed until the next periodic refresh. The order is
+  reversed: an extra table read is cheap, a missed one loses attribution.
+- **Two capture threads could both claim one rate-limit window.** The trigger
+  loaded and then stored, so two callers could pass the same check before either
+  wrote. The window is now claimed with a compare-and-exchange.
+
+The first three share a cause worth naming. Retention was written as a lookup
+of its own rather than as the live path with a different fidelity and an expiry,
+and every one of the divergences followed from that. It is now the same code
+path, which is what the specification meant by a grace period all along.
+
+- **The getting-started guide no longer tells a first-timer to run a profile that
+  does not exist** (issue #43). No profiles ship bundled, so the guide now has the
+  reader obtain one before the first capture, either by scaffolding from an
+  installed Steam title with `fragcap steam profile <APP_ID>` or by authoring one,
+  and states plainly that the `eso` used in the example is illustrative rather
+  than a shipped profile. This is the docs-site counterpart of the same correction
+  made to the README.
+
+Withdraws a security claim from specification 0.1.1-draft. That revision
+asserted that a focal title passes a live session credential on its
+client's command line and described the mechanism as documented. It was
+inference from a parameter name, unsupported by the capture. An entropy
+scan of 3,694 command lines found no credential in either focal title.
+The command line handling rules in section 10.2 stand, rescoped to the
+operator-identifying data that was actually measured.
 
 ### Decisions
 
@@ -49,4 +1124,2245 @@ change pinned artifacts, as required by the constitution.
   rather than mirrored wholesale from a sibling repository. A skill is checked
   against P-1 before it is vendored.
 
+**2026-08-06** The build toolchain is pinned at 1.96.0 while the minimum
+supported version is declared separately as 1.82 and verified by its own check.
+Pinning the build channel at the minimum would hold every later slice's
+dependencies back to a 2024 toolchain in exchange for a claim obtainable more
+cheaply.
+
+**2026-08-06** The repository conventions linter is a task runner subcommand in
+Rust rather than a shell script. The house shell standard is a known missing
+gap, the task runner is specified to require nothing beyond the language
+toolchain, and a Rust check can be unit tested against known-bad input. A
+linter whose matcher never fires is indistinguishable from a clean repository.
+
+**2026-08-06** The facade crate depends on `fragcap-core` directly. The
+dependency diagram in specification section 8.3 omits that edge, but a facade
+that re-exports core types needs core as a direct dependency. The edge violates
+neither stated rule. To be promoted to section 8.3 at the next revision.
+
+**2026-08-06** Platform neutrality is enforced by two checks rather than one.
+Building `fragcap-core` for a target with no capture backend proves it
+compiles portably, but does not fail when a platform crate is added to it,
+because such crates compile to nothing off-platform. The manifest check in
+`cargo xtask deps` asserts the stronger property that data model rule V-4
+requires.
+
+**2026-08-06** The `docs` and `links` workflows are manual-dispatch only until
+slice S18 implements them. Both were written to run automatically and exit
+non-zero, on the reasoning that a skeleton must not report success for work it
+has not done. That reasoning is right and the implementation was wrong: a job
+that fails on every push reports red permanently, which carries no more
+information than reporting green and trains readers to ignore the signal. Not
+reporting at all is the honest option. The `release` workflow keeps its trigger,
+because it is tag-gated and will not fire until a release is deliberately cut.
+
+**2026-08-06** Workflow triggers scoped after the first push produced six runs
+for three workflows. An unqualified `on: push` plus `on: pull_request` fires
+both for any branch with an open pull request, doubling the minute burn.
+`push` is now scoped to the default branch, and every workflow carries a
+concurrency group so superseded runs cancel rather than queue.
+
+`platform` and `audit` are manual-dispatch only for the same reason `docs` and
+`links` are: neither has anything to verify yet. No crate links the capture
+library until S09, and the workspace has no external dependencies to audit
+until S02. Both regain real triggers with the slice that gives them a subject.
+
+**2026-08-06** Removed `--features platform-tests` from the platform workflow.
+No crate declares that feature, so the flag would have failed resolution. It
+was never caught locally because the workflow has never run.
+
+**2026-08-10. `FlowAttributor::refresh` changes from `&mut self` to `&self`, an
+architecture-of-record trait change taken through the deviation process and
+promoted to specification section 29, together with two added trait methods.
+Recorded while implementing slice 015 (the S13 follow-ups, issues #18 and #19).**
+
+- **`refresh(&self)` is the deviation.** Specification section 8.5 declared it
+  `&mut self`, and section 8.6 places the socket-table refresh on the pipeline
+  control thread; the two could not both hold, because a `&mut self` method
+  cannot be called through the `Arc<dyn FlowAttributor>` the capture threads
+  share for lock-free `resolve` (section 11.6). `refresh` now takes `&self`;
+  `SocketTableAttributor` carries its refresh-mutable state (the table source, the
+  process namer, and the retention map) behind a single `Mutex` that the resolve
+  path never touches, so section 11.6 is preserved. A concurrency test drives
+  `refresh` through a shared `Arc` while several threads resolve.
+- **Two trait methods were added, both defaulted.** `wants_refresh(&self) ->
+  bool` (default `false`) lets the control thread gate the refresh on the section
+  11.2 cadence without `fragcap-core` naming the schedule type that lives in
+  `fragcap-attr` (a P-2 guard). `active_endpoints_owned(&self) -> Vec<OwnedEndpoint>`
+  (default maps `active_endpoints` to an unknown owner) carries the owning
+  identifier the section 12.2 narrowing needs. The defaults mean the scripted and
+  stub attributors and the read-only resolver change behavior in no way.
+- **Narrowing filters in the role-stamping decorator, and keeps unknown-owner
+  endpoints.** The session's `RoleStampingAttributor` holds the binding snapshot
+  whose keys are the profiled process identifiers, so it is the one seam that can
+  perform the join (P-3: the pipeline and `fragcap-attr` learn no profiles). It
+  excludes an endpoint only when its owner is known and not profiled; an endpoint
+  with no known owner is kept. On the live socket-table backend every endpoint
+  carries an owner, so this is exactly "admit only profiled"; on the offline
+  scripted substrate no endpoint carries one, so it is a pass-through and the
+  offline goldens are byte-identical.
+- **The CLI `RefreshDriver` and the read/write split were retired on the live
+  path.** With `refresh(&self)` the pipeline shares and refreshes the real
+  attributor directly, so the separate refresh thread and the `PublishedResolver`
+  it fed are no longer used there. `PublishedResolver` is retained as a valid
+  read-only view (removing it entirely is a separable cleanup); the CLI
+  `inner_attributor` component field is removed, and the filter-narrowed event now
+  reports the profiled endpoint count.
+- **Numbering.** This is spec directory `015-attribution-pipeline-integration`, a
+  follow-up to S13, and is not the roadmap's reserved slice S15 (streaming sinks).
+  `docs/plans/README.md` records that the roadmap slices S15 through S18 take
+  directory ordinals 018 through 021.
+
+**2026-08-10. Slice 017 (issue #22) reverses two S14 decisions for the two cases
+they were wrong for and keeps them for the case they were right for. Recorded while
+implementing the CLI capture engine's write gating.**
+
+- **The observe-only tee becomes a synchronous write gate (reverses D-e for the
+  bound and watch-time cases).** S14's `TeeCountingSink` observed each captured
+  packet after the sinks had written it, so the session could count a bound only
+  after the file already exceeded it. It is replaced by a `SessionGate` the output
+  loop consults before the fan-out: the session's decision now gates the write. The
+  gate keeps forwarding each admitted packet to the driver over the same channel the
+  tee used, so `CaptureSession::on_packet` still fires `VolumeReached` and the
+  duration bound in the session, which stays the single owner of the six stop
+  conditions (section 10.6). For an unbounded offline run the gate is a pass-through
+  and D-e's arrangement is unchanged.
+
+- **The session's decision gates the write, but packets are still not routed through
+  the `CaptureSession` object (keeps D-c's separation).** The gate reads a lock-free
+  published window state (open while capturing, closed while watching or draining)
+  that the driver writes as the session transitions, the same discipline section
+  11.6 requires of the attribution snapshot. The gate owns the bound counting, so
+  the admit-or-discard decision is made on the sink thread with no per-packet
+  cross-thread call into the session. The session remains a control brain beside the
+  pipeline, not inside its packet path.
+
+- **The gate seam is generic in core; the session-aware policy is in the facade
+  (constitution P-3).** `fragcap-core` gains only a `WriteGate` trait
+  (`Send + Sync`, `admit(&CapturedPacket) -> bool`) that the output loop consults;
+  it learns nothing of capture sessions or profiles. The `SessionGate` lives in the
+  facade `session` module beside `CaptureSession` and `RoleStampingAttributor`, the
+  crate already above both `fragcap-capture` and `fragcap-attr`, and is handed to the
+  pipeline as an `Arc<dyn WriteGate>`. No new dependency, and core takes no platform
+  dependency.
+
+- **`gate_dropped` is a term of the conservation identity but not of loss
+  (constitution P-4, P-9).** A gate discard is counted so nothing the gate withholds
+  escapes the pipeline accounting, but it is an intended discard (the operator's own
+  bound or the pre-acquisition window), so it is kept out of `fragcap_dropped`,
+  `total_dropped`, and `lost_anything`, which separate a slow sink and an undersized
+  driver buffer from a configuration choice. The writer trailers (pcapng and JSON
+  Lines) are deliberately left unchanged, so the committed goldens stay
+  byte-identical; the gate's discards are surfaced by cause in the completion
+  summary's `watching_discarded` and `discarded_out_of_window` lines, whose sum
+  reconciles with `gate_dropped`.
+
+- **The gate's Sender lives on the gate alone, not on the shared handle.** The
+  driver keeps a `GateHandle` sharing the gate's atomics (to publish the window and
+  read the tallies) but holding no channel sender, so the tee channel closes when the
+  pipeline finishes and the driver's per-packet read loop ends. Sharing the sender
+  would keep the channel open for the whole run and hang the loop after the source
+  exhausts.
+
+These are behavioral reversals confined to this slice; they are promoted to
+`docs/fragcap-specification.md` only at release, not per slice.
+
+**2026-08-10. Review of PR #26 (four Codex findings) tightened the gate.**
+
+- **The gate classifies by the packet's own capture instant, not the window state at
+  write time.** The window became a half-open capture interval `[admit_from,
+  admit_until)` of two single-writer `AtomicI64` values, replacing the `AtomicU8`
+  window state. Because the bounded buffer sits between capture and the gate, a coarse
+  state read at write time misclassified buffered frames crossing a transition: a
+  pre-acquisition frame still buffered when the window opened was written and omitted
+  from `watching_discarded` (C2), and a post-stop frame still draining was written and
+  miscounted as retained (C1). Keying on the packet instant fixes both; on the live
+  path the packet instant (pcap header) and the opening or closing event instant (ETW
+  header) are both Unix wall-clock and directly comparable. Offline opens the interval
+  at `i64::MIN` (all replayed frames in window, goldens unchanged); live opens it at
+  the acquiring event's instant and closes it at a terminal-stage exit's instant. An
+  interrupt or duration stop leaves it open, keeping what was captured before the stop
+  (FR-005).
+- **The live acquisition loop observes pipeline termination.** Spawning the pipeline
+  from arm means it can end before a target is acquired (the sole interface closes or
+  fails). The loop now polls the tee channel for disconnect, the signal that no source
+  remains, and ends the run instead of waiting forever on a still-running watcher (C3).
+- **A zero volume bound stops for `VolumeReached`.** See D-8 in the slice research.
+  `CaptureSession::on_volume_reached` is called by the driver after acquisition when a
+  zero bound is configured, so `--max-packets 0` reports the promised stop reason (P2).
+
+**2026-08-08** The dependency direction check no longer requires
+`fragcap-core` to have zero dependencies. It now checks against a named
+allowlist, currently one crate. The empty-set rule was stricter than the
+principle it enforces: constitution P-2 forbids a platform-specific dependency,
+an I/O crate, and a capture library, not every dependency. The rule would have
+blocked a pure-Rust buffer crate on a reading the constitution does not support.
+The check still fails closed, so anything not on the list is a problem and
+adding to the list is a deliberate edit a reviewer sees.
+
+**2026-08-08** Recorded for promotion to specification section 29:
+sections 8.4 and 8.5 reference eight types in their signatures and define none
+of them. They are `Timestamp`, `Bytes`, `StageId`, `LinkType`, `Endpoint`,
+`FilterProgram`, `ProcessEvent`, and `ProcessRecord`. Slice S02 defines all
+eight, with the three that later slices own documented as provisional:
+`FilterProgram` is settled by S13, and `ProcessEvent` and `ProcessRecord` by
+S11. This is a gap in the architecture of record rather than a decision it made,
+and the constitution requires the divergence be recorded rather than resolved
+silently.
+
+**2026-08-08** The minimum supported toolchain check builds at the declared
+minimum instead of with the pinned toolchain. It previously ran an ordinary
+build and reported success, which checked the pinned toolchain and said nothing
+about the minimum. That was harmless while the dependency graph was empty and
+every declared minimum passed trivially, and stopped being harmless the moment a
+real dependency arrived. It now builds through `rustup run`, into a separate
+target directory so it does not try to replace the running task runner binary,
+and exits 2 when the minimum toolchain is not installed.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 12.5
+requires that subsequent IP fragments be attributed by their fragment
+identifier and address pair, which presupposes a memory it does not describe.
+Slice S03 defines one: a fixed 256 entry table, drop-oldest, holding the
+protocol and ports the first fragment carried, with the eviction counted and
+the entry removed when the datagram's last fragment is observed. It is bounded
+by entry count rather than by age because an age bound needs a clock, and a
+clock in `fragcap-core` is a platform surface constitution P-2 excludes.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 12.6
+defines three of the four combinations of endpoint locality and is silent on
+the fourth, a packet with neither endpoint on the capturing host. S03 makes it
+a counted rejection producing no flow key, on the reasoning that section 8.4
+defines the key's local field as the endpoint on the capturing host, so putting
+an arbitrary endpoint there would assert something untrue. It would also buy
+nothing: such a packet has no local socket, so no socket table lookup could
+ever resolve the key. The practical consequence is that a stale or empty
+interface address set announces itself once per packet instead of yielding a
+capture full of keys that resolve to nothing.
+
+**2026-08-08** Recorded for promotion to specification section 29: the residual
+mis-attribution risk from IPv4 fragment identifier reuse. The identifier is
+sixteen bits, and a host that fragments heavily can reuse one for the same
+address pair and protocol before the earlier table entry has been removed.
+Removing an entry when its datagram's last fragment is observed shortens the
+window and the 256 entry bound caps it, but neither eliminates it, and it is
+not detectable from the capture so it cannot be counted. It is stated rather
+than claimed away, which is what constitution P-9 requires when P-4's mechanism
+does not reach.
+
+**2026-08-08** Corrected in `fragcap-core`: link type code 0 was documented as
+having no link layer header. That is code 101's property. Code 0 is BSD
+loopback encapsulation, which prefixes a four byte host-order address family
+value. The error was harmless while nothing parsed and would have had S03's
+parser read an IP version nibble out of an address family field, rejecting
+every loopback frame and attributing the failure to the wrong cause. Recorded
+because a comment that misdescribes an observation is the kind of small
+inaccuracy a later parser inherits.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 25.3
+requires an attribution script per fixture, declaring what the scripted
+attributor returns for each flow at each point in time, without defining one.
+Slice S04 defines a line-oriented format with three statements and half-open
+time windows. TOML was rejected for now: adopting it means adopting a parser and
+its proc-macro dependencies on behalf of S05, which owns the profile schema and
+should choose against the profile's requirements rather than inherit a choice
+made for a test fixture.
+
+**2026-08-08** Recorded for promotion to specification section 29: section
+25.3's `burst.pcap` must both exceed a 65,536 packet buffer and be small, and
+those cannot both hold, since a faithful fixture would run to several megabytes.
+Backpressure is a relationship between a rate and a capacity rather than a
+property of a file, so the fixture supplies the rate and S08's test supplies a
+small capacity. The narrowing is deliberate and is recorded rather than applied
+silently.
+
+**2026-08-08** Recorded for promotion to specification section 29:
+`FlowAttributor::resolve` in section 8.5 now takes the instant the packet was
+observed. S02 transcribed it without one, and this slice initially kept it that
+way, carrying the clock as an inherent method on the scripted attributor and
+arguing that a real attributor reads a socket table that is already current.
+
+Review of pull request 7 refuted that twice. Section 11.4 already says capture
+and socket table observation are not synchronized, and that a closing
+connection produces final packets processed after the socket has left the
+table; that is why the retention window exists, and it means a real attributor
+is also answering about the past. Separately, section 8.6 holds the attributor
+behind a trait object, so an inherent method is unreachable from the pipeline
+and core cannot downcast to a backend without the dependency P-2 and P-3
+forbid. Every time-windowed fixture would have sat at the epoch resolving
+nothing, and the slice's own test hid that by holding the concrete type.
+
+The change costs one parameter now, with a single real implementor. After S10,
+S11, and S12 it would have cost considerably more.
+
+**2026-08-08** `.gitattributes` gains `*.script text eol=lf`. The existing
+wildcard already covered it; listing it matches the file's own stated convention
+of naming every format whose parsing depends on line endings, and keeps the
+corpus drift check from depending on autodetection.
+
+### 2026-08-09: Two runtime dependencies, chosen by measurement rather than reputation
+
+The workspace has added one runtime dependency in eight slices, so a second and
+third are an architectural event and are recorded as one. `fragcap-profile`
+takes `toml-span` 0.7 and `regex` 1.13 with default features off. Five crates
+enter the graph: `toml-span`, `smallvec`, `regex`, `regex-automata`, and
+`regex-syntax`. Every license is MIT or Apache-2.0, inside the `deny.toml`
+allowlist, and no version specification is a wildcard.
+
+**Why not hand-roll TOML, when pcap, pcapng, and JSON Lines were hand-rolled.**
+Those three formats were the deliverable, produced by fragcap or by a tool, and
+hand-rolling gave verification something independent to judge against. A profile
+is a file a contributor typed. A hand-rolled subset would refuse legal TOML an
+author's editor produced, and section 15.1 promises that adding support for a
+game means writing a TOML file, which a parser that rejects valid files does not
+survive.
+
+**Why not `toml`.** It is unavailable at this workspace's declared minimum
+toolchain. Version 1.1 declares Rust 1.85 against a floor of 1.82, and pinning
+to `~1.0` does not fix it: `toml_parser` resolves to 1.1.3 underneath and
+declares 1.85 as well. Holding the floor would mean a direct dependency on a
+crate this slice never calls, purely to constrain it, which one `cargo update`
+undoes without anything failing loudly. `toml-span` declares 1.70, brings one
+transitive crate rather than four, has no serde in its graph, and carries byte
+spans on every value, which is what the diagnostics are built on. Verified by
+building under `rustup run 1.82`.
+
+**A serde-derived deserializer was never on offer**, which is worth stating
+because it is the obvious ergonomic path. Such a deserializer returns the first
+error and stops, and section 15.4 requires every problem in one report. The
+requirement rules out the shape, so field extraction is written by hand and the
+question of serde at runtime does not arise. S07's `serde_json` remains
+test-only and that argument is undisturbed.
+
+**Why `regex` and not `regex-lite`.** Section 15.4 requires compiling
+`path_regex`, so an engine is unavoidable, and it must be the engine that
+evaluates the pattern in S12: validating with one and matching with another lets
+a pattern pass validation and fail during a capture. `regex-lite` is one crate
+with no dependencies, which is attractive here, and it was rejected because its
+Unicode support is reduced. An image path can carry non-ASCII through a user or
+localized directory name, and matching under quietly different Unicode rules
+produces a wrong binding rather than an error. Default features are off because
+`aho-corasick` and `memchr` accelerate scanning large haystacks, and a haystack
+here is one image path matched a few times per session.
+
+**The glob matcher stays hand-rolled** despite the above, and the pairing only
+looks inconsistent. Section 15.4 needs to know whether two `exe` patterns can
+match a common image name, which is glob intersection; every glob crate answers
+glob matching, which is the intersection of a pattern with a literal. A
+dependency would supply half the requirement and leave the harder half to be
+written anyway, giving two implementations of one syntax to drift apart.
+
+### 2026-08-09: The duration grammar lives in fragcap-core
+
+Section 25.2 lists duration parsing as a tier 0 concern without placing it, and
+three consumers are visible: `capture.duration` in a profile, `--duration` and
+`--wait` on the command line, and the ring window. Core is the crate all three
+reach, and the grammar adds no dependency there, so the allowlist `cargo xtask
+deps` enforces is untouched.
+
+Keeping it in `fragcap-profile` was the alternative and fails on ring mode: that
+slice would either depend on a sibling, which section 8.3 forbids, or carry a
+second grammar. Two implementations of `30m` that disagree produce a capture of
+the wrong length, which is a defect an operator cannot see in the output.
+
+Recorded for promotion to specification section 29, since section 25.2 names the
+concern without assigning it a crate.
+
+### 2026-08-09: Three validation checks beyond the section 15.4 list
+
+Section 15.4 enumerates its checks, and three more are implemented. Recorded as
+additions rather than as readings of the specification, so that a future reader
+comparing the code against the document finds the difference explained rather
+than having to decide whether it is a defect.
+
+- A `terminal` stage must have lifecycle `session`. Section 10.4 defines a
+  transient exit as normal and expected, so a terminal transient ends the
+  capture at the moment a launcher hands off, which is the point the launcher
+  chain exists to survive.
+- The `descends_from` relation must be acyclic. A cycle is unsatisfiable, so
+  every stage in it binds nothing.
+- Every role named in `capture.roles` must be declared by a stage, and the list
+  must not be empty when present. A role nothing declares captures nothing under
+  it.
+
+Each is in the failure class the two unusual checks section 15.4 already names
+were added for: a run that succeeds, exits zero, and captures nothing. All three
+are candidates for promotion into section 15.4 under the deviation process.
+
+### 2026-08-09: Unknown keys are refused, and the schema version is what makes that safe
+
+The `[capture]` table accepts exactly the five keys section 15.2 declares, and
+any key outside a table's accepted set is a diagnostic naming the key and the
+set. Section 17.2 lists more capture options on the command line, and none is
+accepted here: a profile key with no consumer is a key whose behavior is
+untested and whose meaning is set by whoever first reads it. S14 owns the
+command line and adds the keys it can honor.
+
+Ignoring an unknown key is the silent failure. An author who writes `payloads =
+false` intending `payload = false` gets a capture containing full packet
+contents they meant to exclude, and nothing in the run says so. That is a P-9
+problem rather than a typo: the instrument was told to narrow what it recorded
+and did not.
+
+Strictness is only safe because `schema` exists. A profile written for a later
+format declares it and is refused with one version diagnostic rather than a wall
+of unknown-key faults.
+
+### 2026-08-09: Resolution takes its search path from the caller
+
+The resolver implements section 15.3's four steps over directories and a bundled
+set that it is given, and never consults an environment variable or a platform
+configuration location. That keeps a platform-directories dependency out of the
+workspace, keeps the ordering testable against directories a test builds, and
+leaves the platform question to S14, which is the layer that already has to know
+it.
+
+The slug rule applies to steps two through four only, and applies before any
+path is joined. Step one is exempt because an operator who types a path has
+named a file, and refusing an absolute path there would break the case section
+15.3 puts first. The distinction is between naming a file and interpolating a
+name into a search path, and only the second is a traversal surface. The check
+runs before the join rather than relying on the open failing, because a check
+that depends on what happens to be at the target is not a check.
+
+### 2026-08-09: A known divergence from TOML 1.0, found by the analyze gate
+
+`toml-span` does not implement TOML datetimes, which its own documentation
+states. The first draft of this slice's FR-002 required a parser that
+"implements the language rather than a subset of it", and the analyze gate
+measured that claim to be false. The requirement was corrected to name the
+constructs a schema version 1 profile can contain, which is both true and
+sufficient, rather than the finding being explained away.
+
+The divergence is confined to profiles that are invalid regardless. No key in
+schema version 1 has a datetime type, so a datetime can appear only as a
+wrong-typed value or under an unknown key. What changes is the message: a syntax
+diagnostic rather than a type diagnostic located at the key. That is worse, and
+it is worth less than the minimum toolchain the alternative would have cost.
+
+The behavior is pinned by a test rather than left in prose, so a future reader
+finds a recorded decision instead of a surprise, and so that the day the parser
+gains datetime support the test says so.
+
+### 2026-08-09: The ambiguity pass is bounded rather than merely measured, reversing an answer in this slice
+
+Recorded as a reversal because the first answer was written into the plan, the
+research, a success criterion, and a checklist item, and was then shown to be
+wrong in review rather than merely incomplete.
+
+The claim was that the ambiguity check's cost needed no cap because the one
+mebibyte profile size limit already bounded it. It does not. The limit bounds
+each factor and not their product: two `exe` patterns of half a megabyte each
+fit inside a one mebibyte profile and ask the intersection decision for a table
+of roughly 10^12 cells, which aborts the process instead of returning a
+diagnostic. A profile that has already been refused should not be able to end
+the run that is refusing it.
+
+The arithmetic is worse than it first looks. With `k` stages of pattern length
+`L`, the pairwise pass costs about `(kL)^2 / 2`, which depends only on the total
+bytes spent on patterns. Capping one factor moves the cost between the two
+rather than removing it, so one limit would not have been enough.
+
+Two limits now exist, and each answers to the domain rather than being a round
+number:
+
+- An `exe` pattern is capped at 255 characters. `exe` matches one Windows file
+  name component, and Windows caps that component at 255 characters, so a longer
+  pattern is longer than anything it can be compared against.
+- A profile is capped at 64 stages. The focal titles of specification section
+  5.4 declare two stages and three, so 64 is two orders of magnitude beyond any
+  plausible launcher chain, and it bounds the pass at 2,016 decisions.
+
+Worst case is then about 1.3 times 10^8 cell visits and 64 kibibytes of peak
+table. Each limit is its own diagnostic naming itself, and each has a test that
+accepts the limit and refuses one past it. The decision walk carries a
+`debug_assert` stating the invariant it relies on, so a future caller that
+constructs a pattern by some other route fails loudly in a test build.
+
+The general form is worth keeping, because this slice will not be the last to
+read a file an operator did not write: a quadratic pass over such input is not
+made safe by bounding the input, only by bounding the factors the quadratic is
+taken over.
+
+### 2026-08-09: Three corrections from pull request 11 review
+
+Smaller than the above and recorded because each was a promise the code did not
+keep.
+
+**The schema version gate now runs before the top level key check.** A profile
+declaring a later schema and a key this build does not know returned two
+diagnostics, where FR-012 promises one. A new key is the most likely thing a
+later schema adds, so reporting it beside the version fault reports a
+consequence of that fault as though it were a second problem. The test that was
+meant to cover this had placed its unknown key after `[game]`, where TOML puts
+it inside that table rather than at the top level, so it passed without
+exercising the path. Both the ordering and the test are fixed.
+
+**A wrongly typed entry in `capture.roles` no longer suppresses its siblings.**
+The first implementation discarded the whole list when any element failed to
+parse, so `["ghost", 1]` reported the type fault and silently dropped the fact
+that `ghost` is a role no stage declares. Two independent faults, one reported.
+Emptiness is now judged on the number of entries the author declared rather than
+the number that survived parsing, so a list with one bad element is not also
+reported as empty, which would have been a wrong diagnostic rather than an extra
+one.
+
+**A resolution failure now names a supplied directory that does not exist.**
+Skipping an absent search directory is right, and leaving it out of the failure
+report was not: a search consisting only of a missing directory failed with an
+empty list and the message "no profile directories were given", which is false
+when one was given. The candidate path is now recorded before the directory is
+tested, because the answer an operator needs on this failure is where to put the
+file.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 13.3
+marks `dir` as always present and enumerates three values, `in`, `out`, and
+`local`, but `Direction` in `fragcap-core` has two variants and
+`CapturedPacket::direction` is optional, leaving a fourth state with no value
+in the table. Slice S06 adds `unknown` for it. Omitting the key would break the
+guarantee that lets a consumer parse without a presence check. Writing `local`
+would be worse: section 12.6 leaves loopback direction undetermined until it
+can be resolved from the attributed process's endpoint, so `local` and "not
+determined" are different facts, and asserting the first from the second is the
+substitution P-9 exists to block. The distinction is not hypothetical. Every
+packet in `loopback.fcapng` is attributed and carries `dir=unknown`, which is
+the honest record of what the pipeline knows today.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 13.3
+presents `role` and `stage` as a pair, both marked "when stage-bound", but
+`Attribution` carries them as independent options and its builder sets them
+separately, so a role without a stage is representable and will occur. S06
+decides each independently. Treating them as a pair would either drop an
+observed role or fabricate a stage.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 13.3
+names three characters requiring percent-encoding, the semicolon, the equals
+sign, and the percent sign, which are the three that break the grammar. S06
+also encodes every code point below 0x20 and the code point 0x7F, which break
+the containing format: pcapng defines a comment as UTF-8 text, and a reader
+meeting a NUL or a newline mid-comment behaves unpredictably. Percent-encoding
+is lossless and reversible, so the widening preserves the observation rather
+than altering it, which is why it does not conflict with P-9. The alternative
+for a process name containing a newline would be stripping or replacing it.
+
+**2026-08-08** Recorded for promotion to specification section 29: section 13.2
+populates the Interface Statistics Block from the section 12.4 counters, but
+pcapng's standard fields describe losses upstream of the capturing application
+and section 12.4 has two counters, `buffer_dropped` and `sink_dropped`, that no
+standard field expresses. S06 writes them in an `opt_comment` on that block
+under the `fragcap:` sentinel. Writing only the three that fit would satisfy
+section 13.2 as written and violate P-4, which makes an uncounted, unsurfaced
+discard a defect; overloading `isb_osdrop` would report a fragcap loss as an
+operating system loss, which P-9 forbids and which a reader could not detect.
+Between a specification sentence and a constitution principle the constitution
+wins, and here both can be satisfied at once.
+
+**2026-08-08** Recorded as a known gap rather than resolved: section 12.7 says
+the session anchor is written into the capture file, and section 13.2 does not
+list it among the blocks. There is no session in S06 and therefore no anchor to
+record, and inventing a placement now would fix a format decision on behalf of
+the slice that has the data. S08 owns capture start and supplies it.
+
+**2026-08-08** The corpus-driven tests for the writer live in the `fragcap`
+facade rather than in `fragcap-sink`. Producing a written capture from a
+fixture needs a replay source and a scripted attributor, which are siblings of
+`fragcap-sink`, and reaching them from its `tests/` directory would mean a
+dev-dependency on a sibling: the edge P-3 exists to prevent. This is recorded
+rather than quietly done because it would not have been caught. `cargo xtask
+deps` ignores `[dev-dependencies]` by design, and has a test asserting that it
+does, so the violation would have passed the mechanical gate and been visible
+only to a reviewer who went looking. S04 placed its end-to-end test the same
+way for the same reason; the blind spot is worth stating once in a durable
+place rather than rediscovering per slice.
+
+**2026-08-08** The Interface Statistics Block timestamp is derived from the
+last packet written on that interface, or zero when none was, and the writer
+reads no clock anywhere. The block header carries a timestamp field that has to
+hold something and the obvious something is the current time. That choice would
+have made output differ between runs, so every golden would pass once and fail
+afterward, and the natural response to a golden that always fails is to delete
+it, which removes the only check in this slice that reaches outside its own
+assumptions. Recorded because the defect is invisible in review and expensive
+in consequence.
+
+**2026-08-08** pcapng's `epb_flags` option carries a direction field, and S06
+does not write it. Section 13.3 places direction in the annotation, and writing
+it in both would put the same fact in two places that can disagree. Recorded
+because the option is discoverable and the duplication is tempting.
+
+**2026-08-08** Verification against an unmodified analyzer is a documented
+manual step in the slice's quickstart, not a gate. Wireshark 4.6.3 on the
+development machine reads the goldens and displays the annotations, which is
+the actual claim of section 13.1 and P-5 tested on the population it concerns.
+It is not wired into continuous integration because the runners are not
+guaranteed to have Wireshark, and the constitution is explicit that a check
+which did not run must never look like one that passed. Adding Wireshark to the
+runner image is left as an option for S18, which owns analyzer integration and
+has other reasons to want it. The mandatory check is the structural validator,
+which is independent of the writer's encoding code and runs everywhere.
+
+**2026-08-08** Recorded for promotion to specification section 29, from review
+of pull request 8: attribution fidelity moves onto `Attribution` in
+`fragcap-core`, and `Attribution::new` takes it as a required argument. Section
+8.4 fixed the type without it, and S06 initially derived `attr=live` in the
+pcapng writer from `AttributionState::Resolved`. That is an inference, which
+section 13.4 forbids, and it was wrong the day it was written rather than
+wrong-in-future: the scripted attributor resolves from a declared script, so
+every committed golden asserted that an endpoint was present in a socket table
+at a moment when no socket table existed. P-9 covers exactly this. Fidelity is
+now a statement by the party that knows, and the writer records it. Required
+rather than defaulted, because a default is the same inference with a different
+author. The change costs one argument at sixteen call sites now, with one real
+implementor; after S10, S11, and S12 it would have cost considerably more, and
+the retained path would have been silently mislabelled as live in the interim.
+
+**2026-08-08** Narrowing recorded from review of pull request 8: the S06 writer
+records one interface per capture and refuses a second declaration with a named
+error. The slice claimed support for any number. Two defects followed and
+neither is repairable at the moment the second declaration arrives. The
+annotation `iface` key was decided per packet from the interface count at write
+time, so a second interface declared after packets had been written left those
+blocks without a key that section 13.3 then required of them, in blocks pcapng
+cannot revise in place. And `CaptureStats` carries no per-interface breakdown,
+so the same capture-wide counters were written into every Interface Statistics
+Block, reporting each received packet once per interface to anyone summing
+them.
+
+Both are fixable, and neither is fixable here. Consistent `iface` needs all
+interfaces known before the first packet, which a live capture cannot promise;
+correct per-interface statistics need per-interface source counters, which is a
+core type change belonging to the slice that creates the second interface.
+S09 owns live capture and interface enumeration and will have both. Refusing is
+the only option in this slice that puts no false statement in the file, and the
+packet path still carries an interface identifier rather than a constant zero,
+so lifting the restriction does not mean rewriting it.
+
+The annotation grammar keeps the `iface` key, encoded and decoded and tested.
+An unreachable value in a grammar the later slice can populate is cheaper than
+a grammar that has to be widened once there is data for it.
+
+**2026-08-08** Recorded for promotion to specification section 29: section
+13.5's example record shows `src` and `dst`, but `FlowKey` in section 8.4
+carries `local` and `remote`. The normalization is deliberate and load-bearing,
+since it is what makes the key stable across both directions of a conversation
+and therefore usable as an attribution lookup, but it means wire order is not
+stored and is recoverable only in combination with the direction. Slice S07
+emits `src` and `dst` when the direction is known and `local` and `remote` when
+it is not, never both. When direction is undetermined, wire order is not merely
+unavailable to the writer, it is unknown to the whole pipeline, and choosing an
+ordering would present a coin flip as an observation, which P-9 forbids. This
+is the same finding as the `dir=unknown` decision in S06, in a different field,
+and it is concrete rather than theoretical: every packet in `loopback.pcap` has
+a flow key and no direction.
+
+**2026-08-08** Recorded for promotion to specification section 29: the JSON
+record carries the interface name unconditionally, where the pcapng annotation
+carries it only in a multi-interface capture. Section 13.5's example shows it
+unconditionally and section 13.3 marks it conditional, so the two are already
+inconsistent in the specification; S07 follows each. The reason is structural
+rather than stylistic. A pcapng file holds exactly one Interface Description
+Block in the single-interface case, so the key would repeat what the container
+states, while a JSON line is self-contained by design and a consumer who split
+the stream would lose the interface entirely. Both writers read the same
+derivation and differ only in rendering, which is where a format difference
+belongs.
+
+**2026-08-08** Timestamps are rendered by integer arithmetic and never pass
+through a floating point value. The reasoning was revised twice under
+measurement and is worth recording accurately, because two plausible versions
+of it are wrong. It is not true that an `f64` renders present-era microsecond
+timestamps incorrectly; it does not, and a test built on that claim passed
+against both paths. It is also nearly irrelevant that an `f64` loses exactness
+above a 53-bit significand around the year 2255, since an `i64` nanosecond
+timestamp overflows around 2262 regardless. The actual defect is rounding: a
+capture driver reports nanoseconds, the declared resolution is microseconds,
+and something must discard the remainder. This writer floors, as the pcapng
+writer does, so a timestamp orders the same way in both outputs. Dividing into
+an `f64` and printing to six places rounds. For 1754500000.123456789 they
+differ by a microsecond, which would be the two output formats of one capture
+disagreeing about one packet, today, on ordinary input.
+
+**2026-08-08** `serde_json` is added as a dev-dependency of `fragcap-sink` and
+`fragcap`, and the writer is hand-rolled. The workspace claim becomes "one
+runtime dependency, one dev-dependency" rather than "one external dependency",
+which is stated plainly rather than elided. The writer is hand-rolled because
+the exact byte shape is this slice's deliverable and two of its requirements
+are non-default `serde_json` features that change the crate's behavior
+globally: `preserve_order` for the section 13.5 key order, since `Value` sorts
+keys through a `BTreeMap`, and `arbitrary_precision` for an exact decimal, since
+`Number` constructs from `f64` for any non-integer. The dev-dependency is taken
+for the opposite reason: verification is worth more the less it shares with
+what it verifies, and a third-party parser reading every emitted line is a
+stronger check than S06 could obtain for pcapng, where the structural validator
+had to be written here. The `BTreeMap` behavior was not taken on faith; a key
+order test written against parsed values passed regardless of what the writer
+emitted, which is how it was confirmed.
+
+**2026-08-08** Carried forward from S06 rather than resolved: section 13.5
+specifies the header object as declaring the fragcap version, the session
+anchor, and the interface set. The anchor is absent for the same reason it is
+absent from the pcapng output. There is no session in this slice, and giving it
+a placeholder would leave a consumer unable to distinguish an absent anchor
+from a null one that meant something. S08 owns capture start and supplies it to
+both formats.
+
+**2026-08-08** Narrowing recorded from review of pull request 9: the JSON Lines
+writer records one interface per stream and refuses a second, matching the
+pcapng writer. The slice's data model claimed this format escaped that
+restriction, on the reasoning that a JSON record names its interface explicitly
+where a pcapng packet block cannot. That reasoning was wrong, and wrong in an
+instructive way: naming the interface is not the difficulty, choosing it is.
+`CapturedPacket` carries no interface identifier and `Sink::write` has nowhere
+to pass one, so every packet routes to index 0 no matter how many were
+declared. A stream constructed with two interfaces would name both in its
+header and then label every record with the first, which is a false statement
+repeated on every line rather than a field left out, and arguably worse than
+the pcapng case because each record asserts it individually.
+
+The two writers are now blocked on the same thing rather than on different
+things: an interface identifier on the packet, which S09 brings with live
+capture. Only one of S06's two reasons applied here; that this format genuinely
+escaped the per-interface statistics problem is what made the wrong claim look
+right.
+
+**2026-08-08** Hex encoding appends digits directly rather than formatting each
+byte into a temporary `String`. Recorded because the fix is small and the
+reasoning is not: this runs once per payload byte, so an ordinary 1500 byte
+frame made 1500 short-lived heap allocations. That is not a throughput
+question, which this slice sets no target for. It is a P-4 question, because
+the sink thread drains the bounded buffer of section 12.4, and a sink slowed by
+allocator pressure is what fills that buffer and makes the pipeline drop
+packets. A test guards the property by asserting a preallocated output buffer
+does not grow.
+
+**2026-08-08** `AGENTS.md` gains a dependency inventory table distinguishing
+the runtime dependency from the dev-dependency, replacing the claim that the
+workspace has one external dependency. That file is what later agents are
+directed to read, so leaving it stale would have meant the next slice reasoning
+from a false inventory. The entry also states that a test-only `serde_json` is
+not a runtime precedent for S05, and notes that `cargo xtask deps` ignores
+dev-dependencies by design.
+
+### 2026-08-08: The calling thread acquires, and the sink thread is spawned
+
+Specification section 8.6 draws a capture thread and a sink thread without
+saying which one is the caller's. `PacketSource` carries no `Send` bound, while
+`FlowAttributor`, `ProcessWatcher`, and `Sink` all do, which is the seam's own
+record of which components were expected to cross a thread boundary. Moving the
+source to a spawned thread would require adding `Send` to a trait
+`fragcap-core::traits` documents as intended to reach 1.0.0 unchanged.
+
+Acquiring on the caller's thread needs no such change, and the data flow is
+identical.
+
+**This is a deferral with an owner.** Section 12.1 requires one capture handle
+and one capture thread per interface, which this arrangement cannot express. S09
+will need `PacketSource: Send` and should carry the trait change with the slice
+that first requires it, through the deviation process, for promotion to
+specification section 29. The limitation is visible today: a `Pipeline` cannot
+be moved to another thread, which the slice's own tests had to work around.
+
+### 2026-08-08: A failed sink is retired rather than fatal, reversing this slice's first answer
+
+Recorded as a reversal because the first answer was written into the spec and
+then found wrong during planning, and the reasoning is worth keeping.
+
+The first answer read `SinkError::is_countable`, documented in S02 as "whether
+the pipeline should count this and carry on rather than stop", as meaning a
+non-countable error stops the whole run. Retiring the failed sink and
+continuing was rejected on the grounds that the retired sink's missing writes
+would be recorded nowhere, `CaptureStats` having no counter for a retired sink.
+
+That does not survive being followed through. Stopping the run does not remove
+the packets already buffered or still arriving; it leaves them with nowhere to
+go and no counter, which constitution P-4 calls a defect. Both options need the
+same counter, and section 12.4 already supplies it: `sink_dropped` is "dropped
+by a sink that could not accept", and a failed sink is a sink that cannot
+accept.
+
+Retirement therefore needs no new counter, conserves exactly, and keeps a
+capture running when one of several outputs dies. `is_countable` still draws
+the line; what it decides is whether the sink survives the packet, not whether
+the run survives the sink. S15 may revisit when a streaming sink whose failure
+is routine exists.
+
+### 2026-08-08: No runtime dependency for the bounded buffer
+
+Section 12.4 requires bounded, drop-oldest, and a producer that never waits,
+together. `std::sync::mpsc::channel` is unbounded and cannot drop.
+`sync_channel` blocks the producer, which section 12.4 forbids by name, and its
+`try_send` fails rather than evicting, which is drop-newest and the wrong
+policy. A third-party bounded channel offers the same two shapes and would
+still leave the eviction to be written by hand.
+
+The buffer is a `VecDeque` behind a `Mutex` and a `Condvar`. The workspace's
+one runtime dependency stays one.
+
+The property claimed is that the producer never waits for the consumer to make
+progress, not that it never blocks. The second is false of any shared structure
+and would be a claim the code could not honor. The producer's wait is bounded
+by a critical section that pushes and at most pops, held by a consumer that is
+itself never waiting on anything outside the buffer, so sink slowness is not
+expressible as producer latency. A lock-free ring would remove even that wait
+and was rejected as materially harder to prove correct for a property the
+specification does not ask for.
+
+### 2026-08-08: The terminal item is exempt from the capacity bound
+
+The acquisition side ends by pushing one item carrying its final counters.
+Subjecting it to eviction would discard an observed packet to make room for
+fragcap's own bookkeeping, and P-4 would then require counting a loss caused by
+the tool's shutdown rather than by a slow sink. The queue holds at most capacity
+plus one, and the extra item is never a packet.
+
+### 2026-08-08: The eviction count lives in the buffer, not in the producer
+
+So that the consumer can read it however the producer terminated, including an
+unwinding panic. A producer-side counter would lose the count in precisely the
+case where an operator most needs to know that packets went missing.
+
+### 2026-08-08: A panic is re-raised, never reported as an end reason
+
+The buffer closes when its producer handle drops, which unwinding does, so the
+output side observes an ending rather than waiting for a terminal item that will
+never arrive. A guard owning both the producer and the output thread's join
+handle closes the buffer and then joins it, on every path out of `run`, so the
+sinks are drained, flushed, and finished before a panic escapes.
+
+Holding the producer and the join handle separately deadlocks, and did:
+locals drop in reverse declaration order, so the guard joined a thread still
+waiting on a buffer the producer had not yet closed. The test suite hung until
+the two were folded into one guard. Recorded because the ordering is not
+obvious from reading either piece alone.
+
+A panic is never converted into an `EndReason`. It is a defect, and filing it
+under an accounting category would describe a program that was not running
+correctly as though it were. The acquisition side's counters are lost with its
+stack, which is a real gap and is documented rather than hidden; the eviction
+count survives because it is not kept there.
+
+**The obligation is symmetric, and the first version of this only went one
+way.** Review found that a panicking sink unwound the output thread without
+telling the acquisition side, which then kept reading until the source closed on
+its own. A replay source closes; a live source does not, so `run` would have
+acquired forever and never reached the join that re-raises the panic. The
+original test used a finite source and could not have caught it. The output
+thread now holds a guard that requests the stop however it terminates, and the
+test uses a source that never closes, so a regression hangs rather than passing.
+
+### 2026-08-08: An ending acquisition reached on its own outranks a later retirement
+
+Also from review. The end reason was replaced with every-sink-retired whenever
+every sink had retired, regardless of what had already ended acquisition. A
+source that failed with a `DeviceLost` and a last sink that failed afterwards,
+while the output side was still draining, therefore reported the retirement and
+buried the device loss, which is the diagnostic an operator most needs.
+
+Retirement now replaces only the stop it requested. An ending acquisition
+reached on its own happened first and is the reason. The retirements are
+reported either way, in `sink_failures`, so nothing is lost by the narrowing.
+
+### 2026-08-09: A timing-dependent test slipped in with the review fixes, and continuous integration caught it
+
+Worth recording because the discipline that should have prevented it is written
+down in this slice's own research: no test depends on a sleep or on a particular
+thread interleaving, and the tool for ordering two threads is a gate the test
+controls.
+
+The test added for the end-reason fix used a roomy buffer and assumed the
+acquisition side would finish before the output side popped anything. That is a
+race, not an ordering. It passed on the development machine and failed on the
+Windows runner, where the output side won, retired the sink first, and set the
+stop that acquisition then reported, which is the one case where reporting
+`AllSinksRetired` is correct.
+
+The fix under test was never in question: reverting it still fails the test.
+What was wrong was that the test only sometimes produced the scenario it named.
+It now gates the sink on the source running dry, so the retirement is strictly
+after acquisition has chosen its ending, by construction rather than by luck.
+
+The general lesson is that a concurrency test which passes locally has
+demonstrated one schedule. Prefer an ordering the test imposes, and prefer
+asserting an invariant that holds under every schedule, which is why the
+conservation identity is the assertion the rest of this slice leans on.
+
+### 2026-08-08: The bounded buffer refuses a zero capacity rather than documenting against it
+
+`Pipeline::new` rejects a zero capacity with a named error, and review pointed
+out that the crate-private constructor beneath it did not. A zero capacity there
+is worse than useless: every push finds the queue full, pops nothing, and still
+advances the eviction count, so the buffer grows without bound while reporting
+losses that never happened. A counter that lies is the one failure the module
+exists to prevent, so the precondition is asserted.
+
+### 2026-08-08: The `malformed` JSON golden was wrong, and driving the writers from the pipeline found it
+
+`fixtures/goldens/malformed.jsonl` claimed `"unattributed":5` for five packets
+that produced no flow key. Attribution was never attempted on any of them.
+`AttributionState` has distinguished never-attempted from
+attempted-and-unresolved since S02, precisely because the two mean different
+things to an operator, and `stats.rs` defines `packets_unattributed` as
+"retained and marked because attribution did not resolve".
+
+The cause was the S07 corpus helper, which counted with `attribution.is_some()`
+and folded the two states together. The writer was faithful; what it was handed
+was not. The helper now matches on `attribution_state()`, and the golden's
+trailer line is corrected. One field on one line of one golden changed; the
+other fifteen goldens reproduce byte for byte through the pipeline, which is
+what makes this a finding rather than a format change.
+
+This is the class of defect the end-to-end phase exists to catch, and it is
+worth noting that no test caught it for a whole slice: the S07 goldens were
+self-consistent, and the wrong number was wrong only against a definition that
+lived in another crate.
+
+**2026-08-09: three deviations from the architecture of record, for promotion to
+specification section 29.**
+
+- **`PacketSource` requires `Send`.** Section 8.5 declares it without the bound,
+  and slice S08 relied on its absence: it acquired on the calling thread and
+  spawned only the sink thread, so a trait meant to reach 1.0.0 unchanged did
+  not have to change for one slice. Section 12.1's one thread per interface ends
+  that. There is no arrangement of a single thread reading several handles that
+  does not need either this bound or a second buffer, and section 12.4 specifies
+  exactly one buffer.
+- **`CapturedPacket` carries a non-optional interface identifier.** Section
+  8.4's packet vocabulary predates any capture with more than one interface.
+  Non-optional because every packet arrived somewhere; an `Option` would let a
+  real capture ship with the question unanswered. `RawPacket` is unchanged: a
+  source knows only its own interface, so the identifier is attached by the
+  pipeline at the lift.
+- **`CaptureStats::source` becomes per-interface, with the total computed.**
+  Each handle has its own driver buffer, so a kernel drop was always a
+  per-interface quantity; there was simply never a second interface to reveal
+  it. Folding them would tell an operator a driver buffer is undersized without
+  saying which. Found during planning rather than before it.
+
+**2026-08-09: the `pcap` crate binds the capture driver.** Measured rather than
+assumed: MIT or Apache-2.0 across its whole transitive graph, a declared Rust
+1.64 against this workspace's 1.82 floor, and a released-2025 line still
+maintained. Its `Stat` maps one to one onto `SourceStats`, and its counts are
+cumulative from the start of the run, so relaying them unaltered is a copy with
+no arithmetic in which an alteration could hide.
+
+The alternative to a dependency here is not arithmetic over a byte slice, as it
+was in S03 and S06, but a C ABI whose struct layouts must be transcribed by hand
+with nothing checking them against the header. A wrong offset in the packet
+header yields plausible timestamps that are wrong, which is the constitution P-9
+failure that no test over synthetic data catches.
+
+Note for anyone adding to the graph later: `libloading` is pinned to the 0.8
+line by `pcap`, and `libloading` 0.9 declares Rust 1.88. Taking it directly at
+`"0.9"` would break `cargo xtask msrv`, in a check most contributors cannot run
+locally.
+
+**2026-08-09: the transmit capability is answered with a lint, not an
+argument.** `pcap` exposes packet transmission on an active capture, and the
+constitution says a dependency providing a prohibited capability fails the
+dependency audit. Transmission is not on the section 19.3 denylist, which names
+interception drivers, code injection, function hooking, process handles carrying
+memory rights, layered service providers, and image modification; npcap's NDIS
+capture driver is explicitly permitted by section 19.2. That argument is
+correct, and it is also the kind of argument that decays, so `cargo xtask lint`
+now fails if any fragcap source names a transmit call. The check was verified by
+introducing a call and watching it fire.
+
+**2026-08-09: the feature is named `live`, not `platform-tests`.** The
+`platform` workflow anticipated the latter name in a comment. The feature gates
+a capability rather than a test suite, and a capability named for its tests
+invites someone to enable it in order to run tests and be surprised that the
+library changed.
+
+**2026-08-09: `.github/workflows/platform.yml` gains real triggers.** A pinned
+artifact, changed because this slice is the first to give it a subject: until
+now no crate linked against the capture library, so its software development kit
+acquisition step had never run. It now triggers on changes to the capture
+crates and builds the live source, because `cargo check` does not link and a
+missing `wpcap.lib` appears only at the link step. Its first run was watched to
+completion on pull request 12; what it found is the entry dated 2026-08-10
+below.
+
+**2026-08-09: the default route is determined with `std::net`.** A UDP socket
+bound and connected to a documentation-range address reports the source address
+the routing table chose; `connect` on UDP transmits nothing. The alternative was
+`GetBestRoute2` through `windows-sys`, which would add a platform dependency and
+a second major version of `windows-sys` to the graph, since `pcap` pins the 0.36
+line.
+
+**2026-08-09: device loss is determined by observation, not by string
+matching.** `pcap::Error` has thirteen variants and none names a device that has
+gone away; a removed adapter arrives as the general `PcapError(String)`. On a
+terminal error the live source re-enumerates and asks whether its interface is
+still present. Matching the message text would work until a driver update or a
+non-English locale changed it, and would then downgrade a lost device to an
+unmodelled failure silently.
+
+**2026-08-09: the virtual-interface rule is a heuristic and is presented as
+one.** No platform reports a "this is a hypervisor adapter" bit, so fragcap
+matches the adapter description against a documented pattern list. The verdict
+only ever excludes from automatic selection, never from explicit selection, and
+it is recorded with the pattern that matched, so a misclassification is visible
+rather than surfacing as an empty capture.
+
+**2026-08-09: two facts the binding cannot supply are reported as unknown.** The
+`pcap` crate exposes no libpcap version string, and WinPcap API compatibility
+mode is indistinguishable from an ordinary npcap installation through libpcap.
+Both are reported as `None` rather than guessed or inferred, because "not
+determined" and "absent" are different statements. Slice S14's `doctor` command
+can query the installed service and is where that capability belongs.
+
+**2026-08-09: the attributor is shared behind a mutex, as an interim.** Several
+capture threads ask one attributor, and `FlowAttributor` is `Send` without being
+`Sync`. Section 8.6's control thread publishes a snapshot the capture threads
+read without blocking, which is the arrangement that removes the lock; it
+arrives with S11 and S13. Adding `Sync` to the trait would have been a fourth
+deviation to buy something the control thread makes moot.
+
+**2026-08-09: the pcapng writer's blanket refusal of a second interface is
+replaced by a narrower rule.** S06 refused every second interface because
+`CapturedPacket` carried no identifier, so every packet would have routed to the
+first declaration. S09 supplies the identifier, and what remains necessary is
+only that all interfaces be declared before the first packet: section 13.3
+settles the annotation `iface` key from the interface count, and a written block
+cannot be revised.
+
+**2026-08-10: the software development kit is enough to build and not enough to
+run, and this slice learned it the hard way.** The `platform` workflow's first
+ever run acquired the kit and built the live source successfully, then failed
+running the test suite with STATUS_DLL_NOT_FOUND. A binary linked against
+`wpcap.lib` needs `wpcap.dll` at load time, and that DLL ships with the npcap
+driver installation rather than with the kit.
+
+The consequence falsifies a claim this slice's plan made. Tier 2 tests were
+designed to detect a missing driver at runtime and print a reason rather than
+failing; on Windows the process never starts, so that design gets no chance to
+run. The workflow now checks for the driver before choosing which test command
+to issue, and says plainly when live capture was not exercised.
+
+Installing npcap on a runner would make tier 2 tests real and is a licensing
+decision rather than a technical one, so it is left to the operator. Until it is
+taken, the `platform` workflow proves that the live source compiles and links,
+and proves nothing about whether it captures.
+
+**2026-08-09: `cargo xtask neutral` now builds `fragcap-capture` as well as
+`fragcap-core`.** It only ever built core, while the specification claimed both
+build for a target with no capture backend. The claim was true and nothing
+checked it. Found by this slice's analyze gate.
+
+**2026-08-10: three defects found by automated review of pull request 12, all
+real.**
+
+- **The interface address set moved from `PipelineConfig` onto
+  `SourceBinding`.** Specification section 12.6 determines direction by matching
+  against "the address set of the capturing interface", and section 8.4 places
+  the flow key's local endpoint by the same test. One run-wide set cannot say
+  that on a multi-homed machine, and both ways of faking it put a false
+  statement in the output: one interface's addresses reject every other's
+  traffic as `no_local_endpoint`, and their union labels a packet with a local
+  endpoint the capturing adapter does not hold. The field was removed from the
+  configuration rather than kept as a fallback, so the ambiguous form is
+  unwritable. A test gives the two interfaces each other's address sets and
+  asserts the counters change, which a shared union could not do.
+- **A panicking capture thread now winds the others down.** Every capture thread
+  holds a producer, so resuming the unwind while another source was live left
+  the buffer open, the output thread waiting on it, and the run hung instead of
+  reporting the defect. The first attempt at this fix stopped the others at the
+  join and did not work, because join order is arbitrary and the survivor was
+  joined first; the regression test caught that. The stop now fires inside the
+  panicking thread through a guard that checks `std::thread::panicking`, which
+  is deliberately distinct from the existing unconditional one: a source that
+  ends normally must leave the other interfaces running.
+- **The live source documents the timeout it cannot honour.** libpcap fixes the
+  read timeout when a handle is activated, so `next_packet`'s argument is not
+  applicable and silently substituting the handle's value would let stop latency
+  follow a number the pipeline did not choose. `LiveOptions::for_pipeline` makes
+  the two agree by construction, `LiveSource::configured_timeout` exposes the
+  one that governs, and a test pins the default to the pipeline's own so that
+  changing either alone fails.
+
+**2026-08-09: four deviations from the architecture of record, for promotion to
+specification section 29.**
+
+- **`FlowAttributor` requires `Sync`.** Section 8.5 declares it with neither
+  bound. Section 11.6 requires several capture threads to read one published
+  attribution snapshot without locking, and there is no arrangement of a
+  `Send`-only trait that they share without a lock somewhere. S09 changed
+  `PacketSource` by the same route and for the same kind of reason, and the size
+  of the change is the same: a bound that every existing implementor already
+  satisfies, rather than a method on a surface intended to reach 1.0.0. Both
+  implementors in the workspace were already `Sync` and neither changed.
+- **A socket creation instant on the socket table entry.** Section 11 describes
+  a snapshot as a map from endpoint to owning process identifier and says
+  nothing about creation time. Appendix D found the platform exposes it and
+  states that it narrows the section 11.3 race window; carrying it is what makes
+  that true rather than merely available.
+- **The UDP table also reports a socket creation instant.** Appendix D D.1
+  records the timestamp as a property of the TCP table. Both tables carry it,
+  when each is requested by owning module rather than by owning process
+  identifier, which is the class distinction the reconnaissance session did not
+  have reason to draw. This matters more for UDP than for TCP: section 8.4 keys
+  UDP attribution on the local endpoint alone, because the table reports no
+  remote for a datagram socket, so it is the weaker join and the one where a
+  reused port is least distinguishable. For promotion to Appendix D as well as
+  section 29.
+- **An injected clock on the attributor.** Section 11.2 states a cadence without
+  saying where time comes from. A one second interval, a two hundred millisecond
+  rate limit, and a thirty second retention window are otherwise untestable at
+  tier 1, which section 25.1 requires. Scoped to `fragcap-attr` rather than
+  introduced as a workspace-wide abstraction.
+
+**2026-08-09: `arc-swap` is taken as a runtime dependency, for lock-free
+publication.** Section 11.6 requires that the capture thread read the current
+snapshot without locking while the control thread replaces it. The tempting
+alternative, `RwLock<Arc<Index>>`, is a lock: a reader can block behind a
+writer, and the reader here is the acquisition path that section 11.6 exists to
+keep unblocked. It would satisfy a test and not the requirement, which is worse
+than failing both, because it looks like the requirement was met. A hand-rolled
+`AtomicPtr` is correct and needs a reclamation scheme written in `unsafe`, in a
+workspace that has none outside a platform binding.
+
+MIT or Apache-2.0, edition 2018 with no declared minimum toolchain, so it
+cannot move `cargo xtask msrv`. It adds two packages to `Cargo.lock`, not one:
+it has a build dependency on `rustversion`, a proc macro that contributes
+nothing to the built artifact and is also MIT or Apache-2.0. The planning
+research predicted one package, from reading an empty `[dependencies]` table
+and not looking at `[build-dependencies]`. Recorded because a dependency audit
+that makes that mistake under-reports every proc macro in the graph.
+
+Anyone proposing to remove this dependency should answer whether a reader may be
+blocked by a writer at all, which section 11.6 answers no. Whether a read lock
+is fast enough is a different question and not the one being asked.
+
+**2026-08-09: `windows-sys` is pinned to the 0.36 line, which `pcap` already
+resolves.** Taking the current line would put a second complete `windows-sys`
+tree in the graph for declarations that have not changed. Matching the resolved
+version adds no package to `Cargo.lock` at all, so `cargo deny` has no new
+subject and the licence position is unchanged. If `pcap` later requires a newer
+line the graph gains a second copy, which is Cargo working correctly; the
+alternative is guaranteeing the duplicate today.
+
+The alternative to a binding crate here is the same one S09 rejected: a C ABI
+whose struct layouts must be transcribed by hand with nothing checking them
+against the header. A wrong offset in `MIB_TCPROW_OWNER_MODULE` yields a
+plausible process identifier that is wrong, which is the P-9 failure no test
+over synthetic data catches.
+
+**2026-08-09: the feature is `socket-table` and not `live`.** The analyze gate
+caught the collision. `fragcap-capture`'s `live` feature means "links against
+the npcap import library"; this backend links against nothing of the sort,
+because the IP Helper API and the toolhelp snapshot ship with the operating
+system. Folding them into one feature would have made attribution unavailable to
+anyone without a capture driver software development kit it never calls, and
+would have made the workflow step that builds it fail for a reason that has
+nothing to do with it. S09's own rule gives the answer: a feature is named for
+the capability it gates, and these are two capabilities.
+
+**2026-08-09: image names come from toolhelp enumeration, which opens no process
+handle.** Constitution P-1 requires any process handle to state its access
+rights explicitly at the call site. `OpenProcess` with
+`PROCESS_QUERY_LIMITED_INFORMATION` followed by `QueryFullProcessImageNameW`
+would comply: those rights carry no memory access. But P-1's requirement exists
+because a handle request is a thing a reviewer has to check, and
+`CreateToolhelp32Snapshot` removes the thing to check rather than documenting
+it. The image name is already in the enumeration result. `cargo xtask lint` now
+asserts that no fragcap source names a process-opening call at all, which is a
+stronger and cheaper guarantee than asserting that every one it does name
+requests the right rights.
+
+**2026-08-09: `.github/workflows/platform.yml` gains a step and a path filter.**
+A pinned artifact, changed because nothing would otherwise ever compile the new
+backend: that workflow's filters named only `fragcap-capture/**` and
+`fragcap-core/**`, and its only build step was the capture crate. The new step
+is placed before the npcap software development kit is acquired and is not gated
+on the capture driver being present, because this backend needs neither. It is
+therefore the first step in that workflow which can go green on a bare Windows
+runner, and the first that does not depend on an external download succeeding.
+
+**2026-08-09: the cadence configuration is not a profile key.** `fragcap-profile`
+accepts a closed set of five capture keys and refuses unknown ones, and S05
+refused them deliberately: a key with no consumer is a key whose behavior is
+untested and whose meaning is set by whoever first reads it. S14 owns adding
+keys when it owns a command line that can set them. The interval, the retention
+period, and the rate limit are plain values on `AttributorConfig` until then.
+
+**2026-08-09: `resolve` reads the injected clock, and only on the path that
+records a refresh request.** Found unspecified by the analyze gate. The rate
+limit bounds how often fragcap reads the platform's table, which is a
+wall-clock cost, so it cannot be measured in capture time: replaying an hour of
+traffic in one second would otherwise request thousands of refreshes and a quiet
+interface would request none. The clock is injected, so this costs no
+determinism in a test. It does mean `resolve` is not a pure function of the
+index and the packet, which is the honest reading of section 11.2 rather than a
+compromise of it.
+
+**2026-08-09, in review of pull request 14. Five findings, all fixed.** An
+automated review raised two correctness bugs and three lower ones, and each was
+a real defect rather than a false positive.
+
+The tree closed an exit against the newest live node sharing an identifier
+rather than the node whose lifetime contained the exit's time. When an
+identifier is reused and the old process's exit arrives after the new process's
+start, that gave the new process an exit before its own start and left the old
+one open forever. Exit matching now selects by lifetime; `live_node_covering`
+replaces `live_node_for` on that path, and `join_pending_exit` is keyed to the
+specific node a fold just created rather than to whichever node is newest.
+
+The ETW watcher began consuming when the trace opened, inside `start`, but a
+caller can only subscribe after `start` returns, so every event in that window,
+the whole startup burst, was published to nobody. That is the gap the
+subscribe-before-snapshot ordering exists to close, reopened at the delivery
+layer. The consumer now holds a backlog from the moment it opens and delivers it
+to the first subscriber, under the same lock a publish takes so nothing slips
+between the two.
+
+Snapshot reconciliation could collapse two processes into one node: a start
+event for an identifier a snapshot process held would overwrite the snapshot
+node in place, even when the start was a different process that reused the
+identifier. The tree now takes the instant the snapshot reflects
+(`apply_snapshot_at`), and a start after that instant is a distinct node,
+because a process alive at the snapshot instant started at or before it. The ETW
+watcher stamps that instant from the system clock and exposes it. The
+untimestamped `apply_snapshot` keeps merging, which is correct for the offline
+tests that never reuse an identifier against a snapshot, and its limitation is
+documented.
+
+`Session::lost` returned a sentinel on a failed query and the report treated it
+as zero losses, so a transient query failure could make an incomplete trace look
+lossless, the silent loss P-4 and P-9 both forbid. The session now caches the
+last figures a query did read and returns those on failure; zero appears only
+before any successful read, meaning none observed rather than none suffered.
+
+The ETW properties buffer was a `Vec<u8>` cast to `EVENT_TRACE_PROPERTIES`,
+which is undefined behaviour because a `Vec<u8>` guarantees only byte alignment
+and the structure needs more. It is now a `#[repr(C)]` type carrying the
+structure and its trailing name bytes, so the compiler provides the alignment,
+across all three call sites.
+
+**2026-08-09. `windows-sys` supplies the platform binding, not `ferrisetw`.**
+Specification Appendix A names `ferrisetw` and `sysinfo`. Neither is taken, and
+the measurements are in the slice's research document. `windows-sys` 0.61.2
+resolves to two crates against `ferrisetw`'s thirty, where the thirty include a
+bignum stack and a random number generator that a passive observer of process
+events has no use for. It is generated by Microsoft from the Windows metadata
+rather than wrapping that generation a version line behind, which is what S09's
+argument for taking `pcap` actually points at: the value is in who guarantees
+the struct layouts. And it declares Rust 1.71 against this workspace's 1.82,
+where `windows` declares exactly 1.82 and leaves no headroom. A probe naming
+every symbol the slice needs was compiled under `rustup run 1.82` before the
+dependency was added.
+
+What `ferrisetw` would have supplied is schema parsing over manifest-based
+providers, and the kernel process provider is not one: its events are fixed MOF
+layouts. The parse this slice needs is field offsets into one structure, and it
+is written out in `etw/record.rs` with a bounds check on every read and a test
+per field, including the variable-length security identifier that moves the two
+strings after it.
+
+Recorded as a divergence from Appendix A and promoted to specification section
+29 at the next version.
+
+**2026-08-09. No polling fallback, at any privilege level.** Specification
+section 10.1 refuses polling categorically and Appendix D.1 records that an
+unprivileged process telemetry source exists on the platform. Appendix D.4
+records what it cost the reconnaissance harness that used one: a chain member
+living under a second could have gone unobserved. Offering that as a degraded
+mode when elevation is missing would produce a run that exits zero, writes a
+well-formed capture file, and contains no gameplay, under a name that sounds
+like success. `WatcherError::NotElevated` says so in as many words, and there is
+no code path to fall back to. A proposal to add one should explain how the
+resulting capture would be distinguishable from a correct one.
+
+**2026-08-09. The process tree lives in `fragcap-core`, the watcher in
+`fragcap-attr`.** The tree is a fold over values with no platform surface, so
+the whole of section 10.2 is a tier 1 test on any machine, and S12's stage
+matching, which is a decision over a tree, becomes testable at all. Keeping the
+two together would have gated every test of ancestry, retention, and identifier
+recycling behind an elevated Windows session. `interface::select` established
+the shape in S09 for the same reason.
+
+**2026-08-09. Subscribe before snapshotting, never the reverse.** The two orders
+fail differently and only one failure is recoverable. Subscribing first can
+report one process twice, once as an event and once in the snapshot, and the
+tree reconciles that into a single node in either arrival order. Snapshotting
+first leaves a window in which a process created in between is reported by
+neither source, and nothing downstream can detect that it is missing. A visible
+duplicate beats an invisible gap, and an invisible gap in a launcher chain is
+the failure this slice exists to prevent.
+
+**2026-08-09. The event channel is unbounded, and P-4 is satisfied by that
+rather than despite it.** Section 12.4's bounded drop-oldest buffer is the right
+shape for packets, which arrive faster than they can be written and whose
+individual loss costs one packet. Process events arrive in the thousands over a
+session and the loss of one start event costs a subtree. There is therefore no
+discard path here to count. A future reviewer who wants to bound this should
+note that the counter they would add would be counting the loss the bound
+introduced.
+
+**2026-08-09. A record too short to name its process yields nothing; one
+truncated only in its command line still names it.** The asymmetry is
+deliberate. Refusing the second would discard a process, and with it every
+descendant's ancestry, to avoid losing one field the type already permits to be
+absent.
+
+**2026-08-09. Rundown events are ignored and counted.** The kernel emits these
+at session start to describe processes already running. They are not published,
+because the startup snapshot already covers those processes and because a
+rundown record carries the same stale parent identifier a running process does,
+so treating one as a creation event would claim creation-time ancestry it does
+not have. Counted rather than silently dropped. Using them in place of the
+Toolhelp snapshot is a real option that would remove the only process handle
+this slice opens, and it is left for a later slice because it makes `snapshot()`
+asynchronous.
+
+**2026-08-09. The `platform` workflow gains an elevation gate.** A pinned
+artifact, changed for this slice. Three changes: `crates/fragcap-attr/**` joins
+the path triggers, a step builds `fragcap-attr --features etw` so the binding is
+proven to link, and the tier 2 process tests run only when a runtime check finds
+the runner elevated, reporting plainly which case it took. S09's lesson about
+`STATUS_DLL_NOT_FOUND` is that a workflow assuming its precondition goes red for
+a reason that has nothing to do with the change under test.
+
+**2026-08-09. The polling prohibition is not mechanized, and the asymmetry with
+the memory-rights lint is considered.** A lint could forbid the names a poller
+would use, and those names are `Duration`, `interval`, and `loop`, all of which
+appear legitimately throughout the workspace. A check with that false-positive
+rate gets suppressed, and a suppressed check is worse than an honest inspection
+because it looks like a guarantee. The memory-rights check is mechanized because
+its forbidden names are four constants with exactly one meaning each.
+
+**2026-08-09, at integration. Three S11 decisions were withdrawn in S10's
+favour, and the slice is better for it.** S10 merged while this branch was open,
+into the same crate, and three of its choices were stronger than the ones made
+here independently.
+
+The `windows-sys` line moves from 0.61 to 0.36, which is what `pcap` already
+resolves and what S10 pinned to so its backend added no package to `Cargo.lock`.
+Every symbol the watcher names was checked against 0.36 first. Two differences
+are handled in the code: that line predates the handle newtypes, so a trace
+handle is a plain `u64`, and it has no `GUID::from_u128`, so both provider
+identifiers are written out field by field.
+
+The startup snapshot stops calling `OpenProcess`. S11 used it with
+`PROCESS_QUERY_LIMITED_INFORMATION` to read a start time, which complies with
+P-1: the right carries no memory access and it was named at the call site. S10
+had already made the stronger argument in its own enumeration module and backed
+it with a lint entry forbidding `openprocess` anywhere, on the ground that P-1's
+rule exists because a handle request is a thing a reviewer has to check, and
+opening nothing removes the thing to check. S10 invited a later slice to delete
+that entry and argue for it. This slice declined and gave up the start time,
+which FR-009 now records as unknown and FR-024 already gave a defined meaning.
+
+`cargo xtask neutral` needed no change at all: S10 had already added
+`fragcap-attr` to it, for its own backend, which is exactly the outcome that
+check exists to produce.
+
+One S11 decision survives alongside S10's rather than replacing it. The four
+memory-rights constants stay in the lint as a complement to S10's three calls: a
+right can be named where the call is not, and they are what stops a future slice
+that does delete the `openprocess` entry from quietly asking for memory.
+
+S10 also left a note in `platform/toolhelp.rs` addressed to S11, warning that
+`PROCESSENTRY32W`'s parent identifier says who a process's parent is now rather
+than who created it. The two designs agree: that is why a node built from the
+snapshot carries `Ancestry::Snapshot` and one built from a start event carries
+`Ancestry::Observed`, and why they are not interchangeable.
+
+### Deviations recorded by this slice
+
+Each is promoted to specification section 29 at the next version.
+
+- **A command line on `ProcessEvent::Started`.** Sections 10.1 and 10.2 require
+  it. The enum is `#[non_exhaustive]`, which permits new variants but not new
+  fields on an existing one, so this is a breaking change to the variant rather
+  than an additive one. S02 anticipated it in the module's own documentation.
+- **An availability state for a command line.** Section 10.2 lists the field
+  without qualification. A process the startup snapshot finds cannot yield one
+  without `PROCESS_VM_READ`, which P-1 forbids, so the field admits an
+  unavailable state. Recording that a value is unavailable is not withholding
+  it; substituting an empty string would be.
+- **Ancestry provenance on the node.** Section 10.2's field list does not
+  include it, because it does not address the startup snapshot's weaker
+  ancestry. Section 5.3 establishes that the two kinds differ in reliability.
+- **The observed parent identifier is kept even when it resolves to nothing.**
+  Not in section 10.2's field list either. It is an observation, and P-9 does
+  not permit discarding one merely because nothing downstream could use it.
+- **`image` is settled as the full path.** S02 left it ambiguous and its tests
+  used bare file names. Section 10.3 matches the file name with one predicate
+  and the path with two others, so the path is recorded and the name derived.
+- **A watcher-owned report beside `CaptureStats`.** Section 26.2 lists what
+  runtime statistics carry and names only packet quantities, because it was
+  written before there was anything else to count. Section 12.4's conservation
+  identity is asserted over `CaptureStats` in every pipeline test, and a
+  quantity that is not a packet must not enter it.
+- **Specification section 5.4 says the Division 2 chain is six levels; it is
+  seven.** Section 5.4's own diagram lists seven processes, and Appendix D.3's
+  topology lists the same seven. Only the prose sentence between them says six.
+  The tests follow the two that agree. Found by writing the chain out as a test,
+  which is the argument for writing it out as a test.
+
+### Slice narrative, for `AGENTS.md`
+
+Not written into `AGENTS.md` by this branch. S10 is in development in parallel
+and that file's "Current state" section is the one both slices would rewrite, so
+this is folded in by whichever pull request merges second.
+
+**fragcap can see processes, and the tree that holds them is a value.** S11 adds
+a `ProcessWatcher` over an ETW session fragcap starts for itself, and a
+`ProcessTree` in `fragcap-core` that folds its events into the ancestry relation
+of section 10.2. The split is load-bearing: the tree opens nothing, so all of
+section 10.2 is tier 1, and S12's stage matching is testable before it is
+written.
+
+**The Division 2 case is now a test rather than a paragraph.** Three processes
+share one image name and only the last holds sockets. `chains.rs` asserts that
+matching on name alone finds the shim, that ancestry finds the client, and that
+the anti-cheat launcher is the distinguishing ancestor. A regression here would
+mean `descends_from` cannot do the job section 15.4 requires it for.
+
+**Nothing polls, and there is no fallback that does.** Read the decisions above
+before proposing one.
+
+**The ETW watcher has never observed a live process.** The unelevated refusal
+path is checked, the Toolhelp snapshot and the `FILETIME` conversion are checked
+against this machine, and the record parser has a test per field. Everything
+requiring an elevated trace session is tier 2 and, as with live capture since
+S09, has not run. The `platform` workflow now has a step that could run it and
+reports plainly when it cannot.
+
+**2026-08-10. Six decisions taken while implementing S12, recorded for promotion
+to specification section 29.**
+
+- **The stage binding is written onto the process node rather than held in a
+  side-map.** `fragcap-core` gains `ProcessTree::bind_stage`, writing the field
+  S11 reserved for exactly this. A side-map would split the node's state across
+  two owners and thread the map through everywhere the tree already goes.
+- **`descends_from` is evaluated once, on the start event, over current
+  bindings.** S11 guarantees causal creation order, so a stage that matches an
+  ancestor binds before its descendant is evaluated. No deferred re-evaluation
+  queue is introduced for a reordering the event source does not produce.
+- **A process matching more than one stage binds the first in declaration
+  order.** Section 15.4 already makes an ambiguous image match within a chain an
+  error; a total order over declaration position makes the residual case
+  deterministic rather than dependent on iteration order.
+- **The watching-discard counter is the session's own, not `CaptureStats`.** The
+  discard happens upstream of the pipeline whose conservation identity
+  `CaptureStats` carries, so a field there would break that identity or sit
+  unused until S13 and S14 wire the session in. `WatcherReport` and
+  `SourceStats` set the precedent that a component's own accounting is a separate
+  value the run assembles.
+- **The acquisition timeout and the duration bound are measured from arm.** A
+  single clock origin for both, and a session that never acquires still ends: by
+  the acquisition timeout when set, or by the duration bound or an operator
+  interrupt otherwise.
+- **A live service does not keep the all-exited stop condition from firing.**
+  Section 10.4 says a service is never awaited, because waiting on something
+  already running deadlocks; a platform service that outlives the session must
+  not keep it from recognizing that its gameplay processes have all exited.
+
+**2026-08-10, in review of pull request 16. Three findings, all fixed.** An
+automated review raised three real correctness defects in the session, each a
+consequence of the same simplification.
+
+- **Only a non-service match acquires the target.** The Watching to Capturing
+  transition fired on any first match, so a persistent service appearing while
+  Watching began capturing and disabled the acquisition timeout, retaining
+  service noise before any target existed. Section 10.4 says a service is never
+  awaited; the transition is now gated on a non-service binding. A service still
+  binds for attribution.
+- **A process bound already exited is honored as exited.** When ETW delivers an
+  exit before its start, the tree joins the held exit on the start event, so the
+  node is not live. The binding was nonetheless recorded live, which let a
+  terminal that had already gone enter Capturing without ever producing
+  `TerminalStageExited` and left a stale live count blocking `AllProcessesExited`
+  indefinitely. Binding now reads the node's liveness and routes an
+  already-exited bind through the same exit handling.
+- **Packets discarded outside the capture window are counted.** A packet reaching
+  the session while Draining, after a stop condition, was discarded without a
+  counter, which P-4 forbids. `SessionStats::discarded_out_of_window` now counts
+  every such packet, and the conservation identity holds for every call to
+  `on_packet` regardless of state.
+
+**2026-08-10. Six decisions taken while implementing S13, recorded for promotion
+to specification section 29. Two carry deviation candidates, noted below.**
+
+- **Narrowing reads the attribution map, not a process-tree flow set.** The
+  endpoint set comes from `FlowAttributor::active_endpoints`, the seam slice S10
+  built for this. Specification section 12.2 names the attribution map as the only
+  reliable source; the section 8.6 diagram draws a "flow set" from the process
+  tree, and the two denote the same set. **Deviation candidate:** the diagram and
+  the prose should be reconciled.
+- **`filter_gaps` counts occurrences, not packets.** A packet the kernel filter
+  excludes is never delivered to fragcap, so a literal packet count would be
+  fabricated, which constitution P-9 forbids. The counter counts endpoints briefly
+  excluded by a stale narrowed filter, a set difference computed at each reinstall.
+  **Deviation candidate:** section 12.3's prose says "packets," and the unit is
+  occurrences.
+- **Per-source delivery is a `std::sync::mpsc` channel, not `arc-swap`.** Adding
+  `arc-swap` to `fragcap-core` would widen its dependency allowlist from the single
+  entry `bytes`, which the dependency check treats as a P-2 guard. The filter slot
+  is read between reads, off the per-packet path, so section 11.6's lock-free
+  mandate does not extend to it, and a std channel needs no dependency and no lock.
+- **The maintenance timings are injectable through a setter.** `FilterConfig`
+  carries the section 12.2 constants; `Pipeline::set_filter_config` overrides them
+  for tests without changing `Pipeline::new` or `PipelineConfig`, so no existing
+  caller or struct-literal construction breaks. The policy takes the current
+  instant as a parameter, so it needs no clock abstraction in core.
+- **Gap counting is accumulated on the control thread and absorbed by the run.**
+  The control thread holds the per-handle installed history the count is computed
+  from, so it counts there and returns a `CaptureStats` the run folds in with the
+  existing `absorb`, which already sums `filter_gaps`.
+- **A maintenance reinstall failure is non-fatal.** A `set_filter` rejection during
+  phase three keeps the prior program and continues capturing, because correctness
+  never depends on filter freshness and retiring the interface would lose all its
+  later traffic to spare a failed optimization. It advances no drop counter. The
+  program is generated from a fixed grammar, so this path is defensive; a bootstrap
+  rejection at open still retires, which is existing S09 behavior.
+
+**2026-08-10, in review of pull request 17. Four code findings fixed, two recorded
+as required follow-up.** An automated review raised six findings against the first
+commit.
+
+- **A wildcard bind drops the host constraint.** A UDP socket reported bound to
+  `0.0.0.0` or `::` was compiled as `host 0.0.0.0`, which matches no real packet,
+  so the first narrowing would silently exclude that socket's whole traffic while
+  recording no gap. Such a bind now admits by protocol and port alone.
+- **A filter gap is counted when it begins.** Gap accounting ran only at a
+  reinstall, so an endpoint excluded during the debounce or rate-limit window that
+  then closed, or that was still excluded when capture ended, went uncounted. Gaps
+  are now counted the first poll an endpoint is excluded by the installed program,
+  once per episode, independent of any later reinstall.
+- **A retired handle stops accruing gaps and installs.** With begin-time gap
+  counting, a handle whose capture thread ended would otherwise fabricate a gap for
+  every new endpoint against its frozen program. `FilterManager::retire`, called
+  when the control thread can no longer reach a capture thread, stops both.
+- **A control-thread panic propagates.** The control thread's join swallowed a
+  panic, which could present a defect as a completed capture. It is now carried to
+  the caller after orderly shutdown, the same contract the acquisition threads have.
+- **Follow-up, not fixed here: narrowing is not yet restricted to profiled
+  processes.** `FlowAttributor::active_endpoints` returns every socket-table
+  endpoint, not only those owned by profiled processes, because the pipeline has no
+  access to the S11/S12 process-tree stage bindings and `active_endpoints` has
+  dropped the owning process identifier. Restricting the narrowing input to
+  profiled endpoints is the session-to-pipeline integration that S12 deferred to
+  S13 and S14; it is required before the live backend narrows correctly and is
+  recorded as a **section 29 open item**. The filter-management machinery and its
+  tier-1 verification do not depend on it, because the scripted attributor supplies
+  a controlled endpoint set.
+- **Follow-up, not fixed here: the attribution snapshot is not refreshed in the
+  pipeline.** `FlowAttributor::refresh` takes `&mut self` and cannot be called
+  through the `Arc<dyn FlowAttributor>` that section 11.6 requires for lock-free
+  `resolve`, so no thread refreshes the socket table during a run. Driving the
+  periodic refresh from the control thread (section 8.6) needs a `refresh(&self)`
+  trait signature, which is a **section 29 deviation** to be taken with its own
+  change rather than rushed here; every `FlowAttributor` implementor changes with
+  it. Pre-existing (the pipeline never refreshed), surfaced by S13's control
+  thread, which is the natural owner of the driven refresh once the signature
+  allows it.
+
+**2026-08-10. Decisions taken while implementing S14, recorded for promotion to
+specification section 29.**
+
+- **clap and ctrlc land on `fragcap-cli` alone.** The argument grammar of
+  section 17.2 is a fixed set of flags, defaults, subcommands, and help text, and
+  clap derive produces exactly that from typed structs rather than a hand-rolled
+  parser that would drift from the help the specification prints. `ctrlc`
+  supplies the portable console-interrupt hook the standard library lacks, so an
+  operator interrupt becomes `StopReason::Interrupt` and an exit-0 success. Both
+  sit at the top of the dependency graph where nothing reaches them, which `cargo
+  xtask deps` enforces, so a large graph on the binary crate never touches core.
+- **clap is pinned exactly to 4.5.32 for the 1.82 minimum.** clap 4.6 declares
+  edition 2024 and rust-version 1.85, and later 4.5 patches (4.5.61) pull
+  `clap_lex` 1.0, which declares the same, both above the workspace's 1.82
+  minimum. Either resolves under a caret or tilde range and breaks `cargo xtask
+  msrv`, a check most contributors cannot run locally, exactly as `libloading`
+  0.9 did in S09. Because the incompatibility is in a transitive patch a version
+  range cannot exclude, the pin is exact; 4.5.32 is edition 2021, rust-version
+  1.74, on `clap_lex` 0.7. Raise it only alongside a workspace MSRV bump. `ctrlc`
+  and the dev-only `tempfile` build at 1.82 unpinned.
+- **The size grammar lives in `fragcap-core::size`, base 1024.** It mirrors the
+  duration grammar (integer plus a required unit, zero rejected) so the two
+  literal grammars are consistent, and living in core lets the ring slice (S16)
+  reuse it beside `duration` rather than reimplement a size parser in the CLI.
+  Binary units match how buffer and file sizes are reasoned about.
+- **The role and stage bridge is a `FlowAttributor` decorator in the facade
+  `session` module.** `Attribution` already carries `role` and `stage` with
+  builder methods, so `RoleStampingAttributor` populates existing fields rather
+  than changing a type, and a decorator is still just a `FlowAttributor` with no
+  packet acquisition, so P-3 holds. The facade `session` module is its home
+  because that is the one place already above both `fragcap-capture` and
+  `fragcap-attr`; `arc-swap` is not pulled into the facade for it, because the
+  binding snapshot is published on a rare write (a process start or exit) and a
+  short-held lock around an `Arc` swap suffices off the per-packet path.
+- **The session and the pipeline run side by side, joined by a tee.** The
+  pipeline owns the packet threads and never surfaces individual packets; a
+  session driver owns the `CaptureSession` and connects through a `StopHandle` and
+  the published binding snapshot. A `TeeCountingSink` prepended to the sink list
+  forwards each retained packet's length and instant to the driver, so the session
+  stays the single authority for the volume bound and its retained counters while
+  it never sees the packet path, and the tee's receipts stay inside the pipeline's
+  conservation identity.
+- **Events are hand-rolled NDJSON over the sink escaper; every diagnostic stream
+  is standard error.** `serde_json` stays test-only, so the small fixed event set
+  is serialized by hand over the one escaper the sinks already use, keeping serde
+  out of the runtime graph. Command results (`doctor`, `profile`) go to standard
+  output and a capture's progress, summary, and events to standard error, so a
+  sink writing capture data to standard output is never contaminated. Timestamps
+  are RFC3339 `Z` formatted by hand with a civil-date conversion, no date crate.
+- **`doctor` is a pure `Inputs` to `Report` classifier over a thin probe.** Every
+  classification and the exit decision are testable with hand-built inputs and
+  goldens on any target, which is the only way to cover the section 26.3 matrix
+  without the environment. The thin `cfg(windows)` probe reads the machine
+  read-only and installs nothing. The two npcap options are separate checks, each
+  naming its own remediation when absent. A missing process-event session is a
+  blocking fail only when the session is elevated and cannot open, and a
+  non-blocking skip when the tracing capability is not built in.
+- **`run` and `tap` are driven offline through hidden flags.** A recorded capture
+  replayed as the source, a scripted attributor, and a scripted process timeline
+  are selected by hidden flags on `run` and `tap`, so the whole capture path is
+  exercised from `run()` in a tier-1 test with no capture driver, no elevation,
+  and no game. The flags are hidden rather than removed because the same assembly
+  seam is where the feature-gated live path attaches. In the offline shape
+  acquisition is resolved before the pipeline starts, so the published bindings
+  are visible when every packet is attributed, which is what makes the stamped
+  output a stable golden rather than a race between the publish and the resolve.
+- **Live, socket-table, and ETW assembly is now wired behind their features.**
+  When no offline replay source is given, `assemble::components` assembles the
+  real backends: interface enumeration and the section 12.1 selection precedence
+  behind `live`, one `LiveSource` binding per selected interface, the
+  `SocketTableAttributor` (IP Helper table plus toolhelp namer) behind
+  `socket-table`, and the `EtwWatcher` process event stream behind `etw`. A live
+  build without `socket-table` falls back to an empty scripted attributor so
+  packets are retained unattributed rather than having an owner fabricated (P-4
+  permits the first, P-9 forbids the second); a live build without `etw` fails
+  naming the missing feature, because with no live process event source no target
+  could ever be acquired. The offline path is unchanged: the same replay source,
+  scripted attributor, and scripted watcher, and the same usable-backend-absent
+  failure when neither offline nor live is present.
+- **The live driver is a streaming merged channel, distinct from the offline
+  two-phase path.** The offline path folds a pre-collected timeline in two phases
+  and stays byte-identical to its committed goldens. A live capture has no
+  pre-collected timeline and its packets and process events arrive on separate
+  channels, so the live driver merges the counting tee's packets and the ETW
+  watcher's events into one totally ordered channel and folds them in arrival
+  order. That merge is what lets the run stop on a terminal-stage exit even while
+  no further packets arrive: the exit reaches the driver as a merged-channel
+  message independent of the packet path, the session leaves its active state,
+  and the pipeline is stopped. The pipeline build is factored into one helper both
+  drivers call, so the two construct the output path identically.
+- **The live path is compiled but has never executed, consistent with the
+  project's standing position.** It is compiled under the `--all-features` clippy
+  gate and covered only by `#[ignore]`d tier-2 tests, because it needs npcap and
+  an elevated ETW session, which continuous integration has neither. Live capture
+  has still never run in CI. Recorded for promotion to specification section 29.
+- **The socket-table refresh loop is now built through the read/write split the
+  S10 design anticipated.** `FlowAttributor::refresh` takes `&mut self`, so an
+  attributor shared across the capture threads cannot be refreshed through the
+  pointer they hold. The split resolves that: a new platform-neutral
+  `PublishedResolver` in `fragcap-attr` is the read side of section 11.6, holding
+  the shared published index, the shared refresh schedule, and the clock, and
+  answering `resolve` and `active_endpoints` with the exact atomic-load and
+  rate-limited-request semantics of `SocketTableAttributor`'s own read path.
+  `SocketTableAttributor::resolver()` clones one from an attributor. The CLI's
+  live `socket-table` branch builds the mutable attributor, hands the pipeline
+  `Arc::new(attributor.resolver())` as the inner attributor, and moves the mutable
+  attributor onto a `RefreshDriver` control thread that does one initial refresh
+  and then refreshes on the section 11.2 cadence (`wants_refresh`-driven,
+  honoring the resolver's triggered requests), so a refresh on the control thread
+  is visible to every resolving thread and an unseen-endpoint lookup records a
+  request the control thread acts on. The driver is stopped and joined at
+  teardown, after the pipeline ends and before the watcher is dropped; it reads
+  only the socket table and touches neither the pipeline nor the forwarders, so it
+  deadlocks against nothing. This is still compiled-only: it needs npcap and the
+  IP Helper socket table on a real machine, so it is exercised solely by
+  `#[ignore]`d tier-2 tests and has never run in CI. The one tier-1 addition that
+  does run is the `fragcap-attr` unit test proving a resolver answers from the
+  index its attributor publishes and that the resolver's own `refresh` is a
+  harmless no-op.
+- **Review pass (2026-08-10): scope enforcement, mode honoring, JSON
+  completeness, live declarations, and a real elevation probe.** `--roles` is now
+  enforced rather than merely printed: `CaptureSession::new_scoped` treats a stage
+  outside the scoped set as absent from the profile, so it never becomes pending,
+  never binds or stamps, and never influences the stop conditions; `new` delegates
+  to it with no restriction, so existing callers are unchanged, and `run` scopes
+  to the resolved roles while `tap` imposes none. A profile-declared `[capture]
+  mode` is honored through the same command-line-over-profile overlay as the other
+  defaults, so a profile asking for `stream` or `ring` with no `--mode` override is
+  refused naming its slice rather than silently captured as a file. The
+  `session.complete` JSON event now carries `watching_discarded` and
+  `discarded_out_of_window`, so a `--json` consumer, which never sees the human
+  summary, still reads every discard counter FR-021 requires; and `--json`
+  warnings and errors are emitted as `warning`/`error` NDJSON records instead of
+  plain lines, so a diagnostic stream a consumer reads line by line stays valid
+  NDJSON. The live path declares every selected interface with its own name and
+  link type in selection order, matching the pipeline's per-position `InterfaceId`
+  assignment, so a packet from an interface past the first is no longer refused as
+  undeclared; the offline path still declares one interface named "capture" and is
+  byte-identical to its goldens. The live acquisition loop now also ends on an
+  operator interrupt (a clean exit-zero stop) and when a `--duration` bound moves
+  the session out of an active state while still watching, rather than only on
+  acquisition timeout or watcher disconnect. The `doctor` probe detects real
+  elevation by reading the current process token's elevation flag through the
+  documented current-process token pseudo handle, so no handle is opened against
+  any process (P-1) and the blocking elevated-and-tracing-unavailable branch can
+  actually be reached; this adds a windows-only `windows-sys` dependency pinned to
+  the same 0.36 line `fragcap-attr` already resolves, so no second copy enters
+  `Cargo.lock`.
+
+**2026-08-10: transports and streaming sinks (slice S15), decisions worth
+recording for promotion to specification section 29.**
+
+- **A consumer's encoder is an ordinary `Sink` over its connection.** The
+  streaming sink constructs one per connection through a `SinkFactory` that
+  replays the header, so a mid-capture joiner and a fresh rotation segment each
+  begin with their own valid header. Format stays orthogonal to transport with no
+  new abstraction and the S06/S07 writers unchanged. The alternative, a single
+  shared encoder fanning bytes to a broadcast writer, cannot give a mid-capture
+  joiner a valid pcapng header and was rejected (P-5).
+- **The streaming sink's `write` always returns success and never advances the
+  capture-wide `sink_dropped`.** Per-consumer drops are the sink's own,
+  separately reported accounting. This preserves the pipeline conservation
+  identity (the sink received every packet) and keeps a slow downstream reader
+  from retiring the sink, which folding per-consumer loss into `sink_dropped`
+  would not (P-4).
+- **A stalled consumer is unblocked by a stop flag polled through a short socket
+  write timeout, not by `shutdown()`.** `TcpStream::shutdown` does not portably
+  unblock a blocked send (notably on Windows), so a `PollingWriter` gives the
+  socket a fixed short write timeout and rechecks a stop flag between attempts.
+  The disconnect decision itself lives in the streaming sink (queue full past the
+  timeout), so the disconnect reason is deterministic and finish is bounded
+  regardless of the configured timeout. The stop-flag write aborts with
+  `ConnectionAborted`, not `Interrupted`, because `write_all` retries the latter.
+- **The Windows named pipe unblocks a stalled writer with `CancelIoEx`, not
+  `DisconnectNamedPipe`.** `DisconnectNamedPipe` discards bytes already in the
+  pipe buffer, truncating a consumer that kept up; `CancelIoEx` cancels only the
+  in-flight write, and `CloseHandle` on drop then lets the client drain the
+  remaining buffered bytes before end of stream.
+- **No new third-party dependency.** The file, TCP, and Unix transports are the
+  standard library; the named pipe reuses `windows-sys`, already pinned at 0.36
+  for the attribution socket table, taken under `[target.'cfg(windows)']` so it
+  adds no package to `Cargo.lock`. Additive `windows-sys` features
+  (`Win32_System_Pipes`, `Win32_Storage_FileSystem`, `Win32_System_IO`,
+  `Win32_Security`) were enabled; they change no resolved version.
+- **The Unix domain socket transport is `cfg(unix)` and is not compiled or
+  exercised by the gate on the Windows development machine or the Windows
+  `platform` workflow.** It is present for parity and future platforms per
+  specification 14.2; on the primary platform it is unexercised, recorded rather
+  than hidden. The named-pipe tier-2 tests do run on the Windows dev machine and
+  their result is reported.
+
+**2026-08-10: ring mode and triggers (slice S16), decisions worth recording for
+promotion to specification section 29.**
+
+- **The ring dump is the `Sink::finish` seam, not a new trigger path.** The
+  pipeline already calls `finish(self, stats)` on every sink exactly once at
+  drain, and drain is reached by all six session stop conditions. Ring mode
+  therefore adds no code to the capture session, the pipeline, or the write gate;
+  it swaps the sink built for `--out`. A dedicated ring-flush trigger observed by
+  the orchestrator was rejected: it would re-implement drain and the stop
+  conditions and risk the two disagreeing.
+- **The retained window is a `VecDeque<CapturedPacket>` with evict-from-front,
+  and no new dependency.** `CapturedPacket` owns its payload by reference-counted
+  `Bytes`, so retaining a packet is a pointer clone, not a byte copy. The standard
+  library deque is exactly the bounded-tail structure needed, the same reasoning
+  S08 used to keep the pipeline buffer off a concurrency crate.
+- **A size ring window is measured by captured length, matching `--max-bytes`,
+  not by encoded pcapng block size.** An operator reasons about one notion of
+  capture size across `--ring` and `--max-bytes`, and the retained set does not
+  depend on the on-disk encoding. The dumped file is slightly larger than the
+  window because it adds block framing and the mandatory header blocks, the same
+  relationship a `--max-bytes` file has to its bound.
+- **A duration window is measured back from the greatest capture instant
+  observed, not from the last-arrived packet.** Using the last-arrived packet as
+  the reference would let a late out-of-order packet carrying an old instant shrink
+  the window and evict a genuinely recent packet, the dangerous (under-retention)
+  direction. The running-max reference prevents that; a rare out-of-order old
+  packet not at the front is over-retained (safe) rather than allowed to redefine
+  "newest." A full `VecDeque::retain` scan per write that would evict every
+  out-of-order old packet exactly was rejected as O(n-squared) over a capture, and
+  the over-retention it avoids is harmless.
+- **A ring eviction returns success and never advances `sink_dropped`.** Per the
+  same argument S15 used for a streaming sink's per-consumer drops: the sink
+  received every packet (conservation holds), and what it evicts from its window
+  is the operator's declared retention scope, counted in the sink's own `evicted`
+  accounting rather than the capture-wide loss counter (P-4, P-9).
+- **Ring vocabulary is kept distinct from the section 12.4 bounded buffer.** The
+  FR-8 capability is named ring mode, and the internal drop-oldest backpressure
+  buffer of 12.4 stays the bounded buffer. Both are bounded, drop-oldest rings;
+  conflating them would confuse a user-facing output mode with an internal
+  mechanism. The glossary carries a ring-mode entry that names the distinction
+  (constitution P-6).
+- **The end-to-end ring run is proven through the CLI integration harness**
+  (`crates/fragcap-cli/tests/cli_run.rs`) rather than a separate facade test: that
+  harness already drives the whole offline pipeline through the real command
+  entrypoint, including profile resolution and the write gate, so it subsumes what
+  a facade-level test would assert. Both an interrupt trigger and a non-interrupt
+  (terminal-stage-exit) trigger are exercised, and the whole-input window is shown
+  equal in packet count to a plain file capture of the same input.
+
+**2026-08-10: PR #30 review (Codex), three findings addressed.**
+
+- **The eviction count is surfaced, not merely counted (P1).** The ring sink's
+  `evicted` counter is now an `Arc<AtomicU64>` published through
+  `RingSink::evicted_handle`; `build_sinks` keeps the handle and the orchestrator
+  reads it after the run to emit a `ring.evicted` structured event and a summary
+  progress line. Counting without surfacing was the P-4 gap: a run that rolled its
+  window would otherwise report zero loss. This mirrors how a streaming sink's
+  per-consumer drops reach the summary.
+- **The dump file is opened at construction, not at finish (P1).** `RingSink::create`
+  now opens the `--out` file eagerly (returning `Result`, like `RotatingFileSink::create`),
+  so an unwritable destination fails before capture starts rather than discarding the
+  whole captured window at drain.
+- **The duration window compares in `i128` (P2).** `window.as_nanos() as i64` wrapped
+  negative for a window beyond about 292 years, making a huge `--ring` retain only the
+  newest packet; the comparison is now done in a non-wrapping representation.
+
+**2026-08-10: Steam integration and managed launch (slice S17), decisions worth
+recording for promotion to specification section 29.**
+
+- **The registry read and the protocol handler go through the workspace's
+  already-resolved `windows-sys` 0.36, not `winreg`** (a deviation from the
+  specification crate table, which names `winreg`). The additive features
+  `Win32_System_Registry` (the Steam install-path read) and `Win32_UI_Shell`
+  (`ShellExecuteW` for the `steam://` handler) add no package to `Cargo.lock` and
+  change no resolved version, whereas `winreg` would add a second Windows-binding
+  package tree. This mirrors the recorded S10 decision to reuse `windows-sys`
+  rather than take a second binding, and `fragcap-attr` already carries the
+  `unsafe` FFI pattern this follows. No new runtime dependency is added.
+- **`fragcap-steam` compiles on every target; only its Windows internals are
+  cfg-gated.** The public API (discover, scaffold, launch request) is
+  cfg-independent, so the facade and CLI build on the neutral non-Windows target
+  (P-2, FR-014). The registry read and `ShellExecuteW` are `#[cfg(windows)]`, with
+  the non-Windows arm returning an "only supported on Windows" error. The VDF
+  parser, the scaffolding classifier, and the launch-URL and launch-config
+  decisions are portable and unit-tested on the CI host whatever its OS. Gating
+  the whole crate on `cfg(windows)` was rejected: it would break the neutral
+  facade build and hide the portable logic from non-Windows CI.
+- **A scaffold proves its own validity by round-trip.** The renderer builds TOML
+  text and parses it back through `fragcap_profile::Profile::parse` before
+  emitting, so FR-008 (the scaffold passes section 15.4 unedited) holds by
+  construction rather than by a separate assertion. Emitting untested text was
+  rejected as a P-9 risk.
+- **Scaffolded stage rules are `exe` image-name predicates and never inferred
+  `descends_from`.** Runtime process topology, including the observed case where
+  three processes share the image name `TheDivision2.exe` (Q-4), is invisible to a
+  static install-directory scan, so ancestry cannot be inferred at scaffold time.
+  The heuristic header comment and the existing section 15.4 runtime warning cover
+  that case. Where two proposed stages would share a basename, the renderer adds a
+  `path_contains` predicate so the output passes the ambiguous-image-match check.
+- **Managed launch uses `steam://run/<app_id>`** (`steam://rungameid/<app_id>` is
+  the noted alternative; a mutable detail). The launch is issued after the session
+  reaches its watching state and the sinks are open, which is what removes the
+  acquisition race. Because live capture is never executed in CI, the tests assert
+  the launch decision (URL, ordering, refusals); the actual `ShellExecuteW` call
+  is Windows-and-live-gated and tier-2/manual, and is not asserted as run in CI.
+- **Section 16.5 (environment inheritance) is deferred, not implemented.** Reading
+  another process's environment block requires a process handle carrying
+  memory-read rights, which the constitution's technique denylist and the
+  `OpenProcess` lint forbid. It is a corroborating signal only, and section 10
+  ancestry already attributes reliably, so deferring it costs no capability.
+
+**2026-08-11: extcap analyzer integration (slice S18 sub-slice A), decisions
+worth recording for promotion to specification section 29.**
+
+- **One logical extcap interface named `fragcap`, not one per host adapter.**
+  fragcap's capture subject is the profile and role selection, not a network
+  adapter, so it presents a single interface the configurable options
+  parameterize. Its declared link type is Ethernet (DLT 1); heterogeneous
+  per-packet link types (a loopback conversation) are carried by the stream's own
+  interface blocks, which the analyzer reads, so the top-level DLT is a default
+  rather than a constraint. One interface per adapter was rejected: it would push
+  adapter selection into the analyzer and duplicate the section 12.1 selection
+  precedence.
+- **The extcap capture reuses the `run` back half through a second config
+  builder.** `effective_config_for_extcap` mirrors the existing
+  `effective_config_for_tap`: it overlays the extcap options on the profile
+  exactly as `run` does and carries the FIFO as its single sink, then the same
+  `components`, `build_sinks`, and `orchestrator::capture` run unchanged.
+  Synthesizing a `RunArgs` was rejected as coupling extcap to the whole `run`
+  grammar shape; the `_for_tap` precedent is the project's pattern for a second
+  entry point.
+- **The FIFO is a new transport built through the existing sink machinery, not a
+  streaming sink.** A `SinkTransport::Fifo` and a `fifo:` scheme are opened by a
+  small `fragcap_sink::open_fifo` and a pcapng encoder is built over the writer,
+  reusing `build_sinks`. The S15 `StreamSink` (a multi-consumer server with
+  per-consumer queues and a backpressure timeout) was rejected as the wrong shape:
+  the analyzer hands fragcap one already-open FIFO, and the pipeline's own bounded
+  drop-oldest buffer already absorbs a slow reader and counts the drops (P-4).
+- **`open_fifo` is platform-correct and tier-1 testable.** A Windows `\\.\pipe\`
+  path is opened as a named-pipe client (write, no create, a bounded retry on a
+  busy pipe); any other path is opened for writing, created and truncated. That
+  keeps production correct (connect to the analyzer's pipe on Windows, open the
+  analyzer's FIFO on Unix) and lets a tier-1 test point `--fifo` at a regular temp
+  file on any platform. The live named-pipe connect is tier 2, the same boundary
+  live capture has had since S09.
+- **doctor detection is read-only.** A new `paths::extcap_dir()` computes the
+  analyzer's personal extcap directory (`%APPDATA%\Wireshark\extcap` on Windows,
+  an XDG or HOME location elsewhere, with a `FRAGCAP_EXTCAP_DIR` override for
+  tests). The probe reports the directory and whether a fragcap binary is present;
+  it installs, downloads, and copies nothing, which is the Licensing rule and P-1
+  made mechanical.
+- **No new dependency.** The declaration emitters are string formatting, the FIFO
+  open is `std::fs`, the capture reuses the existing pipeline, and the doctor
+  probe is `std::fs`, so the slice adds nothing to `Cargo.lock`.
+- **An analyzer discovers the binary and invokes it directly, with no
+  subcommand.** Wireshark runs `<binary> --extcap-interfaces` and
+  `<binary> --capture --fifo <path> ...`, not `<binary> extcap ...`. The command
+  surface is otherwise subcommand-first, so a raw extcap invocation would be
+  rejected by the parser before the command ran and no interface would be
+  discovered. The library entry now routes an invocation that leads with an
+  extcap protocol flag to the `extcap` subcommand, and a tier-1 test exercises the
+  no-subcommand form so the fix cannot regress. (Codex review of PR #34.)
+- **The analyzer closing its FIFO is a clean stop, not a failure.** A retired sink
+  normally ends a run at exit 1 (specification FR-005a). For an extcap capture the
+  single sink is the analyzer's FIFO, and the analyst closing it is the defined
+  clean stop, so that end is a success while the summary still carries the loss
+  accounting (P-4). The FIFO is opened at assembly, so a mid-capture failure is a
+  consumer disconnect rather than a broken destination. The exit decision is a
+  pure function flagged by the caller (`false` for `run`/`tap`, `true` for
+  `extcap`) and unit-tested. (Codex review of PR #34.)
+
+### Fixed
+
+- **`fragcap run --roles` no longer panics.** `RunArgs.roles` was declared with a
+  `value_parser` returning `Vec<String>` over an `Option<Vec<String>>` field;
+  clap derives the element type from the `Vec` and panicked at access time on the
+  type mismatch, so any `run --roles` invocation aborted. No test exercised it, so
+  it had gone unnoticed. This slice's extcap-versus-run parity test surfaced it.
+  Both `run` and `extcap` now split the comma-separated roles with clap's
+  `value_delimiter`, and the parity test covers `--roles`.
+
+**2026-08-11: shell wrappers (slice S18 sub-slice B). Pinned-artifact and design
+decisions.**
+
+- **Pinned artifacts changed, recorded here.** This slice adds
+  `scripts/Invoke-FragCap.ps1` and `scripts/fragcap.sh` (both under the pinned
+  `scripts/**`) and a `wrappers` step to `.github/workflows/ci.yml` (a pinned
+  workflow). The step runs `cargo run --package xtask -- wrappers` on both the
+  ubuntu and windows legs, after the licensing step.
+- **The un-vendored Bash standard was resolved by authoring, not vendoring.** The
+  ShruggieTech PowerShell standard is vendored with a compliance checker; the Bash
+  standard and a Bash checker are not on disk, a gap the foundation doc flagged as
+  "must be resolved before S18." The operator chose to proceed: `fragcap.sh` is
+  authored to the real ShruggieTech Bash standard, and a Bash structural checker
+  is authored in `xtask` (a pure function over the file bytes, unit-tested against
+  known-bad input like `lint.rs`). `skills-lock.json` is unchanged; vendoring the
+  `shruggie-bash` skill itself remains a separate operator tooling task. The
+  PowerShell wrapper reuses the vendored `Test-ScriptCompliance.ps1` (its POSIX
+  twin, so only bash is needed to run it).
+- **A shell script's shebang forced a lint refinement.** `#!/usr/bin/env bash`
+  must be a Bash script's first line, which conflicts with the SPDX-first-line
+  rule. `xtask/lint.rs` now accepts a first-line shebang and requires the SPDX
+  identifier on the second line instead. `xtask` is not a pinned artifact.
+- **The gate runs bash with relative paths from the repository root.** An absolute
+  drive-letter path (`A:\...`) is not one WSL bash can resolve; a relative path
+  under `current_dir(root)` resolves under native bash, Git Bash, and WSL bash
+  alike. The PowerShell runtime checks are best-effort: they run when `pwsh` is
+  present and are skipped (not failed) when it is not, since the vendored checker's
+  POSIX twin already validates the PowerShell script's structure with bash alone.
+- **The wrappers' runtime behavior is tier 2.** The elevation self-relaunch, real
+  driver and interface detection, live capture, and WSL2 interop against a native
+  binary do not run in continuous integration, exactly as live capture has not
+  since S09. Continuous integration verifies the compliance checkers, the syntax
+  validity, the help paths, and the templating and pass-through through
+  `--dry-run`.
+- **Review hardening (Codex review of PR #35).** The PowerShell wrapper
+  reconstructs the elevated child from its bound parameters (an elevated `$args`
+  drops values already bound), waits on the child and propagates its exit code,
+  resolves `fragcap.exe` beside the wrapper in the release archive before the PATH
+  fallback, and reports the capture driver's version. The Bash wrapper heads the
+  invocation with the resolved binary in every case (not only when a WSL path is
+  translated), rejects a missing option value with exit 2, and prepares the output
+  directory before capture. The `wrappers` gate now requires pwsh and adds a real
+  PowerShell parse (a missing parser is exit 2, never a false pass), the Bash
+  checker rejects invalid UTF-8 and verifies the section 18.3 fixtures including
+  `safe_run`, and the `ci.yml` step is scoped to the ubuntu leg, which carries
+  both bash and pwsh (the windows leg carries no bash on PATH).
+
+Dated 2026-08-11. Sub-slice S18c-2 of roadmap slice S18 (the documentation
+website). Records the pinned-artifact changes, which the constitution requires be
+made only with a dated decision.
+
+- **`.github/workflows/docs.yml` is rewritten from the skeleton to a real build
+  and deploy.** The skeleton dispatched manually and exited 1 by design, because
+  a workflow that runs automatically and fails trains readers to ignore it. There
+  is now a site to build: on a pull request it builds the static export and
+  asserts the `.nojekyll` and `CNAME` markers without deploying; on the default
+  branch it builds and deploys to GitHub Pages through `upload-pages-artifact` and
+  `deploy-pages`, with `pages: write` and `id-token: write` and a `github-pages`
+  environment. Hosting stays GitHub Pages behind Cloudflare DNS (the runbook is
+  operator-run, documented, and uses no Cloudflare token in continuous
+  integration), unchanged from the sub-slice S18c-1 decision. The build step goes
+  through the same `cargo run --package xtask -- docs build` entry point local
+  development uses, rather than calling `pnpm build` directly and reimplementing
+  the marker assertions; that keeps any setup or assertion later added to the
+  xtask command from being bypassed by the artifact that gets deployed (raised in
+  review), at the cost of installing the Rust toolchain in the workflow.
+
+- **`.github/workflows/links.yml` is rewritten to a weekly schedule.** External
+  link liveness is a property of the outside world, not of a change, so it runs on
+  a Monday cron rather than per commit; `workflow_dispatch` is kept for an
+  on-demand run. It runs `bash scripts/lint-docs.sh link`, which exits 2 (could
+  not run) when curl is absent and 1 on a dead link.
+
+- **Node and pnpm are pinned in `docs.yml`: Node 24, pnpm 9.15.** These match the
+  toolchain the committed `pnpm-lock.yaml` and every local build were produced
+  with, so a Pages build cannot diverge from what was verified locally. `pnpm
+  install --frozen-lockfile` fails rather than resolving a different graph.
+
+- **`ci.yml` is unchanged.** Its `docs check` step landed with sub-slice S18c-1
+  and already gates the glossary linter on every push; the website build is not a
+  continuous-integration gate but a deploy pipeline, so it lives in `docs.yml`.
+
+- **The glossary is rendered into the content tree at build time, not committed.**
+  `docs/glossary/` is the single source; `site/scripts/prebuild.mjs` renders it
+  into `site/content/docs/glossary/`, which is gitignored and excluded from the
+  conventions linter (it is linted at its source). A committed second copy would
+  be a drift surface for no benefit.
+
+- **Static search uses the framework's built-in engine, no custom tokenizer.**
+  The default engine already indexes by heading and splits queries on
+  underscores and hyphens, which is what FR-009 asks for; this was verified
+  against `path_regex` and `5-tuple` rather than assumed. A hand-rolled tokenizer
+  would add a maintenance surface to reproduce behavior that already holds.
+
+- **The conventions linter's SPDX rule now covers the site source faces.**
+  `SOURCE_EXT` in `xtask/src/lint.rs` gains `ts`, `tsx`, `mjs`, and `css`, so the
+  TypeScript, TSX, ES module, and CSS files carry the Apache-2.0 SPDX identifier
+  on their first line like every other source file (CONVENTIONS.md), enforced
+  mechanically rather than by convention. Raised in review, where the new site
+  tree had been left outside the rule. Content files (Markdown, MDX, JSON) are not
+  source and stay exempt. The three first-party brand CSS token files gain the
+  same header.
+
+- **`site/tsconfig.json` stays under the encoding checks.** An earlier revision
+  excluded it alongside the generated `next-env.d.ts` on the assumption Next
+  rewrites it with CRLF; Next 16 does not (the committed file already carries the
+  options it wants), and `.gitattributes` normalizes it to LF, so excluding a
+  tracked configuration file would only have hidden a real line-ending violation.
+  Raised in review. Only the generated, gitignored `next-env.d.ts` remains
+  excluded.
+
+- **`docs.yml` and `links.yml` are watched to completion once before being
+  reported as passing**, like `platform.yml`. Neither has run against a real site
+  before this slice.
+
+**2026-08-11: documentation site foundation (slice S18 sub-slice C, part 1).
+Pinned-artifact, specification, and design decisions.**
+
+- **Pinned artifacts changed, recorded here.** This slice adds
+  `scripts/lint-docs.sh` (under the pinned `scripts/**`) and a "Documentation
+  check" step to `.github/workflows/ci.yml` (a pinned workflow), scoped to the
+  ubuntu leg because it needs bash, mirroring the wrapper gate. The site build
+  and deploy workflows (`docs.yml`, `links.yml`) are not touched here; they
+  deploy the site and land with the site in sub-slice S18c-2.
+- **S18c is delivered in two sub-slices under one roadmap id (operator decision,
+  2026-08-11).** Part 1 (this change) is the deterministic, fully-verifiable
+  foundation: the glossary split, the section 4.4 amendment, the documentation
+  linter, and `cargo xtask docs`, all green under `cargo xtask ci`. Part 2
+  (S18c-2) is the Fumadocs on Next.js site and the brand application, which need
+  a network install and a static build. This keeps a verified, mergeable
+  checkpoint out of a large slice; the single v0.2.0 release waits for S18c-2.
+- **Specification section 4.4 amended in-slice, against the usual defer-to-release
+  convention.** Section 22.4 binds the glossary split to "one page per category
+  from section 4.4," and the authored glossary already carried an eighth category
+  ("Command Line and Diagnostics", eight entries) not in section 4.4's seven.
+  Splitting into eight pages while the spec said seven would be an internal
+  contradiction the analyze gate must not ship, so section 4.4 gains the eighth
+  category here (operator decision). Section 22.4 references section 4.4 without a
+  hardcoded count, so no numeric edit was needed there.
+- **Hosting stays GitHub Pages; Cloudflare serves DNS only (operator decision).**
+  Sections 22.1 and 23.2 name GitHub Pages and reject a vendor hosting account.
+  The domain living on Cloudflare is a DNS fact; no Cloudflare credential enters
+  continuous integration and `wrangler` is not a dependency. The Cloudflare DNS
+  records and the GitHub Pages settings are an operator runbook applied by hand
+  after merge, out of scope for the code slice.
+- **The completeness check requires a prose blurb or detail and rejects empty
+  sections, but does not mandate references on every entry.** Specification
+  section 4.6 lists a references section among entry completeness, but the
+  authored glossary carries references only where a primary source exists (14 of
+  125 entries): much of the glossary is fragcap's own internal vocabulary (for
+  example "Sink thread") for which no primary source exists, and fabricating one
+  would violate P-9. The linter therefore requires a prose blurb or detail on
+  every entry (not merely a metadata marker), and validates that a references
+  section or matters callout, where present, is not empty, rather than mandating
+  references on every entry. Tightened from an earlier "one non-blank line" rule
+  in response to the Codex review.
+- **The Undefined Term Rule is enforced for glossary references, not by a
+  free-text scan.** The linter's `check` verifies that every glossary reference (a
+  Markdown link into the glossary) in the canonical documents of section 4.2 names
+  a defined term, in addition to the glossary's own cross-link graph. A full
+  undefined-term scan over all prose would need a marked-term list the project
+  does not maintain and would false-positive on ordinary English; the enforced
+  mechanism is the glossary reference the documents actually use to mark a term.
+  The canonical-document scan was added in response to the Codex review.
+- **Glossary cross-links are repository-relative sibling paths.** CONVENTIONS.md
+  requires relative links between repository documents so they resolve on disk and
+  on GitHub. The split emits `<category>.md#<anchor>` sibling links rather than the
+  site-absolute `/docs/glossary/...` form (which resolved outside the repository
+  when a source page is read on GitHub). The site build maps these to routes in
+  sub-slice S18c-2. Corrected in response to the Codex review.
+- **The linter stays non-executable and is invoked through bash.** It is committed
+  mode 100644, like `scripts/fragcap.sh`, and every documented invocation uses
+  `bash scripts/lint-docs.sh`, which is how continuous integration and the
+  `wrappers` gate call the repository's shell scripts. Adding an executable bit
+  would diverge from the sibling wrapper.
+
+**2026-08-10. The brand session resolved Q-7 and Q-8, and the approved kit is
+vendored into the repository.**
+
+- **Q-7 is Geist Mono.** The monospace face is a selection requirement, not a
+  style choice, because users read packet payloads in it. Geist Mono keeps `0 O`,
+  `1 l I`, `8 B`, `5 S`, and `2 Z` distinguishable at the interface size, and its
+  family relationship to Geist keeps technical specimens from feeling detached
+  from surrounding documentation. Any future replacement is evaluated against the
+  real-format specimen in `brand/specimens/`, not a decorative alphabet.
+- **Q-8 is an independent ShruggieTech sub-brand.** fragcap shares Space Grotesk,
+  Geist, Geist Mono, dark-first discipline, and the parent's exact `#FF5300`
+  orange, but not ShruggieTech green, the shruggie mark, or marketing layouts. The
+  visible relationship is the endorsement "A ShruggieTech project" in Geist Mono,
+  uppercase, subordinate, and outside the logo's clear space. There is no combined
+  parent-product logo. This satisfies the section 23.3 "instrument, not weapon"
+  posture, which is part of the security posture rather than decoration.
+- **The kit is vendored under `brand/`, not embedded in a crate.** The assets are
+  not part of any published crate, so the per-crate license discipline is
+  unaffected. The fonts remain under the SIL Open Font License 1.1, with the
+  license texts carried in `brand/fonts/licenses/`; the logos and the custom
+  wordmark are the project's brand marks, usable under the treatment rules in
+  `brand/README.md` rather than under the code's Apache-2.0 grant.
+- **`brand` is added to the linter's excluded-directory list** (`xtask/src/lint.rs`),
+  matching the vendored-content rationale already used for the skills directories.
+  The binary fonts and images are skipped by content sniffing, but the PDF guide
+  is text-like in its first bytes and the vector art is machine-generated, so the
+  whole directory is treated as vendored content re-imported wholesale rather than
+  edited in place. Text files were normalized to LF on import so the exclusion is
+  a policy choice rather than a workaround for dirty bytes.
+
+**2026-08-08** The `ci` workflow gains a publication licensing step, and its
+header note is corrected to record that the `check` matrix has now run and
+passed while `neutrality` and `msrv` have not. The previous note claimed the
+workflow had never executed because there was no remote, which stopped being
+true when slice S01 integrated through pull request #1.
+
+**2026-08-08** The eight crate names are reserved on crates.io at 0.1.0, the
+version already declared in the workspace manifest, rather than at a 0.0.0
+placeholder. The facade crate cannot be published without its six dependencies
+already in the registry, so reserving the headline name means publishing the
+whole graph; each crate's README states that the release is a skeleton so the
+listing does not overclaim.
+
+**2026-08-08** `release.toml` is added, and configured to move the version
+number and nothing else: no tag, no push, no publish. A release tool that
+commits, tags, pushes, and publishes in one step cannot coexist with an
+integration workflow where nobody pushes to `main` directly. Splitting the
+steps keeps the tag and the publish as separate authorized acts rather than
+side effects of a version bump.
+
+**2026-08-08** The `release` workflow stops exiting non-zero and becomes real.
+Its jobs run in the order specification section 24.4 states: build artifacts,
+generate checksums, create the release with notes from the changelog, then
+publish to the registry. Publication is last because it is the only step that
+cannot be undone, so a failure leaves a release that was never created rather
+than crate versions with nothing to download.
+
+**2026-08-08** Publication is gated on the `crates-io` environment, which
+requires a human to approve the run. That makes the constitution's rule
+against publishing without explicit authorization mechanical rather than
+remembered. Registry credentials reach the job as `CARGO_REGISTRY_TOKEN` from
+that environment, scoped to `publish-update` on `fragcap-*`.
+
+**2026-08-08** Publication order lives in `cargo xtask publish` rather than in
+the workflow, as section 24.4 requires. crates.io rejects a crate whose
+dependencies are not already in the registry, so the order is load-bearing;
+encoding it in Rust means a unit test asserts it against the dependency graph,
+and a reordering that would break a release fails a check instead.
+
+**2026-08-08** `cargo xtask publish` treats an already-published version as a
+skip rather than an error, which makes a run resumable. Uploading eight crates
+is eight network operations, and an interruption after the third would
+otherwise leave a release permanently half published, because rerunning would
+fail on the first crate and stop. Detection matches cargo's message text,
+which is unpleasant but is what cargo offers: there is no skip-existing flag
+and no distinct exit code, and querying the registry over HTTP would put a
+network client into a crate that deliberately has no external dependencies.
+
+**2026-08-08** Release artifacts are knowingly incomplete against
+specification section 24.5, which specifies an archive carrying the binary,
+both shell wrappers, the bundled profiles, the license, and the notice. The
+wrappers arrive with slice S18 and the profiles with S05, so those directories
+are empty and the archive cannot yet be complete. Rather than ship a partial
+archive that looks finished, the packaging step names the absent components,
+writes them to `INCOMPLETE.txt` inside the archive, and warns in the log. The
+record is generated from what is actually on disk, so it retires itself when
+the components land.
+
+- **2026-08-12** `release.toml` and `scripts/**` are pinned artifacts, changed
+  here to add the release-preparation script pair (`scripts/cut-release.sh`,
+  `scripts/New-Release.ps1`) and to record the sequence they consolidate. The
+  script wraps `cargo release` rather than replacing it, so the version bump
+  stays the tool `release.toml` configures; it stops before the tag push and the
+  crates-io environment approval, so both authorizations the constitution
+  requires are still separate human acts rather than side effects of a version
+  bump.
+- **2026-08-12** The changelog assembler and the release-notes derivation live
+  in `cargo xtask` (Rust), not in the shell scripts, per the house rule that a
+  wrapper which parses text is a missing capability in Rust. The transform has a
+  canonical section order and a merge rule that are worth a unit test, and a
+  reimplementation in two shell dialects would be two untested copies of the
+  same logic. The scripts stay thin orchestrators over git, cargo, and the task
+  runner.
+
+**2026-08-10** The release-versioning scheme is codified, and there is one first
+public release. `v0.1.0` is the crates.io namespace-reservation stub already
+published and carries no functionality. The first public release is `v0.2.0`, and
+it comprises the whole roadmap: all eighteen slices, S01 through S18. It, and the
+crates.io publication of the functional crates, happen only after every slice is
+complete and operational; there is no earlier functional release. This reverses an
+earlier same-day decision that split the roadmap across two functional releases
+(`v0.2.0` at the end of S14, `v0.3.0` for S15 through S18); the split is retired.
+The specification is corrected to match: section 3.3 success criteria are no longer
+partitioned (`v0.2.0` is complete when SC-1 through SC-7 hold), section 27.3's
+release table collapses to a single functional release, section 28 is retitled
+"Roadmap Beyond v0.2.0", and the scope prose in the specification, its outline, and
+the plan documents is updated. The workspace manifest stays at `0.1.0`; the bump to
+`0.2.0` is a release-time `cargo release minor` action taken only once every slice
+is complete, so no code artifact changes here.
+
+**2026-08-10** The `0.2.0` version bump is necessary but not sufficient at
+release time, and the release runbook must say so. The pcapng `USER_APPL` and
+the JSON Lines `VERSION` are both `concat!("fragcap/", env!("CARGO_PKG_VERSION"))`,
+so `cargo release minor` changes them from `fragcap/0.1.0` to `fragcap/0.2.0`.
+That moves the value embedded in every committed golden and the two assertions
+that pin it (`crates/fragcap-sink/src/pcapng/mod.rs` and
+`crates/fragcap-sink/src/json/mod.rs`), so the release commit must also
+regenerate the golden corpus and update those assertions, or `cargo xtask ci`
+fails on the release branch. Recorded now so the obligation is not discovered
+during the release.
+
+Dated 2026-08-11. The 2026-08-11 landing-page and brand review (issues #39
+through #43), a website-only change ahead of the v0.2.0 release.
+
+- **Specification section 23.1 is amended to permit a value proposition.** The
+  section previously held the landing page to exactly one sentence of definition
+  with no capability statements, on the premise that the audience arrives already
+  knowing they need a capture tool. That premise is retired: the page should still
+  reach a technically competent visitor who does not yet know that attribution is
+  the hard part. The amended section leads with the problem, allows a small number
+  of capability statements each linking into the documentation, and retains the
+  prohibitions on testimonials, feature grids, and calls to action, with the
+  section 23.3 voice as the guardrail. The corresponding slice spec
+  (`specs/023-docsite/spec.md`, FR-004, FR-005, SC-006, and User Story 1) is
+  updated so the two do not contradict, including the getting-started ordering,
+  which now names obtaining a profile between verify and capture (issue #43).
+
+- **The disclaimer and the wordmark are wired without touching pinned CI.** The
+  disclaimer is single-sourced from `README.md` by extending the existing
+  `site/scripts/prebuild.mjs` render step, which already generates the glossary
+  content tree; the generated module is gitignored and excluded from the
+  conventions linter, matching the glossary precedent. No workflow, release
+  configuration, toolchain pin, or repository-root script changed. `prebuild.mjs`
+  is a site build script under `site/scripts/`, not the constitution's pinned
+  repository-root `scripts/`; the extension is recorded here regardless, since it
+  is a build-affecting change.
+
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.2.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.2.0
