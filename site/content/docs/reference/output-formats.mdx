@@ -14,9 +14,12 @@ capture as an ordinary packet trace. Compatibility is the point: the process
 attribution rides in each packet's comment, a field pcapng already defines, rather
 than in a private extension an analyzer would have to understand.
 
-Open a `.fcapng` file in Wireshark or any pcapng-aware tool. The packets are there
-as usual; the owning process, its role, and the attribution fidelity appear in the
+Open a `.fcapng` file in [Wireshark](https://www.wireshark.org/), the most widely
+used pcapng analyzer, or any other pcapng-aware tool. The packets are there as
+usual; the owning process, its role, and the attribution fidelity appear in the
 per-packet comment. An analyzer that ignores comments still shows you the traffic.
+Wireshark is effectively part of the workflow: fragcap produces the capture, and
+Wireshark is where you read it.
 
 ## JSON Lines
 

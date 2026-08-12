@@ -56,7 +56,10 @@ fragcap run --profile eso --out capture.fcapng
 fragcap arms, waits for the profiled client, attributes its flows, and writes the
 result.
 
-## 5. Open the result
+## 5. Open the result in Wireshark
 
-Open `capture.fcapng` in any pcapng-aware analyzer. Unmodified analyzers read it
-as ordinary pcapng; the process attribution rides in packet comments.
+Open `capture.fcapng` in [Wireshark](https://www.wireshark.org/), or any other
+pcapng-aware analyzer. This is where a capture becomes useful: Wireshark shows the
+packets as usual, and the owning process, its role, and the attribution fidelity
+appear in each packet's comment. Unmodified analyzers read the file as ordinary
+pcapng, so nothing bespoke is needed to look at what you captured.

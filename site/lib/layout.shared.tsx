@@ -41,6 +41,10 @@ export function baseOptions(): BaseLayoutProps {
         text: 'Glossary',
         url: '/docs/glossary',
       },
+      {
+        text: 'Changelog',
+        url: '/docs/changelog',
+      },
     ],
     githubUrl: 'https://github.com/h8rt3rmin8r/fragcap',
   };

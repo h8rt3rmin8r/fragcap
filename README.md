@@ -33,6 +33,12 @@ reads or attaches to the memory of another process. It writes an extended
 [pcapng](https://pcapng.com) file that unmodified analyzers such as Wireshark
 read as an ordinary packet trace.
 
+Two prerequisites sit outside fragcap. Live capture needs the
+[npcap](https://npcap.com) driver installed separately (fragcap detects it and
+never installs, downloads, or bundles it), and reading a capture needs
+[Wireshark](https://www.wireshark.org) or another pcapng-aware analyzer. You
+capture with fragcap, then open the result in Wireshark.
+
 **The full documentation, including a first-run guide, lives at
 [fragcap.com](https://fragcap.com).**
 
