@@ -213,8 +213,8 @@ from the original brief.
 The TOML profile schema: stage definitions, role names, match rules,
 lifecycle hints, and capture defaults. This is the mechanism that keeps
 core game-agnostic while making specific titles first-class. Includes
-the profile resolution order, validation rules, and the shipped profiles
-for the two focal titles.
+the profile resolution order, validation rules, and why v0.2.0 bundles no
+profiles (they are scaffolded from an installed title or authored per title).
 
 ## 16. Steam Integration
 
