@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "verified",
+  "notes": "Hand-verified against a live capture session.",
+  "game": {
+    "id": "eso",
+    "name": "The Elder Scrolls Online",
+    "platform": "steam",
+    "app_id": "306130"
+  },
+  "capture": {
+    "mode": "file",
+    "duration": "30m",
+    "roles": [
+      "launcher",
+      "client"
+    ],
+    "loopback": true,
+    "payload": true
+  },
+  "stage": [
+    {
+      "role": "launcher",
+      "lifecycle": "transient",
+      "match": {
+        "exe": "*Launcher.exe",
+        "path_contains": "Elder Scrolls Online"
+      }
+    },
+    {
+      "role": "client",
+      "lifecycle": "session",
+      "terminal": true,
+      "match": {
+        "exe": "eso64.exe"
+      }
+    }
+  ]
+}

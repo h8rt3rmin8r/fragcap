@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "hint",
+  "provenance": {
+    "source": "steam-appinfo"
+  },
+  "game": {
+    "name": "Palworld"
+  }
+}

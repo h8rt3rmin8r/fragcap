@@ -669,3 +669,70 @@ the rejections, and a stored total can drift from its parts.
 
 **See also:** [Parse rejection cause](process-and-attribution.md#parse-rejection-cause),
 [Backpressure](capture-and-networking.md#backpressure)
+
+## Master target schema
+
+The single versioned JSON Schema (Draft 2020-12) that governs every
+machine-readable targeting and attribution artifact: a [game profile](platform-and-distribution.md#game-profile),
+a [target hint record](#target-hint-record), a user-authored package, and a
+hint-database export. Introduced by issue #75. Embedded in the binary as the
+single source of truth, published under `docs/schema/`, and validated one-off
+with `fragcap schema validate`.
+
+{: .matters }
+> The schema expresses structural conformance only: types, required keys, enum
+> ranges, unknown-key refusal, and the `kind` and `schema` discriminators. The
+> semantic invariants of profile validation (acyclic ancestry, at most one
+> terminal stage, role reachability, no ambiguous image match) are not
+> expressible in a schema and stay in the profile-load path. A document that
+> passes `schema validate` asserts structural conformance, nothing more.
+
+**See also:** [Target artifact kind](#target-artifact-kind), [Fidelity tier](#fidelity-tier),
+[Provenance](#provenance), [Game profile](platform-and-distribution.md#game-profile)
+
+## Target artifact kind
+
+The closed discriminator on every artifact governed by the
+[master target schema](#master-target-schema). One of `profile` (the strict,
+authoritative description the pipeline runs against), `package` (a hand-authored
+or community-submitted profile, highest precedence), `hint` (a loose, partial
+heuristic guess), or `export` (the JSON projection of hint-database rows).
+Profile and package share one strict shape; hint and export share one loose
+shape.
+
+**See also:** [Master target schema](#master-target-schema), [Target hint record](#target-hint-record)
+
+## Target hint record
+
+A loose, partial artifact emitted by a heuristic provider or the hint database.
+It may omit fields a [game profile](platform-and-distribution.md#game-profile) requires, but it
+MUST carry a [fidelity tier](#fidelity-tier) and [provenance](#provenance). A
+hint that does not declare its trust level is refused: an undeclared guess is
+exactly the guess-worn-as-fact the schema exists to prevent.
+
+**See also:** [Fidelity tier](#fidelity-tier), [Provenance](#provenance),
+[Target artifact kind](#target-artifact-kind)
+
+## Fidelity tier
+
+The structured, ordered trust level carried by every targeting artifact:
+`authored` (a person wrote it), `verified` (confirmed correct),
+`heuristic-unverified` (a machine guessed it), or `observed` (confirmed against
+a live capture). The resolver reads it; the instrument never fabricates it.
+
+{: .matters }
+> Fidelity is data, not a comment, precisely so the tool can act on it: refuse
+> to treat a heuristic as verified, surface it to the operator, and gate a
+> submission. Constitution principle P-9 requires that a guess be presentable as
+> a guess and never as a fact.
+
+**See also:** [Master target schema](#master-target-schema), [Provenance](#provenance)
+
+## Provenance
+
+The structured record of where a targeting artifact came from: a `source` (for
+example `steam-appinfo`, `engine-rule`, or `user`) and an optional seed time.
+Required on a [target hint record](#target-hint-record) and on a hint-database
+export, so an unverified artifact always names its origin.
+
+**See also:** [Fidelity tier](#fidelity-tier), [Target hint record](#target-hint-record)

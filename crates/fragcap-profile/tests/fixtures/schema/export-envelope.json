@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "kind": "export",
+  "fidelity": "heuristic-unverified",
+  "provenance": {
+    "source": "steam-appinfo",
+    "seeded_at": "2026-08-12T00:00:00Z"
+  },
+  "records": [
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": {
+        "source": "steam-appinfo"
+      },
+      "game": {
+        "name": "Palworld"
+      }
+    },
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": {
+        "source": "engine-rule"
+      },
+      "game": {
+        "name": "The Ascent"
+      },
+      "stage": [
+        {
+          "role": "client",
+          "lifecycle": "session",
+          "match": {
+            "exe": "TheAscent-Win64-Shipping.exe"
+          }
+        }
+      ]
+    }
+  ]
+}

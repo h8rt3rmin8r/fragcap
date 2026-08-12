@@ -15,4 +15,5 @@ readme                 = "README.md"
 [dependencies]
 fragcap-core.workspace = true
 regex.workspace        = true
+serde_json.workspace   = true
 toml-span.workspace    = true

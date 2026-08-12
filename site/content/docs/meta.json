@@ -9,6 +9,7 @@
     "---Reference---",
     "reference/cli",
     "reference/profile-schema",
+    "reference/target-schema",
     "reference/output-formats",
     "---Understanding fragcap---",
     "architecture",

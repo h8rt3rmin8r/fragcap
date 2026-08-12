@@ -109,6 +109,10 @@ pub mod attr {
 pub mod profile {
     pub use fragcap_profile::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
     pub use fragcap_profile::glob::{ImagePattern, PatternError};
+    /// The master JSON Schema and its structural validation surface (issue #75).
+    pub use fragcap_profile::jsonschema::{
+        schema_document, validate_json, SchemaCode, SchemaDiagnostic, SchemaDiagnostics, Validation,
+    };
     pub use fragcap_profile::matching::{bind_stages, stage_for};
     pub use fragcap_profile::parse::{load, LoadError, MAX_PROFILE_BYTES};
     pub use fragcap_profile::resolve::{

@@ -252,7 +252,7 @@ optional runtime dependency, and one dev-dependency, and the distinction is load
 | `regex` | runtime | S05 | Compiles the `path_regex` match predicate |
 | `arc-swap` | runtime | S10 | Lock-free publication of the attribution snapshot |
 | `windows-sys` | runtime, optional | S10 | The IP Helper socket table, behind the `socket-table` feature |
-| `serde_json` | dev only | S07 | Parses every line the JSON writer emits, in tests |
+| `serde_json` | runtime (in `fragcap-profile`), dev elsewhere | S07, promoted S25 | Parses target JSON for the master-schema validator (S25); parses the JSON writer's output in tests (S07) |
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
 pcap file is a header and a run of records, the attribution script format is
@@ -341,10 +341,18 @@ driver. And the alternative to it is the same C ABI transcription S09 rejected:
 a wrong offset in `MIB_TCPROW_OWNER_MODULE` yields a plausible process
 identifier that is wrong.
 
-S07's writer is hand-rolled and its `serde_json` is test-only on purpose:
-verification is worth more the less it shares with what it verifies. Anything
-proposing to move it into `[dependencies]` is changing that argument and should
-say so.
+S07's writer is hand-rolled and its `serde_json` was test-only on purpose:
+verification is worth more the less it shares with what it verifies. S25 promoted
+`serde_json` to a runtime dependency of `fragcap-profile`, and the argument
+survives because the roles do not overlap: the pcapng and JSON Lines writers are
+still hand-rolled and still verified by a test-only `serde_json`, while the new
+runtime use only parses an input target file to a `Value` for the hand-rolled
+master-schema validator. S25 evaluated taking a JSON Schema validator crate
+(`boon`) instead and rejected it: it adds 42 transitive crates (the ICU4X stack
+via `url`/`idna`) for machinery the schema does not use. The ecosystem value is
+in publishing the schema document, not in consuming a validator, so validation is
+hand-rolled like the glob matcher and the writers, and `serde_json` is the only
+new crate (already in the graph, so `Cargo.lock` is unchanged).
 
 `fragcap-core` may depend only on crates named in the allowlist in
 `xtask/src/deps.rs`, which is checked mechanically. Note that `cargo xtask

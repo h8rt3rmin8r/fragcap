@@ -1841,6 +1841,50 @@ Profiles are data, not code. They are Apache-2.0 licensed with the rest
 of the repository, and contributed profiles are accepted without
 requiring the contributor to write Rust.
 
+### 15.6 Master Schema and Target Artifacts
+
+The profile of sections 15.2 through 15.5 is one of several
+machine-readable targeting and attribution artifacts. As of the master
+schema slice (issue #75) a single versioned JSON Schema (Draft 2020-12)
+governs all of them, so a profile, a partial hint, a user-authored
+package, and a database export share one vocabulary and cannot drift.
+The schema is the authoritative artifact `target-schema.v1.json`,
+embedded in the binary as the single source of truth, published in the
+repository under `docs/schema/`, and rendered as a field reference.
+
+Every artifact declares two top-level keys, `schema` (version) and
+`kind`, the latter a closed discriminator over four forms:
+
+| `kind` | Shape | Meaning |
+| --- | --- | --- |
+| `profile` | strict | The authoritative description the pipeline runs against. |
+| `package` | strict | A hand-authored or community-submitted profile, highest precedence. |
+| `hint` | loose | A heuristic guess from a provider or the hint database. |
+| `export` | loose | The JSON projection of hint-database rows. |
+
+Every artifact also declares a structured `fidelity` tier, ordered
+`authored` > `verified` > `heuristic-unverified` > `observed`, which the
+resolver reads and which the instrument never fabricates: a guess is
+stamped as a guess (constitution P-9). A loose artifact additionally
+carries `provenance` (its `source` and an optional seed time) and is
+refused if either `fidelity` or `provenance` is absent.
+
+Validation of these artifacts is layered, and the seam is deliberate.
+Structural conformance (types, required keys, enum ranges, string
+shapes, unknown-key refusal, the discriminators) is what the schema
+expresses and what `fragcap schema validate <file>` checks, reporting
+every violation in one pass. The semantic invariants of section 15.4
+(acyclic `descends_from`, at most one terminal stage, role reachability,
+no ambiguous image match) are not expressible in a schema and remain the
+profile-load path's responsibility. A document that passes
+`schema validate` is asserting structural conformance only.
+
+Two migrations sit on this schema and are tracked separately. The
+profile parser's move from TOML onto JSON is issue #76; until it lands,
+the runtime profile form is the TOML of section 15.2 and the JSON schema
+governs authoring, validation, hints, and exports. The hint database and
+its schema-conformant export are issue #78.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope

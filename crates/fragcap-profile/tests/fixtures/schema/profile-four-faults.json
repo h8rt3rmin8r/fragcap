@@ -1,0 +1,18 @@
+{
+  "schema": "1",
+  "kind": "profile",
+  "fidelity": "gold",
+  "extra": true,
+  "game": {
+    "id": "eso"
+  },
+  "stage": [
+    {
+      "role": "client",
+      "lifecycle": "session",
+      "match": {
+        "exe": "eso64.exe"
+      }
+    }
+  ]
+}
