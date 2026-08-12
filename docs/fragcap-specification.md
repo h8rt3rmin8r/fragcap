@@ -644,6 +644,25 @@ capture with a single implicit role.
 stage, fragcap tracks all of them and attributes packets to the
 specific instance that owns each flow.
 
+**FR-6. Watch mode (the default launch-agnostic path).** fragcap's
+default capture path does not require it to be the launcher. In watch
+mode fragcap arms its process watcher and sinks and captures the first
+process matching the target identity, however and wherever it was
+started, and attaches to one already running at arm (from the startup
+snapshot of section 19.2). Managed launch (FR-3) is a convenience layered
+on top for the easy platform case, never the spine. This is what makes a
+modded install launched from a mod manager, a standalone title, and every
+non-storefront game capturable at all: the only durable fact is that at
+runtime a process exists that is the game and holds sockets (section
+15.7). The identity is an executable name plus a path anchor; `descends_from`
+is reserved for runtime disambiguation, not the identity's spine, because a
+modded launch has alien ancestry. A watch that never sees its target gives
+up at the acquisition timeout with a named reason and its discard
+accounting surfaced (section 10.6, constitution P-4), never silently. This
+runtime case is the one a hint database marks `launcher_mediated` (issue
+#78): the launch entry is the stub or publisher launcher, and watch mode is
+what attributes the socket-holding descendant.
+
 ### 7.2 Capture Modes
 
 **FR-6. Bounded capture.** fragcap captures for a bounded window
@@ -1164,6 +1183,18 @@ stage match and retains packets thereafter.
 The transition from `Watching` to `Capturing` is the reason FR-2
 exists. The capture handle is already open, so the transition costs no
 setup time and no traffic is lost at the boundary.
+
+`Watching` is where watch mode (section 7.1, FR-6) lives: an armed
+capture waiting for a target that may start later or may already be
+running. A target that starts after arm reaches `Capturing` through the
+`first stage matched` transition on its start event; a target already
+running at arm reaches `Capturing` when the startup snapshot is folded in
+(section 19.2), which matches it exactly as a start event would. Both are
+runtime observation, at two moments. The `Watching --> Complete`
+transition on the acquisition timeout is the loud give-up: it carries
+`StopReason::AcquisitionTimeout` and the watch-time discard accounting, so
+a watch that never acquires reports why rather than hanging or exiting
+silently (constitution P-4).
 
 ### 10.6 Stop Conditions
 

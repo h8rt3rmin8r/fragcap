@@ -33,7 +33,7 @@ use fragcap_core::attribution::{Attribution, StageId};
 use fragcap_core::error::AttrError;
 use fragcap_core::flow::{Endpoint, FlowKey};
 use fragcap_core::packet::{CapturedPacket, Timestamp};
-use fragcap_core::process::{ProcessEvent, ProcessId, ProcessTree};
+use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
 use fragcap_core::traits::{FlowAttributor, WriteGate};
 
 use fragcap_profile::matching::stage_for;
@@ -242,6 +242,40 @@ impl CaptureSession {
             self.match_and_bind(pid, at);
         } else if is_exit {
             self.on_bound_exit(pid);
+        }
+    }
+
+    /// Fold a startup snapshot of already-running processes into the session and
+    /// match them, so a process already running when the session armed can acquire
+    /// the target without a later start event (attach-to-running, section 15.7).
+    ///
+    /// The process watcher takes a query-only toolhelp snapshot at arm; the
+    /// capture path folds it here. Each snapshot process is matched exactly as a
+    /// start event is, in creation order so `descends_from` resolves against an
+    /// ancestor bound first, and a non-service match transitions Watching to
+    /// Capturing just as [`on_process_event`](Self::on_process_event) does. It
+    /// opens no process handle and reads only the image name and path the snapshot
+    /// already carries (constitution P-1).
+    ///
+    /// A no-op unless the session is active. Idempotent: a node already bound is
+    /// left alone, because [`ProcessTree::bind_stage`] binds at most once, so
+    /// applying the same snapshot twice acquires nothing new.
+    pub fn apply_snapshot(&mut self, records: &[ProcessRecord], at: Timestamp) {
+        if !self.is_active() {
+            return;
+        }
+        self.tree.apply_snapshot_at(records, at);
+        // Match in creation (node identifier) order, so an ancestor a
+        // `descends_from` predicate names is bound before its descendant is
+        // evaluated, exactly as `bind_stages` and the offline acquisition loop do.
+        let mut nodes: Vec<(u32, u32)> = self
+            .tree
+            .nodes()
+            .map(|n| (n.id().get(), n.pid().0))
+            .collect();
+        nodes.sort_by_key(|(node_id, _)| *node_id);
+        for (_, pid) in nodes {
+            self.match_and_bind(pid, at);
         }
     }
 

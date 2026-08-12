@@ -7,9 +7,16 @@
 use std::time::Duration;
 
 use fragcap::{
-    CaptureSession, PacketDisposition, ProcessEvent, Profile, SessionConfig, SessionState,
-    StopReason, Timestamp,
+    CaptureSession, PacketDisposition, ProcessEvent, ProcessRecord, Profile, SessionConfig,
+    SessionState, StopReason, Timestamp,
 };
+
+/// A single-stage identity profile, the shape `watch` and `tap` synthesize.
+fn identity(match_body: &str) -> Profile {
+    profile(&format!(
+        r#"{{"role":"target","lifecycle":"session","terminal":true,"match":{match_body}}}"#
+    ))
+}
 
 fn at(n: i64) -> Timestamp {
     Timestamp::from_nanos(n)
@@ -58,6 +65,63 @@ fn a_session_arms_before_any_target() {
         s.state(),
         SessionState::Watching,
         "the handle is open and the watcher attached before any process exists"
+    );
+}
+
+#[test]
+fn a_startup_snapshot_acquires_an_already_running_target() {
+    // Attach-to-running (section 15.7): a process already present at arm, in the
+    // startup snapshot with no later start event, acquires the target.
+    let mut s = CaptureSession::new(identity(r#"{"exe":"eso64.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    assert_eq!(s.state(), SessionState::Watching);
+
+    s.apply_snapshot(
+        &[ProcessRecord::new(1234, 0, "C:\\Games\\ESO\\eso64.exe")],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "a snapshot process matching the identity acquires the target at arm"
+    );
+}
+
+#[test]
+fn a_startup_snapshot_with_no_match_keeps_watching() {
+    let mut s = CaptureSession::new(identity(r#"{"exe":"eso64.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    s.apply_snapshot(
+        &[ProcessRecord::new(1, 0, "C:\\Windows\\explorer.exe")],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Watching,
+        "no snapshot process matches, so the session keeps waiting"
+    );
+}
+
+#[test]
+fn a_startup_snapshot_path_anchor_disambiguates_a_shared_name() {
+    // The modded-Skyrim shape: two processes share the image name, only one under
+    // the path anchor. The anchor selects it.
+    let mut s = CaptureSession::new(
+        identity(r#"{"exe":"SkyrimSE.exe","path_contains":"Mod Organizer 2"}"#),
+        SessionConfig::default(),
+    );
+    s.attach(at(0));
+    s.apply_snapshot(
+        &[
+            ProcessRecord::new(10, 0, "C:\\Steam\\steamapps\\common\\Skyrim\\SkyrimSE.exe"),
+            ProcessRecord::new(20, 0, "D:\\Games\\Mod Organizer 2\\mods\\SkyrimSE.exe"),
+        ],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "the process under the path anchor acquires the target"
     );
 }
 
@@ -225,6 +289,22 @@ fn all_matched_processes_exiting_stops_capture() {
     );
     s.on_process_event(exit(200, 4)); // last non-service process exits
     assert_eq!(s.stop_reason(), Some(StopReason::AllProcessesExited));
+}
+
+#[test]
+fn an_interrupt_while_watching_is_a_clean_cancellation() {
+    // Watch mode (section 15.7): an operator interrupt before any target is
+    // acquired is a clean cancellation, not a failure to acquire. The live path
+    // maps StopReason::Interrupt to exit zero.
+    let mut s = CaptureSession::new(identity(r#"{"exe":"eso64.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    assert_eq!(s.state(), SessionState::Watching);
+    s.on_interrupt();
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::Interrupt),
+        "an interrupt while watching is the interrupt reason, not acquisition timeout"
+    );
 }
 
 #[test]

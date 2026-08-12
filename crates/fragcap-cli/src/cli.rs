@@ -55,6 +55,9 @@ pub enum Command {
     Run(Box<RunArgs>),
     /// Capture a running process ad hoc, without an authored profile.
     Tap(TapArgs),
+    /// Watch for a target by identity and capture it, however it launches,
+    /// including one already running (launch-agnostic, section 15.7).
+    Watch(WatchArgs),
     /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
     /// Manage and validate profiles.
@@ -164,6 +167,53 @@ pub struct TapArgs {
     pub process: String,
 
     /// The capture duration bound.
+    #[arg(short = 'd', long, value_parser = parse_duration)]
+    pub duration: Option<Duration>,
+
+    /// The output capture file (pcapng).
+    #[arg(short = 'o', long)]
+    pub out: Option<PathBuf>,
+
+    /// An output sink, repeatable.
+    #[arg(long, value_parser = crate::args::parse_sink)]
+    pub sink: Vec<SinkSpec>,
+
+    /// Write metadata only, no packet payloads.
+    #[arg(long)]
+    pub no_payload: bool,
+
+    #[command(flatten)]
+    pub offline: OfflineArgs,
+}
+
+/// Arguments to `watch`.
+///
+/// Watch mode captures by a target identity, launch-agnostic: it arms and waits
+/// for a process matching the identity, however it started, and attaches to one
+/// already running. The identity is an executable name plus an optional path
+/// anchor, which is what distinguishes a modded install (an executable outside
+/// `steamapps` launched from a mod manager) from any other process of the same
+/// name. Where `tap` matches an executable name only, `watch` adds the path
+/// anchor and a `--wait` acquisition timeout.
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    /// The image name of the target process (a glob).
+    #[arg(short = 'e', long)]
+    pub exe: String,
+
+    /// A case-insensitive substring the target's full image path must contain.
+    #[arg(long)]
+    pub path: Option<String>,
+
+    /// A regular expression the target's full image path must match.
+    #[arg(long)]
+    pub path_regex: Option<String>,
+
+    /// How long to wait for the target before giving up (acquisition timeout).
+    #[arg(long, value_parser = parse_duration)]
+    pub wait: Option<Duration>,
+
+    /// The capture duration bound, from arm.
     #[arg(short = 'd', long, value_parser = parse_duration)]
     pub duration: Option<Duration>,
 

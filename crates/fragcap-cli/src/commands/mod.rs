@@ -16,3 +16,4 @@ pub mod schema;
 pub mod steam;
 pub mod stub;
 pub mod tap;
+pub mod watch;

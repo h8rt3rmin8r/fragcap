@@ -90,6 +90,17 @@ pub fn capture(
     let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
     session.attach(ARMED_AT);
 
+    // Attach-to-running (section 15.7): fold the startup snapshot the watcher took
+    // at arm, so a target already running when the session armed acquires now,
+    // without a later start event. Empty when no watcher took one, which makes
+    // this a no-op and keeps a run with no already-running target byte-identical.
+    if !components.startup_snapshot.is_empty() {
+        session.apply_snapshot(
+            &components.startup_snapshot,
+            components.snapshot_at.unwrap_or(ARMED_AT),
+        );
+    }
+
     let interface_names = config.interface_names();
     emitter.event(&Event::SessionArmed {
         interfaces: interface_names.clone(),

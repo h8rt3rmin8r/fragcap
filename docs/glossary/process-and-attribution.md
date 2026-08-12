@@ -453,7 +453,32 @@ the instant the session was armed. When unset, the session ends instead by the
 duration bound or an operator interrupt.
 
 **See also:** [Capture session](process-and-attribution.md#capture-session),
-[Stop condition](process-and-attribution.md#stop-condition)
+[Stop condition](process-and-attribution.md#stop-condition),
+[Watch mode](#watch-mode)
+
+## Watch mode
+
+The default launch-agnostic capture path: fragcap arms its
+[process watcher](#process-watcher) and sinks and captures the first process
+matching a [target](#target) identity, however and wherever it was started,
+including one already running at arm (found in the
+[startup snapshot](#startup-snapshot)). The identity is an executable name plus a
+path anchor; a target that starts after arm is acquired on its start event, and
+one already running is acquired when the snapshot is folded in, both by runtime
+observation. Managed launch is a convenience layered on top, never the spine.
+
+{: .matters }
+> Watch mode is what makes a modded install launched from a mod manager, a
+> standalone title, and every non-storefront game capturable at all, because it
+> assumes nothing about origin. It is the runtime case a hint database marks
+> `launcher_mediated`: the launch entry is a stub or publisher launcher, and
+> watch mode attributes the socket-holding descendant. A watch that never sees
+> its target gives up at the [acquisition timeout](#acquisition-timeout) with a
+> named reason, never silently (constitution principle P-4).
+
+**See also:** [Acquisition timeout](#acquisition-timeout),
+[Process watcher](#process-watcher), [Target](#target),
+[Startup snapshot](#startup-snapshot)
 
 ## Stop condition
 

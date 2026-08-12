@@ -1,0 +1,3 @@
+# game.exe is already running at arm (in the startup snapshot), with no start
+# event, so only attach-to-running acquires it.
+snapshot 4242 100 C:\Games\game.exe
