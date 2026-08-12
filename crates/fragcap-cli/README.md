@@ -4,12 +4,10 @@ Command line interface for fragcap. Installs the `fragcap` binary.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
-
-Version 0.1.0 reserves the name and fixes the crate boundary.
-The command surface arrives in slice S14.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Functional as of 0.2.0, the first functional release. This crate installs the
+`fragcap` binary and its command surface: capture and replay, profile
+scaffolding and validation, diagnostics, Steam integration, and Wireshark
+extcap integration.
 
 ## About fragcap
 

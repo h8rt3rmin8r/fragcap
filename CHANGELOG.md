@@ -3310,6 +3310,15 @@ the components land.
   reimplementation in two shell dialects would be two untested copies of the
   same logic. The scripts stay thin orchestrators over git, cargo, and the task
   runner.
+- **2026-08-12** The release scripts regenerate goldens by targeting the two
+  regenerating test binaries (`cargo test -p fragcap --test goldens` and `cargo
+  test -p fragcap-cli --test cli_run`) rather than a workspace-wide test run.
+  This corrects the first cut of this release, which failed at golden
+  regeneration: a workspace run also executes the corpus and extcap conservation
+  checks, which read the same goldens and refuse to regenerate on principle, so
+  running them in the same pass compared new output against a not-yet-rewritten
+  golden and failed. `scripts/**` is a pinned artifact, so the corrected test
+  selection is recorded here as a dated decision.
 
 **2026-08-10** The release-versioning scheme is codified, and there is one first
 public release. `v0.1.0` is the crates.io namespace-reservation stub already

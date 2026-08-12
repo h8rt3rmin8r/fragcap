@@ -4,13 +4,9 @@ Output sinks and transports for fragcap.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
-
-Version 0.1.0 reserves the name and fixes the crate boundary.
-The pcapng writer arrives in slice S06, the JSON Lines writer in S07, and
-transports in S15.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Functional as of 0.2.0, the first functional release. This crate writes both
+output formats, pcapng carrying attribution in packet comments and JSON Lines,
+and carries the transports, streaming sinks, and ring mode.
 
 ## About fragcap
 

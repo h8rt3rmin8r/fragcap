@@ -4,13 +4,11 @@ Facade crate re-exporting the fragcap library surface.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
-
-Version 0.1.0 reserves the name and fixes the crate boundary.
-Re-exports arrive as the crates beneath it gain surface, beginning with
-slice S02.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Functional as of 0.2.0, the first functional release. This crate re-exports the
+full fragcap library surface, from interface selection and the capture pipeline
+to the output writers, the profile schema, attribution, and Steam integration.
+The library is the product; install the `fragcap` binary from the `fragcap-cli`
+crate.
 
 ## About fragcap
 
