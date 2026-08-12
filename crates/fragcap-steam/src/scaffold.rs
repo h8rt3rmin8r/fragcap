@@ -8,12 +8,17 @@
 //! it is returned, so a scaffold that would fail section 15.4 validation is a
 //! bug caught here rather than shipped (S17 D4; FR-008).
 //!
-//! The classifier proposes launcher stages for launcher-suggestive images and
-//! the largest remaining image as the client. It never infers process ancestry
-//! (`descends_from`) from a static scan, because runtime topology is invisible on
-//! disk (S17 D7). Where two proposals would share an image basename, it adds a
-//! `path_contains` predicate so the output satisfies the ambiguous-image-match
-//! check.
+//! The classifier first drops obvious non-game executables (installers,
+//! redistributables, crash handlers, helper stubs, hash-named temp installers),
+//! then proposes launcher stages for launcher-suggestive images and the largest
+//! remaining image as the client. Launcher detection keys on the image basename,
+//! not its path: a title whose files sit under a directory named `Launcher`
+//! would otherwise classify every one of them, installers included, as a
+//! launcher and land the terminal client on `setup.exe` (issue #64). It never
+//! infers process ancestry (`descends_from`) from a static scan, because runtime
+//! topology is invisible on disk (S17 D7). Where two proposals would share an
+//! image basename, it adds a `path_contains` predicate so the output satisfies
+//! the ambiguous-image-match check.
 
 use std::path::{Path, PathBuf};
 
@@ -22,8 +27,32 @@ use fragcap_profile::Profile;
 use crate::library::InstalledTitle;
 use crate::SteamError;
 
-/// Substrings that mark an executable as launcher-suggestive.
+/// Substrings that mark an executable as launcher-suggestive, strongest first so
+/// the best match becomes `role = "launcher"` and the rest fall to `launcher-2`.
 const LAUNCHER_TOKENS: &[&str] = &["launcher", "launch", "starter", "bootstrap", "boot"];
+
+/// Basename substrings that mark an executable as not a game process: installers,
+/// redistributables, crash handlers, and helper stubs. These are dropped before
+/// classification so they never become stages or the terminal client (issue #64).
+const NON_GAME_TOKENS: &[&str] = &[
+    "setup",
+    "installer",
+    "uninstall",
+    "unins",
+    "vc_redist",
+    "vcredist",
+    "redist",
+    "dxsetup",
+    "directx",
+    "dotnetfx",
+    "dotnet",
+    "crashhandler",
+    "crashreporter",
+    "crashreport",
+    "crashpad",
+    "helper",
+    "oalinst",
+];
 
 /// An executable image found by scanning an install directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,29 +144,73 @@ fn is_exe(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether an image is launcher-suggestive, by its basename (not its path): a
+/// parent directory named `Launcher` must not tar every file under it.
 fn is_launcher(image: &ExecutableImage) -> bool {
-    let hay = image.path.to_string_lossy().to_ascii_lowercase();
-    LAUNCHER_TOKENS.iter().any(|t| hay.contains(t))
+    let name = image.file_name.to_ascii_lowercase();
+    LAUNCHER_TOKENS.iter().any(|t| name.contains(t))
+}
+
+/// A launcher's rank, lower being a stronger match, used to order the launcher
+/// stages so the most launcher-like image is `role = "launcher"`.
+fn launcher_rank(image: &ExecutableImage) -> usize {
+    let name = image.file_name.to_ascii_lowercase();
+    LAUNCHER_TOKENS
+        .iter()
+        .position(|t| name.contains(t))
+        .unwrap_or(LAUNCHER_TOKENS.len())
+}
+
+/// Whether an image is an obvious non-game executable: an installer,
+/// redistributable, crash handler, helper stub, or a hash-named temp installer.
+fn is_non_game(file_name: &str) -> bool {
+    let name = file_name.to_ascii_lowercase();
+    if NON_GAME_TOKENS.iter().any(|t| name.contains(t)) {
+        return true;
+    }
+    // Hash-named temp installers, e.g. f5f0755f8afc2b40b7ceb0cc8fed2e30.exe: a
+    // long run of hex digits and nothing else.
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    stem.len() >= 16 && stem.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Classify images into launcher and client stage proposals.
 ///
-/// Launcher-token images become launcher stages; the largest non-launcher image
-/// becomes the client. If every image is launcher-tokened (or there is only one
-/// image), the largest overall is still promoted to client so a client stage
-/// always exists.
+/// Obvious non-game executables are dropped first. Of what remains, launcher-token
+/// images become launcher stages, ordered strongest-match first, and the largest
+/// non-launcher image becomes the client. If every remaining image is
+/// launcher-tokened (or there is only one), the largest is still promoted to
+/// client so a client stage always exists. If the denylist would remove
+/// everything, the original set is kept rather than emit an empty scaffold.
 fn classify(images: Vec<ExecutableImage>, install_dir: &Path) -> Vec<StageProposal> {
-    let (launchers, others): (Vec<_>, Vec<_>) = images.into_iter().partition(is_launcher);
+    let mut candidates: Vec<ExecutableImage> = images
+        .iter()
+        .filter(|i| !is_non_game(&i.file_name))
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        candidates = images;
+    }
+
+    let (mut launchers, others): (Vec<_>, Vec<_>) = candidates.into_iter().partition(is_launcher);
 
     // The client is the largest non-launcher, or, in the degenerate all-launcher
     // case, the largest launcher promoted out of the launcher set.
-    let mut launchers = launchers;
     let client = if let Some(largest) = largest(&others) {
         others[largest].clone()
     } else {
-        let idx = largest(&launchers).expect("at least one image exists");
+        let idx = largest(&launchers).expect("at least one candidate exists");
         launchers.remove(idx)
     };
+
+    // Order launchers so the strongest launcher-token match is role = "launcher",
+    // then by size, so the likely real launcher leads (issue #64).
+    launchers.sort_by(|a, b| {
+        launcher_rank(a)
+            .cmp(&launcher_rank(b))
+            .then(b.size.cmp(&a.size))
+            .then(a.file_name.cmp(&b.file_name))
+    });
 
     let mut proposals: Vec<StageProposal> = launchers
         .into_iter()
@@ -389,14 +462,14 @@ mod tests {
 
     #[test]
     fn shared_basenames_get_disambiguators_that_actually_distinguish() {
-        // Codex's case: two same-basename executables under sibling `bin`
-        // directories. A disambiguator of just the parent (`bin`) would match
-        // both; each must get a value that matches its own path and not the
-        // other's.
+        // Two same-basename launcher stubs under sibling directories (one stays a
+        // launcher, one is promoted to client). A disambiguator of just the parent
+        // would match both; each must get a value that matches its own path and
+        // not the other's.
         let props = classify(
             vec![
-                img("Game/launcher/bin/TheDivision2.exe", 5),
-                img("Game/client/bin/TheDivision2.exe", 50),
+                img("Game/a/GameLauncher.exe", 50),
+                img("Game/b/GameLauncher.exe", 5),
             ],
             Path::new("Game"),
         );
@@ -421,6 +494,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn installers_and_redistributables_are_never_stages() {
+        // The ESO-306130 shape: a real launcher, redistributables, an installer,
+        // a hash-named temp installer, a helper stub, and the game client.
+        let props = classify(
+            vec![
+                img("g/Bethesda.net_Launcher.exe", 20),
+                img("g/vc_redist.2022.x64.exe", 900),
+                img("g/vc_redist.2022.x86.exe", 800),
+                img("g/setup.exe", 1000),
+                img("g/f5f0755f8afc2b40b7ceb0cc8fed2e30.exe", 500),
+                img("g/RestartHelper.exe", 30),
+                img("g/eso64.exe", 400),
+            ],
+            Path::new("g"),
+        );
+        let names: Vec<&str> = props.iter().map(|p| p.image.file_name.as_str()).collect();
+        for junk in [
+            "vc_redist.2022.x64.exe",
+            "vc_redist.2022.x86.exe",
+            "setup.exe",
+            "f5f0755f8afc2b40b7ceb0cc8fed2e30.exe",
+            "RestartHelper.exe",
+        ] {
+            assert!(
+                !names.contains(&junk),
+                "{junk} must not be a stage: {names:?}"
+            );
+        }
+        let client = props.iter().find(|p| p.role == Role::Client).unwrap();
+        assert_eq!(client.image.file_name, "eso64.exe");
+        assert!(props
+            .iter()
+            .any(|p| p.role == Role::Launcher && p.image.file_name == "Bethesda.net_Launcher.exe"));
+    }
+
+    #[test]
+    fn an_installer_is_not_chosen_as_the_client_even_when_largest() {
+        // setup.exe dwarfs the game, but an installer must never be the client.
+        let props = classify(
+            vec![img("g/setup.exe", 10_000), img("g/eso64.exe", 100)],
+            Path::new("g"),
+        );
+        let client = props.iter().find(|p| p.role == Role::Client).unwrap();
+        assert_eq!(client.image.file_name, "eso64.exe");
+        assert!(!props.iter().any(|p| p.image.file_name == "setup.exe"));
+    }
+
+    #[test]
+    fn a_launcher_directory_does_not_classify_the_client_or_promote_an_installer() {
+        // Files under a directory named `Launcher` must not all become launchers;
+        // classification keys on the basename, so the game client stays the client
+        // and the installer/redist are dropped (issue #64).
+        let props = classify(
+            vec![
+                img("ESO/Launcher/Bethesda.net_Launcher.exe", 20),
+                img("ESO/Launcher/setup.exe", 5000),
+                img("ESO/Launcher/vc_redist.2022.x64.exe", 900),
+                img("ESO/game/client/eso64.exe", 400),
+            ],
+            Path::new("ESO"),
+        );
+        let client = props.iter().find(|p| p.role == Role::Client).unwrap();
+        assert_eq!(client.image.file_name, "eso64.exe");
+        assert!(!props.iter().any(|p| p.image.file_name == "setup.exe"));
+        assert!(!props
+            .iter()
+            .any(|p| p.image.file_name == "vc_redist.2022.x64.exe"));
+    }
+
+    #[test]
+    fn an_all_denylisted_scan_still_yields_a_client() {
+        // If every image is an installer or redistributable, keep the set rather
+        // than error, so the operator gets a flagged starting point, not nothing.
+        let props = classify(
+            vec![img("g/setup.exe", 10), img("g/vc_redist.x64.exe", 20)],
+            Path::new("g"),
+        );
+        assert_eq!(props.iter().filter(|p| p.role == Role::Client).count(), 1);
+    }
+
+    #[test]
+    fn launchers_are_ordered_strongest_token_first() {
+        let props = classify(
+            vec![
+                img("g/GameBoot.exe", 5),
+                img("g/MainLauncher.exe", 5),
+                img("g/eso64.exe", 100),
+            ],
+            Path::new("g"),
+        );
+        let launchers: Vec<&str> = props
+            .iter()
+            .filter(|p| p.role == Role::Launcher)
+            .map(|p| p.image.file_name.as_str())
+            .collect();
+        assert_eq!(
+            launchers.first(),
+            Some(&"MainLauncher.exe"),
+            "the strongest launcher-token match leads: {launchers:?}"
+        );
     }
 
     #[test]
@@ -456,10 +632,11 @@ mod tests {
         use crate::test_support::TempTree;
         let tree = TempTree::new();
         let install = tree.path().join("game");
-        // The same image name in two directories: one under a launcher-token
-        // path, one not. The renderer must pin both so validation passes.
-        tree.write_exe(&install.join("bin").join("TheDivision2.exe"), 100);
-        tree.write_exe(&install.join("launch").join("TheDivision2.exe"), 5);
+        // The same launcher image name in two directories: one stays a launcher,
+        // the other is promoted to client. The renderer must pin both so
+        // validation passes.
+        tree.write_exe(&install.join("a").join("SteamLaunch.exe"), 100);
+        tree.write_exe(&install.join("b").join("SteamLaunch.exe"), 5);
         let title = InstalledTitle {
             app_id: "2221490".to_string(),
             name: "The Division 2".to_string(),
