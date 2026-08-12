@@ -10,13 +10,12 @@
 # undone. A failed release is then a release that was never created, rather
 # than crate versions that exist with nothing to download.
 #
-# INCOMPLETE against section 24.5. The archive is specified to contain the
-# binary, both shell wrappers, the bundled profiles, the license, and the
-# notice. The wrappers arrive with slice S18 and the profiles with S05, so
-# `scripts/` and `profiles/` are empty and the archive cannot yet be complete.
-# The packaging step records which components are absent, ships that record
-# inside the archive, and warns in the log. It stops doing so on its own once
-# those directories have contents, so this note does not have to be remembered.
+# The distribution archive contains the release binary and its legal texts
+# (LICENSE, NOTICE), per section 24.5. It ships no shell wrappers (the exe
+# handles elevation itself since #56 and `doctor` covers driver detection, so a
+# wrapper adds little in the archive; wrappers stay in-repo for cloners), no repo
+# README, and no game profiles (fragcap bundles none by design). The archive-
+# contents decision is recorded in changelog.d/release-packaging.decisions.md.
 name: release
 
 on:
@@ -107,41 +106,16 @@ jobs:
           $stage   = "dist/$name"
           New-Item -ItemType Directory -Force $stage | Out-Null
 
+          # Section 24.5: the archive is the binary and its legal texts. It does
+          # NOT ship the shell wrappers (the exe detects elevation itself since
+          # #56 and `doctor` covers driver detection, so a wrapper adds little in
+          # the archive; the wrappers stay in-repo for people who clone), the repo
+          # README (repo-oriented banner/badges/brand-image paths that do not
+          # resolve outside the tree), or a profiles/ directory (fragcap bundles
+          # no profiles by design; they are scaffolded or authored per title), so
+          # there is no INCOMPLETE marker (issues #54, #57).
           Copy-Item target/release/fragcap.exe $stage
-          Copy-Item LICENSE, NOTICE, README.md $stage
-
-          # Section 24.5 also lists the shell wrappers and the bundled
-          # profiles. Include them when they exist. Record them when they do
-          # not, so an incomplete archive says so instead of looking finished.
-          $absent = @()
-
-          $wrappers = @(Get-ChildItem scripts -File -ErrorAction SilentlyContinue |
-                        Where-Object { $_.Extension -in '.sh', '.ps1' })
-          if ($wrappers.Count -gt 0) {
-            New-Item -ItemType Directory -Force "$stage/scripts" | Out-Null
-            $wrappers | Copy-Item -Destination "$stage/scripts"
-          } else {
-            $absent += 'shell wrappers (specification section 18, slice S18)'
-          }
-
-          $profiles = @(Get-ChildItem profiles -File -Filter *.toml -ErrorAction SilentlyContinue)
-          if ($profiles.Count -gt 0) {
-            New-Item -ItemType Directory -Force "$stage/profiles" | Out-Null
-            $profiles | Copy-Item -Destination "$stage/profiles"
-          } else {
-            $absent += 'bundled game profiles (specification section 15, slice S05)'
-          }
-
-          if ($absent.Count -gt 0) {
-            $body = @(
-              'This archive is incomplete against specification section 24.5.',
-              '',
-              'The following components are specified but not yet built:',
-              ''
-            ) + ($absent | ForEach-Object { "  - $_" })
-            $body | Set-Content "$stage/INCOMPLETE.txt" -Encoding utf8NoBOM
-            Write-Output "::warning::archive incomplete: $($absent -join '; ')"
-          }
+          Copy-Item LICENSE, NOTICE $stage
 
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force $stage

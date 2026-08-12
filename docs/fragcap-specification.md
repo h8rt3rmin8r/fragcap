@@ -2638,9 +2638,16 @@ available before publishing its dependents.
 
 ### 24.5 Artifacts
 
-Each release publishes a Windows archive containing the binary, both
-shell wrappers, the bundled profiles, the license, and the notice file.
-Checksums accompany every artifact.
+Each release publishes a Windows archive containing the binary, the
+license, and the notice file. Checksums accompany every artifact.
+
+The archive ships no shell wrappers: the binary handles elevation itself
+(section 17) and reports driver readiness through `doctor` (section 26.3),
+so a wrapper adds little where it would ship, and the wrappers remain in
+the repository for people who clone it. It ships no game profiles, because
+fragcap bundles none by design; a profile is scaffolded from an installed
+title or authored per title (section 15). It ships no repository README,
+which is repo-oriented rather than an archive component.
 
 No artifact contains npcap or any component of it, per section 20.2.
 
