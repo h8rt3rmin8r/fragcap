@@ -306,31 +306,43 @@ function slugify(text) {
 // except inside inline code spans and fenced code blocks, where they are already
 // literal. CHANGELOG.md is authored as GitHub Markdown, not MDX, so a bare `<`
 // would otherwise be read as a JSX tag.
+//
+// Inline-code state is tracked across lines, because a backtick span can wrap a
+// soft line break (Markdown joins the two lines with a space): the ring command
+// in the changelog does exactly this. Resetting the state per line would insert a
+// stray backtick and escape the `<` inside the span. A fence boundary resets any
+// dangling inline state.
 function escapeMdx(text) {
+  const escape = (ch) =>
+    ({ '<': '&lt;', '{': '&#123;', '}': '&#125;' })[ch] ?? ch;
   let inFence = false;
-  return text
-    .split('\n')
-    .map((line) => {
-      if (/^\s*```/.test(line)) {
-        inFence = !inFence;
-        return line;
+  let inCode = false;
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      inCode = false;
+      out.push(line);
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+      continue;
+    }
+    let rendered = '';
+    for (const ch of line) {
+      if (ch === '`') {
+        inCode = !inCode;
+        rendered += ch;
+      } else if (!inCode && (ch === '<' || ch === '{' || ch === '}')) {
+        rendered += escape(ch);
+      } else {
+        rendered += ch;
       }
-      if (inFence) return line;
-      const parts = line.split('`');
-      let out = '';
-      for (let i = 0; i < parts.length; i++) {
-        if (i % 2 === 1) {
-          out += '`' + parts[i] + '`';
-        } else {
-          out += parts[i].replace(
-            /[<{}]/g,
-            (ch) => ({ '<': '&lt;', '{': '&#123;', '}': '&#125;' })[ch],
-          );
-        }
-      }
-      return out;
-    })
-    .join('\n');
+    }
+    out.push(rendered);
+  }
+  return out.join('\n');
 }
 
 function parseChangelogVersions(raw) {
