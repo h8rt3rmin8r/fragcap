@@ -1,0 +1,112 @@
+---
+title: Command line
+description: "The fragcap command surface: the commands, their flags, and the global options."
+---
+
+<Callout title="Why it matters here">
+Every command that captures needs the **npcap** driver installed in
+WinPcap-compatible mode. Run `fragcap doctor` first; it reports the driver's
+presence without capturing anything.
+</Callout>
+
+fragcap has one binary and a small set of commands. This page lists what each one
+does and the flags it accepts. The binary's own `--help` is authoritative and is
+generated from the same definitions; this page is the readable version.
+
+## Global options
+
+These apply to every command:
+
+| Flag | Effect |
+| --- | --- |
+| `--quiet` | Suppress progress; keep warnings and errors. |
+| `--silent` | Suppress everything except errors. |
+| `--json` | Emit newline-delimited structured events on standard error. |
+
+## `run`
+
+Capture a game using a profile. This is the primary command.
+
+```text
+fragcap run --profile eso --out capture.fcapng
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `-p, --profile <REF>` | The profile to capture with: a path, a name, or a game id. Required. |
+| `-o, --out <PATH>` | The output capture file (pcapng). Shorthand for a file sink. |
+| `--mode <MODE>` | Capture mode: `file`, `stream`, or `ring`. Defaults to the profile's, or `file`. |
+| `--sink <SPEC>` | An output sink, repeatable: `file:PATH`, `jsonl:PATH`, `pipe:NAME`, or `tcp://HOST:PORT`. |
+| `-d, --duration <DUR>` | The capture duration bound, measured from arm. |
+| `--wait <DUR>` | How long to wait for the target before giving up (the acquisition timeout). |
+| `--max-packets <N>` | Stop after this many captured packets. |
+| `--max-bytes <SIZE>` | Stop after this many captured bytes (integer plus `b`/`kb`/`mb`/`gb`). |
+| `--roles <A,B>` | The roles to capture, comma-separated. Scopes which stages trigger. |
+| `--direction <DIR>` | The flow direction to scope to. |
+| `-i, --interface <NAME>` | A capture interface, repeatable. |
+| `--loopback` | Include the loopback adapter. |
+| `--no-payload` | Write metadata only, no packet payloads. |
+| `--ring <WINDOW>` | The ring window, for `--mode ring` (a duration or a size). |
+| `--launch` | Launch the game through its platform before capturing. |
+
+Durations accept the same grammar throughout: an integer and a unit, such as
+`30s`, `5m`, or `2h`. See [capture modes](/docs/guides/capture-modes) for what
+`--mode` and `--ring` do.
+
+## `tap`
+
+Capture a running process ad hoc, without an authored profile. Names the process
+by image name rather than resolving a profile.
+
+```text
+fragcap tap --process discord.exe --out capture.fcapng
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `-p, --process <NAME>` | The image name of the process to capture. Required. |
+| `-d, --duration <DUR>` | The capture duration bound. |
+| `-o, --out <PATH>` | The output capture file (pcapng). |
+| `--sink <SPEC>` | An output sink, repeatable. |
+| `--no-payload` | Write metadata only, no packet payloads. |
+
+## `profile`
+
+Manage and validate profiles. A `--profile-dir <PATH>` may be repeated to add
+directories to the search.
+
+- `fragcap profile validate <REF>` reports every diagnostic in one pass. A
+  profile with four mistakes reports four; see [the schema](/docs/reference/profile-schema).
+- `fragcap profile list` lists the bundled and user profiles with counts.
+- `fragcap profile show <REF>` shows how a reference resolves and which source
+  supplied it.
+
+## `steam`
+
+Enumerate titles and scaffold profiles from a Steam installation.
+
+- `fragcap steam profile <APP_ID>` reads Steam's local metadata for an installed
+  title and prints a validating profile skeleton to standard output. It captures
+  nothing and touches no process; it is a starting point you then edit.
+
+## `doctor`
+
+Report environment readiness: whether the capture driver is present and whether
+fragcap can enumerate interfaces. It captures nothing.
+
+```text
+fragcap doctor
+```
+
+## `extcap`
+
+Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an
+extcap capture source; you do not normally run this command by hand. It presents
+one `fragcap` interface whose options (`--profile`, `--roles`, `--direction`,
+`--loopback`) mirror `run`, so the analyzer's capture dialog and the command line
+select capture identically.
+
+## `replay`
+
+Play a capture file back. Not yet implemented; the command parses and reports that
+it is unavailable rather than the parser rejecting it.

@@ -1,0 +1,70 @@
+---
+title: Contributing
+description: Building fragcap, the check set every change runs, and the one rule that is never negotiable.
+---
+
+fragcap is developed in the open. This page is the short version; the
+[CONTRIBUTING.md](https://github.com/h8rt3rmin8r/fragcap/blob/main/CONTRIBUTING.md)
+in the repository is the practical how, and the constitution under `.specify/` is
+the governing rule.
+
+## What fragcap will not accept
+
+fragcap is a passive observation tool, and that is enforced rather than
+aspirational. A pull request using any of the following is declined regardless of
+how well it works:
+
+- Packet interception or filtering drivers
+- Code injection into any target process
+- Function hooking
+- Process handles carrying memory-read rights against a target
+- Layered service providers or Winsock catalog modification
+- Executable image modification
+
+If a capability seems to require one of these, open an issue rather than an
+implementation; it usually means the problem has a passive solution that has not
+been found yet. Copyleft-licensed dependencies are also declined.
+
+## Building
+
+fragcap is a Rust workspace. Build and test it with Cargo:
+
+```text
+cargo build --workspace
+cargo test --workspace
+```
+
+Capture backends are behind feature flags, so the workspace builds and its logic
+is tested on any platform without a capture driver. The live capture path needs
+npcap and runs only where it is installed.
+
+## The check set
+
+One command runs the same checks continuous integration runs:
+
+```text
+cargo xtask ci
+```
+
+It runs formatting, Clippy with warnings denied, the test suite, and the
+repository's own conventions, dependency-direction, and license checks. Run it
+before opening a pull request; it is the same set the automated checks run, so the
+two cannot drift.
+
+## The workflow
+
+- Changes reach `main` only through a pull request that a human reviews and
+  approves. No one pushes to `main` directly.
+- A feature goes through the spec-kit sequence first and lands as a numbered
+  `specs/NNN-slug/` slice. Bug fixes and documentation corrections do not need a
+  slice.
+- A new term gets a [glossary](/docs/glossary) entry in the same change that
+  introduces it.
+- Output stays readable by unmodified analyzers: compatibility outranks richness.
+
+## Documentation
+
+This site is built from the repository. The glossary has a single source under
+`docs/glossary/`, and a linter checks that every entry is complete, that internal
+cross-links resolve, and that the alphabetical index is reproducible. The prose
+you are reading is authored under `site/content/docs/`.

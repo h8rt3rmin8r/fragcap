@@ -47,6 +47,11 @@ const EXCLUDED: &[&str] = &[
     "site/.next",
     "site/.source",
     "site/out",
+    // The glossary content tree is generated from docs/glossary/ by
+    // scripts/prebuild.mjs and gitignored; docs/glossary/ is the single source
+    // and is linted there. Linting the derived copy would double every finding
+    // and depends on the site build having run. Added by slice S18c-2.
+    "site/content/docs/glossary",
     // Next.js rewrites these two on every build with platform-native line
     // endings (CRLF on Windows), so they are managed generated files, not
     // hand-authored source subject to the house encoding rule. next-env.d.ts is
