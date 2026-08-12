@@ -14,6 +14,7 @@
 //! repository.
 
 mod deps;
+mod docs;
 mod license;
 mod lint;
 mod notes;
@@ -37,7 +38,7 @@ cargo xtask <command>
   neutral    Build fragcap-core for a target with no capture backend
   msrv       Build at the declared minimum supported toolchain
   ci         Run the full local check set in order
-  docs       Documentation site (stub; owned by S18)
+  docs       Documentation site: docs (dev), docs build, docs check
   publish    Registry publication in dependency order (--execute to publish)
   notes      Print release notes for a version, from CHANGELOG.md
 ";
@@ -131,7 +132,7 @@ fn main() -> ExitCode {
 
         "wrappers" => match wrappers::run(&root) {
             Ok(0) => {
-                println!("wrappers: both shell wrappers are compliant");
+                println!("wrappers: the shell scripts are compliant");
                 ExitCode::SUCCESS
             }
             Ok(n) => {
@@ -329,15 +330,38 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
+            println!("ci: running docs check");
+            match docs::check(&root) {
+                0 => {}
+                2 => {
+                    eprintln!("ci: docs check could not run");
+                    return ExitCode::from(2);
+                }
+                _ => {
+                    eprintln!("ci: docs check reported failures");
+                    return ExitCode::from(1);
+                }
+            }
             println!("ci: all checks passed");
             ExitCode::SUCCESS
         }
 
-        // Stubs exit 2, not 0. A caller cannot distinguish a successful no-op
-        // from a successful run, so a stub must not claim success.
+        // The single entry point for the documentation site (section 22.6):
+        // `docs` (dev server), `docs build` (static export), `docs check`
+        // (linter), each returning the 0/1/2 contract.
         "docs" => {
-            eprintln!("docs: not implemented. The documentation site is owned by slice S18.");
-            ExitCode::from(2)
+            let code = match std::env::args().nth(2).as_deref() {
+                Some("build") => docs::build(&root),
+                Some("check") => docs::check(&root),
+                None => docs::dev(&root),
+                Some(other) => {
+                    eprintln!(
+                        "docs: unknown subcommand: {other}\n\nUse: docs | docs build | docs check"
+                    );
+                    2
+                }
+            };
+            ExitCode::from(code as u8)
         }
         "notes" => match std::env::args().nth(2) {
             Some(version) => match notes::run(&root, &version) {

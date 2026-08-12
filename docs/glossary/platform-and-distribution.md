@@ -1,0 +1,107 @@
+# Platform and Distribution
+
+## npcap
+
+A Windows packet capture driver and library, the current successor to WinPcap.
+
+{: .matters }
+> **npcap is not redistributable.** fragcap detects it rather than shipping it,
+> and no distribution artifact contains it. Two non-default installation
+> options are required: loopback traffic capture support and WinPcap API
+> compatible mode. Both are verifiable from the registry, which is how
+> `fragcap doctor` names the specific missing option.
+
+**See also:** [Loopback](/docs/glossary/capture-and-networking#loopback)
+
+**References:**
+
+- npcap project documentation, https://npcap.com. Installation options and
+  license terms.
+
+## Game profile
+
+A TOML file describing a game's process topology, stage match rules, and
+capture defaults. Versioned: every profile declares a
+[profile schema version](/docs/glossary/process-and-attribution#profile-schema-version), and a reference to one
+resolves through the [profile resolution order](/docs/glossary/process-and-attribution#profile-resolution-order).
+
+{: .matters }
+> Profiles are data, not code. They carry the same license as the repository,
+> and a contributor can add support for a title without writing Rust. Validation
+> reports every problem in a profile rather than stopping at the first, because
+> the population writing these files is not the population that can debug a
+> parser.
+
+**See also:** [Stage](/docs/glossary/process-and-attribution#stage), [Lifecycle class](/docs/glossary/process-and-attribution#lifecycle-class),
+[Terminal stage](/docs/glossary/process-and-attribution#terminal-stage), [Match predicate](/docs/glossary/process-and-attribution#match-predicate),
+[Ambiguous image match](/docs/glossary/process-and-attribution#ambiguous-image-match),
+[Profile schema version](/docs/glossary/process-and-attribution#profile-schema-version),
+[Profile resolution order](/docs/glossary/process-and-attribution#profile-resolution-order),
+[Duration literal](/docs/glossary/capture-and-networking#duration-literal)
+
+## VDF
+
+**Also known as:** Valve key-value format
+
+Valve's key-value text format. Steam records library locations
+(`libraryfolders.vdf`) and per-title metadata (`appmanifest_<app_id>.acf`) in
+it: quoted keys, quoted-or-nested-block values, line comments, and backslash
+escapes.
+
+{: .matters }
+> fragcap parses the subset these two manifest kinds use with a small hand-rolled
+> parser rather than a dependency, because the format is small and stable
+> (specification section 16.2). A malformed manifest is reported and skipped, not
+> fatal, so one bad file does not hide every good one.
+
+**See also:** [Library discovery](/docs/glossary/platform-and-distribution#library-discovery)
+
+## Library discovery
+
+Reading Steam's local metadata to enumerate installed titles: fragcap locates
+the Steam installation through its Windows registry entry, reads the
+library-folders manifest to find every library, and reads every application
+manifest across them, yielding each installed title with its application
+identifier and install directory.
+
+{: .matters }
+> Discovery reads local files and the registry only. It installs nothing,
+> downloads nothing, and runs no Steam component, the same detection-not-bundling
+> posture the project holds toward [npcap](/docs/glossary/platform-and-distribution#npcap).
+
+**See also:** [VDF](/docs/glossary/platform-and-distribution#vdf), [Profile scaffolding](/docs/glossary/platform-and-distribution#profile-scaffolding),
+[Managed launch](/docs/glossary/platform-and-distribution#managed-launch)
+
+## Profile scaffolding
+
+Generating a [game profile](/docs/glossary/platform-and-distribution#game-profile) skeleton from an installed title.
+fragcap scans the install directory for executable images, proposes
+launcher-suggestive images as launcher stages and the largest remaining image as
+the client, and emits a profile that passes section 15.4 validation unedited.
+
+{: .matters }
+> The output is a heuristic starting point, marked as such in a header comment,
+> and must be verified against an observed capture session: image names alone
+> cannot tell a launcher from a client, and a title may run several processes
+> sharing one image name. The scaffold never infers process ancestry from a
+> static scan.
+
+**See also:** [Game profile](/docs/glossary/platform-and-distribution#game-profile), [Stage](/docs/glossary/process-and-attribution#stage),
+[Ambiguous image match](/docs/glossary/process-and-attribution#ambiguous-image-match),
+[Library discovery](/docs/glossary/platform-and-distribution#library-discovery)
+
+## Managed launch
+
+Starting a title through Steam's protocol handler after fragcap is already
+watching and its capture handle is open, so every process in the launch chain
+produces a start event fragcap observes.
+
+{: .matters }
+> Managed launch eliminates the acquisition race: a launcher whose whole lifetime
+> is shorter than any poll interval is still observed, because the watcher is
+> armed before the launch is issued. It requires `game.platform` and
+> `game.app_id` in the profile, and it opens no process handle (constitution
+> P-1).
+
+**See also:** [Launcher chain](/docs/glossary/process-and-attribution#launcher-chain),
+[Acquisition timeout](/docs/glossary/process-and-attribution#acquisition-timeout), [Game profile](/docs/glossary/platform-and-distribution#game-profile)

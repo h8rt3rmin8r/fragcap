@@ -2,8 +2,10 @@
 
 //! The shell-wrapper compliance gate (specification section 18.4).
 //!
-//! `cargo xtask wrappers` holds the two wrappers under `scripts/` to their
-//! ShruggieTech house standards. The PowerShell wrapper is checked by the
+//! `cargo xtask wrappers` holds the shell scripts under `scripts/` to their
+//! ShruggieTech house standards: the two wrappers and the documentation linter
+//! `lint-docs.sh` (section 22.5), all under the Bash standard, plus the
+//! PowerShell wrapper. The PowerShell wrapper is checked by the
 //! vendored `Test-ScriptCompliance.ps1` (its POSIX twin, so only bash is
 //! needed); the Bash wrapper is checked by [`check_bash`], authored here because
 //! no Bash checker is vendored. Both scripts are then checked for syntax
@@ -326,6 +328,55 @@ pub fn run(root: &Path) -> io::Result<usize> {
             eprintln!(
                 "wrappers: FAIL Invoke-FragCap.ps1 -DryRun did not assemble as expected:\n{out}"
             );
+            fails += 1;
+        }
+    }
+
+    // 6. The documentation linter is a third `scripts/*.sh` under the same
+    // ShruggieTech Bash standard, so the same structural checker and syntax
+    // check hold it. It has no dry-run seam; its `--help` must still exit 0.
+    let lint_docs = root.join("scripts").join("lint-docs.sh");
+    const LINT_DOCS_REL: &str = "scripts/lint-docs.sh";
+    match fs::read(&lint_docs) {
+        Ok(bytes) => {
+            let findings = check_bash(&bytes);
+            if findings.is_empty() {
+                println!("wrappers: OK  lint-docs.sh structure");
+            } else {
+                for rule in findings {
+                    eprintln!("wrappers: FAIL lint-docs.sh: {rule}");
+                    fails += 1;
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("wrappers: FAIL lint-docs.sh is missing");
+            fails += 1;
+        }
+    }
+    if lint_docs.exists() {
+        let (ok, out) = run_cmd(
+            Command::new("bash")
+                .current_dir(root)
+                .arg("-n")
+                .arg(LINT_DOCS_REL),
+        );
+        if ok {
+            println!("wrappers: OK  lint-docs.sh parses (bash -n)");
+        } else {
+            eprintln!("wrappers: FAIL lint-docs.sh does not parse:\n{out}");
+            fails += 1;
+        }
+        let (ok, _) = run_cmd(
+            Command::new("bash")
+                .current_dir(root)
+                .arg(LINT_DOCS_REL)
+                .arg("--help"),
+        );
+        if ok {
+            println!("wrappers: OK  lint-docs.sh --help");
+        } else {
+            eprintln!("wrappers: FAIL lint-docs.sh --help did not exit 0");
             fails += 1;
         }
     }
