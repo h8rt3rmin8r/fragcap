@@ -330,6 +330,7 @@ across all categories.
 | Rust and Tooling | Language, ecosystem, and build vocabulary |
 | Platform and Distribution | Game platforms, launchers, packaging |
 | File and Wire Formats | Capture formats, encodings, block structures |
+| Command Line and Diagnostics | CLI commands, flags, readiness checks, lifecycle events |
 
 Category assignment is single-valued. A term belonging to two
 categories is filed under its primary domain and cross-linked from the

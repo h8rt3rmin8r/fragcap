@@ -65,16 +65,15 @@ term, but the glossary was scheduled to live in the documentation site that S18
 owns. Seventeen slices therefore had nowhere to write, and the backlog would
 have landed on the slice least able to reconstruct why each term was chosen.
 
-`docs/glossary.md` is now the interim home, seeded with 22 entries covering the
-vocabulary already in use. S18 splits it into the per-category pages of
-specification section 22.4 and adds the generated alphabetical index; nothing
-has to be reconstructed at that point.
+`docs/glossary.md` was the interim home while the vocabulary accumulated. S18c
+split it into the per-category pages of specification section 22.4 under
+`docs/glossary/`, one page per section-4.4 category, with a generated
+alphabetical index (`docs/glossary/index.md`); nothing had to be reconstructed.
 
-One caveat worth keeping in view: the documentation linter in section 4.6,
-which enforces entry completeness and cross-link resolution mechanically,
-arrives with S18. Until then these rules are kept by hand, which is a weaker
-guarantee than the constitution assumes. **P-6 is satisfiable now, but not yet
-enforced.**
+The documentation linter of section 4.6, `scripts/lint-docs.sh`, arrived with
+S18c and enforces entry completeness, cross-link resolution, and index
+reproducibility mechanically, wired into `cargo xtask ci`. **P-6 is now
+enforced** rather than kept by hand.
 
 ## Release milestones
 

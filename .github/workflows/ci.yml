@@ -69,6 +69,13 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo run --package xtask -- wrappers
 
+      # The documentation linter (scripts/lint-docs.sh) enforces P-6: glossary
+      # entry completeness, cross-link resolution, and index reproducibility. It
+      # needs bash, so it is scoped to ubuntu like the wrapper gate.
+      - name: Documentation check
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo run --package xtask -- docs check
+
   neutrality:
     # Constitution P-2 proven mechanically: fragcap-core must build where no
     # capture backend exists. A native Linux build is that proof, and needs no
