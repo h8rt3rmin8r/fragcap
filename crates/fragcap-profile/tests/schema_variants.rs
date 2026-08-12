@@ -79,6 +79,40 @@ fn a_fidelity_outside_the_enum_is_refused_in_every_variant() {
 }
 
 #[test]
+fn records_are_refused_on_a_non_export_kind() {
+    // `records` is an export-only envelope; a profile carrying it is rejected,
+    // matching the published schema's `records: false` conditional for
+    // non-export kinds.
+    let d = checked("profile-with-records.json");
+    assert!(d.has(SchemaCode::UnknownKey), "diagnostics: {d}");
+    assert!(
+        d.iter().any(|x| x.pointer == "/records"),
+        "diagnostics: {d}"
+    );
+}
+
+#[test]
+fn an_integral_float_schema_version_is_accepted() {
+    // A Draft 2020-12 validator accepts `1.0` for `const: 1`; fragcap agrees.
+    let body =
+        r#"{"schema":1.0,"kind":"hint","fidelity":"observed","provenance":{"source":"user"}}"#;
+    assert!(
+        check_str(body).is_empty(),
+        "1.0 must be accepted as version 1"
+    );
+}
+
+#[test]
+fn a_non_integral_schema_version_is_still_refused() {
+    let body =
+        r#"{"schema":1.5,"kind":"hint","fidelity":"observed","provenance":{"source":"user"}}"#;
+    assert!(
+        check_str(body).has(SchemaCode::UnsupportedSchema),
+        "1.5 is not version 1"
+    );
+}
+
+#[test]
 fn a_notes_string_is_accepted() {
     // profile-valid carries a notes string; it must not be flagged.
     let d = checked("profile-valid.json");

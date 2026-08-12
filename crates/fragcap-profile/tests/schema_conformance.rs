@@ -39,6 +39,7 @@ fn the_conformance_corpus_matches_the_validator() {
         ("export-valid.json", Valid),
         ("export-envelope.json", Valid),
         ("profile-four-faults.json", Invalid(SchemaCode::UnknownKey)),
+        ("profile-with-records.json", Invalid(SchemaCode::UnknownKey)),
         (
             "hint-no-fidelity.json",
             Invalid(SchemaCode::MissingFidelity),

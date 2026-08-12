@@ -130,7 +130,12 @@ fn check_schema_version(obj: &Map<String, Value>, d: &mut SchemaDiagnostics) {
     match obj.get("schema") {
         None => d.report(SchemaCode::MissingField, "/schema", "`schema` is required"),
         Some(v) => {
-            let ok = v.as_u64() == Some(1) || v.as_i64() == Some(1);
+            // Accept any numeric value equal to one, including the `1.0` spelling.
+            // A Draft 2020-12 validator compares `const: 1` numerically, so `1.0`
+            // satisfies it; matching that here keeps the published schema and this
+            // validator in agreement. A non-numeric or non-integral value (a
+            // string `"1"`, or `1.5`) is still unsupported.
+            let ok = v.is_number() && v.as_f64() == Some(1.0);
             if !ok {
                 d.report(
                     SchemaCode::UnsupportedSchema,

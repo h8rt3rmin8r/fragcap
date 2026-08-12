@@ -175,10 +175,37 @@ impl SchemaDiagnostics {
     ///
     /// A stable order is a correctness property: an operator compares two runs,
     /// and serde_json preserves object order but a walk should not depend on it.
+    /// Array-index segments compare numerically, so `/stage/2` precedes
+    /// `/stage/10` rather than sorting lexicographically after it.
     pub fn finish(mut self) -> SchemaDiagnostics {
         self.items
-            .sort_by(|a, b| a.pointer.cmp(&b.pointer).then(a.code.cmp(&b.code)));
+            .sort_by(|a, b| cmp_pointer(&a.pointer, &b.pointer).then(a.code.cmp(&b.code)));
         self
+    }
+}
+
+/// Compare two JSON pointers segment by segment, comparing all-digit segments
+/// numerically so array indices order as `2` before `10`. A shorter pointer
+/// that is a prefix of a longer one sorts first.
+fn cmp_pointer(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut sa = a.split('/');
+    let mut sb = b.split('/');
+    loop {
+        match (sa.next(), sb.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+                    _ => x.cmp(y),
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
     }
 }
 
@@ -191,5 +218,25 @@ impl fmt::Display for SchemaDiagnostics {
             write!(f, "{d}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_index_segments_order_numerically() {
+        let mut set = SchemaDiagnostics::new();
+        for i in [10usize, 2, 1] {
+            set.report(SchemaCode::MissingField, format!("/stage/{i}/match"), "x");
+        }
+        let set = set.finish();
+        let pointers: Vec<&str> = set.iter().map(|d| d.pointer.as_str()).collect();
+        assert_eq!(
+            pointers,
+            vec!["/stage/1/match", "/stage/2/match", "/stage/10/match"],
+            "array indices must order numerically, not lexicographically"
+        );
     }
 }

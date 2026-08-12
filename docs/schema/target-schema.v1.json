@@ -51,6 +51,15 @@
     {
       "if": { "properties": { "kind": { "const": "export" } } },
       "then": { "required": ["provenance"] }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "enum": ["profile", "package", "hint"] } }
+      },
+      "then": {
+        "properties": { "records": false }
+      }
     }
   ],
   "additionalProperties": false,
