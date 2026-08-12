@@ -36,7 +36,7 @@ const EXTCAP_BINARY: &str = "fragcap.exe";
 #[cfg(not(windows))]
 const EXTCAP_BINARY: &str = "fragcap";
 
-/// Count the `.toml` profiles directly in a directory, or zero when it cannot
+/// Count the `.json` profiles directly in a directory, or zero when it cannot
 /// be read.
 fn count_profiles(dir: &Option<PathBuf>) -> usize {
     let Some(dir) = dir else {
@@ -47,7 +47,7 @@ fn count_profiles(dir: &Option<PathBuf>) -> usize {
     };
     entries
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .count()
 }
 

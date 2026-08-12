@@ -183,16 +183,16 @@ impl Profile {
         }
 
         // The profile-load path accepts only the strict, authoritative kinds. A
-        // loose hint or export is a valid artifact but not a capture profile.
+        // loose hint or export is a structurally valid artifact but not a capture
+        // profile, so it is refused here. A missing or unrecognized kind is
+        // already reported by the structural layer, so it is not repeated.
         match value.get("kind").and_then(Value::as_str) {
-            Some("profile") | Some("package") => {}
-            Some(other) => d.push(Diagnostic::located(
+            Some("hint") | Some("export") => d.push(Diagnostic::located(
                 DiagnosticCode::WrongType,
                 "/kind",
-                format!("`{other}` cannot be loaded as a capture profile; kind must be `profile`"),
+                "a hint or export cannot be loaded as a capture profile; kind must be `profile`",
             )),
-            // A missing kind is already reported structurally.
-            None => {}
+            _ => {}
         }
 
         // fragcap-specific layer: extract leniently, compile, semantic-check.
@@ -257,12 +257,11 @@ fn map_schema_diagnostic(sd: &SchemaDiagnostic) -> Diagnostic {
         SchemaCode::EmptyStages => DiagnosticCode::NoStages,
         SchemaCode::EmptyString => DiagnosticCode::MissingField,
     };
-    let pointer = if sd.pointer.is_empty() {
-        "<document>".to_string()
-    } else {
-        sd.pointer.clone()
-    };
-    Diagnostic::located(code, pointer, sd.message.clone())
+    // Keep the pointer exactly as the validator reported it, including the empty
+    // string for a root-level fault: the profile-load contract locates faults by
+    // JSON pointer, and a consumer must be able to apply it as one. The
+    // syntax-error path uses the same empty pointer for a root fault.
+    Diagnostic::located(code, sd.pointer.clone(), sd.message.clone())
 }
 
 /// The profile as read, before the semantic checks, with every field optional.
@@ -345,10 +344,15 @@ fn draft_from_value(value: &Value, d: &mut Diagnostics) -> Draft {
                     items.len()
                 ),
             ));
-        }
-        for (index, item) in items.iter().enumerate() {
-            if let Some(stage) = item.as_object() {
-                out.stages.push(read_stage(index, stage, d));
+            // Do not populate the semantic draft past the limit. The ambiguity
+            // check is quadratic in the stage count, and the profile is already
+            // refused; extracting thousands of stages only to compare every pair
+            // spends work on a file that has been rejected.
+        } else {
+            for (index, item) in items.iter().enumerate() {
+                if let Some(stage) = item.as_object() {
+                    out.stages.push(read_stage(index, stage, d));
+                }
             }
         }
     }

@@ -121,6 +121,28 @@ fn a_non_profile_kind_cannot_be_loaded_as_a_profile() {
 }
 
 #[test]
+fn an_unrecognized_kind_is_reported_exactly_once() {
+    // The structural layer already reports an unknown kind; the load-path check
+    // must not add a second diagnostic for the same fault.
+    let d = refused(
+        r#"{"schema":1,"kind":"bogus","fidelity":"verified","game":{"id":"t","name":"T"},"stage":[{"role":"c","lifecycle":"session","match":{"exe":"c.exe"}}]}"#,
+    );
+    let at_kind = d.iter().filter(|x| x.location == "/kind").count();
+    assert_eq!(at_kind, 1, "one mistake, one diagnostic at /kind: {d}");
+}
+
+#[test]
+fn a_root_level_fault_keeps_the_empty_json_pointer() {
+    // A non-object document is a root fault; its location is the empty JSON
+    // pointer, which a consumer can apply, not a synthetic placeholder.
+    let d = refused("[]");
+    assert!(
+        d.iter().any(|x| x.location.is_empty()),
+        "a root fault uses the empty pointer: {d}"
+    );
+}
+
+#[test]
 fn an_invalid_slug_is_reported() {
     let d = refused(
         r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"Not A Slug","name":"T"},"stage":[{"role":"c","lifecycle":"session","match":{"exe":"c.exe"}}]}"#,
@@ -197,9 +219,12 @@ fn an_invalid_duration_is_reported() {
 }
 
 #[test]
-fn too_many_stages_is_reported() {
+fn too_many_stages_is_reported_without_running_the_quadratic_pass() {
+    // Every stage shares one exe: if the over-limit array were extracted into the
+    // semantic draft, the quadratic ambiguity check would flood the report with
+    // AmbiguousImageMatch diagnostics. The limit must short-circuit that.
     let stages: Vec<String> = (0..=MAX_STAGES)
-        .map(|i| format!(r#"{{"role":"r{i}","lifecycle":"session","match":{{"exe":"a{i}.exe"}}}}"#))
+        .map(|i| format!(r#"{{"role":"r{i}","lifecycle":"session","match":{{"exe":"dup.exe"}}}}"#))
         .collect();
     let text = format!(
         r#"{{"schema":1,"kind":"profile","fidelity":"verified","game":{{"id":"t","name":"T"}},"stage":[{}]}}"#,
@@ -207,6 +232,16 @@ fn too_many_stages_is_reported() {
     );
     let d = refused(&text);
     assert!(d.has(DiagnosticCode::TooManyStages));
+    assert!(
+        !d.has(DiagnosticCode::AmbiguousImageMatch),
+        "the semantic draft must not be populated past the stage limit: {}",
+        d.len()
+    );
+    assert_eq!(
+        d.len(),
+        1,
+        "an over-limit profile reports only the limit: {d}"
+    );
 }
 
 // --- semantic graph codes --------------------------------------------------
