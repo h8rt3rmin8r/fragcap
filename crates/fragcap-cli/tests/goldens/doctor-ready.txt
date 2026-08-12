@@ -6,6 +6,8 @@ Capture driver
   npcap                  ok    version 1.79
   loopback adapter       ok    loopback capture supported
   winpcap api mode       ok    WinPcap API compatible
+  live backend           ok    live capture backend is built in
+  socket-table backend   ok    socket-table attribution is built in
 Tracing
   process events         ok    process-event session available
 Interfaces

@@ -74,6 +74,138 @@ fn tracing_availability() -> Option<bool> {
     }
 }
 
+/// Whether the live capture backend is compiled into this binary.
+///
+/// Presence is a compile-time fact, so this is `Some(true)` when the `live`
+/// feature is on and `None` when it is not, mirroring [`tracing_availability`].
+/// A binary built without it cannot capture, which the check turns into a
+/// blocking verdict rather than a downstream "no interfaces" symptom.
+fn live_availability() -> Option<bool> {
+    #[cfg(feature = "live")]
+    {
+        Some(true)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        None
+    }
+}
+
+/// Whether the socket-table attribution backend is compiled into this binary.
+///
+/// `Some(true)` when the `socket-table` feature is on, `None` when it is not.
+/// Absence degrades attribution (ETW may still cover it), so the check treats it
+/// as a non-blocking concern.
+fn socket_table_availability() -> Option<bool> {
+    #[cfg(feature = "socket-table")]
+    {
+        Some(true)
+    }
+    #[cfg(not(feature = "socket-table"))]
+    {
+        None
+    }
+}
+
+/// The npcap version, read from the `wpcap.dll` FileVersion resource, or the
+/// literal "installed" when it cannot be read.
+///
+/// This is a read-only version-resource query on a file path: it opens no
+/// process handle, loads no library, and needs no elevation, so constitution
+/// P-1 is not engaged. Any failure falls back to "installed" so the report never
+/// claims a version it did not actually read (P-9).
+#[cfg(windows)]
+fn npcap_version(wpcap: &std::path::Path) -> String {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    const FALLBACK: &str = "installed";
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let path: Vec<u16> = wpcap
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: `path` is a live, null-terminated UTF-16 string; `handle` is a
+    // live out-param the API writes and the size query otherwise ignores.
+    let size = unsafe {
+        let mut handle: u32 = 0;
+        GetFileVersionInfoSizeW(path.as_ptr(), &mut handle)
+    };
+    if size == 0 {
+        return FALLBACK.to_string();
+    }
+
+    let mut buf: Vec<u8> = vec![0u8; size as usize];
+    // SAFETY: `buf` is exactly `size` bytes, matching the value just returned;
+    // `path` is the same live null-terminated string.
+    let ok = unsafe { GetFileVersionInfoW(path.as_ptr(), 0, size, buf.as_mut_ptr() as *mut _) };
+    if ok == 0 {
+        return FALLBACK.to_string();
+    }
+
+    // The translation table: the first (language, codepage) pair names the
+    // StringFileInfo sub-block that carries the human FileVersion string.
+    let mut val_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+    let mut val_len: u32 = 0;
+    let translation = wide("\\VarFileInfo\\Translation");
+    // SAFETY: `buf` holds a valid version-info block of `size` bytes;
+    // `translation` is a live null-terminated string; the out params are live.
+    let ok = unsafe {
+        VerQueryValueW(
+            buf.as_ptr() as *const _,
+            translation.as_ptr(),
+            &mut val_ptr,
+            &mut val_len,
+        )
+    };
+    if ok == 0 || val_ptr.is_null() || val_len < 4 {
+        return FALLBACK.to_string();
+    }
+    // SAFETY: the len check guarantees at least two u16 at `val_ptr`.
+    let (lang, codepage) = unsafe {
+        let p = val_ptr as *const u16;
+        (*p, *p.add(1))
+    };
+
+    let subblock = format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileVersion");
+    let subblock = wide(&subblock);
+    let mut str_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+    let mut str_len: u32 = 0;
+    // SAFETY: as the translation query above; `subblock` is live and null
+    // terminated.
+    let ok = unsafe {
+        VerQueryValueW(
+            buf.as_ptr() as *const _,
+            subblock.as_ptr(),
+            &mut str_ptr,
+            &mut str_len,
+        )
+    };
+    if ok == 0 || str_ptr.is_null() || str_len == 0 {
+        return FALLBACK.to_string();
+    }
+    // `str_len` is the length in characters, including the trailing null.
+    // SAFETY: `str_ptr` points to `str_len` u16 code units per the API contract.
+    let value = unsafe {
+        let slice = std::slice::from_raw_parts(str_ptr as *const u16, str_len as usize);
+        String::from_utf16_lossy(slice)
+    };
+    let value = value.trim_end_matches('\0').trim();
+    if value.is_empty() {
+        FALLBACK.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 /// Gather the environment facts for `doctor`.
 pub fn gather() -> Inputs {
     let user_dir = crate::paths::user_profile_dir();
@@ -92,6 +224,8 @@ pub fn gather() -> Inputs {
             privilege: Privilege::NotElevated,
             npcap: None,
             etw_available: tracing_availability(),
+            live_available: live_availability(),
+            socket_table_available: socket_table_availability(),
             interfaces: Vec::new(),
             extcap_installed,
             extcap_dir,
@@ -119,7 +253,7 @@ fn gather_windows(user_count: usize) -> Inputs {
     // into System32, so its presence there is the signal for that option.
     let npcap = if npcap_wpcap.exists() {
         Some(NpcapInfo {
-            version: "installed".to_string(),
+            version: npcap_version(&npcap_wpcap),
             // Loopback support installs an "NPF_Loopback" adapter; without an
             // adapter enumeration this probe cannot see it, so it reports the
             // conservative answer and the operator confirms.
@@ -141,6 +275,8 @@ fn gather_windows(user_count: usize) -> Inputs {
         },
         npcap,
         etw_available: tracing_availability(),
+        live_available: live_availability(),
+        socket_table_available: socket_table_availability(),
         // Interface enumeration belongs to the capture backend, which is not
         // linked here; the check warns rather than fails on an empty set.
         interfaces: Vec::new(),
@@ -161,7 +297,7 @@ fn gather_windows(user_count: usize) -> Inputs {
 /// pairs elevation with an unavailable trace session is never entered on a false
 /// positive.
 #[cfg(windows)]
-fn is_elevated() -> bool {
+pub(crate) fn is_elevated() -> bool {
     use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
 
     // The current process's primary token, a documented pseudo handle whose

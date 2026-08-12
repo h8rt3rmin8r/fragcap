@@ -413,10 +413,38 @@ fn offline_components(
     })
 }
 
+/// The elevation precondition for live capture, as a pure decision so the
+/// refusal is testable off Windows. `Some(err)` means refuse.
+///
+/// Live capture opens the npcap driver, which requires an elevated session.
+/// This is the detect-instruct-refuse contract: it never auto-relaunches an
+/// elevated process (that would spawn a separate console and break `--json`
+/// streaming), and the underlying elevation read touches only the current
+/// process's own token (constitution P-1). The refusal is an expected
+/// environment-precondition failure (exit 1), matching the no-backend refusal.
+// Called only from the `live` + windows capture path; on every other build it is
+// exercised solely by the platform-neutral test below, so allow it to be unused
+// in non-test code there rather than warn.
+#[cfg_attr(not(all(feature = "live", windows)), allow(dead_code))]
+fn elevation_refusal(elevated: bool) -> Option<CliError> {
+    if elevated {
+        None
+    } else {
+        Some(CliError::failure(
+            "live capture requires Administrator. Re-launch from an elevated terminal \
+             (right-click > Run as administrator), or `Start-Process powershell -Verb RunAs`.",
+        ))
+    }
+}
+
 /// The live path, or the no-backend failure on a build without it.
 fn live_or_absent(config: &EffectiveConfig) -> Result<CaptureComponents, CliError> {
     #[cfg(all(feature = "live", windows))]
     {
+        // Refuse before touching the driver when the session is not elevated.
+        if let Some(refusal) = elevation_refusal(crate::doctor::probe::is_elevated()) {
+            return Err(refusal);
+        }
         live_components(config)
     }
     #[cfg(not(all(feature = "live", windows)))]
@@ -1018,6 +1046,27 @@ mod tests {
 
     fn one_interface() -> Vec<(String, LinkType)> {
         vec![("eth0".to_string(), LinkType::ETHERNET)]
+    }
+
+    // --- Elevation gate (US6) -------------------------------------------
+
+    #[test]
+    fn an_unelevated_session_is_refused_at_exit_one() {
+        let refusal = elevation_refusal(false).expect("not elevated must refuse");
+        assert_eq!(refusal.exit(), crate::exit::Exit::FAILURE);
+        assert!(
+            refusal.message().contains("Administrator"),
+            "the refusal says elevation is required: {}",
+            refusal.message()
+        );
+    }
+
+    #[test]
+    fn an_elevated_session_is_allowed_through() {
+        assert!(
+            elevation_refusal(true).is_none(),
+            "an elevated session is not refused"
+        );
     }
 
     fn finish_all(built: BuiltSinks) {

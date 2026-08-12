@@ -75,6 +75,14 @@ pub struct Inputs {
     /// Whether the process-event tracing session could open, or `None` when the
     /// tracing capability is not built into this binary.
     pub etw_available: Option<bool>,
+    /// Whether the live capture backend is compiled into this binary. `None`
+    /// means it is not: the binary cannot capture at all, which is a blocking
+    /// problem rather than a downstream "no interfaces" symptom.
+    pub live_available: Option<bool>,
+    /// Whether the socket-table attribution backend is compiled into this
+    /// binary. `None` means it is not: attribution is degraded (ETW may still
+    /// cover it), which is a non-blocking concern.
+    pub socket_table_available: Option<bool>,
     /// The interfaces found.
     pub interfaces: Vec<IfaceInfo>,
     /// Whether the analyzer extcap integration is installed (a fragcap binary is

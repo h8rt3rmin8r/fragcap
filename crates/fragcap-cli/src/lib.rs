@@ -156,7 +156,7 @@ fn dispatch(
         Command::Run(args) => commands::run::run(&args, emitter),
         Command::Tap(args) => commands::tap::run(&args, emitter),
         Command::Doctor(_) => commands::doctor::run(json, out),
-        Command::Profile(args) => commands::profile::run(&args, out),
+        Command::Profile(args) => commands::profile::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),

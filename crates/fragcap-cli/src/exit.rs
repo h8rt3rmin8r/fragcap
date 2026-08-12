@@ -127,13 +127,17 @@ impl From<LoadError> for CliError {
 }
 
 impl From<ResolveError> for CliError {
-    /// A malformed reference is a usage error (exit 2), as is a candidate that
-    /// won its step and did not validate. A reference not found anywhere, and a
-    /// candidate that could not be read, are expected failures (exit 1). The
-    /// `show` command overrides the not-found case to exit 1 explicitly.
+    /// A reference that resolves to no profile is an expected failure (exit 1),
+    /// whether it is an absent id-slug (`NotFound`) or an unresolvable
+    /// path-shaped string that is neither a file nor a valid slug
+    /// (`InvalidReference`). The two shapes describe the same "names nothing
+    /// resolvable" outcome, so `profile show` and `profile validate` agree on
+    /// exit 1 for either. A candidate that won its step and then failed
+    /// validation is an invalid *profile*, a configuration error (exit 2); a
+    /// candidate that could not be read is an expected failure (exit 1).
     fn from(e: ResolveError) -> CliError {
         match e {
-            ResolveError::InvalidReference { .. } => CliError::Usage(e.to_string()),
+            ResolveError::InvalidReference { .. } => CliError::Failure(e.to_string()),
             ResolveError::NotFound { .. } => CliError::Failure(e.to_string()),
             ResolveError::Load {
                 source: LoadError::Invalid(_),

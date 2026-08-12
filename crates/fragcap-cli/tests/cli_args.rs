@@ -69,12 +69,15 @@ fn the_value_grammars_reject_bad_values_with_exit_two() {
 }
 
 #[test]
-fn the_replay_stub_reports_not_yet_implemented_names_its_slice_and_exits_two() {
-    // `steam` was a stub until slice S17 delivered it, and `extcap` until slice
-    // S18; both now have their own wiring tests (cli_steam.rs, cli_extcap.rs).
-    // `replay` remains the one stub.
+fn the_replay_stub_reports_not_yet_implemented_without_an_internal_slice_id() {
+    // `steam` and `extcap` were stubs until they were delivered; both now have
+    // their own wiring tests (cli_steam.rs, cli_extcap.rs). `replay` remains the
+    // one stub, and its message carries no internal roadmap identifier (#67).
     let (code, _out, err) = run(&["replay"]);
     assert_eq!(code, 2, "replay exits 2");
     assert!(err.contains("not yet implemented"), "replay: {err}");
-    assert!(err.contains("S15"), "replay must name S15: {err}");
+    assert!(
+        !err.contains("S15") && !err.contains("slice"),
+        "replay must not leak an internal slice id: {err}"
+    );
 }

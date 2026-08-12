@@ -1998,6 +1998,14 @@ capture completes normally and the output is valid. Diagnostics that
 find a blocking problem exit 1, because the command succeeded in
 determining that the environment is not ready.
 
+A profile reference that resolves to no profile is an expected failure
+(exit 1) uniformly, whether it is an absent id-slug or a path-shaped
+string that names no readable file, and `profile show` and `profile
+validate` agree on it. A profile file that exists but fails validation is
+a configuration error (exit 2). Refusing live capture because the session
+is not elevated is an expected environment-precondition failure (exit 1),
+consistent with refusing it because no live capture backend is present.
+
 ### 17.5 Structured Event Stream
 
 With `--json`, fragcap emits newline-delimited JSON events on standard
@@ -2022,6 +2030,15 @@ control information from capture data on separate streams.
 This stream is what makes the shell wrappers thin. A wrapper reacts to
 capture lifecycle without parsing human-readable output, and section 18
 depends on it.
+
+The non-capture commands emit their results as structured records too,
+so automation never scrapes human text. `profile validate --json` emits
+one `diagnostic` record per problem, each carrying the diagnostic's code,
+key path, line, column, and message as distinct fields, followed by a
+terminal `summary`; `profile list --json` emits its counts as a record;
+and `doctor --json` emits one record per readiness check. Because these
+are command results rather than capture lifecycle, they are written to
+standard output, where the command's human output would otherwise go.
 
 ### 17.6 Output Conventions
 
@@ -2809,9 +2826,11 @@ fragcap doctor
     Privilege             elevated                             ok
 
   Capture driver
-    npcap                 1.79 installed                       ok
+    npcap                 version 1.79                         ok
     Loopback adapter      NPF_Loopback present                 ok
     WinPcap API mode      enabled                              ok
+    Live backend          live capture backend is built in     ok
+    Socket-table backend  socket-table attribution is built in ok
 
   Tracing
     ETW kernel process    session available                    ok
@@ -2839,8 +2858,21 @@ installation option when a driver option is missing. Exit code is 0
 when capture is possible and 1 when a blocking problem exists. Warnings
 about optional integration do not block.
 
+The report distinguishes the capture capabilities compiled into the
+running binary from the environment around it. A binary built without the
+live capture backend cannot capture at all, so its absence is a blocking
+failure and its empty interface list is reported as a consequence of the
+missing backend rather than an adapter fault. A binary built without the
+socket-table attribution backend can still capture but attributes less, so
+its absence is a non-blocking warning. A missing npcap loopback adapter is
+likewise a warning, because loopback capture is only needed when the
+operator requests it with `--loopback`; on that path its absence is
+blocking. The npcap line reports the detected driver version when it can be
+read, falling back to a plain "installed" otherwise so it never claims a
+version it did not read.
+
 `--json` produces the same content as structured records for
-consumption by the shell wrappers.
+consumption by the shell wrappers and other automation.
 
 ### 26.4 Failure Reporting
 

@@ -32,6 +32,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The npcap SDK supplies wpcap.lib, the import library the `live` feature
+  # links against. Acquired at build time and discarded with the runner; npcap
+  # itself is never bundled or redistributed (specification section 20.2).
+  NPCAP_SDK_URL: https://npcap.com/dist/npcap-sdk-1.13.zip
 
 jobs:
   artifacts:
@@ -41,8 +45,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Acquire the npcap SDK
+        shell: pwsh
+        run: |
+          # Supplies wpcap.lib for the `live` feature's link step, the same way
+          # platform.yml acquires it for its live build. Downloaded at build time
+          # and discarded with the runner; npcap is never bundled (section 20.2).
+          Invoke-WebRequest -Uri $env:NPCAP_SDK_URL -OutFile npcap-sdk.zip
+          Expand-Archive npcap-sdk.zip -DestinationPath npcap-sdk
+          "LIB=$PWD\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
+
       - name: Build
-        run: cargo build --release --locked
+        # The shipped binary carries its capability features so it can actually
+        # capture (live), attribute from the OS socket table (socket-table), and
+        # trace process events (etw). A bare `cargo build --release` produced an
+        # inert binary that failed every capture (issue #62); the decision to
+        # ship these features is recorded in changelog.d/release-features.decisions.md.
+        run: cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
 
       - name: Assert no npcap component is present in any artifact
         shell: pwsh

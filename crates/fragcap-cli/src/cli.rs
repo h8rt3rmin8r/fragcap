@@ -36,7 +36,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub silent: bool,
 
-    /// Emit newline-delimited structured events on standard error.
+    /// Emit machine-readable structured output instead of human text. `run`,
+    /// `tap`, `steam`, and `extcap` emit the newline-delimited capture event
+    /// stream on standard error; `profile` and `doctor` emit their results as
+    /// newline-delimited records on standard output.
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -52,7 +55,7 @@ pub enum Command {
     Run(Box<RunArgs>),
     /// Capture a running process ad hoc, without an authored profile.
     Tap(TapArgs),
-    /// Run a capture file back (not yet implemented; slice S15).
+    /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
     /// Manage and validate profiles.
     Profile(ProfileArgs),
@@ -70,9 +73,9 @@ pub enum Command {
 pub enum ModeArg {
     /// Bounded capture written to a file (implemented).
     File,
-    /// Live streaming to a transport (deferred to slice S15).
+    /// Live streaming to a transport (not yet implemented).
     Stream,
-    /// Rolling in-memory window (deferred to slice S16).
+    /// Rolling in-memory window (not yet implemented).
     Ring,
 }
 
@@ -113,12 +116,12 @@ pub struct RunArgs {
     pub max_bytes: Option<u64>,
 
     /// The roles to capture, comma-separated. Scopes which stages trigger.
-    ///
-    /// `value_delimiter` splits one comma-separated value into the role list,
-    /// matching the `extcap` surface so the command line and the analyzer dialog
-    /// select capture identically. A custom `value_parser` returning `Vec<String>`
-    /// cannot be used here: clap derives the element type from the `Vec<String>`
-    /// field and panics at access time on the type mismatch.
+    // `value_delimiter` splits one comma-separated value into the role list,
+    // matching the `extcap` surface so the command line and the analyzer dialog
+    // select capture identically. A custom `value_parser` returning `Vec<String>`
+    // cannot be used here: clap derives the element type from the `Vec<String>`
+    // field and panics at access time on the type mismatch. This note stays a
+    // source comment; it is not user-facing help.
     #[arg(long, value_delimiter = ',')]
     pub roles: Option<Vec<String>>,
 
@@ -138,11 +141,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_payload: bool,
 
-    /// The ring window (deferred to slice S16).
+    /// The ring window (not yet implemented).
     #[arg(long, value_parser = parse_ring)]
     pub ring: Option<RingWindow>,
 
-    /// Launch the game before capturing (deferred to slice S17).
+    /// Launch the game through its platform launcher before capturing, then
+    /// capture it (Windows only; requires a Steam app id in the profile).
     #[arg(long)]
     pub launch: bool,
 
@@ -303,9 +307,9 @@ pub struct ExtcapArgs {
     pub profile: Option<String>,
 
     /// Config option: the roles to scope to, comma-separated.
-    ///
-    /// The analyzer sends this as one comma-separated value; `value_delimiter`
-    /// splits it into the role list the overlay expects.
+    // The analyzer sends this as one comma-separated value; `value_delimiter`
+    // splits it into the role list the overlay expects. Source comment, not
+    // user-facing help.
     #[arg(long, value_delimiter = ',')]
     pub roles: Option<Vec<String>>,
 
