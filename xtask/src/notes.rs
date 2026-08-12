@@ -18,9 +18,14 @@ use std::path::Path;
 /// Pull the body of one version's section out of a changelog.
 ///
 /// Matches the heading `## [<version>]` exactly, so `0.1.0` does not match
-/// `## [10.1.0]`. Collects until the next second-level heading. Returns
-/// `None` when the section is absent, and `None` when it is present but
-/// empty, because an empty body is not usable release notes.
+/// `## [10.1.0]`. Collects until the next second-level heading, and also stops
+/// at the `### Decisions` subsection: decisions record verbose internal
+/// rationale for changing pinned artifacts, which belongs in the changelog file
+/// but would bloat the release notes (a single decision fragment runs to
+/// kilobytes). The curated `### Highlights` and the user-facing Added, Changed,
+/// and Fixed sections all sit above Decisions, so they are kept. Returns `None`
+/// when the section is absent, and `None` when it is present but empty, because
+/// an empty body is not usable release notes.
 pub fn extract(changelog: &str, version: &str) -> Option<String> {
     let wanted = format!("[{version}]");
     let mut lines = changelog.lines();
@@ -32,7 +37,11 @@ pub fn extract(changelog: &str, version: &str) -> Option<String> {
 
     let mut body = String::new();
     for line in lines {
-        if line.trim_start().starts_with("## ") {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") {
+            break;
+        }
+        if trimmed == "### Decisions" {
             break;
         }
         body.push_str(line);
@@ -113,7 +122,15 @@ Preamble that is not part of any section.
     fn extracts_the_named_version() {
         let body = extract(SAMPLE, "0.2.0").unwrap();
         assert!(body.contains("The thing this release adds."));
-        assert!(body.contains("A decision."));
+    }
+
+    #[test]
+    fn excludes_the_decisions_section() {
+        // Decisions are verbose internal rationale and must not reach the
+        // release notes, even though they stay in CHANGELOG.md.
+        let body = extract(SAMPLE, "0.2.0").unwrap();
+        assert!(!body.contains("A decision."));
+        assert!(!body.contains("### Decisions"));
     }
 
     #[test]

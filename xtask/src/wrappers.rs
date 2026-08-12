@@ -3,9 +3,11 @@
 //! The shell-wrapper compliance gate (specification section 18.4).
 //!
 //! `cargo xtask wrappers` holds the shell scripts under `scripts/` to their
-//! ShruggieTech house standards: the two wrappers and the documentation linter
-//! `lint-docs.sh` (section 22.5), all under the Bash standard, plus the
-//! PowerShell wrapper. The PowerShell wrapper is checked by the
+//! ShruggieTech house standards: the two capture wrappers, the documentation
+//! linter `lint-docs.sh` (section 22.5), and the Bash release script
+//! `cut-release.sh`, all under the Bash standard, plus the PowerShell wrapper
+//! and the PowerShell release script `New-Release.ps1`. The PowerShell scripts
+//! are checked by the
 //! vendored `Test-ScriptCompliance.ps1` (its POSIX twin, so only bash is
 //! needed); the Bash wrapper is checked by [`check_bash`], authored here because
 //! no Bash checker is vendored. Both scripts are then checked for syntax
@@ -377,6 +379,108 @@ pub fn run(root: &Path) -> io::Result<usize> {
             println!("wrappers: OK  lint-docs.sh --help");
         } else {
             eprintln!("wrappers: FAIL lint-docs.sh --help did not exit 0");
+            fails += 1;
+        }
+    }
+
+    // 7. The release-preparation scripts are a fourth and fifth `scripts/`
+    //    pair under the same standards: `cut-release.sh` (Bash) and
+    //    `New-Release.ps1` (PowerShell). They are held to the structure and
+    //    syntax checks and to a `--help`/`-Help` that exits 0. Their dry-run
+    //    seam is not exercised here, because it drives cargo and would turn a
+    //    lint gate into a build.
+    let cut_release = root.join("scripts").join("cut-release.sh");
+    const CUT_RELEASE_REL: &str = "scripts/cut-release.sh";
+    match fs::read(&cut_release) {
+        Ok(bytes) => {
+            let findings = check_bash(&bytes);
+            if findings.is_empty() {
+                println!("wrappers: OK  cut-release.sh structure");
+            } else {
+                for rule in findings {
+                    eprintln!("wrappers: FAIL cut-release.sh: {rule}");
+                    fails += 1;
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("wrappers: FAIL cut-release.sh is missing");
+            fails += 1;
+        }
+    }
+    if cut_release.exists() {
+        let (ok, out) = run_cmd(
+            Command::new("bash")
+                .current_dir(root)
+                .arg("-n")
+                .arg(CUT_RELEASE_REL),
+        );
+        if ok {
+            println!("wrappers: OK  cut-release.sh parses (bash -n)");
+        } else {
+            eprintln!("wrappers: FAIL cut-release.sh does not parse:\n{out}");
+            fails += 1;
+        }
+        let (ok, _) = run_cmd(
+            Command::new("bash")
+                .current_dir(root)
+                .arg(CUT_RELEASE_REL)
+                .arg("--help"),
+        );
+        if ok {
+            println!("wrappers: OK  cut-release.sh --help");
+        } else {
+            eprintln!("wrappers: FAIL cut-release.sh --help did not exit 0");
+            fails += 1;
+        }
+    }
+
+    let new_release = root.join("scripts").join("New-Release.ps1");
+    const NEW_RELEASE_REL: &str = "scripts/New-Release.ps1";
+    if ps_twin.exists() && new_release.exists() {
+        let (ok, out) = run_cmd(
+            Command::new("bash")
+                .current_dir(root)
+                .arg(TWIN_REL)
+                .arg(NEW_RELEASE_REL),
+        );
+        if ok {
+            println!("wrappers: OK  New-Release.ps1 (vendored checker)");
+        } else {
+            eprintln!("wrappers: FAIL New-Release.ps1 (vendored checker):\n{out}");
+            fails += 1;
+        }
+    } else {
+        eprintln!("wrappers: FAIL New-Release.ps1 or the vendored checker is missing");
+        fails += 1;
+    }
+    if new_release.exists() {
+        let parse = "$e=$null; \
+             [void][System.Management.Automation.Language.Parser]::ParseFile(\
+             (Resolve-Path 'scripts/New-Release.ps1').Path,[ref]$null,[ref]$e); \
+             if ($e -and $e.Count -gt 0) { $e | ForEach-Object { $_.Message } | Write-Output; exit 1 }";
+        let (ok, out) =
+            run_cmd(
+                Command::new("pwsh")
+                    .current_dir(root)
+                    .args(["-NoProfile", "-Command", parse]),
+            );
+        if ok {
+            println!("wrappers: OK  New-Release.ps1 parses (PowerShell)");
+        } else {
+            eprintln!("wrappers: FAIL New-Release.ps1 does not parse:\n{out}");
+            fails += 1;
+        }
+        let (ok, _) = run_cmd(
+            Command::new("pwsh")
+                .args(["-NoProfile", "-File"])
+                .arg(&new_release)
+                .arg("-Help"),
+        );
+        if ok {
+            println!("wrappers: OK  New-Release.ps1 -Help");
+        } else {
+            eprintln!("wrappers: FAIL New-Release.ps1 -Help did not exit 0");
             fails += 1;
         }
     }
