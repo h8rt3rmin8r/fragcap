@@ -247,7 +247,7 @@ fn emit_profiles(
     let _ = writeln!(out, "{line}");
 }
 
-/// Count the `.toml` profiles directly in a directory, or zero when it cannot
+/// Count the `.json` profiles directly in a directory, or zero when it cannot
 /// be read.
 fn count_profiles(dir: &std::path::Path) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -255,6 +255,6 @@ fn count_profiles(dir: &std::path::Path) -> usize {
     };
     entries
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .count()
 }

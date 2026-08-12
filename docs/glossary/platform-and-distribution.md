@@ -20,10 +20,12 @@ A Windows packet capture driver and library, the current successor to WinPcap.
 
 ## Game profile
 
-A TOML file describing a game's process topology, stage match rules, and
-capture defaults. Versioned: every profile declares a
+A JSON file describing a game's process topology, stage match rules, and
+capture defaults. It is the `profile` variant of the
+[master target schema](process-and-attribution.md#master-target-schema); every profile declares a
 [profile schema version](process-and-attribution.md#profile-schema-version), and a reference to one
 resolves through the [profile resolution order](process-and-attribution.md#profile-resolution-order).
+The format moved from TOML to JSON in the profile migration (#76).
 
 {: .matters }
 > Profiles are data, not code. They carry the same license as the repository,

@@ -5,8 +5,8 @@
 //! A profile reference resolves in four steps, first match winning:
 //!
 //! 1. A path to an existing file.
-//! 2. `<ref>.toml` in a profile directory given on the command line.
-//! 3. `<ref>.toml` in the user profile directory.
+//! 2. `<ref>.json` in a profile directory given on the command line.
+//! 3. `<ref>.json` in the user profile directory.
 //! 4. A bundled profile whose `game.id` matches.
 //!
 //! User profiles shadow bundled ones by design, so a bundled profile that has
@@ -269,7 +269,7 @@ pub fn resolve(
         });
     }
 
-    let file_name = format!("{reference}.toml");
+    let file_name = format!("{reference}.json");
     let mut searched: Vec<PathBuf> = Vec::new();
 
     // Step 2, then step 3. Written as two loops rather than one over a chained

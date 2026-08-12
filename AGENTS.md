@@ -241,14 +241,14 @@ one contains, and a drift check in the ordinary gate fails if a committed file
 stops matching it. Regenerate with `FRAGCAP_UPDATE_FIXTURES=1 cargo test -p
 fragcap-capture --test corpus`, then read the diff. See `fixtures/README.md`.
 
-**Dependency inventory.** The workspace has three runtime dependencies, one
-optional runtime dependency, and one dev-dependency, and the distinction is load-bearing rather than bookkeeping.
+**Dependency inventory.** The table below lists the workspace's dependencies and
+which slice added each; the runtime, optional-runtime, and dev distinction is
+load-bearing rather than bookkeeping.
 
 | Crate | Kind | Added by | Why |
 | --- | --- | --- | --- |
 | `bytes` | runtime | S02 | Reference-counted payload clones |
 | `pcap` | runtime, optional | S09 | The capture driver binding, behind the `live` feature |
-| `toml-span` | runtime | S05 | Profile parsing with byte spans on every value |
 | `regex` | runtime | S05 | Compiles the `path_regex` match predicate |
 | `arc-swap` | runtime | S10 | Lock-free publication of the attribution snapshot |
 | `windows-sys` | runtime, optional | S10 | The IP Helper socket table, behind the `socket-table` feature |
@@ -353,6 +353,17 @@ via `url`/`idna`) for machinery the schema does not use. The ecosystem value is
 in publishing the schema document, not in consuming a validator, so validation is
 hand-rolled like the glob matcher and the writers, and `serde_json` is the only
 new crate (already in the graph, so `Cargo.lock` is unchanged).
+
+S026 moved the profile format itself from TOML to JSON, which removed `toml-span`
+from `fragcap-profile` entirely (the format it parsed no longer exists) and
+promoted `serde_json` to a runtime dependency of `fragcap-steam` and `fragcap-cli`
+as well, so the Steam scaffold and the ad-hoc `tap` build their JSON through it
+rather than by hand. No crate is added to `Cargo.lock` by any of these, and one
+(`toml-span`, and its one transitive crate) is removed. The profile-load path
+reuses the S025 `jsonschema` validator for structural conformance and keeps only
+the checks a schema cannot express (glob, regex, and duration compilation and the
+semantic graph checks), so there is one structural implementation bound to the
+published schema.
 
 `fragcap-core` may depend only on crates named in the allowlist in
 `xtask/src/deps.rs`, which is checked mechanically. Note that `cargo xtask

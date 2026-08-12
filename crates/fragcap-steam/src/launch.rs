@@ -127,18 +127,18 @@ pub fn launch(_request: &LaunchRequest) -> Result<(), SteamError> {
 mod tests {
     use super::*;
 
-    fn profile(game_body: &str) -> Profile {
+    /// Build a test profile, splicing extra `game` fields (each with a leading
+    /// comma) into the JSON game object.
+    fn profile(game_extra: &str) -> Profile {
         let text = format!(
-            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\n{game_body}\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = {{ exe = \"g.exe\" }}\n"
+            r#"{{"schema":1,"kind":"profile","fidelity":"verified","game":{{"id":"g","name":"G"{game_extra}}},"stage":[{{"role":"client","lifecycle":"session","terminal":true,"match":{{"exe":"g.exe"}}}}]}}"#
         );
         Profile::parse(&text).expect("valid test profile")
     }
 
     #[test]
     fn a_steam_profile_yields_the_run_url() {
-        let p = profile("platform = \"steam\"\napp_id = \"900883\"");
+        let p = profile(r#","platform":"steam","app_id":"900883""#);
         let req = launch_request(&p).unwrap();
         assert_eq!(req.app_id, "900883");
         assert_eq!(req.url, "steam://run/900883");
@@ -146,13 +146,13 @@ mod tests {
 
     #[test]
     fn a_missing_platform_is_refused() {
-        let p = profile("app_id = \"900883\"");
+        let p = profile(r#","app_id":"900883""#);
         assert_eq!(launch_request(&p), Err(LaunchConfigError::MissingPlatform));
     }
 
     #[test]
     fn a_non_steam_platform_is_refused() {
-        let p = profile("platform = \"epic\"\napp_id = \"1\"");
+        let p = profile(r#","platform":"epic","app_id":"1""#);
         assert_eq!(
             launch_request(&p),
             Err(LaunchConfigError::UnsupportedPlatform("epic".to_string()))
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_missing_app_id_is_refused() {
-        let p = profile("platform = \"steam\"");
+        let p = profile(r#","platform":"steam""#);
         assert_eq!(launch_request(&p), Err(LaunchConfigError::MissingAppId));
     }
 }

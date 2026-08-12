@@ -1096,9 +1096,7 @@ mod tests {
     /// A minimal valid profile with no `[capture]` mode declared.
     fn plain_profile() -> Profile {
         Profile::parse(
-            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = { exe = \"game.exe\" }\n",
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#,
         )
         .expect("the profile parses")
     }
@@ -1106,10 +1104,7 @@ mod tests {
     /// A minimal valid profile declaring ring mode in its `[capture]` table.
     fn ring_mode_profile() -> Profile {
         Profile::parse(
-            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\n\
-             [capture]\nmode = \"ring\"\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = { exe = \"game.exe\" }\n",
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G"},"capture":{"mode":"ring"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#,
         )
         .expect("the profile parses")
     }
@@ -1117,9 +1112,7 @@ mod tests {
     /// A minimal valid profile declaring a Steam platform and app_id.
     fn steam_profile() -> Profile {
         Profile::parse(
-            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\nplatform = \"steam\"\napp_id = \"900883\"\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = { exe = \"game.exe\" }\n",
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G","platform":"steam","app_id":"900883"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#,
         )
         .expect("the profile parses")
     }
@@ -1147,9 +1140,7 @@ mod tests {
     #[test]
     fn launch_without_app_id_is_refused_before_capture() {
         let no_app_id = Profile::parse(
-            "schema = 1\n[game]\nid = \"g\"\nname = \"G\"\nplatform = \"steam\"\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = { exe = \"game.exe\" }\n",
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G","platform":"steam"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#,
         )
         .expect("parses");
         let args = run_args(&["--launch"]);

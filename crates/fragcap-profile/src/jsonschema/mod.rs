@@ -60,3 +60,12 @@ pub fn validate_json(text: &str) -> Validation {
         Ok(value) => Validation::Checked(variants::check(&value)),
     }
 }
+
+/// Validate an already-parsed value against the master schema.
+///
+/// The structural half of [`validate_json`], for a caller that has already parsed
+/// the text to a [`serde_json::Value`] (the profile-load path does, and reuses
+/// this so there is one structural implementation rather than two).
+pub fn validate_value(value: &serde_json::Value) -> SchemaDiagnostics {
+    variants::check(value)
+}

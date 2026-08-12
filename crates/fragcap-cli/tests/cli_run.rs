@@ -15,7 +15,7 @@ fn run_offline(extra: &[String]) -> (u8, String, String) {
     let mut args: Vec<String> = vec![
         "run".into(),
         "--profile".into(),
-        data("game.toml"),
+        data("game.json"),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -134,7 +134,7 @@ fn a_fired_interrupt_stops_cleanly_and_exits_zero() {
     let args: Vec<String> = vec![
         "run".into(),
         "--profile".into(),
-        data("game.toml"),
+        data("game.json"),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -298,7 +298,7 @@ fn an_acquisition_timeout_with_no_target_captures_nothing_and_exits_one() {
     let args = [
         "run",
         "--profile",
-        &data("game.toml"),
+        &data("game.json"),
         "--replay-source",
         &fixture("udp-gameplay.pcap"),
         "--attr-script",
@@ -330,7 +330,7 @@ fn a_ring_capture_dumps_the_recent_tail_on_interrupt() {
     let args: Vec<String> = vec![
         "run".into(),
         "--profile".into(),
-        data("game.toml"),
+        data("game.json"),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),

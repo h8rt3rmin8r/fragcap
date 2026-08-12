@@ -73,8 +73,7 @@ impl fmt::Display for Position {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum DiagnosticCode {
-    /// The document is not valid TOML. Includes a duplicate key, which the
-    /// parser refuses on fragcap's behalf.
+    /// The document is not valid JSON.
     Syntax,
     /// The declared schema version is not one this build supports.
     UnsupportedSchema,
@@ -197,6 +196,26 @@ impl Diagnostic {
             location: location.into(),
             offset: Some(offset),
             position: Some(Position::from_offset(text, offset)),
+            message: message.into(),
+        }
+    }
+
+    /// Build a diagnostic located by a JSON pointer, with no byte position.
+    ///
+    /// The profile-load path locates faults by JSON pointer (for example
+    /// `/stage/1/match/exe`) because serde_json exposes no per-value byte span;
+    /// the pointer names the exact value, and the line and column are not
+    /// available. `offset` and `position` are therefore `None`.
+    pub fn located(
+        code: DiagnosticCode,
+        pointer: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Diagnostic {
+        Diagnostic {
+            code,
+            location: pointer.into(),
+            offset: None,
+            position: None,
             message: message.into(),
         }
     }

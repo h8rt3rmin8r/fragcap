@@ -40,22 +40,20 @@ pub fn run(args: &TapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
 
 /// Build a validated one-stage profile for the named process.
 ///
-/// The process image name is escaped into a TOML string and the whole document
-/// is validated through `Profile::parse`, the same path an authored profile
-/// takes. A name that cannot form a valid profile (empty, or one whose glob does
-/// not compile) surfaces as the profile's own diagnostics, exit 2.
+/// The process image name is placed into a JSON profile (serde_json handles the
+/// escaping) and the whole document is validated through `Profile::parse`, the
+/// same path an authored profile takes. A name that cannot form a valid profile
+/// (empty, or one whose glob does not compile) surfaces as the profile's own
+/// diagnostics, exit 2.
 fn synthesize_profile(process: &str) -> Result<Profile, CliError> {
-    let escaped = process.replace('\\', "\\\\").replace('"', "\\\"");
-    let toml = format!(
-        "schema = 1\n\
-         [game]\n\
-         id = \"tap\"\n\
-         name = \"ad hoc tap\"\n\
-         [[stage]]\n\
-         role = \"target\"\n\
-         lifecycle = \"session\"\n\
-         terminal = true\n\
-         match = {{ exe = \"{escaped}\" }}\n"
-    );
-    Profile::parse(&toml).map_err(CliError::from)
+    let profile = serde_json::json!({
+        "schema": 1,
+        "kind": "profile",
+        "fidelity": "authored",
+        "game": { "id": "tap", "name": "ad hoc tap" },
+        "stage": [
+            { "role": "target", "lifecycle": "session", "terminal": true, "match": { "exe": process } }
+        ]
+    });
+    Profile::parse(&profile.to_string()).map_err(CliError::from)
 }
