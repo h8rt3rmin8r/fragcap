@@ -2493,11 +2493,21 @@ so local and built output cannot diverge through configuration drift.
 The site is one application serving a landing page and the
 documentation described in section 22, deployed to `fragcap.com`.
 
-The landing page states what fragcap is in one sentence, shows one
-worked invocation with its output, names the prerequisite plainly, and
-links to getting started, the repository, and the glossary. It does not
-carry testimonials, feature grids, or calls to action, because the
-audience arrives already knowing they need a capture tool.
+The landing page leads with the problem fragcap solves that standard
+tooling does not: capture below the socket layer has already discarded
+the association between a packet and the process that produced it, and
+for a client started indirectly through a launcher the owning process is
+not the launcher. It then states what fragcap is, shows one worked
+invocation with its output, presents a small number of concrete
+capability statements each linking into the documentation that proves it,
+and names the prerequisite plainly, linking to getting started, the
+repository, and the glossary. It does not carry testimonials, feature
+grids, or calls to action; the capability statements are plain facts with
+links, not marketing copy, and the voice stays within section 23.3. The
+earlier assumption that the audience arrives already knowing they need a
+capture tool is retired: the page should still reach a technically
+competent visitor who does not yet know that attribution is the hard
+part.
 
 ### 23.2 Hosting and Domain
 

@@ -8,3 +8,7 @@ next-env.d.ts
 # The glossary content tree is generated from docs/glossary/ by scripts/prebuild.mjs;
 # docs/glossary/ is the single committed source.
 content/docs/glossary/
+
+# The disclaimer module is generated from README.md by scripts/prebuild.mjs;
+# README.md is the single committed source.
+app/(home)/disclaimer/disclaimer.generated.ts

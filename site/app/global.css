@@ -96,3 +96,24 @@ article h1 {
   font-family: var(--font-display);
   letter-spacing: -0.01em;
 }
+
+/*
+ * Theme-aware wordmark. The vendored SVGs carry fixed stroke colors and must
+ * not be hand-edited, so the marks cannot inherit currentColor; instead the two
+ * variants ship as separate images and CSS shows one per theme. Fumadocs sets
+ * .dark on <html> before paint (next-themes with suppressHydrationWarning), so
+ * the swap is flash-free. Light surfaces take the darker cyan wordmark, the dark
+ * void takes the white one (issue #41).
+ */
+.fc-wordmark-dark {
+  display: none;
+}
+.fc-wordmark-light {
+  display: inline-block;
+}
+.dark .fc-wordmark-dark {
+  display: inline-block;
+}
+.dark .fc-wordmark-light {
+  display: none;
+}

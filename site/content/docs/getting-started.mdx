@@ -32,7 +32,22 @@ fragcap doctor
 `doctor` reports whether the driver is present and whether fragcap can enumerate
 interfaces, without capturing anything.
 
-## 3. Capture
+## 3. Get a profile
+
+A capture is driven by a profile that names the client to wait for and how to
+attribute it. No profiles ship bundled, so you obtain one before the first
+capture. The `eso` used below is illustrative, not a shipped profile.
+
+Scaffold one from an installed Steam title, which writes a validating profile you
+can refine:
+
+```text
+fragcap steam profile <APP_ID>
+```
+
+Or author one by hand, following [Writing a profile](/docs/guides/writing-a-profile).
+
+## 4. Capture
 
 ```text
 fragcap run --profile eso --out capture.fcapng
@@ -41,7 +56,7 @@ fragcap run --profile eso --out capture.fcapng
 fragcap arms, waits for the profiled client, attributes its flows, and writes the
 result.
 
-## 4. Open the result
+## 5. Open the result
 
 Open `capture.fcapng` in any pcapng-aware analyzer. Unmodified analyzers read it
 as ordinary pcapng; the process attribution rides in packet comments.
