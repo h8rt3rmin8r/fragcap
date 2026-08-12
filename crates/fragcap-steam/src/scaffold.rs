@@ -306,73 +306,77 @@ fn disambiguate(proposals: &mut [StageProposal], install_dir: &Path) {
     }
 }
 
-/// Render a profile skeleton to TOML text.
-fn render(title: &InstalledTitle, proposals: &[StageProposal]) -> String {
-    let mut s = String::new();
-    s.push_str(
-        "# Scaffolded by `fragcap steam profile`. The stage classification below is\n\
-         # HEURISTIC and must be verified against an observed capture session before you\n\
-         # rely on it: image names alone cannot distinguish a launcher from a client, and\n\
-         # a title may run several processes sharing one image name. See specification\n\
-         # section 16.3.\n\n",
-    );
-    s.push_str("schema = 1\n\n");
-    s.push_str("[game]\n");
-    s.push_str(&format!("id = \"{}\"\n", slug(&title.app_id)));
-    s.push_str(&format!("name = \"{}\"\n", toml_escape(&title.name)));
-    s.push_str("platform = \"steam\"\n");
-    s.push_str(&format!("app_id = \"{}\"\n", toml_escape(&title.app_id)));
+/// The load-bearing warning carried on every scaffold, as structured data.
+///
+/// It was a TOML header comment before the JSON migration (#76); a comment is
+/// stripped by every parser and the resolver cannot act on it, so it is now the
+/// profile's `notes` field alongside a `fidelity` of `heuristic-unverified`. A
+/// machine can then refuse to treat the guess as verified.
+const HEURISTIC_NOTE: &str = "Scaffolded by `fragcap steam profile`. The stage \
+classification here is HEURISTIC and must be verified against an observed capture \
+session before you rely on it: image names alone cannot distinguish a launcher \
+from a client, and a title may run several processes sharing one image name. See \
+specification section 16.3.";
 
+/// Render a profile skeleton to JSON text.
+///
+/// Built as a [`serde_json::Value`] and serialized, so escaping is correct by
+/// construction and the output re-parses (the caller asserts it validates). The
+/// stage classification is a heuristic, which the `fidelity` and `notes` fields
+/// declare.
+fn render(title: &InstalledTitle, proposals: &[StageProposal]) -> String {
+    use serde_json::{json, Map, Value};
+
+    let mut stages: Vec<Value> = Vec::with_capacity(proposals.len());
+    // The renderer proposes at most one launcher per distinct image, but several
+    // launchers need unique role names; the first keeps `launcher`, later ones
+    // become `launcher-2`, `launcher-3`, and so on.
+    let mut launcher_count = 0u32;
     for p in proposals {
-        s.push_str("\n[[stage]]\n");
+        let mut stage = Map::new();
         match p.role {
             Role::Launcher => {
-                s.push_str("role = \"launcher\"\n");
-                s.push_str("lifecycle = \"transient\"\n");
+                launcher_count += 1;
+                let role = if launcher_count == 1 {
+                    "launcher".to_string()
+                } else {
+                    format!("launcher-{launcher_count}")
+                };
+                stage.insert("role".to_string(), json!(role));
+                stage.insert("lifecycle".to_string(), json!("transient"));
             }
             Role::Client => {
-                s.push_str("role = \"client\"\n");
-                s.push_str("lifecycle = \"session\"\n");
-                s.push_str("terminal = true\n");
+                stage.insert("role".to_string(), json!("client"));
+                stage.insert("lifecycle".to_string(), json!("session"));
+                stage.insert("terminal".to_string(), json!(true));
             }
         }
-        let mut predicates = format!("exe = \"{}\"", toml_escape(&p.image.file_name));
+        let mut predicates = Map::new();
+        predicates.insert("exe".to_string(), json!(p.image.file_name));
         if let Some(d) = &p.path_disambiguator {
-            predicates.push_str(&format!(", path_contains = \"{}\"", toml_escape(d)));
+            predicates.insert("path_contains".to_string(), json!(d));
         }
-        s.push_str(&format!("match = {{ {predicates} }}\n"));
+        stage.insert("match".to_string(), Value::Object(predicates));
+        stages.push(Value::Object(stage));
     }
 
-    // A single launcher role name is unique; multiple launcher stages need unique
-    // roles, which render() below never emits, so at most one launcher is
-    // proposed per distinct role. Roles are made unique in-place here:
-    make_roles_unique(&mut s);
-    s
-}
+    let profile = json!({
+        "schema": 1,
+        "kind": "profile",
+        "fidelity": "heuristic-unverified",
+        "notes": HEURISTIC_NOTE,
+        "game": {
+            "id": slug(&title.app_id),
+            "name": title.name,
+            "platform": "steam",
+            "app_id": title.app_id,
+        },
+        "stage": stages,
+    });
 
-/// Ensure launcher role names are unique by suffixing repeats.
-///
-/// The renderer writes every launcher stage with role `launcher`; the validator
-/// requires unique role names. Rather than thread state through the renderer,
-/// rewrite the emitted text so the first `launcher` keeps its name and later ones
-/// become `launcher-2`, `launcher-3`, and so on.
-fn make_roles_unique(text: &mut String) {
-    let mut count = 0u32;
-    let mut out = String::with_capacity(text.len());
-    for line in text.lines() {
-        if line == "role = \"launcher\"" {
-            count += 1;
-            if count == 1 {
-                out.push_str(line);
-            } else {
-                out.push_str(&format!("role = \"launcher-{count}\""));
-            }
-        } else {
-            out.push_str(line);
-        }
-        out.push('\n');
-    }
-    *text = out;
+    let mut out = serde_json::to_string_pretty(&profile).expect("a scaffold is serializable");
+    out.push('\n');
+    out
 }
 
 /// A valid `game.id` slug derived from the app_id.
@@ -392,22 +396,6 @@ fn slug(app_id: &str) -> String {
         }
     }
     s
-}
-
-/// Escape a string for a TOML basic (double-quoted) string.
-fn toml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -632,12 +620,19 @@ mod tests {
         };
         let text = scaffold(&title).unwrap();
         // scaffold() validates internally; assert it again and check the shape.
-        Profile::parse(&text).expect("scaffold must validate");
-        assert!(text.contains("HEURISTIC"), "missing heuristic header");
-        assert!(text.contains("platform = \"steam\""));
-        assert!(text.contains("app_id = \"900883\""));
-        assert!(text.contains("role = \"client\""));
+        let p = Profile::parse(&text).expect("scaffold must validate");
+        // The heuristic warning survives as structured data, not a comment.
+        assert!(text.contains("HEURISTIC"), "missing heuristic note");
+        assert!(
+            text.contains("\"fidelity\": \"heuristic-unverified\""),
+            "a scaffold is stamped heuristic-unverified: {text}"
+        );
+        assert!(text.contains("\"notes\""), "the warning is a notes field");
+        assert!(text.contains("\"platform\": \"steam\""));
+        assert!(text.contains("\"app_id\": \"900883\""));
+        assert!(text.contains("\"role\": \"client\""));
         assert!(text.contains("eso64.exe"));
+        assert_eq!(p.game().name(), "The Elder Scrolls Online");
     }
 
     #[test]

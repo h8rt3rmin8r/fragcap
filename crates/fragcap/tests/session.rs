@@ -15,8 +15,10 @@ fn at(n: i64) -> Timestamp {
     Timestamp::from_nanos(n)
 }
 
-fn profile(body: &str) -> Profile {
-    let text = format!("schema = 1\n[game]\nid = \"t\"\nname = \"T\"\n{body}");
+fn profile(stages: &str) -> Profile {
+    let text = format!(
+        r#"{{"schema":1,"kind":"profile","fidelity":"verified","game":{{"id":"t","name":"T"}},"stage":[{stages}]}}"#
+    );
     Profile::parse(&text).unwrap_or_else(|d| {
         panic!(
             "test profile did not validate: {:?}",
@@ -28,20 +30,14 @@ fn profile(body: &str) -> Profile {
 /// Launcher (transient) then client (session, terminal, descended from launcher).
 fn terminal_chain() -> Profile {
     profile(
-        "[[stage]]\nrole = \"launcher\"\nlifecycle = \"transient\"\n\
-         match = { exe = \"launcher.exe\" }\n\
-         [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-         match = { exe = \"game.exe\", descends_from = \"launcher\" }\n",
+        r#"{"role":"launcher","lifecycle":"transient","match":{"exe":"launcher.exe"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","descends_from":"launcher"}}"#,
     )
 }
 
 /// Launcher (transient) then client (session, not terminal).
 fn nonterminal_chain() -> Profile {
     profile(
-        "[[stage]]\nrole = \"launcher\"\nlifecycle = \"transient\"\n\
-         match = { exe = \"launcher.exe\" }\n\
-         [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-         match = { exe = \"game.exe\", descends_from = \"launcher\" }\n",
+        r#"{"role":"launcher","lifecycle":"transient","match":{"exe":"launcher.exe"}},{"role":"client","lifecycle":"session","match":{"exe":"game.exe","descends_from":"launcher"}}"#,
     )
 }
 
@@ -289,10 +285,7 @@ fn a_service_process_does_not_keep_the_all_exited_condition_from_firing() {
     // the only non-service stage; when it exits, capture stops even though the
     // service is still live (section 10.4: a service is never awaited).
     let p = profile(
-        "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-         match = { exe = \"game.exe\" }\n\
-         [[stage]]\nrole = \"platform\"\nlifecycle = \"service\"\n\
-         match = { exe = \"platform.exe\" }\n",
+        r#"{"role":"client","lifecycle":"session","match":{"exe":"game.exe"}},{"role":"platform","lifecycle":"service","match":{"exe":"platform.exe"}}"#,
     );
     let mut s = CaptureSession::new(p, SessionConfig::default());
     s.attach(at(0));
@@ -312,10 +305,7 @@ fn a_service_match_does_not_begin_capturing_or_disable_the_timeout() {
     // target (section 10.4: a service is never awaited during acquisition), so
     // the acquisition timeout still governs and no service noise is retained.
     let p = profile(
-        "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-         match = { exe = \"game.exe\" }\n\
-         [[stage]]\nrole = \"platform\"\nlifecycle = \"service\"\n\
-         match = { exe = \"platform.exe\" }\n",
+        r#"{"role":"client","lifecycle":"session","match":{"exe":"game.exe"}},{"role":"platform","lifecycle":"service","match":{"exe":"platform.exe"}}"#,
     );
     let cfg = SessionConfig {
         acquisition_timeout: Some(Duration::from_secs(30)),

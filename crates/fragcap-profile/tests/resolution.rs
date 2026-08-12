@@ -17,17 +17,11 @@ use fragcap_profile::{
     resolve, BundledSet, LoadError, Profile, ProfileSource, ResolveError, SearchPath,
 };
 
-/// A valid profile with the given id, and a name that says where it came from.
+/// A valid JSON profile with the given id, and a name that says where it came
+/// from.
 fn profile_text(id: &str, name: &str) -> String {
     format!(
-        "schema = 1\n\
-         [game]\n\
-         id   = \"{id}\"\n\
-         name = \"{name}\"\n\
-         [[stage]]\n\
-         role      = \"client\"\n\
-         lifecycle = \"session\"\n\
-         match     = {{ exe = \"c.exe\" }}\n"
+        r#"{{"schema":1,"kind":"profile","fidelity":"verified","game":{{"id":"{id}","name":"{name}"}},"stage":[{{"role":"client","lifecycle":"session","match":{{"exe":"c.exe"}}}}]}}"#
     )
 }
 
@@ -58,7 +52,7 @@ fn bundled(id: &str, name: &str) -> BundledSet {
 #[test]
 fn step_one_takes_an_existing_file_wherever_it_is() {
     let dir = scratch("step_one");
-    let path = write(&dir, "anywhere.toml", &profile_text("eso", "from path"));
+    let path = write(&dir, "anywhere.json", &profile_text("eso", "from path"));
 
     let got = resolve(
         path.to_str().expect("utf-8 path"),
@@ -76,7 +70,7 @@ fn step_one_does_not_require_the_reference_to_be_a_slug() {
     // A path carries separators and often an extension, neither of which is a
     // valid id. The operator named a file; that is the whole point of step one.
     let dir = scratch("step_one_not_slug");
-    let path = write(&dir, "Not-A-Slug.Profile.toml", &profile_text("eso", "ok"));
+    let path = write(&dir, "Not-A-Slug.Profile.json", &profile_text("eso", "ok"));
 
     let got = resolve(
         path.to_str().expect("utf-8 path"),
@@ -94,7 +88,7 @@ fn a_directory_does_not_satisfy_step_one() {
     fs::create_dir_all(&sub).expect("create directory");
     // A directory named exactly like the reference, plus a real profile beside
     // it. Step one must not take the directory; step two must find the file.
-    write(&dir, "eso.toml", &profile_text("eso", "the file"));
+    write(&dir, "eso.json", &profile_text("eso", "the file"));
 
     let search = SearchPath {
         command_line: vec![dir.clone()],
@@ -104,7 +98,7 @@ fn a_directory_does_not_satisfy_step_one() {
     assert_eq!(got.profile.game().name(), "the file");
     assert_eq!(
         got.source,
-        ProfileSource::CommandLineDirectory(dir.join("eso.toml")),
+        ProfileSource::CommandLineDirectory(dir.join("eso.json")),
         "a bare name that is also a directory still means a profile"
     );
 }
@@ -114,8 +108,8 @@ fn a_command_line_directory_shadows_the_user_directory() {
     let root = scratch("shadow_command_line");
     let cli = root.join("cli");
     let user = root.join("user");
-    write(&cli, "eso.toml", &profile_text("eso", "from cli"));
-    write(&user, "eso.toml", &profile_text("eso", "from user"));
+    write(&cli, "eso.json", &profile_text("eso", "from cli"));
+    write(&user, "eso.json", &profile_text("eso", "from user"));
 
     let search = SearchPath {
         command_line: vec![cli.clone()],
@@ -125,7 +119,7 @@ fn a_command_line_directory_shadows_the_user_directory() {
     assert_eq!(got.profile.game().name(), "from cli");
     assert_eq!(
         got.source,
-        ProfileSource::CommandLineDirectory(cli.join("eso.toml"))
+        ProfileSource::CommandLineDirectory(cli.join("eso.json"))
     );
 }
 
@@ -135,7 +129,7 @@ fn the_user_directory_shadows_a_bundled_profile() {
     // has drifted from a game update is corrected locally without a release.
     let root = scratch("shadow_user");
     let user = root.join("user");
-    write(&user, "eso.toml", &profile_text("eso", "from user"));
+    write(&user, "eso.json", &profile_text("eso", "from user"));
 
     let search = SearchPath {
         command_line: Vec::new(),
@@ -145,7 +139,7 @@ fn the_user_directory_shadows_a_bundled_profile() {
     assert_eq!(got.profile.game().name(), "from user");
     assert_eq!(
         got.source,
-        ProfileSource::UserDirectory(user.join("eso.toml"))
+        ProfileSource::UserDirectory(user.join("eso.json"))
     );
 }
 
@@ -161,8 +155,8 @@ fn command_line_directories_are_consulted_in_order() {
     let root = scratch("cli_order");
     let first = root.join("first");
     let second = root.join("second");
-    write(&first, "eso.toml", &profile_text("eso", "first"));
-    write(&second, "eso.toml", &profile_text("eso", "second"));
+    write(&first, "eso.json", &profile_text("eso", "first"));
+    write(&second, "eso.json", &profile_text("eso", "second"));
 
     let search = SearchPath {
         command_line: vec![first.clone(), second],
@@ -172,7 +166,7 @@ fn command_line_directories_are_consulted_in_order() {
     assert_eq!(got.profile.game().name(), "first");
     assert_eq!(
         got.source,
-        ProfileSource::CommandLineDirectory(first.join("eso.toml"))
+        ProfileSource::CommandLineDirectory(first.join("eso.json"))
     );
 }
 
@@ -182,7 +176,7 @@ fn an_absent_search_directory_is_skipped_rather_than_an_error() {
     // install, not a failure.
     let root = scratch("absent_directory");
     let user = root.join("user");
-    write(&user, "eso.toml", &profile_text("eso", "from user"));
+    write(&user, "eso.json", &profile_text("eso", "from user"));
 
     let search = SearchPath {
         command_line: vec![root.join("does-not-exist")],
@@ -214,7 +208,7 @@ fn an_absent_search_directory_is_still_reported_as_searched() {
             assert_eq!(reference, "eso");
             assert_eq!(
                 searched,
-                vec![missing.join("eso.toml")],
+                vec![missing.join("eso.json")],
                 "a directory the caller supplied must appear whether or not it exists"
             );
             let rendered = ResolveError::NotFound {
@@ -251,7 +245,7 @@ fn a_candidate_that_wins_its_step_and_cannot_be_used_is_an_error_not_a_fallthrou
     // invalid one is the case a test can build on any machine.
     let root = scratch("wins_and_fails");
     let user = root.join("user");
-    write(&user, "eso.toml", "schema = 1\nthis is not toml\n");
+    write(&user, "eso.json", "schema = 1\nthis is not toml\n");
 
     let search = SearchPath {
         command_line: Vec::new(),
@@ -259,7 +253,7 @@ fn a_candidate_that_wins_its_step_and_cannot_be_used_is_an_error_not_a_fallthrou
     };
     match resolve("eso", &search, &bundled("eso", "from bundle")) {
         Err(ResolveError::Load { path, source }) => {
-            assert_eq!(path, user.join("eso.toml"));
+            assert_eq!(path, user.join("eso.json"));
             assert!(matches!(source, LoadError::Invalid(_)));
         }
         Ok(got) => panic!(
@@ -292,7 +286,7 @@ fn a_reference_that_is_not_a_slug_is_refused_before_any_path_is_joined() {
         "a\\b",
         "C:\\Windows\\eso",
         "ESO",
-        "eso.toml",
+        "eso.json",
         "eso profile",
     ] {
         match resolve(reference, &search, &BundledSet::empty()) {
@@ -324,7 +318,7 @@ fn a_reference_matching_nothing_names_everywhere_it_looked() {
             assert_eq!(reference, "absent");
             assert_eq!(
                 searched,
-                vec![cli.join("absent.toml"), user.join("absent.toml")],
+                vec![cli.join("absent.json"), user.join("absent.json")],
                 "the question an operator asks on this failure is always where you looked"
             );
         }
@@ -369,9 +363,9 @@ fn the_source_is_reported_for_every_step() {
     let root = scratch("sources");
     let cli = root.join("cli");
     let user = root.join("user");
-    let explicit = write(&root, "explicit.toml", &profile_text("eso", "x"));
-    write(&cli, "eso.toml", &profile_text("eso", "c"));
-    write(&user, "div2.toml", &profile_text("div2", "u"));
+    let explicit = write(&root, "explicit.json", &profile_text("eso", "x"));
+    write(&cli, "eso.json", &profile_text("eso", "c"));
+    write(&user, "div2.json", &profile_text("div2", "u"));
 
     let search = SearchPath {
         command_line: vec![cli.clone()],
@@ -385,13 +379,13 @@ fn the_source_is_reported_for_every_step() {
     let by_cli = resolve("eso", &search, &set).expect("resolves");
     assert_eq!(
         by_cli.source,
-        ProfileSource::CommandLineDirectory(cli.join("eso.toml"))
+        ProfileSource::CommandLineDirectory(cli.join("eso.json"))
     );
 
     let by_user = resolve("div2", &search, &set).expect("resolves");
     assert_eq!(
         by_user.source,
-        ProfileSource::UserDirectory(user.join("div2.toml"))
+        ProfileSource::UserDirectory(user.join("div2.json"))
     );
 
     let by_bundle = resolve("third", &search, &set).expect("resolves");
@@ -407,12 +401,10 @@ fn a_resolved_profile_is_validated() {
     let user = root.join("user");
     write(
         &user,
-        "eso.toml",
+        "eso.json",
         // Two unpinned stages that can bind one process: refused by the
-        // ambiguity check, not by the parser.
-        "schema = 1\n[game]\nid = \"eso\"\nname = \"T\"\n\
-         [[stage]]\nrole = \"a\"\nlifecycle = \"transient\"\nmatch = { exe = \"x.exe\" }\n\
-         [[stage]]\nrole = \"b\"\nlifecycle = \"session\"\nmatch = { exe = \"x.exe\" }\n",
+        // ambiguity check, not by the parser (valid JSON, semantic fault).
+        r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"eso","name":"T"},"stage":[{"role":"a","lifecycle":"transient","match":{"exe":"x.exe"}},{"role":"b","lifecycle":"session","match":{"exe":"x.exe"}}]}"#,
     );
 
     let search = SearchPath {

@@ -16,7 +16,7 @@ use common::{data, fixture};
 fn offline_substrate() -> Vec<String> {
     vec![
         "--profile".into(),
-        data("game.toml"),
+        data("game.json"),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -276,7 +276,7 @@ fn a_malformed_profile_is_a_configuration_error_before_capture() {
     // `run`; validation failure is the exit-2 configuration error tested here.)
     let dir = tempfile::tempdir().unwrap();
     let fifo = dir.path().join("extcap.fcapng");
-    let bad = dir.path().join("bad.toml");
+    let bad = dir.path().join("bad.json");
     // schema declared but no [game] and no stage: the profile validator reports
     // diagnostics rather than parsing a capture target.
     fs::write(&bad, "schema = 1\n").unwrap();
@@ -310,7 +310,7 @@ fn extcap_with_no_mode_flag_is_a_usage_error() {
 
 #[test]
 fn capture_without_a_fifo_is_a_usage_error() {
-    let (code, _out, err) = common::run(&["extcap", "--capture", "--profile", &data("game.toml")]);
+    let (code, _out, err) = common::run(&["extcap", "--capture", "--profile", &data("game.json")]);
     assert_eq!(code, 2, "{err}");
     assert!(err.to_lowercase().contains("fifo"), "{err}");
 }

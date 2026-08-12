@@ -1706,69 +1706,68 @@ A profile is a declarative description of a game's process topology and
 capture defaults. Profiles are the mechanism by which fragcap supports
 specific titles without containing knowledge of them.
 
-Adding support for a game requires writing a TOML file. It never
-requires modifying Rust.
+Adding support for a game requires writing a JSON file. It never
+requires modifying Rust. The format moved from TOML to JSON in the
+profile migration (#76); a profile is the `profile` variant of the master
+schema of section 15.6.
 
 ### 15.2 Schema
 
-```toml
-schema = 1
-
-[game]
-id        = "eso"
-name      = "The Elder Scrolls Online"
-platform  = "steam"
-app_id    = "306130"
-
-[capture]
-mode      = "file"
-duration  = "30m"
-roles     = ["launcher", "client"]
-loopback  = true
-payload   = true
-
-[[stage]]
-role      = "launcher"
-lifecycle = "transient"
-match     = { exe = "*Launcher.exe", path_contains = "Elder Scrolls Online" }
-
-[[stage]]
-role      = "client"
-lifecycle = "session"
-terminal  = true
-match     = { exe = "eso64.exe" }
+```json
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "verified",
+  "game": {
+    "id": "eso",
+    "name": "The Elder Scrolls Online",
+    "platform": "steam",
+    "app_id": "306130"
+  },
+  "capture": {
+    "mode": "file",
+    "duration": "30m",
+    "roles": ["launcher", "client"],
+    "loopback": true,
+    "payload": true
+  },
+  "stage": [
+    { "role": "launcher", "lifecycle": "transient",
+      "match": { "exe": "*Launcher.exe", "path_contains": "Elder Scrolls Online" } },
+    { "role": "client", "lifecycle": "session", "terminal": true,
+      "match": { "exe": "eso64.exe" } }
+  ]
+}
 ```
 
 Where an image name is unique within the chain, as `eso64.exe` is, `exe`
 alone suffices. Where it is not, ancestry is required. The second focal
 title runs three processes named `TheDivision2.exe` and only the last
-holds sockets, so its profile must disambiguate:
+holds sockets, so its profile must disambiguate. The anti-cheat launcher
+is the ancestor that distinguishes the real client; fragcap observes the
+relationship and does not interact with that process (see sections 5.4
+and 19):
 
-```toml
-[[stage]]
-role      = "platform"
-lifecycle = "service"
-match     = { exe = "upc.exe" }
-
-[[stage]]
-role      = "client"
-lifecycle = "session"
-terminal  = true
-# exe alone matches three processes here, two of which never transmit.
-# The anti-cheat launcher is the ancestor that distinguishes the real
-# client; fragcap observes the relationship and does not interact with
-# that process. See sections 5.4 and 19.
-match     = { exe = "TheDivision2.exe", descends_from = "anticheat" }
-
-[[stage]]
-role      = "anticheat"
-lifecycle = "transient"
-match     = { exe = "EACLaunch.exe" }
+```json
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "verified",
+  "game": { "id": "div2", "name": "Tom Clancy's The Division 2" },
+  "stage": [
+    { "role": "platform", "lifecycle": "service", "match": { "exe": "upc.exe" } },
+    { "role": "client", "lifecycle": "session", "terminal": true,
+      "match": { "exe": "TheDivision2.exe", "descends_from": "anticheat" } },
+    { "role": "anticheat", "lifecycle": "transient", "match": { "exe": "EACLaunch.exe" } }
+  ]
+}
 ```
 
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `schema` | Yes | Schema version, currently `1` |
+| `kind` | Yes | `profile` for a capture profile (section 15.6) |
+| `fidelity` | Yes | Trust tier; `authored` or `verified` for a hand-written profile |
 | `game.id` | Yes | Slug, unique, used for profile resolution |
 | `game.name` | Yes | Display name |
 | `game.platform` | No | Platform for managed launch |
@@ -1785,9 +1784,9 @@ A profile reference resolves in the following order, first match
 winning.
 
 1. A path to an existing file.
-2. A file named `<ref>.toml` in the profile directory specified on the
+2. A file named `<ref>.json` in the profile directory specified on the
    command line.
-3. A file named `<ref>.toml` in the user profile directory.
+3. A file named `<ref>.json` in the user profile directory.
 4. A profile bundled with the fragcap distribution whose `game.id`
    matches.
 
@@ -1884,11 +1883,11 @@ no ambiguous image match) are not expressible in a schema and remain the
 profile-load path's responsibility. A document that passes
 `schema validate` is asserting structural conformance only.
 
-Two migrations sit on this schema and are tracked separately. The
-profile parser's move from TOML onto JSON is issue #76; until it lands,
-the runtime profile form is the TOML of section 15.2 and the JSON schema
-governs authoring, validation, hints, and exports. The hint database and
-its schema-conformant export are issue #78.
+One migration sits on this schema and is tracked separately: the hint
+database and its schema-conformant export are issue #78. The profile
+parser's move from TOML onto JSON (issue #76) has landed; the runtime
+profile form is the JSON of section 15.2, structurally validated against
+this schema and semantically validated by the checks of section 15.4.
 
 ## 16. Steam Integration
 

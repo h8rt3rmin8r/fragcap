@@ -157,8 +157,12 @@ mod tests {
         Timestamp::from_nanos(n)
     }
 
-    fn profile(body: &str) -> Profile {
-        let text = format!("schema = 1\n[game]\nid = \"t\"\nname = \"T\"\n{body}");
+    /// Build a test profile from a JSON stage-array body (the objects inside
+    /// `"stage": [ ... ]`).
+    fn profile(stages: &str) -> Profile {
+        let text = format!(
+            r#"{{"schema":1,"kind":"profile","fidelity":"verified","game":{{"id":"t","name":"T"}},"stage":[{stages}]}}"#
+        );
         Profile::parse(&text).unwrap_or_else(|d| {
             panic!(
                 "test profile did not validate: {:?}",
@@ -184,10 +188,7 @@ mod tests {
 
     #[test]
     fn exe_matches_the_file_name_case_insensitively() {
-        let p = profile(
-            "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-             match = { exe = \"eso64.exe\" }\n",
-        );
+        let p = profile(r#"{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe"}}"#);
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::started(
             1,
@@ -203,8 +204,7 @@ mod tests {
     #[test]
     fn path_contains_is_a_case_insensitive_substring_of_the_full_path() {
         let p = profile(
-            "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-             match = { path_contains = \"zenimax\" }\n",
+            r#"{"role":"client","lifecycle":"session","match":{"path_contains":"zenimax"}}"#,
         );
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::started(
@@ -221,8 +221,7 @@ mod tests {
     #[test]
     fn path_regex_matches_the_full_path() {
         let p = profile(
-            "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-             match = { path_regex = \"(?i)eso\\\\d+\\\\.exe$\" }\n",
+            r#"{"role":"client","lifecycle":"session","match":{"path_regex":"(?i)eso\\d+\\.exe$"}}"#,
         );
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::started(
@@ -239,8 +238,7 @@ mod tests {
     #[test]
     fn cmdline_contains_matches_an_observed_command_line() {
         let p = profile(
-            "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-             match = { cmdline_contains = \"-sessionid\" }\n",
+            r#"{"role":"client","lifecycle":"session","match":{"cmdline_contains":"-sessionid"}}"#,
         );
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::started(
@@ -260,8 +258,7 @@ mod tests {
         // reported as containing anything. A snapshot process has no command
         // line, and the stage must not bind it.
         let p = profile(
-            "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-             match = { cmdline_contains = \"-sessionid\" }\n",
+            r#"{"role":"client","lifecycle":"session","match":{"cmdline_contains":"-sessionid"}}"#,
         );
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::Started {
@@ -279,8 +276,7 @@ mod tests {
     fn all_specified_predicates_must_hold() {
         // exe matches but the command line does not, so the stage does not bind.
         let p = profile(
-            "[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\n\
-             match = { exe = \"eso64.exe\", cmdline_contains = \"-sessionid\" }\n",
+            r#"{"role":"client","lifecycle":"session","match":{"exe":"eso64.exe","cmdline_contains":"-sessionid"}}"#,
         );
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::started(
@@ -305,10 +301,7 @@ mod tests {
         // process carrying the shared name is NOT the descendant, so a match on
         // exe alone would bind the wrong one and descends_from is what fixes it.
         let p = profile(
-            "[[stage]]\nrole = \"launcher\"\nlifecycle = \"transient\"\n\
-             match = { exe = \"launcher.exe\" }\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = { exe = \"game.exe\", descends_from = \"launcher\" }\n",
+            r#"{"role":"launcher","lifecycle":"transient","match":{"exe":"launcher.exe"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","descends_from":"launcher"}}"#,
         );
         let mut t = ProcessTree::new();
         // ids(&t)[0]: the launcher.
@@ -348,10 +341,7 @@ mod tests {
     #[test]
     fn descends_from_does_not_match_when_no_ancestor_is_bound() {
         let p = profile(
-            "[[stage]]\nrole = \"launcher\"\nlifecycle = \"transient\"\n\
-             match = { exe = \"launcher.exe\" }\n\
-             [[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-             match = { exe = \"game.exe\", descends_from = \"launcher\" }\n",
+            r#"{"role":"launcher","lifecycle":"transient","match":{"exe":"launcher.exe"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","descends_from":"launcher"}}"#,
         );
         let mut t = ProcessTree::new();
         // A game.exe with no launcher ancestor at all.
@@ -366,10 +356,7 @@ mod tests {
         // one keys on exe, the other on the command line. Declaration order
         // decides (D-3).
         let p = profile(
-            "[[stage]]\nrole = \"first\"\nlifecycle = \"session\"\n\
-             match = { exe = \"dup.exe\" }\n\
-             [[stage]]\nrole = \"second\"\nlifecycle = \"transient\"\n\
-             match = { cmdline_contains = \"dup\" }\n",
+            r#"{"role":"first","lifecycle":"session","match":{"exe":"dup.exe"}},{"role":"second","lifecycle":"transient","match":{"cmdline_contains":"dup"}}"#,
         );
         let mut t = ProcessTree::new();
         t.apply(ProcessEvent::started(

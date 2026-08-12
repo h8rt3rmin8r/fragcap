@@ -9,20 +9,16 @@ use std::fs;
 
 use common::run;
 
-const VALID: &str = "schema = 1\n\
-[game]\nid = \"game\"\nname = \"Test Game\"\n\
-[[stage]]\nrole = \"client\"\nlifecycle = \"session\"\nterminal = true\n\
-match = { exe = \"game.exe\" }\n";
+const VALID: &str = r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"game","name":"Test Game"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe"}}]}"#;
 
-/// A profile with several independent mistakes: no schema, no game.id, and a
-/// stage missing its role and carrying an invalid lifecycle.
-const INVALID: &str = "[game]\nname = \"X\"\n\
-[[stage]]\nlifecycle = \"bogus\"\n";
+/// A profile with several independent mistakes: no game.id, and a stage missing
+/// its role and match and carrying an invalid lifecycle.
+const INVALID: &str = r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"name":"X"},"stage":[{"lifecycle":"bogus"}]}"#;
 
 #[test]
 fn a_valid_profile_by_path_validates_without_repeating_the_path() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("game.toml");
+    let path = dir.path().join("game.json");
     fs::write(&path, VALID).unwrap();
     let path_str = path.to_string_lossy().to_string();
 
@@ -41,7 +37,7 @@ fn a_valid_profile_by_path_validates_without_repeating_the_path() {
 #[test]
 fn an_invalid_profile_reports_every_diagnostic_in_one_pass_and_exits_two() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bad.toml");
+    let path = dir.path().join("bad.json");
     fs::write(&path, INVALID).unwrap();
 
     let (code, _out, err) = run(&["profile", "validate", &path.to_string_lossy()]);
@@ -58,8 +54,8 @@ fn an_invalid_profile_reports_every_diagnostic_in_one_pass_and_exits_two() {
 #[test]
 fn list_reports_the_bundled_and_per_directory_counts() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("one.toml"), VALID).unwrap();
-    fs::write(dir.path().join("two.toml"), VALID).unwrap();
+    fs::write(dir.path().join("one.json"), VALID).unwrap();
+    fs::write(dir.path().join("two.json"), VALID).unwrap();
 
     let (code, out, _err) = run(&[
         "profile",
@@ -78,7 +74,7 @@ fn list_reports_the_bundled_and_per_directory_counts() {
 #[test]
 fn show_reports_the_resolved_profile_and_its_source() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("game.toml");
+    let path = dir.path().join("game.json");
     fs::write(&path, VALID).unwrap();
 
     let (code, out, _err) = run(&["profile", "show", &path.to_string_lossy()]);
@@ -116,7 +112,7 @@ fn show_and_validate_agree_on_the_exit_for_a_reference_that_resolves_to_nothing(
 
     // An unresolvable path-shaped reference: both exit 1 as well (the reclassified
     // InvalidReference), never a split between 1 and 2.
-    let missing = dir.path().join("missing.toml");
+    let missing = dir.path().join("missing.json");
     let missing = missing.to_string_lossy().to_string();
     let (show_path, _, _) = run(&["profile", "show", &missing]);
     let (val_path, _, _) = run(&["profile", "validate", &missing]);
@@ -127,7 +123,7 @@ fn show_and_validate_agree_on_the_exit_for_a_reference_that_resolves_to_nothing(
 #[test]
 fn a_profile_file_that_exists_but_is_invalid_still_exits_two() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bad.toml");
+    let path = dir.path().join("bad.json");
     fs::write(&path, INVALID).unwrap();
     let (code, _out, _err) = run(&["profile", "validate", &path.to_string_lossy()]);
     assert_eq!(code, 2, "an invalid profile file is a configuration error");
@@ -136,7 +132,7 @@ fn a_profile_file_that_exists_but_is_invalid_still_exits_two() {
 #[test]
 fn validate_json_emits_one_event_per_diagnostic_and_a_summary() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bad.toml");
+    let path = dir.path().join("bad.json");
     fs::write(&path, INVALID).unwrap();
 
     let (code, out, _err) = run(&["--json", "profile", "validate", &path.to_string_lossy()]);
@@ -174,7 +170,7 @@ fn validate_json_emits_one_event_per_diagnostic_and_a_summary() {
 #[test]
 fn validate_json_on_a_valid_profile_is_a_clean_summary() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("game.toml");
+    let path = dir.path().join("game.json");
     fs::write(&path, VALID).unwrap();
 
     let (code, out, _err) = run(&["--json", "profile", "validate", &path.to_string_lossy()]);
@@ -199,8 +195,8 @@ fn validate_json_on_a_valid_profile_is_a_clean_summary() {
 #[test]
 fn list_json_emits_structured_counts() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("one.toml"), VALID).unwrap();
-    fs::write(dir.path().join("two.toml"), VALID).unwrap();
+    fs::write(dir.path().join("one.json"), VALID).unwrap();
+    fs::write(dir.path().join("two.json"), VALID).unwrap();
 
     let (code, out, _err) = run(&[
         "--json",

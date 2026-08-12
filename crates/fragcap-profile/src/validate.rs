@@ -2,10 +2,15 @@
 
 //! The semantic checks of specification section 15.4.
 //!
-//! Structural faults are found while reading; these are the faults that need the
-//! whole profile in view. Every check runs, and every check that cannot run for
-//! want of an input is skipped rather than aborting, so a profile with several
-//! problems reports all of them.
+//! Structural faults (types, required keys, enum ranges, unknown keys, an empty
+//! `match`) are the schema's job and are found by the structural layer in
+//! [`crate::parse`]. These are the faults that need the whole profile in view.
+//! Every check runs, and every check that cannot run for want of an input is
+//! skipped rather than aborting, so a profile with several problems reports all
+//! of them.
+//!
+//! Locations are JSON pointers, matching the structural layer; there is no byte
+//! position, because serde_json exposes no per-value span.
 //!
 //! # Three checks beyond the section 15.4 list
 //!
@@ -20,10 +25,6 @@
 //!   immediately, producing a short well-formed file.
 //! - A `descends_from` cycle is unsatisfiable, so every stage in it binds
 //!   nothing.
-//!
-//! They are additions rather than readings of section 15.4 and are recorded as
-//! candidates for promotion into it under the deviation process. See the S05
-//! decisions changelog fragment.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,17 +33,16 @@ use crate::parse::{Draft, DraftStage};
 use crate::schema::Lifecycle;
 
 /// Run every semantic check over the draft.
-pub(crate) fn check(draft: &Draft, text: &str, d: &mut Diagnostics) {
+pub(crate) fn check(draft: &Draft, d: &mut Diagnostics) {
     let declared = declared_roles(&draft.stages);
 
-    unique_roles(&draft.stages, text, d);
-    terminal_stage(&draft.stages, text, d);
-    at_least_one_non_service(draft, text, d);
-    predicates_present(&draft.stages, text, d);
-    descends_from_resolves(&draft.stages, &declared, text, d);
-    descends_from_is_acyclic(&draft.stages, &declared, text, d);
-    capture_roles_are_declared(draft, &declared, text, d);
-    ambiguous_image_match(&draft.stages, text, d);
+    unique_roles(&draft.stages, d);
+    terminal_stage(&draft.stages, d);
+    at_least_one_non_service(draft, d);
+    descends_from_resolves(&draft.stages, &declared, d);
+    descends_from_is_acyclic(&draft.stages, &declared, d);
+    capture_roles_are_declared(draft, &declared, d);
+    ambiguous_image_match(&draft.stages, d);
 }
 
 /// Every role the profile declares, mapped to the first stage that declared it.
@@ -56,8 +56,8 @@ fn declared_roles(stages: &[DraftStage]) -> BTreeMap<&str, usize> {
     out
 }
 
-/// FR-016. Role names are unique within a profile, and a collision names both.
-fn unique_roles(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
+/// Role names are unique within a profile, and a collision names both.
+fn unique_roles(stages: &[DraftStage], d: &mut Diagnostics) {
     let mut first: BTreeMap<&str, usize> = BTreeMap::new();
     for s in stages {
         let Some(role) = s.role.as_deref() else {
@@ -67,11 +67,9 @@ fn unique_roles(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
             None => {
                 first.insert(role, s.index);
             }
-            Some(earlier) => d.push(Diagnostic::at(
+            Some(earlier) => d.push(Diagnostic::located(
                 DiagnosticCode::DuplicateRole,
                 s.loc("role"),
-                text,
-                s.role_span.unwrap_or(s.span),
                 format!(
                     "role `{role}` is already declared by stage[{earlier}]; \
                      role names are unique within a profile"
@@ -81,18 +79,15 @@ fn unique_roles(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
     }
 }
 
-/// FR-017 and FR-026. At most one terminal stage, and its lifecycle is
-/// `session`.
-fn terminal_stage(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
+/// At most one terminal stage, and its lifecycle is `session`.
+fn terminal_stage(stages: &[DraftStage], d: &mut Diagnostics) {
     let terminal: Vec<&DraftStage> = stages.iter().filter(|s| s.terminal).collect();
 
     if let Some(first) = terminal.first() {
         for extra in terminal.iter().skip(1) {
-            d.push(Diagnostic::at(
+            d.push(Diagnostic::located(
                 DiagnosticCode::MultipleTerminal,
                 extra.loc("terminal"),
-                text,
-                extra.terminal_span.unwrap_or(extra.span),
                 format!(
                     "stage[{}] is already terminal; at most one stage per profile \
                      may be",
@@ -112,11 +107,9 @@ fn terminal_stage(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
                     Lifecycle::Service => "service",
                     Lifecycle::Session => unreachable!("handled above"),
                 };
-                d.push(Diagnostic::at(
+                d.push(Diagnostic::located(
                     DiagnosticCode::TerminalLifecycle,
                     s.loc("terminal"),
-                    text,
-                    s.terminal_span.unwrap_or(s.span),
                     format!(
                         "a terminal stage must have lifecycle `session`, not `{name}`; \
                          section 10.4 defines a {name} exit as expected, so this would \
@@ -128,15 +121,15 @@ fn terminal_stage(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
     }
 }
 
-/// FR-022. At least one stage is not a service.
+/// At least one stage is not a service.
 ///
 /// Section 10.4: a service is never awaited during acquisition, because waiting
 /// for something already running deadlocks. A profile consisting entirely of
 /// services can therefore never trigger acquisition.
-fn at_least_one_non_service(draft: &Draft, text: &str, d: &mut Diagnostics) {
+fn at_least_one_non_service(draft: &Draft, d: &mut Diagnostics) {
     let stages = &draft.stages;
     if stages.is_empty() {
-        // Already reported as NoStages while reading.
+        // Already reported structurally as a missing or empty stage array.
         return;
     }
     // Skip if any lifecycle failed to parse: the profile is refused anyway, and
@@ -148,44 +141,19 @@ fn at_least_one_non_service(draft: &Draft, text: &str, d: &mut Diagnostics) {
         .iter()
         .all(|s| s.lifecycle == Some(Lifecycle::Service))
     {
-        let at = draft.stage_key_span.unwrap_or(0);
-        d.push(Diagnostic::at(
+        d.push(Diagnostic::located(
             DiagnosticCode::AllServices,
-            "stage",
-            text,
-            at,
+            "/stage",
             "every stage is a service, so nothing can trigger acquisition; \
              at least one stage must be transient or session",
         ));
     }
 }
 
-/// FR-024. A `match` table carries at least one predicate.
-fn predicates_present(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
-    for s in stages {
-        // Only when the table was present and read: a missing `match` is
-        // already a MissingField.
-        let Some(span) = s.match_span else {
-            continue;
-        };
-        if s.predicates.is_empty() {
-            d.push(Diagnostic::at(
-                DiagnosticCode::EmptyMatch,
-                s.loc("match"),
-                text,
-                span,
-                "`match` declares no predicate, which would match every process \
-                 on the system",
-            ));
-        }
-    }
-}
-
-/// FR-018. Every `descends_from` names a role declared in the same profile.
+/// Every `descends_from` names a role declared in the same profile.
 fn descends_from_resolves(
     stages: &[DraftStage],
     declared: &BTreeMap<&str, usize>,
-    text: &str,
     d: &mut Diagnostics,
 ) {
     for s in stages {
@@ -194,11 +162,9 @@ fn descends_from_resolves(
         };
         if !declared.contains_key(target) {
             let known: Vec<&str> = declared.keys().copied().collect();
-            d.push(Diagnostic::at(
+            d.push(Diagnostic::located(
                 DiagnosticCode::UnknownDescendsFrom,
                 s.loc("match.descends_from"),
-                text,
-                s.descends_from_span.unwrap_or(s.span),
                 format!(
                     "`descends_from` names role `{target}`, which no stage declares; \
                      declared roles: {}",
@@ -213,21 +179,19 @@ fn descends_from_resolves(
     }
 }
 
-/// FR-028. The `descends_from` relation is acyclic, and a cycle names every role
-/// in it.
+/// The `descends_from` relation is acyclic, and a cycle names every role in it.
 ///
 /// No process assignment can satisfy a cycle, so every stage in one binds
 /// nothing. Includes the self-reference case, which is a cycle of length one.
 fn descends_from_is_acyclic(
     stages: &[DraftStage],
     declared: &BTreeMap<&str, usize>,
-    text: &str,
     d: &mut Diagnostics,
 ) {
     // Edges only between declared roles. An edge to an undeclared role is
     // already reported and cannot be part of a cycle.
     let mut edge: BTreeMap<&str, &str> = BTreeMap::new();
-    let mut at: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    let mut at: BTreeMap<&str, usize> = BTreeMap::new();
     for s in stages {
         let Some(role) = s.role.as_deref() else {
             continue;
@@ -237,7 +201,7 @@ fn descends_from_is_acyclic(
         };
         if declared.contains_key(target) {
             edge.insert(role, target);
-            at.insert(role, (s.index, s.descends_from_span.unwrap_or(s.span)));
+            at.insert(role, s.index);
         }
     }
 
@@ -253,20 +217,17 @@ fn descends_from_is_acyclic(
         let mut cur = start;
         loop {
             if seen.contains(cur) {
-                // The cycle is the tail of the path from the first occurrence.
                 let from = path.iter().position(|r| *r == cur).unwrap_or(0);
                 let cycle: Vec<&str> = path[from..].to_vec();
                 for role in &cycle {
                     reported.insert(role);
                 }
-                let (index, span) = at.get(cur).copied().unwrap_or((0, 0));
+                let index = at.get(cur).copied().unwrap_or(0);
                 let mut named = cycle.clone();
                 named.push(cur);
-                d.push(Diagnostic::at(
+                d.push(Diagnostic::located(
                     DiagnosticCode::DescendsFromCycle,
-                    format!("stage[{index}].match.descends_from"),
-                    text,
-                    span,
+                    format!("/stage/{index}/match/descends_from"),
                     format!(
                         "`descends_from` forms a cycle: {}. No process can satisfy it, \
                          so every stage in the cycle would bind nothing",
@@ -285,28 +246,22 @@ fn descends_from_is_acyclic(
     }
 }
 
-/// FR-027. `capture.roles` is non-empty when present and every entry is
-/// declared.
+/// `capture.roles` is non-empty when present and every entry is declared.
 fn capture_roles_are_declared(
     draft: &Draft,
     declared: &BTreeMap<&str, usize>,
-    text: &str,
     d: &mut Diagnostics,
 ) {
     let Some(roles) = draft.capture.roles() else {
         return;
     };
-    let at = draft.roles_span.or(draft.capture_span).unwrap_or(0);
 
     // Emptiness is judged on what the author declared, not on what survived
-    // parsing. A list of `["ghost", 1]` has one bad element and is not empty, and
-    // reporting it as empty would be a wrong diagnostic rather than an extra one.
+    // parsing. A list of `["ghost", 1]` has one bad element and is not empty.
     if draft.roles_declared == Some(0) {
-        d.push(Diagnostic::at(
+        d.push(Diagnostic::located(
             DiagnosticCode::EmptyRoles,
-            "capture.roles",
-            text,
-            at,
+            "/capture/roles",
             "`capture.roles` is empty, so it names nothing to capture; omit the key \
              to capture every declared role",
         ));
@@ -316,11 +271,9 @@ fn capture_roles_are_declared(
     for role in roles {
         if !declared.contains_key(role.as_str()) {
             let known: Vec<&str> = declared.keys().copied().collect();
-            d.push(Diagnostic::at(
+            d.push(Diagnostic::located(
                 DiagnosticCode::UndeclaredCaptureRole,
-                "capture.roles",
-                text,
-                at,
+                "/capture/roles",
                 format!(
                     "`capture.roles` names role `{role}`, which no stage declares, so \
                      nothing would be captured under it; declared roles: {}",
@@ -335,14 +288,14 @@ fn capture_roles_are_declared(
     }
 }
 
-/// FR-030 through FR-032. The ambiguous image match check of section 15.4.
+/// The ambiguous image match check of section 15.4.
 ///
 /// For every unordered pair of stages whose `exe` patterns can match a common
 /// image name, the pair is refused unless both stages carry at least one
 /// predicate other than `exe`. Two stages that are both pinned are permitted to
 /// share an image name, which is exactly the section 15.2 profile for the second
 /// focal title.
-fn ambiguous_image_match(stages: &[DraftStage], text: &str, d: &mut Diagnostics) {
+fn ambiguous_image_match(stages: &[DraftStage], d: &mut Diagnostics) {
     for (i, a) in stages.iter().enumerate() {
         let Some(pa) = a.predicates.exe() else {
             continue;
@@ -358,11 +311,9 @@ fn ambiguous_image_match(stages: &[DraftStage], text: &str, d: &mut Diagnostics)
                 continue;
             }
             let unpinned = if a.predicates.is_pinned() { b } else { a };
-            d.push(Diagnostic::at(
+            d.push(Diagnostic::located(
                 DiagnosticCode::AmbiguousImageMatch,
                 unpinned.loc("match.exe"),
-                text,
-                unpinned.exe_span.unwrap_or(unpinned.span),
                 format!(
                     "stage[{}] (`{}`) and stage[{}] (`{}`) can match one image name, and \
                      stage[{}] has no other predicate to distinguish it. A stage bound to \

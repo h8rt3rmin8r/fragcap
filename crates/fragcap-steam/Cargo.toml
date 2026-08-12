@@ -14,6 +14,7 @@ readme                 = "README.md"
 
 [dependencies]
 fragcap-profile.workspace = true
+serde_json.workspace      = true
 
 # Windows-only. Registry read for the Steam install path
 # (Win32_System_Registry) and the steam:// protocol handler for managed launch
