@@ -1,4 +1,4 @@
-{"type":"header","version":"fragcap/0.1.0","interfaces":["burst"]}
+{"type":"header","version":"fragcap/0.2.0","interfaces":["burst"]}
 {"ts":1700000000.000000,"iface":"burst","pid":4242,"proc":"game.exe","dir":"out","attr":"live","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":50,"orig_len":50,"data":"0200000000020200000000010800450000240000000040110000c000020ac6336405753013bf00100000a5a5a5a5a5a5a5a5"}
 {"ts":1700000000.000100,"iface":"burst","pid":4242,"proc":"game.exe","dir":"out","attr":"live","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":50,"orig_len":50,"data":"0200000000020200000000010800450000240000000040110000c000020ac6336405753013bf00100000a5a5a5a5a5a5a5a5"}
 {"ts":1700000000.000200,"iface":"burst","pid":4242,"proc":"game.exe","dir":"out","attr":"live","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":50,"orig_len":50,"data":"0200000000020200000000010800450000240000000040110000c000020ac6336405753013bf00100000a5a5a5a5a5a5a5a5"}

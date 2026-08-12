@@ -401,9 +401,13 @@ fn a_panicking_capture_thread_stops_the_others_rather_than_hanging() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// Yields frames until its own generous limit, so that a missing stop shows
-    /// up as a much larger count rather than as a hung test.
-    const SURVIVOR_LIMIT: usize = 100_000;
+    /// Yields frames until its own limit, so that a missing stop shows up as a
+    /// count that reaches the limit rather than as a hung test. Paired with the
+    /// small per-packet delay in the survivor below: the delay is what keeps the
+    /// count assertion meaningful, so the limit does not need to be enormous. A
+    /// broken stop reaches it in bounded time; the passing path is wound down
+    /// after a handful of packets.
+    const SURVIVOR_LIMIT: usize = 2_000;
 
     struct Panicking;
     impl PacketSource for Panicking {
@@ -429,6 +433,14 @@ fn a_panicking_capture_thread_stops_the_others_rather_than_hanging() {
             if self.produced.fetch_add(1, Ordering::Relaxed) >= SURVIVOR_LIMIT {
                 return Err(SourceError::Closed);
             }
+            // A small per-packet delay so the survivor cannot outrun the
+            // wind-down. Without it the loop is tight enough that a fast runner
+            // produces every SURVIVOR_LIMIT packet before the panicking thread's
+            // stop propagates, and the count assertion below is then flaky (it
+            // failed on CI for exactly this reason). The delay costs nothing on
+            // the passing path, where the survivor is stopped after a handful of
+            // packets; on a broken stop it bounds the run rather than hanging.
+            std::thread::sleep(Duration::from_millis(1));
             Ok(Some(RawPacket::new(
                 fragcap_core::packet::Timestamp::from_nanos(1),
                 fragcap_core::packet::Payload::from_static(&[0u8; 4]),

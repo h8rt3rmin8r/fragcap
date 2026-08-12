@@ -299,8 +299,14 @@ fi
 
 # The bump moved fragcap/<version>, embedded in two assertions and every golden.
 fix_embedded_versions "$old_version" "$target_version"
+# Regenerate the goldens the embedded version moved. Target the two regenerating
+# test binaries specifically rather than the whole workspace: the corpus and
+# extcap conservation checks read these same goldens and refuse to regenerate on
+# principle, so running them in the same pass would race the rewrite (or compare
+# the new output against a not-yet-rewritten golden) and fail.
 log_info "regenerating the golden corpus for the new version"
-FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test --workspace --quiet
+FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test -p fragcap --test goldens --quiet
+FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test -p fragcap-cli --test cli_run --quiet
 
 # Assemble the changelog and fold everything into the single release commit.
 safe_run cargo run --quiet --package xtask -- changelog --release "$target_version" "$release_date"

@@ -4,12 +4,9 @@ Game profile schema, parsing, and stage matching for fragcap.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
-
-Version 0.1.0 reserves the name and fixes the crate boundary.
-The schema arrives in slice S05.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Functional as of 0.2.0, the first functional release. This crate carries the
+profile schema, the validation set that runs before every capture, and profile
+stage matching.
 
 ## About fragcap
 

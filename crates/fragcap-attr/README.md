@@ -4,7 +4,7 @@ Flow attribution and process tree watching for fragcap.
 
 ## Status
 
-**Attribution works. Process watching does not exist yet.**
+Functional as of 0.2.0, the first functional release.
 
 `SocketTableAttributor` implements specification section 11: it snapshots the
 operating system socket table, joins captured flows against it by 5-tuple,
@@ -12,16 +12,13 @@ keeps a closing connection's tail attributed through a retention window, and
 publishes each snapshot as an immutable value that any number of capture
 threads read without locking.
 
+The process watcher tracks process start and exit through Event Tracing for
+Windows and maintains the process tree, so an attribution can carry a process
+identifier, an image name, and a role from profile stage matching.
+
 `ScriptedAttributor` remains, and remains useful: it answers from a declared
 script rather than a socket table, which is what makes the whole pipeline
 testable with no capture driver, no elevation, and no game.
-
-The process watcher arrives in slice S11 and profile stage matching in S12, so
-an attribution from here carries a process identifier and an image name and no
-role.
-
-Depending on this version is reasonable if you want the attributor and can live
-with the surface still moving. Follow [the repository][repo] for progress.
 
 ## Features
 

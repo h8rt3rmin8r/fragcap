@@ -4,12 +4,11 @@ Packet acquisition backends for fragcap.
 
 ## Status
 
-**This release is a skeleton. It contains no functionality.**
-
-Version 0.1.0 reserves the name and fixes the crate boundary.
-Live acquisition arrives in slice S09.
-Depending on this version buys nothing. Follow [the repository][repo]
-for progress.
+Functional as of 0.2.0, the first functional release. This crate reads classic
+pcap and replays it as a `PacketSource`, and, behind the `live` feature, binds
+the npcap capture driver for live acquisition. The offline replay path needs no
+driver and no elevation; live capture links against the npcap import library and
+runs where that driver is installed.
 
 ## About fragcap
 
