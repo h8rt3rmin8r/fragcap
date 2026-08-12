@@ -37,6 +37,22 @@ const EXCLUDED: &[&str] = &[
     ".cursor/skills",
     ".opencode",
     ".specify",
+    // The documentation site's dependency and build output directories. The
+    // top-level `node_modules` entry above only matches the repository root, so
+    // the site's own must be named; `.next`, `.source`, and `out` are generated
+    // build artifacts carrying minified third-party code (CRLF, em dashes) that
+    // is not this repository's to lint. The site's authored source (TypeScript,
+    // MDX, CSS) is still linted. Added by slice S18c-2.
+    "site/node_modules",
+    "site/.next",
+    "site/.source",
+    "site/out",
+    // Next.js rewrites these two on every build with platform-native line
+    // endings (CRLF on Windows), so they are managed generated files, not
+    // hand-authored source subject to the house encoding rule. next-env.d.ts is
+    // gitignored; tsconfig.json is committed but its final form is Next's.
+    "site/next-env.d.ts",
+    "site/tsconfig.json",
 ];
 
 /// Extensions treated as source, and therefore required to carry an SPDX
