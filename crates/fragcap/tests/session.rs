@@ -103,9 +103,15 @@ fn a_startup_snapshot_with_no_match_keeps_watching() {
 }
 
 #[test]
-fn a_startup_snapshot_path_anchor_disambiguates_a_shared_name() {
-    // The modded-Skyrim shape: two processes share the image name, only one under
-    // the path anchor. The anchor selects it.
+fn a_filename_only_snapshot_cannot_be_disambiguated_by_a_path_anchor() {
+    // Honesty (P-9): the Windows toolhelp startup snapshot carries only the
+    // executable file name, never the full path (opening a process to read its
+    // path is the handle the no-handle P-1 choice precludes). A path anchor is
+    // matched against the full path, so it cannot match a snapshot node. An
+    // already-running target that needs a path anchor is therefore not attached
+    // from the snapshot; it is caught when it next produces a start event, whose
+    // image the platform does supply. Modelled with file-name-only records, as
+    // toolhelp gives them.
     let mut s = CaptureSession::new(
         identity(r#"{"exe":"SkyrimSE.exe","path_contains":"Mod Organizer 2"}"#),
         SessionConfig::default(),
@@ -113,15 +119,40 @@ fn a_startup_snapshot_path_anchor_disambiguates_a_shared_name() {
     s.attach(at(0));
     s.apply_snapshot(
         &[
-            ProcessRecord::new(10, 0, "C:\\Steam\\steamapps\\common\\Skyrim\\SkyrimSE.exe"),
-            ProcessRecord::new(20, 0, "D:\\Games\\Mod Organizer 2\\mods\\SkyrimSE.exe"),
+            ProcessRecord::new(10, 0, "SkyrimSE.exe"),
+            ProcessRecord::new(20, 0, "SkyrimSE.exe"),
+        ],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Watching,
+        "a path anchor cannot match a file-name-only snapshot, so no attach happens"
+    );
+}
+
+#[test]
+fn an_out_of_order_snapshot_resolves_descends_from() {
+    // Review of PR #84: a startup snapshot has no creation-order guarantee, so a
+    // child can be listed before its parent. Folding parent-first means a
+    // descends_from stage still binds when both are already running. The client
+    // (descended from the launcher) is listed first; the launcher second.
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.apply_snapshot(
+        &[
+            // Child before parent: game.exe (pid 200, parent 100) precedes
+            // launcher.exe (pid 100). File-name-only, as toolhelp gives.
+            ProcessRecord::new(200, 100, "game.exe"),
+            ProcessRecord::new(100, 0, "launcher.exe"),
         ],
         at(0),
     );
     assert_eq!(
         s.state(),
         SessionState::Capturing,
-        "the process under the path anchor acquires the target"
+        "the descended client acquires the target even though it preceded its parent \
+         in the snapshot"
     );
 }
 

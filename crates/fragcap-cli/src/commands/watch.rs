@@ -104,6 +104,29 @@ fn report_attach_to_running(
             }
         }
         Err(ResolutionError::Unresolved(_)) => {
+            // No fully-matching already-running process. The Windows toolhelp
+            // startup snapshot carries only the executable file name, never the
+            // full path (reading a running process's path is the handle the
+            // no-handle P-1 choice precludes), so a path anchor cannot be checked
+            // against it. If a process whose executable matches is already running
+            // and only the path anchor excluded it, say so rather than let a
+            // silent wait-until-timeout look like nothing is running (review of
+            // PR #84).
+            if let Some(exe) = identity.exe() {
+                let has_path_anchor =
+                    identity.path_contains().is_some() || identity.path_regex().is_some();
+                let exe_already_running = tree
+                    .nodes()
+                    .any(|n| n.is_live() && exe.matches(n.image_name()));
+                if has_path_anchor && exe_already_running {
+                    emitter.warn(
+                        "a process matching the executable is already running, but a path \
+                         anchor cannot be checked against the startup snapshot, which carries \
+                         only the executable name; it will be captured when it next starts",
+                    );
+                    return;
+                }
+            }
             emitter.progress("target not yet running; waiting for it to start");
         }
         Err(ResolutionError::Provider(_)) => {}

@@ -468,6 +468,16 @@ one already running is acquired when the snapshot is folded in, both by runtime
 observation. Managed launch is a convenience layered on top, never the spine.
 
 {: .matters }
+> The path anchor is matched against the full image path. A process starting
+> after arm supplies one; the toolhelp startup snapshot supplies only the
+> executable name, because reading a running process's path is the handle the
+> no-handle posture of principle P-1 declines. So a path anchor disambiguates a
+> target that starts after arm, an already-running target is attached by
+> executable name alone, and where a path anchor cannot be checked against an
+> already-running process fragcap says so rather than wait silently until the
+> [acquisition timeout](#acquisition-timeout).
+
+{: .matters }
 > Watch mode is what makes a modded install launched from a mod manager, a
 > standalone title, and every non-storefront game capturable at all, because it
 > assumes nothing about origin. It is the runtime case a hint database marks

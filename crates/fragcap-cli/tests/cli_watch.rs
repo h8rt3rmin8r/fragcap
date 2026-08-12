@@ -190,6 +190,32 @@ fn watch_output_is_byte_identical_to_an_equivalent_profile_capture() {
 }
 
 #[test]
+fn watch_warns_when_a_path_anchor_cannot_check_an_already_running_process() {
+    // Honesty (review of PR #84): the startup snapshot carries only the
+    // executable name, so a path anchor cannot be checked against an
+    // already-running process. When one whose executable matches is running,
+    // watch says so rather than let a silent wait-until-timeout look like nothing
+    // is running. The already-running game does not restart, so with a wait bound
+    // it times out (exit one), but the warning names the reason.
+    let (code, _out, err) = watch_offline(
+        "game-snapshot.procscript",
+        &[
+            "--exe".into(),
+            "game.exe".into(),
+            "--path".into(),
+            "Mod Organizer 2".into(),
+            "--wait".into(),
+            "1s".into(),
+        ],
+    );
+    assert_eq!(code, 1, "the already-running target is not attached: {err}");
+    assert!(
+        err.contains("path anchor cannot be checked against the startup snapshot"),
+        "watch names why the path-anchored already-running target was not attached: {err}"
+    );
+}
+
+#[test]
 fn watch_without_an_exe_is_a_usage_error() {
     let (code, _out, _err) = common::run(&["watch"]);
     assert_eq!(code, 2);

@@ -656,7 +656,15 @@ non-storefront game capturable at all: the only durable fact is that at
 runtime a process exists that is the game and holds sockets (section
 15.7). The identity is an executable name plus a path anchor; `descends_from`
 is reserved for runtime disambiguation, not the identity's spine, because a
-modded launch has alien ancestry. A watch that never sees its target gives
+modded launch has alien ancestry. The path anchor is matched against the full
+image path, which a process starting after arm supplies but the startup snapshot
+of section 19.2 does not: the toolhelp enumeration carries only the executable
+name, because reading a running process's full path means opening a handle the
+no-handle posture of P-1 declines. So a path anchor disambiguates a target that
+starts after arm, and an already-running target is attached by executable name
+alone; where a path anchor cannot be checked against an already-running process,
+fragcap says so rather than time out silently (P-9). A watch that never sees its
+target gives
 up at the acquisition timeout with a named reason and its discard
 accounting surfaced (section 10.6, constitution P-4), never silently. This
 runtime case is the one a hint database marks `launcher_mediated` (issue
@@ -1189,8 +1197,12 @@ capture waiting for a target that may start later or may already be
 running. A target that starts after arm reaches `Capturing` through the
 `first stage matched` transition on its start event; a target already
 running at arm reaches `Capturing` when the startup snapshot is folded in
-(section 19.2), which matches it exactly as a start event would. Both are
-runtime observation, at two moments. The `Watching --> Complete`
+(section 19.2), which matches it on the executable name the snapshot carries.
+The snapshot records are folded parent-first, so a `descends_from` stage
+resolves against an ancestor already present even though a toolhelp enumeration
+gives no creation-order guarantee. Both are runtime observation, at two moments;
+they differ only in that a start event supplies the full image path and a
+snapshot record the executable name alone. The `Watching --> Complete`
 transition on the acquisition timeout is the loud give-up: it carries
 `StopReason::AcquisitionTimeout` and the watch-time discard accounting, so
 a watch that never acquires reports why rather than hanging or exiting

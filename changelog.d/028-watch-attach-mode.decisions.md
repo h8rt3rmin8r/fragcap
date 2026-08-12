@@ -27,3 +27,23 @@ axis. Fourth, the acquisition timeout is reused, not reinvented: `watch` exposes
 `--wait`, and the give-up is the existing named reason with its discard
 accounting, so P-4 is satisfied without a new counter. MSRV stays 1.82; no
 dependency added.
+
+Two fixes landed from PR review, both about what the toolhelp startup snapshot
+can honestly support. First, the snapshot carries only the executable file name,
+never the full path, because reading a running process's path means opening a
+handle the no-handle P-1 posture declines. A path anchor is matched against the
+full path, so it cannot match an already-running process from the snapshot. The
+first cut's test fabricated full paths a toolhelp enumeration never provides,
+which hid this; the fix makes the behavior honest rather than silent. A path
+anchor now disambiguates a target that starts after arm (the start event supplies
+the path), an already-running target is attached by executable name alone, and
+where a path anchor cannot be checked against an already-running process whose
+executable matches, `watch` warns rather than waiting silently until the
+acquisition timeout (P-9). The tests and the spec, glossary, and help were
+corrected to reflect the file-name-only snapshot. Second, the snapshot is now
+folded parent-first: the tree resolves a record's ancestry against nodes already
+folded with no retroactive linking, and toolhelp gives no creation-order
+guarantee, so a child listed before its parent left its ancestry unresolved and a
+`descends_from` stage never bound when attaching to an already-running multi-stage
+chain. A stable topological ordering before folding fixes it, verified by a test
+that lists a descended client before its launcher.

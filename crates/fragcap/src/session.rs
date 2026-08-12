@@ -264,10 +264,19 @@ impl CaptureSession {
         if !self.is_active() {
             return;
         }
-        self.tree.apply_snapshot_at(records, at);
-        // Match in creation (node identifier) order, so an ancestor a
-        // `descends_from` predicate names is bound before its descendant is
-        // evaluated, exactly as `bind_stages` and the offline acquisition loop do.
+        // Fold parent-first. The tree resolves a snapshot record's ancestry link
+        // against nodes already folded, with no retroactive linking, and toolhelp
+        // enumeration gives no creation-order guarantee, so a child can precede
+        // its parent in the raw snapshot. Folding in that order would leave the
+        // child's ancestry unresolved and a `descends_from` stage would never bind
+        // (review of PR #84). Ordering parent-first makes the ancestry link and
+        // the node-identifier match order below both correct.
+        let ordered = parent_first(records);
+        self.tree.apply_snapshot_at(&ordered, at);
+        // Match in creation (node identifier) order, which now visits a parent
+        // before its children, so an ancestor a `descends_from` predicate names is
+        // bound before its descendant is evaluated, exactly as `bind_stages` and
+        // the offline acquisition loop do.
         let mut nodes: Vec<(u32, u32)> = self
             .tree
             .nodes()
@@ -532,6 +541,46 @@ fn role_in(allowed: &Option<Vec<String>>, role: &str) -> bool {
     allowed
         .as_ref()
         .is_none_or(|set| set.iter().any(|r| r == role))
+}
+
+/// Order snapshot records so a parent precedes its children.
+///
+/// The tree resolves a snapshot record's ancestry against nodes already folded,
+/// with no retroactive linking, and toolhelp enumeration gives no creation-order
+/// guarantee, so folding a child before its parent leaves the child's ancestry
+/// unresolved. A stable Kahn-style pass emits a record once its parent is
+/// external to the snapshot (a root) or already emitted. Records left in a cycle,
+/// which real process ancestry does not form, are appended in input order so none
+/// is dropped. The record count is a process count, so the quadratic worst case
+/// is not a concern.
+fn parent_first(records: &[ProcessRecord]) -> Vec<ProcessRecord> {
+    use std::collections::HashSet;
+    let present: HashSet<u32> = records.iter().map(|r| r.pid).collect();
+    let mut emitted: HashSet<u32> = HashSet::new();
+    let mut order: Vec<ProcessRecord> = Vec::with_capacity(records.len());
+    loop {
+        let mut progressed = false;
+        for r in records {
+            if emitted.contains(&r.pid) {
+                continue;
+            }
+            let parent_ready = !present.contains(&r.parent) || emitted.contains(&r.parent);
+            if parent_ready {
+                order.push(r.clone());
+                emitted.insert(r.pid);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    for r in records {
+        if !emitted.contains(&r.pid) {
+            order.push(r.clone());
+        }
+    }
+    order
 }
 
 /// A published map from process identifier to its role and stage.
