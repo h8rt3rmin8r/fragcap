@@ -155,6 +155,7 @@ fn dispatch(
     match command {
         Command::Run(args) => commands::run::run(&args, emitter),
         Command::Tap(args) => commands::tap::run(&args, emitter),
+        Command::Watch(args) => commands::watch::run(&args, emitter),
         Command::Doctor(_) => commands::doctor::run(json, out),
         Command::Profile(args) => commands::profile::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),

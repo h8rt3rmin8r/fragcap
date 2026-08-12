@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "authored",
+  "game": { "id": "watch", "name": "ad hoc watch" },
+  "stage": [
+    { "role": "target", "lifecycle": "session", "terminal": true, "match": { "exe": "game.exe" } }
+  ]
+}

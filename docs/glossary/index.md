@@ -136,6 +136,7 @@ the owning category page.
 - [Transport](capture-and-networking.md#transport)
 - [VDF](platform-and-distribution.md#vdf)
 - [Virtual interface](capture-and-networking.md#virtual-interface)
+- [Watch mode](process-and-attribution.md#watch-mode)
 - [Wildcard bind address](capture-and-networking.md#wildcard-bind-address)
 - [Write gate](capture-and-networking.md#write-gate)
 - [WSL2 interop](command-line-and-diagnostics.md#wsl2-interop)

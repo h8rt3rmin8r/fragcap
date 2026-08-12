@@ -24,7 +24,7 @@ use fragcap::profile::CaptureMode;
 use fragcap::{
     AttributionScript, BindingPublisher, CommandLine, ConsumerReport, FlowAttributor, Format,
     InterfaceAddrs, InterfaceId, InterfaceSpec, LinkType, PacketSource, PayloadMode, ProcessEvent,
-    ProcessScript, ProcessWatcher, Profile, ReplaySource, RingSink, RingWindow,
+    ProcessRecord, ProcessScript, ProcessWatcher, Profile, ReplaySource, RingSink, RingWindow,
     RoleStampingAttributor, RotatingFileSink, RotationPolicy, ScriptedAttributor, ScriptedWatcher,
     SinkFactory, StreamSink, Timestamp,
 };
@@ -196,6 +196,41 @@ pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -
     }
 }
 
+/// Build the effective configuration for `watch`, from the identity-capture
+/// options and the synthesized one-stage profile.
+///
+/// Like [`effective_config_for_tap`], but carries `--wait` as the acquisition
+/// timeout: watch mode's whole purpose is to wait for a target that may not have
+/// started yet (or attach to one already running), so a give-up bound is
+/// first-class here where `tap` has none.
+pub fn effective_config_for_watch(
+    args: &crate::cli::WatchArgs,
+    profile: &Profile,
+) -> EffectiveConfig {
+    let defaults = profile.capture();
+    let payload = if args.no_payload {
+        false
+    } else {
+        defaults.payload().unwrap_or(true)
+    };
+    EffectiveConfig {
+        mode: CaptureMode::File,
+        ring: None,
+        out: args.out.clone(),
+        sinks: args.sink.clone(),
+        duration: args.duration.or_else(|| defaults.duration()),
+        acquisition_timeout: args.wait,
+        max_packets: None,
+        max_bytes: None,
+        roles: defaults.roles().map(|r| r.to_vec()),
+        direction: Direction::Both,
+        interfaces: Vec::new(),
+        loopback: defaults.loopback().unwrap_or(false),
+        payload,
+        launch: None,
+    }
+}
+
 /// Build the effective configuration for an extcap `--capture`, from the
 /// analyzer-supplied options and the resolved profile.
 ///
@@ -336,6 +371,15 @@ pub struct CaptureComponents {
     pub publisher: BindingPublisher,
     /// The process events, offline or live.
     pub events: EventStream,
+    /// The startup snapshot of processes already running at arm, from the process
+    /// watcher's query-only toolhelp enumeration (live) or the offline script's
+    /// declared snapshot. The orchestrator folds it into the session at arm so an
+    /// already-running target is attached without a later start event (section
+    /// 15.7). Empty when none.
+    pub startup_snapshot: Vec<ProcessRecord>,
+    /// The instant the startup snapshot reflects, when known. `None` offline,
+    /// where the orchestrator applies it at the arm instant.
+    pub snapshot_at: Option<Timestamp>,
     /// The live process watcher, kept alive for the duration of the run so the
     /// ETW session it owns is not torn down while its receiver is still being
     /// drained. `None` on the offline path, which owns no watcher.
@@ -400,7 +444,7 @@ fn offline_components(
     let stamper = RoleStampingAttributor::new(Arc::clone(&inner));
     let publisher = stamper.publisher();
 
-    let events = process_events(&offline.process_script)?;
+    let (events, startup_snapshot) = process_events(&offline.process_script)?;
 
     Ok(CaptureComponents {
         sources,
@@ -408,6 +452,10 @@ fn offline_components(
         stamper: Some(stamper),
         publisher,
         events: EventStream::Prerecorded(events),
+        startup_snapshot,
+        // Offline the snapshot has no separate instant; the orchestrator applies
+        // it at the arm instant, so a snapshot process is present from arm.
+        snapshot_at: None,
         #[cfg(all(feature = "etw", windows))]
         watcher: None,
     })
@@ -542,10 +590,14 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
         let publisher = stamper.publisher();
 
         // The live process event stream, from an ETW session of its own. Kept
-        // alive on the components so the receiver stays connected.
+        // alive on the components so the receiver stays connected. The watcher
+        // took a query-only startup snapshot at start; it is read here so the
+        // orchestrator can attach a target already running at arm (section 15.7).
         let watcher = fragcap::EtwWatcher::start("fragcap-cli")
             .map_err(|e| CliError::failure(format!("process trace session: {e}")))?;
         let rx = watcher.subscribe();
+        let startup_snapshot = ProcessWatcher::snapshot(&watcher);
+        let snapshot_at = watcher.snapshot_taken_at();
 
         Ok(CaptureComponents {
             sources,
@@ -553,6 +605,8 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
             stamper: Some(stamper),
             publisher,
             events: EventStream::Live(rx),
+            startup_snapshot,
+            snapshot_at,
             watcher: Some(watcher),
         })
     }
@@ -563,9 +617,11 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
 /// Uses a [`ScriptedWatcher`] to publish the parsed script, which is the same
 /// watcher the process-tree tests drive, so the offline events reach the session
 /// through the same path a live watcher's would.
-fn process_events(path: &Option<PathBuf>) -> Result<Vec<ProcessEvent>, CliError> {
+fn process_events(
+    path: &Option<PathBuf>,
+) -> Result<(Vec<ProcessEvent>, Vec<ProcessRecord>), CliError> {
     let Some(path) = path else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let text = std::fs::read_to_string(path)
         .map_err(|e| CliError::failure(format!("process script {}: {e}", path.display())))?;
@@ -573,10 +629,15 @@ fn process_events(path: &Option<PathBuf>) -> Result<Vec<ProcessEvent>, CliError>
         .map_err(|e| CliError::failure(format!("process script {}: {e}", path.display())))?;
     let watcher = ScriptedWatcher::new(script);
     let rx = watcher.subscribe();
+    // The declared startup snapshot, read before the streamed events, so the
+    // orchestrator can attach a target already running at arm. The trait form is
+    // explicit because ScriptedWatcher also has an inherent `snapshot` returning a
+    // borrow; the ProcessWatcher method returns the owned records.
+    let snapshot = ProcessWatcher::snapshot(&watcher);
     watcher.play();
     let mut events: Vec<ProcessEvent> = rx.try_iter().collect();
     events.sort_by_key(|e| e.at().as_nanos());
-    Ok(events)
+    Ok((events, snapshot))
 }
 
 /// Parse the offline process-script grammar into a [`ProcessScript`].
@@ -586,15 +647,19 @@ fn process_events(path: &Option<PathBuf>) -> Result<Vec<ProcessEvent>, CliError>
 ///
 /// ```text
 /// # comment
+/// snapshot <pid> <parent> <image>
 /// start <pid> <parent> <image> <cmdline> <at>
 /// exit <pid> <at>
 /// ```
 ///
-/// A `cmdline` of `-` records an unavailable command line, so the
-/// `cmdline_contains` predicate's handling of an unobserved command line stays
-/// testable.
+/// A `snapshot` line declares a process already running at arm, folded into the
+/// session by the orchestrator so an already-running target is attached without a
+/// later start event (section 15.7). A `cmdline` of `-` records an unavailable
+/// command line, so the `cmdline_contains` predicate's handling of an unobserved
+/// command line stays testable.
 pub fn parse_process_script(text: &str) -> Result<ProcessScript, String> {
     let mut script = ProcessScript::new();
+    let mut snapshot: Vec<ProcessRecord> = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let content = raw.trim();
@@ -603,6 +668,16 @@ pub fn parse_process_script(text: &str) -> Result<ProcessScript, String> {
         }
         let words: Vec<&str> = content.split_whitespace().collect();
         match words[0] {
+            "snapshot" => {
+                if words.len() != 4 {
+                    return Err(format!(
+                        "line {line}: snapshot expects <pid> <parent> <image>"
+                    ));
+                }
+                let pid = parse_u32(line, words[1])?;
+                let parent = parse_u32(line, words[2])?;
+                snapshot.push(ProcessRecord::new(pid, parent, words[3]));
+            }
             "start" => {
                 if words.len() != 6 {
                     return Err(format!(
@@ -628,6 +703,9 @@ pub fn parse_process_script(text: &str) -> Result<ProcessScript, String> {
             }
             other => return Err(format!("line {line}: unknown statement `{other}`")),
         }
+    }
+    if !snapshot.is_empty() {
+        script = script.with_snapshot(snapshot);
     }
     Ok(script)
 }

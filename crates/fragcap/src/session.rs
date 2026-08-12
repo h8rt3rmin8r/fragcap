@@ -33,7 +33,7 @@ use fragcap_core::attribution::{Attribution, StageId};
 use fragcap_core::error::AttrError;
 use fragcap_core::flow::{Endpoint, FlowKey};
 use fragcap_core::packet::{CapturedPacket, Timestamp};
-use fragcap_core::process::{ProcessEvent, ProcessId, ProcessTree};
+use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
 use fragcap_core::traits::{FlowAttributor, WriteGate};
 
 use fragcap_profile::matching::stage_for;
@@ -242,6 +242,49 @@ impl CaptureSession {
             self.match_and_bind(pid, at);
         } else if is_exit {
             self.on_bound_exit(pid);
+        }
+    }
+
+    /// Fold a startup snapshot of already-running processes into the session and
+    /// match them, so a process already running when the session armed can acquire
+    /// the target without a later start event (attach-to-running, section 15.7).
+    ///
+    /// The process watcher takes a query-only toolhelp snapshot at arm; the
+    /// capture path folds it here. Each snapshot process is matched exactly as a
+    /// start event is, in creation order so `descends_from` resolves against an
+    /// ancestor bound first, and a non-service match transitions Watching to
+    /// Capturing just as [`on_process_event`](Self::on_process_event) does. It
+    /// opens no process handle and reads only the image name and path the snapshot
+    /// already carries (constitution P-1).
+    ///
+    /// A no-op unless the session is active. Idempotent: a node already bound is
+    /// left alone, because [`ProcessTree::bind_stage`] binds at most once, so
+    /// applying the same snapshot twice acquires nothing new.
+    pub fn apply_snapshot(&mut self, records: &[ProcessRecord], at: Timestamp) {
+        if !self.is_active() {
+            return;
+        }
+        // Fold parent-first. The tree resolves a snapshot record's ancestry link
+        // against nodes already folded, with no retroactive linking, and toolhelp
+        // enumeration gives no creation-order guarantee, so a child can precede
+        // its parent in the raw snapshot. Folding in that order would leave the
+        // child's ancestry unresolved and a `descends_from` stage would never bind
+        // (review of PR #84). Ordering parent-first makes the ancestry link and
+        // the node-identifier match order below both correct.
+        let ordered = parent_first(records);
+        self.tree.apply_snapshot_at(&ordered, at);
+        // Match in creation (node identifier) order, which now visits a parent
+        // before its children, so an ancestor a `descends_from` predicate names is
+        // bound before its descendant is evaluated, exactly as `bind_stages` and
+        // the offline acquisition loop do.
+        let mut nodes: Vec<(u32, u32)> = self
+            .tree
+            .nodes()
+            .map(|n| (n.id().get(), n.pid().0))
+            .collect();
+        nodes.sort_by_key(|(node_id, _)| *node_id);
+        for (_, pid) in nodes {
+            self.match_and_bind(pid, at);
         }
     }
 
@@ -498,6 +541,46 @@ fn role_in(allowed: &Option<Vec<String>>, role: &str) -> bool {
     allowed
         .as_ref()
         .is_none_or(|set| set.iter().any(|r| r == role))
+}
+
+/// Order snapshot records so a parent precedes its children.
+///
+/// The tree resolves a snapshot record's ancestry against nodes already folded,
+/// with no retroactive linking, and toolhelp enumeration gives no creation-order
+/// guarantee, so folding a child before its parent leaves the child's ancestry
+/// unresolved. A stable Kahn-style pass emits a record once its parent is
+/// external to the snapshot (a root) or already emitted. Records left in a cycle,
+/// which real process ancestry does not form, are appended in input order so none
+/// is dropped. The record count is a process count, so the quadratic worst case
+/// is not a concern.
+fn parent_first(records: &[ProcessRecord]) -> Vec<ProcessRecord> {
+    use std::collections::HashSet;
+    let present: HashSet<u32> = records.iter().map(|r| r.pid).collect();
+    let mut emitted: HashSet<u32> = HashSet::new();
+    let mut order: Vec<ProcessRecord> = Vec::with_capacity(records.len());
+    loop {
+        let mut progressed = false;
+        for r in records {
+            if emitted.contains(&r.pid) {
+                continue;
+            }
+            let parent_ready = !present.contains(&r.parent) || emitted.contains(&r.parent);
+            if parent_ready {
+                order.push(r.clone());
+                emitted.insert(r.pid);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    for r in records {
+        if !emitted.contains(&r.pid) {
+            order.push(r.clone());
+        }
+    }
+    order
 }
 
 /// A published map from process identifier to its role and stage.

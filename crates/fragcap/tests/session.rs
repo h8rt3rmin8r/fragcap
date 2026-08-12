@@ -7,9 +7,16 @@
 use std::time::Duration;
 
 use fragcap::{
-    CaptureSession, PacketDisposition, ProcessEvent, Profile, SessionConfig, SessionState,
-    StopReason, Timestamp,
+    CaptureSession, PacketDisposition, ProcessEvent, ProcessRecord, Profile, SessionConfig,
+    SessionState, StopReason, Timestamp,
 };
+
+/// A single-stage identity profile, the shape `watch` and `tap` synthesize.
+fn identity(match_body: &str) -> Profile {
+    profile(&format!(
+        r#"{{"role":"target","lifecycle":"session","terminal":true,"match":{match_body}}}"#
+    ))
+}
 
 fn at(n: i64) -> Timestamp {
     Timestamp::from_nanos(n)
@@ -58,6 +65,94 @@ fn a_session_arms_before_any_target() {
         s.state(),
         SessionState::Watching,
         "the handle is open and the watcher attached before any process exists"
+    );
+}
+
+#[test]
+fn a_startup_snapshot_acquires_an_already_running_target() {
+    // Attach-to-running (section 15.7): a process already present at arm, in the
+    // startup snapshot with no later start event, acquires the target.
+    let mut s = CaptureSession::new(identity(r#"{"exe":"eso64.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    assert_eq!(s.state(), SessionState::Watching);
+
+    s.apply_snapshot(
+        &[ProcessRecord::new(1234, 0, "C:\\Games\\ESO\\eso64.exe")],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "a snapshot process matching the identity acquires the target at arm"
+    );
+}
+
+#[test]
+fn a_startup_snapshot_with_no_match_keeps_watching() {
+    let mut s = CaptureSession::new(identity(r#"{"exe":"eso64.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    s.apply_snapshot(
+        &[ProcessRecord::new(1, 0, "C:\\Windows\\explorer.exe")],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Watching,
+        "no snapshot process matches, so the session keeps waiting"
+    );
+}
+
+#[test]
+fn a_filename_only_snapshot_cannot_be_disambiguated_by_a_path_anchor() {
+    // Honesty (P-9): the Windows toolhelp startup snapshot carries only the
+    // executable file name, never the full path (opening a process to read its
+    // path is the handle the no-handle P-1 choice precludes). A path anchor is
+    // matched against the full path, so it cannot match a snapshot node. An
+    // already-running target that needs a path anchor is therefore not attached
+    // from the snapshot; it is caught when it next produces a start event, whose
+    // image the platform does supply. Modelled with file-name-only records, as
+    // toolhelp gives them.
+    let mut s = CaptureSession::new(
+        identity(r#"{"exe":"SkyrimSE.exe","path_contains":"Mod Organizer 2"}"#),
+        SessionConfig::default(),
+    );
+    s.attach(at(0));
+    s.apply_snapshot(
+        &[
+            ProcessRecord::new(10, 0, "SkyrimSE.exe"),
+            ProcessRecord::new(20, 0, "SkyrimSE.exe"),
+        ],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Watching,
+        "a path anchor cannot match a file-name-only snapshot, so no attach happens"
+    );
+}
+
+#[test]
+fn an_out_of_order_snapshot_resolves_descends_from() {
+    // Review of PR #84: a startup snapshot has no creation-order guarantee, so a
+    // child can be listed before its parent. Folding parent-first means a
+    // descends_from stage still binds when both are already running. The client
+    // (descended from the launcher) is listed first; the launcher second.
+    let mut s = CaptureSession::new(terminal_chain(), SessionConfig::default());
+    s.attach(at(0));
+    s.apply_snapshot(
+        &[
+            // Child before parent: game.exe (pid 200, parent 100) precedes
+            // launcher.exe (pid 100). File-name-only, as toolhelp gives.
+            ProcessRecord::new(200, 100, "game.exe"),
+            ProcessRecord::new(100, 0, "launcher.exe"),
+        ],
+        at(0),
+    );
+    assert_eq!(
+        s.state(),
+        SessionState::Capturing,
+        "the descended client acquires the target even though it preceded its parent \
+         in the snapshot"
     );
 }
 
@@ -225,6 +320,22 @@ fn all_matched_processes_exiting_stops_capture() {
     );
     s.on_process_event(exit(200, 4)); // last non-service process exits
     assert_eq!(s.stop_reason(), Some(StopReason::AllProcessesExited));
+}
+
+#[test]
+fn an_interrupt_while_watching_is_a_clean_cancellation() {
+    // Watch mode (section 15.7): an operator interrupt before any target is
+    // acquired is a clean cancellation, not a failure to acquire. The live path
+    // maps StopReason::Interrupt to exit zero.
+    let mut s = CaptureSession::new(identity(r#"{"exe":"eso64.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    assert_eq!(s.state(), SessionState::Watching);
+    s.on_interrupt();
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::Interrupt),
+        "an interrupt while watching is the interrupt reason, not acquisition timeout"
+    );
 }
 
 #[test]

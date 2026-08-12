@@ -1,0 +1,4 @@
+# game.exe is already running at arm (in the startup snapshot), with no start
+# event, so only attach-to-running acquires it. The toolhelp snapshot carries
+# only the executable file name, never a full path, so this record does too.
+snapshot 4242 100 game.exe
