@@ -11,10 +11,12 @@
 //! The classifier first drops obvious non-game executables (installers,
 //! redistributables, crash handlers, helper stubs, hash-named temp installers),
 //! then proposes launcher stages for launcher-suggestive images and the largest
-//! remaining image as the client. Launcher detection keys on the image basename,
-//! not its path: a title whose files sit under a directory named `Launcher`
-//! would otherwise classify every one of them, installers included, as a
-//! launcher and land the terminal client on `setup.exe` (issue #64). It never
+//! remaining image as the client. Dropping the non-game images first is what
+//! fixes issue #64: the ESO launcher directory is full of installers and
+//! redistributables, and without the denylist they became stages and the largest
+//! of them, `setup.exe`, became the terminal client. Launcher detection stays
+//! path-aware, per specification section 16.3: a launcher-suggestive token in
+//! either the file name or a directory on the path marks a launcher. It never
 //! infers process ancestry (`descends_from`) from a static scan, because runtime
 //! topology is invisible on disk (S17 D7). Where two proposals would share an
 //! image basename, it adds a `path_contains` predicate so the output satisfies
@@ -144,20 +146,27 @@ fn is_exe(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether an image is launcher-suggestive, by its basename (not its path): a
-/// parent directory named `Launcher` must not tar every file under it.
+/// The lowercased full path a launcher-token match runs over. Path-aware per
+/// specification section 16.3: a launcher indication may be in the file name or a
+/// directory on the path. Non-game images are removed before this runs, so an
+/// installer sitting under a `Launcher` directory no longer reaches it.
+fn launcher_haystack(image: &ExecutableImage) -> String {
+    image.path.to_string_lossy().to_ascii_lowercase()
+}
+
+/// Whether an image is launcher-suggestive.
 fn is_launcher(image: &ExecutableImage) -> bool {
-    let name = image.file_name.to_ascii_lowercase();
-    LAUNCHER_TOKENS.iter().any(|t| name.contains(t))
+    let hay = launcher_haystack(image);
+    LAUNCHER_TOKENS.iter().any(|t| hay.contains(t))
 }
 
 /// A launcher's rank, lower being a stronger match, used to order the launcher
 /// stages so the most launcher-like image is `role = "launcher"`.
 fn launcher_rank(image: &ExecutableImage) -> usize {
-    let name = image.file_name.to_ascii_lowercase();
+    let hay = launcher_haystack(image);
     LAUNCHER_TOKENS
         .iter()
-        .position(|t| name.contains(t))
+        .position(|t| hay.contains(t))
         .unwrap_or(LAUNCHER_TOKENS.len())
 }
 
@@ -462,14 +471,15 @@ mod tests {
 
     #[test]
     fn shared_basenames_get_disambiguators_that_actually_distinguish() {
-        // Two same-basename launcher stubs under sibling directories (one stays a
-        // launcher, one is promoted to client). A disambiguator of just the parent
-        // would match both; each must get a value that matches its own path and
-        // not the other's.
+        // Two same-basename executables under sibling `bin` directories,
+        // distinguished by a launcher-token directory on the path (the classifier
+        // is path-aware). A disambiguator of just the parent (`bin`) would match
+        // both; each must get a value that matches its own path and not the
+        // other's.
         let props = classify(
             vec![
-                img("Game/a/GameLauncher.exe", 50),
-                img("Game/b/GameLauncher.exe", 5),
+                img("Game/launcher/bin/TheDivision2.exe", 5),
+                img("Game/client/bin/TheDivision2.exe", 50),
             ],
             Path::new("Game"),
         );
@@ -545,10 +555,13 @@ mod tests {
     }
 
     #[test]
-    fn a_launcher_directory_does_not_classify_the_client_or_promote_an_installer() {
-        // Files under a directory named `Launcher` must not all become launchers;
-        // classification keys on the basename, so the game client stays the client
-        // and the installer/redist are dropped (issue #64).
+    fn installers_under_a_launcher_directory_are_dropped_not_promoted_to_client() {
+        // The ESO shape: the launcher directory holds the launcher plus an
+        // installer and a redistributable, and the installer is the largest image.
+        // The denylist drops the installer and redist before classification, so
+        // the largest of them is never promoted to the terminal client; the real
+        // game client (elsewhere on disk, no launcher token on its path) wins
+        // (issue #64).
         let props = classify(
             vec![
                 img("ESO/Launcher/Bethesda.net_Launcher.exe", 20),
@@ -632,11 +645,10 @@ mod tests {
         use crate::test_support::TempTree;
         let tree = TempTree::new();
         let install = tree.path().join("game");
-        // The same launcher image name in two directories: one stays a launcher,
-        // the other is promoted to client. The renderer must pin both so
-        // validation passes.
-        tree.write_exe(&install.join("a").join("SteamLaunch.exe"), 100);
-        tree.write_exe(&install.join("b").join("SteamLaunch.exe"), 5);
+        // The same image name in two directories: one under a launcher-token
+        // path, one not. The renderer must pin both so validation passes.
+        tree.write_exe(&install.join("bin").join("TheDivision2.exe"), 100);
+        tree.write_exe(&install.join("launch").join("TheDivision2.exe"), 5);
         let title = InstalledTitle {
             app_id: "2221490".to_string(),
             name: "The Division 2".to_string(),
