@@ -260,6 +260,18 @@ Next steps (each is a deliberate, authorized act this script does not perform):
     }
     $releaseDate = if ($Date) { $Date } else { (Get-Date -Format 'yyyy-MM-dd') }
 
+    # Reject a malformed version or date here, before creating a branch or
+    # writing anything. Get-SemverBump already rejects a bad explicit version,
+    # but a -Date typo would otherwise flow through to the changelog heading.
+    # cargo xtask changelog --release validates the same two fields again before
+    # it consumes fragments; this guard is the earlier of the two.
+    if ($targetVersion -notmatch '^\d+\.\d+\.\d+$') {
+        Write-Log "invalid target version: $targetVersion (expected X.Y.Z)" 'Error'; exit 2
+    }
+    if ($releaseDate -notmatch '^\d{4}-\d{2}-\d{2}$') {
+        Write-Log "invalid date: $releaseDate (expected YYYY-MM-DD)" 'Error'; exit 2
+    }
+
     Write-Log "current version: $oldVersion" 'Info'
     Write-Log "target version:  $targetVersion" 'Info'
     Write-Log "release date:    $releaseDate" 'Info'

@@ -248,6 +248,21 @@ target_version="$(semver_bump "$old_version" "$LEVEL")" || {
 
 release_date="${DATE_OVERRIDE:-$(date +%F)}"
 
+# Reject a malformed version or date here, before creating a branch or writing
+# anything. semver_bump classifies an explicit version loosely (a value like
+# 1.2.3junk reaches this point), and a --date typo would otherwise flow through
+# to the changelog heading. cargo xtask changelog --release validates the same
+# two fields again before it consumes fragments; this guard is the earlier of
+# the two, so a bad input never mutates the repository.
+if ! [[ "$target_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    log_error "invalid target version: $target_version (expected X.Y.Z)"
+    exit 2
+fi
+if ! [[ "$release_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    log_error "invalid date: $release_date (expected YYYY-MM-DD)"
+    exit 2
+fi
+
 log_info "current version: $old_version"
 log_info "target version:  $target_version"
 log_info "release date:    $release_date"

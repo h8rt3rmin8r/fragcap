@@ -279,6 +279,44 @@ fn fragment_paths(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(paths)
 }
 
+/// Whether a string is a plain `X.Y.Z` release version: exactly three
+/// dot-separated, non-empty, all-ASCII-digit components. The branch name, the
+/// changelog heading, and the release tag link are all built from this, so a
+/// malformed value such as `1.2.3junk` or `1.2.3.4` must be rejected before any
+/// of them is written.
+fn is_release_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether a string is an ISO `YYYY-MM-DD` date with a plausible month and day.
+/// This is a typo guard, not a full calendar check: it rejects `2026-8-12` and
+/// `Aug 12` while accepting any real date.
+fn is_iso_date(d: &str) -> bool {
+    let parts: Vec<&str> = d.split('-').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let (y, m, day) = (parts[0], parts[1], parts[2]);
+    if y.len() != 4 || m.len() != 2 || day.len() != 2 {
+        return false;
+    }
+    if !y
+        .bytes()
+        .chain(m.bytes())
+        .chain(day.bytes())
+        .all(|b| b.is_ascii_digit())
+    {
+        return false;
+    }
+    let month: u32 = m.parse().unwrap_or(0);
+    let dom: u32 = day.parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&dom)
+}
+
 /// What `run` should do.
 pub enum Mode {
     /// Print the assembled body; change nothing.
@@ -290,6 +328,25 @@ pub enum Mode {
 /// Assemble the changelog. Returns the count of problems (0 on success), or an
 /// `Err` when the command could not run at all (exit 2).
 pub fn run(root: &Path, mode: Mode) -> io::Result<usize> {
+    // Validate release metadata before touching the filesystem, so a mistyped
+    // version or date fails without writing a malformed heading or, worse,
+    // deleting every fragment while reporting success. A direct
+    // `cargo xtask changelog --release <version> <date>` call reaches this too.
+    if let Mode::Release { version, date } = &mode {
+        if !is_release_version(version) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid release version '{version}' (expected X.Y.Z)"),
+            ));
+        }
+        if !is_iso_date(date) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid release date '{date}' (expected YYYY-MM-DD)"),
+            ));
+        }
+    }
+
     let changelog_path = root.join("CHANGELOG.md");
     let changelog = fs::read_to_string(&changelog_path)?;
     let fragments = read_fragments(root)?;
@@ -417,6 +474,53 @@ mod tests {
     fn an_unknown_section_is_an_error() {
         let frags = vec![("add".into(), "### Add\n\n- typo\n".into())];
         assert!(assemble("", &frags).is_err());
+    }
+
+    #[test]
+    fn release_version_accepts_only_x_y_z() {
+        assert!(is_release_version("0.2.0"));
+        assert!(is_release_version("10.20.30"));
+        assert!(!is_release_version("1.2.3junk"));
+        assert!(!is_release_version("1.2.3.4"));
+        assert!(!is_release_version("1.2"));
+        assert!(!is_release_version("v1.2.3"));
+        assert!(!is_release_version("1.2."));
+        assert!(!is_release_version(""));
+    }
+
+    #[test]
+    fn iso_date_rejects_typos() {
+        assert!(is_iso_date("2026-08-12"));
+        assert!(!is_iso_date("2026-8-12"));
+        assert!(!is_iso_date("Aug 12"));
+        assert!(!is_iso_date("2026-13-01"));
+        assert!(!is_iso_date("2026-00-10"));
+        assert!(!is_iso_date("2026-08-32"));
+        assert!(!is_iso_date("2026/08/12"));
+    }
+
+    #[test]
+    fn release_mode_rejects_bad_metadata_before_touching_files() {
+        // A nonexistent root would give a NotFound on the first read; an
+        // InvalidInput proves the metadata guard ran first, before any write or
+        // fragment deletion.
+        let root = Path::new("this/path/does/not/exist");
+        let bad_version = run(
+            root,
+            Mode::Release {
+                version: "1.2.3.4".into(),
+                date: "2026-08-12".into(),
+            },
+        );
+        assert_eq!(bad_version.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        let bad_date = run(
+            root,
+            Mode::Release {
+                version: "0.2.0".into(),
+                date: "2026-8-12".into(),
+            },
+        );
+        assert_eq!(bad_date.unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
