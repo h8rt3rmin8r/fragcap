@@ -1,4 +1,4 @@
-<p align="center">
+<h1 align="center">
   <a href="https://fragcap.com">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="brand/logos/png/fragcap-horizontal-dark-2400.png">
@@ -6,7 +6,7 @@
       <img alt="fragcap" src="brand/logos/png/fragcap-horizontal-dark-2400.png" width="620">
     </picture>
   </a>
-</p>
+</h1>
 
 <p align="center">
   <em>Passive, process-attributed network capture for game clients on Windows.</em>
@@ -112,8 +112,11 @@ roles that separate launcher, client, and platform-service traffic.
 
 ## What it does
 
-- Attributes every captured packet to the process that produced it, from
-  launcher start through client exit.
+- Attributes captured packets to the process that produced them, from launcher
+  start through client exit, and marks the ones it cannot resolve as
+  unattributed rather than dropping them or guessing. A frame with no flow key
+  or a socket-table miss is retained and labeled, not silently assigned an
+  owner.
 - Writes `.fcapng`, an extended pcapng profile carrying attribution in packet
   comments. **Unmodified analyzers read it as ordinary pcapng** and ignore the
   annotations. Compatibility is never traded for richness.
@@ -131,7 +134,7 @@ The command-line tool exposes `run`, `tap`, `profile`, `steam`, `doctor`, and
 `extcap`. Anything reachable through the CLI is reachable through the public Rust
 API.
 
-Some worked invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
+Example invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
 for the full surface):
 
 ```bash
@@ -148,8 +151,12 @@ fragcap run --profile eso --mode ring --ring 10m --out captures/eso.fcapng
 fragcap tap --process eso64.exe --duration 5m --out capture.fcapng
 ```
 
-Non-file sinks (`pipe:`, `tcp://`) have no extension to infer a format from, so
-they name it explicitly with `,format=pcapng` or `,format=jsonl`.
+`eso` and `div2` stand in for profile names; no profiles ship bundled. A profile
+is a file you author or scaffold from an installed title with `fragcap steam
+profile <APP_ID>`, then pass by name or path. See
+[Writing a profile](https://fragcap.com/docs/guides/writing-a-profile). Non-file
+sinks (`pipe:`, `tcp://`) have no extension to infer a format from, so they name
+it explicitly with `,format=pcapng` or `,format=jsonl`.
 
 ## What it will not do
 
