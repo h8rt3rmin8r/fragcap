@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod extcap;
 pub mod profile;
 pub mod run;
+pub mod schema;
 pub mod steam;
 pub mod stub;
 pub mod tap;

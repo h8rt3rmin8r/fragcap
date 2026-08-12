@@ -1,0 +1,68 @@
+---
+title: Target schema
+description: "The master JSON Schema for targeting and attribution artifacts: profiles, packages, hints, and exports."
+---
+
+<Callout title="Structural, not semantic">
+`fragcap schema validate <file>` checks a file against this schema and reports
+every structural problem at once. It does not run the semantic checks a profile
+gets at load time (acyclic ancestry, a single terminal stage, role reachability,
+no ambiguous image match); those are not expressible in a schema. A file that
+passes `schema validate` is structurally conformant, nothing more.
+</Callout>
+
+fragcap has one versioned JSON Schema (Draft 2020-12) that governs every
+machine-readable targeting and attribution artifact, so they share one
+vocabulary and cannot drift. The schema is embedded in the binary as the single
+source of truth and published in the repository at
+[`docs/schema/target-schema.v1.json`](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/schema/target-schema.v1.json).
+Emit the embedded copy with `fragcap schema print`.
+
+## Top-level keys
+
+Every document is a JSON object.
+
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `schema` | integer | yes | Schema version. Currently `1`. |
+| `kind` | enum | yes | `profile`, `package`, `hint`, or `export`. |
+| `fidelity` | enum | yes | `authored`, `verified`, `heuristic-unverified`, `observed`. |
+| `notes` | string | no | Human context, carried as data. |
+| `provenance` | object | for `hint` and `export` | Where the record came from. |
+| `game` | object | for `profile` and `package` | Game identity. |
+| `capture` | object | no | Capture defaults. |
+| `stage` | array | for `profile` and `package` | The stages that match processes. |
+| `records` | array | export envelope only | A batch of loose records. |
+
+Unknown keys are refused everywhere.
+
+## The four kinds
+
+- **`profile`** and **`package`** are the strict form: they require `game` (with
+  `id` and `name`) and a non-empty `stage` array. A package is a hand-authored or
+  community-submitted profile at the highest precedence; it is structurally the
+  same as a profile.
+- **`hint`** is the loose form: a heuristic guess that may omit fields a profile
+  requires, but must carry `fidelity` and `provenance`.
+- **`export`** is the loose form as produced by the hint database. It requires
+  `provenance` and may carry a `records` array, each record with its own
+  `fidelity` and `provenance`.
+
+## Fidelity
+
+Every artifact declares a trust tier, ordered `authored` > `verified` >
+`heuristic-unverified` > `observed`. fragcap reads it and never fabricates it: a
+guess is presented as a guess, never as a fact. That is why `fidelity` is a field
+the tool can act on rather than a comment it would ignore.
+
+## Objects
+
+`game` carries `id` (slug), `name`, optional `platform` and `app_id`. `capture`
+carries `mode`, `duration`, `roles`, `loopback`, `payload`, all optional. A
+`stage` carries `role`, `lifecycle` (`transient`/`session`/`service`), optional
+`terminal`, and a `match` with at least one of `exe`, `path_contains`,
+`path_regex`, `cmdline_contains`, or `descends_from`. `provenance` carries a
+non-empty `source` and an optional `seeded_at`.
+
+See the field-by-field reference in
+[`docs/schema/README.md`](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/schema/README.md).

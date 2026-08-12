@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "kind": "package",
+  "fidelity": "authored",
+  "game": {
+    "id": "div2",
+    "name": "Tom Clancy's The Division 2"
+  },
+  "stage": [
+    {
+      "role": "platform",
+      "lifecycle": "service",
+      "match": {
+        "exe": "upc.exe"
+      }
+    },
+    {
+      "role": "anticheat",
+      "lifecycle": "transient",
+      "match": {
+        "exe": "EACLaunch.exe"
+      }
+    },
+    {
+      "role": "client",
+      "lifecycle": "session",
+      "terminal": true,
+      "match": {
+        "exe": "TheDivision2.exe",
+        "descends_from": "anticheat"
+      }
+    }
+  ]
+}

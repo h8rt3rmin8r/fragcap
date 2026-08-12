@@ -159,6 +159,7 @@ fn dispatch(
         Command::Profile(args) => commands::profile::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
+        Command::Schema(args) => commands::schema::run(&args, out),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
     }
 }

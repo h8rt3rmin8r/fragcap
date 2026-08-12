@@ -61,6 +61,8 @@ pub enum Command {
     Profile(ProfileArgs),
     /// Enumerate titles and scaffold profiles from a Steam installation.
     Steam(SteamArgs),
+    /// Validate JSON target files against the master schema, or print it.
+    Schema(SchemaArgs),
     /// Report environment readiness.
     Doctor(DoctorArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
@@ -254,6 +256,26 @@ pub enum SteamCommand {
         /// The Steam application identifier of an installed title.
         app_id: String,
     },
+}
+
+/// Arguments to `schema`.
+#[derive(Debug, Args)]
+pub struct SchemaArgs {
+    #[command(subcommand)]
+    pub command: SchemaCommand,
+}
+
+/// The `schema` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SchemaCommand {
+    /// Validate a JSON file against the master schema, reporting every
+    /// structural violation in one pass.
+    Validate {
+        /// The JSON file to validate.
+        file: PathBuf,
+    },
+    /// Print the embedded master schema to standard output.
+    Print,
 }
 
 /// Arguments to `doctor`.

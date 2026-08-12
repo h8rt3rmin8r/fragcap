@@ -59,6 +59,7 @@
 
 pub mod diagnostic;
 pub mod glob;
+pub mod jsonschema;
 pub mod matching;
 pub mod parse;
 pub mod resolve;

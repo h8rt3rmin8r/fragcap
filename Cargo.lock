@@ -286,6 +286,7 @@ version = "0.2.0"
 dependencies = [
  "fragcap-core",
  "regex",
+ "serde_json",
  "toml-span",
 ]
 

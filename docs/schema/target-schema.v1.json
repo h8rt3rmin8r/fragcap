@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fragcap.dev/schema/target/v1.json",
+  "title": "fragcap target and attribution schema",
+  "description": "The single versioned vocabulary for every machine-readable fragcap targeting and attribution artifact. One shared core, four kind-discriminated variants (profile, package, hint, export). Structural rules only; semantic invariants (acyclic descends_from, single terminal stage, role reachability, ambiguous image match) are enforced by the profile-load path, not by this schema.",
+  "type": "object",
+  "required": ["schema", "kind", "fidelity"],
+  "properties": {
+    "schema": {
+      "description": "Schema version. Currently 1.",
+      "const": 1
+    },
+    "kind": {
+      "description": "The artifact form. Selects which variant rules apply.",
+      "enum": ["profile", "package", "hint", "export"]
+    },
+    "fidelity": { "$ref": "#/$defs/fidelity" },
+    "notes": {
+      "description": "Human-readable context carried as data, never as a comment.",
+      "type": "string"
+    },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "game": { "$ref": "#/$defs/game" },
+    "capture": { "$ref": "#/$defs/capture" },
+    "stage": {
+      "description": "The stages that recognize this game's processes.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/stage" }
+    },
+    "records": {
+      "description": "Export envelope: a batch of loose records. Present only when kind is export.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "enum": ["profile", "package"] } } },
+      "then": {
+        "required": ["game", "stage"],
+        "properties": {
+          "game": { "required": ["id", "name"] },
+          "stage": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "hint" } } },
+      "then": { "required": ["provenance"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "export" } } },
+      "then": { "required": ["provenance"] }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "enum": ["profile", "package", "hint"] } }
+      },
+      "then": {
+        "properties": { "records": false }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "fidelity": {
+      "description": "Ordered trust tier the resolver reads: authored is highest, observed is a confirmed live result.",
+      "enum": ["authored", "verified", "heuristic-unverified", "observed"]
+    },
+    "provenance": {
+      "description": "Where a record came from.",
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "description": "Origin, for example steam-appinfo, engine-rule, user.",
+          "type": "string",
+          "minLength": 1
+        },
+        "seeded_at": {
+          "description": "When the record was generated or last refreshed.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "game": {
+      "description": "Game identity.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Unique slug, used for resolution and as a filename component.",
+          "type": "string",
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "description": "Platform for managed launch, for example steam.",
+          "type": "string"
+        },
+        "app_id": {
+          "description": "Platform application identifier, kept as a string.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capture": {
+      "description": "Capture defaults, all overridable on the command line.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Output mode default.",
+          "enum": ["file", "stream", "ring"]
+        },
+        "duration": {
+          "description": "Duration literal.",
+          "type": "string"
+        },
+        "roles": {
+          "description": "Roles to keep.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "loopback": {
+          "description": "Include loopback traffic.",
+          "type": "boolean"
+        },
+        "payload": {
+          "description": "Include payload bytes.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "match": {
+      "description": "Process-recognition predicates. At least one must be present.",
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "exe": {
+          "description": "Image-name glob.",
+          "type": "string"
+        },
+        "path_contains": {
+          "description": "Case-insensitive substring of the full path.",
+          "type": "string"
+        },
+        "path_regex": {
+          "description": "Regular expression over the full path.",
+          "type": "string"
+        },
+        "cmdline_contains": {
+          "description": "Substring of the command line.",
+          "type": "string"
+        },
+        "descends_from": {
+          "description": "Role of a synthetic-tree ancestor.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "stage": {
+      "description": "One role and how to recognize the processes that fill it.",
+      "type": "object",
+      "required": ["role", "lifecycle", "match"],
+      "properties": {
+        "role": {
+          "description": "Role name, unique within the document (uniqueness checked at profile load).",
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle": {
+          "description": "Lifecycle class.",
+          "enum": ["transient", "session", "service"]
+        },
+        "terminal": {
+          "description": "Whether this stage's exit ends capture. At most one per document (checked at profile load).",
+          "type": "boolean"
+        },
+        "match": { "$ref": "#/$defs/match" }
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "description": "A loose record inside an export envelope. Carries its own fidelity and provenance.",
+      "type": "object",
+      "required": ["fidelity", "provenance"],
+      "properties": {
+        "fidelity": { "$ref": "#/$defs/fidelity" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "notes": { "type": "string" },
+        "game": { "$ref": "#/$defs/game" },
+        "capture": { "$ref": "#/$defs/capture" },
+        "stage": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stage" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
