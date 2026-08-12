@@ -37,11 +37,34 @@ const EXCLUDED: &[&str] = &[
     ".cursor/skills",
     ".opencode",
     ".specify",
+    // The documentation site's dependency and build output directories. The
+    // top-level `node_modules` entry above only matches the repository root, so
+    // the site's own must be named; `.next`, `.source`, and `out` are generated
+    // build artifacts carrying minified third-party code (CRLF, em dashes) that
+    // is not this repository's to lint. The site's authored source (TypeScript,
+    // MDX, CSS) is still linted. Added by slice S18c-2.
+    "site/node_modules",
+    "site/.next",
+    "site/.source",
+    "site/out",
+    // The glossary content tree is generated from docs/glossary/ by
+    // scripts/prebuild.mjs and gitignored; docs/glossary/ is the single source
+    // and is linted there. Linting the derived copy would double every finding
+    // and depends on the site build having run. Added by slice S18c-2.
+    "site/content/docs/glossary",
+    // next-env.d.ts is a Next.js-generated, gitignored declaration file with no
+    // SPDX header of its own; it is a build product, not hand-authored source.
+    // tsconfig.json is committed and stays under the encoding checks: .gitattributes
+    // normalizes it to LF, and Next 16 does not rewrite it (it already carries the
+    // options Next wants), so excluding it would only hide a real LF violation.
+    "site/next-env.d.ts",
 ];
 
 /// Extensions treated as source, and therefore required to carry an SPDX
-/// identifier as their first line.
-const SOURCE_EXT: &[&str] = &["rs", "sh", "ps1", "psm1"];
+/// identifier as their first line (CONVENTIONS.md). The documentation site adds
+/// the TypeScript, TSX, ES module, and CSS faces of the same rule; content files
+/// (Markdown, MDX, JSON) are not source and are exempt.
+const SOURCE_EXT: &[&str] = &["rs", "sh", "ps1", "psm1", "ts", "tsx", "mjs", "css"];
 
 /// Extensions whose files are binary regardless of content and are never linted
 /// as text. Content sniffing catches most binaries by an embedded null, but a

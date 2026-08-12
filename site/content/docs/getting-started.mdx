@@ -1,0 +1,47 @@
+---
+title: Getting started
+description: Install the capture driver, verify it, run a first capture, and open the result.
+---
+
+## Before you begin
+
+Capture requires the **npcap** driver, installed in WinPcap-compatible mode.
+fragcap detects it and reports where to obtain it when it is absent; it never
+installs, downloads, or bundles it. Install npcap before the steps below.
+
+Three things to expect from your first capture, so the result matches what you
+intend:
+
+- **Payloads are encrypted.** fragcap records that a conversation happened and
+  which process owned it, not readable game traffic.
+- **The launcher-to-client handoff is not in the capture.** fragcap attributes
+  the client's own flows, not the brief launcher exchange that starts it.
+- **A loopback conversation is usually a process talking to itself.** Local
+  traffic on the loopback interface is normal and often not what you are after.
+
+## 1. Install the capture driver
+
+Install npcap in WinPcap-compatible mode. This is the one prerequisite.
+
+## 2. Verify the install
+
+```text
+fragcap doctor
+```
+
+`doctor` reports whether the driver is present and whether fragcap can enumerate
+interfaces, without capturing anything.
+
+## 3. Capture
+
+```text
+fragcap run --profile eso --out capture.fcapng
+```
+
+fragcap arms, waits for the profiled client, attributes its flows, and writes the
+result.
+
+## 4. Open the result
+
+Open `capture.fcapng` in any pcapng-aware analyzer. Unmodified analyzers read it
+as ordinary pcapng; the process attribution rides in packet comments.

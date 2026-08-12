@@ -21,6 +21,28 @@
 use std::path::Path;
 use std::process::Command;
 
+/// A `pnpm` command. On Windows `pnpm` is a `.cmd` shim that the process
+/// creation API cannot spawn directly, so it is run through `cmd /C`; elsewhere
+/// it is a real executable on PATH.
+fn pnpm() -> Command {
+    if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "pnpm"]);
+        c
+    } else {
+        Command::new("pnpm")
+    }
+}
+
+/// Whether pnpm is available (runs `pnpm --version` and checks success).
+fn has_pnpm() -> bool {
+    pnpm()
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Whether a command is available (runs `<cmd> --version` and checks success).
 fn has(cmd: &str) -> bool {
     Command::new(cmd)
@@ -68,14 +90,11 @@ pub fn build(root: &Path) -> i32 {
         );
         return 2;
     }
-    if !has("pnpm") {
+    if !has_pnpm() {
         eprintln!("docs: pnpm is required to build the documentation site");
         return 2;
     }
-    let built = Command::new("pnpm")
-        .current_dir(&site)
-        .arg("build")
-        .status();
+    let built = pnpm().current_dir(&site).arg("build").status();
     if !matches!(built, Ok(s) if s.success()) {
         eprintln!("docs: the site build failed");
         return 1;
@@ -107,11 +126,11 @@ pub fn dev(root: &Path) -> i32 {
         );
         return 2;
     }
-    if !has("pnpm") {
+    if !has_pnpm() {
         eprintln!("docs: pnpm is required to run the documentation dev server");
         return 2;
     }
-    match Command::new("pnpm").current_dir(&site).arg("dev").status() {
+    match pnpm().current_dir(&site).arg("dev").status() {
         Ok(s) if s.success() => 0,
         Ok(_) => 1,
         Err(e) => {

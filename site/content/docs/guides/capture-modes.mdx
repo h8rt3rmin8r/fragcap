@@ -1,0 +1,66 @@
+---
+title: Capture modes
+description: The three capture modes -- file, stream, and ring -- and when to reach for each.
+---
+
+<Callout title="Why it matters here">
+The mode decides where captured packets go. Whichever you pick, capture needs the
+**npcap** driver installed in WinPcap-compatible mode; run `fragcap doctor` to
+confirm it before a first capture.
+</Callout>
+
+fragcap captures in one of three modes, set by `--mode` or by the profile's
+`[capture] mode`. They differ only in where packets end up; attribution is the
+same in all three.
+
+## `file`
+
+The default. Packets are written to a file until a stop condition is reached, then
+the file is finalized. Reach for it when you want a capture you can open later.
+
+```text
+fragcap run --profile eso --out capture.fcapng
+```
+
+Bound the capture with any of `--duration`, `--max-packets`, or `--max-bytes`, or
+let it run until the terminal stage's process exits or you interrupt it.
+
+## `stream`
+
+Packets are streamed to a transport as they are captured, for a consumer reading
+live rather than a file read afterward. Sinks name the transport:
+
+```text
+fragcap run --profile eso --mode stream --sink tcp://127.0.0.1:9000,format=pcapng
+```
+
+A stream sink can be a TCP endpoint (`tcp://HOST:PORT`) or a named pipe
+(`pipe:NAME`). A file sink infers its format from the file extension, but a
+transport has no extension, so a `pipe:` or `tcp://` sink must state its format
+explicitly with `,format=pcapng` or `,format=jsonl`; omitting it is a
+configuration error. Multiple sinks may be attached at once, and each is
+independent: a consumer that falls behind or disconnects is dropped without
+stopping the capture, and the drop is counted and reported.
+
+## `ring`
+
+A rolling in-memory window: fragcap keeps only the most recent packets and,
+when a stop condition fires, dumps that retained window to the output file. Reach
+for it when you want the run-up to an event you cannot predict, without writing
+everything before it.
+
+```text
+fragcap run --profile eso --mode ring --ring 30s --out capture.fcapng
+```
+
+The `--ring` window is either a duration (`30s`) or a size (`64mb`). Ring mode
+requires both `--ring` and an `--out` file to dump to. Packets evicted from the
+window as it rolls are counted and reported in the summary, so the capture never
+loses packets silently.
+
+## Every discard is counted
+
+Across all three modes, fragcap holds to one rule: a packet that is dropped is
+counted and surfaced. A stream consumer that falls behind, a ring window that
+rolls, a capture bound that is reached: each names its own counter in the
+completion summary. A silent loss is a defect, not a mode.

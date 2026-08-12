@@ -1,0 +1,98 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+@source '../node_modules/fumadocs-ui/dist/**/*.js';
+
+/*
+ * Brand faces, served locally from /public/fonts (no CDN, works offline). The
+ * three families and their weights mirror brand/fonts/fonts.css; the license
+ * texts ship alongside them under /fonts/licenses (OFL 1.1).
+ */
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('/fonts/SpaceGrotesk-Medium.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('/fonts/SpaceGrotesk-Bold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Medium.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+/*
+ * Font roles. Geist carries body text, Geist Mono carries code and the
+ * interface, Space Grotesk is the display face for the wordmark and page
+ * titles. Tailwind's --font-sans/--font-mono feed Fumadocs' component styles;
+ * --font-display is referenced directly by the nav title and headings.
+ */
+@theme {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+}
+
+/*
+ * Brand palette (brand/tokens/colors.css). The site is dark-first: 80% neutral
+ * ground, ~15% Signal Cyan as the single accent, Capture Orange kept scarce
+ * (<=5%, reserved for genuine emphasis, never as the sole carrier of meaning).
+ * Only the Fumadocs accent tokens are re-pointed; the neutral preset supplies
+ * the greys.
+ */
+:root {
+  --fragcap-signal-cyan: #27c7e7;
+  --fragcap-capture-orange: #ff5300;
+  --fragcap-void: #050708;
+  --fragcap-light-cyan: #006f82;
+}
+
+/* Light surfaces take the darker cyan so the accent keeps its contrast. */
+:root {
+  --color-fd-primary: #006f82;
+  --color-fd-ring: #006f82;
+}
+
+.dark {
+  --color-fd-background: #050708;
+  --color-fd-primary: #27c7e7;
+  --color-fd-ring: #27c7e7;
+  --color-fd-accent-foreground: #27c7e7;
+}
+
+/* The display face on documentation page titles; body prose stays Geist. */
+#nd-docs-layout h1,
+article h1 {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}

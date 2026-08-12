@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+.source/
+next-env.d.ts
+*.tsbuildinfo
+
+# The glossary content tree is generated from docs/glossary/ by scripts/prebuild.mjs;
+# docs/glossary/ is the single committed source.
+content/docs/glossary/

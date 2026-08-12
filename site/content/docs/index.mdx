@@ -1,0 +1,37 @@
+---
+title: Documentation
+description: Passive, process-attributed network capture for Windows game clients.
+---
+
+fragcap is a passive network capture tool for Windows. It attributes each
+captured flow to the process that produced it, including game clients launched
+indirectly through platform and publisher launchers, and writes the result as an
+extended pcapng file that unmodified analyzers still read as ordinary pcapng.
+
+Packet capture is a solved problem; attribution is not. Standard tooling captures
+below the socket layer, where the association between a packet and the process
+that produced it has already been discarded. fragcap reconstructs that
+association and records it, without touching the processes it names.
+
+## Where to start
+
+- **[Getting started](/docs/getting-started)** walks the first-run path: install
+  the driver, verify it, run a capture, and open the result.
+- **Guides** cover the two things you author or choose: a
+  [profile](/docs/guides/writing-a-profile) that names the client, and a
+  [capture mode](/docs/guides/capture-modes) that decides where packets go.
+- **Reference** is the exact surface: the [command line](/docs/reference/cli),
+  the [profile schema](/docs/reference/profile-schema), and the
+  [output formats](/docs/reference/output-formats).
+- **[Architecture](/docs/architecture)** explains how attribution works, and
+  **[Contributing](/docs/contributing)** covers building and the check set.
+
+The **[Glossary](/docs/glossary)** defines the vocabulary the rest of these pages
+assume, one term to a heading.
+
+## The one prerequisite
+
+Capture requires the **npcap** driver, installed in WinPcap-compatible mode.
+fragcap detects it and reports where to obtain it when it is absent. It never
+installs, downloads, or bundles it, and it never modifies traffic or reaches
+inside the processes it names.

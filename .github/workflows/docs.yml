@@ -1,25 +1,87 @@
 # Documentation site build and deploy. Specification 22, 24.2.
 #
-# SKELETON. Owned by slice S18. There is no site to build yet.
+# The site is a Fumadocs static export under site/. On a pull request this
+# builds the export and asserts the static-hosting markers, without deploying.
+# On the default branch it builds and then deploys to GitHub Pages.
 #
-# Manual dispatch only, deliberately. A skeleton that runs automatically and
-# fails reports red on every push forever, which is as uninformative as
-# reporting green would be and trains readers to ignore the signal. Not
-# reporting is honest; reporting false success is not. S18 adds the real
-# triggers along with the site.
+# Node and pnpm are pinned so a Pages build matches the local build the lockfile
+# was produced with (Node 24, pnpm 9.15). This workflow is a pinned artifact;
+# the reasoning for the version pins is recorded in the changelog decisions
+# fragment for slice S18c.
 name: docs
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+# GitHub Pages allows one concurrent deployment; do not cancel an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  PNPM_VERSION: "9.15.0"
 
 jobs:
   build:
-    name: build and deploy the documentation site
+    name: build the static export
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Not yet implemented
-        run: |
-          echo "The documentation site is owned by slice S18."
-          echo "This workflow is a declared skeleton, not a passing build."
-          exit 1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      # rust-toolchain.toml pins the version; this action honors it. The build
+      # goes through the same `cargo xtask docs build` entry point local
+      # development uses, so any setup or assertion added there is not bypassed
+      # by the artifact that gets deployed.
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      # Builds the static export (pnpm build) and asserts it carries .nojekyll
+      # and CNAME; without .nojekyll GitHub Pages strips the framework asset
+      # directory and the site renders unstyled, and CNAME binds the domain.
+      - name: Build the static export
+        run: cargo run --package xtask -- docs build
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/out
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

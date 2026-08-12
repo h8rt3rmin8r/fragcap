@@ -1,0 +1,90 @@
+---
+title: Profile schema
+description: "The TOML schema a profile declares: game identity, capture defaults, and the stages that match processes."
+---
+
+A profile is a TOML file that names a game and describes the processes fragcap
+should attribute its traffic to. It is validated before every capture: a profile
+that does not parse cleanly stops the run, and validation reports every problem it
+finds in one pass rather than the first.
+
+This is schema version 1. Unknown keys are refused, not ignored, so a typo such as
+`payloads = false` for `payload = false` is reported rather than silently
+producing a capture you did not intend.
+
+## A minimal profile
+
+```toml
+schema = 1
+
+[game]
+id = "game"
+name = "Test Game"
+
+[[stage]]
+role = "client"
+lifecycle = "session"
+terminal = true
+match = { exe = "game.exe" }
+```
+
+## Top level
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `schema` | yes | The schema version. `1`. |
+| `game` | yes | The game's identity (below). |
+| `capture` | no | Capture defaults (below). |
+| `stage` | yes | One or more `[[stage]]` tables; at least one. |
+
+## `[game]`
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | The slug, used to resolve the profile by name. |
+| `name` | yes | The display name. |
+| `platform` | no | The platform for managed launch, if any. |
+| `app_id` | no | The platform's application id, if any. |
+
+## `[capture]`
+
+Defaults the command line can override. Each key here corresponds to a `run`
+flag.
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | The capture mode: `file`, `stream`, or `ring`. |
+| `duration` | The default capture duration bound (for example `"5m"`). |
+| `roles` | The roles captured by default. |
+| `loopback` | Whether to include the loopback adapter. |
+| `payload` | Whether to record packet payloads. |
+
+## `[[stage]]`
+
+Each stage names one process fragcap watches for and how its lifecycle affects the
+capture. A profile has one or more stages.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `role` | yes | The stage's role name, unique within the profile. |
+| `lifecycle` | yes | How an exit is treated: `transient`, `session`, or `service`. |
+| `terminal` | no | Whether this stage's exit ends the capture. At most one stage is terminal, and its lifecycle is `session`. |
+| `match` | yes | The predicates that select the process (below). |
+
+### `match`
+
+An inline table of predicates. All that are present must hold for a process to
+match. A validated profile always constrains at least one.
+
+| Key | Matches against |
+| --- | --- |
+| `exe` | The executable file name, as a glob (for example `"game.exe"`). |
+| `path_contains` | A substring of the full image path. |
+| `path_regex` | A regular expression against the full image path. |
+| `cmdline_contains` | A substring of the process command line. |
+| `descends_from` | The role of an ancestor process, resolved over the process tree fragcap builds. It never matches a process against itself. |
+
+`descends_from` is how a profile names a client launched indirectly: it matches
+the process whose ancestor is another stage's process, rather than assuming the
+client is a direct child of the launcher. See
+[writing a profile](/docs/guides/writing-a-profile) for the worked case.
