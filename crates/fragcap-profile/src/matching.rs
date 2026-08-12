@@ -52,6 +52,39 @@ pub fn stage_for<'p>(profile: &'p Profile, tree: &ProcessTree, node: NodeId) -> 
         .find(|stage| predicates_hold(stage.predicates(), tree, node, n))
 }
 
+/// The first live node whose image-and-path identity holds, in creation order,
+/// or `None`.
+///
+/// The runtime-observation provider of specification section 15.7 uses this to
+/// turn a target identity into a live process, without a profile behind it. Per
+/// that section the observation identity is the image name and path only: this
+/// evaluates `exe`, `path_contains`, and `path_regex` and deliberately does not
+/// evaluate `cmdline_contains` or `descends_from`. Those two are stage-matching
+/// concerns: `cmdline_contains` reads a command line that lies outside the
+/// image-and-path identity, and `descends_from` resolves against stage bindings
+/// that a pure observation with no profile does not have.
+///
+/// An identity that carries no image-or-path predicate anchors nothing, so it
+/// matches nothing rather than every process; that is why a `cmdline_contains`
+/// only or `descends_from` only identity returns `None` here. It reads only what
+/// the process snapshot already holds; it opens nothing and mutates nothing.
+pub fn first_live_match(preds: &MatchPredicates, tree: &ProcessTree) -> Option<NodeId> {
+    // An observation identity must anchor on the image name or path. Without one
+    // of the three there is nothing image-and-path to match, and matching every
+    // live process would be the opposite of an identity.
+    if preds.exe().is_none() && preds.path_contains().is_none() && preds.path_regex().is_none() {
+        return None;
+    }
+    let mut ids: Vec<NodeId> = tree
+        .nodes()
+        .filter(|n| n.is_live())
+        .map(|n| n.id())
+        .collect();
+    ids.sort_by_key(|id| id.get());
+    ids.into_iter()
+        .find(|&id| tree.node(id).is_some_and(|n| image_and_path_hold(preds, n)))
+}
+
 /// Bind every node to its matching stage, in creation order.
 ///
 /// `NodeId` is assigned as events are folded, so iterating in identifier order
@@ -87,20 +120,8 @@ fn predicates_hold(
     id: NodeId,
     node: &ProcessNode,
 ) -> bool {
-    if let Some(exe) = pred.exe() {
-        if !exe.matches(node.image_name()) {
-            return false;
-        }
-    }
-    if let Some(sub) = pred.path_contains() {
-        if !contains_ignore_case(node.image(), sub) {
-            return false;
-        }
-    }
-    if let Some(re) = pred.path_regex() {
-        if !re.regex().is_match(node.image()) {
-            return false;
-        }
+    if !image_and_path_hold(pred, node) {
+        return false;
     }
     if let Some(sub) = pred.cmdline_contains() {
         match node.command_line().as_str() {
@@ -113,6 +134,31 @@ fn predicates_hold(
     }
     if let Some(role) = pred.descends_from() {
         if !ancestor_bound_to(tree, id, role) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the image-and-path predicates hold for one node.
+///
+/// The `exe` glob, the `path_contains` substring, and the `path_regex` are the
+/// predicates that read only the process image name and full path. Shared by
+/// stage matching and by the observation identity of [`first_live_match`], so
+/// the two agree on what "image and path" means.
+fn image_and_path_hold(pred: &MatchPredicates, node: &ProcessNode) -> bool {
+    if let Some(exe) = pred.exe() {
+        if !exe.matches(node.image_name()) {
+            return false;
+        }
+    }
+    if let Some(sub) = pred.path_contains() {
+        if !contains_ignore_case(node.image(), sub) {
+            return false;
+        }
+    }
+    if let Some(re) = pred.path_regex() {
+        if !re.regex().is_match(node.image()) {
             return false;
         }
     }
@@ -348,6 +394,110 @@ mod tests {
         t.apply(ProcessEvent::started(200, 9, "C:\\G\\game.exe", "g", at(1)));
         bind_stages(&p, &mut t);
         assert_eq!(role_of(&t, ids(&t)[0]), None);
+    }
+
+    /// The match predicates of a one-stage profile, for exercising
+    /// `first_live_match` without a public `MatchPredicates` constructor.
+    fn identity(match_body: &str) -> MatchPredicates {
+        let p = profile(&format!(
+            r#"{{"role":"target","lifecycle":"session","match":{match_body}}}"#
+        ));
+        p.stages()[0].predicates().clone()
+    }
+
+    #[test]
+    fn first_live_match_finds_a_live_process_by_exe() {
+        let id = identity(r#"{"exe":"eso64.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(
+            1,
+            0,
+            "C:\\Games\\ESO\\ESO64.EXE",
+            "ESO64.EXE",
+            at(1),
+        ));
+        let found = first_live_match(&id, &t).expect("a live match");
+        assert_eq!(found, ids(&t)[0]);
+    }
+
+    #[test]
+    fn first_live_match_returns_none_when_nothing_matches() {
+        let id = identity(r#"{"exe":"other.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(
+            1,
+            0,
+            "C:\\G\\eso64.exe",
+            "eso64.exe",
+            at(1),
+        ));
+        assert_eq!(first_live_match(&id, &t), None);
+    }
+
+    #[test]
+    fn first_live_match_anchors_on_image_or_path_only() {
+        // Section 15.7: the observation identity is image and path. An identity
+        // with no image-or-path predicate anchors nothing, so it matches nothing
+        // rather than every live process.
+        let id = identity(r#"{"cmdline_contains":"-sessionid"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(
+            1,
+            0,
+            "C:\\G\\eso64.exe",
+            "eso64.exe -sessionid 7",
+            at(1),
+        ));
+        assert_eq!(
+            first_live_match(&id, &t),
+            None,
+            "a cmdline-only identity anchors nothing, so it matches nothing"
+        );
+    }
+
+    #[test]
+    fn first_live_match_does_not_evaluate_cmdline_or_descends_from() {
+        // The observation matcher reads only image and path. A cmdline predicate
+        // that the process does not satisfy is ignored, so the image match still
+        // wins. This is the section 15.7 restriction: observation does not read
+        // the command line or stage ancestry.
+        let id = identity(r#"{"exe":"eso64.exe","cmdline_contains":"absent-flag"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(
+            1,
+            0,
+            "C:\\Games\\ESO\\eso64.exe",
+            "eso64.exe --windowed",
+            at(1),
+        ));
+        assert_eq!(
+            first_live_match(&id, &t),
+            Some(ids(&t)[0]),
+            "the image match holds; the command line is not evaluated"
+        );
+    }
+
+    #[test]
+    fn first_live_match_takes_the_first_in_creation_order() {
+        let id = identity(r#"{"exe":"game.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(10, 0, "C:\\A\\game.exe", "g", at(1)));
+        t.apply(ProcessEvent::started(20, 0, "C:\\B\\game.exe", "g", at(2)));
+        let found = first_live_match(&id, &t).expect("a live match");
+        assert_eq!(found, ids(&t)[0], "the earlier-created match wins");
+    }
+
+    #[test]
+    fn first_live_match_skips_an_exited_process() {
+        let id = identity(r#"{"exe":"game.exe"}"#);
+        let mut t = ProcessTree::new();
+        t.apply(ProcessEvent::started(10, 0, "C:\\A\\game.exe", "g", at(1)));
+        t.apply(ProcessEvent::Exited { pid: 10, at: at(2) });
+        assert_eq!(
+            first_live_match(&id, &t),
+            None,
+            "an exited process is not a live match"
+        );
     }
 
     #[test]

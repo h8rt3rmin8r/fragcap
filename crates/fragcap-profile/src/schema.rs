@@ -449,6 +449,129 @@ impl CaptureDefaults {
     }
 }
 
+/// The targeting trust tier of specification section 15.6.
+///
+/// How trustworthy a target definition is, which the resolver of section 15.7
+/// ranks by. Entirely separate from the attribution fidelity of section 13.4
+/// (`fragcap_core::attribution::Fidelity`, one of `Live`, `Retained`, `None`),
+/// which is how a captured packet was attributed. The two are different axes on
+/// different types, and neither is derived from the other; the `Observed` tier
+/// here is not the same thing as a live attribution.
+///
+/// The variants are declared in ascending trust order on purpose, so the derived
+/// [`Ord`] makes the more trusted tier the greater value:
+/// `Authored > Verified > HeuristicUnverified > Observed`. A resolver that ranks
+/// by trust then compares tiers the way it reads, and a provider precedence that
+/// inverted the order would be caught by comparing against this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FidelityTier {
+    /// A confirmed live result: a running process the tool observed itself. The
+    /// bottom of the cascade and the arbiter of last resort.
+    Observed,
+    /// A machine's guess (a shipped hint, an engine rule, a platform walker) that
+    /// has not been confirmed against a live capture.
+    HeuristicUnverified,
+    /// A curated definition that has been verified against a live capture.
+    Verified,
+    /// A definition a human authored directly. The highest trust.
+    Authored,
+}
+
+impl FidelityTier {
+    /// The accepted spellings, highest trust first, for a diagnostic or listing.
+    pub const ACCEPTED: &'static [&'static str] =
+        &["authored", "verified", "heuristic-unverified", "observed"];
+
+    /// Parse the schema spelling.
+    pub fn parse(s: &str) -> Option<FidelityTier> {
+        match s {
+            "authored" => Some(FidelityTier::Authored),
+            "verified" => Some(FidelityTier::Verified),
+            "heuristic-unverified" => Some(FidelityTier::HeuristicUnverified),
+            "observed" => Some(FidelityTier::Observed),
+            _ => None,
+        }
+    }
+
+    /// The schema spelling, so `parse(t.as_str()) == Some(t)` for every tier.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FidelityTier::Authored => "authored",
+            FidelityTier::Verified => "verified",
+            FidelityTier::HeuristicUnverified => "heuristic-unverified",
+            FidelityTier::Observed => "observed",
+        }
+    }
+}
+
+/// The artifact form of specification section 15.6, the `kind` discriminator.
+///
+/// The profile-load path accepts the two authoritative forms, [`Kind::Profile`]
+/// and [`Kind::Package`] (an authored target package is structurally a profile at
+/// the highest fidelity). It refuses the loose forms [`Kind::Hint`] and
+/// [`Kind::Export`], which are not capture profiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A curated or verified capture profile.
+    Profile,
+    /// A user-authored target package. Loadable as a capture profile.
+    Package,
+    /// A heuristic guess. Not loadable as a capture profile.
+    Hint,
+    /// An export envelope of loose records. Not loadable as a capture profile.
+    Export,
+}
+
+impl Kind {
+    /// Parse the schema spelling.
+    pub fn parse(s: &str) -> Option<Kind> {
+        match s {
+            "profile" => Some(Kind::Profile),
+            "package" => Some(Kind::Package),
+            "hint" => Some(Kind::Hint),
+            "export" => Some(Kind::Export),
+            _ => None,
+        }
+    }
+
+    /// The schema spelling.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Kind::Profile => "profile",
+            Kind::Package => "package",
+            Kind::Hint => "hint",
+            Kind::Export => "export",
+        }
+    }
+}
+
+/// Where a target artifact came from, per the schema's `provenance`.
+///
+/// The `source` is an opaque label a provider stamps (for example `user`,
+/// `steam-appinfo`, `engine-rule`, `runtime-observation`); `seeded_at` records
+/// when a generated record was last refreshed. Carried, never inferred (P-9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Provenance {
+    source: String,
+    seeded_at: Option<String>,
+}
+
+impl Provenance {
+    pub(crate) fn new(source: String, seeded_at: Option<String>) -> Provenance {
+        Provenance { source, seeded_at }
+    }
+
+    /// The origin label.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// When the record was generated or last refreshed, if declared.
+    pub fn seeded_at(&self) -> Option<&str> {
+        self.seeded_at.as_deref()
+    }
+}
+
 /// A validated game profile.
 ///
 /// Every invariant the validation set of specification section 15.4 checks holds
@@ -456,22 +579,55 @@ impl CaptureDefaults {
 /// declaration order, contains at least one non-service stage and at most one
 /// terminal stage, has unique role names, has a `descends_from` relation that is
 /// acyclic and resolves within the set, and contains no ambiguous image match.
+///
+/// It also carries the section 15.6 metadata the resolver reads: the `kind`, the
+/// `fidelity` tier, an optional `provenance`, and optional `notes`. These are
+/// validated structurally at load and retained rather than discarded, so a later
+/// consumer can read how trustworthy the definition is without re-parsing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
     game: Game,
     capture: CaptureDefaults,
     stages: Vec<Stage>,
+    kind: Kind,
+    fidelity: FidelityTier,
+    provenance: Option<Provenance>,
+    notes: Option<String>,
 }
 
 impl Profile {
     /// The accepted top level key names, for a diagnostic that has to list them.
-    pub const ACCEPTED: &'static [&'static str] = &["schema", "game", "capture", "stage"];
+    ///
+    /// The master schema (section 15.6) governs unknown-key refusal; this list
+    /// stays in step with it so a fragcap-side message names the same keys.
+    pub const ACCEPTED: &'static [&'static str] = &[
+        "schema",
+        "kind",
+        "fidelity",
+        "provenance",
+        "notes",
+        "game",
+        "capture",
+        "stage",
+    ];
 
-    pub(crate) fn new(game: Game, capture: CaptureDefaults, stages: Vec<Stage>) -> Profile {
+    pub(crate) fn new(
+        game: Game,
+        capture: CaptureDefaults,
+        stages: Vec<Stage>,
+        kind: Kind,
+        fidelity: FidelityTier,
+        provenance: Option<Provenance>,
+        notes: Option<String>,
+    ) -> Profile {
         Profile {
             game,
             capture,
             stages,
+            kind,
+            fidelity,
+            provenance,
+            notes,
         }
     }
 
@@ -507,6 +663,29 @@ impl Profile {
     /// The stage with the given role, if there is one.
     pub fn stage(&self, role: &str) -> Option<&Stage> {
         self.stages.iter().find(|s| s.role() == role)
+    }
+
+    /// The artifact form this profile declared, one of [`Kind::Profile`] or
+    /// [`Kind::Package`] (the load path refuses the loose kinds).
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// The declared trust tier the resolver ranks by (section 15.6).
+    pub fn fidelity(&self) -> FidelityTier {
+        self.fidelity
+    }
+
+    /// Where this profile came from, if it declared a provenance. A profile is
+    /// not required to declare one; only the loose artifacts are.
+    pub fn provenance(&self) -> Option<&Provenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Human-readable context carried as data, if the profile declared any. The
+    /// scaffold uses this to carry its heuristic-verification warning.
+    pub fn notes(&self) -> Option<&str> {
+        self.notes.as_deref()
     }
 }
 
@@ -572,6 +751,63 @@ mod tests {
         let c = PathRegex::new("b+").expect("compiles");
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn fidelity_tier_parses_only_its_schema_spellings_and_round_trips() {
+        for (s, t) in [
+            ("authored", FidelityTier::Authored),
+            ("verified", FidelityTier::Verified),
+            ("heuristic-unverified", FidelityTier::HeuristicUnverified),
+            ("observed", FidelityTier::Observed),
+        ] {
+            assert_eq!(FidelityTier::parse(s), Some(t));
+            assert_eq!(t.as_str(), s);
+            assert_eq!(FidelityTier::parse(t.as_str()), Some(t));
+        }
+        assert_eq!(FidelityTier::parse("Authored"), None);
+        assert_eq!(FidelityTier::parse("heuristic"), None);
+        assert_eq!(FidelityTier::parse(""), None);
+    }
+
+    #[test]
+    fn fidelity_tier_orders_more_trusted_as_greater() {
+        // The whole point of the ascending declaration: a resolver ranking by
+        // trust compares the way it reads. Authored is the most trusted.
+        assert!(FidelityTier::Authored > FidelityTier::Verified);
+        assert!(FidelityTier::Verified > FidelityTier::HeuristicUnverified);
+        assert!(FidelityTier::HeuristicUnverified > FidelityTier::Observed);
+        let mut tiers = [
+            FidelityTier::Verified,
+            FidelityTier::Observed,
+            FidelityTier::Authored,
+            FidelityTier::HeuristicUnverified,
+        ];
+        tiers.sort();
+        assert_eq!(
+            tiers,
+            [
+                FidelityTier::Observed,
+                FidelityTier::HeuristicUnverified,
+                FidelityTier::Verified,
+                FidelityTier::Authored,
+            ]
+        );
+    }
+
+    #[test]
+    fn kind_parses_only_its_schema_spellings_and_round_trips() {
+        for (s, k) in [
+            ("profile", Kind::Profile),
+            ("package", Kind::Package),
+            ("hint", Kind::Hint),
+            ("export", Kind::Export),
+        ] {
+            assert_eq!(Kind::parse(s), Some(k));
+            assert_eq!(k.as_str(), s);
+        }
+        assert_eq!(Kind::parse("Profile"), None);
+        assert_eq!(Kind::parse("bundle"), None);
     }
 
     #[test]
