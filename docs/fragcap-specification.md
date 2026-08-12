@@ -1791,9 +1791,10 @@ winning.
 4. A profile bundled with the fragcap distribution whose `game.id`
    matches.
 
-User profiles shadow bundled profiles by design, so a bundled profile
-that has drifted from a game update is corrected locally without
-waiting for a release.
+Were a profile bundled, a user profile of the same id would shadow it by
+design, so a bundled profile that had drifted from a game update is
+corrected locally without waiting for a release. v0.2.0 bundles none
+(section 15.5), so step 4 currently matches nothing.
 
 ### 15.4 Validation
 
@@ -1832,14 +1833,18 @@ validation produces exit code 2 and no capture attempt.
 
 ### 15.5 Bundled Profiles
 
-v0.2.0 ships profiles for the two focal titles used in development.
-Bundled profiles are correct at release and are expected to drift as
-games update, which is why section 15.3 places them last in resolution
-order.
+v0.2.0 ships no bundled profiles. A profile is obtained per title instead:
+scaffolded from an installed Steam title with `fragcap steam profile
+<app_id>` and refined, or authored by hand. The distribution bundles none,
+which is why `fragcap doctor` reports zero bundled profiles and the release
+archive carries no `profiles/` directory (section 24.5).
 
-Profiles are data, not code. They are Apache-2.0 licensed with the rest
-of the repository, and contributed profiles are accepted without
-requiring the contributor to write Rust.
+The resolution order (section 15.3) still defines where a bundled profile
+would resolve, so a profile contributed to a future release is found there,
+shadowed by a user profile of the same id. Profiles are data, not code:
+they are Apache-2.0 licensed with the rest of the repository, and a
+contributed profile is accepted without requiring the contributor to write
+Rust.
 
 ## 16. Steam Integration
 
@@ -2329,7 +2334,6 @@ fragcap/
 ├── xtask/                    Repository task runner
 ├── docs/                     Documentation content (MDX)
 ├── web/                      Website and documentation application
-├── profiles/                 Bundled game profiles
 ├── scripts/                  Shell wrappers and linters
 ├── fixtures/                 Test capture files and scripted data
 ├── Cargo.toml                Workspace manifest
@@ -2638,9 +2642,16 @@ available before publishing its dependents.
 
 ### 24.5 Artifacts
 
-Each release publishes a Windows archive containing the binary, both
-shell wrappers, the bundled profiles, the license, and the notice file.
-Checksums accompany every artifact.
+Each release publishes a Windows archive containing the binary, the
+license, and the notice file. Checksums accompany every artifact.
+
+The archive ships no shell wrappers: the binary handles elevation itself
+(section 17) and reports driver readiness through `doctor` (section 26.3),
+so a wrapper adds little where it would ship, and the wrappers remain in
+the repository for people who clone it. It ships no game profiles, because
+fragcap bundles none by design; a profile is scaffolded from an installed
+title or authored per title (section 15). It ships no repository README,
+which is repo-oriented rather than an archive component.
 
 No artifact contains npcap or any component of it, per section 20.2.
 
@@ -2847,8 +2858,8 @@ fragcap doctor
       to enable live capture from its interface list.
 
   Profiles
-    Bundled                            2 available             ok
-    User directory                     0 profiles              ok
+    Bundled                            0 available             ok
+    User directory                     2 profiles              ok
 
   Ready to capture.
 ```

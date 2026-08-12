@@ -56,11 +56,81 @@ pub fn extract(changelog: &str, version: &str) -> Option<String> {
     }
 }
 
+/// Pull just the `### Highlights` subsection out of one version's section.
+///
+/// Finds `## [<version>]`, then the `### Highlights` heading within it, and
+/// collects until the next subsection (`###`) or version (`##`). The heading
+/// itself is dropped; the curated bullets are what the release notes want.
+/// Returns `None` when the version has no Highlights block, so the caller can
+/// fall back to the fuller body. This is what keeps a release page crisp: for a
+/// release with eighteen essay-length fragments, the full Added list runs to
+/// over a thousand lines, and the Highlights are the two dozen that matter.
+pub fn extract_highlights(changelog: &str, version: &str) -> Option<String> {
+    let wanted = format!("[{version}]");
+    let mut lines = changelog.lines();
+
+    lines.by_ref().find(|line| {
+        let l = line.trim_start();
+        l.starts_with("## ") && l.contains(&wanted)
+    })?;
+
+    let mut in_highlights = false;
+    let mut body = String::new();
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") {
+            break;
+        }
+        if trimmed.starts_with("### ") {
+            if trimmed == "### Highlights" {
+                in_highlights = true;
+            } else if in_highlights {
+                break;
+            }
+            continue;
+        }
+        if in_highlights {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// A link to the full changelog at the release tag.
+fn changelog_link(version: &str) -> String {
+    format!("https://github.com/h8rt3rmin8r/fragcap/blob/v{version}/CHANGELOG.md")
+}
+
+/// The release-notes body for a real version: the curated Highlights plus a link
+/// to the full changelog at the tag, or the fuller Added/Changed/Fixed body when
+/// the version carries no Highlights block. Returns `None` when the version has
+/// no section at all.
+pub fn notes(changelog: &str, version: &str) -> Option<String> {
+    if let Some(highlights) = extract_highlights(changelog, version) {
+        Some(format!(
+            "{highlights}\n\nFull changelog: {}",
+            changelog_link(version)
+        ))
+    } else {
+        extract(changelog, version)
+    }
+}
+
 /// Print the notes for `version`, falling back to the `Unreleased` section.
 ///
-/// The fallback exists because `CHANGELOG.md` is assembled from
+/// For a real version, the notes are the curated Highlights plus a link to the
+/// full changelog; a version with no Highlights keeps the fuller body. The
+/// Unreleased fallback exists because `CHANGELOG.md` is assembled from
 /// `changelog.d/` fragments at release time, and a tag can be cut before that
-/// assembly has renamed the section.
+/// assembly has renamed the section; it carries no tag link, because the content
+/// is not yet published under a version.
 pub fn run(root: &Path, version: &str) -> usize {
     let path = root.join("CHANGELOG.md");
     let text = match fs::read_to_string(&path) {
@@ -71,12 +141,14 @@ pub fn run(root: &Path, version: &str) -> usize {
         }
     };
 
-    if let Some(body) = extract(&text, version) {
+    if let Some(body) = notes(&text, version) {
         println!("{body}");
         return 0;
     }
 
-    if let Some(body) = extract(&text, "Unreleased") {
+    if let Some(body) =
+        extract_highlights(&text, "Unreleased").or_else(|| extract(&text, "Unreleased"))
+    {
         eprintln!("notes: no section for {version}, using Unreleased");
         println!("{body}");
         return 0;
@@ -174,5 +246,65 @@ Preamble that is not part of any section.
     fn the_preamble_is_not_treated_as_a_section() {
         let body = extract(SAMPLE, "Unreleased").unwrap();
         assert!(!body.contains("Preamble"));
+    }
+
+    const HIGHLIGHTED: &str = "\
+## [0.2.0] - 2026-09-01
+
+### Highlights
+
+- A curated highlight.
+- Another highlight.
+
+### Added
+
+- A verbose added item that should not reach the notes.
+
+### Decisions
+
+- **2026-09-01** A decision.
+";
+
+    #[test]
+    fn extract_highlights_returns_only_the_highlights_bullets() {
+        let h = extract_highlights(HIGHLIGHTED, "0.2.0").unwrap();
+        assert!(h.contains("A curated highlight."));
+        assert!(h.contains("Another highlight."));
+        assert!(
+            !h.contains("verbose added item"),
+            "the Added list is trimmed"
+        );
+        assert!(!h.contains("### Highlights"), "the heading is dropped");
+        assert!(!h.contains("A decision."), "decisions are excluded");
+    }
+
+    #[test]
+    fn extract_highlights_is_none_without_a_highlights_block() {
+        // SAMPLE's 0.2.0 has Added but no Highlights.
+        assert_eq!(extract_highlights(SAMPLE, "0.2.0"), None);
+    }
+
+    #[test]
+    fn notes_prefers_highlights_and_appends_a_tag_link() {
+        let body = notes(HIGHLIGHTED, "0.2.0").unwrap();
+        assert!(body.contains("A curated highlight."));
+        assert!(
+            !body.contains("verbose added item"),
+            "the full Added list is trimmed away when Highlights exist"
+        );
+        assert!(
+            body.contains("blob/v0.2.0/CHANGELOG.md"),
+            "links to the full changelog at the tag: {body}"
+        );
+    }
+
+    #[test]
+    fn notes_falls_back_to_the_full_body_without_highlights() {
+        // SAMPLE 0.2.0 has no Highlights: keep the current Added/Changed/Fixed
+        // body, and do not append a link (the body is already the full notes).
+        let body = notes(SAMPLE, "0.2.0").unwrap();
+        assert!(body.contains("The thing this release adds."));
+        assert!(!body.contains("A decision."), "decisions still excluded");
+        assert!(!body.contains("blob/"), "no link in the fallback body");
     }
 }
