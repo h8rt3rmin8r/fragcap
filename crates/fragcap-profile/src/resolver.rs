@@ -30,9 +30,11 @@
 //! not.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use fragcap_core::process::ProcessTree;
 
+use crate::engine_rule::Engine;
 use crate::resolve::{BundledSet, ResolveError, SearchPath};
 use crate::schema::MatchPredicates;
 use crate::target::Target;
@@ -71,6 +73,7 @@ pub struct ResolutionRequest<'a> {
     bundled: &'a BundledSet,
     identity: Option<&'a MatchPredicates>,
     tree: Option<&'a ProcessTree>,
+    install_root: Option<&'a Path>,
 }
 
 impl<'a> ResolutionRequest<'a> {
@@ -86,6 +89,7 @@ impl<'a> ResolutionRequest<'a> {
             bundled,
             identity: None,
             tree: None,
+            install_root: None,
         }
     }
 
@@ -105,6 +109,29 @@ impl<'a> ResolutionRequest<'a> {
             bundled,
             identity: Some(identity),
             tree: Some(tree),
+            install_root: None,
+        }
+    }
+
+    /// A request that resolves a game's client from its install directory (the
+    /// engine-rule case).
+    ///
+    /// Carries no reference and no process tree, so the profile and observation
+    /// providers decline; the engine-rule provider inspects the install root. The
+    /// S030 platform walker will populate the same input, so it composes with the
+    /// engine-rule provider without changing it.
+    pub fn for_install(
+        install_root: &'a Path,
+        search: &'a SearchPath,
+        bundled: &'a BundledSet,
+    ) -> ResolutionRequest<'a> {
+        ResolutionRequest {
+            reference: None,
+            search,
+            bundled,
+            identity: None,
+            tree: None,
+            install_root: Some(install_root),
         }
     }
 
@@ -131,6 +158,24 @@ impl<'a> ResolutionRequest<'a> {
     /// The observed process tree, if the request carries one.
     pub fn tree(&self) -> Option<&ProcessTree> {
         self.tree
+    }
+
+    /// The install directory to inspect for an engine layout, if the request
+    /// carries one.
+    pub fn install_root(&self) -> Option<&Path> {
+        self.install_root
+    }
+
+    /// Add an install root to a request that already carries other inputs.
+    ///
+    /// A real request carries every input available, and the cascade's precedence
+    /// decides between the providers that can answer. This is how a request that
+    /// resolves a profile reference can also offer the engine-rule provider an
+    /// install directory: the higher-precedence profile answer wins when it
+    /// resolves, and the engine rule answers only when the profile does not.
+    pub fn with_install_root(mut self, install_root: &'a Path) -> ResolutionRequest<'a> {
+        self.install_root = Some(install_root);
+        self
     }
 }
 
@@ -162,21 +207,76 @@ impl std::error::Error for ProviderError {
     }
 }
 
+/// Why the engine-rule provider declined despite recognizing a layout.
+///
+/// Recorded when a rule matched more than one candidate client under one engine
+/// (for example two `*-Win64-Shipping.exe` files). The provider declines rather
+/// than pick one arbitrarily (P-9), and this note lets the decline explain itself
+/// if nothing lower in the cascade resolves either (P-4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineRuleAmbiguity {
+    engine: Engine,
+    candidates: usize,
+}
+
+impl EngineRuleAmbiguity {
+    /// The engine whose layout matched ambiguously.
+    pub fn engine(&self) -> Engine {
+        self.engine
+    }
+
+    /// How many candidate clients the rule matched.
+    pub fn candidates(&self) -> usize {
+        self.candidates
+    }
+}
+
+impl fmt::Display for EngineRuleAmbiguity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the {} engine rule matched {} candidate clients, so it declined \
+             rather than pick one; runtime observation will disambiguate",
+            self.engine.as_str(),
+            self.candidates
+        )
+    }
+}
+
 /// Notes a provider records while declining, so a not-resolved outcome can
 /// explain itself.
 ///
 /// The profile provider records its [`ResolveError::NotFound`] here when nothing
 /// matched a reference, so the command line can print the same "searched ..."
-/// message it prints today even though the cascade continued past it.
+/// message it prints today even though the cascade continued past it. The
+/// engine-rule provider records an [`EngineRuleAmbiguity`] when it recognized a
+/// layout but could not single out one client.
 #[derive(Default)]
 pub struct ResolutionNotes {
     profile_not_found: Option<ResolveError>,
+    engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
+    engine_rule_unreadable: Option<PathBuf>,
 }
 
 impl ResolutionNotes {
     /// Record that the profile provider found nothing for the reference.
     pub fn note_profile_not_found(&mut self, error: ResolveError) {
         self.profile_not_found = Some(error);
+    }
+
+    /// Record that the engine-rule provider recognized a layout but matched more
+    /// than one candidate client, so it declined.
+    pub fn note_engine_rule_ambiguous(&mut self, engine: Engine, candidates: usize) {
+        self.engine_rule_ambiguous = Some(EngineRuleAmbiguity { engine, candidates });
+    }
+
+    /// Record that the engine-rule provider could not fully read the install
+    /// directory, so its scan was incomplete and it declined rather than resolve
+    /// from a partial view. The first unreadable path is kept.
+    pub fn note_engine_rule_unreadable(&mut self, path: PathBuf) {
+        if self.engine_rule_unreadable.is_none() {
+            self.engine_rule_unreadable = Some(path);
+        }
     }
 }
 
@@ -189,6 +289,8 @@ impl ResolutionNotes {
 #[derive(Debug)]
 pub struct Unresolved {
     profile_not_found: Option<ResolveError>,
+    engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
+    engine_rule_unreadable: Option<PathBuf>,
 }
 
 impl Unresolved {
@@ -196,6 +298,19 @@ impl Unresolved {
     /// and nothing matched.
     pub fn profile_not_found(&self) -> Option<&ResolveError> {
         self.profile_not_found.as_ref()
+    }
+
+    /// The engine-rule provider's ambiguity, if it recognized a layout but
+    /// declined because it matched more than one candidate client.
+    pub fn engine_rule_ambiguous(&self) -> Option<EngineRuleAmbiguity> {
+        self.engine_rule_ambiguous
+    }
+
+    /// The install path the engine-rule provider could not fully read, if a
+    /// filesystem error left its scan incomplete. Distinguishes an inaccessible
+    /// install from an unrecognized engine (FR-009).
+    pub fn engine_rule_unreadable(&self) -> Option<&Path> {
+        self.engine_rule_unreadable.as_deref()
     }
 
     /// Consume the outcome and return the profile provider's not-found error, so
@@ -220,7 +335,15 @@ impl fmt::Display for ResolutionError {
             ResolutionError::Provider(e) => write!(f, "{e}"),
             ResolutionError::Unresolved(u) => match &u.profile_not_found {
                 Some(e) => write!(f, "{e}"),
-                None => write!(f, "no target could be resolved"),
+                None => match &u.engine_rule_unreadable {
+                    Some(p) => write!(
+                        f,
+                        "no target could be resolved; the engine rule could not \
+                         fully read {}",
+                        p.display()
+                    ),
+                    None => write!(f, "no target could be resolved"),
+                },
             },
         }
     }
@@ -319,6 +442,8 @@ impl TargetResolver {
         }
         Err(ResolutionError::Unresolved(Unresolved {
             profile_not_found: notes.profile_not_found,
+            engine_rule_ambiguous: notes.engine_rule_ambiguous,
+            engine_rule_unreadable: notes.engine_rule_unreadable,
         }))
     }
 }

@@ -1998,10 +1998,80 @@ section 15.3, which is a narrower, first-match lookup of a single
 profile by name or path within the profile provider. The cascade sits
 above it, choosing which provider answers at all.
 
-The engine-rule provider, the platform walker, and the hint-database
-provider are defined here but filled in by later slices (S029, S030, and
-issue #78); until then they are registered providers that return no
-answer, so adding their data does not change the resolver's ordering.
+The platform walker and the hint-database provider are defined here but
+filled in by later slices (S030 and issue #78); until then they are
+registered providers that return no answer, so adding their data does not
+change the resolver's ordering. The engine-rule provider is filled in by
+slice S029, described next.
+
+#### 15.7.1 Engine rules
+
+An **engine rule** recognizes a game's socket-holding client from its game
+engine's documented on-disk install layout, with no per-title data. It is
+the highest-leverage general provider because it needs nothing authored: a
+large class of games ship a thin launcher stub in the install root whose
+only job is to relaunch the real networked client, and before the game has
+run, only the on-disk layout distinguishes the stub from the client.
+Neither standard capture tooling nor the profile provider can name that
+client without per-title data; an engine rule names it from the engine's
+convention alone.
+
+The engine-rule provider takes an install directory (a launch entry point,
+supplied directly here or by the platform walker in S030) and evaluates a
+fixed, ordered set of rules against it, returning the first engine whose
+layout is present:
+
+| Engine | Layout signature | Resolved client |
+| --- | --- | --- |
+| Unreal | a `*-Win64-Shipping.exe` file under a `Binaries\Win64` directory | that shipping executable |
+| Unity | a `*_Data` directory and a `UnityPlayer.dll` or `GameAssembly.dll` in the root | the player executable named after the `*_Data` stem |
+| Godot | a `*.pck` archive in the root | the executable named after the archive stem |
+| Ren'Py | a `renpy` directory and one or more `.rpa` archives | the launcher executable in the root |
+
+These signatures are the same class of filename and path evidence the
+Steam database uses to attribute an engine. SteamDB's detection ruleset,
+`SteamDatabase/FileDetectionRuleSets` (MIT), matches engines from depot
+file names and paths alone, never from file contents, and lists exactly
+these markers (`*-Win64-Shipping.exe` for Unreal, `UnityPlayer.dll` and
+`GameAssembly.dll` for Unity, a `.pck` for Godot, and so on). fragcap
+tracks the subset of that ruleset that also names the client executable, so
+the rules stay aligned with a maintained, authoritative source rather than
+an invented one. Like SteamDB's, they are educated guesses from layout,
+which is why the answer is `heuristic-unverified`.
+
+The rules key on install-layout convention only. They read no launcher
+token and no post-run artifact: per-user AppData files, which some engines
+write on first run, do not exist at the moment a pre-launch resolver runs,
+so they are useless to it. The provider reads the filesystem and nothing
+else; it opens no process handle, reads no process memory, and launches
+nothing (constitution P-1).
+
+Every engine-rule answer is stamped `heuristic-unverified` with provenance
+`engine-rule`, and never a higher tier: a documented on-disk convention is
+a good guess, not a fact an author vouched for (constitution P-9).
+Composition with the platform walker (S030) is by design: the walker finds
+a title's install location, and the engine rule hops from that location to
+the socket holder, so the walker's output feeds the same provider
+unchanged.
+
+When a rule recognizes its layout but matches more than one candidate
+client (for example two `*-Win64-Shipping.exe` files under
+`Binaries\Win64`), the provider declines rather than pick one arbitrarily,
+and records the ambiguity so a not-resolved outcome can explain itself
+(constitution P-4). The cascade then falls through to runtime observation,
+the arbiter that disambiguates from the live process set once the game is
+running. A recognized layout whose named client is absent from disk
+likewise yields no answer rather than a fabricated target.
+
+A filesystem error is not the same as an absent layout, and the provider
+keeps them distinct. When a directory cannot be read, the scan is
+incomplete, and an incomplete scan could hide a second candidate and turn a
+true ambiguity into a false single answer. So the provider declines and
+records the unreadable path rather than resolving from a partial view; the
+path is observable on the not-resolved outcome, distinguishing an
+inaccessible install from an unrecognized engine (constitution P-4). A
+clean, readable layout for a lower-precedence engine still resolves; the
+unreadable path surfaces only when nothing resolves.
 
 ## 16. Steam Integration
 

@@ -32,6 +32,7 @@ the owning category page.
 - [Dual-stack socket](process-and-attribution.md#dual-stack-socket)
 - [Duration literal](capture-and-networking.md#duration-literal)
 - [Effective configuration](command-line-and-diagnostics.md#effective-configuration)
+- [Engine rule](process-and-attribution.md#engine-rule)
 - [Enhanced Packet Block](file-and-wire-formats.md#enhanced-packet-block)
 - [EtherType](capture-and-networking.md#ethertype)
 - [ETW](windows-internals.md#etw)

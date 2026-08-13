@@ -16,6 +16,7 @@
 //! never inferred (P-9). An observation answer is [`FidelityTier::Observed`], a
 //! profile answer is whatever the profile declared.
 
+use crate::engine_rule::Engine;
 use crate::schema::{FidelityTier, MatchPredicates, Profile, Provenance};
 
 /// A live process the runtime-observation provider matched, recorded from what
@@ -78,15 +79,77 @@ impl ObservedTarget {
     }
 }
 
+/// A client executable an engine rule resolved from an install directory's
+/// documented layout, recorded from the filesystem alone.
+///
+/// It carries which engine's rule matched, the image file name and full path of
+/// the resolved client (the socket holder a launch stub relaunches), and the
+/// identity the pipeline binds it by once the process appears. No process is
+/// running yet and none is inspected: the resolution is a function of the install
+/// directory's shape, so no process handle is opened and no memory is read
+/// (constitution P-1).
+///
+/// The identity is carried, not just the resolved path, so watch mode (S028) can
+/// bind the process by its match rules (the executable name plus the path anchor
+/// the rule keyed on) once it starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineRuleTarget {
+    engine: Engine,
+    image_name: String,
+    image_path: String,
+    identity: MatchPredicates,
+}
+
+impl EngineRuleTarget {
+    /// Build an engine-rule target from the matched engine, the resolved client's
+    /// name and path, and the identity that binds it.
+    pub fn new(
+        engine: Engine,
+        image_name: String,
+        image_path: String,
+        identity: MatchPredicates,
+    ) -> EngineRuleTarget {
+        EngineRuleTarget {
+            engine,
+            image_name,
+            image_path,
+            identity,
+        }
+    }
+
+    /// Which engine's rule resolved this target.
+    pub fn engine(&self) -> Engine {
+        self.engine
+    }
+
+    /// The resolved client's image file name.
+    pub fn image_name(&self) -> &str {
+        &self.image_name
+    }
+
+    /// The resolved client's full path on disk.
+    pub fn image_path(&self) -> &str {
+        &self.image_path
+    }
+
+    /// The identity the pipeline binds the client by once it appears.
+    pub fn identity(&self) -> &MatchPredicates {
+        &self.identity
+    }
+}
+
 /// How a resolved target is backed.
 ///
-/// Either a validated profile (from the profile provider) or a live process the
+/// A validated profile (from the profile provider), a client resolved from an
+/// engine's install layout (from the engine-rule provider), or a live process the
 /// observation provider matched. A later slice may add further origins, but every
 /// origin still resolves to one identity to capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetOrigin {
     /// Backed by a validated profile. The profile's stages are the match rules.
     Profile(Profile),
+    /// Resolved from an engine's documented install layout, with no profile.
+    EngineRule(EngineRuleTarget),
     /// Derived from a live process matched by an identity, with no profile.
     Observed(ObservedTarget),
 }
@@ -134,7 +197,7 @@ impl Target {
     pub fn profile(&self) -> Option<&Profile> {
         match &self.origin {
             TargetOrigin::Profile(p) => Some(p),
-            TargetOrigin::Observed(_) => None,
+            TargetOrigin::EngineRule(_) | TargetOrigin::Observed(_) => None,
         }
     }
 
@@ -145,7 +208,7 @@ impl Target {
     pub fn into_profile(self) -> Option<Profile> {
         match self.origin {
             TargetOrigin::Profile(p) => Some(p),
-            TargetOrigin::Observed(_) => None,
+            TargetOrigin::EngineRule(_) | TargetOrigin::Observed(_) => None,
         }
     }
 }

@@ -58,6 +58,7 @@
 //! it.
 
 pub mod diagnostic;
+pub mod engine_rule;
 pub mod glob;
 pub mod jsonschema;
 pub mod matching;
@@ -70,6 +71,7 @@ pub mod target;
 pub mod validate;
 
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
+pub use engine_rule::Engine;
 pub use glob::{ImagePattern, PatternError, MAX_PATTERN_CHARS};
 pub use matching::first_live_match;
 pub use parse::{load, LoadError, MAX_PROFILE_BYTES, MAX_STAGES};
@@ -80,11 +82,11 @@ pub use resolve::{
     resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
 };
 pub use resolver::{
-    DuplicatePrecedence, Precedence, ProviderError, ResolutionError, ResolutionNotes,
-    ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
+    DuplicatePrecedence, EngineRuleAmbiguity, Precedence, ProviderError, ResolutionError,
+    ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
 };
 pub use schema::{
     CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
     PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
 };
-pub use target::{ObservedTarget, Target, TargetOrigin};
+pub use target::{EngineRuleTarget, ObservedTarget, Target, TargetOrigin};
