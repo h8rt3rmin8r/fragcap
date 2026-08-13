@@ -865,6 +865,60 @@ slice S029; its [provenance](#provenance) source is `engine-rule`.
 [Fidelity tier](#fidelity-tier), [Resolution cascade](#resolution-cascade),
 [Platform walker](#platform-walker)
 
+## Technology detection
+
+The surface that reports the technologies present in a game's install directory
+(its game engine, [anti-cheat](anti-cheat-and-security.md#anti-cheat), SDK,
+emulator, container, and launcher) by matching a
+[detection ruleset](#detection-ruleset)'s path patterns against the install's
+file paths, using file names and relative paths only. Distinct from the
+[engine rule](#engine-rule), which reads the same install layout only to name the
+socket-holding client: technology detection labels what a game is built on and
+what watches it, and does not choose a capture target. Each finding pairs a
+technology name with the [marker path](#marker-path) that revealed it and is
+stamped [heuristic-unverified](#fidelity-tier). Introduced by slice S031; the
+categories are `engine`, `anti_cheat`, `sdk`, `framework`, `emulator`,
+`container`, `runtime`, and `launcher`.
+
+{: .matters }
+> Technology detection reads file paths only: it opens no process handle, reads
+> no process memory, reads no file content, and makes no network call
+> (constitution P-1). A detected anti-cheat is surfaced as a user-safety and
+> consent signal so the operator knows what watches a game before capturing it;
+> fragcap detects it and never interacts with it. A ruleset pattern the regex
+> engine cannot compile is a counted, surfaced skip rather than a silent drop, so
+> reduced coverage is visible (P-4), and a finding is a heuristic guess from a
+> path, never asserted as fact (P-9).
+
+**See also:** [Detection ruleset](#detection-ruleset),
+[Marker path](#marker-path), [Engine rule](#engine-rule),
+[Anti-cheat](anti-cheat-and-security.md#anti-cheat)
+
+## Detection ruleset
+
+The open SteamDB `SteamDatabase/FileDetectionRuleSets` ruleset (MIT), the
+maintained source behind SteamDB's technology attribution, which recognizes game
+engines, anti-cheat systems, SDKs, emulators, containers, and launchers from
+depot file paths alone. fragcap vendors it verbatim, pinned to an upstream commit
+and hash-locked, and applies its direct category sections to a local install for
+[technology detection](#technology-detection). The [engine rule](#engine-rule)
+tracks a hand-written subset of the same ruleset (the part that also names the
+client executable).
+
+**See also:** [Technology detection](#technology-detection),
+[Engine rule](#engine-rule)
+
+## Marker path
+
+The relative install-directory path of the file or directory whose name matched a
+[detection ruleset](#detection-ruleset) pattern, carried on a
+[technology detection](#technology-detection) finding as the auditable evidence
+for it. A finding names one representative marker even when several files matched
+the same technology, so the report is one line per technology, not one per file.
+
+**See also:** [Technology detection](#technology-detection),
+[Detection ruleset](#detection-ruleset)
+
 ## Platform walker
 
 A [provider](#provider) that turns a storefront's installed library into cascade

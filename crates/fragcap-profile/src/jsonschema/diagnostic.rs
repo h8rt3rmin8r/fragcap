@@ -53,6 +53,8 @@ pub enum SchemaCode {
     EmptyStages,
     /// A string that must be non-empty is empty (for example `provenance.source`).
     EmptyString,
+    /// A technology finding's `category` is not one of the defined categories.
+    InvalidCategory,
 }
 
 impl SchemaCode {
@@ -75,6 +77,7 @@ impl SchemaCode {
             SchemaCode::EmptyMatch => "empty-match",
             SchemaCode::EmptyStages => "empty-stages",
             SchemaCode::EmptyString => "empty-string",
+            SchemaCode::InvalidCategory => "invalid-category",
         }
     }
 }

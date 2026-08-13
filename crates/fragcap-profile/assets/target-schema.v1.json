@@ -31,6 +31,11 @@
       "description": "Export envelope: a batch of loose records. Present only when kind is export.",
       "type": "array",
       "items": { "$ref": "#/$defs/record" }
+    },
+    "technologies": {
+      "description": "Technologies detected in the target's install directory, each a heuristic-unverified finding with the marker path that revealed it. Optional; a target may carry none.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/technology" }
     }
   },
   "allOf": [
@@ -202,6 +207,28 @@
           "type": "array",
           "items": { "$ref": "#/$defs/stage" }
         }
+      },
+      "additionalProperties": false
+    },
+    "technology": {
+      "description": "One detected technology: a category, a name, the marker path that matched, and a heuristic fidelity.",
+      "type": "object",
+      "required": ["category", "name", "fidelity"],
+      "properties": {
+        "category": {
+          "description": "Technology category.",
+          "enum": ["engine", "anti_cheat", "sdk", "framework", "emulator", "container", "runtime", "launcher"]
+        },
+        "name": {
+          "description": "Technology name (the ruleset key as a readable label).",
+          "type": "string",
+          "minLength": 1
+        },
+        "marker_path": {
+          "description": "Relative install-directory path of a representative file that matched.",
+          "type": "string"
+        },
+        "fidelity": { "$ref": "#/$defs/fidelity" }
       },
       "additionalProperties": false
     }

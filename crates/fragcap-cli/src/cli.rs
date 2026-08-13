@@ -47,8 +47,8 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// The seven commands of the tool. Four are implemented; three are stubs that
-/// name the slice that will deliver them.
+/// The command surface of the tool. Most commands are implemented; a couple
+/// remain stubs that name the slice that will deliver them.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Capture a game using a profile.
@@ -66,6 +66,9 @@ pub enum Command {
     Steam(SteamArgs),
     /// Validate JSON target files against the master schema, or print it.
     Schema(SchemaArgs),
+    /// Detect the technologies present in a game's install directory (engine,
+    /// anti-cheat, SDK, and more), from file paths only.
+    Technologies(TechnologiesArgs),
     /// Report environment readiness.
     Doctor(DoctorArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
@@ -326,6 +329,14 @@ pub enum SchemaCommand {
     },
     /// Print the embedded master schema to standard output.
     Print,
+}
+
+/// Arguments to `technologies`.
+#[derive(Debug, Args)]
+pub struct TechnologiesArgs {
+    /// The install directory to scan for technologies.
+    #[arg(short = 'p', long)]
+    pub path: PathBuf,
 }
 
 /// Arguments to `doctor`.

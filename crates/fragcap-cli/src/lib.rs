@@ -161,6 +161,7 @@ fn dispatch(
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
+        Command::Technologies(args) => commands::technologies::run(&args, out),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
     }
 }

@@ -311,6 +311,7 @@ fn map_schema_diagnostic(sd: &SchemaDiagnostic) -> Diagnostic {
         SchemaCode::EmptyMatch => DiagnosticCode::EmptyMatch,
         SchemaCode::EmptyStages => DiagnosticCode::NoStages,
         SchemaCode::EmptyString => DiagnosticCode::MissingField,
+        SchemaCode::InvalidCategory => DiagnosticCode::WrongType,
     };
     // Keep the pointer exactly as the validator reported it, including the empty
     // string for a root-level fault: the profile-load contract locates faults by
