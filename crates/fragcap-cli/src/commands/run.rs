@@ -32,6 +32,7 @@ use fragcap::profile::{
 use fragcap::steam::SteamWalkerProvider;
 
 use crate::assemble;
+use crate::attach;
 use crate::cli::RunArgs;
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
@@ -57,20 +58,33 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // Exactly one target input is present (the clap group guarantees it). A
     // profile reference takes the unchanged profile path; an install location
     // takes the non-profile path.
-    let profile = if let Some(reference) = args.profile.as_deref() {
+    let (profile, nonprofile) = if let Some(reference) = args.profile.as_deref() {
         let request = ResolutionRequest::for_reference(reference, &search, &bundled);
         let target = resolver.resolve(&request)?;
-        target.into_profile().ok_or_else(|| {
+        let profile = target.into_profile().ok_or_else(|| {
             // A profile reference is answered only by the profile provider, so a
             // non-profile target cannot arise here; this documents the invariant.
             CliError::failure("resolved a target with no profile from a profile reference")
-        })?
+        })?;
+        (profile, false)
     } else {
-        resolve_nonprofile(&resolver, args, emitter, &search, &bundled)?
+        (
+            resolve_nonprofile(&resolver, args, emitter, &search, &bundled)?,
+            true,
+        )
     };
 
     let config = assemble::effective_config(args, &profile)?;
     let components = assemble::components(&args.offline, &config)?;
+
+    // The non-profile path is launch-agnostic like `watch`: report an
+    // already-running attach, and warn when a resolved path anchor (an engine-rule
+    // Unreal client carries one) cannot be checked against the executable-only
+    // startup snapshot, so acquisition is never silently impossible (review of PR
+    // #88). The `--profile` path keeps its existing behavior unchanged.
+    if nonprofile {
+        attach::report_attach_to_running(&profile, &components, emitter);
+    }
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();

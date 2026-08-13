@@ -1,0 +1,6 @@
+# An Unreal shipping client already running at arm (in the startup snapshot),
+# with no start event, so only attach-to-running could acquire it. The toolhelp
+# snapshot carries only the executable file name, never a full path, so the
+# Binaries\Win64 path anchor the engine rule resolves cannot be checked against
+# it.
+snapshot 4242 100 Game-Win64-Shipping.exe

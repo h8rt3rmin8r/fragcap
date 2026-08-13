@@ -21,6 +21,7 @@ pub mod doctor;
 
 mod args;
 mod assemble;
+mod attach;
 mod cli;
 mod commands;
 mod emit;

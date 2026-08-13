@@ -59,6 +59,53 @@ fn run_captures_a_nonprofile_target_from_an_install_dir() {
 }
 
 #[test]
+fn a_resolved_path_anchor_warns_when_it_cannot_check_an_already_running_target() {
+    // Codex review of PR #88: an engine-rule Unreal identity carries a
+    // `Binaries\Win64` path anchor. The startup snapshot supplies only the
+    // executable name, so the anchor cannot be checked against an already-running
+    // process. Rather than silently wait until a restart, run warns that the
+    // path-anchored target is already running and will be captured when it next
+    // starts, mirroring watch. With a wait bound and no restart, it times out
+    // (exit 1), but the reason is named.
+    let install = tempfile::tempdir().unwrap();
+    let shipping = install
+        .path()
+        .join("Game")
+        .join("Binaries")
+        .join("Win64")
+        .join("Game-Win64-Shipping.exe");
+    fs::create_dir_all(shipping.parent().unwrap()).unwrap();
+    fs::write(&shipping, b"MZ placeholder shipping client").unwrap();
+
+    let args: Vec<String> = vec![
+        "run".into(),
+        "--replay-source".into(),
+        fixture("udp-gameplay.pcap"),
+        "--attr-script".into(),
+        fixture("udp-gameplay.script"),
+        "--process-script".into(),
+        data("unreal-snapshot.procscript"),
+        "--local-addr".into(),
+        "192.0.2.10".into(),
+        "--install-dir".into(),
+        install.path().to_string_lossy().into_owned(),
+        "--wait".into(),
+        "1s".into(),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _out, err) = run(&refs);
+
+    assert_eq!(
+        code, 1,
+        "the path-anchored already-running target is not attached: {err}"
+    );
+    assert!(
+        err.contains("path anchor cannot be checked against the startup snapshot"),
+        "run names why the path-anchored already-running target was not attached: {err}"
+    );
+}
+
+#[test]
 fn an_install_dir_with_no_client_is_a_surfaced_failure() {
     // US3/SC-004: an empty install directory resolves to nothing. The command
     // fails (exit 1) naming the reason and captures nothing (P-4).

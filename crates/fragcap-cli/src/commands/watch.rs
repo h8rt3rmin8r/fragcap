@@ -18,14 +18,10 @@
 //! the already-running process. The session is the single acquisition authority;
 //! the resolver names the answer.
 
-use fragcap::profile::{
-    EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider, ResolutionError,
-    ResolutionRequest, SearchPath, TargetOrigin, TargetResolver,
-};
-use fragcap::steam::SteamWalkerProvider;
-use fragcap::{BundledSet, ProcessTree, Profile};
+use fragcap::Profile;
 
-use crate::assemble::{self, ARMED_AT};
+use crate::assemble;
+use crate::attach;
 use crate::cli::WatchArgs;
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
@@ -41,7 +37,7 @@ pub fn run(args: &WatchArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // the cascade. A hit means the target is already running; report the observed
     // answer that names it. The session's own snapshot fold (in the shared engine)
     // performs the acquisition, so this reports rather than acquires.
-    report_attach_to_running(&profile, &components, emitter);
+    attach::report_attach_to_running(&profile, &components, emitter);
 
     orchestrator::install_interrupt_handler();
     // `watch` scopes to its single synthesized stage, so it imposes no role
@@ -57,81 +53,6 @@ pub fn run(args: &WatchArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // A sink failure is an unrecoverable end for `watch`, not a clean stop.
         false,
     )
-}
-
-/// Resolve the identity against the startup snapshot and report an
-/// already-running attach through the S027 cascade.
-///
-/// The `ObservationProvider` answers at the `observed` tier over a tree built
-/// from the snapshot; a hit is an already-running target. The report is the
-/// honest observed answer (P-9). No answer means the target is not yet running
-/// and will be acquired by wait-for-start.
-fn report_attach_to_running(
-    profile: &Profile,
-    components: &assemble::CaptureComponents,
-    emitter: &mut Emitter,
-) {
-    if components.startup_snapshot.is_empty() {
-        return;
-    }
-    let mut tree = ProcessTree::new();
-    tree.apply_snapshot_at(
-        &components.startup_snapshot,
-        components.snapshot_at.unwrap_or(ARMED_AT),
-    );
-    let identity = profile.stages()[0].predicates();
-
-    let resolver = TargetResolver::new(vec![
-        Box::new(ProfileProvider::new()),
-        Box::new(HintProvider::new()),
-        Box::new(EngineRuleProvider::new()),
-        Box::new(SteamWalkerProvider::new()),
-        Box::new(ObservationProvider::new()),
-    ])
-    .expect("the built-in providers have distinct precedence positions");
-
-    let search = SearchPath::new();
-    let bundled = BundledSet::empty();
-    let request = ResolutionRequest::for_observation(identity, &tree, &search, &bundled);
-    match resolver.resolve(&request) {
-        Ok(target) => {
-            if let TargetOrigin::Observed(o) = target.origin() {
-                emitter.progress(&format!(
-                    "attached to already-running pid {} {} ({})",
-                    o.pid(),
-                    o.image_name(),
-                    target.fidelity().as_str()
-                ));
-            }
-        }
-        Err(ResolutionError::Unresolved(_)) => {
-            // No fully-matching already-running process. The Windows toolhelp
-            // startup snapshot carries only the executable file name, never the
-            // full path (reading a running process's path is the handle the
-            // no-handle P-1 choice precludes), so a path anchor cannot be checked
-            // against it. If a process whose executable matches is already running
-            // and only the path anchor excluded it, say so rather than let a
-            // silent wait-until-timeout look like nothing is running (review of
-            // PR #84).
-            if let Some(exe) = identity.exe() {
-                let has_path_anchor =
-                    identity.path_contains().is_some() || identity.path_regex().is_some();
-                let exe_already_running = tree
-                    .nodes()
-                    .any(|n| n.is_live() && exe.matches(n.image_name()));
-                if has_path_anchor && exe_already_running {
-                    emitter.warn(
-                        "a process matching the executable is already running, but a path \
-                         anchor cannot be checked against the startup snapshot, which carries \
-                         only the executable name; it will be captured when it next starts",
-                    );
-                    return;
-                }
-            }
-            emitter.progress("target not yet running; waiting for it to start");
-        }
-        Err(ResolutionError::Provider(_)) => {}
-    }
 }
 
 /// Build a validated one-stage identity profile from the executable and the

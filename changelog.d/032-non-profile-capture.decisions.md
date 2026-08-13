@@ -50,3 +50,18 @@ Steam app id, which a `--install-dir` synthesized profile does not carry, so a
 `--launch` with `--install-dir` fails through the existing launch-build error
 rather than a new check; a `--steam` synthesized profile does carry the app id.
 No dependency is added and the minimum supported toolchain stays green.
+
+A follow-up from PR review addressed the attach-to-running case for an anchored
+identity. An engine-rule resolution of an Unreal client carries a `Binaries\Win64`
+path anchor alongside the executable name, and the Windows toolhelp startup
+snapshot carries only the executable name (the no-handle P-1 choice), so the
+anchor cannot be checked against an already-running process. Left alone, a
+`run --install-dir`/`--steam` over an already-running anchored target would wait
+silently until a restart, timeout, or interrupt. The non-profile path now runs the
+same attach-to-running report `watch` uses: it warns that a matching executable is
+already running but the path anchor cannot be checked against the snapshot and the
+target will be captured when it next starts, rather than making acquisition
+silently impossible. The shared logic was extracted from `watch` into a new
+`attach` module used by both commands; the anchor is preserved on the synthesized
+stage for the process-start event that will carry the full path. The `--profile`
+path is unchanged: the report runs only on the non-profile branch.
