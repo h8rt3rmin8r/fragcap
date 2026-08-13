@@ -2,14 +2,15 @@
 
 //! The concrete providers of the resolution cascade, specification section 15.7.
 //!
-//! Two carry data in this slice. [`ProfileProvider`] wraps the section 15.3
-//! profile lookup and stamps its answer with the profile's own declared fidelity.
-//! [`ObservationProvider`] matches a live process by identity and stamps an
-//! [`FidelityTier::Observed`] answer; it is the arbiter at the bottom of the
-//! cascade. The remaining three ([`HintProvider`], [`EngineRuleProvider`],
-//! [`PlatformWalkerProvider`]) are registered at their precedence positions and
-//! decline in this slice; their data arrives in #78, S029, and S030 without
-//! touching the resolver engine.
+//! [`ProfileProvider`] wraps the section 15.3 profile lookup and stamps its
+//! answer with the profile's own declared fidelity. [`EngineRuleProvider`]
+//! resolves a client from an engine's install layout (S029). [`ObservationProvider`]
+//! matches a live process by identity and stamps an [`FidelityTier::Observed`]
+//! answer; it is the arbiter at the bottom of the cascade. [`HintProvider`] is a
+//! no-answer stub until issue #78 fills it. The platform-walker provider at
+//! `Precedence::PlatformWalker` lives in `fragcap-steam` (S030), not here, because
+//! it needs Steam knowledge and `fragcap-profile` may not depend on
+//! `fragcap-steam`.
 //!
 //! No provider here opens a process handle. The observation provider reads only
 //! the image name and path already in the process snapshot (constitution P-1).
@@ -221,30 +222,10 @@ impl TargetProvider for EngineRuleProvider {
     }
 }
 
-/// A storefront library walker (S030). Declines in this slice.
-#[derive(Default)]
-pub struct PlatformWalkerProvider;
-
-impl PlatformWalkerProvider {
-    /// Build the provider.
-    pub fn new() -> PlatformWalkerProvider {
-        PlatformWalkerProvider
-    }
-}
-
-impl TargetProvider for PlatformWalkerProvider {
-    fn precedence(&self) -> Precedence {
-        Precedence::PlatformWalker
-    }
-
-    fn provide(
-        &self,
-        _request: &ResolutionRequest,
-        _notes: &mut ResolutionNotes,
-    ) -> Result<Option<Target>, ProviderError> {
-        Ok(None)
-    }
-}
+// The platform-walker provider is no longer a stub here: S030 moved it into
+// `fragcap-steam` as `SteamWalkerProvider`, because it needs Steam knowledge and
+// `fragcap-profile` may not depend on `fragcap-steam` (the dependency direction).
+// Its precedence position, `Precedence::PlatformWalker`, is unchanged.
 
 #[cfg(test)]
 mod tests {
@@ -416,14 +397,8 @@ mod tests {
             .provide(&req, &mut notes)
             .unwrap()
             .is_none());
-        assert_eq!(
-            PlatformWalkerProvider::new().precedence(),
-            Precedence::PlatformWalker
-        );
-        assert!(PlatformWalkerProvider::new()
-            .provide(&req, &mut notes)
-            .unwrap()
-            .is_none());
+        // The platform-walker provider lives in fragcap-steam (S030) and is
+        // exercised there; only the hint stub remains a no-answer provider here.
     }
 
     // A minimal Unreal install tree under the system temp dir, removed on drop.

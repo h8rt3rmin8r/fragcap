@@ -61,8 +61,9 @@ pub mod core {
 /// `#[cfg(windows)]` in the crate, so the facade re-export builds everywhere.
 pub mod steam {
     pub use fragcap_steam::{
-        discover, discover_in, launch, launch_request, scaffold, InstalledTitle, LaunchConfigError,
-        LaunchRequest, SteamError, SteamInstallation, SteamLibrary,
+        discover, discover_in, install_root_for, install_root_in, launch, launch_request, scaffold,
+        InstallLookup, InstalledTitle, LaunchConfigError, LaunchRequest, SteamError,
+        SteamInstallation, SteamLibrary, SteamWalkerProvider,
     };
 }
 
@@ -119,8 +120,7 @@ pub mod profile {
     /// The target resolution cascade: providers, precedence, and the resolver
     /// (issue #77, section 15.7).
     pub use fragcap_profile::providers::{
-        EngineRuleProvider, HintProvider, ObservationProvider, PlatformWalkerProvider,
-        ProfileProvider,
+        EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider,
     };
     pub use fragcap_profile::resolve::{
         resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
@@ -128,12 +128,15 @@ pub mod profile {
     pub use fragcap_profile::resolver::{
         DuplicatePrecedence, EngineRuleAmbiguity, Precedence, ProviderError, ResolutionError,
         ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
+        WalkerAmbiguity,
     };
     pub use fragcap_profile::schema::{
         CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
         PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
     };
-    pub use fragcap_profile::target::{EngineRuleTarget, ObservedTarget, Target, TargetOrigin};
+    pub use fragcap_profile::target::{
+        EngineRuleTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
+    };
 }
 
 /// Output sinks.

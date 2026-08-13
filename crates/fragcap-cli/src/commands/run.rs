@@ -9,9 +9,10 @@
 //! target, captures, stops on a bound or interrupt, and reports.
 
 use fragcap::profile::{
-    EngineRuleProvider, HintProvider, ObservationProvider, PlatformWalkerProvider, ProfileProvider,
-    ResolutionRequest, TargetResolver,
+    EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider, ResolutionRequest,
+    TargetResolver,
 };
+use fragcap::steam::SteamWalkerProvider;
 
 use crate::assemble;
 use crate::cli::RunArgs;
@@ -38,7 +39,7 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         Box::new(ProfileProvider::new()),
         Box::new(HintProvider::new()),
         Box::new(EngineRuleProvider::new()),
-        Box::new(PlatformWalkerProvider::new()),
+        Box::new(SteamWalkerProvider::new()),
         Box::new(ObservationProvider::new()),
     ])
     .expect("the built-in providers have distinct precedence positions");

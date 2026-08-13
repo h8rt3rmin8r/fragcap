@@ -138,18 +138,76 @@ impl EngineRuleTarget {
     }
 }
 
+/// A client executable a platform walker resolved from a storefront's installed
+/// library, recorded from the filesystem alone.
+///
+/// It carries the storefront (`steam` in the first walker), the image file name
+/// and full path of the resolved client, and the identity the pipeline binds it
+/// by. Like an engine-rule target it names a file on disk, not a running process:
+/// no process handle is opened and no memory is read (constitution P-1). The
+/// walker resolves it by classifying the install directory's executables, so its
+/// provenance names that method and not a source it did not read (P-9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WalkerTarget {
+    platform: String,
+    image_name: String,
+    image_path: String,
+    identity: MatchPredicates,
+}
+
+impl WalkerTarget {
+    /// Build a walker target from the storefront, the resolved client's name and
+    /// path, and the identity that binds it.
+    pub fn new(
+        platform: String,
+        image_name: String,
+        image_path: String,
+        identity: MatchPredicates,
+    ) -> WalkerTarget {
+        WalkerTarget {
+            platform,
+            image_name,
+            image_path,
+            identity,
+        }
+    }
+
+    /// The storefront the walker read (for example `steam`).
+    pub fn platform(&self) -> &str {
+        &self.platform
+    }
+
+    /// The resolved client's image file name.
+    pub fn image_name(&self) -> &str {
+        &self.image_name
+    }
+
+    /// The resolved client's full path on disk.
+    pub fn image_path(&self) -> &str {
+        &self.image_path
+    }
+
+    /// The identity the pipeline binds the client by once it appears.
+    pub fn identity(&self) -> &MatchPredicates {
+        &self.identity
+    }
+}
+
 /// How a resolved target is backed.
 ///
 /// A validated profile (from the profile provider), a client resolved from an
-/// engine's install layout (from the engine-rule provider), or a live process the
-/// observation provider matched. A later slice may add further origins, but every
-/// origin still resolves to one identity to capture.
+/// engine's install layout (from the engine-rule provider), a client resolved
+/// from a storefront's installed library (from the platform walker), or a live
+/// process the observation provider matched. Every origin resolves to one
+/// identity to capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetOrigin {
     /// Backed by a validated profile. The profile's stages are the match rules.
     Profile(Profile),
     /// Resolved from an engine's documented install layout, with no profile.
     EngineRule(EngineRuleTarget),
+    /// Resolved from a storefront's installed library, with no profile.
+    PlatformWalker(WalkerTarget),
     /// Derived from a live process matched by an identity, with no profile.
     Observed(ObservedTarget),
 }
@@ -197,7 +255,9 @@ impl Target {
     pub fn profile(&self) -> Option<&Profile> {
         match &self.origin {
             TargetOrigin::Profile(p) => Some(p),
-            TargetOrigin::EngineRule(_) | TargetOrigin::Observed(_) => None,
+            TargetOrigin::EngineRule(_)
+            | TargetOrigin::PlatformWalker(_)
+            | TargetOrigin::Observed(_) => None,
         }
     }
 
@@ -208,7 +268,9 @@ impl Target {
     pub fn into_profile(self) -> Option<Profile> {
         match self.origin {
             TargetOrigin::Profile(p) => Some(p),
-            TargetOrigin::EngineRule(_) | TargetOrigin::Observed(_) => None,
+            TargetOrigin::EngineRule(_)
+            | TargetOrigin::PlatformWalker(_)
+            | TargetOrigin::Observed(_) => None,
         }
     }
 }

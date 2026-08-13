@@ -243,6 +243,35 @@ impl fmt::Display for EngineRuleAmbiguity {
     }
 }
 
+/// Why the platform walker declined despite finding an install directory.
+///
+/// Recorded when the walker classified an install directory and found more than
+/// one plausible client executable, so it declined rather than guess one (P-9).
+/// The count lets a not-resolved outcome explain itself if nothing lower resolves
+/// either (P-4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WalkerAmbiguity {
+    candidates: usize,
+}
+
+impl WalkerAmbiguity {
+    /// How many plausible client executables the walker could not reduce to one.
+    pub fn candidates(&self) -> usize {
+        self.candidates
+    }
+}
+
+impl fmt::Display for WalkerAmbiguity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the platform walker found {} plausible client executables, so it \
+             declined rather than guess one; runtime observation will disambiguate",
+            self.candidates
+        )
+    }
+}
+
 /// Notes a provider records while declining, so a not-resolved outcome can
 /// explain itself.
 ///
@@ -250,12 +279,15 @@ impl fmt::Display for EngineRuleAmbiguity {
 /// matched a reference, so the command line can print the same "searched ..."
 /// message it prints today even though the cascade continued past it. The
 /// engine-rule provider records an [`EngineRuleAmbiguity`] when it recognized a
-/// layout but could not single out one client.
+/// layout but could not single out one client, and the platform walker records a
+/// [`WalkerAmbiguity`] for the analogous case over an install directory.
 #[derive(Default)]
 pub struct ResolutionNotes {
     profile_not_found: Option<ResolveError>,
     engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
     engine_rule_unreadable: Option<PathBuf>,
+    walker_ambiguous: Option<WalkerAmbiguity>,
+    walker_unreadable: Option<PathBuf>,
 }
 
 impl ResolutionNotes {
@@ -278,6 +310,21 @@ impl ResolutionNotes {
             self.engine_rule_unreadable = Some(path);
         }
     }
+
+    /// Record that the platform walker found more than one plausible client in an
+    /// install directory, so it declined rather than guess one.
+    pub fn note_walker_ambiguous(&mut self, candidates: usize) {
+        self.walker_ambiguous = Some(WalkerAmbiguity { candidates });
+    }
+
+    /// Record that the platform walker could not read an install directory, so it
+    /// declined rather than report a clean no-match. The first unreadable path is
+    /// kept.
+    pub fn note_walker_unreadable(&mut self, path: PathBuf) {
+        if self.walker_unreadable.is_none() {
+            self.walker_unreadable = Some(path);
+        }
+    }
 }
 
 /// Nothing in the cascade answered.
@@ -291,6 +338,8 @@ pub struct Unresolved {
     profile_not_found: Option<ResolveError>,
     engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
     engine_rule_unreadable: Option<PathBuf>,
+    walker_ambiguous: Option<WalkerAmbiguity>,
+    walker_unreadable: Option<PathBuf>,
 }
 
 impl Unresolved {
@@ -313,6 +362,19 @@ impl Unresolved {
         self.engine_rule_unreadable.as_deref()
     }
 
+    /// The platform walker's ambiguity, if it found more than one plausible
+    /// client in an install directory and declined.
+    pub fn walker_ambiguous(&self) -> Option<WalkerAmbiguity> {
+        self.walker_ambiguous
+    }
+
+    /// The install path the platform walker could not read, if a filesystem error
+    /// left it unable to classify the directory. Distinguishes an inaccessible
+    /// install from an unrecognized one.
+    pub fn walker_unreadable(&self) -> Option<&Path> {
+        self.walker_unreadable.as_deref()
+    }
+
     /// Consume the outcome and return the profile provider's not-found error, so
     /// a caller can map it onto its own error class.
     pub fn into_profile_not_found(self) -> Option<ResolveError> {
@@ -325,8 +387,9 @@ impl Unresolved {
 pub enum ResolutionError {
     /// A provider hit a hard error and the cascade aborted.
     Provider(ProviderError),
-    /// Every provider declined.
-    Unresolved(Unresolved),
+    /// Every provider declined. Boxed because the accumulated decline notes make
+    /// [`Unresolved`] much larger than the other variant.
+    Unresolved(Box<Unresolved>),
 }
 
 impl fmt::Display for ResolutionError {
@@ -335,14 +398,20 @@ impl fmt::Display for ResolutionError {
             ResolutionError::Provider(e) => write!(f, "{e}"),
             ResolutionError::Unresolved(u) => match &u.profile_not_found {
                 Some(e) => write!(f, "{e}"),
-                None => match &u.engine_rule_unreadable {
-                    Some(p) => write!(
+                None => match (&u.engine_rule_unreadable, &u.walker_unreadable) {
+                    (Some(p), _) => write!(
                         f,
                         "no target could be resolved; the engine rule could not \
                          fully read {}",
                         p.display()
                     ),
-                    None => write!(f, "no target could be resolved"),
+                    (None, Some(p)) => write!(
+                        f,
+                        "no target could be resolved; the platform walker could \
+                         not read {}",
+                        p.display()
+                    ),
+                    (None, None) => write!(f, "no target could be resolved"),
                 },
             },
         }
@@ -440,11 +509,13 @@ impl TargetResolver {
                 Err(e) => return Err(ResolutionError::Provider(e)),
             }
         }
-        Err(ResolutionError::Unresolved(Unresolved {
+        Err(ResolutionError::Unresolved(Box::new(Unresolved {
             profile_not_found: notes.profile_not_found,
             engine_rule_ambiguous: notes.engine_rule_ambiguous,
             engine_rule_unreadable: notes.engine_rule_unreadable,
-        }))
+            walker_ambiguous: notes.walker_ambiguous,
+            walker_unreadable: notes.walker_unreadable,
+        })))
     }
 }
 
