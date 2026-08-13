@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "kind": "hint",
+  "fidelity": "heuristic-unverified",
+  "provenance": {
+    "source": "steam-appinfo",
+    "seeded_at": "2026-08-13T00:00:00Z"
+  },
+  "game": {
+    "name": "The Elder Scrolls Online",
+    "app_id": "306130"
+  },
+  "launcher_mediated": true,
+  "launch": [
+    {
+      "os": "windows",
+      "osarch": "64",
+      "launch_type": "default",
+      "executable": "Launcher/Bethesda.net_Launcher.exe",
+      "description": "Launch The Elder Scrolls Online"
+    },
+    {
+      "os": "windows",
+      "executable": "eso64.exe",
+      "arguments": "-skipintro",
+      "beta_branch": "pts"
+    }
+  ],
+  "engine": {
+    "name": "HeroEngine",
+    "source": "pcgamingwiki",
+    "confidence": "low"
+  }
+}

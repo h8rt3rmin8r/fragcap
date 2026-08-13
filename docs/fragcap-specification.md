@@ -1932,6 +1932,47 @@ parser's move from TOML onto JSON (issue #76) has landed; the runtime
 profile form is the JSON of section 15.2, structurally validated against
 this schema and semantically validated by the checks of section 15.4.
 
+#### 15.6.1 Loose hint-record seeding fields
+
+The loose variants carry three optional structures the hint database (issue #78)
+will emit, revised into the schema by issue #83's Steam catalog research. They
+appear on a `hint` at the top level and on each record inside an `export`
+envelope, and are refused on the strict `profile` and `package` variants and on
+the export envelope's own top level, because they are hint-seeding metadata rather
+than the authored capture format. The addition is additive within schema version
+1: every prior artifact still validates and no version bump is made.
+
+The first is `launch`, an array of a title's Steam launch configurations. Each
+entry records one `config.launch` entry: an optional operating-system,
+architecture, launch-type, and beta-branch filter (free strings, because Steam's
+launch vocabularies evolve externally), a required non-empty `executable`, and an
+optional `arguments` string and `description`. The array is carried whole and is
+never reduced at seeding time to a single "the game binary"; for a
+launcher-mediated title the invoked entry is a publisher launcher rather than the
+socket holder, and reducing the array to one executable would record the launcher
+as the game. Which entry, or which descendant of the invoked one, holds the
+sockets is the resolution cascade's runtime job (section 15.7), not a seeding-time
+transformation.
+
+The second is `launcher_mediated`, a boolean marking exactly that class of titles
+(for example ESO or The Division 2) where Steam starts a publisher launcher that
+then starts the real client. It is a second signal into the same stub-to-client
+hop the engine rule (section 15.7.1) already performs.
+
+The third is `engine`, an engine attribution carrying an optional engine `name`, a
+`source` from the closed set {`pcgamingwiki`, `exe_heuristic`,
+`depot_filename_rules`} naming where the attribution came from, and a `confidence`
+from the closed set {`confirmed`, `high`, `medium`, `low`, `unknown`}. A failed
+lookup leaves the object absent rather than present with a fabricated value. The
+engine `confidence` is a within-field grading of one heuristic guess and is
+deliberately not a rung on the record `fidelity` ladder: the record fidelity says
+how much to trust the record as a whole, while the engine confidence grades one
+field inside it, so a low-confidence engine guess never silently moves the
+record's overall trust (constitution P-9). The engine `source` is likewise
+distinct from the record's provenance `source`, which names where the whole record
+came from. Building the database, the seeding pipeline, and the external lookups
+that fill these fields is issue #78; this schema defines the shape they target.
+
 ### 15.7 Target Resolution Cascade
 
 Deciding what to capture for a given game is a separate question from how

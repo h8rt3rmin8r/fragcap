@@ -63,6 +63,21 @@ fn the_conformance_corpus_matches_the_validator() {
             "technology-bad-category.json",
             Invalid(SchemaCode::InvalidCategory),
         ),
+        ("hint-loose-valid.json", Valid),
+        ("export-loose-record.json", Valid),
+        (
+            "engine-bad-source.json",
+            Invalid(SchemaCode::InvalidEngineSource),
+        ),
+        (
+            "engine-bad-confidence.json",
+            Invalid(SchemaCode::InvalidEngineConfidence),
+        ),
+        (
+            "launch-no-executable.json",
+            Invalid(SchemaCode::MissingField),
+        ),
+        ("profile-with-launch.json", Invalid(SchemaCode::UnknownKey)),
         ("not-json.json", Malformed),
     ];
 

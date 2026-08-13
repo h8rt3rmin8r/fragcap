@@ -36,7 +36,17 @@
       "description": "Technologies detected in the target's install directory, each a heuristic-unverified finding with the marker path that revealed it. Optional; a target may carry none.",
       "type": "array",
       "items": { "$ref": "#/$defs/technology" }
-    }
+    },
+    "launch": {
+      "description": "Steam launch configurations for this title, one entry per config.launch entry, carried whole. Hint-seeding metadata; never reduced to a single binary at seeding time (reducing to the socket holder is the resolver's runtime job).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/launch_entry" }
+    },
+    "launcher_mediated": {
+      "description": "True when Steam starts a publisher launcher that then starts the real client, so the invoked launch entry is not the socket-holding binary.",
+      "type": "boolean"
+    },
+    "engine": { "$ref": "#/$defs/engine" }
   },
   "allOf": [
     {
@@ -64,6 +74,19 @@
       },
       "then": {
         "properties": { "records": false }
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "enum": ["profile", "package", "export"] } }
+      },
+      "then": {
+        "properties": {
+          "launch": false,
+          "launcher_mediated": false,
+          "engine": false
+        }
       }
     }
   ],
@@ -206,6 +229,44 @@
         "stage": {
           "type": "array",
           "items": { "$ref": "#/$defs/stage" }
+        },
+        "launch": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/launch_entry" }
+        },
+        "launcher_mediated": { "type": "boolean" },
+        "engine": { "$ref": "#/$defs/engine" }
+      },
+      "additionalProperties": false
+    },
+    "launch_entry": {
+      "description": "One Steam launch configuration (a config.launch entry). The invoked binary for a launcher-mediated title is a publisher launcher, not the socket holder; the entry records what Steam declares.",
+      "type": "object",
+      "required": ["executable"],
+      "properties": {
+        "os": { "description": "Operating-system filter, as Steam declares it.", "type": "string" },
+        "osarch": { "description": "Processor-architecture filter.", "type": "string" },
+        "launch_type": { "description": "Launch configuration type.", "type": "string" },
+        "beta_branch": { "description": "Beta-branch selector.", "type": "string" },
+        "executable": { "description": "The invoked binary.", "type": "string", "minLength": 1 },
+        "arguments": { "description": "Command-line arguments.", "type": "string" },
+        "description": { "description": "Human-readable label.", "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "engine": {
+      "description": "Engine attribution with its provenance and confidence. A within-record grading of one heuristic field, distinct from the record fidelity: a low engine confidence does not lower the record's overall trust.",
+      "type": "object",
+      "required": ["source", "confidence"],
+      "properties": {
+        "name": { "description": "The attributed engine name; absent when the lookup did not settle on one.", "type": "string" },
+        "source": {
+          "description": "Where the engine attribution came from.",
+          "enum": ["pcgamingwiki", "exe_heuristic", "depot_filename_rules"]
+        },
+        "confidence": {
+          "description": "Confidence in the engine attribution; a within-field gradation, not a fidelity tier.",
+          "enum": ["confirmed", "high", "medium", "low", "unknown"]
         }
       },
       "additionalProperties": false

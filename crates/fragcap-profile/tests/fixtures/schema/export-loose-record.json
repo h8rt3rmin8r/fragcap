@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "kind": "export",
+  "fidelity": "heuristic-unverified",
+  "provenance": { "source": "targets-db" },
+  "records": [
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": { "source": "targets-db" },
+      "game": { "name": "The Division 2", "app_id": "2221490" },
+      "launcher_mediated": true,
+      "launch": [
+        { "os": "windows", "executable": "TheDivision2.exe" }
+      ],
+      "engine": { "source": "exe_heuristic", "confidence": "unknown" }
+    }
+  ]
+}

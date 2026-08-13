@@ -746,7 +746,66 @@ hint that does not declare its trust level is refused: an undeclared guess is
 exactly the guess-worn-as-fact the schema exists to prevent.
 
 **See also:** [Fidelity tier](#fidelity-tier), [Provenance](#provenance),
-[Target artifact kind](#target-artifact-kind)
+[Target artifact kind](#target-artifact-kind),
+[Launch array](#launch-array), [Engine attribution](#engine-attribution)
+
+## Launch array
+
+The ordered list of a Steam title's launch configurations, carried on a
+[target hint record](#target-hint-record) as its `launch` field. Each entry
+records one `config.launch` configuration: an optional operating-system,
+architecture, launch-type, and beta-branch filter, a required `executable`, and
+optional arguments and a description. The array is carried whole and is never
+reduced at seeding time to a single "the game binary"; deciding which entry (or
+which descendant of the invoked one) holds the sockets is the
+[resolution cascade](#resolution-cascade)'s runtime job, not a seeding-time
+transformation.
+
+{: .matters }
+> For a [launcher-mediated](#launcher-mediated) title the entry Steam invokes is a
+> publisher launcher, not the socket-holding client, so flattening the array to
+> the invoked executable would record the launcher as the game. Preserving the
+> array with its filters intact keeps the honest, unreduced fact for the resolver
+> (P-9).
+
+**See also:** [Launcher-mediated](#launcher-mediated),
+[Target hint record](#target-hint-record),
+[Resolution cascade](#resolution-cascade)
+
+## Launcher-mediated
+
+A flag on a [target hint record](#target-hint-record) marking a title that Steam
+starts through a publisher launcher, which then starts the real client (for
+example ESO or The Division 2): `Steam -> Launcher.exe -> Game-Win64-Shipping.exe`.
+The invoked [launch array](#launch-array) entry is the launcher, not the socket
+holder, so a `launcher_mediated` hint is a second signal into the same
+stub-to-client hop the [engine rule](#engine-rule) already performs, resolved at
+runtime rather than assumed at seeding time.
+
+**See also:** [Launch array](#launch-array), [Engine rule](#engine-rule),
+[Target hint record](#target-hint-record)
+
+## Engine attribution
+
+A [target hint record](#target-hint-record)'s guess at a title's engine, carried
+as its `engine` field: an optional engine `name`, a `source`
+(`pcgamingwiki`, `exe_heuristic`, or `depot_filename_rules`) naming where the
+guess came from, and a `confidence`
+(`confirmed`, `high`, `medium`, `low`, `unknown`). A failed lookup leaves the
+field absent rather than present with a fabricated value.
+
+{: .matters }
+> Engine `confidence` is a within-field grading of one heuristic guess, not a
+> rung on the record's [fidelity tier](#fidelity-tier) ladder. The record fidelity
+> says how much to trust the record as a whole; the engine confidence grades one
+> field inside it. Keeping them separate stops a low-confidence engine guess from
+> silently moving the record's overall trust, which is the same P-9 honesty the
+> fidelity model exists for. The engine `source` is likewise distinct from the
+> record's [provenance](#provenance) source, which names where the whole record
+> came from.
+
+**See also:** [Fidelity tier](#fidelity-tier), [Provenance](#provenance),
+[Engine rule](#engine-rule), [Target hint record](#target-hint-record)
 
 ## Fidelity tier
 
