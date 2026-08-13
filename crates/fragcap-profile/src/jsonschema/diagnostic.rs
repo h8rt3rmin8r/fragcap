@@ -55,6 +55,10 @@ pub enum SchemaCode {
     EmptyString,
     /// A technology finding's `category` is not one of the defined categories.
     InvalidCategory,
+    /// An engine attribution's `source` is not one of the defined sources.
+    InvalidEngineSource,
+    /// An engine attribution's `confidence` is not one of the defined levels.
+    InvalidEngineConfidence,
 }
 
 impl SchemaCode {
@@ -78,6 +82,8 @@ impl SchemaCode {
             SchemaCode::EmptyStages => "empty-stages",
             SchemaCode::EmptyString => "empty-string",
             SchemaCode::InvalidCategory => "invalid-category",
+            SchemaCode::InvalidEngineSource => "invalid-engine-source",
+            SchemaCode::InvalidEngineConfidence => "invalid-engine-confidence",
         }
     }
 }

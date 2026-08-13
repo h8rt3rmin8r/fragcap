@@ -36,6 +36,17 @@ const TECHNOLOGY_CATEGORIES: [&str; 8] = [
     "runtime",
     "launcher",
 ];
+const ENGINE_SOURCES: [&str; 3] = ["pcgamingwiki", "exe_heuristic", "depot_filename_rules"];
+const ENGINE_CONFIDENCES: [&str; 5] = ["confirmed", "high", "medium", "low", "unknown"];
+const LAUNCH_ENTRY_KEYS: [&str; 7] = [
+    "os",
+    "osarch",
+    "launch_type",
+    "beta_branch",
+    "executable",
+    "arguments",
+    "description",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -85,6 +96,7 @@ pub fn check(root: &Value) -> SchemaDiagnostics {
     if let Some(t) = obj.get("technologies") {
         check_technologies(t, "/technologies", &mut d);
     }
+    check_loose_extras(obj, "", &mut d);
 
     // Per-variant required-field rules.
     match kind {
@@ -235,6 +247,23 @@ fn allowed_top_keys(kind: Option<Kind>) -> &'static [&'static str] {
             "stage",
             "records",
             "technologies",
+        ],
+        // The loose hint variant additionally carries the hint-seeding metadata
+        // (`launch`, `launcher_mediated`, `engine`); the strict profile/package
+        // variant does not, so those keys are unknown there.
+        Some(Kind::Hint) => &[
+            "schema",
+            "kind",
+            "fidelity",
+            "notes",
+            "provenance",
+            "game",
+            "capture",
+            "stage",
+            "technologies",
+            "launch",
+            "launcher_mediated",
+            "engine",
         ],
         _ => &[
             "schema",
@@ -701,10 +730,14 @@ fn check_records(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
                 "game",
                 "capture",
                 "stage",
+                "launch",
+                "launcher_mediated",
+                "engine",
             ],
             d,
         );
         check_fidelity(obj, &join(&rp, "fidelity"), true, d);
+        check_loose_extras(obj, &rp, d);
         match obj.get("provenance") {
             None => d.report(
                 SchemaCode::MissingProvenance,
@@ -731,6 +764,165 @@ fn check_records(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
                 );
             }
         }
+    }
+}
+
+/// Validate the loose hint-seeding fields (`launch`, `launcher_mediated`,
+/// `engine`) wherever they may appear: the hint top level (`base` is empty) and
+/// each export record (`base` is the record pointer). The variant boundary (which
+/// kinds may carry them) is enforced by `allowed_top_keys` and the record
+/// allowed-key set; this only shape-checks a present value.
+fn check_loose_extras(obj: &Map<String, Value>, base: &str, d: &mut SchemaDiagnostics) {
+    if let Some(launch) = obj.get("launch") {
+        check_launch(launch, &join(base, "launch"), d);
+    }
+    if let Some(flag) = obj.get("launcher_mediated") {
+        if !flag.is_boolean() {
+            d.report(
+                SchemaCode::WrongType,
+                join(base, "launcher_mediated"),
+                "`launcher_mediated` must be a boolean",
+            );
+        }
+    }
+    if let Some(engine) = obj.get("engine") {
+        check_engine(engine, &join(base, "engine"), d);
+    }
+}
+
+fn check_launch(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => {
+            d.report(SchemaCode::WrongType, pointer, "`launch` must be an array");
+            return;
+        }
+    };
+    for (i, item) in arr.iter().enumerate() {
+        check_launch_entry(item, &format!("{pointer}/{i}"), d);
+    }
+}
+
+fn check_launch_entry(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => {
+            d.report(
+                SchemaCode::WrongType,
+                pointer,
+                "a launch entry must be an object",
+            );
+            return;
+        }
+    };
+    check_unknown_keys(obj, pointer, &LAUNCH_ENTRY_KEYS, d);
+
+    match obj.get("executable") {
+        None => d.report(
+            SchemaCode::MissingField,
+            join(pointer, "executable"),
+            "a launch entry requires `executable`",
+        ),
+        Some(Value::String(s)) if s.is_empty() => d.report(
+            SchemaCode::EmptyString,
+            join(pointer, "executable"),
+            "`executable` must not be empty",
+        ),
+        Some(Value::String(_)) => {}
+        Some(_) => d.report(
+            SchemaCode::WrongType,
+            join(pointer, "executable"),
+            "`executable` must be a string",
+        ),
+    }
+
+    // Every other launch-entry field is an optional free-string filter or label.
+    for key in [
+        "os",
+        "osarch",
+        "launch_type",
+        "beta_branch",
+        "arguments",
+        "description",
+    ] {
+        if let Some(val) = obj.get(key) {
+            if !val.is_string() {
+                d.report(
+                    SchemaCode::WrongType,
+                    join(pointer, key),
+                    format!("`{key}` must be a string"),
+                );
+            }
+        }
+    }
+}
+
+fn check_engine(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => {
+            d.report(SchemaCode::WrongType, pointer, "`engine` must be an object");
+            return;
+        }
+    };
+    check_unknown_keys(obj, pointer, &["name", "source", "confidence"], d);
+
+    if let Some(name) = obj.get("name") {
+        if !name.is_string() {
+            d.report(
+                SchemaCode::WrongType,
+                join(pointer, "name"),
+                "`engine.name` must be a string",
+            );
+        }
+    }
+
+    match obj.get("source") {
+        None => d.report(
+            SchemaCode::MissingField,
+            join(pointer, "source"),
+            "`engine.source` is required",
+        ),
+        Some(v) => match v.as_str() {
+            Some(s) if ENGINE_SOURCES.contains(&s) => {}
+            Some(_) => d.report(
+                SchemaCode::InvalidEngineSource,
+                join(pointer, "source"),
+                format!(
+                    "`engine.source` must be one of {}",
+                    ENGINE_SOURCES.join(", ")
+                ),
+            ),
+            None => d.report(
+                SchemaCode::WrongType,
+                join(pointer, "source"),
+                "`engine.source` must be a string",
+            ),
+        },
+    }
+
+    match obj.get("confidence") {
+        None => d.report(
+            SchemaCode::MissingField,
+            join(pointer, "confidence"),
+            "`engine.confidence` is required",
+        ),
+        Some(v) => match v.as_str() {
+            Some(s) if ENGINE_CONFIDENCES.contains(&s) => {}
+            Some(_) => d.report(
+                SchemaCode::InvalidEngineConfidence,
+                join(pointer, "confidence"),
+                format!(
+                    "`engine.confidence` must be one of {}",
+                    ENGINE_CONFIDENCES.join(", ")
+                ),
+            ),
+            None => d.report(
+                SchemaCode::WrongType,
+                join(pointer, "confidence"),
+                "`engine.confidence` must be a string",
+            ),
+        },
     }
 }
 

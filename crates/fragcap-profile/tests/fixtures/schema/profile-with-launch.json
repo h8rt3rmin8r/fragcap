@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "authored",
+  "game": { "id": "example", "name": "Example" },
+  "stage": [
+    { "role": "client", "lifecycle": "session", "terminal": true, "match": { "exe": "example.exe" } }
+  ],
+  "launch": [
+    { "executable": "example.exe" }
+  ]
+}

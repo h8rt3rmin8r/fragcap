@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "hint",
+  "fidelity": "heuristic-unverified",
+  "provenance": { "source": "seed" },
+  "game": { "name": "Example" },
+  "launch": [
+    { "os": "windows", "arguments": "-nointro" }
+  ]
+}
