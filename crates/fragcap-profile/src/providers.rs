@@ -208,6 +208,13 @@ impl TargetProvider for EngineRuleProvider {
                 notes.note_engine_rule_ambiguous(engine, candidates);
                 Ok(None)
             }
+            // A filesystem error left the scan incomplete: decline, but record the
+            // unreadable path so an inaccessible install is distinguishable from an
+            // unrecognized engine (P-4, FR-009), never resolved from a partial view.
+            EngineResolution::Unreadable { path } => {
+                notes.note_engine_rule_unreadable(path);
+                Ok(None)
+            }
             // No recognized layout, or a recognized layout whose client is absent.
             EngineResolution::NoMatch => Ok(None),
         }
@@ -524,6 +531,40 @@ mod tests {
                 assert_eq!(ambiguity.candidates(), 2);
             }
             other => panic!("expected Unresolved with an ambiguity note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn engine_rule_provider_surfaces_an_unreadable_install() {
+        // An install root that cannot be read declines with the path recorded, so
+        // an inaccessible install is distinguishable from an unrecognized engine
+        // (FR-009), surfaced through Unresolved rather than swallowed.
+        let base = std::env::temp_dir().join(format!(
+            "fragcap-provider-unreadable-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let absent = base.join("does-not-exist");
+        let search = SearchPath::new();
+        let bundled = BundledSet::empty();
+        let req = ResolutionRequest::for_install(&absent, &search, &bundled);
+
+        let answer = EngineRuleProvider::new()
+            .provide(&req, &mut ResolutionNotes::default())
+            .expect("no hard error");
+        assert!(answer.is_none(), "an unreadable install is a decline");
+
+        let resolver =
+            TargetResolver::new(vec![Box::new(EngineRuleProvider::new())]).expect("one provider");
+        match resolver.resolve(&req) {
+            Err(ResolutionError::Unresolved(u)) => {
+                assert_eq!(
+                    u.engine_rule_unreadable(),
+                    Some(absent.as_path()),
+                    "the unreadable install path is observable"
+                );
+            }
+            other => panic!("expected Unresolved with the unreadable path, got {other:?}"),
         }
     }
 

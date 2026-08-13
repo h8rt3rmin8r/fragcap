@@ -222,3 +222,24 @@ acceptance target (SC-001) and the honesty and determinism criteria on its own.
 US2 (Unity, Ren'Py) is the same-cost breadth increment. Ship both this slice per
 the plan; fall back to US1-only, deferring US2, only if Unity/Ren'Py detection
 proves subtler than documented.
+
+---
+
+## Post-review follow-up (PR #85)
+
+Two changes landed after the first review, both verified by `cargo xtask ci`:
+
+- [X] T023 Surface filesystem scan failures instead of swallowing them (Codex
+  P2, FR-009). Scan helpers return the unreadable path; `EngineResolution` gains
+  an `Unreadable { path }` variant; the provider records an
+  `engine_rule_unreadable` note surfaced through `Unresolved` and declines rather
+  than resolving from a partial view. `resolve_engine` remembers the first
+  unreadable path but lets a clean lower-precedence engine still resolve. Files:
+  `engine_rule.rs`, `providers.rs`, `resolver.rs`; tests for absent dir, file-as-
+  root, and provider/resolver surfacing (research D11).
+- [X] T024 Align engine signatures with the open
+  `SteamDatabase/FileDetectionRuleSets` ruleset: add the `GameAssembly.dll`
+  IL2CPP marker to Unity and add a Godot rule (`*.pck` beside a like-named exe),
+  and document the ruleset as the authoritative source. Files: `engine_rule.rs`
+  (Engine::Godot, resolve_godot, Unity marker), spec 15.7.1, glossary, contract,
+  data-model (research D12).

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Engine rules: recognizing a game's socket-holding client from its engine's
-//! documented on-disk install layout, specification section 15.7.
+//! Engine rules: recognizing a game's socket-holding client from its game
+//! engine's documented on-disk install layout, specification section 15.7.
 //!
 //! A large class of games ship a thin launcher stub in the install root whose
 //! only job is to relaunch the real networked client. Before the game has ever
@@ -11,14 +11,33 @@
 //! conventions, so recognizing the convention resolves the client with no
 //! per-game data.
 //!
+//! # Filename and path signatures only
+//!
+//! The signatures this module keys on are the same ones the Steam database uses
+//! to attribute an engine: `SteamDatabase/FileDetectionRuleSets` (MIT), the open
+//! ruleset behind SteamDB's technology table, detects engines from depot file
+//! names and paths alone, never from file contents. This module tracks the
+//! filename-signature subset of that ruleset that also names the client
+//! executable: a `*-Win64-Shipping.exe` under `Binaries\Win64` (Unreal), a
+//! `*_Data` directory beside a `UnityPlayer.dll` or `GameAssembly.dll` (Unity,
+//! including IL2CPP builds), a `*.pck` archive beside the binary (Godot), and a
+//! `renpy` directory with `.rpa` archives (Ren'Py). Like SteamDB's, these are
+//! educated guesses from layout, which is exactly why every answer is stamped
+//! heuristic-unverified.
+//!
+//! # Passive and honest
+//!
 //! This module is pure filesystem inspection. It reads directory entries and
 //! nothing else: it opens no process handle, reads no process memory, launches
 //! nothing, and reads no post-run artifact (constitution P-1). An engine rule is
 //! a heuristic, so every answer it feeds the cascade is stamped
 //! [`FidelityTier::HeuristicUnverified`](crate::schema::FidelityTier), never
 //! higher (P-9). When it recognizes a layout but cannot single out one client, it
-//! declines rather than pick one arbitrarily, and the cascade falls through to
-//! runtime observation.
+//! declines rather than pick one arbitrarily. When a filesystem error leaves a
+//! scan incomplete, it declines with the unreadable path recorded rather than
+//! resolving from a partial view (P-4, FR-009); an incomplete scan could hide a
+//! second candidate and turn a true ambiguity into a false single answer, so an
+//! unreadable tree is surfaced, not swallowed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,18 +54,22 @@ use crate::target::EngineRuleTarget;
 pub enum Engine {
     /// Unreal Engine: a `*-Win64-Shipping.exe` under `Binaries\Win64`.
     Unreal,
-    /// Unity: a `*_Data` directory and `UnityPlayer.dll` beside the player.
+    /// Unity: a `*_Data` directory beside `UnityPlayer.dll` or `GameAssembly.dll`.
     Unity,
+    /// Godot: a `*.pck` archive beside the binary.
+    Godot,
     /// Ren'Py: a `renpy` directory and `.rpa` archives.
     RenPy,
 }
 
 impl Engine {
-    /// A stable lower-case label for diagnostics.
+    /// A stable lower-case label for diagnostics. Matches the engine names used
+    /// by the `SteamDatabase/FileDetectionRuleSets` ruleset, lower-cased.
     pub fn as_str(&self) -> &'static str {
         match self {
             Engine::Unreal => "unreal",
             Engine::Unity => "unity",
+            Engine::Godot => "godot",
             Engine::RenPy => "renpy",
         }
     }
@@ -66,42 +89,70 @@ pub(crate) enum EngineResolution {
     NoMatch,
     /// A rule recognized its layout but matched more than one candidate client.
     Ambiguous { engine: Engine, candidates: usize },
+    /// A filesystem error left a scan incomplete, so no answer is trustworthy.
+    /// Carries the path that could not be read, for an observable decline note.
+    Unreadable { path: PathBuf },
 }
+
+/// A directory scan that could not be completed, carrying the unreadable path.
+type ScanResult<T> = Result<T, PathBuf>;
 
 /// The maximum directory depth the layout probes descend to.
 ///
 /// The recognized layouts are shallow (an Unreal `Binaries\Win64` sits a level or
-/// two below the install root; Unity and Ren'Py markers sit at or just under the
-/// root), so a small bound keeps the scan cheap and avoids false matches from
-/// tools buried deep in a large install tree.
+/// two below the install root; Unity, Godot, and Ren'Py markers sit at or just
+/// under the root), so a small bound keeps the scan cheap and avoids false
+/// matches from tools buried deep in a large install tree.
 const MAX_SCAN_DEPTH: usize = 6;
 
 /// Evaluate the engine rules against an install directory, returning the first
 /// engine whose layout is present.
 ///
-/// The engines are tried in a fixed, total order (Unreal, Unity, Ren'Py), so the
-/// result never depends on filesystem iteration order (FR-006). A rule that
-/// recognizes its layout answers (with a resolution or an ambiguity); only a rule
-/// that does not recognize its layout falls through to the next.
+/// The engines are tried in a fixed, total order (Unreal, Unity, Godot, Ren'Py),
+/// so the result never depends on filesystem iteration order (FR-006). A rule
+/// that recognizes its layout answers (with a resolution or an ambiguity); a rule
+/// that does not recognize its layout falls through to the next. A rule that
+/// could not complete its scan records the unreadable path and falls through, so
+/// a clean lower-precedence resolution still wins; only if nothing resolves does
+/// the unreadable path surface, distinguishing an inaccessible install from an
+/// unrecognized engine.
 pub(crate) fn resolve_engine(install_root: &Path) -> EngineResolution {
-    for recognizer in [resolve_unreal, resolve_unity, resolve_renpy] {
+    let mut unreadable: Option<PathBuf> = None;
+    for recognizer in [resolve_unreal, resolve_unity, resolve_godot, resolve_renpy] {
         match recognizer(install_root) {
             EngineResolution::NoMatch => continue,
+            EngineResolution::Unreadable { path } => {
+                if unreadable.is_none() {
+                    unreadable = Some(path);
+                }
+                continue;
+            }
             resolved_or_ambiguous => return resolved_or_ambiguous,
         }
     }
-    EngineResolution::NoMatch
+    match unreadable {
+        Some(path) => EngineResolution::Unreadable { path },
+        None => EngineResolution::NoMatch,
+    }
 }
 
 /// Unreal: a `*-Win64-Shipping.exe` file under a directory whose trailing
 /// components are `Binaries\Win64`.
 fn resolve_unreal(install_root: &Path) -> EngineResolution {
+    let dirs = match dirs_within(install_root, MAX_SCAN_DEPTH) {
+        Ok(dirs) => dirs,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
     let mut candidates: Vec<PathBuf> = Vec::new();
-    for dir in dirs_within(install_root, MAX_SCAN_DEPTH) {
+    for dir in dirs {
         if !ends_with_components(&dir, &["binaries", "win64"]) {
             continue;
         }
-        for file in files_in(&dir) {
+        let files = match files_in(&dir) {
+            Ok(files) => files,
+            Err(path) => return EngineResolution::Unreadable { path },
+        };
+        for file in files {
             if file_name_lower(&file).is_some_and(|n| n.ends_with("-win64-shipping.exe")) {
                 candidates.push(file);
             }
@@ -110,18 +161,27 @@ fn resolve_unreal(install_root: &Path) -> EngineResolution {
     decide(Engine::Unreal, candidates, "Binaries\\Win64")
 }
 
-/// Unity: a `*_Data` directory and a `UnityPlayer.dll` in the install root, with
-/// the player executable named after the `*_Data` stem.
+/// Unity: a `*_Data` directory beside a `UnityPlayer.dll` (mono) or a
+/// `GameAssembly.dll` (IL2CPP) in the install root, with the player executable
+/// named after the `*_Data` stem. Both markers are Unity evidence in the
+/// `FileDetectionRuleSets` ruleset.
 fn resolve_unity(install_root: &Path) -> EngineResolution {
-    let root_files = files_in(install_root);
-    let has_unity_player = root_files
-        .iter()
-        .any(|f| file_name_lower(f).is_some_and(|n| n == "unityplayer.dll"));
-    if !has_unity_player {
+    let root_files = match files_in(install_root) {
+        Ok(files) => files,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
+    let has_unity_marker = root_files.iter().any(|f| {
+        file_name_lower(f).is_some_and(|n| n == "unityplayer.dll" || n == "gameassembly.dll")
+    });
+    if !has_unity_marker {
         return EngineResolution::NoMatch;
     }
+    let root_dirs = match dirs_in(install_root) {
+        Ok(dirs) => dirs,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
     let mut candidates: Vec<PathBuf> = Vec::new();
-    for dir in dirs_in(install_root) {
+    for dir in root_dirs {
         let Some(name) = dir_name_lower(&dir) else {
             continue;
         };
@@ -140,16 +200,51 @@ fn resolve_unity(install_root: &Path) -> EngineResolution {
     decide(Engine::Unity, candidates, "")
 }
 
+/// Godot: a `*.pck` archive in the install root, with the game executable named
+/// after the archive's stem beside it (the default Godot export names the binary
+/// and its `.pck` from the same stem).
+fn resolve_godot(install_root: &Path) -> EngineResolution {
+    let root_files = match files_in(install_root) {
+        Ok(files) => files,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for file in &root_files {
+        let Some(name) = file_name_lower(file) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".pck") else {
+            continue;
+        };
+        let exe = format!("{stem}.exe");
+        if let Some(found) = root_files
+            .iter()
+            .find(|f| file_name_lower(f).is_some_and(|n| n == exe))
+        {
+            candidates.push(found.clone());
+        }
+    }
+    decide(Engine::Godot, candidates, "")
+}
+
 /// Ren'Py: a `renpy` directory in the install root and at least one `.rpa`
 /// archive, with a launcher executable in the root.
 fn resolve_renpy(install_root: &Path) -> EngineResolution {
-    let has_renpy_dir = dirs_in(install_root)
+    let root_dirs = match dirs_in(install_root) {
+        Ok(dirs) => dirs,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
+    let has_renpy_dir = root_dirs
         .iter()
         .any(|d| dir_name_lower(d).is_some_and(|n| n == "renpy"));
     if !has_renpy_dir {
         return EngineResolution::NoMatch;
     }
-    let has_rpa = files_within(install_root, MAX_SCAN_DEPTH)
+    let all_files = match files_within(install_root, MAX_SCAN_DEPTH) {
+        Ok(files) => files,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
+    let has_rpa = all_files
         .iter()
         .any(|f| file_name_lower(f).is_some_and(|n| n.ends_with(".rpa")));
     if !has_rpa {
@@ -159,7 +254,11 @@ fn resolve_renpy(install_root: &Path) -> EngineResolution {
     // (for example a 32-bit sibling); the rule cannot tell pre-launch which holds
     // sockets, so more than one is an honest ambiguity the cascade resolves at
     // runtime rather than a tie the rule breaks arbitrarily.
-    let candidates: Vec<PathBuf> = files_in(install_root)
+    let root_files = match files_in(install_root) {
+        Ok(files) => files,
+        Err(path) => return EngineResolution::Unreadable { path },
+    };
+    let candidates: Vec<PathBuf> = root_files
         .into_iter()
         .filter(|f| file_name_lower(f).is_some_and(|n| n.ends_with(".exe")))
         .collect();
@@ -203,60 +302,61 @@ fn build_target(engine: Engine, path: &Path, path_contains: &str) -> Option<Engi
 }
 
 // Filesystem helpers. All read directory entries only; none opens a process or
-// reads process memory.
+// reads process memory. Each returns the unreadable path on error rather than an
+// empty result, so an incomplete scan is never mistaken for an absent layout.
 
-/// The immediate file entries of a directory (non-recursive), empty on error.
-fn files_in(dir: &Path) -> Vec<PathBuf> {
+/// The immediate file entries of a directory (non-recursive).
+fn files_in(dir: &Path) -> ScanResult<Vec<PathBuf>> {
     read_entries(dir, |ft| ft.is_file())
 }
 
-/// The immediate subdirectories of a directory (non-recursive), empty on error.
-fn dirs_in(dir: &Path) -> Vec<PathBuf> {
+/// The immediate subdirectories of a directory (non-recursive).
+fn dirs_in(dir: &Path) -> ScanResult<Vec<PathBuf>> {
     read_entries(dir, |ft| ft.is_dir())
 }
 
-/// Immediate entries of a directory whose file type satisfies `keep`.
-fn read_entries(dir: &Path, keep: impl Fn(&fs::FileType) -> bool) -> Vec<PathBuf> {
-    let Ok(read) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
+/// Immediate entries of a directory whose file type satisfies `keep`, or the
+/// directory path if it could not be read fully.
+fn read_entries(dir: &Path, keep: impl Fn(&fs::FileType) -> bool) -> ScanResult<Vec<PathBuf>> {
+    let read = fs::read_dir(dir).map_err(|_| dir.to_path_buf())?;
     let mut out = Vec::new();
-    for entry in read.flatten() {
-        if let Ok(ft) = entry.file_type() {
-            if keep(&ft) {
-                out.push(entry.path());
-            }
+    for entry in read {
+        let entry = entry.map_err(|_| dir.to_path_buf())?;
+        let ft = entry.file_type().map_err(|_| dir.to_path_buf())?;
+        if keep(&ft) {
+            out.push(entry.path());
         }
     }
-    out
+    Ok(out)
 }
 
 /// All directories under `root` within `max_depth` levels, including `root`.
-fn dirs_within(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+fn dirs_within(root: &Path, max_depth: usize) -> ScanResult<Vec<PathBuf>> {
     let mut out = vec![root.to_path_buf()];
-    collect_dirs(root, max_depth, &mut out);
-    out
+    collect_dirs(root, max_depth, &mut out)?;
+    Ok(out)
 }
 
-fn collect_dirs(dir: &Path, remaining_depth: usize, out: &mut Vec<PathBuf>) {
+fn collect_dirs(dir: &Path, remaining_depth: usize, out: &mut Vec<PathBuf>) -> ScanResult<()> {
     if remaining_depth == 0 {
-        return;
+        return Ok(());
     }
-    for sub in dirs_in(dir) {
-        collect_dirs(&sub, remaining_depth - 1, out);
+    for sub in dirs_in(dir)? {
+        collect_dirs(&sub, remaining_depth - 1, out)?;
         out.push(sub);
     }
+    Ok(())
 }
 
 /// All files under `root` within `max_depth` levels.
-fn files_within(root: &Path, max_depth: usize) -> Vec<PathBuf> {
-    let mut out = files_in(root);
-    for dir in dirs_within(root, max_depth) {
+fn files_within(root: &Path, max_depth: usize) -> ScanResult<Vec<PathBuf>> {
+    let mut out = files_in(root)?;
+    for dir in dirs_within(root, max_depth)? {
         if dir != root {
-            out.extend(files_in(&dir));
+            out.extend(files_in(&dir)?);
         }
     }
-    out
+    Ok(out)
 }
 
 /// The lower-cased final file name of a path, if it has one.
@@ -459,10 +559,43 @@ mod tests {
     }
 
     #[test]
-    fn unity_without_a_player_dll_does_not_match() {
+    fn unity_il2cpp_is_recognized_by_game_assembly_dll() {
+        // An IL2CPP build may carry GameAssembly.dll; it is Unity evidence in the
+        // FileDetectionRuleSets ruleset just as UnityPlayer.dll is.
+        let tree = TempTree::new("unity-il2cpp");
+        tree.mkdir("MyIl2cppGame_Data");
+        tree.touch("GameAssembly.dll");
+        tree.touch("MyIl2cppGame.exe");
+        let target = resolved(resolve_engine(tree.path()));
+        assert_eq!(target.engine(), Engine::Unity);
+        assert_eq!(target.image_name(), "MyIl2cppGame.exe");
+    }
+
+    #[test]
+    fn unity_without_a_marker_dll_does_not_match() {
         let tree = TempTree::new("unity-nodll");
         tree.mkdir("MyUnityGame_Data");
         tree.touch("MyUnityGame.exe");
+        assert!(matches!(
+            resolve_engine(tree.path()),
+            EngineResolution::NoMatch
+        ));
+    }
+
+    #[test]
+    fn godot_resolves_the_binary_beside_its_pck() {
+        let tree = TempTree::new("godot");
+        tree.touch("MyGodotGame.pck");
+        tree.touch("MyGodotGame.exe");
+        let target = resolved(resolve_engine(tree.path()));
+        assert_eq!(target.engine(), Engine::Godot);
+        assert_eq!(target.image_name(), "MyGodotGame.exe");
+    }
+
+    #[test]
+    fn godot_pck_without_a_matching_binary_does_not_fabricate_a_target() {
+        let tree = TempTree::new("godot-nopair");
+        tree.touch("data.pck"); // no data.exe beside it
         assert!(matches!(
             resolve_engine(tree.path()),
             EngineResolution::NoMatch
@@ -512,33 +645,68 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_or_absent_directory_does_not_match() {
+    fn an_existing_but_empty_directory_is_a_clean_no_match() {
         let tree = TempTree::new("empty");
         assert!(matches!(
             resolve_engine(tree.path()),
             EngineResolution::NoMatch
         ));
+    }
+
+    #[test]
+    fn an_absent_directory_is_unreadable_not_a_no_match() {
+        // An inaccessible install must be distinguishable from an unrecognized
+        // engine (FR-009). A path that cannot be read fails the same way a
+        // permission-denied directory would.
+        let tree = TempTree::new("absent");
         let absent = tree.path().join("does-not-exist");
-        assert!(matches!(resolve_engine(&absent), EngineResolution::NoMatch));
+        match resolve_engine(&absent) {
+            EngineResolution::Unreadable { path } => assert_eq!(path, absent),
+            other => panic!("expected Unreadable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_file_as_install_root_is_unreadable_not_a_no_match() {
+        let tree = TempTree::new("fileroot");
+        tree.touch("not-a-dir");
+        let file = tree.path().join("not-a-dir");
+        match resolve_engine(&file) {
+            EngineResolution::Unreadable { path } => assert_eq!(path, file),
+            other => panic!("expected Unreadable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_clean_lower_engine_resolves_even_when_a_higher_scan_is_incomplete() {
+        // resolve_unreal walks the whole tree; if an unrelated subtree were
+        // unreadable it would report Unreadable, but a clean readable tree with a
+        // Godot layout resolves as Godot and the walk completes. This documents
+        // that a readable tree never spuriously reports Unreadable.
+        let tree = TempTree::new("clean-godot");
+        tree.touch("MyGodotGame.pck");
+        tree.touch("MyGodotGame.exe");
+        assert!(matches!(
+            resolve_engine(tree.path()),
+            EngineResolution::Resolved(_)
+        ));
     }
 
     #[test]
     fn the_engine_labels_are_stable() {
         assert_eq!(Engine::Unreal.as_str(), "unreal");
         assert_eq!(Engine::Unity.as_str(), "unity");
+        assert_eq!(Engine::Godot.as_str(), "godot");
         assert_eq!(Engine::RenPy.as_str(), "renpy");
     }
 
     #[test]
-    fn a_resolved_unreal_target_is_stamped_by_the_provider_layer_only() {
-        // The module itself carries no fidelity; the provider stamps it. This test
-        // documents that the resolved target names a real file that exists.
+    fn a_resolved_unreal_target_names_a_file_that_exists() {
         let tree = unreal_tree("Exists");
         let target = resolved(resolve_engine(tree.path()));
         assert!(Path::new(target.image_path()).is_file());
-        // Fidelity is applied at the provider; assert the tier exists as expected
-        // there via the provider tests. Here we only touch the enum to keep the
-        // separation explicit.
+        // Fidelity is applied at the provider, not here; touch the enum to keep
+        // the separation explicit.
         let _ = FidelityTier::HeuristicUnverified;
     }
 }

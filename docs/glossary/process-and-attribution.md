@@ -839,12 +839,17 @@ games ship a thin launcher stub in the install root whose only job is to relaunc
 the real networked client; before the game has run, only the on-disk layout
 distinguishes the two. An engine rule keys on that layout: Unreal Engine's
 shipping client is a `*-Win64-Shipping.exe` under a `Binaries\Win64` directory,
-Unity's player sits beside a `*_Data` directory and a `UnityPlayer.dll`, and
-Ren'Py ships a `renpy` directory and `.rpa` archives. It reads the filesystem
-only, opening no process handle and reading no process memory (constitution
-P-1), and it ignores post-run artifacts such as per-user AppData, which do not
-exist before the first launch. Introduced by issue #77, filled in by slice S029;
-its [provenance](#provenance) source is `engine-rule`.
+Unity's player sits beside a `*_Data` directory and a `UnityPlayer.dll` or
+`GameAssembly.dll`, Godot's binary sits beside a `*.pck` archive, and Ren'Py
+ships a `renpy` directory and `.rpa` archives. These are the same class of
+filename evidence the Steam database's open detection ruleset
+(`SteamDatabase/FileDetectionRuleSets`, MIT) uses to attribute an engine from
+depot file names alone; fragcap tracks the subset that also names the client
+executable, so the rules stay aligned with a maintained source. It reads the
+filesystem only, opening no process handle and reading no process memory
+(constitution P-1), and it ignores post-run artifacts such as per-user AppData,
+which do not exist before the first launch. Introduced by issue #77, filled in by
+slice S029; its [provenance](#provenance) source is `engine-rule`.
 
 {: .matters }
 > An engine rule is a heuristic, so every answer it produces is stamped
@@ -852,7 +857,9 @@ its [provenance](#provenance) source is `engine-rule`.
 > recognized but more than one candidate client matches, the rule declines rather
 > than pick one arbitrarily, and the cascade falls through to
 > [runtime observation](#resolution-cascade), which disambiguates once the game is
-> running.
+> running. A directory it cannot read is not the same as an absent layout: an
+> incomplete scan could hide a second candidate, so the rule declines and records
+> the unreadable path rather than resolving from a partial view (P-4).
 
 **See also:** [Provider](#provider), [Provenance](#provenance),
 [Fidelity tier](#fidelity-tier), [Resolution cascade](#resolution-cascade)

@@ -145,14 +145,63 @@ constitution, and the slice scope.
 
 ## D10. Unity and Ren'Py in this slice
 
-- **Decision**: Implement all three rules (Unreal, Unity, Ren'Py) in this slice,
-  behind one rule-evaluation path with a total, iteration-order-independent
-  order. Unreal is the hard acceptance gate; Unity and Ren'Py split to a
-  follow-up only if unforeseen complexity forces it.
-- **Rationale**: The three share the provider, the origin variant, the fidelity
-  and provenance stamping, and the fixture helper. Their marginal cost is a
+- **Decision**: Implement the Unreal, Unity, and Ren'Py rules (and, per D12,
+  Godot) in this slice, behind one rule-evaluation path with a total,
+  iteration-order-independent order. Unreal is the hard acceptance gate; the
+  others split to a follow-up only if unforeseen complexity forces it.
+- **Rationale**: They share the provider, the origin variant, the fidelity and
+  provenance stamping, and the fixture helper. Their marginal cost is a
   recognizer function and a fixture each. Landing them together is the plan's
   default and gives the cascade real breadth immediately.
-- **Alternatives considered**: Unreal only, defer Unity/Ren'Py. Held in reserve
-  as the fallback if Unity/Ren'Py detection proves subtler than documented; the
-  spec (FR-008) and acceptance (SC-001 targets Unreal) permit it.
+- **Alternatives considered**: Unreal only, defer the rest. Held in reserve as
+  the fallback if the others prove subtler than documented; the spec (FR-008) and
+  acceptance (SC-001 targets Unreal) permit it.
+
+## D11. A filesystem error is not a no-match (added in review)
+
+- **Decision**: The scan helpers return the unreadable path on error rather than
+  an empty result. A recognizer whose scan cannot complete returns an
+  `Unreadable { path }` outcome; the provider records it as an
+  `engine_rule_unreadable` note surfaced through `Unresolved`, and declines
+  rather than resolving from a partial view. `resolve_engine` remembers the first
+  unreadable path but lets a clean lower-precedence engine resolve; the path
+  surfaces only when nothing resolves.
+- **Rationale**: FR-009 requires the reason for a decline, including "cannot read
+  the install directory," to be observable. Swallowing `read_dir` errors into an
+  empty result both violates that and is unsafe: an unreadable subtree could hide
+  a second `*-Win64-Shipping.exe`, turning a true `Ambiguous` into a false
+  single `Resolved`. Declining on an incomplete scan preserves P-9 honesty and
+  P-4 no-silent-loss. Raised by the PR review (Codex P2).
+- **Alternatives considered**: (a) Keep swallowing errors. Rejected: the review
+  finding is correct and the false-single-resolve is a real P-9 hazard. (b)
+  Return a hard `ProviderError`. Rejected: an unreadable tree does not need to
+  abort the whole cascade; runtime observation can still resolve, so a
+  decline-with-note is proportionate and keeps the provider's "never `Err`"
+  contract. (c) Surface `Unreadable` immediately, blocking lower engines.
+  Rejected: a readable Unity or Godot layout with one unrelated unreadable subdir
+  should still resolve; remember-and-continue keeps clean resolutions winning.
+
+## D12. Align the engine signatures with the SteamDB detection ruleset
+
+- **Decision**: Track the open `SteamDatabase/FileDetectionRuleSets` ruleset (MIT,
+  the source behind SteamDB's technology table) for the layout signatures, taking
+  the subset that also names the client executable. This adds the `GameAssembly.dll`
+  IL2CPP marker to the Unity rule (alongside `UnityPlayer.dll`) and adds a Godot
+  rule (`*.pck` beside a like-named executable), and it documents the ruleset as
+  the authoritative source the patterns follow.
+- **Rationale**: The project's research on the Steam catalog identifies
+  `FileDetectionRuleSets` as the official, maintained engine-detection ruleset,
+  operating on filenames and paths only, which is exactly fragcap's constraint
+  (no file-content reads, P-1). Aligning with it means the signatures track a
+  maintained authority rather than an invented one, and it broadens coverage
+  (IL2CPP Unity builds, Godot titles) at the cost of one marker and one recognizer.
+  The ruleset's own posture, that detection is a set of educated guesses, matches
+  the `heuristic-unverified` stamp exactly.
+- **Alternatives considered**: (a) Vendor or execute the full ruleset. Rejected
+  for this slice: the full ruleset needs depot file manifests (license-gated) and
+  covers anti-cheat, SDKs, and emulators fragcap does not target; the runtime
+  engine rule needs only the client-naming filename subset, applied to a local
+  install directory. The full catalog-scale detection is a separate concern (the
+  Steam catalog research), not the S029 runtime provider. (b) Invent our own
+  signatures. Rejected: an authoritative maintained source exists, so tracking it
+  is both less work and more correct.

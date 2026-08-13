@@ -47,3 +47,31 @@ is built in-crate via `Default` and the existing setters, and nothing is added t
 fidelity this provider stamps (`heuristic-unverified`) remains separate from the
 attribution fidelity (`Live`/`Retained`/`None`) in `fragcap-core::attribution`,
 which this slice does not touch. MSRV stays 1.82.
+
+**2026-08-12** Two further decisions landed from PR review. First, a filesystem
+error is no longer swallowed into a no-match: the scan helpers return the
+unreadable path, a recognizer whose scan cannot complete returns an `Unreadable`
+outcome, and the provider records an `engine_rule_unreadable` note surfaced
+through `Unresolved` and declines rather than resolving from a partial view. This
+was a review finding (Codex P2): swallowing `read_dir` errors both violated
+FR-009 (an inaccessible install must be distinguishable from an unrecognized
+engine) and was unsafe, because an unreadable subtree could hide a second
+`*-Win64-Shipping.exe` and turn a true ambiguity into a false single answer. The
+resolver remembers the first unreadable path but lets a clean lower-precedence
+engine still resolve, so the path surfaces only when nothing resolves. The
+provider keeps its "never `Err`" contract; an unreadable tree is a
+decline-with-note, not a cascade abort, because runtime observation can still
+resolve.
+
+Second, the engine layout signatures were aligned with the open
+`SteamDatabase/FileDetectionRuleSets` ruleset (MIT), the maintained source behind
+SteamDB's engine attribution, which detects engines from depot filenames and
+paths only, exactly fragcap's constraint (no file-content reads, P-1). fragcap
+tracks the subset of that ruleset that also names the client executable. This
+added the `GameAssembly.dll` IL2CPP marker to the Unity rule (alongside
+`UnityPlayer.dll`) and a Godot rule (a `*.pck` archive beside a like-named
+executable, the SteamDB Godot signal). The full ruleset is not vendored or
+executed: it needs license-gated depot manifests and covers anti-cheat, SDKs, and
+emulators the runtime provider does not target; catalog-scale detection is a
+separate concern. The ruleset's own posture, that detection is a set of educated
+guesses, matches the `heuristic-unverified` stamp exactly. No dependency is added.

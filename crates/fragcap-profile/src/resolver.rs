@@ -30,7 +30,7 @@
 //! not.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fragcap_core::process::ProcessTree;
 
@@ -255,6 +255,7 @@ impl fmt::Display for EngineRuleAmbiguity {
 pub struct ResolutionNotes {
     profile_not_found: Option<ResolveError>,
     engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
+    engine_rule_unreadable: Option<PathBuf>,
 }
 
 impl ResolutionNotes {
@@ -268,6 +269,15 @@ impl ResolutionNotes {
     pub fn note_engine_rule_ambiguous(&mut self, engine: Engine, candidates: usize) {
         self.engine_rule_ambiguous = Some(EngineRuleAmbiguity { engine, candidates });
     }
+
+    /// Record that the engine-rule provider could not fully read the install
+    /// directory, so its scan was incomplete and it declined rather than resolve
+    /// from a partial view. The first unreadable path is kept.
+    pub fn note_engine_rule_unreadable(&mut self, path: PathBuf) {
+        if self.engine_rule_unreadable.is_none() {
+            self.engine_rule_unreadable = Some(path);
+        }
+    }
 }
 
 /// Nothing in the cascade answered.
@@ -280,6 +290,7 @@ impl ResolutionNotes {
 pub struct Unresolved {
     profile_not_found: Option<ResolveError>,
     engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
+    engine_rule_unreadable: Option<PathBuf>,
 }
 
 impl Unresolved {
@@ -293,6 +304,13 @@ impl Unresolved {
     /// declined because it matched more than one candidate client.
     pub fn engine_rule_ambiguous(&self) -> Option<EngineRuleAmbiguity> {
         self.engine_rule_ambiguous
+    }
+
+    /// The install path the engine-rule provider could not fully read, if a
+    /// filesystem error left its scan incomplete. Distinguishes an inaccessible
+    /// install from an unrecognized engine (FR-009).
+    pub fn engine_rule_unreadable(&self) -> Option<&Path> {
+        self.engine_rule_unreadable.as_deref()
     }
 
     /// Consume the outcome and return the profile provider's not-found error, so
@@ -317,7 +335,15 @@ impl fmt::Display for ResolutionError {
             ResolutionError::Provider(e) => write!(f, "{e}"),
             ResolutionError::Unresolved(u) => match &u.profile_not_found {
                 Some(e) => write!(f, "{e}"),
-                None => write!(f, "no target could be resolved"),
+                None => match &u.engine_rule_unreadable {
+                    Some(p) => write!(
+                        f,
+                        "no target could be resolved; the engine rule could not \
+                         fully read {}",
+                        p.display()
+                    ),
+                    None => write!(f, "no target could be resolved"),
+                },
             },
         }
     }
@@ -417,6 +443,7 @@ impl TargetResolver {
         Err(ResolutionError::Unresolved(Unresolved {
             profile_not_found: notes.profile_not_found,
             engine_rule_ambiguous: notes.engine_rule_ambiguous,
+            engine_rule_unreadable: notes.engine_rule_unreadable,
         }))
     }
 }

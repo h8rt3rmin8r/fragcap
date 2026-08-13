@@ -22,6 +22,10 @@ impl TargetProvider for EngineRuleProvider {
 - No rule matches, or a matched rule's client file is absent: return `Ok(None)`.
 - Ambiguous match (more than one candidate client for one rule): record
   `notes.note_engine_rule_ambiguous(engine, candidates)` and return `Ok(None)`.
+- Unreadable scan (a filesystem error left the scan incomplete): record
+  `notes.note_engine_rule_unreadable(path)` and return `Ok(None)`, so an
+  inaccessible install is distinguishable from an unrecognized engine (FR-009)
+  and never resolved from a partial view.
 - Exactly one candidate: return `Ok(Some(target))` where
   - `target.fidelity() == FidelityTier::HeuristicUnverified`
   - `target.provenance().source() == "engine-rule"`
@@ -45,7 +49,7 @@ impl<'a> ResolutionRequest<'a> {
 ## Module surface (`engine_rule`)
 
 ```text
-pub enum Engine { Unreal, Unity, RenPy }
+pub enum Engine { Unreal, Unity, Godot, RenPy }
 impl Engine { pub fn as_str(&self) -> &'static str; }
 
 pub struct EngineRuleTarget { /* engine, image_name, image_path, identity */ }
@@ -57,23 +61,30 @@ impl EngineRuleTarget {
 }
 
 // Internal to the module (not part of the public API):
-enum EngineResolution { Resolved(EngineRuleTarget), NoMatch,
-                        Ambiguous { engine: Engine, candidates: usize } }
+enum EngineResolution { Resolved(Box<EngineRuleTarget>), NoMatch,
+                        Ambiguous { engine: Engine, candidates: usize },
+                        Unreadable { path: PathBuf } }
 fn resolve_engine(install_root: &Path) -> EngineResolution;
 ```
 
 `resolve_engine` contract:
 
-- Evaluates the engine rules in a fixed, total order (Unreal, Unity, Ren'Py) and
-  returns the first engine whose layout is present. The order is declared, not
-  incidental, so the result is independent of filesystem iteration order.
+- Evaluates the engine rules in a fixed, total order (Unreal, Unity, Godot,
+  Ren'Py) and returns the first engine whose layout is present. The order is
+  declared, not incidental, so the result is independent of filesystem iteration
+  order. The layout signatures track the open
+  `SteamDatabase/FileDetectionRuleSets` ruleset.
 - Unreal rule: a file named `*-Win64-Shipping.exe` (case-insensitive) under a
   directory ending in `Binaries/Win64` (case-insensitive, either separator). The
   resolved `identity` carries `exe = <that file name>` and
   `path_contains = "Binaries\\Win64"`.
 - Unity rule: a `*_Data` directory beside a player executable, with a
-  `UnityPlayer.dll` present. The resolved client is the player executable
-  matching the `*_Data` stem; `identity` carries its `exe`.
+  `UnityPlayer.dll` or `GameAssembly.dll` (IL2CPP) present. The resolved client
+  is the player executable matching the `*_Data` stem; `identity` carries its
+  `exe`.
+- Godot rule: a `*.pck` archive in the root with an executable named after the
+  archive stem beside it. The resolved client is that executable; `identity`
+  carries its `exe`.
 - Ren'Py rule: a `renpy` directory and at least one `.rpa` archive under the
   root. The resolved client is the Ren'Py launcher executable in the root;
   `identity` carries its `exe`.
@@ -81,6 +92,9 @@ fn resolve_engine(install_root: &Path) -> EngineResolution;
   fabricated target.
 - More than one candidate client for the winning rule yields
   `Ambiguous { engine, candidates }`.
+- A filesystem read error yields `Unreadable { path }` rather than a
+  possibly-incomplete `NoMatch` or `Resolved`; a clean lower-precedence engine
+  still resolves, and the unreadable path surfaces only when nothing resolves.
 
 ## Public re-exports (`lib.rs`)
 
@@ -97,5 +111,6 @@ match on `TargetOrigin::EngineRule` and read the resolved client.
 - Fidelity honesty: the resolved target is `HeuristicUnverified` with
   provenance `engine-rule`; no path stamps a higher tier.
 - No silent loss: an ambiguous layout records a note observable via `Unresolved`
-  when nothing lower resolves.
+  when nothing lower resolves; an unreadable install records the path observable
+  via `Unresolved::engine_rule_unreadable()`, distinct from a clean no-match.
 - P-1: the module names no process handle API; `cargo xtask lint` stays green.
