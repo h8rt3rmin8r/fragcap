@@ -224,9 +224,11 @@ validates against the master target schema.
 2. **Given** the written `technologies` structure, **When** it is validated
    against the master target schema, **Then** it conforms (the schema defines the
    category vocabulary and the per-finding shape).
-3. **Given** a target for which no technologies were detected, **When** its
-   metadata is written, **Then** the `technologies` structure is present and
-   empty (or omitted per the schema's optionality rule), never malformed.
+3. **Given** a target for which no technologies were detected, **When** the
+   scaffold writes its metadata, **Then** the `technologies` structure is present
+   and empty (an empty array), so a scan that ran and found nothing is
+   distinguishable from an older artifact that predates the field; the schema
+   still keeps the field optional so those older artifacts validate.
 
 ---
 

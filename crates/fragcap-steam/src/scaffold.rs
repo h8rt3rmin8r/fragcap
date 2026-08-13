@@ -405,23 +405,24 @@ fn render(
     );
     profile.insert("stage".to_string(), json!(stages));
 
-    // A detected technology set is carried as data. Omit the key entirely when
-    // nothing was detected, which the schema allows and which keeps a
-    // technology-free install's scaffold unchanged.
-    if !technologies.is_empty() {
-        let techs: Vec<Value> = technologies
-            .iter()
-            .map(|t| {
-                json!({
-                    "category": t.category.as_str(),
-                    "name": t.name,
-                    "marker_path": t.marker_path,
-                    "fidelity": t.fidelity.as_str(),
-                })
+    // A detected technology set is carried as data. The scaffold always runs
+    // detection, so the array is always emitted, empty included: an empty
+    // `technologies` says detection ran and found nothing, which a downstream
+    // consumer must be able to tell apart from an older artifact that predates
+    // the field and never ran detection at all (P-9). The schema keeps the field
+    // optional so those older artifacts still validate.
+    let techs: Vec<Value> = technologies
+        .iter()
+        .map(|t| {
+            json!({
+                "category": t.category.as_str(),
+                "name": t.name,
+                "marker_path": t.marker_path,
+                "fidelity": t.fidelity.as_str(),
             })
-            .collect();
-        profile.insert("technologies".to_string(), Value::Array(techs));
-    }
+        })
+        .collect();
+    profile.insert("technologies".to_string(), Value::Array(techs));
 
     let mut out =
         serde_json::to_string_pretty(&Value::Object(profile)).expect("a scaffold is serializable");
@@ -717,6 +718,28 @@ mod tests {
         assert!(text.contains("\"name\": \"EasyAntiCheat\""));
         assert!(text.contains("\"category\": \"engine\""));
         assert!(text.contains("\"name\": \"Unreal\""));
+    }
+
+    #[test]
+    fn a_technology_free_install_still_emits_an_empty_technologies_array() {
+        use crate::test_support::TempTree;
+        let tree = TempTree::new();
+        let install = tree.path().join("plain");
+        // A client executable but no technology markers the ruleset recognizes.
+        tree.write_exe(&install.join("Plain.exe"), 100);
+        let title = InstalledTitle {
+            app_id: "42".to_string(),
+            name: "Plain Game".to_string(),
+            install_dir: install,
+        };
+        let text = scaffold(&title).unwrap();
+        Profile::parse(&text).expect("scaffold must validate");
+        // The scaffold ran detection and found nothing: the array is present and
+        // empty, distinct from an older artifact that never had the field.
+        assert!(
+            text.contains("\"technologies\": []"),
+            "an empty technologies array is emitted: {text}"
+        );
     }
 
     #[test]

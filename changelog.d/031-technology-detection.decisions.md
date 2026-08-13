@@ -53,6 +53,17 @@ defined for future sources and unpopulated by this ruleset. The hand-rolled
 variant validator learned the new property, and a new `invalid-category`
 diagnostic code names an out-of-enum category.
 
+A follow-up from PR review sharpened the scaffold's empty case: the scaffold
+always runs detection, so it always emits the `technologies` array, empty
+included. An empty array says detection ran and found nothing, which a downstream
+consumer must be able to tell apart from an older artifact that predates the
+field and never ran detection; omitting the key would conflate the two (P-9). The
+schema keeps the field optional so those older artifacts still validate. The same
+review made the directory walk surface a directory whose enumeration fails
+partway (a `read_dir` iterator error on an individual entry) as an unreadable
+path rather than skipping it silently, so a partial scan is never reported as a
+complete empty one (P-4).
+
 Sixth, detection surfaces on demand and at scaffold time, and never inside the
 live capture loop. A `fragcap technologies` command prints the report, and the
 Steam scaffold carries the findings into the target artifact it already

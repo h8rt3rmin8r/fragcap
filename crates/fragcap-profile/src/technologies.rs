@@ -403,15 +403,27 @@ fn walk(
     };
 
     let mut children: Vec<(PathBuf, bool)> = Vec::new();
+    let mut entry_error = false;
     for entry in read {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            // An entry that cannot be read during enumeration (it became
+            // inaccessible or disappeared mid-scan) leaves this directory
+            // partially seen. Surface the containing directory as unreadable
+            // rather than skip silently, so a partial scan is never reported as
+            // a complete one (P-4).
+            Err(_) => {
+                entry_error = true;
+                continue;
+            }
         };
         match entry.file_type() {
             Ok(file_type) => children.push((entry.path(), file_type.is_dir())),
             Err(_) => unreadable.push(entry.path()),
         }
+    }
+    if entry_error {
+        unreadable.push(dir.to_path_buf());
     }
     children.sort_by(|a, b| a.0.cmp(&b.0));
 
