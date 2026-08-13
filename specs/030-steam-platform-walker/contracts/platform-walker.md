@@ -33,14 +33,20 @@ impl fragcap_profile::TargetProvider for SteamWalkerProvider {
 ## Enumeration helper (`fragcap-steam`)
 
 ```text
-pub fn install_root_for(app_id: &str) -> Result<Option<PathBuf>, SteamError>;
-pub fn install_root_in(root: &Path, app_id: &str) -> Result<Option<PathBuf>, SteamError>;
+pub struct InstallLookup { pub install_dir: Option<PathBuf>, pub warnings: Vec<String> }
+pub fn install_root_for(app_id: &str) -> Result<InstallLookup, SteamError>;
+pub fn install_root_in(root: &Path, app_id: &str) -> Result<InstallLookup, SteamError>;
 ```
 
-Returns the install directory of the installed title with `app_id`, or `None` if
-it is not installed. `install_root_for` locates Steam (registry) then delegates to
-`install_root_in`, which is portable and used in tests. The caller enriches a
-`ResolutionRequest` with the returned directory via `with_install_root`.
+Returns the install directory of the installed title with `app_id` (or `None` if
+it is not installed) together with the enumeration warnings (a malformed manifest,
+an unreadable configured library, a duplicate app id). The warnings are never
+dropped: a malformed manifest for the requested app makes `install_dir` `None` but
+preserves the diagnostic, so it is not silently indistinguishable from an
+uninstalled title (FR-008). `install_root_for` locates Steam (registry) then
+delegates to `install_root_in`, which is portable and used in tests. The caller
+enriches a `ResolutionRequest` with `install_dir` via `with_install_root` and
+surfaces `warnings`.
 
 ## New profile-crate surface (`fragcap-profile`)
 
@@ -75,9 +81,13 @@ enum ClientResolution { Resolved(WalkerTarget), NoMatch,
 fn client_for(install_dir: &Path) -> ClientResolution;
 ```
 
-- Scans the install directory (Err reading it -> `Unreadable`), drops non-game
-  executables (installers, redistributables, helpers, hash-named installers) and
-  launcher stubs using the shared scaffold predicates.
+- Scans the install directory and drops non-game executables (installers,
+  redistributables, helpers, hash-named installers) and launcher stubs using the
+  shared scaffold predicates. It does NOT restore the dropped set when filtering
+  empties it (an installer-only directory declines, unlike the scaffold).
+- The scan is strict: a `read_dir` error, an entry iterator error, or a per-entry
+  metadata error yields `Unreadable`, not a partial candidate set, so an
+  incomplete scan never produces a false single answer.
 - Exactly one plausible client remains -> `Resolved`, with `identity` carrying at
   least `exe = <client file name>`.
 - Zero remain -> `NoMatch`. More than one remain -> `Ambiguous { candidates }`.

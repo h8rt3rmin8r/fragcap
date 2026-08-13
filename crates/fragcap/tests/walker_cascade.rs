@@ -122,6 +122,7 @@ fn a_steam_installed_unreal_title_resolves_via_the_engine_rule() {
 
     let install_root = install_root_in(tree.path(), "220")
         .expect("no error")
+        .install_dir
         .expect("installed");
     let search = SearchPath::new();
     let bundled = BundledSet::empty();
@@ -151,6 +152,7 @@ fn a_steam_installed_non_engine_title_resolves_via_the_walker() {
 
     let install_root = install_root_in(tree.path(), "400")
         .expect("no error")
+        .install_dir
         .expect("installed");
     let search = SearchPath::new();
     let bundled = BundledSet::empty();
@@ -186,6 +188,7 @@ fn an_authored_profile_outranks_the_engine_rule_and_the_walker() {
 
     let install_root = install_root_in(tree.path(), "220")
         .expect("no error")
+        .install_dir
         .expect("installed");
     let search = SearchPath::new();
     let bundled =
@@ -225,6 +228,7 @@ fn a_not_installed_title_degrades_to_runtime_observation() {
     assert!(
         install_root_in(tree.path(), "999")
             .expect("no error")
+            .install_dir
             .is_none(),
         "the requested title is not installed"
     );
@@ -258,6 +262,7 @@ fn an_ambiguous_install_degrades_to_runtime_observation() {
 
     let install_root = install_root_in(tree.path(), "500")
         .expect("no error")
+        .install_dir
         .expect("installed");
     let id = identity("ClientA.exe");
     let ptree = tree_with("ClientA.exe", "C:\\Games\\Division\\ClientA.exe");

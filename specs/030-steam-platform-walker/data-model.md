@@ -59,13 +59,16 @@ the cascade contract.
     `NoMatch` to `Ok(None)`, `Ambiguous` to recording the note then `Ok(None)`,
     `Unreadable` to recording the note then `Ok(None)`. Never returns `Err`.
 
-### `install_root_for` (function, `library.rs` or `lib.rs`)
+### `install_root_for` (function, `library.rs`/`lib.rs`)
 
-- `install_root_for(app_id: &str) -> Result<Option<PathBuf>, SteamError>`:
-  discovers the Steam installation and returns the matching title's install
-  directory, or `None` if the title is not installed. The CLI/future capture path
-  uses it to enrich the request with `install_root`. Portable variant
-  `install_root_in(root, app_id)` over a given Steam root for tests.
+- `install_root_for(app_id) -> Result<InstallLookup, SteamError>` and the portable
+  `install_root_in(root, app_id) -> Result<InstallLookup, SteamError>`.
+- `InstallLookup { install_dir: Option<PathBuf>, warnings: Vec<String> }` carries
+  the install directory (or `None` if not installed) AND the enumeration warnings.
+  A malformed manifest for the requested app makes `install_dir` `None` but
+  preserves the warning, so it is never silently indistinguishable from an
+  uninstalled title (review fix, FR-008). The CLI/future capture path enriches the
+  request with `install_dir` and surfaces `warnings`.
 
 ## Shared within `fragcap-steam`
 
@@ -78,17 +81,23 @@ the cascade contract.
 
 ```text
 client_for(install_dir):
-  images = scan(install_dir)            // Err -> Unreadable{install_dir}
-  candidates = images.filter(!is_non_game)   // fall back to images if that empties
-  clients = candidates.filter(!is_launcher)
+  images = scan(install_dir)            // Err (any read/entry/metadata) -> Unreadable
+  clients = images.filter(!is_non_game && !is_launcher)
   match clients.len():
-    0 -> NoMatch                        // only launchers / nothing on disk
+    0 -> NoMatch                        // only installers/launchers, or nothing
     1 -> Resolved(WalkerTarget{ "steam", name, path, identity(exe=name) })
     _ -> Ambiguous{ candidates: clients.len() }   // several plausible clients
 ```
 
-Determinism: `scan` already sorts by path, so the single-client and count
-decisions do not depend on directory iteration order.
+Unlike the scaffold classifier, the walker does NOT restore the dropped set when
+the non-game filter empties it: an install holding only a redistributable or
+helper has no plausible client, and automatic capture declines rather than target
+an installer (review fix, section 15.7.2). `scan` is strict about read failures
+(a `read_dir` error, an entry iterator error, or a per-entry metadata error is
+surfaced as `SteamError::Io`, not skipped), so an incomplete scan becomes
+`Unreadable` rather than a false single answer (review fix, mirroring the S029
+engine rule). Determinism: `scan` sorts by path, so the outcome does not depend on
+directory iteration order.
 
 ## Fidelity and provenance (fixed values)
 

@@ -236,3 +236,26 @@ The MVP is US2 (the walker resolves a single-client Steam title) plus US3
 composition with the engine rule that #77 was built toward. Production capture of a
 resolved non-profile target is the explicit follow-up (see the plan's scope
 boundary), surfaced at the pre-push halt.
+
+---
+
+## Post-review follow-up (PR #86)
+
+Three changes landed after the first review, all verified by `cargo xtask ci`:
+
+- [X] T022 (Codex P1) `client_for` no longer restores the dropped set when the
+  non-game filter empties it, so an installer-only install declines instead of
+  targeting the installer (section 15.7.2). File: `walker.rs`; test
+  `an_install_of_only_non_game_executables_declines`.
+- [X] T023 (Codex P1) `install_root_in`/`install_root_for` return
+  `InstallLookup { install_dir, warnings }` so enumeration warnings (malformed
+  manifest, unreadable library, duplicate app id) are surfaced, not discarded, and
+  a malformed manifest for the requested app is not silently indistinguishable
+  from an uninstalled title (FR-008). Files: `library.rs`, `lib.rs`, facade
+  re-export, `walker_cascade.rs` callers; test
+  `install_root_in_resolves_and_carries_warnings`.
+- [X] T024 (Codex P2) the shared `scan` is strict: directory-entry iterator errors
+  and per-entry metadata errors surface as `SteamError::Io` rather than being
+  skipped, so an incomplete scan becomes `Unreadable` rather than a false single
+  answer (mirrors the S029 engine-rule handling; also improves the scaffold).
+  File: `scaffold.rs`.

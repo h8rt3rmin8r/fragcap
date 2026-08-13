@@ -53,17 +53,38 @@ impl SteamInstallation {
     }
 }
 
-/// The install directory of the installed title with `app_id` under a given
-/// Steam root, or `None` if it is not installed.
+/// The outcome of looking up a title's install directory.
+///
+/// Carries the install directory when the title is installed, and always the
+/// non-fatal enumeration warnings (a malformed manifest, an unreadable configured
+/// library, a duplicate app id). A malformed manifest for the requested app makes
+/// `install_dir` `None`, but the warning is preserved rather than making the title
+/// silently indistinguishable from an uninstalled one, so the caller can surface
+/// it (FR-008, P-4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstallLookup {
+    /// The resolved install directory, or `None` if the title is not installed.
+    pub install_dir: Option<PathBuf>,
+    /// Non-fatal enumeration diagnostics, never silently dropped.
+    pub warnings: Vec<String>,
+}
+
+/// Look up the install directory of the installed title with `app_id` under a
+/// given Steam root, carrying any enumeration warnings.
 ///
 /// Portable (takes the root as a value), so the platform-walker's enumeration is
-/// testable without a registry. The caller enriches a resolution request with the
-/// returned directory so the engine rule and the walker can resolve from it
-/// (S030).
-pub fn install_root_in(root: &Path, app_id: &str) -> Result<Option<PathBuf>, SteamError> {
-    Ok(discover_in(root)?
+/// testable without a registry. The caller enriches a resolution request with
+/// `install_dir` so the engine rule and the walker can resolve from it (S030), and
+/// surfaces `warnings` rather than swallowing them.
+pub fn install_root_in(root: &Path, app_id: &str) -> Result<InstallLookup, SteamError> {
+    let installation = discover_in(root)?;
+    let install_dir = installation
         .find(app_id)
-        .map(|title| title.install_dir.clone()))
+        .map(|title| title.install_dir.clone());
+    Ok(InstallLookup {
+        install_dir,
+        warnings: installation.warnings,
+    })
 }
 
 /// Discover libraries and installed titles under a given Steam root.
@@ -317,6 +338,42 @@ mod tests {
             "expected a skip warning, got {:?}",
             inst.warnings
         );
+    }
+
+    #[test]
+    fn install_root_in_resolves_and_carries_warnings() {
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_1.acf"),
+            &manifest("1", "Good", "Good"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_2.acf"),
+            "\"AppState\" { \"appid\" \"2\" ", // malformed, discovery skips it
+        );
+
+        // The installed title resolves, and the malformed-manifest warning is
+        // carried rather than swallowed (FR-008).
+        let found = install_root_in(root, "1").unwrap();
+        assert_eq!(
+            found.install_dir,
+            Some(root.join("steamapps").join("common").join("Good"))
+        );
+        assert!(
+            found
+                .warnings
+                .iter()
+                .any(|w| w.contains("appmanifest_2.acf")),
+            "the malformed manifest is surfaced, got {:?}",
+            found.warnings
+        );
+
+        // A title that is not installed still carries the warnings, so a malformed
+        // manifest is never silently indistinguishable from an uninstalled title.
+        let missing = install_root_in(root, "999").unwrap();
+        assert!(missing.install_dir.is_none());
+        assert!(!missing.warnings.is_empty());
     }
 
     #[test]

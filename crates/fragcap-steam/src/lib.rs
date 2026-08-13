@@ -39,7 +39,9 @@ mod walker;
 mod test_support;
 
 pub use launch::{launch, launch_request, LaunchConfigError, LaunchRequest};
-pub use library::{discover_in, install_root_in, InstalledTitle, SteamInstallation, SteamLibrary};
+pub use library::{
+    discover_in, install_root_in, InstallLookup, InstalledTitle, SteamInstallation, SteamLibrary,
+};
 pub use scaffold::scaffold;
 pub use walker::SteamWalkerProvider;
 
@@ -138,15 +140,16 @@ pub fn discover() -> Result<SteamInstallation, SteamError> {
     library::discover_in(&root)
 }
 
-/// The install directory of the installed title with `app_id`, or `None` if it is
-/// not installed.
+/// Look up the install directory of the installed title with `app_id`, carrying
+/// any enumeration warnings.
 ///
 /// Locates Steam through the registry (Windows only) then reads its libraries.
 /// The platform walker (S030) and the capture path use this to enrich a
 /// resolution request with the title's install directory, so the engine rule and
-/// the walker can resolve the socket-holding client from it. Reads the filesystem
-/// and registry only; opens no process handle (P-1).
-pub fn install_root_for(app_id: &str) -> Result<Option<PathBuf>, SteamError> {
+/// the walker can resolve the socket-holding client from it, and to surface the
+/// enumeration warnings (FR-008). Reads the filesystem and registry only; opens no
+/// process handle (P-1).
+pub fn install_root_for(app_id: &str) -> Result<InstallLookup, SteamError> {
     let root = steam_root()?;
     library::install_root_in(&root, app_id)
 }

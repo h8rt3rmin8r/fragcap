@@ -103,18 +103,29 @@ pub fn scaffold(title: &InstalledTitle) -> Result<String, SteamError> {
 }
 
 /// Recursively collect `.exe` images under a directory.
+///
+/// Strict about read failures: a `read_dir` error, a directory-entry iterator
+/// error, or a per-entry metadata error is surfaced as [`SteamError::Io`] rather
+/// than skipped. An incomplete scan is not the same as an exhaustive one; the
+/// platform walker (S030) declines when the scan cannot complete so it never
+/// resolves a false single client from a partial view, and the scaffold likewise
+/// does not build a skeleton from one.
 pub(crate) fn scan(dir: &Path) -> Result<Vec<ExecutableImage>, SteamError> {
     fn walk(dir: &Path, out: &mut Vec<ExecutableImage>) -> Result<(), SteamError> {
         let entries = std::fs::read_dir(dir).map_err(|source| SteamError::Io {
             path: dir.to_path_buf(),
             source,
         })?;
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|source| SteamError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
             let path = entry.path();
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
+            let meta = entry.metadata().map_err(|source| SteamError::Io {
+                path: path.clone(),
+                source,
+            })?;
             if meta.is_dir() {
                 walk(&path, out)?;
             } else if is_exe(&path) {

@@ -63,22 +63,17 @@ fn client_for(install_dir: &Path) -> ClientResolution {
         }
     };
 
-    // Drop obvious non-game executables, keeping the original set if that would
-    // empty it, exactly as the scaffold classifier does, so the two agree on what
-    // an installer or helper is.
-    let mut candidates: Vec<ExecutableImage> = images
-        .iter()
-        .filter(|image| !is_non_game(&image.file_name))
-        .cloned()
-        .collect();
-    if candidates.is_empty() {
-        candidates = images;
-    }
-
-    // The plausible clients are the non-launchers.
-    let clients: Vec<ExecutableImage> = candidates
+    // Drop obvious non-game executables (installers, redistributables, helpers),
+    // then launcher stubs. Unlike the scaffold classifier, the walker does NOT
+    // restore the dropped set when filtering empties it: an install holding only a
+    // redistributable or helper has no plausible client, and automatic capture
+    // must decline rather than target an installer (section 15.7.2). The two still
+    // agree on what an installer or launcher is; only the empty-set outcome differs
+    // (a human-reviewed scaffold is a skeleton to correct, an automatic answer is
+    // not).
+    let clients: Vec<ExecutableImage> = images
         .into_iter()
-        .filter(|image| !is_launcher(image))
+        .filter(|image| !is_non_game(&image.file_name) && !is_launcher(image))
         .collect();
 
     match clients.len() {
@@ -180,6 +175,17 @@ mod tests {
         assert_eq!(target.platform(), "steam");
         assert_eq!(target.image_name(), "MyGame.exe");
         assert!(target.identity().exe().is_some());
+    }
+
+    #[test]
+    fn an_install_of_only_non_game_executables_declines() {
+        // Only an installer on disk: the walker must decline rather than target
+        // the installer as the client (section 15.7.2), unlike the scaffold, which
+        // would restore it as a skeleton for a human to correct.
+        let tree = TempTree::new();
+        tree.write_exe(&tree.path().join("vc_redist.x64.exe"), 8192);
+        tree.write_exe(&tree.path().join("UnityCrashHandler64.exe"), 2048);
+        assert!(matches!(client_for(tree.path()), ClientResolution::NoMatch));
     }
 
     #[test]

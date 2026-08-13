@@ -56,3 +56,24 @@ deferred and that this slice also defers; the enumeration-to-install-root helper
 ready. The walker, its composition with the engine rule, and its degradation to
 runtime observation are proven end to end through the resolver in the facade's
 `walker_cascade` integration test. MSRV stays 1.82.
+
+**2026-08-13** Three review findings (Codex) were fixed. First (P1), the walker's
+`client_for` no longer restores the dropped executables when the non-game filter
+empties the candidate set. That fallback is correct for the human-reviewed
+scaffold (a skeleton to correct) but wrong for automatic capture: an install
+holding only a redistributable or helper would have resolved the installer as the
+sole client. The walker now declines (`NoMatch`) for an installer-only directory,
+as section 15.7.2 requires for zero plausible clients. Second (P1),
+`install_root_in`/`install_root_for` now return an `InstallLookup { install_dir,
+warnings }` instead of a bare `Option<PathBuf>`, so the non-fatal enumeration
+warnings (a malformed manifest, an unreadable configured library, a duplicate app
+id) are carried rather than discarded. A malformed manifest for the requested app
+made the previous helper return `Ok(None)`, silently indistinguishable from an
+uninstalled title; the warning is now preserved (FR-008, P-4). Third (P2), the
+shared `scan` is now strict: it surfaces directory-entry iterator errors and
+per-entry metadata errors as `SteamError::Io` rather than skipping them via
+`flatten()` and `Err(_) => continue`. An incomplete scan could otherwise hide a
+second candidate and let the walker resolve a false single answer, the same
+false-single-answer class the S029 engine-rule unreadable handling prevents; the
+walker now declines with an unreadable outcome. Making `scan` strict also improves
+the scaffold, which no longer builds a skeleton from a partial view.

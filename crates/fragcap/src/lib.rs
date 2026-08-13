@@ -62,8 +62,8 @@ pub mod core {
 pub mod steam {
     pub use fragcap_steam::{
         discover, discover_in, install_root_for, install_root_in, launch, launch_request, scaffold,
-        InstalledTitle, LaunchConfigError, LaunchRequest, SteamError, SteamInstallation,
-        SteamLibrary, SteamWalkerProvider,
+        InstallLookup, InstalledTitle, LaunchConfigError, LaunchRequest, SteamError,
+        SteamInstallation, SteamLibrary, SteamWalkerProvider,
     };
 }
 
