@@ -108,6 +108,7 @@ pub mod attr {
 /// Game profiles: schema, validation, resolution, and stage matching.
 pub mod profile {
     pub use fragcap_profile::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
+    pub use fragcap_profile::engine_rule::Engine;
     pub use fragcap_profile::glob::{ImagePattern, PatternError};
     /// The master JSON Schema and its structural validation surface (issue #75).
     pub use fragcap_profile::jsonschema::{
@@ -125,14 +126,14 @@ pub mod profile {
         resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
     };
     pub use fragcap_profile::resolver::{
-        DuplicatePrecedence, Precedence, ProviderError, ResolutionError, ResolutionNotes,
-        ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
+        DuplicatePrecedence, EngineRuleAmbiguity, Precedence, ProviderError, ResolutionError,
+        ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
     };
     pub use fragcap_profile::schema::{
         CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
         PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
     };
-    pub use fragcap_profile::target::{ObservedTarget, Target, TargetOrigin};
+    pub use fragcap_profile::target::{EngineRuleTarget, ObservedTarget, Target, TargetOrigin};
 }
 
 /// Output sinks.

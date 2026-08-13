@@ -779,11 +779,11 @@ A source that can answer "what is this game's target identity?" within the
 [target](#target) stamped with its [fidelity tier](#fidelity-tier) and
 [provenance](#provenance), or no answer, and occupies a fixed position in the
 cascade's precedence order. Introduced by issue #77. The built-in providers are
-the profile lookup, the hint database, the engine rule, the platform walker, and
-runtime observation.
+the profile lookup, the hint database, the [engine rule](#engine-rule), the
+platform walker, and runtime observation.
 
 **See also:** [Resolution cascade](#resolution-cascade), [Target resolver](#target-resolver),
-[Target](#target), [Fidelity tier](#fidelity-tier)
+[Target](#target), [Fidelity tier](#fidelity-tier), [Engine rule](#engine-rule)
 
 ## Target
 
@@ -828,4 +828,31 @@ Distinct from the [profile resolution order](#profile-resolution-order), which i
 the narrower first-match lookup of a single profile inside the profile provider.
 
 **See also:** [Provider](#provider), [Target resolver](#target-resolver),
-[Target](#target), [Profile resolution order](#profile-resolution-order)
+[Target](#target), [Profile resolution order](#profile-resolution-order),
+[Engine rule](#engine-rule)
+
+## Engine rule
+
+A [provider](#provider) that recognizes a game's socket-holding client from its
+game engine's documented on-disk install layout, with no per-title data. Many
+games ship a thin launcher stub in the install root whose only job is to relaunch
+the real networked client; before the game has run, only the on-disk layout
+distinguishes the two. An engine rule keys on that layout: Unreal Engine's
+shipping client is a `*-Win64-Shipping.exe` under a `Binaries\Win64` directory,
+Unity's player sits beside a `*_Data` directory and a `UnityPlayer.dll`, and
+Ren'Py ships a `renpy` directory and `.rpa` archives. It reads the filesystem
+only, opening no process handle and reading no process memory (constitution
+P-1), and it ignores post-run artifacts such as per-user AppData, which do not
+exist before the first launch. Introduced by issue #77, filled in by slice S029;
+its [provenance](#provenance) source is `engine-rule`.
+
+{: .matters }
+> An engine rule is a heuristic, so every answer it produces is stamped
+> [heuristic-unverified](#fidelity-tier) and never higher (P-9). When a layout is
+> recognized but more than one candidate client matches, the rule declines rather
+> than pick one arbitrarily, and the cascade falls through to
+> [runtime observation](#resolution-cascade), which disambiguates once the game is
+> running.
+
+**See also:** [Provider](#provider), [Provenance](#provenance),
+[Fidelity tier](#fidelity-tier), [Resolution cascade](#resolution-cascade)
