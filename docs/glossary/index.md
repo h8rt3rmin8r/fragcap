@@ -91,6 +91,7 @@ the owning category page.
 - [Percent-encoding](file-and-wire-formats.md#percent-encoding)
 - [PID recycling](process-and-attribution.md#pid-recycling)
 - [Pipeline](capture-and-networking.md#pipeline)
+- [Platform walker](process-and-attribution.md#platform-walker)
 - [Process node](process-and-attribution.md#process-node)
 - [Process tree](process-and-attribution.md#process-tree)
 - [Process watcher](process-and-attribution.md#process-watcher)

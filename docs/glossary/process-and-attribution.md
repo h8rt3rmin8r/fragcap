@@ -862,4 +862,35 @@ slice S029; its [provenance](#provenance) source is `engine-rule`.
 > the unreadable path rather than resolving from a partial view (P-4).
 
 **See also:** [Provider](#provider), [Provenance](#provenance),
-[Fidelity tier](#fidelity-tier), [Resolution cascade](#resolution-cascade)
+[Fidelity tier](#fidelity-tier), [Resolution cascade](#resolution-cascade),
+[Platform walker](#platform-walker)
+
+## Platform walker
+
+A [provider](#provider) that turns a storefront's installed library into cascade
+answers. It enumerates the storefront's installed titles and their install
+directories (Steam's `libraryfolders.vdf` and `appmanifest` files, in the first
+walker), and it contributes to the cascade in two ways: it makes a title's
+install directory available to the resolver so the higher-precedence
+[engine rule](#engine-rule) can name the socket holder from layout, and, when the
+engine rule does not recognize the layout, it answers at its own lower precedence
+by classifying the install directory's executables into a single client. It reads
+the filesystem and the registry only, opening no process handle and reading no
+process memory (constitution P-1). Introduced by issue #77, filled in by slice
+S030; its [provenance](#provenance) source is `steam-library`, naming the library
+walk and install-directory classification it performs and not a source it does not
+read.
+
+{: .matters }
+> The walker declines rather than guess. It resolves only when exactly one
+> plausible client executable remains after dropping installers and launcher
+> stubs; zero, or several, is a decline, and the cascade falls through to runtime
+> observation, which resolves the game from the live socket-holding process.
+> Selecting a client by size among several is the coincidental heuristic that
+> proved unreliable, so the walker, feeding automatic capture, does not guess
+> where the human-reviewed
+> [scaffold](platform-and-distribution.md#profile-scaffolding) does (constitution
+> P-9). A directory it cannot read is surfaced, not treated as an absent one (P-4).
+
+**See also:** [Provider](#provider), [Resolution cascade](#resolution-cascade),
+[Engine rule](#engine-rule), [Target](#target), [Provenance](#provenance)

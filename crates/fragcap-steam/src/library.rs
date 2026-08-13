@@ -53,6 +53,19 @@ impl SteamInstallation {
     }
 }
 
+/// The install directory of the installed title with `app_id` under a given
+/// Steam root, or `None` if it is not installed.
+///
+/// Portable (takes the root as a value), so the platform-walker's enumeration is
+/// testable without a registry. The caller enriches a resolution request with the
+/// returned directory so the engine rule and the walker can resolve from it
+/// (S030).
+pub fn install_root_in(root: &Path, app_id: &str) -> Result<Option<PathBuf>, SteamError> {
+    Ok(discover_in(root)?
+        .find(app_id)
+        .map(|title| title.install_dir.clone()))
+}
+
 /// Discover libraries and installed titles under a given Steam root.
 ///
 /// Portable: takes the root as a value so the whole enumeration is testable

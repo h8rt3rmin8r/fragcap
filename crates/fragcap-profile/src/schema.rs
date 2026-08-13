@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use regex::Regex;
 
-use crate::glob::ImagePattern;
+use crate::glob::{ImagePattern, PatternError};
 
 /// The only schema version this build supports.
 ///
@@ -207,6 +207,18 @@ impl MatchPredicates {
         "cmdline_contains",
         "descends_from",
     ];
+
+    /// Build predicates that match by executable image name alone.
+    ///
+    /// The `exe` glob is the one predicate an external provider (the platform
+    /// walker in `fragcap-steam`, S030) needs to synthesize an identity from a
+    /// resolved client file name, without reaching the crate-internal setters.
+    /// Returns the pattern error if the name is not a usable glob.
+    pub fn with_exe(exe: &str) -> Result<MatchPredicates, PatternError> {
+        let mut predicates = MatchPredicates::default();
+        predicates.set_exe(ImagePattern::new(exe)?);
+        Ok(predicates)
+    }
 
     /// Executable file name glob.
     pub fn exe(&self) -> Option<&ImagePattern> {
@@ -557,7 +569,11 @@ pub struct Provenance {
 }
 
 impl Provenance {
-    pub(crate) fn new(source: String, seeded_at: Option<String>) -> Provenance {
+    /// Build a provenance from a source label and an optional seed time.
+    ///
+    /// Public so an external provider (the platform walker in `fragcap-steam`,
+    /// S030) can stamp its answer with an honest source naming what it did.
+    pub fn new(source: String, seeded_at: Option<String>) -> Provenance {
         Provenance { source, seeded_at }
     }
 

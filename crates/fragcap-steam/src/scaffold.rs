@@ -103,7 +103,7 @@ pub fn scaffold(title: &InstalledTitle) -> Result<String, SteamError> {
 }
 
 /// Recursively collect `.exe` images under a directory.
-fn scan(dir: &Path) -> Result<Vec<ExecutableImage>, SteamError> {
+pub(crate) fn scan(dir: &Path) -> Result<Vec<ExecutableImage>, SteamError> {
     fn walk(dir: &Path, out: &mut Vec<ExecutableImage>) -> Result<(), SteamError> {
         let entries = std::fs::read_dir(dir).map_err(|source| SteamError::Io {
             path: dir.to_path_buf(),
@@ -155,7 +155,7 @@ fn launcher_haystack(image: &ExecutableImage) -> String {
 }
 
 /// Whether an image is launcher-suggestive.
-fn is_launcher(image: &ExecutableImage) -> bool {
+pub(crate) fn is_launcher(image: &ExecutableImage) -> bool {
     let hay = launcher_haystack(image);
     LAUNCHER_TOKENS.iter().any(|t| hay.contains(t))
 }
@@ -172,7 +172,7 @@ fn launcher_rank(image: &ExecutableImage) -> usize {
 
 /// Whether an image is an obvious non-game executable: an installer,
 /// redistributable, crash handler, helper stub, or a hash-named temp installer.
-fn is_non_game(file_name: &str) -> bool {
+pub(crate) fn is_non_game(file_name: &str) -> bool {
     let name = file_name.to_ascii_lowercase();
     if NON_GAME_TOKENS.iter().any(|t| name.contains(t)) {
         return true;

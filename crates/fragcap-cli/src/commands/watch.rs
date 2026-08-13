@@ -19,9 +19,10 @@
 //! the resolver names the answer.
 
 use fragcap::profile::{
-    EngineRuleProvider, HintProvider, ObservationProvider, PlatformWalkerProvider, ProfileProvider,
-    ResolutionError, ResolutionRequest, SearchPath, TargetOrigin, TargetResolver,
+    EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider, ResolutionError,
+    ResolutionRequest, SearchPath, TargetOrigin, TargetResolver,
 };
+use fragcap::steam::SteamWalkerProvider;
 use fragcap::{BundledSet, ProcessTree, Profile};
 
 use crate::assemble::{self, ARMED_AT};
@@ -84,7 +85,7 @@ fn report_attach_to_running(
         Box::new(ProfileProvider::new()),
         Box::new(HintProvider::new()),
         Box::new(EngineRuleProvider::new()),
-        Box::new(PlatformWalkerProvider::new()),
+        Box::new(SteamWalkerProvider::new()),
         Box::new(ObservationProvider::new()),
     ])
     .expect("the built-in providers have distinct precedence positions");

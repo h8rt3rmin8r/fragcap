@@ -2073,6 +2073,51 @@ inaccessible install from an unrecognized engine (constitution P-4). A
 clean, readable layout for a lower-precedence engine still resolves; the
 unreadable path surfaces only when nothing resolves.
 
+#### 15.7.2 Platform walker
+
+A **platform walker** turns a storefront's installed library into cascade
+answers. It sits directly below the engine rule, because an engine's
+documented layout is a more specific signal than a storefront's generic
+"here is the install directory." The first walker reads Steam's local
+library (section 16), enumerating installed titles and their install
+directories.
+
+The walker contributes in two ways. First, it makes a title's install
+directory available to the resolver as the request's install-root input, so
+the higher-precedence engine rule (section 15.7.1) can name the socket
+holder from layout. An Unreal title installed through Steam therefore
+resolves through the engine rule, with the walker only having supplied the
+directory. Second, when the engine rule does not recognize the layout, the
+walker answers at its own precedence by classifying the install directory's
+executables, dropping installers, redistributables, helpers, and launcher
+stubs (the same classification section 16.3 uses), and resolving the single
+remaining client.
+
+The walker declines rather than guess. It resolves only when exactly one
+plausible client executable remains; zero, or several, is a decline. It does
+not select a client by size among several candidates, which is a coincidental
+signal rather than a reliable one, so the walker, feeding automatic capture,
+does not guess where the human-reviewed scaffold of section 16.3 does
+(constitution P-9). A declined resolution lets the cascade fall through to
+runtime observation, which resolves the game from the live socket-holding
+process once it is running; an ambiguous or unreadable install is recorded as
+a surfaced not-resolved reason rather than a silent drop (constitution P-4).
+
+Every walker answer is stamped `heuristic-unverified` with provenance
+`steam-library`, an honest name for the library walk and install-directory
+classification the walker performed. It is not `steam-appinfo`: the walker
+does not read Steam's application info (the `config.launch` array that names
+the executable Steam itself invokes), which lives only in Steam's networked
+product-info service or a local binary cache. Reading application info is a
+documented future direction, not part of the first walker; until then the
+engine rule and the install-directory classification cover the common cases
+and the hard, launcher-mediated titles degrade to runtime observation.
+
+The walker provider lives in the `fragcap-steam` crate, not in the crate that
+owns the cascade, because it needs Steam knowledge and the dependency
+direction (section 8.3) forbids the profile crate from depending on the Steam
+crate. The facade, which depends on both, assembles the resolver.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope
@@ -2081,9 +2126,21 @@ The `fragcap-steam` crate reads Steam's local installation metadata to
 enumerate installed titles, scaffold profiles, and perform managed
 launch. It contains no capture logic and no attribution logic.
 
+Steam is one adapter feeding the target-resolution cascade (section 15.7),
+not the spine of targeting. Its library enumeration and executable
+classification are exposed through the cascade as the platform walker
+(section 15.7.2), which sits below the engine rule and above runtime
+observation; a title Steam cannot resolve statically degrades to runtime
+observation like any other. The managed launch below is a convenience for
+starting a title under capture, not a precondition of resolving or capturing
+one.
+
 Isolating platform knowledge in its own crate preserves G-4. Core has
 no notion of Steam, and a future platform crate adds support without
-touching anything below the facade.
+touching anything below the facade. The platform walker respects the same
+direction: it lives in `fragcap-steam` and implements the cascade's provider
+trait, because the profile crate that owns the cascade may not depend on the
+Steam crate.
 
 ### 16.2 Library Discovery
 
