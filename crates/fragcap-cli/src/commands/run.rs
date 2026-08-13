@@ -1,20 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `run`: resolve a profile, build the effective configuration, assemble the
+//! `run`: resolve a target, build the effective configuration, assemble the
 //! pipeline and session, and capture.
 //!
 //! The command is the front half; the capture engine in [`crate::orchestrator`]
-//! is the shared back half `tap` also reaches. Resolution and overlay decide
-//! what to capture and with what options; the orchestrator arms, waits for the
-//! target, captures, stops on a bound or interrupt, and reports.
+//! is the shared back half `tap` and `watch` also reach. Resolution and overlay
+//! decide what to capture and with what options; the orchestrator arms, waits for
+//! the target, captures, stops on a bound or interrupt, and reports.
+//!
+//! `run` has three mutually-exclusive target inputs (a clap group enforces
+//! exactly one):
+//!
+//! - `--profile <ref>` resolves a profile through the cascade and captures with
+//!   it, unchanged and byte-identical to before the cascade existed.
+//! - `--install-dir <path>` and `--steam <app_id>` resolve a target from an
+//!   install location with no authored profile. When the cascade answers with a
+//!   non-profile target (an engine rule, the platform walker, or runtime
+//!   observation), `run` synthesizes a one-stage capture identity from the
+//!   resolved target's `MatchPredicates`, stamps it `heuristic-unverified`
+//!   (never `authored`, because it was resolved by a heuristic rather than typed
+//!   by an operator, P-9), and captures it through the same launch-agnostic
+//!   engine `watch` uses. No process handle is opened and no process memory is
+//!   read (P-1).
+
+use std::path::{Path, PathBuf};
 
 use fragcap::profile::{
-    EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider, ResolutionRequest,
-    TargetResolver,
+    EngineRuleProvider, HintProvider, MatchPredicates, ObservationProvider, Profile,
+    ProfileProvider, ResolutionError, ResolutionRequest, TargetResolver,
 };
 use fragcap::steam::SteamWalkerProvider;
 
 use crate::assemble;
+use crate::attach;
 use crate::cli::RunArgs;
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
@@ -22,13 +40,6 @@ use crate::orchestrator;
 use crate::paths;
 
 /// Run `run`.
-///
-/// Resolution now flows through the target resolution cascade (section 15.7): the
-/// resolver consults its providers in precedence order and returns a fidelity
-/// stamped target. For a profile reference the profile provider answers, and the
-/// backing profile is handed to the capture path exactly as before, so output is
-/// unchanged. The launch-agnostic observation path (a target with no profile) is
-/// wired but not yet driven from the command line; that is a later slice.
 pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let search = paths::search_path(&[]);
     let bundled = paths::bundled();
@@ -43,16 +54,37 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         Box::new(ObservationProvider::new()),
     ])
     .expect("the built-in providers have distinct precedence positions");
-    let request = ResolutionRequest::for_reference(&args.profile, &search, &bundled);
-    let target = resolver.resolve(&request)?;
-    let profile = target.into_profile().ok_or_else(|| {
-        // The command-line request carries only a profile reference, so only the
-        // profile provider can answer; a non-profile target cannot arise here.
-        CliError::failure("resolved a target with no profile, which run cannot capture yet")
-    })?;
+
+    // Exactly one target input is present (the clap group guarantees it). A
+    // profile reference takes the unchanged profile path; an install location
+    // takes the non-profile path.
+    let (profile, nonprofile) = if let Some(reference) = args.profile.as_deref() {
+        let request = ResolutionRequest::for_reference(reference, &search, &bundled);
+        let target = resolver.resolve(&request)?;
+        let profile = target.into_profile().ok_or_else(|| {
+            // A profile reference is answered only by the profile provider, so a
+            // non-profile target cannot arise here; this documents the invariant.
+            CliError::failure("resolved a target with no profile from a profile reference")
+        })?;
+        (profile, false)
+    } else {
+        (
+            resolve_nonprofile(&resolver, args, emitter, &search, &bundled)?,
+            true,
+        )
+    };
 
     let config = assemble::effective_config(args, &profile)?;
     let components = assemble::components(&args.offline, &config)?;
+
+    // The non-profile path is launch-agnostic like `watch`: report an
+    // already-running attach, and warn when a resolved path anchor (an engine-rule
+    // Unreal client carries one) cannot be checked against the executable-only
+    // startup snapshot, so acquisition is never silently impossible (review of PR
+    // #88). The `--profile` path keeps its existing behavior unchanged.
+    if nonprofile {
+        attach::report_attach_to_running(&profile, &components, emitter);
+    }
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();
@@ -67,4 +99,200 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // A sink failure is an unrecoverable end for `run`, not a clean stop.
         false,
     )
+}
+
+/// Resolve a non-profile target from an install location and synthesize the
+/// one-stage profile that captures it.
+fn resolve_nonprofile(
+    resolver: &TargetResolver,
+    args: &RunArgs,
+    emitter: &mut Emitter,
+    search: &fragcap::profile::SearchPath,
+    bundled: &fragcap::profile::BundledSet,
+) -> Result<Profile, CliError> {
+    // Resolve the install root, either given directly or looked up from a Steam
+    // app id. A Steam lookup surfaces its enumeration warnings and fails loudly
+    // when the title is not installed (P-4).
+    let (install_root, app_id): (PathBuf, Option<&str>) = if let Some(dir) = &args.install_dir {
+        (dir.clone(), None)
+    } else {
+        let app_id = args
+            .steam
+            .as_deref()
+            .expect("the clap group guarantees exactly one target input");
+        let lookup = fragcap::steam::install_root_for(app_id)
+            .map_err(|e| CliError::failure(format!("cannot look up Steam app {app_id}: {e}")))?;
+        for warning in &lookup.warnings {
+            emitter.warn(warning);
+        }
+        let root = lookup.install_dir.ok_or_else(|| {
+            CliError::failure(format!(
+                "Steam app {app_id} is not installed in any library"
+            ))
+        })?;
+        (root, Some(app_id))
+    };
+
+    let request = ResolutionRequest::for_install(&install_root, search, bundled);
+    let target = match resolver.resolve(&request) {
+        Ok(target) => target,
+        Err(error) => return Err(nonprofile_resolution_error(error, &install_root)),
+    };
+
+    match target.identity() {
+        Some(identity) => synthesize_profile(identity, app_id),
+        // An install request carries no profile reference, so the cascade cannot
+        // return a profile-backed target here; this documents the invariant.
+        None => target.into_profile().ok_or_else(|| {
+            CliError::failure("resolved a target with neither a profile nor an identity")
+        }),
+    }
+}
+
+/// Build a validated one-stage profile from a resolved non-profile identity.
+///
+/// The identity's predicates are serialized back into a JSON profile and parsed
+/// through [`Profile::parse`], the same validating path an authored profile and
+/// `watch`/`tap` take, so an unusable identity surfaces as a profile diagnostic
+/// (exit 2). The fidelity is `heuristic-unverified`: the identity was resolved by
+/// an install-layout heuristic or runtime observation, not typed by an operator,
+/// so stamping it `authored` (as `watch` does for its typed identity) would be a
+/// lie (P-9). The game identity is a generic placeholder; a `--steam` app id is
+/// carried as a fact on `game.app_id`.
+fn synthesize_profile(
+    identity: &MatchPredicates,
+    app_id: Option<&str>,
+) -> Result<Profile, CliError> {
+    let mut predicates = serde_json::Map::new();
+    if let Some(exe) = identity.exe() {
+        predicates.insert(
+            "exe".to_string(),
+            serde_json::Value::String(exe.as_str().to_string()),
+        );
+    }
+    if let Some(path) = identity.path_contains() {
+        predicates.insert(
+            "path_contains".to_string(),
+            serde_json::Value::String(path.to_string()),
+        );
+    }
+    if let Some(re) = identity.path_regex() {
+        predicates.insert(
+            "path_regex".to_string(),
+            serde_json::Value::String(re.as_str().to_string()),
+        );
+    }
+    if let Some(cmdline) = identity.cmdline_contains() {
+        predicates.insert(
+            "cmdline_contains".to_string(),
+            serde_json::Value::String(cmdline.to_string()),
+        );
+    }
+    if let Some(role) = identity.descends_from() {
+        predicates.insert(
+            "descends_from".to_string(),
+            serde_json::Value::String(role.to_string()),
+        );
+    }
+
+    let mut game = serde_json::Map::new();
+    game.insert(
+        "id".to_string(),
+        serde_json::Value::String("target".to_string()),
+    );
+    game.insert(
+        "name".to_string(),
+        serde_json::Value::String("ad hoc target".to_string()),
+    );
+    if let Some(app_id) = app_id {
+        game.insert(
+            "platform".to_string(),
+            serde_json::Value::String("steam".to_string()),
+        );
+        game.insert(
+            "app_id".to_string(),
+            serde_json::Value::String(app_id.to_string()),
+        );
+    }
+
+    let profile = serde_json::json!({
+        "schema": 1,
+        "kind": "profile",
+        "fidelity": "heuristic-unverified",
+        "game": game,
+        "stage": [
+            { "role": "target", "lifecycle": "session", "terminal": true, "match": predicates }
+        ]
+    });
+    Profile::parse(&profile.to_string()).map_err(CliError::from)
+}
+
+/// Turn a non-profile resolution failure into a surfaced command error that names
+/// the reason, so a declined install location is distinguishable from a game that
+/// sent no traffic (P-4, FR-007).
+///
+/// The generic `From<ResolutionError>` reduces an unresolved outcome to a
+/// profile-not-found class, and the error's `Display` names the unreadable cases
+/// but not the ambiguity ones, so the ambiguity notes are rendered explicitly
+/// here.
+fn nonprofile_resolution_error(error: ResolutionError, install_root: &Path) -> CliError {
+    let unresolved = match error {
+        ResolutionError::Unresolved(u) => u,
+        // A hard provider error aborts the cascade; reuse its existing mapping.
+        other => return CliError::from(other),
+    };
+
+    let detail = if let Some(ambiguity) = unresolved.engine_rule_ambiguous() {
+        format!(
+            "an engine layout was recognized but matched {} candidate clients",
+            ambiguity.candidates()
+        )
+    } else if let Some(ambiguity) = unresolved.walker_ambiguous() {
+        format!(
+            "the platform walker found {} plausible clients",
+            ambiguity.candidates()
+        )
+    } else if let Some(path) = unresolved.engine_rule_unreadable() {
+        format!("the engine rule could not fully read {}", path.display())
+    } else if let Some(path) = unresolved.walker_unreadable() {
+        format!("the platform walker could not read {}", path.display())
+    } else {
+        "no engine layout or single client executable was recognized".to_string()
+    };
+
+    CliError::failure(format!(
+        "could not resolve a capture target from {}: {detail}",
+        install_root.display()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fragcap::profile::FidelityTier;
+
+    fn identity() -> MatchPredicates {
+        MatchPredicates::with_exe("game.exe").expect("a valid exe glob")
+    }
+
+    #[test]
+    fn a_synthesized_profile_is_heuristic_unverified_never_authored() {
+        let profile = synthesize_profile(&identity(), None).expect("a valid synthesized profile");
+        assert_eq!(profile.fidelity(), FidelityTier::HeuristicUnverified);
+        assert_ne!(profile.fidelity(), FidelityTier::Authored);
+    }
+
+    #[test]
+    fn a_steam_synthesized_profile_carries_the_app_id_as_a_fact() {
+        let profile = synthesize_profile(&identity(), Some("306130")).expect("a valid profile");
+        assert_eq!(profile.game().app_id(), Some("306130"));
+        // The display name stays generic; the app id is the only asserted fact.
+        assert_eq!(profile.fidelity(), FidelityTier::HeuristicUnverified);
+    }
+
+    #[test]
+    fn a_synthesized_profile_is_a_single_target_stage() {
+        let profile = synthesize_profile(&identity(), None).unwrap();
+        assert_eq!(profile.stages().len(), 1);
+    }
 }

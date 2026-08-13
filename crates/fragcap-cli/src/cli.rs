@@ -20,7 +20,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::args::{parse_duration, parse_ring, parse_size, Direction, RingWindow, SinkSpec};
 
@@ -88,11 +88,27 @@ pub enum ModeArg {
 }
 
 /// Arguments to `run`.
+///
+/// Exactly one target input is required: a profile reference (`--profile`), an
+/// install directory to resolve through the cascade (`--install-dir`), or a Steam
+/// app id resolved to one (`--steam`). The clap group enforces the
+/// exactly-one rule, so a usage error (exit 2) is reported before any resolution.
 #[derive(Debug, Args)]
+#[command(group(ArgGroup::new("target_input").required(true).args(["profile", "install_dir", "steam"])))]
 pub struct RunArgs {
     /// The profile to capture with: a path, a name, or a game id.
     #[arg(short = 'p', long)]
-    pub profile: String,
+    pub profile: Option<String>,
+
+    /// An install directory to resolve through the cascade and capture, with no
+    /// authored profile (engine rule, platform walker, or runtime observation).
+    #[arg(long)]
+    pub install_dir: Option<PathBuf>,
+
+    /// A Steam app id to resolve to its install directory and capture, with no
+    /// authored profile.
+    #[arg(long)]
+    pub steam: Option<String>,
 
     /// The output capture file (pcapng). Shorthand for a file sink.
     #[arg(short = 'o', long)]
