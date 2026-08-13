@@ -38,7 +38,8 @@ fn a_bad_subcommand_is_a_usage_error() {
 
 #[test]
 fn a_missing_required_flag_is_a_usage_error() {
-    // `run` requires --profile.
+    // `run` requires exactly one target input (--profile / --install-dir /
+    // --steam); supplying none is a usage error.
     let (code, _out, _err) = run(&["run"]);
     assert_eq!(code, 2);
     // `tap` requires --process.

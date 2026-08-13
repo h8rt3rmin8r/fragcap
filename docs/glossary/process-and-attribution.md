@@ -948,3 +948,31 @@ read.
 
 **See also:** [Provider](#provider), [Resolution cascade](#resolution-cascade),
 [Engine rule](#engine-rule), [Target](#target), [Provenance](#provenance)
+
+## Non-profile capture path
+
+The `run` branch that captures a [target](#target) the
+[resolution cascade](#resolution-cascade) resolved without a
+[game profile](platform-and-distribution.md#game-profile). When `run` is given an
+install location instead of a profile reference (an install directory or a Steam
+app id resolved to one), the [engine rule](#engine-rule), the
+[platform walker](#platform-walker), or runtime observation resolve a client
+identity, and `run` synthesizes a one-stage capture identity from that resolved
+target's [match predicates](#match-predicate) and captures it through the same
+launch-agnostic engine an authored profile uses. It is what activates the
+cascade's install-layout providers for capture rather than leaving their answers
+at a dead end. Introduced by slice S032.
+
+{: .matters }
+> The synthesized identity is stamped [heuristic-unverified](#fidelity-tier),
+> never authored, because it was resolved by a heuristic rather than typed by an
+> operator (P-9). It reaches the target through the same passive engine as every
+> other capture: no process handle is opened and no process memory is read (P-1).
+> An install location the cascade cannot resolve to a single client (an
+> unrecognized layout, an ambiguous one, an unreadable tree, or a Steam app id
+> that is not installed) is a surfaced command failure that captures nothing, not
+> a silent empty capture (P-4).
+
+**See also:** [Resolution cascade](#resolution-cascade), [Target](#target),
+[Engine rule](#engine-rule), [Platform walker](#platform-walker),
+[Fidelity tier](#fidelity-tier)

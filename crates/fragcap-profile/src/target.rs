@@ -273,4 +273,99 @@ impl Target {
             | TargetOrigin::Observed(_) => None,
         }
     }
+
+    /// The recognition identity of a non-profile target.
+    ///
+    /// A target resolved by the engine rule, the platform walker, or runtime
+    /// observation carries a [`MatchPredicates`] identity (an image name plus
+    /// optional path anchors) rather than a backing profile. The non-profile
+    /// capture path reads it here to synthesize a one-stage capture identity,
+    /// exactly as `watch` builds one from a typed identity. A profile-backed
+    /// target returns `None`: its identity lives in its stages, and it is
+    /// captured through [`Target::into_profile`] instead.
+    pub fn identity(&self) -> Option<&MatchPredicates> {
+        match &self.origin {
+            TargetOrigin::Profile(_) => None,
+            TargetOrigin::EngineRule(t) => Some(t.identity()),
+            TargetOrigin::PlatformWalker(t) => Some(t.identity()),
+            TargetOrigin::Observed(t) => Some(t.identity()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine_rule::Engine;
+
+    fn provenance() -> Provenance {
+        Provenance::new("engine-rule".to_string(), None)
+    }
+
+    fn identity() -> MatchPredicates {
+        MatchPredicates::with_exe("game.exe").expect("a valid exe glob")
+    }
+
+    #[test]
+    fn identity_is_some_for_a_non_profile_origin() {
+        let engine_rule = Target::new(
+            FidelityTier::HeuristicUnverified,
+            provenance(),
+            TargetOrigin::EngineRule(EngineRuleTarget::new(
+                Engine::Unreal,
+                "game.exe".to_string(),
+                "C:/game/game.exe".to_string(),
+                identity(),
+            )),
+        );
+        assert!(engine_rule.identity().is_some());
+
+        let walker = Target::new(
+            FidelityTier::HeuristicUnverified,
+            Provenance::new("steam-library".to_string(), None),
+            TargetOrigin::PlatformWalker(WalkerTarget::new(
+                "steam".to_string(),
+                "game.exe".to_string(),
+                "C:/game/game.exe".to_string(),
+                identity(),
+            )),
+        );
+        assert!(walker.identity().is_some());
+
+        let observed = Target::new(
+            FidelityTier::Observed,
+            Provenance::new("observation".to_string(), None),
+            TargetOrigin::Observed(ObservedTarget::new(
+                1234,
+                "game.exe".to_string(),
+                "C:/game/game.exe".to_string(),
+                identity(),
+            )),
+        );
+        assert!(observed.identity().is_some());
+    }
+
+    #[test]
+    fn identity_is_none_for_a_profile_origin() {
+        let profile = Profile::parse(
+            &serde_json::json!({
+                "schema": 1,
+                "kind": "profile",
+                "fidelity": "authored",
+                "game": { "id": "g", "name": "Game" },
+                "stage": [
+                    { "role": "client", "lifecycle": "session", "terminal": true,
+                      "match": { "exe": "game.exe" } }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("a valid profile");
+        let target = Target::new(
+            FidelityTier::Authored,
+            Provenance::new("user".to_string(), None),
+            TargetOrigin::Profile(profile),
+        );
+        assert!(target.identity().is_none());
+    }
 }

@@ -78,6 +78,7 @@ the owning category page.
 - [MSRV](rust-and-tooling.md#msrv)
 - [Named pipe](windows-internals.md#named-pipe)
 - [Narrowing](capture-and-networking.md#narrowing)
+- [Non-profile capture path](process-and-attribution.md#non-profile-capture-path)
 - [npcap](platform-and-distribution.md#npcap)
 - [Output template](command-line-and-diagnostics.md#output-template)
 - [OwnedEndpoint](capture-and-networking.md#ownedendpoint)

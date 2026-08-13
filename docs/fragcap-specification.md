@@ -2163,6 +2163,37 @@ stays byte-compatible with unmodified analyzers (P-5). The ruleset's second-pass
 detection engine lives in the `fragcap-profile` crate beside the engine rule,
 adds no dependency, and was filled in by slice S031.
 
+#### 15.7.4 Non-profile capture
+
+The cascade resolves a target; the `run` command captures one. For a
+profile-backed target, `run` captures with the backing profile as it always has.
+For a target the cascade resolved without a profile (an engine rule, the platform
+walker, or runtime observation), `run` synthesizes a one-stage capture identity
+from the resolved target's match predicates (its image name plus any path
+anchors) and captures it through the same launch-agnostic engine, so an
+install-layout provider's answer reaches a capture rather than a dead end.
+
+`run` takes exactly one of three mutually-exclusive target inputs: a profile
+reference (`--profile`), an install directory (`--install-dir`), or a Steam app id
+(`--steam`) resolved to its install directory through the local library lookup.
+The install-location inputs supply the resolver an install root, so the engine
+rule and the walker resolve the socket-holding client from layout, and runtime
+observation resolves it from a matching live process. The synthesized identity is
+built through the same validating profile construction an authored profile takes,
+and is stamped `heuristic-unverified`, never `authored`: it was resolved by a
+heuristic, not vouched for by an author (P-9). The game identity it carries is a
+generic placeholder, plus the Steam app id as a fact when the input was `--steam`.
+
+The capture reaches the target the same passive way every capture does: the
+session arms, folds a query-only startup snapshot to attach to an already-running
+target, and attributes from outside the process. No process handle is opened and
+no process memory is read (P-1). An install location the cascade cannot resolve to
+a single client, an unreadable install tree, or a Steam app id that is not
+installed each produce a surfaced command failure that names the reason and
+captures nothing (P-4), distinguishable from a game that ran but sent no traffic.
+The `--profile` path is unchanged and its output byte-identical. This path was
+filled in by slice S032, activating the providers slices S029 and S030 registered.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope
