@@ -2118,6 +2118,51 @@ owns the cascade, because it needs Steam knowledge and the dependency
 direction (section 8.3) forbids the profile crate from depending on the Steam
 crate. The facade, which depends on both, assembles the resolver.
 
+#### 15.7.3 Technology detection
+
+Technology detection is a surface adjacent to the cascade, not a provider in it.
+Where an engine rule (section 15.7.1) reads an install layout only to name the
+socket-holding client, technology detection reports the wider set of technologies
+the same directory reveals: its game engine, anti-cheat, SDK, emulator,
+container, and launcher. It labels what a game is built on and what watches it;
+it does not choose a capture target, and it does not change which executable the
+resolver picks.
+
+Detection is built on the open `SteamDatabase/FileDetectionRuleSets` ruleset
+(MIT), the maintained source behind SteamDB's technology attribution, which
+recognizes technologies from depot file paths alone, never from file contents.
+That is exactly the passive constraint of P-1, so the whole ruleset is vendored
+verbatim (pinned to an upstream commit, carried with its MIT notice, and
+integrity-locked by a recorded SHA-256 over its bytes) and applied to a real
+install the operator already has on disk. The depot-manifest license gate SteamDB
+itself faces is a catalog-scale concern for titles nobody owns; it does not apply
+to a local install. The engine rule (section 15.7.1) tracks a hand-written subset
+of the same ruleset, the part that also names the client executable.
+
+The engine reads directory entries and matches the ruleset's path regexes against
+the relative paths it finds, using file names and relative paths only. It opens no
+process handle, reads no process memory, reads no file content, launches nothing,
+and makes no network call (P-1). A detected anti-cheat is surfaced as a
+user-safety and consent signal, so an operator knows what watches a game before
+capturing alongside it; fragcap detects it and never interacts with it. Every
+finding is stamped `heuristic-unverified`, because a path match is a guess, and
+names the marker path that produced it as auditable evidence (P-9). The ruleset is
+authored for a PCRE-style engine and contains constructs the project's RE2-family
+regex engine cannot compile; each such pattern is skipped, counted, and recorded
+with the technology it belonged to, never silently dropped, and the vendored bytes
+are never edited to force compilation (P-4). An unreadable install subtree is
+surfaced distinctly from a clean empty scan.
+
+Findings are surfaced to the operator through a dedicated command and are carried
+in a target artifact as a multi-category `technologies` structure defined in the
+master target schema (section 15.2 vocabulary), each finding recording its
+category, technology name, marker path, and fidelity. Detection does not run
+inside the live capture loop and does not alter the packet-stream output, which
+stays byte-compatible with unmodified analyzers (P-5). The ruleset's second-pass
+`Evidence` deduction is not applied; only the direct category sections are. The
+detection engine lives in the `fragcap-profile` crate beside the engine rule,
+adds no dependency, and was filled in by slice S031.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope

@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fragcap_profile::Profile;
+use fragcap_profile::{CompiledRuleset, Profile, TechnologyFinding};
 
 use crate::library::InstalledTitle;
 use crate::SteamError;
@@ -93,7 +93,21 @@ pub fn scaffold(title: &InstalledTitle) -> Result<String, SteamError> {
         });
     }
     let proposals = classify(images, &title.install_dir);
-    let text = render(title, &proposals);
+
+    // Label the technologies present in the install directory (engine,
+    // anti-cheat, SDK, and so on) and carry them in the scaffolded target. This
+    // labels technologies; it does not change which image the classifier picked
+    // as the client. The install directory just scanned readably above, so a
+    // detect error here is an unexpected race, surfaced rather than swallowed
+    // (P-4).
+    let findings = CompiledRuleset::embedded()
+        .detect(&title.install_dir)
+        .map_err(|e| SteamError::Io {
+            path: e.path,
+            source: e.source,
+        })?
+        .findings;
+    let text = render(title, &proposals, &findings);
 
     // Validity by construction (D4): never emit a profile the validator rejects.
     match Profile::parse(&text) {
@@ -335,7 +349,11 @@ specification section 16.3.";
 /// construction and the output re-parses (the caller asserts it validates). The
 /// stage classification is a heuristic, which the `fidelity` and `notes` fields
 /// declare.
-fn render(title: &InstalledTitle, proposals: &[StageProposal]) -> String {
+fn render(
+    title: &InstalledTitle,
+    proposals: &[StageProposal],
+    technologies: &[TechnologyFinding],
+) -> String {
     use serde_json::{json, Map, Value};
 
     let mut stages: Vec<Value> = Vec::with_capacity(proposals.len());
@@ -371,21 +389,43 @@ fn render(title: &InstalledTitle, proposals: &[StageProposal]) -> String {
         stages.push(Value::Object(stage));
     }
 
-    let profile = json!({
-        "schema": 1,
-        "kind": "profile",
-        "fidelity": "heuristic-unverified",
-        "notes": HEURISTIC_NOTE,
-        "game": {
+    let mut profile = Map::new();
+    profile.insert("schema".to_string(), json!(1));
+    profile.insert("kind".to_string(), json!("profile"));
+    profile.insert("fidelity".to_string(), json!("heuristic-unverified"));
+    profile.insert("notes".to_string(), json!(HEURISTIC_NOTE));
+    profile.insert(
+        "game".to_string(),
+        json!({
             "id": slug(&title.app_id),
             "name": title.name,
             "platform": "steam",
             "app_id": title.app_id,
-        },
-        "stage": stages,
-    });
+        }),
+    );
+    profile.insert("stage".to_string(), json!(stages));
 
-    let mut out = serde_json::to_string_pretty(&profile).expect("a scaffold is serializable");
+    // A detected technology set is carried as data. The scaffold always runs
+    // detection, so the array is always emitted, empty included: an empty
+    // `technologies` says detection ran and found nothing, which a downstream
+    // consumer must be able to tell apart from an older artifact that predates
+    // the field and never ran detection at all (P-9). The schema keeps the field
+    // optional so those older artifacts still validate.
+    let techs: Vec<Value> = technologies
+        .iter()
+        .map(|t| {
+            json!({
+                "category": t.category.as_str(),
+                "name": t.name,
+                "marker_path": t.marker_path,
+                "fidelity": t.fidelity.as_str(),
+            })
+        })
+        .collect();
+    profile.insert("technologies".to_string(), Value::Array(techs));
+
+    let mut out =
+        serde_json::to_string_pretty(&Value::Object(profile)).expect("a scaffold is serializable");
     out.push('\n');
     out
 }
@@ -644,6 +684,62 @@ mod tests {
         assert!(text.contains("\"role\": \"client\""));
         assert!(text.contains("eso64.exe"));
         assert_eq!(p.game().name(), "The Elder Scrolls Online");
+    }
+
+    #[test]
+    fn a_scaffold_carries_detected_technologies_and_still_validates() {
+        use crate::test_support::TempTree;
+        let tree = TempTree::new();
+        let install = tree.path().join("game");
+        // A client executable the classifier picks, plus technology markers the
+        // ruleset recognizes: an Unreal asset and an EasyAntiCheat dll.
+        tree.write_exe(&install.join("Game.exe"), 100);
+        tree.write(
+            &install.join("Content").join("Maps").join("Level.uasset"),
+            "x",
+        );
+        tree.write(
+            &install.join("EasyAntiCheat").join("EasyAntiCheat_x64.dll"),
+            "x",
+        );
+        let title = InstalledTitle {
+            app_id: "555".to_string(),
+            name: "Marker Game".to_string(),
+            install_dir: install,
+        };
+        let text = scaffold(&title).unwrap();
+        // The artifact still validates against the master schema.
+        Profile::parse(&text).expect("scaffold with technologies must validate");
+        assert!(
+            text.contains("\"technologies\""),
+            "technologies present: {text}"
+        );
+        assert!(text.contains("\"category\": \"anti_cheat\""));
+        assert!(text.contains("\"name\": \"EasyAntiCheat\""));
+        assert!(text.contains("\"category\": \"engine\""));
+        assert!(text.contains("\"name\": \"Unreal\""));
+    }
+
+    #[test]
+    fn a_technology_free_install_still_emits_an_empty_technologies_array() {
+        use crate::test_support::TempTree;
+        let tree = TempTree::new();
+        let install = tree.path().join("plain");
+        // A client executable but no technology markers the ruleset recognizes.
+        tree.write_exe(&install.join("Plain.exe"), 100);
+        let title = InstalledTitle {
+            app_id: "42".to_string(),
+            name: "Plain Game".to_string(),
+            install_dir: install,
+        };
+        let text = scaffold(&title).unwrap();
+        Profile::parse(&text).expect("scaffold must validate");
+        // The scaffold ran detection and found nothing: the array is present and
+        // empty, distinct from an older artifact that never had the field.
+        assert!(
+            text.contains("\"technologies\": []"),
+            "an empty technologies array is emitted: {text}"
+        );
     }
 
     #[test]

@@ -53,6 +53,16 @@ fn the_conformance_corpus_matches_the_validator() {
             "unsupported-version.json",
             Invalid(SchemaCode::UnsupportedSchema),
         ),
+        ("profile-technologies-valid.json", Valid),
+        ("profile-technologies-empty.json", Valid),
+        (
+            "technology-missing-category.json",
+            Invalid(SchemaCode::MissingField),
+        ),
+        (
+            "technology-bad-category.json",
+            Invalid(SchemaCode::InvalidCategory),
+        ),
         ("not-json.json", Malformed),
     ];
 

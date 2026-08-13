@@ -26,6 +26,16 @@ const MATCH_PREDICATES: [&str; 5] = [
     "cmdline_contains",
     "descends_from",
 ];
+const TECHNOLOGY_CATEGORIES: [&str; 8] = [
+    "engine",
+    "anti_cheat",
+    "sdk",
+    "framework",
+    "emulator",
+    "container",
+    "runtime",
+    "launcher",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -71,6 +81,9 @@ pub fn check(root: &Value) -> SchemaDiagnostics {
         if !n.is_string() {
             d.report(SchemaCode::WrongType, "/notes", "`notes` must be a string");
         }
+    }
+    if let Some(t) = obj.get("technologies") {
+        check_technologies(t, "/technologies", &mut d);
     }
 
     // Per-variant required-field rules.
@@ -221,6 +234,7 @@ fn allowed_top_keys(kind: Option<Kind>) -> &'static [&'static str] {
             "capture",
             "stage",
             "records",
+            "technologies",
         ],
         _ => &[
             "schema",
@@ -231,8 +245,101 @@ fn allowed_top_keys(kind: Option<Kind>) -> &'static [&'static str] {
             "game",
             "capture",
             "stage",
+            "technologies",
         ],
     }
+}
+
+fn check_technologies(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => {
+            d.report(
+                SchemaCode::WrongType,
+                pointer,
+                "`technologies` must be an array",
+            );
+            return;
+        }
+    };
+    for (i, item) in arr.iter().enumerate() {
+        check_technology(item, &format!("{pointer}/{i}"), d);
+    }
+}
+
+fn check_technology(v: &Value, pointer: &str, d: &mut SchemaDiagnostics) {
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => {
+            d.report(
+                SchemaCode::WrongType,
+                pointer,
+                "a technology must be an object",
+            );
+            return;
+        }
+    };
+    check_unknown_keys(
+        obj,
+        pointer,
+        &["category", "name", "marker_path", "fidelity"],
+        d,
+    );
+
+    match obj.get("category") {
+        None => d.report(
+            SchemaCode::MissingField,
+            join(pointer, "category"),
+            "`category` is required",
+        ),
+        Some(v) => match v.as_str() {
+            Some(s) if TECHNOLOGY_CATEGORIES.contains(&s) => {}
+            Some(_) => d.report(
+                SchemaCode::InvalidCategory,
+                join(pointer, "category"),
+                format!(
+                    "`category` must be one of {}",
+                    TECHNOLOGY_CATEGORIES.join(", ")
+                ),
+            ),
+            None => d.report(
+                SchemaCode::WrongType,
+                join(pointer, "category"),
+                "`category` must be a string",
+            ),
+        },
+    }
+
+    match obj.get("name") {
+        None => d.report(
+            SchemaCode::MissingField,
+            join(pointer, "name"),
+            "`name` is required",
+        ),
+        Some(Value::String(s)) if s.is_empty() => d.report(
+            SchemaCode::EmptyString,
+            join(pointer, "name"),
+            "`name` must not be empty",
+        ),
+        Some(Value::String(_)) => {}
+        Some(_) => d.report(
+            SchemaCode::WrongType,
+            join(pointer, "name"),
+            "`name` must be a string",
+        ),
+    }
+
+    if let Some(mp) = obj.get("marker_path") {
+        if !mp.is_string() {
+            d.report(
+                SchemaCode::WrongType,
+                join(pointer, "marker_path"),
+                "`marker_path` must be a string",
+            );
+        }
+    }
+
+    check_fidelity(obj, &join(pointer, "fidelity"), true, d);
 }
 
 fn check_unknown_top_keys(obj: &Map<String, Value>, kind: Option<Kind>, d: &mut SchemaDiagnostics) {

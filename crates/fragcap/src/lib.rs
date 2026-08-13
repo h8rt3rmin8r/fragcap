@@ -137,6 +137,9 @@ pub mod profile {
     pub use fragcap_profile::target::{
         EngineRuleTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
     };
+    pub use fragcap_profile::technologies::{
+        Category, CompiledRuleset, DetectError, ScanOutcome, SkippedPattern, TechnologyFinding,
+    };
 }
 
 /// Output sinks.

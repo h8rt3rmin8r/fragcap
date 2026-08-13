@@ -67,7 +67,9 @@ pub mod providers;
 pub mod resolve;
 pub mod resolver;
 pub mod schema;
+pub mod sha256;
 pub mod target;
+pub mod technologies;
 pub mod validate;
 
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
@@ -89,3 +91,7 @@ pub use schema::{
     PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
 };
 pub use target::{EngineRuleTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget};
+pub use technologies::{
+    Category, CompiledRuleset, DetectError, ScanOutcome, SkippedPattern, TechnologyFinding,
+    MAX_SCAN_DEPTH, RULES_INI, RULES_LOCK,
+};

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "heuristic-unverified",
+  "game": {
+    "id": "example",
+    "name": "Example Game"
+  },
+  "stage": [
+    {
+      "role": "client",
+      "lifecycle": "session",
+      "terminal": true,
+      "match": {
+        "exe": "example.exe"
+      }
+    }
+  ],
+  "technologies": [
+    {
+      "category": "engine",
+      "name": "Unreal",
+      "marker_path": "Content/Maps/Level.uasset",
+      "fidelity": "heuristic-unverified"
+    },
+    {
+      "category": "anti_cheat",
+      "name": "EasyAntiCheat",
+      "marker_path": "EasyAntiCheat/EasyAntiCheat_x64.dll",
+      "fidelity": "heuristic-unverified"
+    }
+  ]
+}
