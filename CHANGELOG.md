@@ -18,6 +18,54 @@ change pinned artifacts, as required by the constitution.
 
 ## [0.3.0] - 2026-08-14
 
+### Highlights
+
+v0.3.0 makes fragcap installable and lets it capture a game launched any way, not
+just a Steam title started through Steam.
+
+- **Windows installer (MSI).** A one-click installer puts `fragcap` on your PATH,
+  installs the targets hint database, and links the npcap download page. A
+  portable `.zip` and the hint database are also published, each with a SHA-256
+  checksum. The installer is unsigned for this release (see Installing below);
+  code signing is tracked for a later release.
+- **Capture any game, launched any way.** A new target resolution cascade and a
+  `watch` mode capture a game by identity (its executable name plus an optional
+  path anchor), however and wherever it starts. Modded installs launched from a
+  mod manager, standalone titles, and non-Steam games are now capturable, not
+  only Steam-launched ones. Runtime observation is the final arbiter and opens no
+  process handle.
+- **A targets hint database.** An embedded, offline database seeds which client a
+  game runs. It ships empty and grows privately from your own machine as you
+  capture; nothing about your library is shipped or shared.
+- **Engine-aware resolution.** Unreal, Unity, Godot, and Ren'Py installs are
+  recognized by their layout, so the process that actually holds the sockets is
+  found even when the launched executable is a stub.
+- **One schema for every artifact.** Profiles are now JSON governed by a
+  published master schema; `fragcap schema validate <file>` checks any targeting
+  or attribution file and reports every problem in one pass.
+- **Clearer live capture.** Live capture now refuses up front when it is not
+  elevated, explaining how to re-launch, instead of failing later inside the
+  driver.
+
+#### Installing on Windows
+
+1. Download `fragcap-0.3.0-x86_64.msi` and its `.sha256` from the assets below.
+2. Verify it: `Get-FileHash fragcap-0.3.0-x86_64.msi -Algorithm SHA256` should
+   match the value in the `.sha256` file. The installer is unsigned, so Windows
+   shows a SmartScreen "Windows protected your PC" warning with an "Unknown
+   Publisher" note; this is expected. Choose **More info**, then **Run anyway**.
+3. Run the installer. It installs to `Program Files`, adds fragcap to the system
+   PATH, and installs the hint database.
+4. Open a **new** terminal (so the PATH change takes effect) and run
+   `fragcap doctor` to check your setup.
+5. Live capture also needs the **npcap** driver in WinPcap-compatible mode, which
+   the installer cannot bundle; get it from https://npcap.com (the installer also
+   links it on completion).
+
+Prefer no installer? Download the portable
+`fragcap-0.3.0-x86_64-pc-windows-msvc.zip` instead and run `fragcap.exe` from the
+unzipped folder; it carries the hint database beside the binary.
+
 ### Added
 
 Live capture (`run`, `tap`, and analyzer capture) now detects when it is not
