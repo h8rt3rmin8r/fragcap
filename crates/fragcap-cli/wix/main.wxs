@@ -96,10 +96,20 @@
       Return="ignore" so a refusal (Tamper Protection, disabled Defender) does not
       fail the install. The command line is set by an immediate action whose
       Property equals the deferred action's Id, which becomes its CustomActionData.
+
+      The install path is passed to PowerShell as a bound parameter of a script
+      block (& {param($p) ...} "[INSTALLDIR]."), never interpolated into the
+      command text, so a directory name containing a quote or a subexpression is
+      treated as data and cannot inject code that would then run elevated. A
+      trailing sentinel dot on the argument keeps the path's own trailing
+      backslash from escaping the closing quote during argument parsing;
+      PowerShell trims the sentinel and the backslash back off. A paired rollback
+      action removes the exclusion if a later step fails, so a cancelled install
+      leaves no orphaned exclusion.
     -->
     <CustomAction Id="SetDefenderAdd"
                   Property="DefenderAdd"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;Add-MpPreference -ExclusionPath '[INSTALLDIR]'&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) Add-MpPreference -ExclusionPath ($p.TrimEnd([char]46, [char]92))}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderAdd"
                   BinaryKey="WixCA"
@@ -108,9 +118,20 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <CustomAction Id="SetDefenderRollback"
+                  Property="DefenderRollback"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) Remove-MpPreference -ExclusionPath ($p.TrimEnd([char]46, [char]92))}&quot; &quot;[INSTALLDIR].&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="DefenderRollback"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <CustomAction Id="SetDefenderRemove"
                   Property="DefenderRemove"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;Remove-MpPreference -ExclusionPath '[INSTALLDIR]'&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) Remove-MpPreference -ExclusionPath ($p.TrimEnd([char]46, [char]92))}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRemove"
                   BinaryKey="WixCA"
@@ -120,8 +141,13 @@
                   Return="ignore" />
 
     <InstallExecuteSequence>
+      <!-- Install: set the rollback command and queue the rollback immediately
+           before the add, so a failure after the add is undone; then add. -->
       <Custom Action="SetDefenderAdd" After="InstallFiles">NOT Installed</Custom>
-      <Custom Action="DefenderAdd" After="SetDefenderAdd">NOT Installed</Custom>
+      <Custom Action="SetDefenderRollback" After="SetDefenderAdd">NOT Installed</Custom>
+      <Custom Action="DefenderRollback" After="SetDefenderRollback">NOT Installed</Custom>
+      <Custom Action="DefenderAdd" After="DefenderRollback">NOT Installed</Custom>
+      <!-- Uninstall: remove the exclusion before the files are removed. -->
       <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
       <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>

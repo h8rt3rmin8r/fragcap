@@ -32,7 +32,12 @@ the installer already holds; it opens no process handle and touches no target
 process, its memory, its traffic, or the network stack, so it is outside the P-1
 technique denylist. It is best-effort: Windows Tamper Protection or a disabled
 Defender can refuse the change even when elevated, and a refusal must not fail the
-install, so the action ignores its own failure.
+install, so the action ignores its own failure. The install path is passed to
+PowerShell as a bound parameter of a script block rather than interpolated into
+the command text, so a directory name containing a quote or a subexpression is
+data and cannot inject code that would then run elevated; a paired rollback action
+removes the exclusion if a later install step fails, so a cancelled install leaves
+none behind.
 
 The hint database default is on. The MSI installs the database under a
 program-files directory a standard user cannot write at runtime, but local

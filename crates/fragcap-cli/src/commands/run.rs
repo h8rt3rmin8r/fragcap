@@ -54,7 +54,7 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // build_resolver). With neither set, fall back to the per-user default, which
     // the first-run bootstrap below creates when absent so hint resolution and
     // local accumulation work with no configuration (issue #96, slice S039).
-    let (hint_db, from_default) = match paths::hint_db_path(args.hint_db.as_deref()) {
+    let (mut hint_db, from_default) = match paths::hint_db_path(args.hint_db.as_deref()) {
         Some(path) => (Some(path), false),
         None => (paths::default_hint_db_path(), true),
     };
@@ -65,13 +65,18 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // both ship it there), seeds the writable per-user copy; otherwise an empty
     // store is created. A bootstrap failure is a warning, never fatal (FR-005).
     if from_default {
-        if let Some(default) = hint_db.as_deref() {
+        if let Some(default) = hint_db.clone() {
             let template = bundled_hint_db_template();
-            if let Err(e) = ensure_default_hint_db(default, template.as_deref()) {
+            if let Err(e) = ensure_default_hint_db(&default, template.as_deref()) {
                 emitter.warn(&format!(
                     "hint database could not be initialized at {}: {e}",
                     default.display()
                 ));
+                // The bootstrap left no usable database (any partial output was
+                // removed above). Drop the default so resolution proceeds with no
+                // hint provider, rather than letting build_resolver treat a missing
+                // or invalid default as a fatal error (FR-005).
+                hint_db = None;
             }
         }
     }
@@ -169,17 +174,57 @@ fn ensure_default_hint_db(default: &Path, template: Option<&Path>) -> std::io::R
     if let Some(parent) = default.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    match template {
-        Some(template) if template.is_file() => {
-            std::fs::copy(template, default)?;
-            Ok(())
-        }
+    let result = match template {
+        Some(template) if template.is_file() => copy_writable_hint_db(template, default),
         // No template shipped: materialize an empty current-schema store. Opening
         // a store at a fresh path creates a valid, empty database.
         _ => fragcap::targets::Store::open(default)
             .map(|_| ())
             .map_err(|e| std::io::Error::other(e.to_string())),
+    };
+    if result.is_err() {
+        // A copy or create that fails partway can leave a truncated file behind.
+        // Remove it, so a later `build_resolver` cannot see a present-but-invalid
+        // database and turn a non-fatal bootstrap failure into a fatal one (the
+        // caller also drops the path; this is the on-disk half). FR-005.
+        let _ = std::fs::remove_file(default);
     }
+    result
+}
+
+/// Copy the shipped template to the writable per-user default.
+///
+/// The installer ships the template read-only, and a plain file copy preserves
+/// that attribute on Windows. The per-user copy must be writable, because local
+/// accumulation persists into it on every run, so the read-only attribute is
+/// cleared on the destination after the copy.
+fn copy_writable_hint_db(template: &Path, default: &Path) -> std::io::Result<()> {
+    std::fs::copy(template, default)?;
+    let perms = std::fs::metadata(default)?.permissions();
+    if perms.readonly() {
+        make_writable(default, perms)?;
+    }
+    Ok(())
+}
+
+/// Grant write access to a freshly copied file. On Windows this clears the
+/// read-only file attribute the MSI template carries; on Unix it adds owner write
+/// without widening group or other, so the Unix "world writable" caveat behind the
+/// `set_readonly(false)` lint does not apply.
+#[cfg(not(unix))]
+fn make_writable(path: &Path, mut perms: std::fs::Permissions) -> std::io::Result<()> {
+    #[allow(clippy::permissions_set_readonly_false)]
+    {
+        perms.set_readonly(false);
+    }
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(unix)]
+fn make_writable(path: &Path, perms: std::fs::Permissions) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = perms.mode() | 0o200;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 /// Learn this machine's Steam launch executables into the configured hint store.
@@ -557,6 +602,37 @@ mod tests {
             template_bytes,
             "the default must be a copy of the template"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_bootstrap_makes_a_read_only_template_copy_writable() {
+        // PR #97 review (P1): the MSI ships the template read-only, and a plain
+        // file copy preserves that attribute, which would make the per-user copy
+        // read-only and break the read-write open that local accumulation needs.
+        let dir = scratch("bootstrap-readonly");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let template = dir.join("template.db");
+        fragcap::targets::Store::open(&template).expect("template store");
+        let mut ro = std::fs::metadata(&template).expect("meta").permissions();
+        ro.set_readonly(true);
+        std::fs::set_permissions(&template, ro).expect("mark template read-only");
+
+        let default = dir.join("hint.db");
+        ensure_default_hint_db(&default, Some(&template)).expect("bootstrap copies");
+        assert!(
+            !std::fs::metadata(&default)
+                .expect("meta")
+                .permissions()
+                .readonly(),
+            "the bootstrapped default must be writable"
+        );
+        // It opens as a valid store (a read-write open would fail if read-only).
+        fragcap::targets::Store::open(&default).expect("valid writable store");
+
+        // Clear the template's read-only bit so the scratch tree can be removed.
+        let tmeta = std::fs::metadata(&template).expect("meta").permissions();
+        let _ = make_writable(&template, tmeta);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
