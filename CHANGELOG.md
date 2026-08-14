@@ -16,6 +16,343 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-14
+
+### Highlights
+
+v0.4.0 makes fragcap a first-class Wireshark capture source and makes `fragcap
+doctor` tell the truth about your setup, on top of a documentation, schema, and
+brand pass.
+
+- **Wireshark extcap integration.** fragcap can register itself as a Wireshark
+  extcap capture source, so it shows up as a capture interface inside Wireshark.
+  Register it from the CLI with `fragcap extcap install` / `fragcap extcap
+  uninstall` (with `--user` or `--system` scope), or let the Windows installer
+  do it as an optional, off-by-default step (per user, or machine wide for
+  administrators when Wireshark is detected).
+- **`fragcap doctor` tells the truth and reads clearly.** doctor now lists your
+  real capture-capable interfaces and actual loopback support instead of
+  placeholders. It identifies itself (its version and the binary, profile, and
+  hint database paths it is using), colorizes status, and wraps to the terminal
+  width. When the extcap integration is not registered, it names the Wireshark
+  download page (which also provides the required npcap driver) alongside
+  `fragcap extcap install`. Output stays plain under redirection, `NO_COLOR`, or
+  `--json`, and recognizes a machine-wide registration, not only a per-user one.
+- **Documentation you can follow.** The documentation site renders theme-aware
+  Mermaid diagrams from the same fenced source that renders on GitHub, the
+  Getting Started guide gains an annotated install walkthrough built from real
+  installer screenshots, and the external-dependency model (npcap required,
+  Wireshark recommended, the extcap integration optional) is single-sourced so
+  the tool and the docs cannot drift.
+- **Schema, brand, and housekeeping.** The master profile schema's identifier is
+  corrected to the project's real domain, the vendored brand kit moves to v1.1.0
+  (a semantic token layer, components, and guidelines, with every brand
+  immutable unchanged), and the Windows executable now carries a proper
+  FileVersion resource.
+
+#### Installing on Windows
+
+1. Download `fragcap-0.4.0-x86_64.msi` and its `.sha256` from the assets below.
+2. Verify it: `Get-FileHash fragcap-0.4.0-x86_64.msi -Algorithm SHA256` should
+   match the value in the `.sha256` file. The installer is unsigned, so Windows
+   shows a SmartScreen "Windows protected your PC" warning with an "Unknown
+   Publisher" note; this is expected. Choose **More info**, then **Run anyway**.
+3. Run the installer. It installs to `Program Files`, adds fragcap to the system
+   PATH, and installs the hint database. It can optionally register fragcap as a
+   Wireshark extcap source; both registration choices are off by default.
+4. Open a **new** terminal (so the PATH change takes effect) and run
+   `fragcap doctor` to check your setup.
+5. Live capture also needs the **npcap** driver, which the installer cannot
+   bundle. Install it from https://npcap.com (the installer links it on
+   completion) with its two non-default options enabled: **WinPcap API-compatible
+   mode** and **loopback traffic capture support** (fragcap needs both; `fragcap
+   doctor` names either if it is missing).
+
+Prefer no installer? Download the portable
+`fragcap-0.4.0-x86_64-pc-windows-msvc.zip` instead and run `fragcap.exe` from the
+unzipped folder; it carries the hint database beside the binary.
+
+### Added
+
+The documentation site now renders Mermaid diagrams. A ```mermaid fence is
+rewritten to a client-side renderer that follows the page theme, so the same
+fenced source renders on the site and on GitHub. Three seed diagrams are authored
+with it (the pieces and how they relate, the runtime data flow, and how npcap is
+acquired) on the Architecture page and in the master specification.
+
+The Getting Started guide gains an annotated install walkthrough built from real
+Wireshark and Npcap installer screenshots, ending in a `fragcap doctor`
+verification step that shows the readiness output. Screenshots are served from
+`site/public/screenshots/`.
+
+The Windows installer can now register fragcap as a Wireshark extcap capture
+source. An optional wizard step offers two opt-in choices, both off by default:
+register for the current user (the common case), or, for administrators, register
+for all users on the machine when Wireshark is detected. Both drive the existing
+`fragcap extcap install` command, a failed registration never fails the install,
+and leaving both unchecked registers nothing so you can run `fragcap extcap
+install` later. The choices are also public installer properties
+(`REGISTEREXTCAP_USER`, `REGISTEREXTCAP_MACHINE`) for silent installs.
+
+`fragcap doctor` now points at where to get Wireshark. When the analyzer extcap
+integration is not registered, the guidance names the Wireshark download URL
+alongside `fragcap extcap install`, and notes that the Wireshark installer also
+provides npcap, so one download resolves both the recommended analyzer and the
+required capture driver. The URL is single-sourced in a new
+`fragcap_core::interface::WIRESHARK_DOWNLOAD_URL` constant, the sibling of
+`DRIVER_DOWNLOAD_URL`, and the npcap-absent remediation takes its Wireshark URL
+from the same constant rather than a second literal. doctor stays granular (the
+per-option npcap precision is unchanged) and the integration check remains a
+non-blocking optional warning; a ready environment's output is unchanged.
+
+`fragcap extcap install` and `fragcap extcap uninstall` gained `--user` and
+`--system` scope flags. `--user` (the default when no scope is given) registers
+into the per-user Wireshark extcap directory; `--system` registers into the
+machine-wide one, resolving Wireshark's registry-recorded install directory (and
+falling back to the Program Files default), the same location `doctor` probes, so
+a machine-wide install and `doctor` agree even when Wireshark is installed outside
+Program Files. The existing `--dir` remains an explicit override,
+and the three selectors are mutually exclusive. This is the ergonomic form of what
+was previously only expressible by pointing `--dir` at the system directory; the
+default behavior is unchanged.
+
+`fragcap extcap install` and `fragcap extcap uninstall` register and unregister
+fragcap as a Wireshark extcap capture source, so you no longer copy the binary
+into Wireshark's extcap directory by hand; `fragcap doctor` then reports the
+integration accordingly. Registration is per user, so on a shared machine each
+user who wants the Wireshark integration runs `fragcap extcap install` once; an
+administrator can register for the whole machine by pointing `--dir` at
+Wireshark's system extcap directory.
+
+### Changed
+
+The external-dependency model is now stated once. The glossary carries a
+"Dependency model" entry defining the three tiers (npcap required, Wireshark
+recommended, the Wireshark extcap integration optional) to match the `fragcap
+doctor` severities; the README and the Getting Started guide summarize and link
+to it rather than restating the tiers, so the tool and the docs cannot drift.
+
+The stale loopback framing is corrected across the README, the glossary, and the
+master specification: current Npcap installs loopback capture support
+automatically, so it is no longer a separate installation option to enable. The
+one option that still matters, WinPcap API compatible mode, is kept. The docs now
+also state that npcap is by the Nmap Project and that the Wireshark installer
+bundles it.
+
+`fragcap doctor` now recognizes a machine-wide Wireshark extcap registration, not
+only the per-user one. The `analyzer extcap` check reports `ok` when the fragcap
+binary is present in either the current user's Wireshark extcap directory or the
+machine-wide (system) one, and names which scope registered it. Previously a
+second user on a machine where fragcap was registered machine-wide (the MSI's
+machine-wide option, slice 043) saw the "not registered" optional warning even
+though Wireshark could see the source. The machine-wide directory is resolved from
+the same `HKLM\SOFTWARE\Wireshark` registry value the MSI registers into, so a
+non-default Wireshark install location is recognized too, with the Program Files
+path as a fallback. Detection stays read-only, and the not-registered case is
+still an optional warning.
+
+`fragcap doctor` output is easier to read and now identifies itself: it opens
+with the fragcap version and the paths to the running binary, the user profile
+directory, and the hint database, separates its sections with blank lines,
+colors the status flags when writing to a terminal, and wraps long lines to a
+normal terminal width. Redirected output, output with `NO_COLOR` set, and the
+`--json` form stay plain.
+
+The glossary "Technique denylist" entry is now an actual list. The six
+denylisted techniques (packet interception drivers, code injection, function
+hooking, memory-read process handles, layered service providers, and executable
+image modification) each get their own item with a plain-language gloss of what
+the technique is and one line on why it is off-limits, naming the permitted
+alternative that observes from outside the target. The enforcement note and the
+P-1 framing are preserved. Documentation only; the denylist itself is unchanged.
+
+The vendored brand kit under `brand/` is refreshed to version 1.1.0, a
+presentation and completeness pass over the resolved 1.0.0 identity rather than a
+re-decision of it. Every brand immutable is unchanged: Geist Mono, Signal Cyan
+`#27C7E7`, Capture Orange `#FF5300`, and the dark-first `#050708` ground. The
+logo, wordmark, and favicon masters are redrawn as clean filled paths, and the
+favicons and social preview are re-rendered from them.
+
+What the refresh adds is deliverable rather than decorative: a Fault color
+(`#E9505F` on dark, `#C0293A` on light) for the failure state the earlier palette
+had no color for; a semantic token layer (`--fc-bg`, `--fc-fg`, and their kin)
+plus a `.fc-light` class so the light reading mode is expressible in code;
+`tokens/base.css` and `tokens/spacing.css`; a `components/` set,
+`guidelines/index.html`, `styles.css`, a `SKILL.md`, and a measured `VERIFY.md`
+whose numbers are re-derived from the shipped files. The version 1.0.0
+`--fragcap-*` CSS variable names are retained as aliases of the canonical
+`--fc-*` tokens, so nothing that consumed the old names breaks. The documentation
+site single-sources both its palette (now including the Fault swatch) and its
+logo, favicon, and guide assets from `brand/`, so the site and the kit cannot
+drift.
+
+### Fixed
+
+The documentation website's profile pages described the wrong format. The
+profile-schema reference and the writing-a-profile guide documented and
+demonstrated the profile as TOML, a format the tool stopped accepting when the
+profile format moved to JSON; both pages are now JSON, and their examples carry
+the schema's required top-level keys (`schema`, `kind`, `fidelity`) and validate
+against the published schema. Command examples name a `.json` profile path rather
+than `.toml`.
+
+The verbatim game slug `eso` no longer appears throughout the docs as if it were
+a shipped profile. One concrete slug is kept, as the example value under the CLI
+`--profile` reference; every other occurrence is a typed placeholder (`<game-id>`,
+`<client>.exe`, `<profile>.json`), and the sentence apologizing that the example
+was illustrative and not a shipped profile is gone.
+
+The two wide Mermaid diagrams on the Architecture page (the dependency model and
+the runtime data flow) are laid out top to bottom instead of left to right, so
+they fit the content column and are legible at normal widths instead of running
+off the side.
+
+The site footer no longer detaches on documentation pages. It rendered once at
+the body level, a sibling of the fumadocs docs layout whose grid forces a full
+viewport of height, which parked the footer a full viewport below the content on
+every docs page. The footer now renders in flow: the home group renders it after
+its layout, and docs pages render it inside the docs content column after the
+body, so it sits directly under the content, exactly one footer per page, with
+the home page unchanged.
+
+The `fragcap.exe` binary now carries its real version. Its Windows PE version
+resource was never stamped, so `Get-Command fragcap` (and Explorer file
+properties, and inventory tools) reported a FileVersion of `0.0.0.0` even though
+`fragcap --version` printed the true version (issue #104). The build now embeds a
+VERSIONINFO resource stamped from the crate version, so the FileVersion and
+ProductVersion match `fragcap --version` and track releases automatically. The
+version is single-sourced from the workspace version, so the two can never
+disagree. This is a Windows build-time change only; no runtime behavior changes.
+
+`fragcap doctor` now lists the real capture-capable network interfaces, naming
+each adapter beside its address, instead of always reporting that none were
+found. The empty-set warning appears only when enumeration genuinely finds no
+interfaces, and an enumeration that fails is reported as a failure rather than
+presented as a successfully observed empty machine.
+
+`fragcap doctor` now reports loopback capture support from the actual loopback
+adapter rather than an unrelated driver file, so a machine that has loopback
+support installed is no longer told it is missing; when the state cannot be
+determined the report says so rather than claiming loopback is absent.
+
+### Decisions
+
+**2026-08-14** Added the optional Wireshark extcap registration to the Windows
+installer (`crates/fragcap-cli/wix/main.wxs`, release-adjacent and pinned),
+implementing the slice 041 decision D-4. Both scopes are offered: per-user by
+default, machine-wide for administrators. Per-user is a deferred, user-impersonated
+WiX custom action running the installed `fragcap.exe extcap install`, so the target
+resolves to the installing user's profile rather than SYSTEM; machine-wide is a
+non-impersonated action running `extcap install --dir <WiresharkDir>\extcap`, gated
+on a registry search that detects Wireshark. Both use the Defender-exclusion command
+pattern (immediate action sets CustomActionData, deferred WixQuietExec,
+`Return="ignore"` so a failure never fails the install) and add no new WiX
+extension, keeping the release job's `cargo wix` invocation unchanged. No `fragcap`
+CLI surface changed; the installer drives the already-shipped `extcap install` and
+`--dir`.
+
+Registration is deliberately forward-only: unlike the Defender exclusion, it has no
+rollback and no unregister-on-uninstall. extcap registration is user-managed,
+idempotent state (a user may register or unregister independently with `fragcap
+extcap install` / `uninstall`), so an installer-owned undo would delete a
+registration this install does not own, on uninstall, on a major upgrade, or on
+rollback of an unrelated failure. Users unregister with `fragcap extcap uninstall`.
+This reverses the "paired rollback and removal" half of D-4, which assumed the
+Defender-exclusion symmetry applied; it does not, because registration state is
+shared with the user and the CLI. `fragcap doctor` probes the per-user extcap
+directory only, so it confirms the per-user scope; a machine-wide-only registration
+is confirmed by Wireshark listing fragcap as a source. Teaching `doctor` to also
+recognize the system extcap directory is a separate follow-up.
+
+**2026-08-14** Corrected the master schema's `$id` host from `fragcap.dev` to
+`fragcap.com` (`https://fragcap.com/schema/target/v1.json`), in the published copy
+`docs/schema/target-schema.v1.json`, the byte-identical embedded asset
+`crates/fragcap-profile/assets/target-schema.v1.json`, the CLI test that asserts
+the exact string (`crates/fragcap-cli/tests/cli_schema.rs`), and the identity
+contract example (`specs/025-master-json-schema/contracts/master-schema.contract.md`).
+Resolves issue #117.
+
+This is recorded as a deliberate decision because the S025 identity contract states
+the `$id` host is fixed at authoring time and never changed for a published version.
+The change is made anyway, and it is safe: `fragcap.dev` was never a domain the
+project owned or served, `fragcap.com` is the project's real registered domain (the
+docs site), and the `$id` is an opaque stable identifier that nothing in the project
+dereferences over the network, so this is an identifier correction rather than a
+hosting change (no schema route is served at that URL, and none is added here).
+Schema version 1 is embedded in the binary and not published to any schema registry,
+so overwriting the v1 identity before 1.0 breaks no external consumer. The two schema
+copies are edited identically and remain byte-identical, enforced by the drift test
+in `crates/fragcap-profile/tests/schema_conformance.rs`.
+
+**2026-08-14** Adopted a single required/recommended/optional model for
+fragcap's external dependencies: npcap is required (the capture driver),
+Wireshark is recommended (the analyzer, whose installer also provides npcap), and
+the Wireshark extcap integration is optional (it ships with Wireshark and only
+needs fragcap registered as a source). `fragcap doctor` severities follow this
+model, and the documentation pass in a later slice single-sources the same
+wording so the tool and the docs cannot drift.
+
+**2026-08-14** De-hardcoded the release version from the release-runbook
+documentation in two pinned artifacts. `release.toml`'s step-3 comment and
+`scripts/New-Release.ps1`'s minor-bump `.EXAMPLE` both named a literal `v0.2.0` /
+`release/0.2.0`, which went stale the moment the version moved and would misdirect
+an operator who read the file rather than the script's printed next steps. Both
+now use a `vX.Y.Z` / `release/X.Y.Z` placeholder, so they stay correct across
+releases. No behavior changed: `release.toml` still tags, pushes, and publishes
+nothing (`tag`, `push`, and `publish` are all false), and the scripts already
+print the tag command with the actual bumped version at runtime
+(`git tag v${version} ...`), which is unaffected. Recorded here because both files
+are pinned artifacts (surfaced by the Codex review of the v0.3.0 release,
+pull request 99).
+
+**2026-08-14** Corrected the MSI build in the release workflow
+(`.github/workflows/release.yml`) after the re-pointed v0.3.0 run reached the MSI
+step for the first time and failed on the `cargo wix` invocation. The step passed
+`--ext WixUtilExtension`, which cargo-wix's `wix` subcommand does not accept, and
+it omitted `--target-bin-dir`, which is required alongside `--no-build` so the
+hand-authored `main.wxs` can resolve `$(var.CargoTargetBinDir)` to the staged
+payload. The invocation now passes no extension flags (cargo-wix already links
+both `WixUIExtension` and `WixUtilExtension`, so adding either again makes light
+fail with duplicate-table and duplicate-symbol collisions) and sets
+`--target-bin-dir` to the release output directory.
+
+Two `main.wxs` defects were fixed in the same change (that file is not a pinned
+artifact): an explicit `ARPNOMODIFY` property collided with the one
+`WixUI_InstallDir` already defines, and the `WixUILicenseRtf` path was relative to
+the package directory rather than the repository root where `cargo wix` runs.
+
+The whole MSI build was then validated end to end offline against WiX 3.14: the
+installer compiles and links with no errors, and an administrative extract
+confirms it carries `fragcap.exe`, `hint.db`, `LICENSE`, and `NOTICE` under a
+`fragcap` directory with product name `fragcap`, version `0.3.0`, and manufacturer
+`ShruggieTech`. This is a fix-forward: the v0.3.0 tag builds from the workflow as
+it was at the tag, so consuming it requires re-pointing the tag.
+
+**2026-08-14** Fixed two defects in the release workflow
+(`.github/workflows/release.yml`) that only surfaced when the release path first
+ran for real at the v0.3.0 tag; both had sat latent because the affected steps run
+only on a tag push and none had occurred since they were added.
+
+First, the "Assert the featured binary starts without npcap" step (added with the
+release capability features, issue #62) accepted `doctor` exiting 0 or 1 in its
+guard and printed its success message, but never reset `$LASTEXITCODE`. On a
+runner without npcap, `doctor` correctly exits 1 (its "not ready" code), so the
+step inherited that 1 and GitHub Actions failed a check that had in fact passed,
+which blocked the whole release before any artifact was assembled. The step now
+ends with an explicit `exit 0` on the success path; a `doctor` that fails to start
+(any exit other than 0 or 1) still fails the step through the existing guard.
+
+Second, the "Install WiX and cargo-wix" step (added for the MSI, issue #96)
+installed WiX through choco but did not propagate the `WIX` environment variable
+and its `bin` directory to the later "Build the MSI installer" step, which runs in
+a fresh shell that does not inherit a mid-job machine-environment change. cargo-wix
+resolves the WiX binaries through the `WIX` variable, so the MSI build would not
+have found them. The step now reads the machine `WIX` variable after install and
+appends it to `$GITHUB_ENV` and its `bin` to `$GITHUB_PATH`, failing loudly if WiX
+is absent. This is a fix-forward: the v0.3.0 tag builds from the workflow as it was
+at the tag, so consuming the fix requires the operator to re-point the tag or cut
+the next version.
+
 ## [0.3.0] - 2026-08-14
 
 ### Highlights
@@ -4746,5 +5083,6 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.4.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.4.0
 [0.3.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.3.0
 [0.2.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.2.0
