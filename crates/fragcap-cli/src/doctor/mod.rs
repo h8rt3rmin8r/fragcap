@@ -104,13 +104,20 @@ pub struct Inputs {
     /// apart by `live_available`. A failed probe is reported distinctly so it is
     /// never presented as a successfully observed empty machine (P-9).
     pub interface_error: Option<String>,
-    /// Whether the analyzer extcap integration is installed (a fragcap binary is
-    /// present in the extcap directory).
+    /// Whether the analyzer extcap integration is installed for the current user
+    /// (a fragcap binary is present in the per-user extcap directory).
     pub extcap_installed: bool,
-    /// The analyzer's extcap directory, when the platform location can be
-    /// determined. Reported by the integration check so an operator knows where
-    /// to copy the binary.
+    /// The analyzer's per-user extcap directory, when the platform location can
+    /// be determined. Reported by the integration check so an operator knows
+    /// where to copy the binary.
     pub extcap_dir: Option<std::path::PathBuf>,
+    /// Whether the integration is installed machine-wide (a fragcap binary is
+    /// present in Wireshark's system extcap directory, as the MSI's machine-wide
+    /// option installs it). A second user sees a machine-wide registration even
+    /// though it is not in their own profile.
+    pub extcap_system_installed: bool,
+    /// The machine-wide (system) extcap directory, when it can be determined.
+    pub extcap_system_dir: Option<std::path::PathBuf>,
     /// How many bundled profiles ship.
     pub bundled_count: usize,
     /// How many user profiles are available.

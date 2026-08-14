@@ -47,17 +47,20 @@ clap.workspace       = true
 ctrlc.workspace      = true
 serde_json.workspace = true
 
-# Windows only, for the `doctor` elevation probe and the npcap version read.
-# Pinned to the same 0.36 line fragcap-attr already resolves (see the workspace
-# manifest for why), so this adds no second windows-sys tree to Cargo.lock. The
-# token features the elevation probe reads, plus `Win32_Storage_FileSystem` for
-# the wpcap.dll FileVersion read; `Win32_Foundation` is already in the workspace
+# Windows only, for the `doctor` elevation probe, the npcap version read, and the
+# Wireshark install-directory registry lookup. Pinned to the same 0.36 line
+# fragcap-attr already resolves (see the workspace manifest for why), so this adds
+# no second windows-sys tree to Cargo.lock. The token features the elevation probe
+# reads, `Win32_Storage_FileSystem` for the wpcap.dll FileVersion read, and
+# `Win32_System_Registry` for reading the machine-wide Wireshark install location
+# the MSI registers extcap into; `Win32_Foundation` is already in the workspace
 # set.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
 ] }
 
 [dev-dependencies]
