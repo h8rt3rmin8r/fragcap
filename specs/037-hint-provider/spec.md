@@ -202,8 +202,10 @@ live path re-matches against.
   platform walker, runtime observation) can answer, the lower provider's answer
   MUST be used.
 - **FR-007**: The hint provider MUST decline (return no answer) when the row is
-  absent, when the row carries no usable launch executable, or when the request
-  carries no application id.
+  absent, when the row carries no usable launch executable, when the request
+  carries no application id, or when the row is launcher-mediated (its launch
+  executable is the publisher launcher rather than the socket-holding client, so
+  resolving it would record the launcher as the game).
 - **FR-008**: After restricting a row's launch entries to those applicable to the
   capture platform (operating-system filter unset or naming Windows) and reducing
   them to the set of distinct executable file names (file-name component, compared

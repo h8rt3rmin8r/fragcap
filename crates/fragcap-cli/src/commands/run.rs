@@ -121,11 +121,26 @@ fn build_resolver(hint_db: Option<&Path>) -> Result<TargetResolver, CliError> {
     // runtime check below, not a compile-time feature gate. A library consumer of
     // `fragcap` that builds without the `targets` feature never reaches this code.
     if let Some(path) = hint_db {
-        if path.exists() {
-            let store = fragcap::targets::Store::open(path).map_err(|e| {
-                CliError::failure(format!("cannot open hint database {}: {e}", path.display()))
-            })?;
-            providers.push(Box::new(fragcap::targets::HintDatabaseProvider::new(store)));
+        // `try_exists` distinguishes a genuinely absent file (Ok(false), which is
+        // not an error, FR-013) from a path whose existence cannot be determined
+        // (Err, for example a denying ACL on a parent). `Path::exists` collapses
+        // the latter to `false` and would silently leave precedence 2 empty for a
+        // database the operator explicitly named, so an inaccessible path is
+        // surfaced loudly like an unopenable one (FR-014).
+        match path.try_exists() {
+            Ok(true) => {
+                let store = fragcap::targets::Store::open(path).map_err(|e| {
+                    CliError::failure(format!("cannot open hint database {}: {e}", path.display()))
+                })?;
+                providers.push(Box::new(fragcap::targets::HintDatabaseProvider::new(store)));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return Err(CliError::failure(format!(
+                    "cannot access hint database {}: {e}",
+                    path.display()
+                )))
+            }
         }
     }
 
@@ -281,7 +296,16 @@ fn nonprofile_resolution_error(error: ResolutionError, install_root: &Path) -> C
         other => return CliError::from(other),
     };
 
-    let detail = if let Some(ambiguity) = unresolved.engine_rule_ambiguous() {
+    let detail = if let Some(ambiguity) = unresolved.hint_ambiguous() {
+        // The hint provider is the highest-precedence heuristic source, so its note
+        // is the most specific one to report (FR-008): name the app id and how many
+        // candidate clients its row could not reduce to one.
+        format!(
+            "the hint database named {} candidate clients for app {}",
+            ambiguity.candidates(),
+            ambiguity.app_id()
+        )
+    } else if let Some(ambiguity) = unresolved.engine_rule_ambiguous() {
         format!(
             "an engine layout was recognized but matched {} candidate clients",
             ambiguity.candidates()
@@ -363,6 +387,42 @@ mod tests {
         let result = build_resolver(Some(&path));
         assert!(result.is_err(), "a corrupt database must be a loud error");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_hint_ambiguity_is_named_in_the_nonprofile_error() {
+        // FR-008: when the hint row names several candidate clients and nothing
+        // lower resolves, the run error names the app id and the candidate count
+        // rather than the generic "no client recognized" message.
+        use fragcap::profile::{ResolutionRequest, SearchPath, TargetResolver};
+        use fragcap::targets::{Game, HintDatabaseProvider, LaunchEntry, Store};
+
+        let mut store = Store::open_in_memory().expect("in-memory store");
+        let mut game = Game::new(480);
+        let mut a = LaunchEntry::new("client.exe").expect("non-empty");
+        a.os = Some("windows".to_string());
+        let mut b = LaunchEntry::new("editor.exe").expect("non-empty");
+        b.os = Some("windows".to_string());
+        game.launch = vec![a, b];
+        store.upsert_game(&game).expect("upsert");
+
+        let resolver = TargetResolver::new(vec![Box::new(HintDatabaseProvider::new(store))])
+            .expect("one provider");
+        let search = SearchPath::new();
+        let bundled = fragcap::profile::BundledSet::empty();
+        let request =
+            ResolutionRequest::for_reference("unused", &search, &bundled).with_steam_app_id(480);
+        let error = resolver
+            .resolve(&request)
+            .expect_err("an ambiguous hint with no lower provider is unresolved");
+
+        let install = scratch("install");
+        let cli_error = nonprofile_resolution_error(error, &install);
+        let message = cli_error.message();
+        assert!(
+            message.contains("480") && message.contains('2'),
+            "the run error names the app id and candidate count: {message}"
+        );
     }
 
     #[test]

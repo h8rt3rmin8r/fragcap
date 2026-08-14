@@ -10,11 +10,14 @@ resolves without an operator authoring a profile first, while a live observation
 always overrides it.
 
 The provider never guesses. A sparse catalog-only row, an engine-only row with no
-launch executable, a request with no application id, and a row whose Windows launch
-entries name more than one distinct executable are all declines, so the cascade
-falls through to the lower providers rather than arming a capture against a guessed
-process (P-4); an ambiguous decline records the application id and candidate count
-so a not-resolved outcome can explain itself. Launch entries are first restricted
+launch executable, a request with no application id, a launcher-mediated row (whose
+launch executable is the publisher launcher rather than the socket-holding client,
+so resolving it would record the launcher as the game and lose the gameplay
+traffic), and a row whose Windows launch entries name more than one distinct
+executable are all declines, so the cascade falls through to the lower providers
+rather than arming a capture against a launcher or a guessed process (P-4); an
+ambiguous decline records the application id and candidate count, surfaced by the
+`run` error, so a not-resolved outcome can explain itself. Launch entries are first restricted
 to those applicable to Windows and reduced to the set of distinct executable file
 names, so one executable repeated across arguments, architectures, and beta
 branches is one candidate, not an ambiguity. Every answer is stamped

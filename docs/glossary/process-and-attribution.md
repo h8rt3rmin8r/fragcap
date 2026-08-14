@@ -1139,14 +1139,15 @@ when the operator supplies a present database, and its absence changes nothing.
 {: .matters }
 > The hint provider answers only when the row names exactly one usable client, and
 > it never guesses. A sparse catalog-only row, an engine-only row with no launch
-> executable, and a row whose launch entries name more than one distinct
-> executable are all declines, so the cascade falls through to the
-> [engine rule](#engine-rule), the [platform walker](#platform-walker), and
-> [runtime observation](#resolution-cascade) rather than arming a capture against a
-> guessed process (P-4). An ambiguous decline records why, so a not-resolved
-> outcome can explain itself. Every answer is
-> [heuristic-unverified](#fidelity-tier) and a live observation always overrides it
-> (P-9).
+> executable, a row whose launch entries name more than one distinct executable,
+> and a [launcher-mediated](#launcher-mediated) row (whose launch executable is the
+> publisher launcher, not the socket-holding client) are all declines, so the
+> cascade falls through to the [engine rule](#engine-rule), the
+> [platform walker](#platform-walker), and [runtime observation](#resolution-cascade)
+> rather than arming a capture against a launcher or a guessed process (P-4). An
+> ambiguous decline records why, so a not-resolved outcome can explain itself. Every
+> answer is [heuristic-unverified](#fidelity-tier) and a live observation always
+> overrides it (P-9).
 
 **See also:** [Provider](#provider), [Hint database](#hint-database),
 [Resolution cascade](#resolution-cascade), [Engine rule](#engine-rule),

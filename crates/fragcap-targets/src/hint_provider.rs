@@ -14,11 +14,13 @@
 //! and answers with a heuristic-unverified [`Target`] built from the row's launch
 //! executable, carrying the `launcher_mediated` and engine facts. It answers only
 //! when the row names exactly one usable client (P-9): a sparse row, an
-//! engine-only row, or a row it cannot reduce to one executable is a decline, so
-//! the cascade continues to the engine rule and below (P-4). Every answer is
-//! stamped `hint-db`, the same name the store's export uses, and never claims a
-//! source it did not read. It reads the embedded database only: no process handle,
-//! no memory, no launch, no network (P-1).
+//! engine-only row, a row it cannot reduce to one executable, and a
+//! launcher-mediated row (whose launch executable is the publisher launcher, not
+//! the socket-holding client) are all declines, so the cascade continues to the
+//! engine rule and below (P-4). Every answer is stamped `hint-db`, the same name
+//! the store's export uses, and never claims a source it did not read. It reads
+//! the embedded database only: no process handle, no memory, no launch, no network
+//! (P-1).
 
 use fragcap_profile::{
     FidelityTier, HintTarget, MatchPredicates, Precedence, Provenance, ProviderError,
@@ -72,6 +74,19 @@ impl TargetProvider for HintDatabaseProvider {
             Err(e) => return Err(ProviderError::Hint(e.to_string())),
         };
 
+        // A launcher-mediated title's launch executable is the publisher launcher,
+        // not the socket-holding client (specification section 15.6.1): Steam
+        // starts the launcher, which then starts the real game. Resolving the
+        // launch entry here would record the launcher as the game, and the
+        // synthesized one-stage capture would match a process that exits before the
+        // gameplay traffic flows, losing it with nothing counted (P-4, P-9). The
+        // database's single launch array cannot name the descendant client, so a
+        // mediated row is a decline: the engine rule, the platform walker, and
+        // runtime observation are the providers that find the client past the hop.
+        if game.launcher_mediated == Some(true) {
+            return Ok(None);
+        }
+
         let executables = windows_executables(&game.launch);
         match executables.len() {
             // No usable client executable (a Tier-1-only or engine-only row, or a
@@ -109,11 +124,15 @@ impl TargetProvider for HintDatabaseProvider {
 ///
 /// Keeps only launch entries applicable to Windows (an `os` filter that is unset
 /// or names Windows), reduces each to its file-name component, and returns the set
-/// of distinct names compared case-insensitively, preserving the first-seen
-/// casing. One executable repeated across arguments, osarch values, or beta
-/// branches collapses to one entry; a macOS or Linux entry is dropped.
+/// of distinct names, preserving the first-seen casing. Two names are the same when
+/// they fold to the same Unicode lowercase, matching the case-insensitive
+/// equivalence the `ImagePattern` matcher applies (see `fragcap-profile`'s
+/// `glob::folded_eq`), so a name the resulting identity would match is not counted
+/// as a second candidate. One executable repeated across arguments, osarch values,
+/// or beta branches, or differing only by case (ASCII or non-ASCII), collapses to
+/// one entry; a macOS or Linux entry is dropped.
 fn windows_executables(launch: &[LaunchEntry]) -> Vec<String> {
-    let mut seen_lower: Vec<String> = Vec::new();
+    let mut seen_folded: Vec<String> = Vec::new();
     let mut out: Vec<String> = Vec::new();
     for entry in launch {
         if !is_windows_entry(entry) {
@@ -123,11 +142,13 @@ fn windows_executables(launch: &[LaunchEntry]) -> Vec<String> {
         if name.is_empty() {
             continue;
         }
-        let lower = name.to_ascii_lowercase();
-        if seen_lower.iter().any(|s| s == &lower) {
+        // Unicode-aware lowercasing, not ASCII-only, so `Spel.exe` and its
+        // non-ASCII case variants fold together exactly as the matcher folds them.
+        let folded = name.to_lowercase();
+        if seen_folded.iter().any(|s| s == &folded) {
             continue;
         }
-        seen_lower.push(lower);
+        seen_folded.push(folded);
         out.push(name.to_string());
     }
     out
@@ -183,7 +204,9 @@ mod tests {
     fn a_row_with_one_executable_resolves_at_heuristic_unverified() {
         let mut game = Game::new(730);
         game.name = Some("CS2".to_string());
-        game.launcher_mediated = Some(true);
+        // Not launcher-mediated: the launch executable is the client itself, so it
+        // resolves. The carried fact is still surfaced on the answer.
+        game.launcher_mediated = Some(false);
         game.engine = Some(Engine {
             name: Some("Source 2".to_string()),
             source: EngineSource::Pcgamingwiki,
@@ -200,7 +223,7 @@ mod tests {
                 assert_eq!(t.app_id(), 730);
                 assert_eq!(t.image_name(), "cs2.exe");
                 assert!(t.identity().exe().is_some());
-                assert_eq!(t.launcher_mediated(), Some(true));
+                assert_eq!(t.launcher_mediated(), Some(false));
                 assert_eq!(t.engine(), Some("Source 2"));
             }
             other => panic!("expected a hint-database origin, got {other:?}"),
@@ -225,6 +248,55 @@ mod tests {
         let target = resolve(store_with(game), 1).expect("one candidate resolves");
         match target.origin() {
             TargetOrigin::HintDatabase(t) => assert_eq!(t.image_name(), "Game.exe"),
+            other => panic!("expected a hint origin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_launcher_mediated_row_declines() {
+        // A launcher-mediated title's launch executable is the publisher launcher,
+        // not the socket-holding client. Resolving it would record the launcher as
+        // the game and lose the gameplay traffic, so the provider declines and lets
+        // the engine rule, walker, and runtime observation find the real client
+        // past the launcher hop (P-4, P-9).
+        let mut game = Game::new(306130);
+        game.name = Some("The Elder Scrolls Online".to_string());
+        game.launcher_mediated = Some(true);
+        game.launch = vec![launch("Launcher.exe", Some("windows"))];
+        assert!(
+            resolve(store_with(game), 306130).is_none(),
+            "a launcher-mediated row names the launcher, not the client"
+        );
+    }
+
+    #[test]
+    fn a_row_with_unknown_mediation_resolves() {
+        // Mediation unknown (None) is not the same as known-mediated: the launch
+        // executable is the best available identity, resolved heuristic-unverified
+        // and overridable by observation.
+        let mut game = Game::new(400);
+        game.launch = vec![launch("game.exe", Some("windows"))];
+        assert!(
+            resolve(store_with(game), 400).is_some(),
+            "an unknown-mediation row still resolves its single client"
+        );
+    }
+
+    #[test]
+    fn a_case_variant_non_ascii_executable_is_one_candidate() {
+        // Two entries spelling the same non-ASCII name with different casing fold
+        // to one candidate under Unicode lowercasing, matching the matcher's
+        // case-insensitive equivalence, so they are not a false ambiguity. ASCII-
+        // only folding (the pre-fix behavior) would leave the accented capital
+        // distinct and wrongly report an ambiguity.
+        let mut game = Game::new(2);
+        game.launch = vec![
+            launch("Sp\u{00EB}l.exe", Some("windows")),
+            launch("SP\u{00CB}L.EXE", Some("windows")),
+        ];
+        let target = resolve(store_with(game), 2).expect("one folded candidate resolves");
+        match target.origin() {
+            TargetOrigin::HintDatabase(t) => assert_eq!(t.image_name(), "Sp\u{00EB}l.exe"),
             other => panic!("expected a hint origin, got {other:?}"),
         }
     }

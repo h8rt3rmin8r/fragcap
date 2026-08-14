@@ -36,6 +36,9 @@ The provider returns `Ok(None)` and records no note in these cases:
 
 - `request.steam_app_id()` is `None` (nothing to look up).
 - The store has no row for the appid.
+- The row is launcher-mediated (`launcher_mediated == Some(true)`): its launch
+  executable is the publisher launcher, not the socket-holding client, so the
+  database cannot name the client and the provider defers to the lower providers.
 - The row's Windows-applicable launch entries reduce to an empty set of distinct
   executables (a Tier-1-only or engine-only row).
 
@@ -76,10 +79,13 @@ CLI assembly time (C7), surfaced as a `CliError`.
   with the `targets` feature built in, and a present file at `<path>`: the CLI
   opens the store and registers `HintDatabaseProvider` at precedence 2. A
   `Store::open` failure is a `CliError` (FR-014).
-- No path supplied, or the path does not exist, or the `targets` feature is not
-  built in: precedence 2 is left empty; no error is raised for a missing database;
-  resolution and capture behavior are identical to a build without this feature
-  (FR-012, FR-013).
+- No path supplied, or the path is confirmed absent, or the `targets` feature is
+  not built in: precedence 2 is left empty; no error is raised for a missing
+  database; resolution and capture behavior are identical to a build without this
+  feature (FR-012, FR-013). Existence is checked with `try_exists`, so a path whose
+  existence cannot be determined (for example a denying ACL) is surfaced as a
+  `CliError` rather than silently treated as absent, alongside the unopenable case
+  (FR-014).
 - `run --steam <app_id>`: the CLI parses `<app_id>` to `u32` and attaches it to the
   resolution request with `with_steam_app_id`, so the hint provider is offered the
   appid while the install root remains available to the lower providers.
