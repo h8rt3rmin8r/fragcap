@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  fragcap Windows installer (unsigned).
+
+  Built with cargo-wix over WiX v3. Link with the WixUtilExtension (the release
+  job passes `-e WixUtilExtension`) for WixQuietExec (the best-effort Defender
+  exclusion) and WixShellExec (the npcap exit-dialog link); WixUIExtension is
+  linked by cargo-wix for WixUI_InstallDir.
+
+  Payload files (fragcap.exe, hint.db, LICENSE, NOTICE) are read from
+  $(var.CargoTargetBinDir): the release job stages hint.db, LICENSE, and NOTICE
+  next to the built fragcap.exe before invoking cargo wix.
+
+  UpgradeCode is frozen for the life of the product line; it must never change or
+  upgrades will duplicate rather than replace the install.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Product Id="*"
+           Name="fragcap"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="ShruggieTech"
+           UpgradeCode="7F3A2C4E-1D9B-4A6E-9C58-2B0E7D4F6A13">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="fragcap: passive, process-attributed network capture for Windows"
+             Manufacturer="ShruggieTech" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of fragcap is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs metadata. -->
+    <Property Id="ARPURLINFOABOUT" Value="https://fragcap.com" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- Install layout: ProgramFiles (64-bit) \ fragcap. -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="fragcap">
+
+          <Component Id="Comp_fragcap_exe" Guid="4C1E9A72-6B33-4D8A-BE21-9F5C0A3D7E64">
+            <File Id="fragcap_exe"
+                  Name="fragcap.exe"
+                  Source="$(var.CargoTargetBinDir)\fragcap.exe"
+                  KeyPath="yes" />
+            <!-- Put fragcap on the system path; effective in newly opened shells. -->
+            <Environment Id="PathEntry"
+                         Name="PATH"
+                         Value="[INSTALLDIR]"
+                         Part="last"
+                         Action="set"
+                         System="yes"
+                         Permanent="no" />
+          </Component>
+
+          <Component Id="Comp_hint_db" Guid="A8D4F1C0-2E77-4B95-8A6D-5C3B9E0F1A28">
+            <File Id="hint_db"
+                  Name="hint.db"
+                  Source="$(var.CargoTargetBinDir)\hint.db"
+                  ReadOnly="yes"
+                  KeyPath="yes" />
+          </Component>
+
+          <Component Id="Comp_license" Guid="D2B7E5A1-3C48-4F6B-9D02-7E1A4C8B5F30">
+            <File Id="license_txt"
+                  Name="LICENSE"
+                  Source="$(var.CargoTargetBinDir)\LICENSE"
+                  KeyPath="yes" />
+          </Component>
+
+          <Component Id="Comp_notice" Guid="F0A3C6E9-7B21-4D4C-9E58-1A2B3C4D5E6F">
+            <File Id="notice_txt"
+                  Name="NOTICE"
+                  Source="$(var.CargoTargetBinDir)\NOTICE"
+                  KeyPath="yes" />
+          </Component>
+
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainFeature" Title="fragcap" Level="1">
+      <ComponentRef Id="Comp_fragcap_exe" />
+      <ComponentRef Id="Comp_hint_db" />
+      <ComponentRef Id="Comp_license" />
+      <ComponentRef Id="Comp_notice" />
+    </Feature>
+
+    <!--
+      Best-effort Windows Defender exclusion for fragcap's own install directory.
+      Deferred, non-impersonated (runs with the installer's elevation), and
+      Return="ignore" so a refusal (Tamper Protection, disabled Defender) does not
+      fail the install. The command line is set by an immediate action whose
+      Property equals the deferred action's Id, which becomes its CustomActionData.
+    -->
+    <CustomAction Id="SetDefenderAdd"
+                  Property="DefenderAdd"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;Add-MpPreference -ExclusionPath '[INSTALLDIR]'&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="DefenderAdd"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="SetDefenderRemove"
+                  Property="DefenderRemove"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;Remove-MpPreference -ExclusionPath '[INSTALLDIR]'&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="DefenderRemove"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetDefenderAdd" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="DefenderAdd" After="SetDefenderAdd">NOT Installed</Custom>
+      <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+
+    <!--
+      Installer UI: license, install directory, and an exit-dialog checkbox that
+      opens the npcap download page (the one remaining prerequisite before live
+      capture). npcap itself is never downloaded, bundled, or installed.
+    -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+    <WixVariable Id="WixUILicenseRtf" Value="wix\License.rtf" />
+
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
+              Value="Open the npcap download page (required before capturing traffic)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="https://npcap.com" />
+    <CustomAction Id="LaunchNpcap"
+                  BinaryKey="WixCA"
+                  DllEntry="WixShellExec"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <UI>
+      <UIRef Id="WixUI_InstallDir" />
+      <Publish Dialog="ExitDialog"
+               Control="Finish"
+               Event="DoAction"
+               Value="LaunchNpcap">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+    </UI>
+
+  </Product>
+</Wix>

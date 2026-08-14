@@ -116,7 +116,11 @@ pub struct RunArgs {
     /// A targets hint database to consult during resolution (issue #78). When set
     /// and present, a `--steam` capture may resolve its client from the database at
     /// heuristic-unverified fidelity, above the engine rule. Overrides the
-    /// `FRAGCAP_HINT_DB` environment variable. A missing database is not an error.
+    /// `FRAGCAP_HINT_DB` environment variable and the default location; a database
+    /// named here that does not exist is not created and is not an error. With
+    /// neither this flag nor the environment variable set, `run` defaults to
+    /// `%APPDATA%\fragcap\hint.db` and creates it on first use (seeding it from the
+    /// bundled database shipped beside the executable when present).
     #[arg(long)]
     pub hint_db: Option<PathBuf>,
 

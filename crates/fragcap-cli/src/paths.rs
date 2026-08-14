@@ -87,6 +87,28 @@ pub fn hint_db_path(flag: Option<&Path>) -> Option<PathBuf> {
     env::var_os(HINT_DB_ENV).map(PathBuf::from)
 }
 
+/// The per-user default hint database location, a sibling of the profile
+/// directory, or `None` when the platform application-data base cannot be
+/// determined.
+///
+/// This is the fallback the `run` command uses when the operator supplies
+/// neither the `--hint-db` flag nor the `FRAGCAP_HINT_DB` override (both handled
+/// by [`hint_db_path`], which takes precedence). It mirrors [`user_profile_dir`]:
+/// `%APPDATA%\fragcap\hint.db`, read from the environment so no
+/// platform-directories crate is pulled in. It is the only hint-database source
+/// the first-run bootstrap ever creates; an explicitly named path is never
+/// created on the operator's behalf.
+pub fn default_hint_db_path() -> Option<PathBuf> {
+    default_hint_db_from(env::var_os("APPDATA").map(PathBuf::from))
+}
+
+/// The default hint database location given an application-data base. Factored
+/// out from [`default_hint_db_path`] so the join is testable without mutating the
+/// process environment.
+fn default_hint_db_from(appdata: Option<PathBuf>) -> Option<PathBuf> {
+    appdata.map(|base| base.join("fragcap").join("hint.db"))
+}
+
 /// Assemble the section 15.3 search path from the command-line directories and
 /// the user directory.
 pub fn search_path(command_line: &[PathBuf]) -> SearchPath {
@@ -110,5 +132,23 @@ mod tests {
         // The explicit flag is returned as-is, independent of the environment.
         let flag = Path::new("C:/scratch/hint.db");
         assert_eq!(hint_db_path(Some(flag)), Some(flag.to_path_buf()));
+    }
+
+    #[test]
+    fn the_default_hint_db_is_a_sibling_of_the_profile_directory() {
+        // Given an application-data base, the default hint database lives under
+        // fragcap's own subdirectory, beside where profiles resolve.
+        let base = PathBuf::from("C:/Users/example/AppData/Roaming");
+        assert_eq!(
+            default_hint_db_from(Some(base.clone())),
+            Some(base.join("fragcap").join("hint.db"))
+        );
+    }
+
+    #[test]
+    fn the_default_hint_db_is_absent_without_an_application_data_base() {
+        // With no resolvable base the default is unavailable, exactly as the
+        // profile directory degrades; the run then proceeds without a default.
+        assert_eq!(default_hint_db_from(None), None);
     }
 }

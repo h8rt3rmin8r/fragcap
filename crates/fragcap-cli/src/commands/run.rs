@@ -48,7 +48,33 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // operator supplied a present database (and this build carries the targets
     // feature). A missing database is not an error; a present-but-unopenable one
     // is (FR-013, FR-014).
-    let hint_db = paths::hint_db_path(args.hint_db.as_deref());
+    // Resolve the hint database. An explicit `--hint-db` flag or `FRAGCAP_HINT_DB`
+    // wins and keeps its exact semantics (absent is non-fatal and never created, a
+    // present one is consulted, an unopenable one is a loud error in
+    // build_resolver). With neither set, fall back to the per-user default, which
+    // the first-run bootstrap below creates when absent so hint resolution and
+    // local accumulation work with no configuration (issue #96, slice S039).
+    let (hint_db, from_default) = match paths::hint_db_path(args.hint_db.as_deref()) {
+        Some(path) => (Some(path), false),
+        None => (paths::default_hint_db_path(), true),
+    };
+
+    // Bootstrap only the defaulted location, never a path the operator named: an
+    // explicit absent path stays a non-fatal no-op (FR-002, FR-004). The template,
+    // when present beside the executable (the installer and the portable archive
+    // both ship it there), seeds the writable per-user copy; otherwise an empty
+    // store is created. A bootstrap failure is a warning, never fatal (FR-005).
+    if from_default {
+        if let Some(default) = hint_db.as_deref() {
+            let template = bundled_hint_db_template();
+            if let Err(e) = ensure_default_hint_db(default, template.as_deref()) {
+                emitter.warn(&format!(
+                    "hint database could not be initialized at {}: {e}",
+                    default.display()
+                ));
+            }
+        }
+    }
 
     // Before resolving, learn this machine's own Steam launch executables into the
     // configured hint store, so the hint provider can name a socket-holding client
@@ -107,6 +133,53 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // A sink failure is an unrecoverable end for `run`, not a clean stop.
         false,
     )
+}
+
+/// The read-only hint database template shipped beside the executable, if present.
+///
+/// Both distribution forms place `hint.db` next to `fragcap.exe`: the installer
+/// under its install directory, the portable archive beside the unzipped binary.
+/// The first-run bootstrap copies it to the writable per-user default. A bare-exe
+/// copy has no sibling template, and the bootstrap creates an empty store instead.
+/// This opens no process and reads no memory; it only inspects the executable's
+/// own directory (P-1).
+fn bundled_hint_db_template() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let sibling = exe.parent()?.join("hint.db");
+    sibling.is_file().then_some(sibling)
+}
+
+/// Ensure the default hint database exists, so hint resolution and local
+/// accumulation have a store the first time fragcap runs with no configuration.
+///
+/// Pure over its arguments and so tested with scratch directories; it touches only
+/// `default`:
+///
+/// - `default` already exists: it is left exactly as it was (idempotent).
+/// - `default` absent with a `template`: the template is copied to `default`.
+/// - `default` absent with no template: an empty current-schema store is created.
+///
+/// The parent directory is created as needed. This is only ever called for the
+/// per-user default, never for a path the operator named explicitly, so it can
+/// never create or overwrite an operator-supplied file (FR-004).
+fn ensure_default_hint_db(default: &Path, template: Option<&Path>) -> std::io::Result<()> {
+    if default.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = default.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match template {
+        Some(template) if template.is_file() => {
+            std::fs::copy(template, default)?;
+            Ok(())
+        }
+        // No template shipped: materialize an empty current-schema store. Opening
+        // a store at a fresh path creates a valid, empty database.
+        _ => fragcap::targets::Store::open(default)
+            .map(|_| ())
+            .map_err(|e| std::io::Error::other(e.to_string())),
+    }
 }
 
 /// Learn this machine's Steam launch executables into the configured hint store.
@@ -450,6 +523,60 @@ mod tests {
         let result = build_resolver(Some(&path));
         assert!(result.is_err(), "a corrupt database must be a loud error");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_bootstrap_creates_an_empty_store_when_absent_with_no_template() {
+        // FR-003: with no template, the default is materialized as an empty,
+        // valid, current-schema store.
+        let dir = scratch("bootstrap-empty");
+        let default = dir.join("hint.db");
+        assert!(!default.exists());
+        ensure_default_hint_db(&default, None).expect("bootstrap creates a store");
+        assert!(
+            default.is_file(),
+            "the default database must exist after bootstrap"
+        );
+        fragcap::targets::Store::open(&default).expect("the created file is a valid store");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_bootstrap_copies_the_template_when_present() {
+        // FR-003: when a template ships beside the executable, it seeds the
+        // per-user default byte-for-byte.
+        let dir = scratch("bootstrap-copy");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let template = dir.join("template.db");
+        fragcap::targets::Store::open(&template).expect("template store");
+        let template_bytes = std::fs::read(&template).expect("read template");
+        let default = dir.join("sub").join("hint.db");
+        ensure_default_hint_db(&default, Some(&template)).expect("bootstrap copies");
+        assert_eq!(
+            std::fs::read(&default).expect("read default"),
+            template_bytes,
+            "the default must be a copy of the template"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_bootstrap_leaves_an_existing_default_untouched() {
+        // FR-004: an already-present default is never overwritten, even when a
+        // template is available (an explicit path never reaches this helper).
+        let dir = scratch("bootstrap-present");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let default = dir.join("hint.db");
+        std::fs::write(&default, b"sentinel").expect("seed sentinel");
+        let template = dir.join("template.db");
+        fragcap::targets::Store::open(&template).expect("template store");
+        ensure_default_hint_db(&default, Some(&template)).expect("no-op on a present default");
+        assert_eq!(
+            std::fs::read(&default).expect("read default"),
+            b"sentinel",
+            "an existing default must be left exactly as it was"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

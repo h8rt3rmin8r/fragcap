@@ -1833,6 +1833,14 @@ winning.
 4. A profile bundled with the fragcap distribution whose `game.id`
    matches.
 
+The targets hint database has its own per-user default location,
+`%APPDATA%\fragcap\hint.db`, a sibling of the user profile directory. When
+neither the `--hint-db` option nor the `FRAGCAP_HINT_DB` environment
+variable names a database, `run` uses that default and creates it on first
+use: it copies a database shipped beside the binary when one is present,
+and otherwise creates an empty store. A database named explicitly is used
+as given and, when absent, is neither created nor an error.
+
 Were a profile bundled, a user profile of the same id would shadow it by
 design, so a bundled profile that had drifted from a game update is
 corrected locally without waiting for a release. v0.2.0 bundles none
@@ -2695,7 +2703,10 @@ the paperwork.
 
 **No bundling.** No fragcap distribution artifact contains npcap
 binaries, installers, or driver files. This includes release archives,
-installers, and container images.
+installers, and container images. The obligation binds npcap alone:
+fragcap's own data artifacts, such as the barebones targets hint database
+shipped with the release (section 24.5), are not npcap and are not
+restricted by it.
 
 **Detection, not installation.** fragcap detects npcap's presence and
 version at runtime and reports its absence with the official download
@@ -3076,16 +3087,32 @@ available before publishing its dependents.
 
 ### 24.5 Artifacts
 
-Each release publishes a Windows archive containing the binary, the
-license, and the notice file. Checksums accompany every artifact.
+Each release publishes three Windows downloads, and a checksum accompanies
+every one: a portable archive containing the binary, the license, the
+notice file, and the barebones targets hint database; an unsigned MSI
+installer; and the barebones hint database on its own. The user chooses
+among them. The hint database is placed beside the binary in both the
+archive and the installer, so the first-run bootstrap (section 15.3) can
+seed the writable per-user copy from it.
+
+The MSI installs the binary per-machine, adds its directory to the system
+path, best-effort excludes its own install directory from Windows Defender
+(an action scoped to fragcap's own files and removed on uninstall), and
+surfaces the npcap download page on completion without downloading,
+bundling, or installing npcap (section 20.2). It is unsigned for this
+release; code signing is tracked separately, so the checksum is the
+integrity check a user verifies.
 
 The archive ships no shell wrappers: the binary handles elevation itself
 (section 17) and reports driver readiness through `doctor` (section 26.3),
 so a wrapper adds little where it would ship, and the wrappers remain in
 the repository for people who clone it. It ships no game profiles, because
 fragcap bundles none by design; a profile is scaffolded from an installed
-title or authored per title (section 15). It ships no repository README,
-which is repo-oriented rather than an archive component.
+title or authored per title (section 15). The barebones hint database is
+not a game profile: it is fragcap's own data artifact, empty on release and
+grown from the user's own machine, so shipping it is not the profile
+bundling section 15 declines. The archive ships no repository README, which
+is repo-oriented rather than an archive component.
 
 No artifact contains npcap or any component of it, per section 20.2.
 
