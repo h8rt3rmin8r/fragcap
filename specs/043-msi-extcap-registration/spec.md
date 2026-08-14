@@ -32,9 +32,14 @@ the existing `main.wxs` patterns, and the slice scope:
   location; when found, a deferred custom action runs `fragcap.exe extcap install
   --dir <WiresharkDir>\extcap`. The CLI already supports `--dir`, so no new Rust
   surface is added.
-- Q: Failure handling? -> A: Mirror the existing Defender-exclusion pattern:
-  `Return="ignore"` so a registration failure never fails the install, with a
-  paired rollback that unregisters if a later install step fails.
+- Q: Failure handling? -> A: Use the Defender-exclusion command pattern with
+  `Return="ignore"` so a registration failure never fails the install.
+  Registration is forward-only, with no rollback and no unregister-on-uninstall
+  (revised after PR review): extcap registration is user-managed, idempotent state
+  shared with the `fragcap extcap install` / `uninstall` commands, so an
+  installer-owned undo would delete a registration this install does not own. This
+  reverses the "paired rollback and removal" half of D-4, whose Defender-symmetry
+  assumption does not hold for user-managed state.
 - Q: Verification here? -> A: The MSI cannot be built or install-tested in this
   environment (no WiX toolchain), exactly as D-4 states. This slice verifies the
   well-formedness and consistency of the WiX and docs and the green `cargo xtask
@@ -69,8 +74,9 @@ points at that user's Wireshark extcap directory.
    **Then** nothing is registered and `doctor` shows the row as an optional
    warning with the `fragcap extcap install` guidance.
 3. **Given** the register option is selected but registration fails, **When** the
-   install runs, **Then** the install still succeeds (the action returns ignore)
-   and a paired rollback leaves no partial registration.
+   install runs, **Then** the install still succeeds (the action returns ignore).
+   Registration is idempotent and best-effort, so no rollback is performed and no
+   user-managed registration is disturbed.
 
 ### User Story 2 - Register for every user on this machine (Priority: P2)
 
@@ -83,7 +89,10 @@ administrator path; it depends on Wireshark being present, so it follows the
 per-user default.
 
 **Independent Test**: Build the MSI (manual), install machine-wide on a box with
-Wireshark present, then run `doctor` as a second user: the extcap row is `ok`.
+Wireshark present, then confirm Wireshark lists fragcap as a capture source for a
+second user. Note: `fragcap doctor` probes the per-user extcap directory only, so
+it does not yet report a machine-wide-only registration as `ok` (a separate doctor
+follow-up); the machine-wide check is Wireshark showing the source.
 
 **Acceptance Scenarios**:
 
@@ -120,8 +129,10 @@ per-user scope and the `fragcap extcap install` fallback.
 - A registration failure (Wireshark absent for per-user, a locked directory,
   Tamper-style refusal) must never fail the install; it returns ignore, like the
   Defender exclusion.
-- An uninstall should not leave a dangling extcap registration for the per-user
-  scope; unregister on uninstall where the scope allows, mirroring the rollback.
+- The installer does not unregister on uninstall (or on a major upgrade), because
+  extcap registration is user-managed state a user may have created or kept
+  independently; removing it would delete a registration the install does not own.
+  Users unregister with `fragcap extcap uninstall`.
 - The machine-wide option must degrade cleanly when Wireshark is not installed
   (the system extcap directory does not exist).
 - main.wxs is release-adjacent and pinned: the change carries a dated changelog
@@ -142,8 +153,9 @@ per-user scope and the `fragcap extcap install` fallback.
   is detected via a registry search, runs `fragcap.exe extcap install --dir
   <WiresharkInstallDir>\extcap`.
 - **FR-004**: A registration custom action MUST use `Return="ignore"` so a
-  failure never fails the install, and MUST have a paired rollback that
-  unregisters on a later failure, mirroring the Defender-exclusion pattern.
+  failure never fails the install. Registration MUST be forward-only: it MUST NOT
+  roll back or unregister on uninstall or upgrade, so it never deletes a
+  user-managed registration the install does not own.
 - **FR-005**: The installer text MUST state that per-user registration is for the
   current user only, and MUST name `fragcap extcap install` as the way to
   register later.
@@ -165,7 +177,7 @@ per-user scope and the `fragcap extcap install` fallback.
 - **Register-extcap wizard control**: the optional installer control; per-user
   default, machine-wide for administrators.
 - **Per-user registration action**: deferred, impersonated, runs `extcap
-  install`, ignore-on-failure, with rollback.
+  install`, ignore-on-failure, forward-only (no rollback or uninstall removal).
 - **Machine-wide registration action**: gated on a Wireshark registry search,
   runs `extcap install --dir <detected>\extcap`.
 
@@ -176,8 +188,9 @@ per-user scope and the `fragcap extcap install` fallback.
 - **SC-001**: With the option selected during a normal-user MSI install, `fragcap
   doctor` reports the analyzer extcap row as `ok` for that user (manual, at the
   halt).
-- **SC-002**: With the machine-wide option and Wireshark present, a second user
-  on the machine sees the extcap row as `ok` (manual, at the halt).
+- **SC-002**: With the machine-wide option and Wireshark present, a second user on
+  the machine sees fragcap listed as a Wireshark capture source (manual, at the
+  halt). `doctor` probing of the system extcap directory is a separate follow-up.
 - **SC-003**: A registration failure leaves the install successful and no partial
   registration behind.
 - **SC-004**: With the option unselected, the installer registers nothing and

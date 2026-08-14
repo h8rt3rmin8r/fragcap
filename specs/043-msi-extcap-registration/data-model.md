@@ -18,11 +18,12 @@ registry search that gate the optional registration.
 | Per-user | sets CustomActionData | WixQuietExec | yes | `"[INSTALLDIR]fragcap.exe" extcap install` | ignore |
 | Machine-wide | sets CustomActionData | WixQuietExec | no | `"[INSTALLDIR]fragcap.exe" extcap install --dir "[WIRESHARK_DIR]extcap"` | ignore |
 
-Each scope has a rollback action (`extcap uninstall ...`) queued before the deferred
-action so a later install failure undoes the registration, and an uninstall action
-that removes the registration when the product is removed. Conditions: per-user runs
-when `REGISTEREXTCAP_USER=1`; machine-wide runs when `REGISTEREXTCAP_MACHINE=1 AND
-WIRESHARK_DIR`.
+Registration is forward-only (revised after PR review): there is no rollback and no
+unregister-on-uninstall, because extcap registration is user-managed, idempotent
+state and an installer-owned undo would delete a registration the install does not
+own. Conditions: per-user runs when `REGISTEREXTCAP_USER=1`; machine-wide runs when
+`REGISTEREXTCAP_MACHINE=1 AND WIRESHARK_DIR`. Users unregister with `fragcap extcap
+uninstall`.
 
 ## Sequencing
 
