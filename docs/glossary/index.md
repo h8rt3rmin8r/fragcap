@@ -59,6 +59,7 @@ the owning category page.
 - [Game profile](platform-and-distribution.md#game-profile)
 - [Golden file](file-and-wire-formats.md#golden-file)
 - [Hint database](process-and-attribution.md#hint-database)
+- [Hint provider](process-and-attribution.md#hint-provider)
 - [Install acknowledgement](capture-and-networking.md#install-acknowledgement)
 - [Interface address set](capture-and-networking.md#interface-address-set)
 - [Interface Description Block](file-and-wire-formats.md#interface-description-block)

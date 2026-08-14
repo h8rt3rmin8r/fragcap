@@ -20,12 +20,15 @@
 //! such a claim own shipping one (specification section 15.5).
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fragcap::profile::{BundledSet, SearchPath};
 
 /// The environment variable that overrides the user profile directory.
 pub const PROFILE_DIR_ENV: &str = "FRAGCAP_PROFILE_DIR";
+
+/// The environment variable that supplies a targets hint database for resolution.
+pub const HINT_DB_ENV: &str = "FRAGCAP_HINT_DB";
 
 /// The environment variable that overrides the analyzer extcap directory.
 pub const EXTCAP_DIR_ENV: &str = "FRAGCAP_EXTCAP_DIR";
@@ -69,6 +72,21 @@ pub fn user_profile_dir() -> Option<PathBuf> {
     env::var_os("APPDATA").map(|base| PathBuf::from(base).join("fragcap").join("profiles"))
 }
 
+/// The targets hint database to consult during resolution, or `None` when the
+/// operator supplied neither the `--hint-db` flag nor the `FRAGCAP_HINT_DB`
+/// override.
+///
+/// The flag takes precedence over the environment variable, mirroring how the
+/// profile directory resolves. Returning a path here does not assert the file
+/// exists; the caller decides that a missing file means no provider (not an
+/// error), while a present-but-unopenable one is surfaced loudly.
+pub fn hint_db_path(flag: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = flag {
+        return Some(path.to_path_buf());
+    }
+    env::var_os(HINT_DB_ENV).map(PathBuf::from)
+}
+
 /// Assemble the section 15.3 search path from the command-line directories and
 /// the user directory.
 pub fn search_path(command_line: &[PathBuf]) -> SearchPath {
@@ -81,4 +99,16 @@ pub fn search_path(command_line: &[PathBuf]) -> SearchPath {
 /// The bundled profile set for this release: empty.
 pub fn bundled() -> BundledSet {
     BundledSet::empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flag_supplies_the_hint_db_path() {
+        // The explicit flag is returned as-is, independent of the environment.
+        let flag = Path::new("C:/scratch/hint.db");
+        assert_eq!(hint_db_path(Some(flag)), Some(flag.to_path_buf()));
+    }
 }

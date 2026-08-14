@@ -79,9 +79,9 @@ pub mod targets {
     pub use fragcap_targets::{
         export, import, seed_catalog, seed_engine, CatalogBatch, CatalogEntry, CatalogSource,
         Classification, CorpusGate, Engine, EngineBatch, EngineConfidence, EngineEntry, EngineFeed,
-        EngineSource, FixtureCatalog, FixtureEngineFeed, Game, ImportSummary, LaunchEntry,
-        ResolvedEngine, SeedState, SeedSummary, SeedTier, Store, TargetsError, TechCategory,
-        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        EngineSource, FixtureCatalog, FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary,
+        LaunchEntry, ResolvedEngine, SeedState, SeedSummary, SeedTier, Store, TargetsError,
+        TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
 
     /// The live catalog source, behind the `net` feature (slice S035). Compiled
@@ -148,22 +148,22 @@ pub mod profile {
     /// The target resolution cascade: providers, precedence, and the resolver
     /// (issue #77, section 15.7).
     pub use fragcap_profile::providers::{
-        EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider,
+        EngineRuleProvider, ObservationProvider, ProfileProvider,
     };
     pub use fragcap_profile::resolve::{
         resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
     };
     pub use fragcap_profile::resolver::{
-        DuplicatePrecedence, EngineRuleAmbiguity, Precedence, ProviderError, ResolutionError,
-        ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
-        WalkerAmbiguity,
+        DuplicatePrecedence, EngineRuleAmbiguity, HintAmbiguity, Precedence, ProviderError,
+        ResolutionError, ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver,
+        Unresolved, WalkerAmbiguity,
     };
     pub use fragcap_profile::schema::{
         CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
         PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
     };
     pub use fragcap_profile::target::{
-        EngineRuleTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
+        EngineRuleTarget, HintTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
     };
     pub use fragcap_profile::technologies::{
         Category, CompiledRuleset, DetectError, ScanOutcome, SkippedPattern, TechnologyFinding,

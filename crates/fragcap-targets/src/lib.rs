@@ -28,6 +28,7 @@ pub mod catalog;
 pub mod engine_feed;
 pub mod export;
 pub mod gate;
+pub mod hint_provider;
 #[cfg(feature = "net")]
 pub mod http_catalog;
 #[cfg(feature = "net")]
@@ -45,6 +46,7 @@ pub use engine_feed::{
 };
 pub use export::export;
 pub use gate::{CorpusGate, DEFAULT_MIN_REVIEWS};
+pub use hint_provider::HintDatabaseProvider;
 #[cfg(feature = "net")]
 pub use http_catalog::HttpCatalog;
 #[cfg(feature = "net")]

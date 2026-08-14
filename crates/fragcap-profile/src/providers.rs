@@ -6,11 +6,12 @@
 //! answer with the profile's own declared fidelity. [`EngineRuleProvider`]
 //! resolves a client from an engine's install layout (S029). [`ObservationProvider`]
 //! matches a live process by identity and stamps an [`FidelityTier::Observed`]
-//! answer; it is the arbiter at the bottom of the cascade. [`HintProvider`] is a
-//! no-answer stub until issue #78 fills it. The platform-walker provider at
-//! `Precedence::PlatformWalker` lives in `fragcap-steam` (S030), not here, because
-//! it needs Steam knowledge and `fragcap-profile` may not depend on
-//! `fragcap-steam`.
+//! answer; it is the arbiter at the bottom of the cascade. The provider at
+//! `Precedence::HintDatabase` lives in `fragcap-targets` (S037) as
+//! `HintDatabaseProvider`, and the one at `Precedence::PlatformWalker` in
+//! `fragcap-steam` (S030), not here: each reads a store or a storefront that
+//! `fragcap-profile` may not depend on, so the trait and the precedence position
+//! stay here while the concrete provider lives in the crate that owns the data.
 //!
 //! No provider here opens a process handle. The observation provider reads only
 //! the image name and path already in the process snapshot (constitution P-1).
@@ -140,30 +141,10 @@ fn observe(identity: &crate::schema::MatchPredicates, tree: &ProcessTree) -> Opt
     ))
 }
 
-/// The shipped hint database (issue #78). Declines in this slice.
-#[derive(Default)]
-pub struct HintProvider;
-
-impl HintProvider {
-    /// Build the provider.
-    pub fn new() -> HintProvider {
-        HintProvider
-    }
-}
-
-impl TargetProvider for HintProvider {
-    fn precedence(&self) -> Precedence {
-        Precedence::HintDatabase
-    }
-
-    fn provide(
-        &self,
-        _request: &ResolutionRequest,
-        _notes: &mut ResolutionNotes,
-    ) -> Result<Option<Target>, ProviderError> {
-        Ok(None)
-    }
-}
+// The hint-database provider is no longer a stub here: S037 moved it into
+// `fragcap-targets` as `HintDatabaseProvider`, because it reads the targets store
+// and `fragcap-profile` may not depend on `fragcap-targets` (the dependency
+// direction). Its precedence position, `Precedence::HintDatabase`, is unchanged.
 
 /// A general engine-layout rule (S029). Resolves a game's socket-holding client
 /// from the engine's documented install layout, at heuristic-unverified fidelity.
@@ -376,19 +357,14 @@ mod tests {
     }
 
     #[test]
-    fn the_stub_providers_decline_at_their_precedence() {
+    fn the_engine_rule_declines_without_an_install_root() {
         let search = SearchPath::new();
         let bundled = BundledSet::empty();
         // A reference request carries no install root, so the engine-rule provider
-        // declines here just as the still-empty hint and walker providers do.
+        // declines here, as it does for any request that does not name an install.
         let req = ResolutionRequest::for_reference("eso", &search, &bundled);
         let mut notes = ResolutionNotes::default();
 
-        assert_eq!(HintProvider::new().precedence(), Precedence::HintDatabase);
-        assert!(HintProvider::new()
-            .provide(&req, &mut notes)
-            .unwrap()
-            .is_none());
         assert_eq!(
             EngineRuleProvider::new().precedence(),
             Precedence::EngineRule
@@ -397,8 +373,9 @@ mod tests {
             .provide(&req, &mut notes)
             .unwrap()
             .is_none());
-        // The platform-walker provider lives in fragcap-steam (S030) and is
-        // exercised there; only the hint stub remains a no-answer provider here.
+        // The hint-database provider lives in fragcap-targets (S037) and the
+        // platform-walker provider in fragcap-steam (S030); both are exercised in
+        // their own crates, because fragcap-profile may not depend on either.
     }
 
     // A minimal Unreal install tree under the system temp dir, removed on drop.

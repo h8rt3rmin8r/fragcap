@@ -26,8 +26,8 @@
 use std::path::{Path, PathBuf};
 
 use fragcap::profile::{
-    EngineRuleProvider, HintProvider, MatchPredicates, ObservationProvider, Profile,
-    ProfileProvider, ResolutionError, ResolutionRequest, TargetResolver,
+    EngineRuleProvider, MatchPredicates, ObservationProvider, Profile, ProfileProvider,
+    ResolutionError, ResolutionRequest, TargetProvider, TargetResolver,
 };
 use fragcap::steam::SteamWalkerProvider;
 
@@ -44,16 +44,12 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let search = paths::search_path(&[]);
     let bundled = paths::bundled();
 
-    // The built-in providers occupy distinct precedence positions by
-    // construction, so this cannot fail; the expect documents that invariant.
-    let resolver = TargetResolver::new(vec![
-        Box::new(ProfileProvider::new()),
-        Box::new(HintProvider::new()),
-        Box::new(EngineRuleProvider::new()),
-        Box::new(SteamWalkerProvider::new()),
-        Box::new(ObservationProvider::new()),
-    ])
-    .expect("the built-in providers have distinct precedence positions");
+    // Assemble the cascade, registering the hint-database provider only when the
+    // operator supplied a present database (and this build carries the targets
+    // feature). A missing database is not an error; a present-but-unopenable one
+    // is (FR-013, FR-014).
+    let hint_db = paths::hint_db_path(args.hint_db.as_deref());
+    let resolver = build_resolver(hint_db.as_deref())?;
 
     // Exactly one target input is present (the clap group guarantees it). A
     // profile reference takes the unchanged profile path; an install location
@@ -101,6 +97,57 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     )
 }
 
+/// Assemble the resolution cascade, registering the concrete hint-database
+/// provider at precedence 2 only when this build carries the `targets` feature and
+/// the operator supplied a present database file.
+///
+/// A missing database (no path, or a path that does not exist) leaves precedence 2
+/// empty, so resolution is identical to a build without the feature (FR-012,
+/// FR-013). A present-but-unopenable database (corrupt or a wrong schema version)
+/// fails here, at the boundary where the operator named it, rather than as a
+/// per-request surprise (FR-014). The built-in providers occupy distinct
+/// precedence positions by construction, so `TargetResolver::new` cannot fail for
+/// that reason; the message documents the invariant.
+fn build_resolver(hint_db: Option<&Path>) -> Result<TargetResolver, CliError> {
+    let mut providers: Vec<Box<dyn TargetProvider>> = vec![
+        Box::new(ProfileProvider::new()),
+        Box::new(EngineRuleProvider::new()),
+        Box::new(SteamWalkerProvider::new()),
+        Box::new(ObservationProvider::new()),
+    ];
+
+    // The shipped tool always carries the targets database, so `fragcap::targets`
+    // is always available here; the graceful "no database" degradation is the
+    // runtime check below, not a compile-time feature gate. A library consumer of
+    // `fragcap` that builds without the `targets` feature never reaches this code.
+    if let Some(path) = hint_db {
+        // `try_exists` distinguishes a genuinely absent file (Ok(false), which is
+        // not an error, FR-013) from a path whose existence cannot be determined
+        // (Err, for example a denying ACL on a parent). `Path::exists` collapses
+        // the latter to `false` and would silently leave precedence 2 empty for a
+        // database the operator explicitly named, so an inaccessible path is
+        // surfaced loudly like an unopenable one (FR-014).
+        match path.try_exists() {
+            Ok(true) => {
+                let store = fragcap::targets::Store::open(path).map_err(|e| {
+                    CliError::failure(format!("cannot open hint database {}: {e}", path.display()))
+                })?;
+                providers.push(Box::new(fragcap::targets::HintDatabaseProvider::new(store)));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return Err(CliError::failure(format!(
+                    "cannot access hint database {}: {e}",
+                    path.display()
+                )))
+            }
+        }
+    }
+
+    TargetResolver::new(providers)
+        .map_err(|e| CliError::failure(format!("provider precedence conflict: {e}")))
+}
+
 /// Resolve a non-profile target from an install location and synthesize the
 /// one-stage profile that captures it.
 fn resolve_nonprofile(
@@ -133,7 +180,14 @@ fn resolve_nonprofile(
         (root, Some(app_id))
     };
 
-    let request = ResolutionRequest::for_install(&install_root, search, bundled);
+    // Offer the hint provider the Steam app id (when the target is a Steam title
+    // and the id is numeric) while the install root stays available to the engine
+    // rule and platform walker: the higher-precedence hint answer wins when the
+    // database names a client, and the lower providers answer when it does not.
+    let mut request = ResolutionRequest::for_install(&install_root, search, bundled);
+    if let Some(id) = app_id.and_then(|s| s.parse::<u32>().ok()) {
+        request = request.with_steam_app_id(id);
+    }
     let target = match resolver.resolve(&request) {
         Ok(target) => target,
         Err(error) => return Err(nonprofile_resolution_error(error, &install_root)),
@@ -242,7 +296,16 @@ fn nonprofile_resolution_error(error: ResolutionError, install_root: &Path) -> C
         other => return CliError::from(other),
     };
 
-    let detail = if let Some(ambiguity) = unresolved.engine_rule_ambiguous() {
+    let detail = if let Some(ambiguity) = unresolved.hint_ambiguous() {
+        // The hint provider is the highest-precedence heuristic source, so its note
+        // is the most specific one to report (FR-008): name the app id and how many
+        // candidate clients its row could not reduce to one.
+        format!(
+            "the hint database named {} candidate clients for app {}",
+            ambiguity.candidates(),
+            ambiguity.app_id()
+        )
+    } else if let Some(ambiguity) = unresolved.engine_rule_ambiguous() {
         format!(
             "an engine layout was recognized but matched {} candidate clients",
             ambiguity.candidates()
@@ -273,6 +336,93 @@ mod tests {
 
     fn identity() -> MatchPredicates {
         MatchPredicates::with_exe("game.exe").expect("a valid exe glob")
+    }
+
+    /// A unique scratch path under the system temp dir, never created.
+    fn scratch(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "fragcap-build-resolver-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ))
+    }
+
+    #[test]
+    fn build_resolver_without_a_hint_db_succeeds() {
+        // FR-013: no database supplied is not an error; the cascade is assembled
+        // without the hint provider, exactly as before this slice.
+        assert!(build_resolver(None).is_ok());
+    }
+
+    #[test]
+    fn a_missing_hint_db_file_is_not_an_error() {
+        // FR-013: a path that does not exist leaves precedence 2 empty and raises
+        // no error.
+        let absent = scratch("absent");
+        assert!(!absent.exists());
+        assert!(build_resolver(Some(&absent)).is_ok());
+    }
+
+    #[test]
+    fn a_present_valid_hint_db_registers_the_provider() {
+        // FR-012: a present, openable database registers the provider (the
+        // assembly succeeds with the extra precedence position).
+        let path = scratch("valid.db");
+        // Creating a store makes a valid database file at the path.
+        fragcap::targets::Store::open(&path).expect("create store");
+        assert!(build_resolver(Some(&path)).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_present_unopenable_hint_db_is_an_error() {
+        // FR-014: a present-but-unopenable database (here, a file that is not a
+        // SQLite database) fails loudly rather than being treated as absent.
+        let path = scratch("corrupt.db");
+        std::fs::write(&path, b"this is not a sqlite database").expect("write garbage");
+        let result = build_resolver(Some(&path));
+        assert!(result.is_err(), "a corrupt database must be a loud error");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_hint_ambiguity_is_named_in_the_nonprofile_error() {
+        // FR-008: when the hint row names several candidate clients and nothing
+        // lower resolves, the run error names the app id and the candidate count
+        // rather than the generic "no client recognized" message.
+        use fragcap::profile::{ResolutionRequest, SearchPath, TargetResolver};
+        use fragcap::targets::{Game, HintDatabaseProvider, LaunchEntry, Store};
+
+        let mut store = Store::open_in_memory().expect("in-memory store");
+        let mut game = Game::new(480);
+        let mut a = LaunchEntry::new("client.exe").expect("non-empty");
+        a.os = Some("windows".to_string());
+        let mut b = LaunchEntry::new("editor.exe").expect("non-empty");
+        b.os = Some("windows".to_string());
+        game.launch = vec![a, b];
+        store.upsert_game(&game).expect("upsert");
+
+        let resolver = TargetResolver::new(vec![Box::new(HintDatabaseProvider::new(store))])
+            .expect("one provider");
+        let search = SearchPath::new();
+        let bundled = fragcap::profile::BundledSet::empty();
+        let request =
+            ResolutionRequest::for_reference("unused", &search, &bundled).with_steam_app_id(480);
+        let error = resolver
+            .resolve(&request)
+            .expect_err("an ambiguous hint with no lower provider is unresolved");
+
+        let install = scratch("install");
+        let cli_error = nonprofile_resolution_error(error, &install);
+        let message = cli_error.message();
+        assert!(
+            message.contains("480") && message.contains('2'),
+            "the run error names the app id and candidate count: {message}"
+        );
     }
 
     #[test]

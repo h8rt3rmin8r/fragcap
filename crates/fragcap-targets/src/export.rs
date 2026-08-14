@@ -17,8 +17,9 @@ use crate::TargetsError;
 
 /// The provenance source stamped on the export and every record this slice. The
 /// per-tier provenance detail is a later-slice concern; here the whole store has
-/// one origin.
-const PROVENANCE_SOURCE: &str = "hint-db";
+/// one origin. Shared with the hint provider (S037) so a resolution answer and an
+/// export name the store's origin identically (one honest name, P-9).
+pub(crate) const PROVENANCE_SOURCE: &str = "hint-db";
 
 /// Every record carries this fidelity. Engine confidence grades one field within
 /// it and never changes it (P-9).

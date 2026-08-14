@@ -77,20 +77,22 @@ pub use engine_rule::Engine;
 pub use glob::{ImagePattern, PatternError, MAX_PATTERN_CHARS};
 pub use matching::first_live_match;
 pub use parse::{load, LoadError, MAX_PROFILE_BYTES, MAX_STAGES};
-pub use providers::{EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider};
+pub use providers::{EngineRuleProvider, ObservationProvider, ProfileProvider};
 pub use resolve::{
     resolve, BundledSet, DuplicateGameId, ProfileSource, ResolveError, Resolved, SearchPath,
 };
 pub use resolver::{
-    DuplicatePrecedence, EngineRuleAmbiguity, Precedence, ProviderError, ResolutionError,
-    ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver, Unresolved,
-    WalkerAmbiguity,
+    DuplicatePrecedence, EngineRuleAmbiguity, HintAmbiguity, Precedence, ProviderError,
+    ResolutionError, ResolutionNotes, ResolutionRequest, TargetProvider, TargetResolver,
+    Unresolved, WalkerAmbiguity,
 };
 pub use schema::{
     CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
     PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
 };
-pub use target::{EngineRuleTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget};
+pub use target::{
+    EngineRuleTarget, HintTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
+};
 pub use technologies::{
     Category, CompiledRuleset, DetectError, ScanOutcome, SkippedPattern, TechnologyFinding,
     MAX_SCAN_DEPTH, RULES_INI, RULES_LOCK,

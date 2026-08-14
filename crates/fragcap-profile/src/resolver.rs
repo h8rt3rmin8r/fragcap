@@ -74,6 +74,7 @@ pub struct ResolutionRequest<'a> {
     identity: Option<&'a MatchPredicates>,
     tree: Option<&'a ProcessTree>,
     install_root: Option<&'a Path>,
+    steam_app_id: Option<u32>,
 }
 
 impl<'a> ResolutionRequest<'a> {
@@ -90,6 +91,7 @@ impl<'a> ResolutionRequest<'a> {
             identity: None,
             tree: None,
             install_root: None,
+            steam_app_id: None,
         }
     }
 
@@ -110,6 +112,7 @@ impl<'a> ResolutionRequest<'a> {
             identity: Some(identity),
             tree: Some(tree),
             install_root: None,
+            steam_app_id: None,
         }
     }
 
@@ -132,6 +135,7 @@ impl<'a> ResolutionRequest<'a> {
             identity: None,
             tree: None,
             install_root: Some(install_root),
+            steam_app_id: None,
         }
     }
 
@@ -166,6 +170,12 @@ impl<'a> ResolutionRequest<'a> {
         self.install_root
     }
 
+    /// The Steam application id to look up in the hint database, if the request
+    /// carries one.
+    pub fn steam_app_id(&self) -> Option<u32> {
+        self.steam_app_id
+    }
+
     /// Add an install root to a request that already carries other inputs.
     ///
     /// A real request carries every input available, and the cascade's precedence
@@ -175,6 +185,18 @@ impl<'a> ResolutionRequest<'a> {
     /// resolves, and the engine rule answers only when the profile does not.
     pub fn with_install_root(mut self, install_root: &'a Path) -> ResolutionRequest<'a> {
         self.install_root = Some(install_root);
+        self
+    }
+
+    /// Add a Steam application id to a request that already carries other inputs.
+    ///
+    /// This is how a `--steam` capture offers the hint provider its application id
+    /// while still carrying the install root the lower providers read: the
+    /// higher-precedence hint answer wins when the database names a client, and the
+    /// engine rule and platform walker answer from the install root when it does
+    /// not.
+    pub fn with_steam_app_id(mut self, steam_app_id: u32) -> ResolutionRequest<'a> {
+        self.steam_app_id = Some(steam_app_id);
         self
     }
 }
@@ -189,12 +211,19 @@ pub enum ProviderError {
     /// The profile provider found a candidate it could not use, or was given a
     /// reference that is neither a file nor a valid slug.
     Profile(ResolveError),
+    /// The hint provider's database failed to read after it had opened cleanly (a
+    /// disk fault, a file truncated under it). Carried as a message so
+    /// `fragcap-profile` names no `fragcap-targets` type; a broken read aborts the
+    /// cascade rather than declining silently (P-4). A database that cannot be
+    /// opened at all never reaches a provider: the wiring layer surfaces that.
+    Hint(String),
 }
 
 impl fmt::Display for ProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ProviderError::Profile(e) => write!(f, "{e}"),
+            ProviderError::Hint(message) => write!(f, "hint database read failed: {message}"),
         }
     }
 }
@@ -203,6 +232,7 @@ impl std::error::Error for ProviderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ProviderError::Profile(e) => Some(e),
+            ProviderError::Hint(_) => None,
         }
     }
 }
@@ -272,6 +302,42 @@ impl fmt::Display for WalkerAmbiguity {
     }
 }
 
+/// Why the hint provider declined despite finding a row for the application id.
+///
+/// Recorded when a row's launch entries named more than one distinct candidate
+/// executable that could not be reduced to one, so the provider declined rather
+/// than guess (P-9). The count lets a not-resolved outcome explain itself if
+/// nothing lower resolves either (P-4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HintAmbiguity {
+    app_id: u32,
+    candidates: usize,
+}
+
+impl HintAmbiguity {
+    /// The Steam application id whose row matched ambiguously.
+    pub fn app_id(&self) -> u32 {
+        self.app_id
+    }
+
+    /// How many distinct candidate executables the row named.
+    pub fn candidates(&self) -> usize {
+        self.candidates
+    }
+}
+
+impl fmt::Display for HintAmbiguity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the hint database row for app {} named {} distinct candidate \
+             executables, so it declined rather than pick one; runtime observation \
+             will disambiguate",
+            self.app_id, self.candidates
+        )
+    }
+}
+
 /// Notes a provider records while declining, so a not-resolved outcome can
 /// explain itself.
 ///
@@ -284,6 +350,7 @@ impl fmt::Display for WalkerAmbiguity {
 #[derive(Default)]
 pub struct ResolutionNotes {
     profile_not_found: Option<ResolveError>,
+    hint_ambiguous: Option<HintAmbiguity>,
     engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
     engine_rule_unreadable: Option<PathBuf>,
     walker_ambiguous: Option<WalkerAmbiguity>,
@@ -294,6 +361,12 @@ impl ResolutionNotes {
     /// Record that the profile provider found nothing for the reference.
     pub fn note_profile_not_found(&mut self, error: ResolveError) {
         self.profile_not_found = Some(error);
+    }
+
+    /// Record that the hint provider found a row but its launch entries named more
+    /// than one distinct candidate executable, so it declined.
+    pub fn note_hint_ambiguous(&mut self, app_id: u32, candidates: usize) {
+        self.hint_ambiguous = Some(HintAmbiguity { app_id, candidates });
     }
 
     /// Record that the engine-rule provider recognized a layout but matched more
@@ -336,6 +409,7 @@ impl ResolutionNotes {
 #[derive(Debug)]
 pub struct Unresolved {
     profile_not_found: Option<ResolveError>,
+    hint_ambiguous: Option<HintAmbiguity>,
     engine_rule_ambiguous: Option<EngineRuleAmbiguity>,
     engine_rule_unreadable: Option<PathBuf>,
     walker_ambiguous: Option<WalkerAmbiguity>,
@@ -347,6 +421,12 @@ impl Unresolved {
     /// and nothing matched.
     pub fn profile_not_found(&self) -> Option<&ResolveError> {
         self.profile_not_found.as_ref()
+    }
+
+    /// The hint provider's ambiguity, if it found a row but its launch entries
+    /// named more than one distinct candidate executable and it declined.
+    pub fn hint_ambiguous(&self) -> Option<HintAmbiguity> {
+        self.hint_ambiguous
     }
 
     /// The engine-rule provider's ambiguity, if it recognized a layout but
@@ -511,6 +591,7 @@ impl TargetResolver {
         }
         Err(ResolutionError::Unresolved(Box::new(Unresolved {
             profile_not_found: notes.profile_not_found,
+            hint_ambiguous: notes.hint_ambiguous,
             engine_rule_ambiguous: notes.engine_rule_ambiguous,
             engine_rule_unreadable: notes.engine_rule_unreadable,
             walker_ambiguous: notes.walker_ambiguous,
@@ -698,6 +779,57 @@ mod tests {
         match result {
             Err(DuplicatePrecedence(Precedence::Profile)) => {}
             _ => panic!("expected a DuplicatePrecedence error for the Profile position"),
+        }
+    }
+
+    #[test]
+    fn a_request_carries_a_steam_app_id_through_the_builder() {
+        let search = SearchPath::new();
+        let bundled = BundledSet::empty();
+        let base = ResolutionRequest::for_reference("t", &search, &bundled);
+        assert_eq!(base.steam_app_id(), None);
+        let with_id = base.with_steam_app_id(730);
+        assert_eq!(with_id.steam_app_id(), Some(730));
+    }
+
+    /// A provider that records a hint-ambiguity note and declines, for exercising
+    /// the note's path to `Unresolved` without the real hint provider.
+    struct AmbiguousHint {
+        app_id: u32,
+        candidates: usize,
+    }
+
+    impl TargetProvider for AmbiguousHint {
+        fn precedence(&self) -> Precedence {
+            Precedence::HintDatabase
+        }
+
+        fn provide(
+            &self,
+            _request: &ResolutionRequest,
+            notes: &mut ResolutionNotes,
+        ) -> Result<Option<Target>, ProviderError> {
+            notes.note_hint_ambiguous(self.app_id, self.candidates);
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn a_hint_ambiguity_note_surfaces_through_unresolved() {
+        let search = SearchPath::new();
+        let bundled = BundledSet::empty();
+        let resolver = TargetResolver::new(vec![Box::new(AmbiguousHint {
+            app_id: 480,
+            candidates: 3,
+        })])
+        .expect("one provider");
+        match resolver.resolve(&empty_request(&search, &bundled)) {
+            Err(ResolutionError::Unresolved(u)) => {
+                let ambiguity = u.hint_ambiguous().expect("the ambiguity is recorded");
+                assert_eq!(ambiguity.app_id(), 480);
+                assert_eq!(ambiguity.candidates(), 3);
+            }
+            other => panic!("expected Unresolved with a hint ambiguity, got {other:?}"),
         }
     }
 }
