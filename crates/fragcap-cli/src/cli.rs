@@ -552,12 +552,24 @@ pub enum ExtcapAction {
     Uninstall(ExtcapInstallArgs),
 }
 
-/// Options shared by `extcap install` and `extcap uninstall`.
+/// Options shared by `extcap install` and `extcap uninstall`. The scope selects
+/// which Wireshark extcap directory to act on; the three selectors form a
+/// mutually exclusive group (at most one), and the default when none is given is
+/// the per-user scope, the same location `doctor` probes for the current user.
 #[derive(Args, Debug)]
 pub struct ExtcapInstallArgs {
-    /// The extcap directory to register into. Defaults to the per-user Wireshark
-    /// extcap directory, the same location `doctor` probes.
-    #[arg(long)]
+    /// Use the per-user Wireshark extcap directory (the default).
+    #[arg(long, group = "extcap_scope")]
+    pub user: bool,
+
+    /// Use the machine-wide Wireshark extcap directory, so every user on the
+    /// machine sees the integration (needs the privilege to write it).
+    #[arg(long, group = "extcap_scope")]
+    pub system: bool,
+
+    /// An explicit extcap directory, overriding the scope flags. Point this at the
+    /// system directory to register machine-wide without `--system`.
+    #[arg(long, group = "extcap_scope")]
     pub dir: Option<PathBuf>,
 }
 

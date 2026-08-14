@@ -120,25 +120,37 @@ Register or unregister fragcap as a Wireshark extcap source, so Wireshark lists
 it in its capture interfaces.
 
 ```text
-fragcap extcap install            # register for the current user (idempotent)
+fragcap extcap install            # register for the current user (the default; idempotent)
 fragcap extcap uninstall          # unregister (idempotent; a no-op if not registered)
+fragcap extcap install --system   # register machine-wide, for every user
 fragcap extcap install --dir DIR  # register into an explicit directory
 ```
 
-**Registration is per user.** It copies the running fragcap binary into your own
-Wireshark extcap directory (the per-user location `doctor` probes), and it needs
-no elevation. Installing fragcap for the whole machine does not register it for
-everyone: on a shared computer, **each user who wants the Wireshark integration
-runs `fragcap extcap install` once.** If Wireshark does not show fragcap as a
-capture source, run `fragcap doctor`, which reports whether the integration is
-registered for you and prints the exact command to fix it.
+The scope selectors `--user`, `--system`, and `--dir` are mutually exclusive; with
+none given, the default is the current user. `--user`/`--system` register into the
+per-user and machine-wide Wireshark extcap directories `doctor` probes, and `--dir`
+is an explicit override (the same directory selected by a scope, named literally).
+The flags apply to `uninstall` as well.
 
-To register for every user of the machine, an administrator can point `--dir` at
-Wireshark's system extcap directory, for example:
+**The default is per user.** It copies the running fragcap binary into your own
+Wireshark extcap directory and needs no elevation. Installing fragcap for the whole
+machine does not register it for everyone: on a shared computer, **each user who
+wants the Wireshark integration runs `fragcap extcap install` once.** If Wireshark
+does not show fragcap as a capture source, run `fragcap doctor`, which reports
+whether the integration is registered for you and prints the exact command to fix
+it.
+
+To register for every user of the machine, an administrator runs the machine-wide
+form (writing into Wireshark's system extcap directory needs the privilege to write
+there):
 
 ```text
-fragcap extcap install --dir "C:\Program Files\Wireshark\extcap"
+fragcap extcap install --system
 ```
+
+`--system` resolves the system Wireshark extcap directory for you; to target a
+non-standard location, name it explicitly instead, for example
+`fragcap extcap install --dir "C:\Program Files\Wireshark\extcap"`.
 
 ### From the installer
 

@@ -427,26 +427,31 @@ fn the_new_subcommands_do_not_regress_the_bare_protocol_forms() {
 }
 
 #[test]
-fn doctor_reports_the_integration_after_install_and_not_after_uninstall() {
-    // End-to-end agreement: install writes where doctor probes, so the doctor
-    // integration check flips. doctor reads the per-user extcap dir from
-    // FRAGCAP_EXTCAP_DIR; this is the only test in this file that touches that
-    // variable, so setting it process-wide does not race another test. The
-    // machine-wide dir is pinned to a separate empty directory via
-    // FRAGCAP_SYSTEM_EXTCAP_DIR so the probe does not read the real system
-    // Wireshark directory and the test stays hermetic and per-user scoped.
-    let dir = tempfile::tempdir().unwrap();
+fn extcap_scope_flags_target_the_right_directory_and_doctor_agrees() {
+    // End-to-end agreement across scopes: install writes where doctor probes, so
+    // the doctor integration check flips and names the scope. doctor reads the
+    // per-user extcap dir from FRAGCAP_EXTCAP_DIR and the machine-wide dir from
+    // FRAGCAP_SYSTEM_EXTCAP_DIR; this is the only test in this file that sets those
+    // variables, so setting them process-wide does not race another test, and it
+    // keeps the probe off the real system Wireshark directory (hermetic).
+    let user = tempfile::tempdir().unwrap();
     let system = tempfile::tempdir().unwrap();
-    std::env::set_var("FRAGCAP_EXTCAP_DIR", dir.path());
+    std::env::set_var("FRAGCAP_EXTCAP_DIR", user.path());
     std::env::set_var("FRAGCAP_SYSTEM_EXTCAP_DIR", system.path());
 
+    // Default (no scope flag) registers per-user; doctor names the current user.
     common::run(&["extcap", "install"]);
+    assert_eq!(
+        fs::read_dir(user.path()).unwrap().count(),
+        1,
+        "the default scope is per-user"
+    );
+    assert_eq!(fs::read_dir(system.path()).unwrap().count(), 0);
     let (_c, out, _e) = common::run(&["doctor"]);
     assert!(
         out.contains("installed for the current user in"),
-        "doctor reports the integration installed for the current user: {out}"
+        "doctor names the current-user scope: {out}"
     );
-
     common::run(&["extcap", "uninstall"]);
     let (_c, out, _e) = common::run(&["doctor"]);
     assert!(
@@ -454,6 +459,56 @@ fn doctor_reports_the_integration_after_install_and_not_after_uninstall() {
         "doctor reports it not registered after uninstall: {out}"
     );
 
+    // --system registers into the machine-wide directory; doctor names it.
+    let (code, _o, err) = common::run(&["extcap", "install", "--system"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        fs::read_dir(system.path()).unwrap().count(),
+        1,
+        "--system registers machine-wide"
+    );
+    assert_eq!(fs::read_dir(user.path()).unwrap().count(), 0);
+    let (_c, out, _e) = common::run(&["doctor"]);
+    assert!(
+        out.contains("installed machine-wide in"),
+        "doctor names the machine-wide scope: {out}"
+    );
+    let (code, out, err) = common::run(&["extcap", "uninstall", "--system"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("removed"), "{out}");
+    assert_eq!(fs::read_dir(system.path()).unwrap().count(), 0);
+
+    // --user is the explicit form of the default per-user scope.
+    common::run(&["extcap", "install", "--user"]);
+    assert_eq!(
+        fs::read_dir(user.path()).unwrap().count(),
+        1,
+        "--user registers per-user"
+    );
+    assert_eq!(fs::read_dir(system.path()).unwrap().count(), 0);
+    common::run(&["extcap", "uninstall", "--user"]);
+
     std::env::remove_var("FRAGCAP_EXTCAP_DIR");
     std::env::remove_var("FRAGCAP_SYSTEM_EXTCAP_DIR");
+}
+
+#[test]
+fn extcap_scope_selectors_are_mutually_exclusive() {
+    // At most one of --user / --system / --dir; two selectors is a clap usage
+    // error (exit 2), never an ambiguous registration. No env vars, so this runs
+    // in parallel with every other test.
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_string_lossy().into_owned();
+
+    let (code, _o, err) = common::run(&["extcap", "install", "--user", "--system"]);
+    assert_eq!(code, 2, "--user with --system is a usage error: {err}");
+
+    let (code, _o, err) = common::run(&["extcap", "install", "--system", "--dir", &d]);
+    assert_eq!(code, 2, "--system with --dir is a usage error: {err}");
+
+    let (code, _o, err) = common::run(&["extcap", "uninstall", "--user", "--dir", &d]);
+    assert_eq!(
+        code, 2,
+        "uninstall --user with --dir is a usage error: {err}"
+    );
 }
