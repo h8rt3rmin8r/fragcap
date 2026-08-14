@@ -40,9 +40,10 @@ information by observing from the outside.
   Attribution comes from the socket table, read entirely from outside.
 - **Process handles carrying memory-read rights.** Opening a handle to a target
   with the access needed to read its memory. Off-limits because reading another
-  process's memory is exactly what detection systems look for. fragcap recovers
-  which process owns a flow from creation-time ETW telemetry, and any handle it
-  does open declares query-only rights at the call site.
+  process's memory is exactly what detection systems look for. fragcap never
+  reads a target's memory; it recovers process relationships from creation-time
+  ETW telemetry and attributes flow ownership from the socket table, and any
+  handle it does open declares query-only rights at the call site.
 - **Layered service providers.** Inserting fragcap into the Winsock call chain
   that a socket's traffic passes through. Off-limits because it interposes on
   live traffic. The socket table yields the same process-to-flow association
