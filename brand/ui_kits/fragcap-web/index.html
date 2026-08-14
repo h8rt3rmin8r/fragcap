@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fragcap - passive process-attributed network capture for games</title>
+<link rel="icon" href="../../favicons/favicon.svg">
+<link rel="stylesheet" href="../../styles.css">
+<link rel="stylesheet" href="../../components/components.css">
+<style>
+  main, header, footer { max-width: var(--fc-content-max); margin: 0 auto;
+                         padding-left: var(--fc-space-6); padding-right: var(--fc-space-6); }
+  .nav { display:flex; align-items:center; justify-content:space-between;
+         padding-top:var(--fc-space-5); padding-bottom:var(--fc-space-5); }
+  .nav img { width:190px; height:auto; display:block; }
+  .nav ul { display:flex; gap:var(--fc-space-6); list-style:none; margin:0; padding:0;
+            font-size:var(--fc-text-body-sm); }
+  .nav a { color:var(--fc-fg-muted); }
+  .nav a:hover { color:var(--fc-accent); }
+
+  .hero { padding:var(--fc-space-9) 0 var(--fc-space-8);
+          border-bottom:1px solid var(--fc-border); }
+  .hero h1 { font-size:var(--fc-text-display-lg); max-width:16ch; margin-bottom:var(--fc-space-5); }
+  .hero p { color:var(--fc-fg-muted); font-size:var(--fc-text-body-lg);
+            max-width:56ch; margin-bottom:var(--fc-space-6); }
+  .hero .inline { display:flex; gap:var(--fc-space-3); flex-wrap:wrap; }
+
+  section { padding:var(--fc-space-8) 0; }
+  .cols { display:grid; gap:var(--fc-space-5);
+          grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
+  .stack { display:flex; flex-direction:column; gap:var(--fc-space-2); }
+  .prereq { border-left:2px solid var(--fc-warning); padding-left:var(--fc-space-4);
+            color:var(--fc-fg-muted); }
+  .footer { border-top:1px solid var(--fc-border); padding:var(--fc-space-6) 0 var(--fc-space-8);
+            display:flex; justify-content:space-between; gap:var(--fc-space-5); flex-wrap:wrap; }
+  .endorse { font-family:var(--fc-font-mono); font-size:var(--fc-text-body-xs);
+             text-transform:uppercase; letter-spacing:var(--fc-label-tracking);
+             color:var(--fc-fg-muted); }
+  .kv { font-family:var(--fc-font-mono); font-size:var(--fc-text-body-sm);
+        color:var(--fc-fg-muted); }
+  .kv b { font-weight:400; color:var(--fc-fg); }
+</style>
+</head>
+<body>
+
+<header>
+  <nav class="nav">
+    <a href="#"><img src="../../logos/svg/fragcap-horizontal-dark.svg" alt="fragcap"></a>
+    <ul>
+      <li><a href="#capture">Capture</a></li>
+      <li><a href="#limits">Limits</a></li>
+      <li><a href="#docs">Documentation</a></li>
+    </ul>
+  </nav>
+</header>
+
+<main>
+  <!-- The brand forbids conventional marketing structure: state what the tool
+       is, show one worked invocation with representative output, name the
+       prerequisite plainly, link to documentation. No testimonials, no feature
+       grids, no urgency. -->
+  <section class="hero">
+    <div class="fc-section__eyebrow">Captured signal. Preserved evidence.</div>
+    <h1>See what your game is saying.</h1>
+    <p>Your machine is already exchanging thousands of packets a second while you
+       play. fragcap makes them readable: which process, which endpoint, how many
+       bytes, right now. It reads traffic and never writes it - no injection, no
+       modification, no automation, nothing hidden.</p>
+    <div class="inline">
+      <a class="fc-btn fc-btn--primary" href="https://fragcap.com/docs">Read the documentation</a>
+      <a class="fc-btn fc-btn--ghost" href="https://github.com/h8rt3rmin8r/fragcap">View on GitHub</a>
+    </div>
+  </section>
+
+  <section id="capture">
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">One worked invocation</div>
+      <h2 class="fc-section__title">Capture, filtered by process</h2>
+    </div>
+    <div class="fc-code">$ fragcap --process game.exe --filter "udp.port == 27015" --out session.pcapng
+
+interface   Ethernet 2
+attributed  game.exe (pid 8412)
+filter      udp.port == 27015
+writing     session.pcapng</div>
+
+    <div class="stack" style="margin-top:var(--fc-space-5)">
+      <div class="fc-capture-row" data-selected="true">
+        <span class="fc-capture-row__dir">OUT</span>
+        <span class="fc-capture-row__flow"><b>10.0.0.99:51820</b> <em>&rarr;</em> 172.16.10.12:27015</span>
+        <span class="fc-capture-row__proc">game.exe</span>
+        <span class="fc-capture-row__bytes">1 314 B</span>
+        <span class="fc-badge fc-badge--signal">Captured</span>
+      </div>
+      <div class="fc-capture-row">
+        <span class="fc-capture-row__dir">IN</span>
+        <span class="fc-capture-row__flow">172.16.10.12:27015 <em>&rarr;</em> 10.0.0.99:51820</span>
+        <span class="fc-capture-row__proc">game.exe</span>
+        <span class="fc-capture-row__bytes">208 B</span>
+        <span class="fc-badge fc-badge--signal">Captured</span>
+      </div>
+      <div class="fc-capture-row">
+        <span class="fc-capture-row__dir">IN</span>
+        <span class="fc-capture-row__flow">172.16.10.12:27015 <em>&rarr;</em> 10.0.0.99:51820</span>
+        <span class="fc-capture-row__proc">game.exe</span>
+        <span class="fc-capture-row__bytes">1 460 B</span>
+        <span class="fc-badge fc-badge--capture">Inspect</span>
+      </div>
+      <div class="fc-capture-row">
+        <span class="fc-capture-row__dir">OUT</span>
+        <span class="fc-capture-row__flow">10.0.0.99:51821 <em>&rarr;</em> <em>unknown</em></span>
+        <span class="fc-capture-row__proc">unattributed</span>
+        <span class="fc-capture-row__bytes">0 B</span>
+        <span class="fc-badge fc-badge--fault">Failed</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="limits">
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Before you start</div>
+      <h2 class="fc-section__title">Prerequisites and limitations</h2>
+      <p class="fc-section__sub">Stated up front, where they are still useful.
+        Supported behaviour, inferred behaviour and unknown behaviour are
+        distinguished throughout the documentation.</p>
+    </div>
+    <div class="cols">
+      <div class="fc-card">
+        <div class="fc-section__eyebrow">Prerequisite</div>
+        <p class="prereq" style="margin-top:var(--fc-space-3)">Packet capture requires
+          an Npcap-compatible capture driver.</p>
+      </div>
+      <div class="fc-card">
+        <div class="fc-section__eyebrow">Limitation</div>
+        <p class="prereq" style="margin-top:var(--fc-space-3)">Encrypted payloads remain
+          opaque unless a supported decoder can derive the required session context.</p>
+      </div>
+      <div class="fc-card">
+        <div class="fc-section__eyebrow">Unknowns</div>
+        <p class="prereq" style="margin-top:var(--fc-space-3)">Traffic that cannot be
+          attributed to a process is labelled <em>unattributed</em>, never guessed.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="docs">
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Session filter</div>
+      <h2 class="fc-section__title">Narrow the capture</h2>
+    </div>
+    <div class="fc-card">
+      <div class="cols">
+        <div class="fc-field">
+          <label class="fc-label" for="iface">Interface</label>
+          <select id="iface" class="fc-select">
+            <option>Ethernet 2</option>
+            <option>Wi-Fi</option>
+          </select>
+          <span class="fc-field__hint">Only interfaces the driver exposes are listed.</span>
+        </div>
+        <div class="fc-field">
+          <label class="fc-label" for="proc">Process</label>
+          <input id="proc" class="fc-input" value="game.exe">
+          <span class="fc-field__hint">Attribution is per-process, not per-port.</span>
+        </div>
+        <div class="fc-field">
+          <label class="fc-label" for="out">Output</label>
+          <input id="out" class="fc-input" aria-invalid="true" value="/traces/session.pcapng">
+          <span class="fc-field__error">Path is not writable. Capture will not start.</span>
+        </div>
+      </div>
+      <hr class="fc-divider">
+      <div class="fc-field">
+        <label class="fc-label" for="dfilter">Display filter</label>
+        <textarea id="dfilter" class="fc-textarea">udp.port == 27015 and not icmp</textarea>
+      </div>
+      <div style="display:flex;gap:var(--fc-space-3);margin-top:var(--fc-space-4);flex-wrap:wrap">
+        <button class="fc-btn fc-btn--primary">Start capture</button>
+        <button class="fc-btn">Save filter</button>
+        <button class="fc-btn fc-btn--warning">Drop session</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="footer">
+    <div>
+      <img src="../../logos/svg/fragcap-wordmark-cyan.svg" alt="fragcap" width="140">
+      <p class="kv" style="margin-top:var(--fc-space-3)">
+        Capture is passive and inspectable.<br>
+        Every row is a packet that <b>actually happened</b>.
+      </p>
+    </div>
+    <div class="endorse">A ShruggieTech project</div>
+  </div>
+</footer>
+
+</body>
+</html>

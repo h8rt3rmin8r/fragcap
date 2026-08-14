@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fragcap Brand System</title>
+<style>
+/* ── Fonts ────────────────────────────────────────────────────────────────
+   Loaded from the kit's own WOFF2 files so the PDF embeds fragcap's real
+   typefaces. Both Space Grotesk weights are declared: v1.0.0's guide embedded
+   only one, so every heading level shared a single weight. */
+@font-face { font-family:"Space Grotesk"; src:url("../fonts/woff2/SpaceGrotesk-Medium.woff2") format("woff2"); font-weight:500; }
+@font-face { font-family:"Space Grotesk"; src:url("../fonts/woff2/SpaceGrotesk-Bold.woff2")   format("woff2"); font-weight:700; }
+@font-face { font-family:"Geist";         src:url("../fonts/woff2/Geist-Regular.woff2")       format("woff2"); font-weight:400; }
+@font-face { font-family:"Geist";         src:url("../fonts/woff2/Geist-Medium.woff2")        format("woff2"); font-weight:500; }
+@font-face { font-family:"Geist Mono";    src:url("../fonts/woff2/GeistMono-Regular.woff2")   format("woff2"); font-weight:400; }
+
+:root {
+  --cyan:#27C7E7; --orange:#FF5300; --fault:#E9505F;
+  --void:#050708; --surface:#0B1115; --raised:#101A20; --line:#21323A;
+  --text:#F2F7F8; --muted:#94A8B0;
+  --lsurf:#F5F8F9; --ltext:#102027; --lcyan:#006F82; --lorange:#C24100; --lfault:#C0293A;
+  --display:"Space Grotesk"; --body:"Geist"; --mono:"Geist Mono";
+}
+
+@page { size: 8.5in 11in; margin: 0; }
+
+* { box-sizing: border-box; }
+html, body { margin:0; padding:0; background:var(--void); }
+body {
+  font-family: var(--body); font-size: 10.6pt; line-height: 1.6;
+  color: var(--text); -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+
+.page {
+  position: relative;
+  width: 8.5in; height: 11in;
+  padding: 0.74in 0.78in 0.62in;
+  background: var(--void);
+  page-break-after: always;
+  overflow: hidden;
+}
+.page:last-child { page-break-after: auto; }
+
+.folio {
+  position:absolute; left:0.78in; right:0.78in; bottom:0.40in;
+  display:flex; justify-content:space-between; align-items:baseline;
+  font-family:var(--mono); font-size:7.2pt; letter-spacing:.16em;
+  text-transform:uppercase; color:#5C7079;
+  border-top:1px solid var(--line); padding-top:8px;
+}
+
+h1,h2,h3 { font-family:var(--display); letter-spacing:-.025em; line-height:1.1; margin:0; }
+h1 { font-weight:700; font-size:24pt; }
+h2 { font-weight:700; font-size:16.5pt; margin-bottom:7px; }
+h3 { font-weight:500; font-size:11.5pt; letter-spacing:-.012em; margin-bottom:4px; }
+p  { margin:0 0 7px; }
+.lead { color:var(--muted); max-width:74ch; }
+.eyebrow {
+  font-family:var(--mono); font-size:7.6pt; letter-spacing:.18em;
+  text-transform:uppercase; color:var(--cyan); margin-bottom:5px;
+}
+.eyebrow--orange { color:var(--orange); }
+.eyebrow--muted  { color:var(--muted); }
+.mono { font-family:var(--mono); }
+.muted { color:var(--muted); }
+.cy { color:var(--cyan); } .og { color:var(--orange); } .ft { color:var(--fault); }
+
+section { margin-bottom:20px; }
+.rule { border:0; border-top:1px solid var(--line); margin:13px 0; }
+
+/* tables */
+table { width:100%; border-collapse:collapse; font-size:9.4pt; }
+th {
+  text-align:left; font-family:var(--mono); font-weight:400; font-size:7.4pt;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--muted);
+  padding:4px 9px 4px 0; border-bottom:1px solid var(--line);
+}
+td { padding:4px 9px 4px 0; border-bottom:1px solid #16242B; vertical-align:top; }
+tr:last-child td { border-bottom:0; }
+td.m { font-family:var(--mono); }
+td.num { font-family:var(--mono); text-align:right; padding-right:0; }
+th.num { text-align:right; padding-right:0; }
+td.numpad, th.numpad { text-align:right; padding-right:22px; font-family:var(--mono); }
+
+/* cards + grids */
+.card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:12px 15px; }
+.grid { display:grid; gap:10px; }
+.g2 { grid-template-columns:1fr 1fr; }
+.g3 { grid-template-columns:repeat(3,1fr); }
+.g4 { grid-template-columns:repeat(4,1fr); }
+.g5 { grid-template-columns:repeat(5,1fr); }
+
+/* swatches */
+.sw { border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.sw .chip { height:33px; }
+.sw .m { padding:7px 9px 8px; background:var(--surface); }
+.sw .n { font-size:9.6pt; font-weight:500; }
+.sw .h { font-family:var(--mono); font-size:7.4pt; color:var(--muted); margin-top:1px; }
+.sw .r { font-family:var(--mono); font-size:7.2pt; color:var(--cyan); margin-top:3px; }
+.sw .u { font-size:7.4pt; color:var(--muted); margin-top:2px; line-height:1.35; }
+
+/* logo tiles */
+.tile { background:var(--void); border:1px solid var(--line); border-radius:8px;
+        padding:14px; display:flex; align-items:center; justify-content:center; }
+.tile img { max-width:100%; max-height:100%; }
+.cap { font-family:var(--mono); font-size:7.2pt; letter-spacing:.14em;
+       text-transform:uppercase; color:var(--muted); margin-top:5px; }
+
+/* code / specimen */
+.code { font-family:var(--mono); font-size:9.8pt; line-height:1.55; white-space:pre;
+        color:var(--text); }
+.badge { display:inline-block; font-family:var(--mono); font-size:7pt;
+         letter-spacing:.14em; text-transform:uppercase; padding:3px 9px;
+         border:1px solid var(--line); border-radius:999px; color:var(--muted); }
+.badge.s { border-color:var(--cyan);   color:var(--cyan); }
+.badge.c { border-color:var(--orange); color:var(--orange); }
+.badge.f { border-color:var(--fault);  color:var(--fault); }
+.badge .dot { display:inline-block; width:.5em; height:.5em; background:currentColor;
+              border-radius:50%; margin-right:.45em; vertical-align:baseline; }
+.badge .sq  { display:inline-block; width:.5em; height:.5em; background:currentColor;
+              margin-right:.45em; vertical-align:baseline; }
+
+/* Geist ships 400 and 500 only, and Geist Mono ships 400 only. Letting <b>
+   ask for 700 makes the renderer synthesise a faux bold, which Skia then has
+   to emit as outlined Type 3 glyphs instead of real text. Emphasis therefore
+   resolves to the real Medium face, and to colour alone in mono. */
+b, strong { font-weight:500; }
+.mono b, .mono strong, .code b, .code strong,
+td.m b, .badge b { font-weight:400; }
+
+ul.tight { margin:0; padding-left:14px; color:var(--muted); }
+ul.tight li { margin-bottom:3px; }
+</style>
+</head>
+<body>
+
+<!-- ══ 1 · COVER ══════════════════════════════════════════════════════════ -->
+<div class="page" style="padding:0">
+  <div style="position:absolute;inset:0;background:
+       radial-gradient(62% 52% at 30% 40%, rgba(39,199,231,.10), rgba(5,7,8,0) 70%);"></div>
+  <div style="position:absolute;left:0.78in;top:2.95in;right:0.78in">
+    <img src="../logos/svg/fragcap-mark-color.svg" style="width:1.42in;display:block">
+    <img src="../logos/svg/fragcap-wordmark-cyan.svg"
+         style="width:4.1in;display:block;margin-top:0.42in">
+    <div class="mono" style="font-size:9.2pt;letter-spacing:.2em;text-transform:uppercase;
+         color:var(--muted);margin-top:0.30in">Brand &amp; design system</div>
+    <div style="width:2.1in;border-top:1px solid var(--line);margin:0.28in 0"></div>
+    <p style="font-size:15pt;line-height:1.45;color:var(--text);margin:0;
+       white-space:nowrap">Passive process-attributed network capture for games.</p>
+    <p class="muted" style="font-size:11.5pt;margin-top:12px">
+      Captured signal. Preserved evidence.</p>
+  </div>
+  <div class="mono" style="position:absolute;left:0.78in;bottom:0.78in;
+       font-size:7pt;letter-spacing:.2em;text-transform:uppercase;color:#5C7079">
+    A ShruggieTech project &nbsp;·&nbsp; Version 1.1.0 &nbsp;·&nbsp; fragcap.com</div>
+</div>
+
+<!-- ══ 2 · FOUNDATION ════════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Foundation</div>
+  <h1>See what your game is actually saying</h1>
+  <p class="lead" style="margin-top:10px">Your machine is already exchanging thousands of
+    packets a second while you play. fragcap makes them readable: which process, which
+    endpoint, how many bytes, right now. It reads traffic and never writes it &mdash; no
+    injection, no modification, no automation, nothing hidden.</p>
+  <p class="lead">That is the whole pitch. Some people open fragcap once out of curiosity
+    and close it again; some find the protocol quirk that has been bugging them for months.
+    Both are fine outcomes.</p>
+
+  <hr class="rule" style="margin:14px 0">
+
+  <hr class="rule">
+
+  <table>
+    <tr><th style="width:22%">Category</th><td>Game network capture and analysis tooling</td></tr>
+    <tr><th>Role</th><td>Passive capture and decode. fragcap reads; it does not write</td></tr>
+    <tr><th>Audience</th><td>Curious players first, then modders, server operators,
+      developers, researchers and tool authors. The technical floor is real; being paid to
+      do this is not</td></tr>
+    <tr><th>Descriptor</th><td>Passive process-attributed network capture for games</td></tr>
+    <tr><th>Parent</th><td>ShruggieTech &mdash; shared typography and dark-first discipline, independent identity</td></tr>
+  </table>
+
+  <hr class="rule" style="margin:14px 0">
+
+  <div class="eyebrow">Brand idea</div>
+  <h2>Captured signal. Preserved evidence.</h2>
+  <p class="lead">The brand treats packets as observable material. Every row fragcap shows
+    you actually crossed the wire, timestamped and attributed to a process, and it stays
+    readable long after the session ends.</p>
+
+  <div style="margin-top:12px">
+    <table>
+      <tr><th style="width:20%">Trait</th><th style="width:42%">Expression</th><th>Avoid</th></tr>
+      <tr><td>Precise</td><td>Exact nouns, units, formats, commands</td><td class="muted">Vague claims</td></tr>
+      <tr><td>Observational</td><td>Observation, capture, decode, traces</td><td class="muted">Combat metaphors</td></tr>
+      <tr><td>Dry</td><td>Calm statements and sparse wit</td><td class="muted">Hype, performed excitement</td></tr>
+      <tr><td>Competent</td><td>Assumes technical ability</td><td class="muted">Condescending tutorials</td></tr>
+      <tr><td>Transparent</td><td>Names limitations, prerequisites and sharp edges</td><td class="muted">Implied magic</td></tr>
+    </table>
+  </div>
+
+  <hr class="rule" style="margin:14px 0">
+
+  <div class="eyebrow">Promises</div>
+  <div class="grid g2" style="margin-top:6px">
+    <div class="card" style="padding:11px 14px"><ul class="tight">
+      <li>Capture is passive and inspectable.</li>
+      <li>Every row is a packet that actually happened.</li>
+      <li>Unknowns are labelled as unknowns.</li>
+    </ul></div>
+    <div class="card" style="padding:11px 14px"><ul class="tight">
+      <li>Technical boundaries are stated before convenience claims.</li>
+      <li>Terminology stays consistent across CLI, docs, schemas and interfaces.</li>
+    </ul></div>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>02</span></div>
+</div>
+
+<!-- ══ 3 · LOGO SYSTEM ═══════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Logo system</div>
+  <h1>Marks and lockups</h1>
+  <p class="lead" style="margin-top:10px">The mark carries three coordinated ideas: a
+    triple-bladed <b>F</b> for parallel packet lanes; four separated corner segments that
+    frame a capture without resorting to a weapon-like crosshair; and orange terminals for
+    the bytes isolated by capture. The lower lane is deliberately shorter so the silhouette
+    reads as F rather than E.</p>
+
+  <div class="tile" style="height:1.42in;margin:14px 0 5px">
+    <img src="../logos/svg/fragcap-horizontal-dark.svg" style="width:5.0in">
+  </div>
+  <div class="cap">Horizontal lockup &mdash; headers, repository artwork, wide surfaces</div>
+
+  <div class="grid g4" style="margin-top:14px">
+    <div>
+      <div class="tile" style="height:1.28in"><img src="../logos/svg/fragcap-stacked-dark.svg" style="width:1.02in"></div>
+      <div class="cap">Stacked · 96 px</div>
+    </div>
+    <div>
+      <div class="tile" style="height:1.28in"><img src="../logos/svg/fragcap-mark-color.svg" style="width:0.82in"></div>
+      <div class="cap">Mark · 24 px</div>
+    </div>
+    <div>
+      <div class="tile" style="height:1.28in;background:var(--lsurf);border-color:#D5DFE3">
+        <img src="../logos/svg/fragcap-horizontal-light.svg" style="width:1.42in"></div>
+      <div class="cap">Light surface</div>
+    </div>
+    <div>
+      <div class="tile" style="height:1.28in"><img src="../logos/svg/fragcap-mark-reduced.svg" style="width:0.82in"></div>
+      <div class="cap">Reduced · ≤ 32 px</div>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <div class="grid g2" style="align-items:start">
+    <div>
+      <div class="eyebrow">Clear space</div>
+      <h3>One orange terminal, all the way round</h3>
+      <p class="muted" style="font-size:9.4pt">The dashed boundary below is the minimum.
+        No text, border, icon or crop may enter it.</p>
+      <div style="display:inline-block;padding:0.155in;outline:1px dashed var(--cyan);
+                  margin-top:6px;background:var(--void)">
+        <img src="../logos/svg/fragcap-horizontal-dark.svg" style="width:1.68in;display:block">
+      </div>
+    </div>
+    <div>
+      <div class="eyebrow">Minimum size</div>
+      <table style="margin-top:2px">
+        <tr><th>Asset</th><th class="num">Min width</th></tr>
+        <tr><td>Mark</td><td class="num">24 px</td></tr>
+        <tr><td>Horizontal lockup</td><td class="num">160 px</td></tr>
+        <tr><td>Stacked lockup</td><td class="num">96 px</td></tr>
+        <tr><td>Wordmark</td><td class="num">120 px</td></tr>
+      </table>
+      <p class="muted" style="font-size:9pt;margin-top:10px">
+        At and below <b class="cy">32 px</b> the four reticle corners and three terminals
+        collapse into noise. Small icons use the reduced mark &mdash; the F and its
+        terminals &mdash; from the favicon exports. Never rasterise a large lockup down to
+        browser-icon size at runtime.</p>
+      <p class="muted" style="font-size:9pt">The wordmark is custom vector lettering
+        shipped as <b class="cy">filled outlines</b>. It does not depend on stroke
+        rendering, it fills with <span class="mono">currentColor</span>, and it survives
+        expand-to-outlines workflows. Never set it in live text or a substitute typeface.</p>
+    </div>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>03</span></div>
+</div>
+
+<!-- ══ 4 · PROHIBITED ════════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Logo system</div>
+  <h1>Backgrounds and prohibited treatments</h1>
+  <p class="lead" style="margin-top:10px">The primary presentation is Signal Cyan and
+    Capture Orange on Void. The light variant uses the deeper accessible values on Light
+    Surface. Single-ink white and black variants exist for reproduction that supports one
+    ink only.</p>
+
+  <div class="grid g4" style="margin-top:14px">
+    <div>
+      <div class="tile" style="height:0.98in"><img src="../logos/svg/fragcap-horizontal-dark.svg" style="width:1.42in"></div>
+      <div class="cap">Void · primary</div>
+    </div>
+    <div>
+      <div class="tile" style="height:0.98in;background:var(--lsurf);border-color:#D5DFE3">
+        <img src="../logos/svg/fragcap-horizontal-light.svg" style="width:1.42in"></div>
+      <div class="cap">Light Surface</div>
+    </div>
+    <div>
+      <div class="tile" style="height:0.98in;background:#1E2C33">
+        <img src="../logos/svg/fragcap-horizontal-white.svg" style="width:1.42in"></div>
+      <div class="cap">White · single ink</div>
+    </div>
+    <div>
+      <div class="tile" style="height:0.98in;background:#C9D2D6;border-color:#C9D2D6">
+        <img src="../logos/svg/fragcap-horizontal-black.svg" style="width:1.42in"></div>
+      <div class="cap">Black · single ink</div>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <div class="grid g2" style="align-items:start">
+    <div class="card">
+      <div class="eyebrow">Do</div>
+      <ul class="tight" style="margin-top:7px">
+        <li>Use SVG wherever the surface supports it; PNG for social platforms and
+            raster-only systems.</li>
+        <li>Keep the Void tile in small icon exports &mdash; it protects the reticle
+            corners and terminals against light and dark browser chrome alike.</li>
+        <li>Treat <span class="mono">logos/svg/</span> as the source of truth.</li>
+        <li>Give every lockup its full clear space before anything else is placed.</li>
+        <li>Pair every colour-coded state with text or an icon.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="eyebrow" style="color:var(--fault)">Do not</div>
+      <ul class="tight" style="margin-top:7px">
+        <li>Rotate, skew, stretch, outline, bevel or add glow.</li>
+        <li>Recolour individual packet lanes.</li>
+        <li>Move the orange terminals or make them appear explosive.</li>
+        <li>Close the four reticle corners into a box or circle.</li>
+        <li>Set the wordmark in live text or a substitute typeface.</li>
+        <li>Place the logo over busy imagery.</li>
+        <li>Combine the fragcap and ShruggieTech marks into one lockup.</li>
+        <li>Add skulls, weapons, controllers, shields or exploit imagery.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <div class="eyebrow eyebrow--orange">Why the last rule matters</div>
+  <p class="lead">Reading game traffic is where protocol reverse-engineering starts, and
+    protocol knowledge is how cheats get written. That road exists, and fragcap stands at
+    one end of it. Anyone technical enough to run this works that out in about a minute, so
+    the brand does not pretend otherwise. fragcap answers with scope: it captures and
+    decodes, and it will not inject, modify, automate or hide. The project draws that line;
+    the technology does not enforce it.</p>
+  <p class="lead">The visual rules follow. Moderators, storefronts and anti-cheat vendors
+    triage on appearance long before they read a manifest, and a skull or a crosshair
+    answers the question for them.</p>
+
+  <div class="folio"><span>fragcap brand system</span><span>04</span></div>
+</div>
+
+<!-- ══ 5 · COLOR ═════════════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Colour</div>
+  <h1>Palette</h1>
+  <p class="lead" style="margin-top:10px">Dark-first and close to monochrome. Cyan is the
+    observed signal. Orange is the captured terminal or a state requiring attention. Aim
+    for roughly <b class="cy">80%</b> neutral surfaces, <b class="cy">15%</b> cyan and
+    under <b class="og">5%</b> orange in a typical view. Orange is not a general
+    call-to-action colour.</p>
+
+  <div class="eyebrow eyebrow--muted" style="margin-top:13px">Accents &mdash; dark surfaces</div>
+  <div class="grid g3">
+    <div class="sw"><div class="chip" style="background:#27C7E7"></div><div class="m">
+      <div class="n">Signal Cyan</div><div class="h">#27C7E7</div>
+      <div class="u">Identity, links, focus, active data</div><div class="r">10.01:1 on Void</div></div></div>
+    <div class="sw"><div class="chip" style="background:#FF5300"></div><div class="m">
+      <div class="n">Capture Orange</div><div class="h">#FF5300</div>
+      <div class="u">Captured terminal, warning (scarce)</div><div class="r">6.24:1 on Void</div></div></div>
+    <div class="sw"><div class="chip" style="background:#E9505F"></div><div class="m">
+      <div class="n">Fault</div><div class="h">#E9505F</div>
+      <div class="u">Failed capture, hard error</div><div class="r">5.55:1 on Void</div></div></div>
+  </div>
+
+  <div class="eyebrow eyebrow--muted" style="margin-top:14px">Neutrals &mdash; dark surfaces</div>
+  <div class="grid g5">
+    <div class="sw"><div class="chip" style="background:#050708"></div><div class="m">
+      <div class="n">Void</div><div class="h">#050708</div><div class="u">Primary background</div></div></div>
+    <div class="sw"><div class="chip" style="background:#0B1115"></div><div class="m">
+      <div class="n">Surface</div><div class="h">#0B1115</div><div class="u">Panels, code</div></div></div>
+    <div class="sw"><div class="chip" style="background:#101A20"></div><div class="m">
+      <div class="n">Surface Raised</div><div class="h">#101A20</div><div class="u">Selected rows</div></div></div>
+    <div class="sw"><div class="chip" style="background:#21323A"></div><div class="m">
+      <div class="n">Line</div><div class="h">#21323A</div><div class="u">Borders, rails</div></div></div>
+    <div class="sw"><div class="chip" style="background:#F2F7F8"></div><div class="m">
+      <div class="n">Text</div><div class="h">#F2F7F8</div><div class="r">18.68:1</div></div></div>
+  </div>
+
+  <div class="eyebrow eyebrow--muted" style="margin-top:14px">Light reading surface</div>
+  <div class="grid g5">
+    <div class="sw"><div class="chip" style="background:#94A8B0"></div><div class="m">
+      <div class="n">Text Muted</div><div class="h">#94A8B0</div><div class="r">8.16:1 on Void</div></div></div>
+    <div class="sw"><div class="chip" style="background:#F5F8F9"></div><div class="m">
+      <div class="n">Light Surface</div><div class="h">#F5F8F9</div><div class="u">Reading background</div></div></div>
+    <div class="sw"><div class="chip" style="background:#102027"></div><div class="m">
+      <div class="n">Light Text</div><div class="h">#102027</div><div class="r">15.64:1</div></div></div>
+    <div class="sw"><div class="chip" style="background:#006F82"></div><div class="m">
+      <div class="n">Light Cyan</div><div class="h">#006F82</div><div class="r">5.47:1</div></div></div>
+    <div class="sw"><div class="chip" style="background:#C24100"></div><div class="m">
+      <div class="n">Light Orange</div><div class="h">#C24100</div><div class="r">4.86:1</div></div></div>
+  </div>
+
+  <div class="card" style="margin-top:12px;padding:11px 14px;border-color:var(--orange)">
+    <div class="eyebrow eyebrow--orange">The one hard rule</div>
+    <p style="margin:5px 0 0;font-size:9.8pt">Signal Cyan measures
+      <b class="og mono">1.89:1</b> on Light Surface. Never set it as text on a pale
+      background &mdash; use Light Cyan. Capture Orange needs Light Orange, and Fault needs
+      <span class="mono">Fault Deep #C0293A</span> (<span class="mono">5.44:1</span>).</p>
+  </div>
+
+  <div class="grid g2" style="margin-top:11px;align-items:start">
+    <div>
+      <div class="eyebrow eyebrow--muted">Semantic use</div>
+      <table>
+        <tr><th style="width:30%">Colour</th><th>Means</th></tr>
+        <tr><td class="cy" style="white-space:nowrap">Signal Cyan</td><td class="muted">Selection, capture readiness, active filters, links, focus.</td></tr>
+        <tr><td class="og" style="white-space:nowrap">Capture Orange</td><td class="muted">Captured boundaries, warnings, dropped data, a state needing inspection.</td></tr>
+        <tr><td class="ft" style="white-space:nowrap">Fault</td><td class="muted">A capture that failed. Always with explicit text and an icon.</td></tr>
+      </table>
+    </div>
+    <div>
+      <div class="eyebrow eyebrow--muted">Fault is new in 1.1.0</div>
+      <p class="muted" style="font-size:9.2pt">Version 1.0.0 had no failure colour at all:
+        success was cyan, orange covered warnings, and "this failed" had nothing to use.</p>
+      <p class="muted" style="font-size:9.2pt">Capture Orange and Fault sit only about
+        <b>25 degrees</b> apart in hue, so they are not reliably separable under
+        colour-vision deficiency. That is acceptable only because status never rests on
+        colour alone here &mdash; every state ships a label or a shape too.</p>
+      <div style="margin-top:8px">
+        <span class="badge s"><i class="dot"></i>Captured</span>
+        <span class="badge c"><i class="sq"></i>Inspect</span>
+        <span class="badge f">&#215;&nbsp;Failed</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>05</span></div>
+</div>
+
+<!-- ══ 6 · TYPOGRAPHY I ══════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Typography</div>
+  <h1>Display, reading, payload</h1>
+  <p class="lead" style="margin-top:10px">Typography is shared selectively with
+    ShruggieTech, which creates lineage through craft rather than through copied layouts or
+    parent-brand colour.</p>
+
+  <div class="card" style="margin-top:15px;padding:20px 22px">
+    <div class="eyebrow">fragcap typography</div>
+    <div style="font-family:var(--display);font-weight:700;font-size:46pt;
+                letter-spacing:-.025em;line-height:1.06;margin:14px 0 9px">
+      Observe the traffic.</div>
+    <div class="muted" style="font-size:13pt;margin-bottom:20px">
+      Passive process-attributed network capture for games.</div>
+
+    <div class="eyebrow eyebrow--orange">Hex readability test</div>
+    <div class="code" style="margin:8px 0 22px;font-size:11.2pt">00000000  45 00 00 3C 1C 46 40 00 40 06 B1 E6
+00000010  AC 10 0A 63 AC 10 0A 0C C2 03 00 50</div>
+
+    <div class="eyebrow eyebrow--muted">Glyph disambiguation</div>
+    <div class="code cy" style="margin-top:8px;font-size:15.5pt">0 O   1 l I   8 B   5 S   2 Z   { } [ ] ( )</div>
+
+    <hr class="rule" style="margin:18px 0 14px">
+    <div style="font-family:var(--display);font-weight:500;font-size:15pt;letter-spacing:-.02em">
+      Space Grotesk Medium 500 carries subheads</div>
+    <div style="font-size:10.6pt;margin-top:5px">Geist Regular 400 carries reading and
+      interface text at a line height near 1.65.</div>
+    <div class="code muted" style="font-size:9.8pt;margin-top:4px">Geist Mono 400 carries packet payloads, code, labels and metadata.</div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1.25fr 0.75fr;gap:22px;
+       margin-top:16px;align-items:start">
+    <div>
+      <table>
+        <tr><th>Function</th><th>Typeface</th><th>Weights</th></tr>
+        <tr><td>Display, headings</td><td>Space Grotesk</td><td class="m">500, 700</td></tr>
+        <tr><td>Body, interface</td><td>Geist</td><td class="m">400, 500</td></tr>
+        <tr><td>Packet data, code</td><td>Geist Mono</td><td class="m">400</td></tr>
+        <tr><td>Wordmark</td><td>Custom vector</td><td class="m">Filled outlines</td></tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr><th>Behaviour</th><th class="num">Value</th></tr>
+        <tr><td>Display tracking</td><td class="num">&minus;0.025em</td></tr>
+        <tr><td>Label tracking (mono)</td><td class="num">0.08em</td></tr>
+        <tr><td>Body line height</td><td class="num">1.65</td></tr>
+        <tr><td>Code line height</td><td class="num">1.5</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>06</span></div>
+</div>
+
+<!-- ══ 7 · TYPOGRAPHY II ═════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Typography</div>
+  <h1>The scale, and the rules that do not bend</h1>
+  <p class="lead" style="margin-top:10px">Sizes are carried as tokens in
+    <span class="mono">tokens/typography.css</span>, so a heading level is chosen by name
+    rather than by typing a number into a stylesheet.</p>
+
+  <table style="margin-top:20px">
+    <tr><th style="width:30%">Token</th><th style="width:11%" class="numpad">Size</th><th>Specimen</th></tr>
+    <tr><td class="m">--fc-text-display-lg</td><td class="numpad">52</td>
+        <td style="font-family:var(--display);font-weight:700;font-size:27pt;letter-spacing:-.025em">Title pages</td></tr>
+    <tr><td class="m">--fc-text-display-md</td><td class="numpad">40</td>
+        <td style="font-family:var(--display);font-weight:700;font-size:21pt;letter-spacing:-.025em">Page heads</td></tr>
+    <tr><td class="m">--fc-text-display-sm</td><td class="numpad">28</td>
+        <td style="font-family:var(--display);font-weight:700;font-size:15pt;letter-spacing:-.025em">Section heads</td></tr>
+    <tr><td class="m">--fc-text-heading</td><td class="numpad">20</td>
+        <td style="font-family:var(--display);font-weight:500;font-size:12.5pt">Subheads</td></tr>
+    <tr><td class="m">--fc-text-body-md</td><td class="numpad">16</td>
+        <td style="font-size:11pt">Default reading size</td></tr>
+    <tr><td class="m">--fc-text-body-sm</td><td class="numpad">14</td>
+        <td style="font-size:9.4pt">Dense tables and captions</td></tr>
+    <tr><td class="m">--fc-text-body-xs</td><td class="numpad">12</td>
+        <td class="m" style="font-size:7.6pt;letter-spacing:.16em;text-transform:uppercase">Eyebrows and metadata</td></tr>
+  </table>
+
+  <hr class="rule" style="margin:22px 0">
+
+  <div class="grid g2" style="align-items:start;gap:26px">
+    <div>
+      <div class="eyebrow eyebrow--muted">The monospace decision</div>
+      <p class="muted" style="font-size:9.8pt">Geist Mono keeps <span class="mono">0 O</span>,
+        <span class="mono">1 l I</span>, <span class="mono">8 B</span>,
+        <span class="mono">5 S</span> and <span class="mono">2 Z</span> distinguishable at
+        the actual interface size, which is what matters in a payload. Its family
+        relationship to Geist also stops technical specimens from feeling detached from the
+        documentation around them.</p>
+      <p class="muted" style="font-size:9.8pt">Evaluate any future replacement against the
+        real-format specimen in <span class="mono">specimens/</span>, never a decorative
+        alphabet.</p>
+    </div>
+    <div>
+      <div class="eyebrow eyebrow--muted">Non-negotiable</div>
+      <ul class="tight" style="font-size:9.8pt">
+        <li>Hex dumps never use ligatures. <span class="mono">tokens/base.css</span>
+            disables them on <span class="mono">code</span>,
+            <span class="mono">pre</span>, <span class="mono">kbd</span> and
+            <span class="mono">samp</span>.</li>
+        <li>Never apply smart quotes or automatic character substitution to payloads,
+            commands or file paths.</li>
+        <li>Sentence case is the default. Uppercase is reserved for compact labels,
+            capture states and table metadata.</li>
+        <li>Geist has no 700 and Geist Mono has no bold. Asking for a weight that is not
+            shipped makes the renderer synthesise a faux bold, which prints badly and
+            forces outlined glyphs into exported PDFs.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>07</span></div>
+</div>
+
+<!-- ══ 7 · VISUAL LANGUAGE ═══════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Visual language</div>
+  <h1>Instrumentation</h1>
+  <p class="lead" style="margin-top:10px">Visual references come from oscilloscopes,
+    protocol analysers, packet lanes, capture gates, timing marks and network topology. Use
+    exact alignment and quiet negative space. Every graphic should do a job: explain a
+    state, or explain a relationship.</p>
+
+  <div class="eyebrow eyebrow--muted" style="margin-top:16px">Signature component &mdash; CaptureRow</div>
+  <p class="muted" style="font-size:9.2pt">One observed packet: direction, the endpoint
+    pair, the attributed process, byte count, and a capture state. Endpoints are mono so
+    columns align down a long trace. One endpoint may be tinted cyan to mark the active
+    observation path. State is always a labelled badge, never a bare colour.</p>
+
+  <div style="margin-top:8px">
+    <div style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:14px;
+         align-items:center;padding:8px 12px;border:1px solid var(--cyan);border-radius:6px;
+         background:rgba(39,199,231,.10);font-family:var(--mono);font-size:9.2pt;margin-bottom:6px">
+      <span class="cy">OUT</span>
+      <span><span class="cy">10.0.0.99:51820</span> <span class="muted">&rarr;</span> 172.16.10.12:27015</span>
+      <span class="muted" style="font-family:var(--body);font-size:7.4pt">game.exe</span>
+      <span class="muted">1 314 B</span>
+      <span class="badge s"><i class="dot"></i>Captured</span>
+    </div>
+    <div style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:14px;
+         align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:6px;
+         background:var(--surface);font-family:var(--mono);font-size:9.2pt;margin-bottom:6px">
+      <span class="cy">IN</span>
+      <span>172.16.10.12:27015 <span class="muted">&rarr;</span> 10.0.0.99:51820</span>
+      <span class="muted" style="font-family:var(--body);font-size:7.4pt">game.exe</span>
+      <span class="muted">1 460 B</span>
+      <span class="badge c"><i class="sq"></i>Inspect</span>
+    </div>
+    <div style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:14px;
+         align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:6px;
+         background:var(--surface);font-family:var(--mono);font-size:9.2pt">
+      <span class="cy">OUT</span>
+      <span>10.0.0.99:51821 <span class="muted">&rarr;</span> <span class="muted">unknown</span></span>
+      <span class="muted" style="font-family:var(--body);font-size:7.4pt">unattributed</span>
+      <span class="muted">0 B</span>
+      <span class="badge f">&#215;&nbsp;Failed</span>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <div class="grid g2" style="align-items:start">
+    <div>
+      <div class="eyebrow eyebrow--muted">Iconography</div>
+      <p class="muted" style="font-size:9.2pt">Simple line icons, 1.5&ndash;2 px strokes,
+        square or lightly chamfered terminals, minimal rounding. Prefer direct technical
+        symbols: filter, file, clock, interface, endpoint, search. Avoid mascots, weapons,
+        controllers, shields, hooded figures and generic circuit-board decoration.</p>
+
+      <div class="eyebrow eyebrow--muted" style="margin-top:12px">Surfaces and geometry</div>
+      <p class="muted" style="font-size:9.2pt">Panels use 1 px Line borders and radii
+        between 4 px and 8 px. Avoid glass effects, large shadows, chrome and decorative
+        gradients. Selected states may use a subtle cyan border or a low-opacity cyan fill.
+        Orange backgrounds should be rare and small.</p>
+    </div>
+    <div>
+      <div class="eyebrow eyebrow--muted">Data visualisation</div>
+      <p class="muted" style="font-size:9.2pt">Prefer lanes, traces, timelines, byte grids
+        and topology diagrams. Cyan marks the active observation path. Orange marks the
+        selected terminal, a discontinuity or a warning. Grey remains the default for
+        context.</p>
+
+      <div class="eyebrow eyebrow--muted" style="margin-top:12px">Motion</div>
+      <p class="muted" style="font-size:9.2pt">Motion communicates capture state, filtering
+        or continuity. Keep interface transitions between 120 ms and 240 ms on
+        <span class="mono">cubic-bezier(.2,.6,.2,1)</span>. Avoid pulsing glow, glitch
+        effects, screen shake and decorative scan lines. Always respect
+        <span class="mono">prefers-reduced-motion</span>.</p>
+    </div>
+  </div>
+
+
+  <hr class="rule" style="margin:14px 0">
+
+  <div class="eyebrow eyebrow--muted">Icon specimen &mdash; new in 1.1.0</div>
+  <p class="muted" style="font-size:9.2pt;margin-bottom:8px">Six starter icons ship in
+    <span class="mono">icons/</span>: the exact symbols named above, on a 24 grid with a
+    1.5 stroke, butt caps and mitre joins. They stroke with
+    <span class="mono">currentColor</span>, so an icon inherits whatever semantic token its
+    container sets. Extend the set with direct technical symbols only.</p>
+  <div class="grid g5" style="grid-template-columns:repeat(6,1fr);gap:8px"><div style="text-align:center"><div class="tile" style="height:0.60in;padding:0;color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="filter"><path d="M3.5 4.5h17l-6.5 8v6.5l-4 2v-8.5z"/></svg></div><div class="cap" style="margin-top:4px">filter</div></div><div style="text-align:center"><div class="tile" style="height:0.60in;padding:0;color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="file"><path d="M5.5 2.5h9l5 5v14h-14z"/><path d="M14.5 2.5v5h5"/><path d="M8.5 12.5h7M8.5 16.5h7"/></svg></div><div class="cap" style="margin-top:4px">file</div></div><div style="text-align:center"><div class="tile" style="height:0.60in;padding:0;color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="clock"><circle cx="12" cy="12" r="9"/><path d="M12 6.5V12l4 2.5"/></svg></div><div class="cap" style="margin-top:4px">clock</div></div><div style="text-align:center"><div class="tile" style="height:0.60in;padding:0;color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="interface"><rect x="2.5" y="6.5" width="19" height="11"/><path d="M6.5 10.5h11M6.5 13.5h7"/></svg></div><div class="cap" style="margin-top:4px">interface</div></div><div style="text-align:center"><div class="tile" style="height:0.60in;padding:0;color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="endpoint"><path d="M2.5 12h6M15.5 12h6"/><rect x="8.5" y="8.5" width="7" height="7"/></svg></div><div class="cap" style="margin-top:4px">endpoint</div></div><div style="text-align:center"><div class="tile" style="height:0.60in;padding:0;color:var(--cyan)"><svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="search"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5l5.5 5.5"/></svg></div><div class="cap" style="margin-top:4px">search</div></div></div>
+
+  <div class="folio"><span>fragcap brand system</span><span>08</span></div>
+</div>
+
+<!-- ══ 8 · VOICE ═════════════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Voice and writing</div>
+  <h1>Precise, dry, technically literate</h1>
+  <p class="lead" style="margin-top:10px">Assume technical competence. Use active voice,
+    concrete nouns and observable outcomes. State prerequisites before instructions.
+    Distinguish supported behaviour, inferred behaviour and unknown behaviour.</p>
+  <p class="lead">Address the reader as someone playing a game on their own machine.
+    "Your traffic" and "your game" beat "the operator" and "the end user" every time, and
+    they cost nothing in precision. Where a capability has an obvious misuse, name it and
+    say where the project's line falls &mdash; this audience will see what fragcap enables
+    whether or not the copy admits it.</p>
+
+  <hr class="rule" style="margin:14px 0">
+
+  <div class="eyebrow eyebrow--muted">Preferred register</div>
+  <table>
+    <tr><th style="width:50%">Prefer</th><th>Avoid</th></tr>
+    <tr><td>your game, your machine, your traffic</td><td class="muted">the operator, the end user</td></tr>
+    <tr><td>capture, observe, inspect, decode</td><td class="muted">intercept, attack, exploit</td></tr>
+    <tr><td>packet, frame, trace, session</td><td class="muted">traffic magic, secret data</td></tr>
+    <tr><td>supported, experimental, unknown</td><td class="muted">flawless, revolutionary, effortless</td></tr>
+    <tr><td>requires, emits, records, filters</td><td class="muted">unlocks, dominates, supercharges</td></tr>
+  </table>
+
+  <hr class="rule" style="margin:14px 0">
+
+  <div class="grid g2" style="align-items:start">
+    <div>
+      <div class="eyebrow eyebrow--muted">Worked examples</div>
+      <div class="card" style="padding:9px 12px;margin-top:5px">
+        <div class="eyebrow eyebrow--muted" style="margin-bottom:3px">Product statement</div>
+        <div class="code" style="font-size:8.6pt;white-space:pre-wrap">Passive process-attributed network capture for games.</div>
+      </div>
+      <div class="card" style="padding:9px 12px;margin-top:6px">
+        <div class="eyebrow eyebrow--muted" style="margin-bottom:3px">Prerequisite</div>
+        <div class="code" style="font-size:8.6pt;white-space:pre-wrap">Packet capture requires an Npcap-compatible capture driver.</div>
+      </div>
+      <div class="card" style="padding:9px 12px;margin-top:6px">
+        <div class="eyebrow eyebrow--muted" style="margin-bottom:3px">Empty state / error</div>
+        <div class="code" style="font-size:8.6pt;white-space:pre-wrap">No packets matched the current filter.
+Capture stopped. Interface `Ethernet 2` is gone.</div>
+      </div>
+    </div>
+    <div>
+      <div class="eyebrow eyebrow--muted">Register on the landing page</div>
+      <p class="muted" style="font-size:9.2pt">fragcap does not use conventional marketing
+        structure. State what the tool is, show one worked invocation with real output, name
+        the prerequisite, link to documentation. No testimonials, no feature grids, no
+        urgency. A curious player should get through it without looking anything up.</p>
+
+      <div class="eyebrow eyebrow--muted" style="margin-top:12px">Limitation</div>
+      <div class="code muted" style="font-size:8.6pt;white-space:pre-wrap;margin-bottom:10px">Encrypted payloads remain opaque unless a supported decoder can derive the required session context.</div>
+
+      <div class="eyebrow eyebrow--muted">Casing and terminology</div>
+      <p class="muted" style="font-size:9.2pt">The product name is always lowercase:
+        <b class="cy">fragcap</b>. Begin a sentence with <span class="mono">fragcap</span>
+        rather than capitalising it. File formats, protocol names and command flags keep
+        their canonical casing.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:10px;padding:9px 13px;border-color:var(--fault)">
+    <div class="eyebrow" style="color:var(--fault)">Never write "X, not Y"</div>
+    <p style="margin:4px 0 0;font-size:8.8pt">
+      <span class="muted">Evidence, not theatre. An instrument, not a weapon.</span>
+      Borrowed confidence, and the clearest tell of machine-written copy. Same for
+      <span class="muted">X over Y</span> and
+      <span class="muted">rather than merely Z</span>. State the thing you mean.
+      <span class="mono cy">build/verify.py</span> fails the build when this pattern
+      reaches brand copy.</p>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>09</span></div>
+</div>
+
+<!-- ══ 9 · PARENT + IMPLEMENTATION ═══════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Parent relationship</div>
+  <h1>A ShruggieTech project</h1>
+  <p class="lead" style="margin-top:10px">fragcap is an independent ShruggieTech product
+    identity. It shares Space Grotesk, Geist, Geist Mono, dark-first discipline and the
+    parent's exact <span class="mono">#FF5300</span> orange. It does not inherit
+    ShruggieTech green, the shruggie mark, marketing layouts or verbal flourish.</p>
+  <p class="lead">The approved endorsement is <b>A ShruggieTech project</b>. Set it in
+    Geist Mono, uppercase, with positive tracking. Keep it visually subordinate and outside
+    the fragcap logo's clear space. It may appear in footers, About pages, repository
+    metadata, title-page colophons and social previews.
+    <b class="og">Never combine both marks into one logo.</b></p>
+
+  <div class="card" style="margin-top:12px;text-align:center;padding:18px">
+    <div class="mono" style="font-size:8.8pt;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)">
+      A ShruggieTech project</div>
+  </div>
+
+  <hr class="rule">
+
+  <div class="eyebrow">Digital implementation</div>
+  <h2>Load the system</h2>
+  <div class="code" style="background:var(--surface);border:1px solid var(--line);
+       border-radius:8px;padding:12px 14px;font-size:9pt;margin-bottom:10px">&lt;link rel="stylesheet" href="styles.css"&gt;
+&lt;link rel="stylesheet" href="components/components.css"&gt;</div>
+  <p class="muted" style="font-size:9.4pt"><span class="mono">styles.css</span> is the
+    single entry point &mdash; it pulls in the fonts, all four token files and the base
+    element styles. The default surface is dark; add
+    <span class="mono">class="fc-light"</span> to any container to switch that subtree to
+    the light reading surface and the deeper accent values. No second stylesheet, no
+    component changes.</p>
+
+  <table style="margin-top:10px">
+    <tr><th>File</th><th>Provides</th></tr>
+    <tr><td class="m">tokens/colors.css</td><td class="muted">Brand colours, transparent fills, semantic tokens, <span class="mono">.fc-light</span></td></tr>
+    <tr><td class="m">tokens/typography.css</td><td class="muted">Families, weights, display and body scales, tracking, leading</td></tr>
+    <tr><td class="m">tokens/spacing.css</td><td class="muted">Spacing scale, radii, stroke widths, shadows, motion, layout</td></tr>
+    <tr><td class="m">tokens/base.css</td><td class="muted">Element resets, focus ring, ligature suppression, reduced motion</td></tr>
+  </table>
+
+  <hr class="rule">
+
+  <div class="eyebrow" style="color:var(--fault)">Accessibility</div>
+  <div class="grid g2" style="margin-top:8px;align-items:start">
+    <div><ul class="tight" style="font-size:9.2pt">
+      <li>Never use bright Signal Cyan as body text on a light surface &mdash; it measures
+          1.89:1. Use Light Cyan.</li>
+      <li>Never communicate capture status through colour alone. Pair it with text or a glyph.</li>
+      <li>Every interactive element needs a visible 2 px focus ring and a non-colour state
+          change.</li>
+    </ul></div>
+    <div><ul class="tight" style="font-size:9.2pt">
+      <li>Interface text should meet WCAG AA contrast at its rendered size.</li>
+      <li>Respect <span class="mono">prefers-reduced-motion</span> on every transition and
+          animation.</li>
+      <li>Favicons ship the reduced mark at and below 32 px, so the identity is still
+          readable at browser-tab size.</li>
+    </ul></div>
+  </div>
+
+  <div class="folio"><span>fragcap brand system</span><span>10</span></div>
+</div>
+
+<!-- ══ 10 · INVENTORY ════════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="eyebrow">Asset inventory</div>
+  <h1>What ships in the kit</h1>
+  <p class="lead" style="margin-top:10px">Treat the files in
+    <span class="mono">logos/svg/</span> as the source of truth. Use SVG wherever the
+    surface supports it; use PNG for social platforms, raster-only systems and external
+    listings.</p>
+
+  <table style="margin-top:16px">
+    <tr><th style="width:32%">Path</th><th>Contents</th></tr>
+    <tr><td class="m">logos/svg/</td><td class="muted">Vector masters: every lockup, mark and wordmark variant, plus the social preview. All filled paths &mdash; no live text, no stroked lettering</td></tr>
+    <tr><td class="m">logos/png/</td><td class="muted">High-resolution raster exports and the 1280×640 social preview</td></tr>
+    <tr><td class="m">favicons/</td><td class="muted">SVG, multi-resolution ICO, browser PNGs, Apple and Android icons, manifest</td></tr>
+    <tr><td class="m">fonts/</td><td class="muted">WOFF2, static TTF, CSS declarations and OFL licences</td></tr>
+    <tr><td class="m">tokens/</td><td class="muted">CSS and JSON design tokens, with measured contrast ratios</td></tr>
+    <tr><td class="m">icons/</td><td class="muted">Six starter line icons on a 24 grid, stroked with <span class="mono">currentColor</span></td></tr>
+    <tr><td class="m">components/</td><td class="muted"><span class="mono">components.css</span> plus React core and form components</td></tr>
+    <tr><td class="m">guidelines/index.html</td><td class="muted">Visual system reference, rendered live from the system itself</td></tr>
+    <tr><td class="m">ui_kits/fragcap-web/</td><td class="muted">Demo product page built entirely from the system</td></tr>
+    <tr><td class="m">specimens/</td><td class="muted">Typography and hex-readability specimen</td></tr>
+    <tr><td class="m">styles.css</td><td class="muted">Single CSS entry point</td></tr>
+    <tr><td class="m">README.md</td><td class="muted">The complete written manual</td></tr>
+    <tr><td class="m">SKILL.md</td><td class="muted">Makes the kit invocable as a skill</td></tr>
+    <tr><td class="m">VERIFY.md</td><td class="muted">Generated dimensions, ICO entries and SHA-256 checksums</td></tr>
+  </table>
+
+  <hr class="rule" style="margin:20px 0 14px">
+  <img src="../logos/svg/fragcap-horizontal-dark.svg" style="width:1.9in;display:block">
+  <div class="mono" style="font-size:7pt;letter-spacing:.2em;text-transform:uppercase;
+       color:#5C7079;margin-top:5px">
+    A ShruggieTech project &nbsp;·&nbsp; Brand system 1.1.0 &nbsp;·&nbsp; fragcap.com</div>
+
+  <div class="folio"><span>fragcap brand system</span><span>11</span></div>
+</div>
+
+</body>
+</html>

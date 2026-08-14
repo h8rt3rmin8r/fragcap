@@ -479,20 +479,27 @@ const brandPublicDir = join('public', 'brand');
 
 // The subset of tokens the page presents as swatches, with a human label and a
 // note on role. Keyed by the CSS custom property name in brand/tokens/colors.css.
+// The canonical names are the --fc-* tokens, which hold the hex literals; the
+// v1.0.0 --fragcap-* names are kept in the kit only as var() aliases of these,
+// so the swatches read the --fc-* source directly.
 const BRAND_SWATCHES = [
-  ['--fragcap-signal-cyan', 'Signal Cyan', 'The single accent. Links, focus, emphasis.'],
-  ['--fragcap-capture-orange', 'Capture Orange', 'Scarce. Genuine emphasis only, never the sole carrier of meaning.'],
-  ['--fragcap-void', 'Void', 'The dark-first ground.'],
-  ['--fragcap-surface', 'Surface', 'Raised panels on the void.'],
-  ['--fragcap-line', 'Line', 'Borders and dividers.'],
-  ['--fragcap-text', 'Text', 'Primary text on dark.'],
-  ['--fragcap-text-muted', 'Text Muted', 'Secondary text and labels.'],
-  ['--fragcap-light-cyan', 'Light Cyan', 'The accent on light surfaces, for contrast.'],
+  ['--fc-signal-cyan', 'Signal Cyan', 'The single accent. Links, focus, emphasis.'],
+  ['--fc-capture-orange', 'Capture Orange', 'Scarce. Genuine emphasis only, never the sole carrier of meaning.'],
+  ['--fc-void', 'Void', 'The dark-first ground.'],
+  ['--fc-surface', 'Surface', 'Raised panels on the void.'],
+  ['--fc-line', 'Line', 'Borders and dividers.'],
+  ['--fc-text', 'Text', 'Primary text on dark.'],
+  ['--fc-text-muted', 'Text Muted', 'Secondary text and labels.'],
+  ['--fc-fault', 'Fault', 'Failed capture or a hard error. Always paired with text or an icon.'],
+  ['--fc-light-cyan', 'Light Cyan', 'The accent on light surfaces, for contrast.'],
 ];
 
 function parseCssVars(css) {
   const vars = {};
-  for (const m of css.matchAll(/(--fragcap-[a-z-]+)\s*:\s*([^;]+);/g)) {
+  // Capture both the canonical --fc-* tokens and the legacy --fragcap-* aliases;
+  // the swatch list reads the --fc-* names, which resolve to hex literals rather
+  // than the var() indirection the --fragcap-* aliases now carry.
+  for (const m of css.matchAll(/(--(?:fc|fragcap)-[a-z-]+)\s*:\s*([^;]+);/g)) {
     vars[m[1]] = m[2].trim();
   }
   return vars;

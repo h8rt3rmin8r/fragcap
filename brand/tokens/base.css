@@ -1,0 +1,76 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* fragcap base - minimal element styles bound to the tokens.
+ * The default surface is dark; add class="fc-light" to a container for
+ * reading mode. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  background: var(--fc-bg);
+  color: var(--fc-fg);
+  font-family: var(--fc-font-body);
+  font-size: var(--fc-text-body-md);
+  line-height: var(--fc-body-leading);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body { margin: 0; }
+
+h1, h2, h3, h4 {
+  font-family: var(--fc-font-display);
+  font-weight: var(--fc-weight-bold);
+  letter-spacing: var(--fc-display-tracking);
+  line-height: var(--fc-display-leading);
+  margin: 0 0 var(--fc-space-4);
+}
+
+h1 { font-size: var(--fc-text-display-md); }
+h2 { font-size: var(--fc-text-display-sm); }
+h3 { font-size: var(--fc-text-heading); }
+
+p { margin: 0 0 var(--fc-space-4); }
+
+code, pre, kbd, samp {
+  font-family: var(--fc-font-mono);
+  line-height: var(--fc-code-leading);
+  /* Payloads and hex dumps must never ligate or substitute characters. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+a {
+  color: var(--fc-link);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+hr {
+  border: 0;
+  border-top: var(--fc-stroke-hairline) solid var(--fc-border);
+  margin: var(--fc-space-6) 0;
+}
+
+/* Eyebrow / section label - mono, uppercase, positive tracking */
+.fc-eyebrow {
+  font-family: var(--fc-font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--fc-label-tracking);
+  font-size: var(--fc-text-body-xs);
+  color: var(--fc-accent);
+}
+
+/* Accessibility-first focus: always visible, never signalled by color alone */
+:focus-visible {
+  outline: var(--fc-stroke-focus) solid var(--fc-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

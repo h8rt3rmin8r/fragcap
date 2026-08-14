@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fragcap - visual system reference</title>
+<link rel="icon" href="../favicons/favicon.svg">
+<link rel="stylesheet" href="../styles.css">
+<link rel="stylesheet" href="../components/components.css">
+<style>
+  body { padding: var(--fc-space-8) var(--fc-space-6) var(--fc-space-9); }
+  main { max-width: var(--fc-content-max); margin: 0 auto; }
+  .masthead { display:flex; align-items:center; gap:var(--fc-space-5);
+              padding-bottom:var(--fc-space-6);
+              border-bottom:1px solid var(--fc-border); margin-bottom:var(--fc-space-8); }
+  .masthead img { width: 300px; height: auto; }
+  .masthead p { margin:0; color:var(--fc-fg-muted); max-width:34ch; }
+  section { margin-bottom: var(--fc-space-9); }
+  .grid { display:grid; gap:var(--fc-space-4); }
+  .g2 { grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+  .g3 { grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); }
+  .g4 { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
+  .swatch { border:1px solid var(--fc-border); border-radius:var(--fc-radius-lg); overflow:hidden; }
+  .swatch .chip { height:76px; }
+  .swatch .meta { padding:var(--fc-space-3) var(--fc-space-4); background:var(--fc-panel); }
+  .swatch .name { font-size:var(--fc-text-body-sm); }
+  .swatch .hex  { font-family:var(--fc-font-mono); font-size:var(--fc-text-body-xs);
+                  color:var(--fc-fg-muted); }
+  .swatch .role { font-size:var(--fc-text-body-xs); color:var(--fc-fg-muted);
+                  margin-top:var(--fc-space-1); }
+  .ratio { font-family:var(--fc-font-mono); font-size:var(--fc-text-body-xs);
+           color:var(--fc-accent); }
+  .tile { background:var(--fc-panel); border:1px solid var(--fc-border);
+          border-radius:var(--fc-radius-lg); padding:var(--fc-space-5);
+          display:flex; align-items:center; justify-content:center; min-height:150px; }
+  .tile img { max-width:100%; height:auto; }
+  .grid.g3 > div { display:flex; flex-direction:column; }
+  .grid.g3 .tile { flex:1; }
+  .caption { font-family:var(--fc-font-mono); font-size:var(--fc-text-body-xs);
+             color:var(--fc-fg-muted); text-transform:uppercase;
+             letter-spacing:var(--fc-label-tracking); margin-top:var(--fc-space-2); }
+  table { width:100%; border-collapse:collapse; font-size:var(--fc-text-body-sm); }
+  th { text-align:left; font-family:var(--fc-font-mono); font-weight:400;
+       font-size:var(--fc-text-body-xs); text-transform:uppercase;
+       letter-spacing:var(--fc-label-tracking); color:var(--fc-fg-muted);
+       padding:var(--fc-space-3) var(--fc-space-4); border-bottom:1px solid var(--fc-border); }
+  td { padding:var(--fc-space-3) var(--fc-space-4); border-bottom:1px solid var(--fc-border);
+       vertical-align:top; }
+  td.mono { font-family:var(--fc-font-mono); }
+  .do-dont { display:grid; gap:var(--fc-space-5);
+             grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+  .do-dont ul { margin:0; padding-left:1.1rem; color:var(--fc-fg-muted); }
+  .do-dont li { margin-bottom:var(--fc-space-2); }
+  .clear-demo { position:relative; display:inline-block; padding:34px;
+                outline:1px dashed var(--fc-accent); outline-offset:0; }
+  .clear-demo img { display:block; width:280px; }
+  .light-panel { background:var(--fc-bg); color:var(--fc-fg);
+                 border:1px solid var(--fc-border);
+                 border-radius:var(--fc-radius-lg); padding:var(--fc-space-6); }
+  .row-stack { display:flex; flex-direction:column; gap:var(--fc-space-2); }
+  .inline { display:flex; flex-wrap:wrap; gap:var(--fc-space-3); align-items:center; }
+</style>
+</head>
+<body>
+<main>
+
+  <header class="masthead">
+    <img src="../logos/svg/fragcap-horizontal-dark.svg" alt="fragcap">
+    <p>Visual system reference. Everything on this page is rendered from
+       <code>styles.css</code> and <code>components/components.css</code>.</p>
+  </header>
+
+  <!-- ── Logo ─────────────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Logo system</div>
+      <h2 class="fc-section__title">Marks and lockups</h2>
+      <p class="fc-section__sub">A triple-bladed F for parallel packet lanes, four
+        separated corner segments forming a capture frame, and orange terminals for
+        the bytes isolated by capture. The wordmark ships as filled vector outlines;
+        it is never live text and never a substituted typeface.</p>
+    </div>
+    <div class="grid g3">
+      <div>
+        <div class="tile"><img src="../logos/svg/fragcap-horizontal-dark.svg" alt="Horizontal lockup"></div>
+        <div class="caption">Horizontal · 160 px min</div>
+      </div>
+      <div>
+        <div class="tile"><img src="../logos/svg/fragcap-stacked-dark.svg" alt="Stacked lockup" style="width:150px"></div>
+        <div class="caption">Stacked · 96 px min</div>
+      </div>
+      <div>
+        <div class="tile"><img src="../logos/svg/fragcap-mark-color.svg" alt="Mark" style="width:120px"></div>
+        <div class="caption">Mark · 24 px min</div>
+      </div>
+      <div>
+        <div class="tile" style="background:var(--fc-light-surface)">
+          <img src="../logos/svg/fragcap-horizontal-light.svg" alt="Light lockup">
+        </div>
+        <div class="caption">Light surface variant</div>
+      </div>
+      <div>
+        <div class="tile"><img src="../logos/svg/fragcap-wordmark-cyan.svg" alt="Wordmark" style="width:190px"></div>
+        <div class="caption">Wordmark · 120 px min</div>
+      </div>
+      <div>
+        <div class="tile"><img src="../logos/svg/fragcap-mark-reduced.svg" alt="Reduced mark" style="width:120px"></div>
+        <div class="caption">Reduced mark · ≤ 32 px only</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Clear space ──────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Clear space</div>
+      <h2 class="fc-section__title">One orange terminal, all the way round</h2>
+      <p class="fc-section__sub">The dashed boundary is the minimum. No text, border,
+        icon or crop may enter it. Below 32 px the four reticle corners collapse into
+        noise, so small icons use the reduced mark from the favicon exports.</p>
+    </div>
+    <div class="clear-demo">
+      <img src="../logos/svg/fragcap-horizontal-dark.svg" alt="Clear space diagram">
+    </div>
+  </section>
+
+  <!-- ── Color ────────────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Color</div>
+      <h2 class="fc-section__title">Dark-first, close to monochrome</h2>
+      <p class="fc-section__sub">Roughly 80% neutral surfaces, 15% cyan, under 5%
+        orange in a typical view. Orange is not a general call-to-action color.
+        Contrast ratios are measured against the surface each token is used on.</p>
+    </div>
+
+    <div class="grid g4" style="margin-bottom:var(--fc-space-6)">
+      <div class="swatch"><div class="chip" style="background:#27C7E7"></div>
+        <div class="meta"><div class="name">Signal Cyan</div><div class="hex">#27C7E7</div>
+        <div class="role">Observed signal, links, focus</div><div class="ratio">10.01:1 on Void</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#FF5300"></div>
+        <div class="meta"><div class="name">Capture Orange</div><div class="hex">#FF5300</div>
+        <div class="role">Captured terminal, warning</div><div class="ratio">6.24:1 on Void</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#E9505F"></div>
+        <div class="meta"><div class="name">Fault</div><div class="hex">#E9505F</div>
+        <div class="role">Failed capture, hard error</div><div class="ratio">5.55:1 on Void</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#050708"></div>
+        <div class="meta"><div class="name">Void</div><div class="hex">#050708</div>
+        <div class="role">Primary background</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#0B1115"></div>
+        <div class="meta"><div class="name">Surface</div><div class="hex">#0B1115</div>
+        <div class="role">Panels and code</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#101A20"></div>
+        <div class="meta"><div class="name">Surface Raised</div><div class="hex">#101A20</div>
+        <div class="role">Elevated, selected rows</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#21323A"></div>
+        <div class="meta"><div class="name">Line</div><div class="hex">#21323A</div>
+        <div class="role">Borders, inactive diagrams</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#F2F7F8"></div>
+        <div class="meta"><div class="name">Text</div><div class="hex">#F2F7F8</div>
+        <div class="role">Primary text on dark</div><div class="ratio">18.68:1 on Void</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#94A8B0"></div>
+        <div class="meta"><div class="name">Text Muted</div><div class="hex">#94A8B0</div>
+        <div class="role">Secondary text on dark</div><div class="ratio">8.16:1 on Void</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#F5F8F9"></div>
+        <div class="meta"><div class="name">Light Surface</div><div class="hex">#F5F8F9</div>
+        <div class="role">Light reading background</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#102027"></div>
+        <div class="meta"><div class="name">Light Text</div><div class="hex">#102027</div>
+        <div class="role">Primary text on light</div><div class="ratio">15.64:1 on Light</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#006F82"></div>
+        <div class="meta"><div class="name">Light Cyan</div><div class="hex">#006F82</div>
+        <div class="role">Accessible cyan on light</div><div class="ratio">5.47:1 on Light</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#C24100"></div>
+        <div class="meta"><div class="name">Light Orange</div><div class="hex">#C24100</div>
+        <div class="role">Accessible orange on light</div><div class="ratio">4.86:1 on Light</div></div></div>
+      <div class="swatch"><div class="chip" style="background:#C0293A"></div>
+        <div class="meta"><div class="name">Fault Deep</div><div class="hex">#C0293A</div>
+        <div class="role">Error on light surfaces</div><div class="ratio">5.44:1 on Light</div></div></div>
+    </div>
+
+    <div class="fc-card" style="border-color:var(--fc-warning)">
+      <strong style="font-family:var(--fc-font-mono);font-size:var(--fc-text-body-xs);
+        text-transform:uppercase;letter-spacing:var(--fc-label-tracking);
+        color:var(--fc-warning)">The one hard rule</strong>
+      <p style="margin:var(--fc-space-2) 0 0;color:var(--fc-fg-muted)">
+        Signal Cyan is <span class="ratio" style="color:var(--fc-warning)">1.89:1</span>
+        on Light Surface. Never set it as text on a pale background - use Light Cyan.
+        The same applies to Capture Orange, which needs Light Orange.</p>
+    </div>
+  </section>
+
+  <!-- ── Type ─────────────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Typography</div>
+      <h2 class="fc-section__title">Display, reading, payload</h2>
+    </div>
+    <div class="fc-card">
+      <div class="fc-section__eyebrow">fragcap typography</div>
+      <div style="font-family:var(--fc-font-display);font-weight:700;font-size:3rem;
+                  letter-spacing:-0.025em;line-height:1.1;margin:var(--fc-space-3) 0">
+        Observe the traffic.</div>
+      <p style="color:var(--fc-fg-muted);margin-bottom:var(--fc-space-5)">
+        Passive process-attributed network capture for games.</p>
+
+      <div class="fc-section__eyebrow" style="color:var(--fc-warning)">Hex readability test</div>
+      <div class="fc-code" style="margin:var(--fc-space-3) 0;border:0;padding-left:0;background:transparent">
+00000000  45 00 00 3C 1C 46 40 00 40 06 B1 E6
+00000010  AC 10 0A 63 AC 10 0A 0C C2 03 00 50</div>
+      <div class="fc-code" style="border:0;padding-left:0;background:transparent;color:var(--fc-accent)">
+0 O   1 l I   8 B   5 S   2 Z   { } [ ] ( )</div>
+      <hr class="fc-divider">
+      <table>
+        <tr><th>Function</th><th>Typeface</th><th>Weights</th></tr>
+        <tr><td>Display and headings</td><td>Space Grotesk</td><td class="mono">500, 700 · tracking −0.025em</td></tr>
+        <tr><td>Body and interface</td><td>Geist</td><td class="mono">400, 500 · line-height 1.65</td></tr>
+        <tr><td>Packet data and code</td><td>Geist Mono</td><td class="mono">400 · no ligatures</td></tr>
+        <tr><td>Product wordmark</td><td>Custom vector lettering</td><td class="mono">Filled outlines, fixed artwork</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Components ───────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Components</div>
+      <h2 class="fc-section__title">CaptureRow and controls</h2>
+      <p class="fc-section__sub">CaptureRow is the signature component: one observed
+        packet, with the attributed process and a capture state rendered as a
+        labelled badge, so it never rests on colour alone.</p>
+    </div>
+
+    <div class="row-stack" style="margin-bottom:var(--fc-space-6)">
+      <div class="fc-capture-row" data-selected="true">
+        <span class="fc-capture-row__dir">OUT</span>
+        <span class="fc-capture-row__flow"><b>10.0.0.99:51820</b> <em>&rarr;</em> 172.16.10.12:27015</span>
+        <span class="fc-capture-row__proc">game.exe</span>
+        <span class="fc-capture-row__bytes">1 314 B</span>
+        <span class="fc-badge fc-badge--signal">Captured</span>
+      </div>
+      <div class="fc-capture-row">
+        <span class="fc-capture-row__dir">IN</span>
+        <span class="fc-capture-row__flow">172.16.10.12:27015 <em>&rarr;</em> 10.0.0.99:51820</span>
+        <span class="fc-capture-row__proc">game.exe</span>
+        <span class="fc-capture-row__bytes">208 B</span>
+        <span class="fc-badge fc-badge--capture">Inspect</span>
+      </div>
+      <div class="fc-capture-row">
+        <span class="fc-capture-row__dir">OUT</span>
+        <span class="fc-capture-row__flow">10.0.0.99:51821 <em>&rarr;</em> <em>unknown</em></span>
+        <span class="fc-capture-row__proc">unattributed</span>
+        <span class="fc-capture-row__bytes">0 B</span>
+        <span class="fc-badge fc-badge--fault">Failed</span>
+      </div>
+    </div>
+
+    <div class="grid g2">
+      <div class="fc-card">
+        <div class="fc-section__eyebrow">Buttons and badges</div>
+        <div class="inline" style="margin:var(--fc-space-4) 0">
+          <button class="fc-btn fc-btn--primary">Start capture</button>
+          <button class="fc-btn">Open trace</button>
+          <button class="fc-btn fc-btn--ghost">Cancel</button>
+          <button class="fc-btn fc-btn--warning">Drop session</button>
+          <button class="fc-btn" disabled>Unavailable</button>
+        </div>
+        <div class="inline">
+          <span class="fc-badge">Unknown</span>
+          <span class="fc-badge fc-badge--signal">Captured</span>
+          <span class="fc-badge fc-badge--capture">Inspect</span>
+          <span class="fc-badge fc-badge--fault">Failed</span>
+        </div>
+      </div>
+      <div class="fc-card">
+        <div class="fc-section__eyebrow">Form controls</div>
+        <div style="display:grid;gap:var(--fc-space-4);margin-top:var(--fc-space-4)">
+          <div class="fc-field">
+            <label class="fc-label" for="g-filter">Display filter</label>
+            <input id="g-filter" class="fc-input" value="udp.port == 27015">
+            <span class="fc-field__hint">Applied to the live capture buffer.</span>
+          </div>
+          <div class="fc-field">
+            <label class="fc-label" for="g-iface">Interface</label>
+            <select id="g-iface" class="fc-select"><option>Ethernet 2</option></select>
+          </div>
+          <div class="fc-field">
+            <label class="fc-label" for="g-bad">Capture file</label>
+            <input id="g-bad" class="fc-input" aria-invalid="true" value="/traces/session.pcapng">
+            <span class="fc-field__error">Path is not writable. Capture will not start.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Light mode ───────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Light mode</div>
+      <h2 class="fc-section__title">The same components, one class</h2>
+      <p class="fc-section__sub">Adding <code>class="fc-light"</code> to any container
+        swaps the semantic tokens to the light reading surface and the deeper accent
+        values. No second stylesheet, no component changes.</p>
+    </div>
+    <div class="fc-light light-panel">
+      <div class="fc-section__eyebrow">Reading surface</div>
+      <h3 class="fc-section__title" style="font-size:var(--fc-text-heading)">Captured signal. Preserved evidence.</h3>
+      <p style="color:var(--fc-fg-muted)">Accent text here uses Light Cyan, not Signal Cyan.</p>
+      <div class="inline" style="margin-bottom:var(--fc-space-4)">
+        <button class="fc-btn fc-btn--primary">Start capture</button>
+        <button class="fc-btn">Open trace</button>
+        <span class="fc-badge fc-badge--signal">Captured</span>
+        <span class="fc-badge fc-badge--fault">Failed</span>
+      </div>
+      <div class="fc-capture-row">
+        <span class="fc-capture-row__dir">OUT</span>
+        <span class="fc-capture-row__flow"><b>10.0.0.99:51820</b> <em>&rarr;</em> 172.16.10.12:27015</span>
+        <span class="fc-capture-row__proc">game.exe</span>
+        <span class="fc-capture-row__bytes">1 314 B</span>
+        <span class="fc-badge fc-badge--signal">Captured</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Do / don't ───────────────────────────────────────────────────── -->
+  <section>
+    <div class="fc-section">
+      <div class="fc-section__eyebrow">Prohibited treatments</div>
+      <h2 class="fc-section__title">Why the imagery rules are strict</h2>
+      <p class="fc-section__sub">Reading game traffic is where protocol
+        reverse-engineering starts, and that is how cheats get written. fragcap's
+        answer is scope: capture and decode, never inject or modify. Moderators and
+        anti-cheat vendors triage on appearance long before they read code, so a
+        skull or a crosshair answers the question for them.</p>
+    </div>
+    <div class="do-dont">
+      <div class="fc-card">
+        <div class="fc-section__eyebrow">Do</div>
+        <ul style="margin-top:var(--fc-space-3)">
+          <li>Use SVG wherever the surface supports it.</li>
+          <li>Keep the Void tile in small icon exports.</li>
+          <li>Pair every colour-coded state with text or an icon.</li>
+          <li>State prerequisites before instructions.</li>
+          <li>Label unknowns as unknowns.</li>
+        </ul>
+      </div>
+      <div class="fc-card">
+        <div class="fc-section__eyebrow" style="color:var(--fc-danger)">Do not</div>
+        <ul style="margin-top:var(--fc-space-3)">
+          <li>Rotate, skew, stretch, outline, bevel or add glow.</li>
+          <li>Recolour individual packet lanes.</li>
+          <li>Move the terminals or make them look explosive.</li>
+          <li>Close the four reticle corners into a box or circle.</li>
+          <li>Set the wordmark in live text or a substitute typeface.</li>
+          <li>Combine the fragcap and ShruggieTech marks into one lockup.</li>
+          <li>Add skulls, weapons, controllers, shields or exploit imagery.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <hr class="fc-divider">
+  <p style="font-family:var(--fc-font-mono);font-size:var(--fc-text-body-xs);
+            text-transform:uppercase;letter-spacing:var(--fc-label-tracking);
+            color:var(--fc-fg-muted)">A ShruggieTech project · fragcap brand system 1.1.0</p>
+
+</main>
+</body>
+</html>

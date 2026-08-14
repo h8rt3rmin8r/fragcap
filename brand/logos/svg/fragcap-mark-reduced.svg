@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="fragcap">
+  <title>fragcap</title>
+  <g class="packet-f"><path fill="#27C7E7" d="M120 108l24-24h50v344h-74z"/><path fill="#27C7E7" d="M168 84h198l20 18-20 18H168z"/><path fill="#27C7E7" d="M168 220h198l20 18-20 18H168z"/><path fill="#27C7E7" d="M168 356h122l20 18-20 18H168z"/></g><g class="captured-terminals"><path fill="#FF5300" d="M398 84h46v46h-46z"/><path fill="#FF5300" d="M398 220h46v46h-46z"/><path fill="#FF5300" d="M320 356h46v46h-46z"/></g>
+</svg>

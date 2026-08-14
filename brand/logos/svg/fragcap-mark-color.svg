@@ -1,23 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <title>fragcap logo</title>
-
-  <g id="fragcap-mark">
-  <g id="capture-reticle" fill="#27C7E7">
-    <path d="M72 154V72h82v22H94v60z"/>
-    <path d="M358 72h82v82h-22V94h-60z"/>
-    <path d="M72 358h22v60h60v22H72z"/>
-    <path d="M418 358h22v82h-82v-22h60z"/>
-  </g>
-  <g id="packet-f" fill="#27C7E7">
-    <path d="M156 134l16-16h34v272h-50z"/>
-    <path d="M188 118h150l14 12-14 12H188z"/>
-    <path d="M188 220h150l14 12-14 12H188z"/>
-    <path d="M188 322h92l14 12-14 12h-92z"/>
-  </g>
-  <g id="captured-terminals" fill="#FF5300">
-    <rect x="370" y="118" width="34" height="34"/>
-    <rect x="370" y="220" width="34" height="34"/>
-    <rect x="312" y="322" width="34" height="34"/>
-  </g>
-</g>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="fragcap">
+  <title>fragcap</title>
+  <g class="capture-reticle"><path fill="#27C7E7" d="M72 154V72h82v22H94v60z"/><path fill="#27C7E7" d="M358 72h82v82h-22V94h-60z"/><path fill="#27C7E7" d="M72 358h22v60h60v22H72z"/><path fill="#27C7E7" d="M418 358h22v82h-82v-22h60z"/></g><g class="packet-f"><path fill="#27C7E7" d="M156 134l16-16h34v272h-50z"/><path fill="#27C7E7" d="M188 118h150l14 12-14 12H188z"/><path fill="#27C7E7" d="M188 220h150l14 12-14 12H188z"/><path fill="#27C7E7" d="M188 322h92l14 12-14 12h-92z"/></g><g class="captured-terminals"><path fill="#FF5300" d="M370 118h34v34h-34z"/><path fill="#FF5300" d="M370 220h34v34h-34z"/><path fill="#FF5300" d="M312 322h34v34h-34z"/></g>
 </svg>

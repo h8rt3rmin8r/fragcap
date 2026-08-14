@@ -1,14 +1,30 @@
 # Brand
 
-**Status: resolved (brand session, 2026-08-10).** The approved fragcap identity,
-version 1.0.0, is vendored in the top-level [`brand/`](../../brand/) directory:
-the full brand system (`brand/README.md`), the logo lockups (`brand/logos/`),
-favicons, fonts with their OFL licenses (`brand/fonts/`), design tokens
-(`brand/tokens/`), a type and hex-readability specimen (`brand/specimens/`), and
-the printable guide (`brand/brand-guide.pdf`). Treat `brand/logos/svg/` as the
-source of truth. This directory carries the repository-specific notes that the
-kit does not: the security-posture framing that governs acceptance, the two
-resolved open questions, and the site deployment target for S18.
+**Status: resolved (brand session, 2026-08-10); kit at version 1.1.0.** The
+approved fragcap identity is vendored in the top-level [`brand/`](../../brand/)
+directory: the full brand system (`brand/README.md`), the logo lockups
+(`brand/logos/`), favicons, fonts with their OFL licenses (`brand/fonts/`),
+design tokens (`brand/tokens/`), a type and hex-readability specimen
+(`brand/specimens/`), and the printable guide (`brand/brand-guide.pdf`). Treat
+`brand/logos/svg/` as the source of truth. This directory carries the
+repository-specific notes that the kit does not: the security-posture framing
+that governs acceptance, the two resolved open questions, and the site
+deployment target for S18.
+
+The 1.1.0 kit (issue #59) is a presentation and completeness pass over the
+resolved 1.0.0 identity, not a re-decision of it. Every brand immutable is
+unchanged: Geist Mono, Signal Cyan `#27C7E7`, Capture Orange `#FF5300`, and the
+dark-first `#050708` ground. What it adds is deliverable rather than decorative:
+a Fault color (`#E9505F` on dark, `#C0293A` on light) for the failure state the
+1.0.0 palette had no color for; a semantic token layer (`--fc-bg`, `--fc-fg`,
+and their kin) plus a `.fc-light` class so the light reading mode is expressible
+in code; `tokens/base.css` and `tokens/spacing.css`; a `components/` set,
+`guidelines/index.html`, `styles.css`, a `SKILL.md`, and a measured `VERIFY.md`.
+The v1.0.0 `--fragcap-*` CSS variable names are retained as aliases of the
+canonical `--fc-*` tokens, so nothing that consumed the old names breaks.
+Integrity is recorded in `brand/manifest.json` and re-derived in
+`brand/VERIFY.md`; the site single-sources both the palette and the assets from
+`brand/` through `site/scripts/prebuild.mjs`.
 
 The two former open questions from specification section 29 are both resolved:
 
