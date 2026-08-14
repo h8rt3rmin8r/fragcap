@@ -116,10 +116,25 @@ fn socket_table_availability() -> Option<bool> {
 /// compiling (constitution P-2). This mirrors [`live_availability`]. The old
 /// probe hardcoded the empty set and guessed loopback from an unrelated file;
 /// both are gone.
-fn live_probe() -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
+fn live_probe(wpcap_loadable: bool) -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
     #[cfg(all(feature = "live", windows))]
     {
         use fragcap::core::virtual_verdict;
+        // wpcap.dll is a delay-load import (crates/fragcap-cli/build.rs), so the
+        // first call that reaches it forces the load. Both fragcap::enumerate and
+        // fragcap::detect_driver call pcap::Device::list, and when the DLL cannot
+        // be resolved that load raises a delay-load exception (0xC06D007E,
+        // MOD_NOT_FOUND) that aborts the process before the Result-based guards
+        // inside those functions can run. So the live backend is touched only when
+        // wpcap.dll is loadable (see the gate in gather_windows). When it is not,
+        // nothing was attempted, so this is not a probe failure: the interface set
+        // is empty with no error, and the npcap / winpcap-api checks (not the
+        // interface check) carry the remediation. Without this gate `doctor` could
+        // not run on the very machine that most needs it to run and say what to
+        // install.
+        if !wpcap_loadable {
+            return (Vec::new(), None, None);
+        }
         // A failed enumeration is preserved as an error string rather than
         // flattened to an empty set, so the classifier does not report a probe
         // that could not run as an observed-empty machine (P-9).
@@ -147,6 +162,7 @@ fn live_probe() -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
         // Enumeration was not attempted (the backend is not linked); that is not
         // a failure, so the error is None and the classifier attributes the empty
         // set to the missing backend.
+        let _ = wpcap_loadable;
         (Vec::new(), None, None)
     }
 }
@@ -276,7 +292,9 @@ pub fn gather() -> Inputs {
         let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
             extcap_status();
         let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
-        let (interfaces, _loopback, interface_error) = live_probe();
+        // wpcap.dll is not loadable on a non-Windows build; the live backend is
+        // not linked anyway.
+        let (interfaces, _loopback, interface_error) = live_probe(false);
         Inputs {
             fragcap_version,
             binary_path,
@@ -314,15 +332,30 @@ fn gather_windows(user_count: usize) -> Inputs {
     let npcap_wpcap = npcap_dir.join("wpcap.dll");
     let system_wpcap = system32.join("wpcap.dll");
 
-    // The live backend answers what exists: the interface set, and whether a
-    // loopback adapter is among them. It is linked only under the `live` feature,
-    // so this returns empty and undetermined on a build without it.
-    let (interfaces, loopback_supported, interface_error) = live_probe();
+    // npcap is present when its own wpcap.dll exists in the Npcap directory; this
+    // drives the installation and version report below.
+    let npcap_present = npcap_wpcap.exists();
 
-    // npcap is present when its own wpcap.dll exists in the Npcap directory. The
-    // WinPcap API compatibility option additionally installs wpcap.dll directly
-    // into System32, so its presence there is the signal for that option.
-    let npcap = if npcap_wpcap.exists() {
+    // Whether the live backend can be touched at all. enumerate and detect_driver
+    // reach the delay-loaded `wpcap.dll` by name, which the loader resolves from
+    // the default DLL search path (System32), not from System32\Npcap: fragcap
+    // adds no npcap DLL directory and requires the WinPcap API compatibility
+    // option, which installs wpcap.dll into System32 (spec 20.3). When that copy
+    // is absent the delay-load raises a MOD_NOT_FOUND exception at the first pcap
+    // call and aborts the process before doctor can report it, so the gate is the
+    // presence of the System32 copy, not of npcap itself. npcap installed without
+    // the compatibility option (Npcap\wpcap.dll present, System32\wpcap.dll
+    // absent) is therefore not probed here, and the winpcap-api check names the
+    // fix.
+    let wpcap_loadable = system_wpcap.exists();
+
+    // The live backend answers what exists: the interface set, and whether a
+    // loopback adapter is among them. Probed only when wpcap.dll is loadable, and
+    // linked only under the `live` feature, so this returns empty and
+    // undetermined otherwise.
+    let (interfaces, loopback_supported, interface_error) = live_probe(wpcap_loadable);
+
+    let npcap = if npcap_present {
         Some(NpcapInfo {
             version: npcap_version(&npcap_wpcap),
             // From enumerating the loopback adapter, never a proxy file.
