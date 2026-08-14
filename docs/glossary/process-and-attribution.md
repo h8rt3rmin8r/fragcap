@@ -799,15 +799,54 @@ silent omission.
 
 ## Seed summary
 
-The truthful account a [catalog seeder](#catalog-seeder) run returns: how many
-titles it fetched, wrote, excluded by the [corpus gate](#corpus-gate), saw as a
-within-run duplicate appid (merged once, not written twice), and failed to parse.
-The counts reconcile (fetched equals written plus excluded plus duplicates plus
-failed), so a corpus that dropped what it could not handle, or a repeated title
-that would otherwise overstate the total, cannot read as complete. This is the
-seeding-time form of the No Silent Loss principle (P-4).
+The truthful account a seeder run returns, shared by the
+[catalog seeder](#catalog-seeder) and the [engine seeder](#engine-seeder): how
+many titles it fetched, wrote, excluded, saw as a within-run duplicate appid
+(merged once, not written twice), and failed to parse. The counts reconcile
+(fetched equals written plus excluded plus duplicates plus failed), so a corpus
+that dropped what it could not handle, or a repeated title that would otherwise
+overstate the total, cannot read as complete. This is the seeding-time form of the
+No Silent Loss principle (P-4).
 
-**See also:** [Catalog seeder](#catalog-seeder), [Corpus gate](#corpus-gate)
+**See also:** [Catalog seeder](#catalog-seeder), [Engine seeder](#engine-seeder),
+[Corpus gate](#corpus-gate)
+
+## Engine seeder
+
+The [seeding tier](#seeding-tier) that fills the [hint database](#hint-database)'s
+[engine attribution](#engine-attribution) columns (engine name, source
+`pcgamingwiki`, and confidence) from an [engine feed](#engine-feed), keyed by
+Steam application id. It reads a feed's entries, writes an engine by application id
+for each title that resolves to a single unambiguous engine (leaving other tiers'
+columns intact), records a resume cursor after each page, and returns a
+[seed summary](#seed-summary). Unlike the [catalog seeder](#catalog-seeder) it
+applies no [corpus gate](#corpus-gate): it enriches whatever titles the feed names
+an engine for. A title with no engine, or an ambiguous one, is left absent and
+counted excluded, never guessed (P-9).
+
+{: .matters }
+> The engine seeder writes a within-field [engine attribution](#engine-attribution)
+> onto a row without touching the catalog name or the [launch array](#launch-array)
+> the other tiers own, and it never lowers the record's overall
+> [fidelity tier](#fidelity-tier): a seeded engine stays heuristic-unverified
+> however confident the field grade. Absence is honest; a guessed engine would be
+> a hint worn as a fact (P-9).
+
+**See also:** [Engine attribution](#engine-attribution), [Engine feed](#engine-feed),
+[Seed summary](#seed-summary), [Seeding tier](#seeding-tier),
+[Hint database](#hint-database)
+
+## Engine feed
+
+The source abstraction the [engine seeder](#engine-seeder) reads from: it yields,
+per title, an application id and either a single resolved engine (a name and a
+within-field confidence grade) or no engine. Its logic is driven in tests by an
+offline fixture feed and in production by a read-only PCGamingWiki query source;
+the two share one contract, so the seeder is tested without a network. It is named
+a feed, not a source, to stay distinct from the `engine.source` provenance token
+an [engine attribution](#engine-attribution) carries.
+
+**See also:** [Engine seeder](#engine-seeder), [Engine attribution](#engine-attribution)
 
 ## Target hint record
 

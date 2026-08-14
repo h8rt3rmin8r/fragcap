@@ -1,0 +1,14 @@
+[
+  { "appid": 570, "engine": "Source 2", "confidence": "confirmed" },
+  { "appid": 620, "engine": "Source", "confidence": "high" },
+  { "appid": 730, "engine": ["Source 2"], "confidence": "medium" },
+  { "appid": 400, "engine": "Source", "confidence": "low" },
+  { "appid": 220, "engine": "Source" },
+  { "appid": 1091500, "engine": "REDengine 4", "confidence": "unknown" },
+  { "appid": 292030, "engine": "REDengine 3", "confidence": "high" },
+  { "appid": 8930, "engine": "" },
+  { "appid": 4000 },
+  { "appid": 105600, "engine": ["Unity", "Custom"], "confidence": "medium" },
+  { "appid": 12345, "engine": 42 },
+  { "appid": 67890, "engine": "Unity", "confidence": "rock-solid" }
+]
