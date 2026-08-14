@@ -50,15 +50,18 @@ threshold, is not admitted (counted as excluded, never as failed).
 ## Seed summary (P-4/P-9 conservation)
 
 ```text
-SeedSummary { fetched: u64, written: u64, excluded: u64, failed: u64 }
+SeedSummary { fetched, written, excluded, duplicates, failed }   // all u64
 
-invariant: fetched == written + excluded + failed   // asserted in tests
+invariant: fetched == written + excluded + duplicates + failed   // asserted in tests
 ```
 
-- `written`: admitted by the gate and merged into the store.
+- `written`: distinct appids admitted by the gate and merged into the store.
 - `excluded`: not admitted by the gate.
-- `failed`: an entry that could not be processed (a per-entry error); the run
-  continues past it.
+- `duplicates`: an admitted appid already written earlier in this run; merged
+  idempotently but counted once as written, so the summary does not overstate the
+  corpus.
+- `failed`: an entry that could not be parsed (missing appid, or a present but
+  wrong-typed field, which is never coerced to absent); the run continues past it.
 
 ## The seeder
 

@@ -10,11 +10,16 @@ packet capture.
 A corpus gate scopes the written rows to titles that are games and clear a
 configurable review-count threshold, so the store holds the corpus that matters
 rather than the whole ~150k app-list universe. Every fetched title is accounted for
-in a seed summary as written, excluded, or failed, and the counts reconcile
-(fetched equals written plus excluded plus failed), so a corpus that could not
-handle something can never read as complete (P-4, P-9). A title whose popularity is
-unknown is excluded rather than admitted on a guess, and a single unparsable entry
-is counted as failed without aborting the run.
+in a seed summary as written, excluded, a within-run duplicate, or failed, and the
+counts reconcile (fetched equals written plus excluded plus duplicates plus failed),
+so a corpus that could not handle something, or a repeated appid that would
+otherwise overstate the total, can never read as complete (P-4, P-9). A title whose
+popularity is unknown is excluded rather than admitted on a guess; an entry with a
+present but wrong-typed field is counted as failed rather than coerced to an absent
+value; and a single unparsable entry is counted as failed without aborting the run.
+The offline `targets seed` command requires exactly one catalog source, so `--from`
+together with the live `--steam`, or neither, is a usage error rather than a silent
+choice.
 
 The seed is idempotent and resumable: it merges each title by application id
 through a new `merge_catalog` that writes only the Tier 1 columns, leaving any

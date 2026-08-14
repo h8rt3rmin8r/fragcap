@@ -389,7 +389,20 @@ pub enum TargetsCommand {
 }
 
 /// Arguments to `targets seed`.
+///
+/// Exactly one catalog source is required. In a default build that is `--from`; a
+/// `net` build adds `--steam`, and the two are mutually exclusive, so `--from`
+/// with `--steam`, or neither, is a usage error (exit 2) rather than a silent
+/// choice.
 #[derive(Debug, Args)]
+#[cfg_attr(
+    feature = "net",
+    command(group(ArgGroup::new("catalog_source").required(true).args(["from", "steam"])))
+)]
+#[cfg_attr(
+    not(feature = "net"),
+    command(group(ArgGroup::new("catalog_source").required(true).args(["from"])))
+)]
 pub struct TargetsSeedArgs {
     /// Seed from a local catalog document (offline).
     #[arg(long)]

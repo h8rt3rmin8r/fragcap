@@ -148,29 +148,68 @@ impl CatalogSource for FixtureCatalog {
 
 /// Parse one catalog entry object.
 pub fn parse_entry(item: &Value, index: usize) -> Result<CatalogEntry, TargetsError> {
-    let appid = item
-        .get("appid")
-        .and_then(Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok())
-        .ok_or_else(|| TargetsError::Seed(format!("catalog entry {index} has no u32 appid")))?;
+    // A present but wrong-typed field is a malformed entry (counted as failed), not
+    // an absent one: coercing a string review_count to "no reviews" and then
+    // reporting the title as excluded rather than failed would make the summary lie
+    // about why the title is missing (P-9).
+    let appid = match item.get("appid") {
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| {
+                TargetsError::Seed(format!("catalog entry {index} appid is not a u32"))
+            })?,
+        None => {
+            return Err(TargetsError::Seed(format!(
+                "catalog entry {index} has no appid"
+            )))
+        }
+    };
 
-    let name = item
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let name = opt_string(item, "name", index)?.filter(|s| !s.is_empty());
 
-    let classification = match item.get("classification").and_then(Value::as_str) {
-        Some(s) if s.eq_ignore_ascii_case("game") => Classification::Game,
-        _ => Classification::Other,
+    let classification = match item.get("classification") {
+        None | Some(Value::Null) => Classification::Other,
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("game") => Classification::Game,
+        Some(Value::String(_)) => Classification::Other,
+        Some(_) => {
+            return Err(TargetsError::Seed(format!(
+                "catalog entry {index} classification is not a string"
+            )))
+        }
     };
 
     Ok(CatalogEntry {
         appid,
         name,
         classification,
-        review_count: item.get("review_count").and_then(Value::as_u64),
-        owners: item.get("owners").and_then(Value::as_u64),
-        peak_ccu: item.get("peak_ccu").and_then(Value::as_u64),
+        review_count: opt_u64(item, "review_count", index)?,
+        owners: opt_u64(item, "owners", index)?,
+        peak_ccu: opt_u64(item, "peak_ccu", index)?,
     })
+}
+
+/// An optional non-negative integer field: absent or null is `None`; present but
+/// not a non-negative integer is a malformed entry.
+fn opt_u64(item: &Value, key: &str, index: usize) -> Result<Option<u64>, TargetsError> {
+    match item.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| {
+            TargetsError::Seed(format!(
+                "catalog entry {index} field {key:?} is not a non-negative integer"
+            ))
+        }),
+    }
+}
+
+/// An optional string field: absent or null is `None`; present but not a string is
+/// a malformed entry.
+fn opt_string(item: &Value, key: &str, index: usize) -> Result<Option<String>, TargetsError> {
+    match item.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(TargetsError::Seed(format!(
+            "catalog entry {index} field {key:?} is not a string"
+        ))),
+    }
 }

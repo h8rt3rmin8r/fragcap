@@ -8,6 +8,8 @@
 //! from the catalog tier's recorded cursor, records progress after each page, and
 //! never prunes: a stored title absent from a run is left as it is.
 
+use std::collections::HashSet;
+
 use crate::catalog::CatalogSource;
 use crate::gate::CorpusGate;
 use crate::model::{SeedState, SeedTier};
@@ -20,20 +22,25 @@ use crate::TargetsError;
 pub struct SeedSummary {
     /// Titles the source yielded (parsed entries plus items it could not parse).
     pub fetched: u64,
-    /// Titles admitted by the gate and merged into the store.
+    /// Distinct titles admitted by the gate and merged into the store. A repeated
+    /// appid is counted here once, not once per occurrence.
     pub written: u64,
     /// Titles the gate excluded (not a game, or below the review threshold, or no
     /// known review count).
     pub excluded: u64,
+    /// Admitted titles whose appid had already been written earlier in this run: a
+    /// repeated entry, merged idempotently but not double-counted as written.
+    pub duplicates: u64,
     /// Titles the source could not parse. Counted, never silently dropped; a bad
     /// title does not abort the run.
     pub failed: u64,
 }
 
 impl SeedSummary {
-    /// The conservation identity every run satisfies.
+    /// The conservation identity every run satisfies: every fetched title is
+    /// written, excluded, a within-run duplicate, or failed.
     pub fn is_conserved(&self) -> bool {
-        self.fetched == self.written + self.excluded + self.failed
+        self.fetched == self.written + self.excluded + self.duplicates + self.failed
     }
 }
 
@@ -50,6 +57,9 @@ pub fn seed_catalog(
     now: Option<String>,
 ) -> Result<SeedSummary, TargetsError> {
     let mut summary = SeedSummary::default();
+    // Appids written in this run, so a repeated appid is merged idempotently but
+    // counted once (the summary must not overstate the corpus).
+    let mut written_appids: HashSet<u32> = HashSet::new();
 
     // Resume from the recorded cursor, if any.
     let mut cursor: Option<String> = store
@@ -65,17 +75,22 @@ pub fn seed_catalog(
 
         for entry in &batch.entries {
             summary.fetched += 1;
-            if gate.admits(entry) {
-                store.merge_catalog(
-                    entry.appid,
-                    entry.name.as_deref(),
-                    entry.review_count,
-                    entry.owners,
-                    entry.peak_ccu,
-                )?;
+            if !gate.admits(entry) {
+                summary.excluded += 1;
+                continue;
+            }
+            store.merge_catalog(
+                entry.appid,
+                entry.name.as_deref(),
+                entry.review_count,
+                entry.owners,
+                entry.peak_ccu,
+            )?;
+            // The merge is idempotent; count a repeated appid once.
+            if written_appids.insert(entry.appid) {
                 summary.written += 1;
             } else {
-                summary.excluded += 1;
+                summary.duplicates += 1;
             }
         }
 

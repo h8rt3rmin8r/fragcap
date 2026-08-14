@@ -168,8 +168,11 @@ entries are unchanged.
 - A catalog source that returns an empty universe: the seed completes writing
   nothing, and the summary reports zero fetched, zero written.
 - A title present twice in the source within one run: it is written once (the
-  merge is idempotent per application id), and the duplication does not inflate the
-  written count misleadingly.
+  merge is idempotent per application id), and the repeat is counted as a duplicate
+  rather than inflating the written count.
+- An entry with a present but wrong-typed field (for example a review count given as
+  a string): counted as failed, not coerced to an absent value and then reported as
+  excluded, so the summary does not misattribute why the title is missing (P-9).
 - A title that is in corpus but carries no name: written with the name omitted
   (never as an empty string, per S034) and counted as written; corpus membership
   is by application id.
@@ -204,9 +207,11 @@ entries are unchanged.
   configurable popularity threshold (a review count), and MUST exclude the rest.
   The threshold MUST be configurable, with a documented default.
 - **FR-005**: A seed run MUST produce a summary reporting, at minimum, the counts
-  of titles fetched, written, excluded by the gate, and failed (unfetchable or
-  unparsable). No title may be dropped from the corpus without being counted in
-  one of these categories (P-4, P-9).
+  of titles fetched, written, excluded by the gate, duplicated within the run (an
+  admitted appid already written, merged once but not double-counted), and failed
+  (unfetchable or unparsable). No title may be dropped from the corpus without being
+  counted in one of these categories, and no repeated appid may inflate the written
+  count (P-4, P-9).
 - **FR-006**: A single malformed or unfetchable title MUST NOT abort the run; it is
   counted as failed and the seed continues with the remaining titles.
 - **FR-007**: The store MUST provide a per-tier merge that writes only the Tier 1
@@ -258,8 +263,10 @@ entries are unchanged.
   in-corpus titles from the fixture and no others, and the store exports
   schema-valid JSON, with no network access.
 - **SC-002**: Every title in a seed run is accounted for in the summary as written,
-  excluded, or failed; the four counts reconcile with the source's total, so no
-  title is silently lost (verified by a conservation assertion in tests).
+  excluded, duplicated, or failed; the counts reconcile with the source's total
+  (fetched equals written plus excluded plus duplicates plus failed), so no title is
+  silently lost and no repeat inflates the written count (verified by a conservation
+  assertion in tests).
 - **SC-003**: Seeding Tier 1 over a store already carrying engine and launch data
   for a title updates the catalog columns and leaves the engine and launch data
   unchanged, in 100% of such cases.

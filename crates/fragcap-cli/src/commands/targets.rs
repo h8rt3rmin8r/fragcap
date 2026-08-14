@@ -113,11 +113,12 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 
     let _ = writeln!(
         out,
-        "seeded {}: fetched {} written {} excluded {} failed {}",
+        "seeded {}: fetched {} written {} excluded {} duplicates {} failed {}",
         args.db.display(),
         summary.fetched,
         summary.written,
         summary.excluded,
+        summary.duplicates,
         summary.failed
     );
     Ok(Exit::SUCCESS)

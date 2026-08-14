@@ -64,6 +64,45 @@ fn the_store_exports_schema_valid_after_seeding() {
 }
 
 #[test]
+fn a_wrong_typed_field_is_counted_failed_not_excluded() {
+    // A present but wrong-typed review_count must count as failed (malformed), not
+    // be coerced to "no reviews" and reported as excluded.
+    let catalog = FixtureCatalog::from_json(
+        r#"[
+          { "appid": 10, "name": "Good", "classification": "game", "review_count": 5000 },
+          { "appid": 20, "name": "BadReviews", "classification": "game", "review_count": "lots" }
+        ]"#,
+    )
+    .unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    let summary = seed_catalog(&mut store, &catalog, &CorpusGate::new(100), None).unwrap();
+    assert_eq!(summary.written, 1);
+    assert_eq!(summary.failed, 1, "the wrong-typed entry is failed");
+    assert_eq!(summary.excluded, 0, "it is not miscounted as excluded");
+    assert!(summary.is_conserved());
+}
+
+#[test]
+fn a_repeated_appid_is_written_once() {
+    let catalog = FixtureCatalog::from_json(
+        r#"[
+          { "appid": 42, "name": "First",  "classification": "game", "review_count": 5000 },
+          { "appid": 42, "name": "Second", "classification": "game", "review_count": 6000 }
+        ]"#,
+    )
+    .unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    let summary = seed_catalog(&mut store, &catalog, &CorpusGate::new(100), None).unwrap();
+    assert_eq!(summary.written, 1, "a distinct title is written once");
+    assert_eq!(
+        summary.duplicates, 1,
+        "the repeat is a duplicate, not a second write"
+    );
+    assert_eq!(store.games().unwrap().len(), 1, "the store holds one row");
+    assert!(summary.is_conserved());
+}
+
+#[test]
 fn a_higher_threshold_shrinks_the_corpus() {
     let mut store = Store::open_in_memory().unwrap();
     // Only 570 (2,000,000) and 730 (100,000) clear 1,000,000... only 570.

@@ -800,10 +800,12 @@ silent omission.
 ## Seed summary
 
 The truthful account a [catalog seeder](#catalog-seeder) run returns: how many
-titles it fetched, wrote, excluded by the [corpus gate](#corpus-gate), and failed
-to parse. The counts reconcile (fetched equals written plus excluded plus failed),
-so a corpus that dropped what it could not handle cannot read as complete. This is
-the seeding-time form of the No Silent Loss principle (P-4).
+titles it fetched, wrote, excluded by the [corpus gate](#corpus-gate), saw as a
+within-run duplicate appid (merged once, not written twice), and failed to parse.
+The counts reconcile (fetched equals written plus excluded plus duplicates plus
+failed), so a corpus that dropped what it could not handle, or a repeated title
+that would otherwise overstate the total, cannot read as complete. This is the
+seeding-time form of the No Silent Loss principle (P-4).
 
 **See also:** [Catalog seeder](#catalog-seeder), [Corpus gate](#corpus-gate)
 
