@@ -86,6 +86,69 @@ fn a_malformed_entry_is_counted_not_fatal() {
 }
 
 #[test]
+fn a_within_run_duplicate_is_merged_once_and_the_first_wins() {
+    // Two resolved entries for the same appid with conflicting engines: the first
+    // is authoritative, the second is counted as a duplicate and not re-merged, so
+    // the stored attribution does not depend on source order.
+    let feed = FixtureEngineFeed::from_json(
+        r#"[
+          { "appid": 570, "engine": "First",  "confidence": "high" },
+          { "appid": 570, "engine": "Second", "confidence": "low" }
+        ]"#,
+    )
+    .unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    let summary = seed_engine(&mut store, &feed, None).unwrap();
+
+    assert_eq!(summary.written, 1, "{summary:?}");
+    assert_eq!(summary.duplicates, 1, "{summary:?}");
+    assert_eq!(summary.fetched, 2, "{summary:?}");
+    assert!(summary.is_conserved(), "{summary:?}");
+
+    let game = store
+        .games()
+        .unwrap()
+        .into_iter()
+        .find(|g| g.appid == 570)
+        .unwrap();
+    let engine = game.engine.unwrap();
+    assert_eq!(
+        engine.name.as_deref(),
+        Some("First"),
+        "the first entry wins"
+    );
+    assert_eq!(engine.confidence, EngineConfidence::High);
+}
+
+#[test]
+fn duplicate_appids_straddling_a_page_boundary_are_all_counted() {
+    // Three entries for appid 1 and one for appid 2, at batch size 2, so the equal
+    // appids straddle a page boundary. An appid-keyed cursor would skip the third
+    // "1" and undercount fetched while conservation still appeared to hold (P-4);
+    // the offset cursor preserves every occurrence.
+    let feed = FixtureEngineFeed::from_json_with_batch(
+        r#"[
+          { "appid": 1, "engine": "A" },
+          { "appid": 1, "engine": "A" },
+          { "appid": 1, "engine": "A" },
+          { "appid": 2, "engine": "B" }
+        ]"#,
+        2,
+    )
+    .unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    let summary = seed_engine(&mut store, &feed, None).unwrap();
+
+    assert_eq!(
+        summary.fetched, 4,
+        "every occurrence is fetched: {summary:?}"
+    );
+    assert_eq!(summary.written, 2, "{summary:?}");
+    assert_eq!(summary.duplicates, 2, "{summary:?}");
+    assert!(summary.is_conserved(), "{summary:?}");
+}
+
+#[test]
 fn an_engine_only_row_exports_valid() {
     // Every appid in the fixture is new to the store, so each written row is an
     // engine-only row (appid + engine, no name). The export must still validate.

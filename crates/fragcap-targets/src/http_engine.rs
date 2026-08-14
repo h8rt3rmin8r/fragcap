@@ -114,11 +114,20 @@ impl EngineFeed for HttpEngineFeed {
 }
 
 /// Map one Cargo query row into an engine entry. Returns `None` for a row the seeder
-/// should count as failed (no usable Steam application id).
+/// should count as failed: no usable Steam application id, or a present but
+/// wrong-typed `Engine` field (FR-013). An absent or null `Engine` is an honest "no
+/// engine", not a failure.
 fn parse_cargo_row(row: &Value) -> Option<EngineEntry> {
     let title = row.get("title")?;
     let appid = first_appid(title.get("SteamID").and_then(Value::as_str)?)?;
-    let engine = resolve_engine_field(title.get("Engine").and_then(Value::as_str));
+    // A present but non-string `Engine` field is malformed, not "no engine": count it
+    // failed rather than coercing it to an absent engine and reporting the row
+    // excluded, which would misstate why the engine was omitted (FR-013).
+    let engine = match title.get("Engine") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(field)) => resolve_engine_field(field),
+        Some(_) => return None,
+    };
     Some(EngineEntry {
         appid,
         engine: engine.map(|name| ResolvedEngine {
@@ -141,8 +150,7 @@ fn first_appid(field: &str) -> Option<u32> {
 /// blank (no engine), name one engine, or list several (ambiguous). Splits on commas
 /// and semicolons, trims, and collapses duplicates; a single distinct name resolves,
 /// zero or more than one yields `None`.
-fn resolve_engine_field(field: Option<&str>) -> Option<String> {
-    let field = field?;
+fn resolve_engine_field(field: &str) -> Option<String> {
     let mut distinct: Vec<String> = Vec::new();
     for part in field.split([',', ';']) {
         let name = part.trim();

@@ -77,9 +77,10 @@ const DEFAULT_BATCH: usize = 100;
 /// `confidence`. The engine field resolves to a single name (a string or a
 /// one-element array), to no engine (absent, null, empty, or an empty array), or to
 /// ambiguous (more than one distinct engine); an out-of-set confidence or a
-/// wrong-typed field makes the entry malformed. Entries are held sorted by appid and
-/// paged by the last appid returned, so the cursor contract (and resumability) is
-/// exercised offline.
+/// wrong-typed field makes the entry malformed. Entries are held sorted by appid
+/// (stably, so duplicate appids keep document order) and paged by a consumed-count
+/// offset cursor, so the cursor contract (and resumability) is exercised offline
+/// without an appid-keyed cursor collapsing duplicate appids.
 pub struct FixtureEngineFeed {
     entries: Vec<EngineEntry>,
     /// Items the document could not parse. Tolerated at load and surfaced to the
@@ -127,25 +128,30 @@ impl FixtureEngineFeed {
 
 impl EngineFeed for FixtureEngineFeed {
     fn fetch_batch(&self, cursor: Option<&str>) -> Result<EngineBatch, TargetsError> {
-        let after: Option<u32> = match cursor {
-            None => None,
-            Some(c) => Some(
-                c.parse()
-                    .map_err(|_| TargetsError::Seed(format!("bad engine cursor: {c:?}")))?,
-            ),
+        // The cursor is the number of entries already consumed (an offset), not an
+        // appid. An appid-keyed cursor (`appid > last`) would silently skip a
+        // duplicate appid that straddles a page boundary, dropping it from the
+        // fetched total while conservation still appeared to hold against the reduced
+        // total (P-4). An offset preserves every occurrence and matches the live
+        // source's offset pagination.
+        let offset: usize = match cursor {
+            None => 0,
+            Some(c) => c
+                .parse()
+                .map_err(|_| TargetsError::Seed(format!("bad engine cursor: {c:?}")))?,
         };
 
         let entries: Vec<EngineEntry> = self
             .entries
             .iter()
-            .filter(|e| after.is_none_or(|a| e.appid > a))
+            .skip(offset)
             .take(self.batch_size)
             .cloned()
             .collect();
 
         // A full page may have more behind it; a short page is the end.
         let next_cursor = if entries.len() == self.batch_size {
-            entries.last().map(|e| e.appid.to_string())
+            Some((offset + entries.len()).to_string())
         } else {
             None
         };
@@ -153,7 +159,7 @@ impl EngineFeed for FixtureEngineFeed {
         // Surface the load-time malformed count once, on the initial page, so a fresh
         // seed counts it and a resumed seed (which skips the processed prefix) does
         // not re-count it.
-        let failed = if after.is_none() { self.malformed } else { 0 };
+        let failed = if offset == 0 { self.malformed } else { 0 };
 
         Ok(EngineBatch {
             entries,

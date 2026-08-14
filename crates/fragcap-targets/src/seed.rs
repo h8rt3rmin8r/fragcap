@@ -130,8 +130,9 @@ pub fn seed_engine(
     now: Option<String>,
 ) -> Result<SeedSummary, TargetsError> {
     let mut summary = SeedSummary::default();
-    // Appids written in this run, so a repeated appid is merged idempotently but
-    // counted once (the summary must not overstate the enrichment).
+    // Appids written in this run, so a repeated appid is merged exactly once (the
+    // first-seen resolved engine wins) and counted once (the summary must not
+    // overstate the enrichment).
     let mut written_appids: HashSet<u32> = HashSet::new();
 
     // Resume from the recorded engine-tier cursor, if any.
@@ -153,18 +154,21 @@ pub fn seed_engine(
                 summary.excluded += 1;
                 continue;
             };
+            // A repeated appid is merged once: the first resolved engine for an
+            // appid in this run is authoritative, and a later duplicate is counted
+            // but not re-merged. Merging the duplicate would make the stored
+            // attribution depend on source order when two entries disagree.
+            if !written_appids.insert(entry.appid) {
+                summary.duplicates += 1;
+                continue;
+            }
             let engine = Engine {
                 name: Some(resolved.name.clone()),
                 source: EngineSource::Pcgamingwiki,
                 confidence: resolved.confidence,
             };
             store.merge_engine(entry.appid, &engine)?;
-            // The merge is idempotent; count a repeated appid once.
-            if written_appids.insert(entry.appid) {
-                summary.written += 1;
-            } else {
-                summary.duplicates += 1;
-            }
+            summary.written += 1;
         }
 
         // Record progress after each page so a later run resumes here.
