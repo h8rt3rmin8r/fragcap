@@ -33,6 +33,10 @@ pub const HINT_DB_ENV: &str = "FRAGCAP_HINT_DB";
 /// The environment variable that overrides the analyzer extcap directory.
 pub const EXTCAP_DIR_ENV: &str = "FRAGCAP_EXTCAP_DIR";
 
+/// The environment variable that overrides the machine-wide (system) analyzer
+/// extcap directory.
+pub const SYSTEM_EXTCAP_DIR_ENV: &str = "FRAGCAP_SYSTEM_EXTCAP_DIR";
+
 /// The fragcap binary name inside an analyzer extcap directory. Both the
 /// `extcap install` command (which writes it) and the `doctor` probe (which
 /// checks for it) reference this one constant so the register target and the
@@ -69,6 +73,29 @@ pub fn extcap_dir() -> Option<PathBuf> {
                 .join("wireshark")
                 .join("extcap")
         })
+    }
+}
+
+/// The machine-wide (system) analyzer extcap directory, or `None` when the
+/// platform location cannot be determined.
+///
+/// This is where the MSI's machine-wide option installs the fragcap binary, so a
+/// registration is visible to every user of the machine. `doctor` reads it
+/// read-only and installs nothing. On Windows it is `%ProgramFiles%\Wireshark\
+/// extcap`; elsewhere it is a conventional system Wireshark extcap location. An
+/// override, `FRAGCAP_SYSTEM_EXTCAP_DIR`, lets a test point it at a scratch
+/// directory on any platform.
+pub fn system_extcap_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os(SYSTEM_EXTCAP_DIR_ENV) {
+        return Some(PathBuf::from(dir));
+    }
+    #[cfg(windows)]
+    {
+        env::var_os("ProgramFiles").map(|base| PathBuf::from(base).join("Wireshark").join("extcap"))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(PathBuf::from("/usr/lib/wireshark/extcap"))
     }
 }
 

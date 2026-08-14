@@ -15,19 +15,24 @@ use std::path::PathBuf;
 
 use super::{Inputs, Privilege, Subsystem};
 
-/// The analyzer extcap directory and whether a fragcap binary is installed in
-/// it, read-only.
+/// The analyzer extcap directories (per-user and machine-wide) and whether a
+/// fragcap binary is installed in each, read-only.
 ///
-/// Detection only: this reads the directory to see whether the binary has been
+/// Detection only: this reads the directories to see whether the binary has been
 /// copied there and installs, downloads, and copies nothing, which is the
 /// Licensing rule and constitution P-1 made mechanical (specification 14.5).
-fn extcap_status() -> (Option<PathBuf>, bool) {
-    let dir = crate::paths::extcap_dir();
-    let installed = dir
-        .as_ref()
-        .map(|d| d.join(crate::paths::EXTCAP_BINARY).exists())
-        .unwrap_or(false);
-    (dir, installed)
+/// Returns `(user_dir, user_installed, system_dir, system_installed)`.
+fn extcap_status() -> (Option<PathBuf>, bool, Option<PathBuf>, bool) {
+    let present = |dir: &Option<PathBuf>| {
+        dir.as_ref()
+            .map(|d| d.join(crate::paths::EXTCAP_BINARY).exists())
+            .unwrap_or(false)
+    };
+    let user_dir = crate::paths::extcap_dir();
+    let system_dir = crate::paths::system_extcap_dir();
+    let user_installed = present(&user_dir);
+    let system_installed = present(&system_dir);
+    (user_dir, user_installed, system_dir, system_installed)
 }
 
 /// Count the `.json` profiles directly in a directory, or zero when it cannot
@@ -268,7 +273,8 @@ pub fn gather() -> Inputs {
     }
     #[cfg(not(windows))]
     {
-        let (extcap_dir, extcap_installed) = extcap_status();
+        let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
+            extcap_status();
         let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
         let (interfaces, _loopback, interface_error) = live_probe();
         Inputs {
@@ -287,6 +293,8 @@ pub fn gather() -> Inputs {
             interface_error,
             extcap_installed,
             extcap_dir,
+            extcap_system_installed,
+            extcap_system_dir,
             bundled_count: crate::paths::bundled().len(),
             user_count,
         }
@@ -325,7 +333,8 @@ fn gather_windows(user_count: usize) -> Inputs {
         None
     };
 
-    let (extcap_dir, extcap_installed) = extcap_status();
+    let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
+        extcap_status();
     let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
     Inputs {
         fragcap_version,
@@ -347,6 +356,8 @@ fn gather_windows(user_count: usize) -> Inputs {
         interface_error,
         extcap_installed,
         extcap_dir,
+        extcap_system_installed,
+        extcap_system_dir,
         bundled_count: crate::paths::bundled().len(),
         user_count,
     }

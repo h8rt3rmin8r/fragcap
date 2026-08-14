@@ -429,17 +429,22 @@ fn the_new_subcommands_do_not_regress_the_bare_protocol_forms() {
 #[test]
 fn doctor_reports_the_integration_after_install_and_not_after_uninstall() {
     // End-to-end agreement: install writes where doctor probes, so the doctor
-    // integration check flips. doctor reads the extcap dir from
+    // integration check flips. doctor reads the per-user extcap dir from
     // FRAGCAP_EXTCAP_DIR; this is the only test in this file that touches that
-    // variable, so setting it process-wide does not race another test.
+    // variable, so setting it process-wide does not race another test. The
+    // machine-wide dir is pinned to a separate empty directory via
+    // FRAGCAP_SYSTEM_EXTCAP_DIR so the probe does not read the real system
+    // Wireshark directory and the test stays hermetic and per-user scoped.
     let dir = tempfile::tempdir().unwrap();
+    let system = tempfile::tempdir().unwrap();
     std::env::set_var("FRAGCAP_EXTCAP_DIR", dir.path());
+    std::env::set_var("FRAGCAP_SYSTEM_EXTCAP_DIR", system.path());
 
     common::run(&["extcap", "install"]);
     let (_c, out, _e) = common::run(&["doctor"]);
     assert!(
-        out.contains("installed in"),
-        "doctor reports the integration installed: {out}"
+        out.contains("installed for the current user in"),
+        "doctor reports the integration installed for the current user: {out}"
     );
 
     common::run(&["extcap", "uninstall"]);
@@ -450,4 +455,5 @@ fn doctor_reports_the_integration_after_install_and_not_after_uninstall() {
     );
 
     std::env::remove_var("FRAGCAP_EXTCAP_DIR");
+    std::env::remove_var("FRAGCAP_SYSTEM_EXTCAP_DIR");
 }

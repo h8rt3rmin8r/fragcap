@@ -261,29 +261,61 @@ fn interfaces(inputs: &Inputs) -> Vec<Check> {
 }
 
 fn integration(inputs: &Inputs) -> Check {
-    // The analyzer extcap directory, named in both states so the operator knows
-    // where the binary belongs (specification section 14.5, FR-009).
-    let location = inputs.extcap_dir.as_ref().map(|d| d.display().to_string());
-    if inputs.extcap_installed {
-        let detail = match &location {
-            Some(dir) => format!("installed in {dir}"),
-            None => "installed".to_string(),
-        };
-        Check::ok(INTEGRATION, "analyzer extcap", detail)
-    } else {
-        // Optional: a warning, never a block. Wireshark's extcap framework is
-        // always present; what is not yet in place is fragcap's registration as
-        // one of its sources, which `fragcap extcap install` (slice 041) will do.
-        let detail = match &location {
-            Some(dir) => format!(
-                "not registered as a Wireshark extcap source; run `fragcap extcap install` to \
-                 register it in {dir} (optional)"
-            ),
-            None => "not registered as a Wireshark extcap source; run `fragcap extcap install` \
-                     to register it (optional)"
-                .to_string(),
-        };
-        Check::warn(INTEGRATION, "analyzer extcap", detail)
+    // Registration can be per-user (%APPDATA%\Wireshark\extcap) or machine-wide
+    // (Wireshark's system extcap directory, where the MSI's machine-wide option
+    // installs it). The check is ok when either scope holds the binary, and the
+    // detail names which scope, so a second user on a machine-wide install is not
+    // told it is missing (specification section 14.5, FR-009).
+    let user = inputs.extcap_dir.as_ref().map(|d| d.display().to_string());
+    let system = inputs
+        .extcap_system_dir
+        .as_ref()
+        .map(|d| d.display().to_string());
+    match (inputs.extcap_installed, inputs.extcap_system_installed) {
+        (true, true) => {
+            let detail = match (&user, &system) {
+                (Some(u), Some(s)) => {
+                    format!("installed for the current user in {u} and machine-wide in {s}")
+                }
+                (Some(u), None) => {
+                    format!("installed for the current user in {u} and machine-wide")
+                }
+                (None, Some(s)) => format!("installed machine-wide in {s}"),
+                (None, None) => "installed for the current user and machine-wide".to_string(),
+            };
+            Check::ok(INTEGRATION, "analyzer extcap", detail)
+        }
+        (true, false) => {
+            let detail = match &user {
+                Some(u) => format!("installed for the current user in {u}"),
+                None => "installed for the current user".to_string(),
+            };
+            Check::ok(INTEGRATION, "analyzer extcap", detail)
+        }
+        (false, true) => {
+            let detail = match &system {
+                Some(s) => format!("installed machine-wide in {s}"),
+                None => "installed machine-wide".to_string(),
+            };
+            Check::ok(INTEGRATION, "analyzer extcap", detail)
+        }
+        (false, false) => {
+            // Optional: a warning, never a block. Wireshark's extcap framework is
+            // always present; what is not yet in place is fragcap's registration as
+            // one of its sources, which `fragcap extcap install` (slice 041) will do.
+            let detail = match &user {
+                Some(dir) => format!(
+                    "not registered as a Wireshark extcap source; run `fragcap extcap install` to \
+                     register it in {dir} (optional)"
+                ),
+                None => {
+                    "not registered as a Wireshark extcap source; run `fragcap extcap install` \
+                         to register it (optional)"
+                        .to_string()
+                }
+            };
+            Check::warn(INTEGRATION, "analyzer extcap", detail)
+        }
     }
 }
 
@@ -337,6 +369,10 @@ mod tests {
             extcap_installed: true,
             extcap_dir: Some(std::path::PathBuf::from(
                 "C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap",
+            )),
+            extcap_system_installed: false,
+            extcap_system_dir: Some(std::path::PathBuf::from(
+                "C:\\Program Files\\Wireshark\\extcap",
             )),
             bundled_count: 0,
             user_count: 2,
@@ -516,6 +552,59 @@ mod tests {
         assert!(integration(&unknown).detail.contains("installed"));
         unknown.extcap_installed = false;
         assert!(integration(&unknown).detail.contains("optional"));
+    }
+
+    #[test]
+    fn integration_recognizes_both_extcap_scopes() {
+        // Per-user only: ok, names the current-user scope (SC-002).
+        let mut user_only = ready_inputs();
+        user_only.extcap_installed = true;
+        user_only.extcap_system_installed = false;
+        let check = integration(&user_only);
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.contains("current user"), "{}", check.detail);
+
+        // Machine-wide only: ok, names the machine-wide scope (SC-001). This is
+        // the case a second user hit before this slice; it must not warn.
+        let mut system_only = ready_inputs();
+        system_only.extcap_installed = false;
+        system_only.extcap_system_installed = true;
+        let check = integration(&system_only);
+        assert_eq!(
+            check.status,
+            Status::Ok,
+            "machine-wide must be ok: {}",
+            check.detail
+        );
+        assert!(check.detail.contains("machine-wide"), "{}", check.detail);
+        let system_dir = system_only
+            .extcap_system_dir
+            .as_ref()
+            .unwrap()
+            .display()
+            .to_string();
+        assert!(
+            check.detail.contains(&system_dir),
+            "names system dir: {}",
+            check.detail
+        );
+
+        // Both scopes: ok, names both.
+        let mut both = ready_inputs();
+        both.extcap_installed = true;
+        both.extcap_system_installed = true;
+        let check = integration(&both);
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.contains("current user"), "{}", check.detail);
+        assert!(check.detail.contains("machine-wide"), "{}", check.detail);
+
+        // Neither: the optional warning, unchanged.
+        let mut neither = ready_inputs();
+        neither.extcap_installed = false;
+        neither.extcap_system_installed = false;
+        let check = integration(&neither);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("optional"), "{}", check.detail);
     }
 
     #[test]
