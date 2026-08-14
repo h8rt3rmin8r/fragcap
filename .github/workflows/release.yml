@@ -79,6 +79,10 @@ jobs:
             exit 1
           }
           Write-Output "OK: the featured binary starts and runs doctor without npcap installed."
+          # doctor exits 1 when npcap is absent (its correct "not ready" code), so
+          # `$LASTEXITCODE` is 1 on the success path here. Reset it, or GitHub
+          # Actions ends the step with that leftover code and fails a passing check.
+          exit 0
 
       - name: Assert no npcap component is present in any artifact
         shell: pwsh
@@ -118,6 +122,16 @@ jobs:
           # cargo-wix, which drives candle/light over crates/fragcap-cli/wix/main.wxs.
           $ErrorActionPreference = 'Stop'
           choco install wixtoolset --no-progress -y
+          # choco sets the machine WIX env var and PATH, but a later step runs in a
+          # fresh shell that does not inherit them; export them so `cargo wix` can
+          # locate the WiX binaries (it resolves them through the WIX env var).
+          $wix = [Environment]::GetEnvironmentVariable('WIX', 'Machine')
+          if (-not $wix) {
+            Write-Error "WiX Toolset not found after install (WIX env var is unset)."
+            exit 1
+          }
+          "WIX=$wix" >> $env:GITHUB_ENV
+          (Join-Path $wix 'bin') >> $env:GITHUB_PATH
           cargo install cargo-wix --locked
 
       - name: Build the MSI installer
