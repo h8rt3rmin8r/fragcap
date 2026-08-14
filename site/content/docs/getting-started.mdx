@@ -5,9 +5,18 @@ description: Install the capture driver, verify it, run a first capture, and ope
 
 ## Before you begin
 
-Capture requires the **npcap** driver, installed in WinPcap-compatible mode.
-fragcap detects it and reports where to obtain it when it is absent; it never
-installs, downloads, or bundles it. Install npcap before the steps below.
+fragcap uses a small, layered set of external tools:
+
+- **Required: npcap**, the capture driver. fragcap detects it and reports where
+  to obtain it when it is absent; it never installs, downloads, or bundles it.
+- **Recommended: Wireshark**, the analyzer you open captures in. Its installer
+  also provides npcap, so installing Wireshark is the simplest way to get both.
+- **Optional: the Wireshark extcap integration**, which lets fragcap feed
+  Wireshark live. Register it with `fragcap extcap install`.
+
+The full definitions live in the
+[dependency model](/docs/glossary/platform-and-distribution#dependency-model);
+this page summarizes and links so the two cannot drift.
 
 Three things to expect from your first capture, so the result matches what you
 intend:
@@ -28,19 +37,94 @@ with an "Unknown Publisher" note; this is expected for this release. Choose **Mo
 info** then **Run anyway**, and verify the download's `.sha256` checksum, which is
 the integrity check in the absence of a signature.
 
-## 2. Install the capture driver
+## 2. Install npcap (through the Wireshark installer)
 
-Install npcap in WinPcap-compatible mode. This is the one prerequisite fragcap
-cannot install for you.
+npcap is the one prerequisite fragcap cannot install for you. The simplest way to
+get it is the Wireshark installer, which bundles npcap; you also get the
+recommended analyzer in the same step. Download Wireshark from
+[wireshark.org](https://www.wireshark.org/), run the installer, and follow the
+screens below.
+
+On the **Choose Components** screen, leave the External capture tools (extcap)
+group selected. These are the interfaces Wireshark can capture through; fragcap
+registers alongside them later with `fragcap extcap install`.
+
+![Wireshark Choose Components screen with the External capture tools (extcap) group selected](/screenshots/01_wireshark_choose-components_extcap.png)
+
+Accept the default **install location** unless you have a reason to change it.
+
+![Wireshark Choose Install Location screen showing the default Program Files folder](/screenshots/02_wireshark_choose-install-location.png)
+
+On the **Packet Capture** screen, leave **Install Npcap** checked. This is the
+bundled npcap installer; Wireshark launches it as part of its own setup.
+
+![Wireshark Packet Capture screen with Install Npcap checked](/screenshots/03_wireshark_packet-capture_install-npcap.png)
+
+The npcap installer opens with its **license agreement**. npcap is by the Nmap
+Project and is not redistributable, which is why fragcap detects it rather than
+shipping it. Read and accept the license to continue.
+
+![Npcap license agreement, copyright the Nmap Project](/screenshots/04_wireshark_npcap-setup.png)
+
+On the npcap **Installation Options**, leave **Install Npcap in WinPcap
+API-compatible Mode** checked. fragcap links against the WinPcap-compatible
+interface, so this option is the one that matters for capture. Current npcap
+installs loopback capture automatically, so there is no separate loopback option
+to enable here.
+
+![Npcap Installation Options with WinPcap API-compatible Mode checked](/screenshots/05_wireshark_npcap-setup_options.png)
+
+Finish the npcap installer, then the Wireshark installer. Capture also requires
+running fragcap with administrative privilege.
 
 ## 3. Verify the install
+
+Run `fragcap doctor`. It reports your environment (identity, platform, the
+capture driver, tracing, interfaces, the Wireshark integration, and profiles)
+and captures nothing. A ready environment looks like this:
 
 ```text
 fragcap doctor
 ```
 
-`doctor` reports whether the driver is present and whether fragcap can enumerate
-interfaces, without capturing anything.
+```text
+Identity
+  version                ok    0.3.0
+  binary                 ok    C:\Program Files\fragcap\fragcap.exe
+  profile dir            ok    C:\Users\you\AppData\Roaming\fragcap\profiles
+  hint db                ok    C:\Users\you\AppData\Roaming\fragcap\hint.db
+
+Platform
+  os                     ok    Windows 11
+  subsystem              ok    native
+  privilege              ok    elevated
+
+Capture driver
+  npcap                  ok    version 1.88
+  loopback adapter       ok    loopback capture supported
+  winpcap api mode       ok    WinPcap API compatible
+  live backend           ok    live capture backend is built in
+  socket-table backend   ok    socket-table attribution is built in
+
+Tracing
+  process events         ok    process-event session available
+
+Interfaces
+  adapter                ok    Ethernet 192.0.2.10
+
+Integration
+  analyzer extcap        ok    installed in
+                               C:\Users\you\AppData\Roaming\Wireshark\extcap
+
+Profiles
+  profiles               ok    bundled: 0, user: 2
+
+Ready to capture.
+```
+
+Any row that is not `ok` names what is missing and how to resolve it. If npcap is
+absent, `doctor` says so and links the download; the `analyzer extcap` row is
+optional, not a blocker, and turns `ok` once you run `fragcap extcap install`.
 
 ## 4. Get a profile
 

@@ -7,6 +7,26 @@ This page explains how fragcap works at the level a user benefits from knowing.
 The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md)
 is the architecture of record; this is the shape of it.
 
+## The pieces
+
+fragcap captures and attributes; npcap is the required capture driver; Wireshark
+is the recommended analyzer and its installer also provides npcap; the Wireshark
+extcap integration is optional. See the dependency model in the
+[glossary](/docs/glossary/platform-and-distribution#dependency-model).
+
+```mermaid
+flowchart LR
+  fragcap["fragcap: capture and attribution"]
+  npcap["npcap: capture driver (required)"]
+  ws["Wireshark: analyzer (recommended)"]
+  extcap["Wireshark extcap: optional"]
+  fragcap -->|captures through| npcap
+  fragcap -->|writes captures opened in| ws
+  ws -->|installer bundles| npcap
+  extcap -->|ships with| ws
+  fragcap -.->|registered by fragcap extcap install| extcap
+```
+
 ## The problem
 
 A packet on the wire does not carry the identity of the process that sent it.
@@ -53,6 +73,43 @@ blocking capture, and every discard, at the buffer, at a sink, or against a
 capture bound, has a named counter that appears in the completion summary. The
 accounting is conservation, not decoration: for every sink, received plus dropped
 plus refused equals captured.
+
+```mermaid
+flowchart LR
+  nic["Network interface"]
+  npcap["npcap driver"]
+  cap["fragcap capture: one thread per interface"]
+  buf["Bounded buffer: drop-oldest, counted"]
+  attr["Attribution: socket table and process tree"]
+  pcapng["pcapng file"]
+  jsonl["JSON Lines"]
+  ws["Wireshark"]
+  nic --> npcap --> cap --> buf --> attr
+  attr --> pcapng
+  attr --> jsonl
+  pcapng -->|opened in| ws
+  attr -.->|live via extcap| ws
+```
+
+## Getting npcap
+
+fragcap never downloads, installs, or bundles npcap; it detects it and reports
+its absence through `fragcap doctor`. npcap is by the Nmap Project. The usual way
+to get it is the Wireshark installer, which bundles it; you can also install it
+directly.
+
+```mermaid
+flowchart TD
+  user["You"]
+  ws["Wireshark installer"]
+  npcap["npcap: by the Nmap Project"]
+  fragcap["fragcap"]
+  user -->|installs| ws
+  ws -->|bundles and installs| npcap
+  user -.->|or installs directly| npcap
+  fragcap -->|detects only, never bundles| npcap
+  fragcap -->|reports absence via fragcap doctor| user
+```
 
 ## The security posture
 
