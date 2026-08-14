@@ -37,6 +37,11 @@ with an "Unknown Publisher" note; this is expected for this release. Choose **Mo
 info** then **Run anyway**, and verify the download's `.sha256` checksum, which is
 the integrity check in the absence of a signature.
 
+The installer also offers an optional step to register fragcap with Wireshark,
+for the current user or (for administrators) for all users on the machine. It is
+off by default; if you skip it, you can register later with `fragcap extcap
+install`. See [the extcap reference](/docs/reference/cli#extcap) for the details.
+
 ## 2. Install npcap (through the Wireshark installer)
 
 npcap is the one prerequisite fragcap cannot install for you. The simplest way to

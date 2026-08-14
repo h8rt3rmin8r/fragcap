@@ -140,6 +140,22 @@ Wireshark's system extcap directory, for example:
 fragcap extcap install --dir "C:\Program Files\Wireshark\extcap"
 ```
 
+### From the installer
+
+The Windows installer (`.msi`) can register the integration for you. Its optional
+Wireshark integration step offers two independent, opt-out choices, both off by
+default so nothing is registered unless you ask:
+
+- **For the current user** runs the per-user registration above as the installing
+  account, so it lands in your own Wireshark extcap directory.
+- **For all users on this machine** registers into Wireshark's system extcap
+  directory when Wireshark is detected. It is ignored if Wireshark is not found.
+
+A failed registration never fails the install, and leaving both unchecked
+registers nothing; you can always run `fragcap extcap install` later. Both choices
+are also public installer properties (`REGISTEREXTCAP_USER`,
+`REGISTEREXTCAP_MACHINE`), so an administrator can set them for a silent install.
+
 ## `replay`
 
 Play a capture file back. Not yet implemented; the command parses and reports that

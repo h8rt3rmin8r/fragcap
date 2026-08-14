@@ -140,6 +140,99 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <!--
+      Optional Wireshark extcap registration (slice 043). Two independent opt-ins,
+      both off by default and never forced. They drive the installed binary's own
+      `fragcap extcap install`, so no registration logic lives in the installer.
+
+      Per-user runs impersonated so `extcap install` (no directory) resolves the
+      installing user's %APPDATA%\Wireshark\extcap rather than SYSTEM's. Machine-wide
+      runs non-impersonated (the elevated installer writes under Program Files) into
+      the detected Wireshark system extcap directory, and is a clean no-op when
+      Wireshark is not installed (WIRESHARK_DIR is empty). Both mirror the Defender
+      pattern above: an immediate action builds the command line into the deferred
+      action's CustomActionData, the deferred WixQuietExec runs it with
+      Return="ignore" so a failure never fails the install, and a rollback pairs each
+      with an `extcap uninstall`. The binary path is passed as data, never
+      interpolated into the command text.
+    -->
+    <Property Id="REGISTEREXTCAP_USER" Value="0" Secure="yes" />
+    <Property Id="REGISTEREXTCAP_MACHINE" Value="0" Secure="yes" />
+
+    <!-- Wireshark install directory from its registry entry; empty when absent.
+         The default value of HKLM\SOFTWARE\Wireshark is the install path. -->
+    <Property Id="WIRESHARK_DIR" Secure="yes">
+      <RegistrySearch Id="WiresharkInstallDir"
+                      Root="HKLM"
+                      Key="SOFTWARE\Wireshark"
+                      Type="raw"
+                      Win64="yes" />
+    </Property>
+
+    <!-- Per-user: impersonated, targets the installing user's Wireshark extcap dir. -->
+    <CustomAction Id="SetRegisterExtcapUser"
+                  Property="RegisterExtcapUser"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap install"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapUser"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <CustomAction Id="SetRegisterExtcapUserRollback"
+                  Property="RegisterExtcapUserRollback"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap uninstall"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapUserRollback"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <CustomAction Id="SetRegisterExtcapUserRemove"
+                  Property="RegisterExtcapUserRemove"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap uninstall"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapUserRemove"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <!-- Machine-wide: non-impersonated, targets Wireshark's system extcap dir. -->
+    <CustomAction Id="SetRegisterExtcapMachine"
+                  Property="RegisterExtcapMachine"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap install --dir &quot;[WIRESHARK_DIR]\extcap&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapMachine"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <CustomAction Id="SetRegisterExtcapMachineRollback"
+                  Property="RegisterExtcapMachineRollback"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap uninstall --dir &quot;[WIRESHARK_DIR]\extcap&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapMachineRollback"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+    <CustomAction Id="SetRegisterExtcapMachineRemove"
+                  Property="RegisterExtcapMachineRemove"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap uninstall --dir &quot;[WIRESHARK_DIR]\extcap&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapMachineRemove"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
       <!-- Install: set the rollback command and queue the rollback immediately
            before the add, so a failure after the add is undone; then add. -->
@@ -147,9 +240,29 @@
       <Custom Action="SetDefenderRollback" After="SetDefenderAdd">NOT Installed</Custom>
       <Custom Action="DefenderRollback" After="SetDefenderRollback">NOT Installed</Custom>
       <Custom Action="DefenderAdd" After="DefenderRollback">NOT Installed</Custom>
-      <!-- Uninstall: remove the exclusion before the files are removed. -->
+
+      <!-- Optional extcap registration, after files exist so fragcap.exe can run.
+           Rollback is queued before each deferred action; Return="ignore" keeps a
+           failure non-fatal. Conditioned on the opt-in property (and, for
+           machine-wide, on Wireshark being detected). -->
+      <Custom Action="SetRegisterExtcapUser" After="DefenderAdd">REGISTEREXTCAP_USER = 1 AND NOT Installed</Custom>
+      <Custom Action="SetRegisterExtcapUserRollback" After="SetRegisterExtcapUser">REGISTEREXTCAP_USER = 1 AND NOT Installed</Custom>
+      <Custom Action="RegisterExtcapUserRollback" After="SetRegisterExtcapUserRollback">REGISTEREXTCAP_USER = 1 AND NOT Installed</Custom>
+      <Custom Action="RegisterExtcapUser" After="RegisterExtcapUserRollback">REGISTEREXTCAP_USER = 1 AND NOT Installed</Custom>
+
+      <Custom Action="SetRegisterExtcapMachine" After="RegisterExtcapUser">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
+      <Custom Action="SetRegisterExtcapMachineRollback" After="SetRegisterExtcapMachine">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
+      <Custom Action="RegisterExtcapMachineRollback" After="SetRegisterExtcapMachineRollback">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
+      <Custom Action="RegisterExtcapMachine" After="RegisterExtcapMachineRollback">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
+
+      <!-- Uninstall: remove the exclusion and unregister extcap before the files are
+           removed (fragcap.exe must still exist to run `extcap uninstall`). -->
       <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
       <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
+      <Custom Action="SetRegisterExtcapUserRemove" After="DefenderRemove">REMOVE="ALL"</Custom>
+      <Custom Action="RegisterExtcapUserRemove" After="SetRegisterExtcapUserRemove">REMOVE="ALL"</Custom>
+      <Custom Action="SetRegisterExtcapMachineRemove" After="RegisterExtcapUserRemove">REMOVE="ALL" AND WIRESHARK_DIR</Custom>
+      <Custom Action="RegisterExtcapMachineRemove" After="SetRegisterExtcapMachineRemove">REMOVE="ALL" AND WIRESHARK_DIR</Custom>
     </InstallExecuteSequence>
 
     <!--
@@ -176,6 +289,45 @@
                Control="Finish"
                Event="DoAction"
                Value="LaunchNpcap">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+
+      <!--
+        Optional Wireshark extcap registration dialog, inserted between the
+        install-directory and confirm dialogs. Both checkboxes are off by default
+        (the properties default to 0), so registration is never forced. The backing
+        properties are public, so an administrator can also set them on the command
+        line for a silent install (for example REGISTEREXTCAP_MACHINE=1).
+      -->
+      <Dialog Id="ExtcapDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Wireshark integration (optional)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="Register fragcap as a Wireshark extcap capture source." />
+
+        <Control Id="UserCheckBox" Type="CheckBox" X="20" Y="60" Width="330" Height="17" Property="REGISTEREXTCAP_USER" CheckBoxValue="1" Text="Register fragcap for the current user (recommended)" />
+        <Control Id="UserNote" Type="Text" X="35" Y="79" Width="320" Height="26" NoPrefix="yes" Text="Registers into your own Wireshark configuration only, for the account running this installer." />
+
+        <Control Id="MachineCheckBox" Type="CheckBox" X="20" Y="114" Width="330" Height="17" Property="REGISTEREXTCAP_MACHINE" CheckBoxValue="1" Text="Register for all users on this machine (administrators)" />
+        <Control Id="MachineNote" Type="Text" X="35" Y="133" Width="320" Height="26" NoPrefix="yes" Text="Requires Wireshark to be installed; registers into Wireshark's system extcap directory. Ignored if Wireshark is not found." />
+
+        <Control Id="SkipNote" Type="Text" X="20" Y="175" Width="330" Height="26" NoPrefix="yes" Text="You can leave both unchecked and register later at any time by running: fragcap extcap install" />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <!-- Splice ExtcapDlg into the WixUI_InstallDir flow: after the install
+           directory is chosen, before the confirm dialog. Higher Order overrides
+           the stock InstallDirDlg -> VerifyReadyDlg transition. -->
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ExtcapDlg" Order="3">WIXUI_INSTALLDIR_VALID="1"</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ExtcapDlg" Order="3">1</Publish>
     </UI>
 
   </Product>
