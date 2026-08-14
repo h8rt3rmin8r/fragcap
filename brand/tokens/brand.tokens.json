@@ -1,32 +1,70 @@
 {
   "meta": {
     "name": "fragcap",
-    "version": "1.0.0"
+    "version": "1.1.0",
+    "parent": "ShruggieTech",
+    "mode": "dark-first"
   },
   "color": {
-    "signal_cyan": "#27C7E7",
-    "capture_orange": "#FF5300",
-    "void": "#050708",
-    "surface": "#0B1115",
-    "surface_raised": "#101A20",
-    "line": "#21323A",
-    "text": "#F2F7F8",
-    "text_muted": "#94A8B0",
-    "light_surface": "#F5F8F9",
-    "light_text": "#102027",
-    "light_cyan": "#006F82",
-    "light_orange": "#C24100"
+    "signal_cyan": { "value": "#27C7E7", "role": "observed signal, links, focus, active data" },
+    "capture_orange": { "value": "#FF5300", "role": "captured terminal, warning emphasis" },
+    "void": { "value": "#050708", "role": "primary background" },
+    "surface": { "value": "#0B1115", "role": "panels and code surfaces" },
+    "surface_raised": { "value": "#101A20", "role": "elevated controls, selected rows" },
+    "line": { "value": "#21323A", "role": "borders, separators, inactive diagrams" },
+    "text": { "value": "#F2F7F8", "role": "primary text on dark" },
+    "text_muted": { "value": "#94A8B0", "role": "secondary text on dark" },
+    "light_surface": { "value": "#F5F8F9", "role": "light reading background" },
+    "light_text": { "value": "#102027", "role": "primary text on light" },
+    "light_text_muted": { "value": "#47606B", "role": "secondary text on light" },
+    "light_line": { "value": "#D5DFE3", "role": "borders on light" },
+    "light_cyan": { "value": "#006F82", "role": "accessible cyan on light surfaces" },
+    "light_orange": { "value": "#C24100", "role": "accessible orange on light surfaces" },
+    "fault": { "value": "#E9505F", "role": "failed capture, hard error (dark surfaces)" },
+    "fault_deep": { "value": "#C0293A", "role": "failed capture, hard error (light surfaces)" }
+  },
+  "contrast": {
+    "note": "WCAG 2.1 ratios, measured. Interface text must meet AA at its rendered size.",
+    "text_on_void": 18.68,
+    "text_muted_on_void": 8.16,
+    "signal_cyan_on_void": 10.01,
+    "capture_orange_on_void": 6.24,
+    "fault_on_void": 5.55,
+    "light_text_on_light_surface": 15.64,
+    "light_text_muted_on_light_surface": 6.24,
+    "light_cyan_on_light_surface": 5.47,
+    "light_orange_on_light_surface": 4.86,
+    "fault_deep_on_light_surface": 5.44,
+    "signal_cyan_on_light_surface": 1.89
+  },
+  "ratio": {
+    "note": "Target proportions in a typical view.",
+    "neutral_surfaces": 0.80,
+    "signal_cyan": 0.15,
+    "capture_orange": 0.05
   },
   "font": {
-    "display": "Space Grotesk",
-    "body": "Geist",
-    "mono": "Geist Mono",
-    "wordmark": "Custom fragcap vector lettering"
+    "display": { "family": "Space Grotesk", "weights": [500, 700] },
+    "body": { "family": "Geist", "weights": [400, 500] },
+    "mono": { "family": "Geist Mono", "weights": [400] },
+    "wordmark": "Custom fragcap vector lettering, shipped as filled outlines"
+  },
+  "type": {
+    "display_tracking": "-0.025em",
+    "label_tracking": "0.08em",
+    "body_leading": 1.65,
+    "code_leading": 1.5,
+    "display_leading": 1.1
+  },
+  "space": {
+    "1": "0.25rem", "2": "0.5rem", "3": "0.75rem", "4": "1rem",
+    "5": "1.5rem", "6": "2rem", "7": "3rem", "8": "4rem", "9": "6rem"
   },
   "radius": {
     "small": "4px",
     "control": "6px",
-    "panel": "8px"
+    "panel": "8px",
+    "pill": "999px"
   },
   "stroke": {
     "hairline": "1px",
@@ -36,6 +74,20 @@
   "motion": {
     "fast": "120ms",
     "normal": "180ms",
-    "slow": "240ms"
+    "slow": "240ms",
+    "ease": "cubic-bezier(0.2, 0.6, 0.2, 1)"
+  },
+  "logo": {
+    "grid": 512,
+    "artwork_box": [72, 72, 440, 440],
+    "terminal_unit": 34,
+    "clear_space": "one orange terminal width",
+    "min_size_px": {
+      "mark": 24,
+      "horizontal_lockup": 160,
+      "stacked_lockup": 96,
+      "wordmark": 120
+    },
+    "reduced_mark_threshold_px": 32
   }
 }

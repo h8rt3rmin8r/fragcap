@@ -1,0 +1,223 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* fragcap components
+ * Requires styles.css (fonts, tokens, base) to be loaded first.
+ * Every component reads semantic tokens, so it inherits light mode from a
+ * .fc-light ancestor without a second stylesheet. */
+
+/* ── Button ───────────────────────────────────────────────────────────── */
+.fc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fc-space-2);
+  font-family: var(--fc-font-body);
+  font-size: var(--fc-text-body-sm);
+  font-weight: var(--fc-weight-medium);
+  line-height: 1;
+  padding: var(--fc-space-3) var(--fc-space-5);
+  border-radius: var(--fc-radius-md);
+  border: var(--fc-stroke-hairline) solid var(--fc-border);
+  background: var(--fc-panel-raised);
+  color: var(--fc-fg);
+  cursor: pointer;
+  transition: background var(--fc-motion-fast) var(--fc-ease),
+              border-color var(--fc-motion-fast) var(--fc-ease);
+}
+.fc-btn:hover { border-color: var(--fc-accent); }
+.fc-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+.fc-btn--primary {
+  background: var(--fc-cyan-10);
+  border-color: var(--fc-accent);
+  color: var(--fc-accent);
+}
+.fc-btn--primary:hover { background: var(--fc-cyan-20); }
+
+.fc-btn--ghost { background: transparent; }
+
+/* Capture Orange is not a general call-to-action color. This variant exists
+   only for the destructive or inspection-required case. */
+.fc-btn--warning {
+  background: var(--fc-orange-10);
+  border-color: var(--fc-warning);
+  color: var(--fc-warning);
+}
+
+/* ── Badge ────────────────────────────────────────────────────────────── */
+.fc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fc-space-2);
+  font-family: var(--fc-font-mono);
+  font-size: var(--fc-text-body-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--fc-label-tracking);
+  padding: var(--fc-space-1) var(--fc-space-3);
+  border-radius: var(--fc-radius-pill);
+  border: var(--fc-stroke-hairline) solid var(--fc-border);
+  color: var(--fc-fg-muted);
+  white-space: nowrap;
+}
+.fc-badge--signal  { border-color: var(--fc-accent);  color: var(--fc-accent); }
+.fc-badge--capture { border-color: var(--fc-warning); color: var(--fc-warning); }
+.fc-badge--fault   { border-color: var(--fc-danger);  color: var(--fc-danger); }
+
+/* Status must never be carried by color alone. Each state badge carries a
+   shape as well, so it survives greyscale printing and color-vision
+   deficiency. The shapes are drawn in CSS rather than typed as glyphs:
+   Geist and Geist Mono have no U+25A0, so a glyph-based square would
+   silently fall back to whatever serif the renderer had lying around. */
+.fc-badge--signal::before,
+.fc-badge--capture::before {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  background: currentColor;
+}
+.fc-badge--signal::before  { border-radius: 50%; }        /* circle - active */
+.fc-badge--capture::before { border-radius: 0; }          /* square - echoes the mark's terminal */
+.fc-badge--fault::before {
+  content: "\00D7";                                        /* multiplication sign - failed */
+  font-family: var(--fc-font-mono);
+  line-height: 1;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────── */
+.fc-card {
+  background: var(--fc-panel);
+  border: var(--fc-stroke-hairline) solid var(--fc-border);
+  border-radius: var(--fc-radius-lg);
+  padding: var(--fc-space-5);
+}
+.fc-card--raised { background: var(--fc-panel-raised); box-shadow: var(--fc-shadow-panel); }
+
+/* ── Section heading ──────────────────────────────────────────────────── */
+.fc-section { margin-bottom: var(--fc-space-6); }
+.fc-section__eyebrow {
+  font-family: var(--fc-font-mono);
+  font-size: var(--fc-text-body-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--fc-label-tracking);
+  color: var(--fc-accent);
+  margin-bottom: var(--fc-space-2);
+}
+.fc-section__title {
+  font-family: var(--fc-font-display);
+  font-weight: var(--fc-weight-bold);
+  font-size: var(--fc-text-display-sm);
+  letter-spacing: var(--fc-display-tracking);
+  line-height: var(--fc-display-leading);
+  margin: 0;
+}
+.fc-section__sub {
+  color: var(--fc-fg-muted);
+  margin-top: var(--fc-space-2);
+  max-width: var(--fc-content-narrow);
+}
+
+/* ── Divider ──────────────────────────────────────────────────────────── */
+.fc-divider {
+  border: 0;
+  border-top: var(--fc-stroke-hairline) solid var(--fc-border);
+  margin: var(--fc-space-6) 0;
+}
+
+/* ── CaptureRow ───────────────────────────────────────────────────────────
+ * fragcap's signature component. A single observed packet: direction, the
+ * endpoint pair, the attributed process, and the capture state. The byte
+ * count and endpoints are mono so columns align down a long trace, and the
+ * state is a badge rather than a bare color. */
+.fc-capture-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: var(--fc-space-4);
+  padding: var(--fc-space-3) var(--fc-space-4);
+  border: var(--fc-stroke-hairline) solid var(--fc-border);
+  border-radius: var(--fc-radius-md);
+  background: var(--fc-panel);
+  font-family: var(--fc-font-mono);
+  font-size: var(--fc-text-body-sm);
+}
+.fc-capture-row + .fc-capture-row { margin-top: var(--fc-space-2); }
+
+.fc-capture-row[data-selected="true"] {
+  background: var(--fc-cyan-10);
+  border-color: var(--fc-accent);
+}
+
+.fc-capture-row__dir {
+  color: var(--fc-accent);
+  letter-spacing: var(--fc-label-tracking);
+}
+.fc-capture-row__flow { color: var(--fc-fg); }
+.fc-capture-row__flow em {
+  font-style: normal;
+  color: var(--fc-fg-muted);
+}
+/* One endpoint may be highlighted to mark the observation path. */
+.fc-capture-row__flow b { font-weight: 400; color: var(--fc-accent); }
+
+.fc-capture-row__proc {
+  font-family: var(--fc-font-body);
+  color: var(--fc-fg-muted);
+  font-size: var(--fc-text-body-xs);
+}
+.fc-capture-row__bytes {
+  color: var(--fc-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Code surface ─────────────────────────────────────────────────────── */
+.fc-code {
+  background: var(--fc-panel);
+  border: var(--fc-stroke-hairline) solid var(--fc-border);
+  border-radius: var(--fc-radius-lg);
+  padding: var(--fc-space-4) var(--fc-space-5);
+  font-family: var(--fc-font-mono);
+  font-size: var(--fc-text-body-sm);
+  line-height: var(--fc-code-leading);
+  color: var(--fc-fg);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* ── Form controls ────────────────────────────────────────────────────── */
+.fc-field { display: flex; flex-direction: column; gap: var(--fc-space-2); }
+.fc-label {
+  font-family: var(--fc-font-mono);
+  font-size: var(--fc-text-body-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--fc-label-tracking);
+  color: var(--fc-fg-muted);
+}
+.fc-input, .fc-select, .fc-textarea {
+  font-family: var(--fc-font-mono);
+  font-size: var(--fc-text-body-sm);
+  color: var(--fc-fg);
+  background: var(--fc-panel);
+  border: var(--fc-stroke-hairline) solid var(--fc-border);
+  border-radius: var(--fc-radius-md);
+  padding: var(--fc-space-3) var(--fc-space-4);
+  width: 100%;
+  transition: border-color var(--fc-motion-fast) var(--fc-ease);
+}
+.fc-input::placeholder, .fc-textarea::placeholder { color: var(--fc-fg-muted); }
+.fc-input:hover, .fc-select:hover, .fc-textarea:hover { border-color: var(--fc-accent); }
+.fc-textarea { min-height: 7rem; resize: vertical; line-height: var(--fc-code-leading); }
+.fc-select { appearance: none; padding-right: var(--fc-space-7); }
+
+/* Invalid state changes the border AND prints a message - never color alone. */
+.fc-input[aria-invalid="true"],
+.fc-select[aria-invalid="true"],
+.fc-textarea[aria-invalid="true"] { border-color: var(--fc-danger); }
+.fc-field__error {
+  font-family: var(--fc-font-body);
+  font-size: var(--fc-text-body-xs);
+  color: var(--fc-danger);
+}
+.fc-field__hint {
+  font-family: var(--fc-font-body);
+  font-size: var(--fc-text-body-xs);
+  color: var(--fc-fg-muted);
+}

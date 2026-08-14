@@ -1,0 +1,51 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* fragcap spacing, radii, stroke, shadow and motion
+ * Laboratory geometry: hairline borders, small radii, minimal shadow.
+ * No glass effects, chrome, or decorative gradients.
+ *
+ * These values existed in brand.tokens.json in v1.0.0 but had no CSS form,
+ * so nothing could actually consume them. */
+
+:root {
+  /* ── Spacing scale (4px base) ── */
+  --fc-space-1: 0.25rem;   /* 4 */
+  --fc-space-2: 0.5rem;    /* 8 */
+  --fc-space-3: 0.75rem;   /* 12 */
+  --fc-space-4: 1rem;      /* 16 */
+  --fc-space-5: 1.5rem;    /* 24 */
+  --fc-space-6: 2rem;      /* 32 */
+  --fc-space-7: 3rem;      /* 48 */
+  --fc-space-8: 4rem;      /* 64 */
+  --fc-space-9: 6rem;      /* 96 */
+
+  /* ── Radii ── */
+  --fc-radius-sm: 4px;     /* chips, small controls */
+  --fc-radius-md: 6px;     /* buttons, inputs */
+  --fc-radius-lg: 8px;     /* cards, panels */
+  --fc-radius-pill: 999px; /* badges */
+
+  /* ── Stroke ── */
+  --fc-stroke-hairline: 1px;
+  --fc-stroke-icon: 1.5px;
+  --fc-stroke-focus: 2px;
+
+  /* ── Shadow (rare, quiet) ── */
+  --fc-shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --fc-shadow-raised: 0 4px 16px rgba(0, 0, 0, 0.4);
+
+  /* ── Motion ── */
+  --fc-motion-fast: 120ms;
+  --fc-motion-normal: 180ms;
+  --fc-motion-slow: 240ms;
+  --fc-ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+
+  /* ── Layout ── */
+  --fc-content-max: 1200px;
+  --fc-content-narrow: 720px;
+
+  /* ── Logo clear space ──
+   * One orange terminal width. The mark is drawn on a 512 grid where the
+   * terminal is 34 units, so clear space is 34/368 of the mark's artwork
+   * width - about 9%. */
+  --fc-clearspace-ratio: 0.092;
+}

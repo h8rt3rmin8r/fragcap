@@ -1,15 +1,96 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/* fragcap color system
+ * Dark-first. Neutral surfaces carry structure; Signal Cyan is the observed
+ * signal; Capture Orange is the captured terminal or a state that requires
+ * inspection, and stays scarce so it keeps its meaning.
+ *
+ * Two things were missing from v1.0.0 and are added here:
+ *   1. A semantic layer (--fc-bg, --fc-fg, ...) plus a .fc-light class, so the
+ *      light reading mode the brand specifies is actually deliverable in code
+ *      instead of only described in prose.
+ *   2. A fault color. v1.0.0 had no failure state at all: success was cyan and
+ *      orange covered warnings, which left "this failed" with nothing to use.
+ *      Capture Orange and Fault Red sit only ~25 degrees apart in hue, so
+ *      status must always carry text or an icon as well - which the brand
+ *      already requires.
+ */
+
 :root {
-  --fragcap-signal-cyan: #27C7E7;
-  --fragcap-capture-orange: #FF5300;
-  --fragcap-void: #050708;
-  --fragcap-surface: #0B1115;
-  --fragcap-surface-raised: #101A20;
-  --fragcap-line: #21323A;
-  --fragcap-text: #F2F7F8;
-  --fragcap-text-muted: #94A8B0;
-  --fragcap-light-surface: #F5F8F9;
-  --fragcap-light-text: #102027;
-  --fragcap-light-cyan: #006F82;
-  --fragcap-light-orange: #C24100;
+  /* ── Brand immutables ── */
+  --fc-signal-cyan: #27C7E7;      /* observed signal, links, focus, active data */
+  --fc-capture-orange: #FF5300;   /* captured terminal, warning emphasis (rare) */
+  --fc-void: #050708;             /* primary background */
+  --fc-surface: #0B1115;          /* panels and code surfaces */
+  --fc-surface-raised: #101A20;   /* elevated controls, selected rows */
+  --fc-line: #21323A;             /* borders, separators, inactive diagrams */
+  --fc-text: #F2F7F8;             /* primary text on dark */
+  --fc-text-muted: #94A8B0;       /* secondary text on dark */
+
+  /* ── Light reading surface ── */
+  --fc-light-surface: #F5F8F9;    /* light reading background */
+  --fc-light-text: #102027;       /* primary text on light */
+  --fc-light-text-muted: #47606B; /* secondary text on light (AA on Light Surface) */
+  --fc-light-line: #D5DFE3;       /* borders on light */
+
+  /* ── Accessible accents for light surfaces ── */
+  /* The dark-tuned Signal Cyan is 1.89:1 on Light Surface. Never use it as
+     text there; these deeper values are the light-mode equivalents. */
+  --fc-light-cyan: #006F82;       /* 5.47:1 on Light Surface */
+  --fc-light-orange: #C24100;     /* 4.86:1 on Light Surface */
+
+  /* ── Fault ── */
+  --fc-fault: #E9505F;            /* 5.55:1 on Void - failed capture, hard error */
+  --fc-fault-deep: #C0293A;       /* 5.44:1 on Light Surface */
+
+  /* ── Transparent accent fills ── */
+  --fc-cyan-10: rgba(39, 199, 231, 0.10);
+  --fc-cyan-20: rgba(39, 199, 231, 0.20);
+  --fc-orange-10: rgba(255, 83, 0, 0.12);
+  --fc-fault-10: rgba(233, 80, 95, 0.12);
+
+  /* ── Semantic tokens - DARK (default brand surface) ── */
+  --fc-bg: var(--fc-void);
+  --fc-panel: var(--fc-surface);
+  --fc-panel-raised: var(--fc-surface-raised);
+  --fc-border: var(--fc-line);
+  --fc-fg: var(--fc-text);
+  --fc-fg-muted: var(--fc-text-muted);
+  --fc-accent: var(--fc-signal-cyan);
+  --fc-link: var(--fc-signal-cyan);
+  --fc-focus: var(--fc-signal-cyan);
+  --fc-warning: var(--fc-capture-orange);
+  --fc-danger: var(--fc-fault);
+}
+
+/* ── Semantic tokens - LIGHT (reading / documentation) ── */
+.fc-light {
+  --fc-bg: var(--fc-light-surface);
+  --fc-panel: #FFFFFF;
+  --fc-panel-raised: #FFFFFF;
+  --fc-border: var(--fc-light-line);
+  --fc-fg: var(--fc-light-text);
+  --fc-fg-muted: var(--fc-light-text-muted);
+  --fc-accent: var(--fc-light-cyan);
+  --fc-link: var(--fc-light-cyan);
+  --fc-focus: var(--fc-light-cyan);
+  --fc-warning: var(--fc-light-orange);
+  --fc-danger: var(--fc-fault-deep);
+}
+
+/* ── Legacy aliases ──
+ * v1.0.0 published --fragcap-* variable names. They are kept so existing
+ * product code keeps working; new work should use the --fc-* names above. */
+:root {
+  --fragcap-signal-cyan: var(--fc-signal-cyan);
+  --fragcap-capture-orange: var(--fc-capture-orange);
+  --fragcap-void: var(--fc-void);
+  --fragcap-surface: var(--fc-surface);
+  --fragcap-surface-raised: var(--fc-surface-raised);
+  --fragcap-line: var(--fc-line);
+  --fragcap-text: var(--fc-text);
+  --fragcap-text-muted: var(--fc-text-muted);
+  --fragcap-light-surface: var(--fc-light-surface);
+  --fragcap-light-text: var(--fc-light-text);
+  --fragcap-light-cyan: var(--fc-light-cyan);
+  --fragcap-light-orange: var(--fc-light-orange);
 }

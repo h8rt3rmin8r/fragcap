@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* fragcap design system - single entry point.
+ * Link this one file to load fonts, tokens, and base element styles:
+ *   <link rel="stylesheet" href="styles.css">
+ * The default surface is dark; add class="fc-light" on a container for
+ * reading mode. Component styles live in components/components.css. */
+
+@import "./fonts/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/base.css";

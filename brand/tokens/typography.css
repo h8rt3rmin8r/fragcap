@@ -1,10 +1,49 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/* fragcap typography
+ * Space Grotesk carries display hierarchy, Geist handles reading and interface
+ * text, Geist Mono carries packet payloads, code, labels and metadata.
+ * Hex dumps never use ligatures and never apply smart quotes or automatic
+ * character substitution. */
+
 :root {
-  --fragcap-font-display: "Space Grotesk", system-ui, sans-serif;
-  --fragcap-font-body: "Geist", system-ui, sans-serif;
-  --fragcap-font-mono: "Geist Mono", ui-monospace, monospace;
-  --fragcap-display-tracking: -0.025em;
-  --fragcap-label-tracking: 0.08em;
-  --fragcap-body-leading: 1.65;
-  --fragcap-code-leading: 1.5;
+  /* ── Families ── */
+  --fc-font-display: "Space Grotesk", system-ui, sans-serif;
+  --fc-font-body: "Geist", system-ui, sans-serif;
+  --fc-font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ── Weights ── */
+  --fc-weight-regular: 400;
+  --fc-weight-medium: 500;
+  --fc-weight-bold: 700;
+
+  /* ── Display scale ── */
+  --fc-text-display-lg: 3.25rem;   /* 52 - title pages */
+  --fc-text-display-md: 2.5rem;    /* 40 - page heads */
+  --fc-text-display-sm: 1.75rem;   /* 28 - section heads */
+  --fc-text-heading: 1.25rem;      /* 20 - subheads */
+
+  /* ── Body scale ── */
+  --fc-text-body-lg: 1.125rem;     /* 18 - lead paragraphs */
+  --fc-text-body-md: 1rem;         /* 16 - default */
+  --fc-text-body-sm: 0.875rem;     /* 14 - dense tables, captions */
+  --fc-text-body-xs: 0.75rem;      /* 12 - eyebrows, metadata */
+
+  /* ── Tracking ── */
+  --fc-display-tracking: -0.025em; /* display and headings */
+  --fc-label-tracking: 0.08em;     /* mono labels, eyebrows, capture states */
+  --fc-body-tracking: 0;
+
+  /* ── Leading ── */
+  --fc-body-leading: 1.65;
+  --fc-code-leading: 1.5;
+  --fc-display-leading: 1.1;
+
+  /* ── Legacy aliases (v1.0.0 names) ── */
+  --fragcap-font-display: var(--fc-font-display);
+  --fragcap-font-body: var(--fc-font-body);
+  --fragcap-font-mono: var(--fc-font-mono);
+  --fragcap-display-tracking: var(--fc-display-tracking);
+  --fragcap-label-tracking: var(--fc-label-tracking);
+  --fragcap-body-leading: var(--fc-body-leading);
+  --fragcap-code-leading: var(--fc-code-leading);
 }
