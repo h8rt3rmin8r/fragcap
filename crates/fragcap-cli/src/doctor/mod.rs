@@ -40,8 +40,11 @@ pub enum Privilege {
 pub struct NpcapInfo {
     /// The version string the driver reports.
     pub version: String,
-    /// Whether loopback capture support is installed (a non-default option).
-    pub loopback_adapter: bool,
+    /// Whether loopback capture is available, as three-valued driver truth:
+    /// `Some(true)` present, `Some(false)` determined absent, `None` not
+    /// determined (for example on a build without the live capture backend). It
+    /// comes from enumerating the loopback adapter, never from a proxy file.
+    pub loopback_supported: Option<bool>,
     /// Whether WinPcap API compatibility mode is installed (a non-default
     /// option).
     pub winpcap_api_mode: bool,
@@ -64,6 +67,16 @@ pub struct IfaceInfo {
 /// test.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Inputs {
+    /// The fragcap version that produced this report. Carried as a field (not
+    /// read in the classifier) so a test fixture supplies a fixed value and the
+    /// goldens do not churn on a release bump.
+    pub fragcap_version: String,
+    /// The absolute path of the running binary, when it can be determined.
+    pub binary_path: Option<std::path::PathBuf>,
+    /// The user profile directory, reported regardless of whether it exists yet.
+    pub profile_dir: Option<std::path::PathBuf>,
+    /// The default hint-database path, reported regardless of existence.
+    pub hint_db_path: Option<std::path::PathBuf>,
     /// The operating system description.
     pub os: String,
     /// Native or a subsystem.
@@ -212,26 +225,49 @@ impl Report {
     }
 
     /// Render the human report as aligned columns grouped by section, ending
-    /// with the readiness verdict.
+    /// with the readiness verdict. Plain text with no color; this is the
+    /// golden-tested form.
     pub fn render_human(&self) -> String {
+        self.render_human_with(false)
+    }
+
+    /// Render the human report, optionally colorizing status words and bolding
+    /// section headings with ANSI. `color` is the caller's choice from whether
+    /// the destination is an interactive terminal; the plain form
+    /// (`color == false`) is byte-identical to [`Report::render_human`], so the
+    /// golden path is never colorized.
+    pub fn render_human_with(&self, color: bool) -> String {
         let mut out = String::new();
         let mut section = "";
         for check in &self.checks {
             if check.section != section {
-                out.push_str(check.section);
+                if !section.is_empty() {
+                    out.push('\n');
+                }
+                if color {
+                    out.push_str(ANSI_BOLD);
+                    out.push_str(check.section);
+                    out.push_str(ANSI_RESET);
+                } else {
+                    out.push_str(check.section);
+                }
                 out.push('\n');
                 section = check.section;
             }
-            out.push_str(&format!(
-                "  {:<22} {:<5} {}\n",
-                check.name,
-                check.status.as_str(),
-                check.detail
-            ));
+            // The visible prefix is "  " + name(22) + " " + status(5) + " " = 31
+            // columns, so a wrapped detail continuation hangs under column 31.
+            out.push_str(&format!("  {:<22} ", check.name));
+            out.push_str(&status_field(check.status, color));
+            out.push(' ');
+            out.push_str(&wrap_hanging(&check.detail, DETAIL_INDENT, LINE_WIDTH));
+            out.push('\n');
             if let Some(remediation) = &check.remediation {
-                out.push_str(&format!("    remediation: {remediation}\n"));
+                out.push_str("    remediation: ");
+                out.push_str(&wrap_hanging(remediation, REMEDIATION_INDENT, LINE_WIDTH));
+                out.push('\n');
             }
         }
+        out.push('\n');
         if self.ready() {
             out.push_str("Ready to capture.\n");
         } else {
@@ -268,4 +304,60 @@ impl Report {
         }
         out
     }
+}
+
+/// The column a wrapped detail continuation hangs under: "  " + name(22) + " " +
+/// status(5) + " ".
+const DETAIL_INDENT: usize = 31;
+/// The column a wrapped remediation continuation hangs under: "    remediation: ".
+const REMEDIATION_INDENT: usize = 17;
+/// The width no default-content line should exceed.
+const LINE_WIDTH: usize = 80;
+
+/// Reset all ANSI styling.
+const ANSI_RESET: &str = "\x1b[0m";
+/// Bold, for section headings when color is on.
+const ANSI_BOLD: &str = "\x1b[1m";
+
+/// The five-column status field, optionally colored. When color is on only the
+/// word is wrapped in an escape; the padding stays plain so the columns keep
+/// their visible width.
+fn status_field(status: Status, color: bool) -> String {
+    let word = status.as_str();
+    if !color {
+        return format!("{word:<5}");
+    }
+    let code = match status {
+        Status::Ok => "\x1b[32m",
+        Status::Warn => "\x1b[33m",
+        Status::Skip => "\x1b[2m",
+        Status::Fail => "\x1b[1;31m",
+    };
+    let pad = " ".repeat(5usize.saturating_sub(word.len()));
+    format!("{code}{word}{ANSI_RESET}{pad}")
+}
+
+/// Wrap `text` on word boundaries so no line exceeds `width` columns, hanging
+/// continuations under `indent` spaces. A single word longer than the available
+/// width is left whole rather than split, so a path or URL stays intact.
+fn wrap_hanging(text: &str, indent: usize, width: usize) -> String {
+    let avail = width.saturating_sub(indent).max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if cur.len() + 1 + word.len() <= avail {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    let indent_str = " ".repeat(indent);
+    lines.join(&format!("\n{indent_str}"))
 }

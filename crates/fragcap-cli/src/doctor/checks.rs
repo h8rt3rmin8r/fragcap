@@ -11,6 +11,7 @@
 
 use super::{Check, Inputs, Privilege, Report, Subsystem};
 
+const IDENTITY: &str = "Identity";
 const PLATFORM: &str = "Platform";
 const DRIVER: &str = "Capture driver";
 const TRACING: &str = "Tracing";
@@ -19,12 +20,14 @@ const INTEGRATION: &str = "Integration";
 const PROFILES: &str = "Profiles";
 
 /// Where to obtain npcap. fragcap never installs it (the Licensing section).
-const NPCAP_SOURCE: &str = "fragcap does not install npcap; obtain it from https://npcap.com and \
-     install it, then run doctor again";
+const NPCAP_SOURCE: &str = "fragcap does not install npcap; obtain it from https://npcap.com, or \
+     install Wireshark (https://www.wireshark.org), whose installer also provides npcap, then run \
+     doctor again";
 
 /// Run every classifier in section order.
 pub fn run(inputs: &Inputs) -> Report {
-    let mut checks = vec![
+    let mut checks = identity(inputs);
+    checks.extend([
         os(inputs),
         subsystem(inputs),
         privilege(inputs),
@@ -34,11 +37,30 @@ pub fn run(inputs: &Inputs) -> Report {
         live_backend(inputs),
         socket_table_backend(inputs),
         tracing(inputs),
-    ];
+    ]);
     checks.extend(interfaces(inputs));
     checks.push(integration(inputs));
     checks.push(profiles(inputs));
     Report { checks }
+}
+
+/// The leading identity section: which fragcap produced this report and where it
+/// keeps its data. Every row is informational (ok) and never changes the exit
+/// status; a path is shown whether or not it exists yet, and an unresolvable one
+/// renders as "undetermined" rather than an empty or wrong value.
+fn identity(inputs: &Inputs) -> Vec<Check> {
+    fn path_detail(path: &Option<std::path::PathBuf>) -> String {
+        match path {
+            Some(path) => path.display().to_string(),
+            None => "undetermined".to_string(),
+        }
+    }
+    vec![
+        Check::ok(IDENTITY, "version", inputs.fragcap_version.clone()),
+        Check::ok(IDENTITY, "binary", path_detail(&inputs.binary_path)),
+        Check::ok(IDENTITY, "profile dir", path_detail(&inputs.profile_dir)),
+        Check::ok(IDENTITY, "hint db", path_detail(&inputs.hint_db_path)),
+    ]
 }
 
 fn os(inputs: &Inputs) -> Check {
@@ -81,20 +103,27 @@ fn npcap(inputs: &Inputs) -> Check {
 fn loopback(inputs: &Inputs) -> Check {
     match &inputs.npcap {
         None => Check::skip(DRIVER, "loopback adapter", "npcap is not installed"),
-        Some(info) if info.loopback_adapter => {
-            Check::ok(DRIVER, "loopback adapter", "loopback capture supported")
-        }
-        // Only needed with --loopback, so a non-blocking warning in standalone
-        // doctor rather than a blocking fail. The remediation is folded into the
-        // detail because a warn carries no separate remediation line. The
-        // run/extcap path that actually requests --loopback treats its absence
-        // as blocking on that path.
-        Some(_) => Check::warn(
-            DRIVER,
-            "loopback adapter",
-            "loopback capture support is not installed; reinstall npcap with the \
-             \"Support loopback traffic\" option to enable it (only needed with --loopback)",
-        ),
+        // Three-valued driver truth. Loopback is only needed with --loopback, so
+        // neither absence nor an undetermined state blocks standalone doctor; the
+        // run/extcap path that actually requests --loopback treats its absence as
+        // blocking on that path. The old signal guessed from an unrelated file and
+        // is gone; and current npcap installs loopback automatically, with no
+        // installer checkbox, so the wording no longer tells the operator to pick
+        // one.
+        Some(info) => match info.loopback_supported {
+            Some(true) => Check::ok(DRIVER, "loopback adapter", "loopback capture supported"),
+            Some(false) => Check::warn(
+                DRIVER,
+                "loopback adapter",
+                "loopback capture is not available; it is only needed when capturing \
+                 loopback traffic with --loopback",
+            ),
+            None => Check::warn(
+                DRIVER,
+                "loopback adapter",
+                "loopback support could not be determined",
+            ),
+        },
     }
 }
 
@@ -231,10 +260,17 @@ fn integration(inputs: &Inputs) -> Check {
         };
         Check::ok(INTEGRATION, "analyzer extcap", detail)
     } else {
-        // Optional: a warning, never a block.
+        // Optional: a warning, never a block. Wireshark's extcap framework is
+        // always present; what is not yet in place is fragcap's registration as
+        // one of its sources, which `fragcap extcap install` (slice 041) will do.
         let detail = match &location {
-            Some(dir) => format!("not installed; copy the fragcap binary into {dir} (optional)"),
-            None => "not installed; the analyzer integration is optional".to_string(),
+            Some(dir) => format!(
+                "not registered as a Wireshark extcap source; run `fragcap extcap install` to \
+                 register it in {dir} (optional)"
+            ),
+            None => "not registered as a Wireshark extcap source; run `fragcap extcap install` \
+                     to register it (optional)"
+                .to_string(),
         };
         Check::warn(INTEGRATION, "analyzer extcap", detail)
     }
@@ -259,12 +295,22 @@ mod tests {
 
     fn ready_inputs() -> Inputs {
         Inputs {
+            fragcap_version: "0.0.0-test".to_string(),
+            binary_path: Some(std::path::PathBuf::from(
+                "C:\\Program Files\\fragcap\\fragcap.exe",
+            )),
+            profile_dir: Some(std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles",
+            )),
+            hint_db_path: Some(std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\hint.db",
+            )),
             os: "Windows 11".to_string(),
             subsystem: Subsystem::Native,
             privilege: Privilege::Elevated,
             npcap: Some(NpcapInfo {
                 version: "1.79".to_string(),
-                loopback_adapter: true,
+                loopback_supported: Some(true),
                 winpcap_api_mode: true,
             }),
             etw_available: Some(true),
@@ -311,7 +357,7 @@ mod tests {
         // ready.
         let mut inputs = ready_inputs();
         if let Some(info) = inputs.npcap.as_mut() {
-            info.loopback_adapter = false;
+            info.loopback_supported = Some(false);
         }
         let report = run(&inputs);
         assert_eq!(loopback(&inputs).status, Status::Warn);
@@ -386,7 +432,7 @@ mod tests {
         let mut inputs = ready_inputs();
         inputs.npcap = Some(NpcapInfo {
             version: "1.79".to_string(),
-            loopback_adapter: false,
+            loopback_supported: Some(false),
             winpcap_api_mode: false,
         });
         inputs.privilege = Privilege::Elevated;
@@ -470,5 +516,64 @@ mod tests {
             .iter()
             .any(|c| c.section == INTERFACES && c.status == Status::Warn));
         assert!(report.ready());
+    }
+
+    #[test]
+    fn loopback_is_three_valued_and_never_blocks() {
+        // Determined present, determined absent, and undetermined are ok, warn,
+        // warn respectively, and none of them blocks readiness (loopback is only
+        // needed with --loopback).
+        for (state, want) in [
+            (Some(true), Status::Ok),
+            (Some(false), Status::Warn),
+            (None, Status::Warn),
+        ] {
+            let mut inputs = ready_inputs();
+            if let Some(info) = inputs.npcap.as_mut() {
+                info.loopback_supported = state;
+            }
+            assert_eq!(loopback(&inputs).status, want, "state {state:?}");
+            assert!(
+                run(&inputs).ready(),
+                "loopback never blocks: state {state:?}"
+            );
+        }
+        // Undetermined says so and never claims loopback is not installed.
+        let mut inputs = ready_inputs();
+        if let Some(info) = inputs.npcap.as_mut() {
+            info.loopback_supported = None;
+        }
+        let detail = loopback(&inputs).detail;
+        assert!(detail.contains("could not be determined"), "{detail}");
+        assert!(!detail.contains("not installed"), "{detail}");
+    }
+
+    #[test]
+    fn the_identity_section_leads_and_is_informational() {
+        let report = run(&ready_inputs());
+        // The first four rows are the identity section, all ok.
+        let identity: Vec<_> = report
+            .checks
+            .iter()
+            .filter(|c| c.section == IDENTITY)
+            .collect();
+        assert_eq!(identity.len(), 4, "version, binary, profile dir, hint db");
+        assert!(identity.iter().all(|c| c.status == Status::Ok));
+        assert_eq!(report.checks[0].section, IDENTITY, "identity leads");
+        assert!(
+            report.checks[0].detail.contains("0.0.0-test"),
+            "version row"
+        );
+        // Identity is informational: an unresolvable path is an ok note, and the
+        // machine stays ready.
+        let mut inputs = ready_inputs();
+        inputs.binary_path = None;
+        inputs.profile_dir = None;
+        inputs.hint_db_path = None;
+        let report = run(&inputs);
+        assert!(report.ready(), "unresolvable paths do not block");
+        let binary = report.checks.iter().find(|c| c.name == "binary").unwrap();
+        assert_eq!(binary.status, Status::Ok);
+        assert_eq!(binary.detail, "undetermined");
     }
 }
