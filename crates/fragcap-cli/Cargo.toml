@@ -20,6 +20,11 @@ default      = []
 live         = ["fragcap/live"]
 socket-table = ["fragcap/socket-table"]
 etw          = ["fragcap/etw"]
+# The live catalog seeder (issue #78, slice S035). Off by default: the shipped tool
+# seeds offline from a fixture; a maintainer builds with `--features net` to seed
+# the hint database from the Steam Web API. End users consume the shipped data file
+# (#58) and never seed, so they never pay for the HTTP client.
+net          = ["fragcap/net"]
 
 # The library is the testable product: `fragcap_cli::run` drives the whole
 # command surface without spawning a process. The binary is a shim over it.

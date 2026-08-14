@@ -1,0 +1,8 @@
+[
+  { "appid": 306130, "name": "The Elder Scrolls Online", "classification": "game", "review_count": 5000, "peak_ccu": 12000 },
+  { "appid": 570, "name": "Dota 2", "classification": "game", "review_count": 2000000, "peak_ccu": 700000 },
+  { "appid": 440, "name": "Obscure Indie", "classification": "game", "review_count": 50 },
+  { "appid": 700, "name": "Some Editor Tool", "classification": "other", "review_count": 9999 },
+  { "appid": 730, "classification": "game", "review_count": 100000 },
+  { "name": "Broken Entry With No AppId", "classification": "game", "review_count": 800 }
+]

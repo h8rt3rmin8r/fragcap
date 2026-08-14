@@ -771,6 +771,44 @@ than rebuilding the whole corpus.
 **See also:** [Hint database](#hint-database), [Launch array](#launch-array),
 [Engine attribution](#engine-attribution)
 
+## Catalog seeder
+
+The [seeding tier](#seeding-tier) that fills the [hint database](#hint-database)'s
+public-catalog columns (application id, name, and popularity metrics) from a
+catalog source. It reads a source's entries, applies the [corpus gate](#corpus-gate),
+merges the admitted titles by application id (leaving other tiers' columns intact),
+records a resume cursor after each page, and returns a [seed summary](#seed-summary).
+Its logic is driven in tests by an offline fixture source and in production by a
+read-only HTTP source; the two share one contract, so the seeder is tested without
+a network.
+
+**See also:** [Corpus gate](#corpus-gate), [Seed summary](#seed-summary),
+[Seeding tier](#seeding-tier), [Hint database](#hint-database)
+
+## Corpus gate
+
+The rule the [catalog seeder](#catalog-seeder) applies to decide whether a catalog
+entry belongs in the corpus: it admits a title only if the title is a game and its
+review count is known and at or above a configurable threshold. The Steam app-list
+universe is large and mostly noise; the gate scopes the corpus to the titles that
+matter. A title whose popularity is unknown is excluded, not admitted on a guess
+(P-9), and every exclusion is counted in the [seed summary](#seed-summary), never a
+silent omission.
+
+**See also:** [Catalog seeder](#catalog-seeder), [Seed summary](#seed-summary)
+
+## Seed summary
+
+The truthful account a [catalog seeder](#catalog-seeder) run returns: how many
+titles it fetched, wrote, excluded by the [corpus gate](#corpus-gate), saw as a
+within-run duplicate appid (merged once, not written twice), and failed to parse.
+The counts reconcile (fetched equals written plus excluded plus duplicates plus
+failed), so a corpus that dropped what it could not handle, or a repeated title
+that would otherwise overstate the total, cannot read as complete. This is the
+seeding-time form of the No Silent Loss principle (P-4).
+
+**See also:** [Catalog seeder](#catalog-seeder), [Corpus gate](#corpus-gate)
+
 ## Target hint record
 
 A loose, partial artifact emitted by a heuristic provider or the hint database.

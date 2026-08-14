@@ -33,6 +33,9 @@ etw          = ["fragcap-attr/etw"]
 # build compiles neither the embedded SQLite engine nor a C toolchain for it; a
 # consumer that wants the store opts in. Slice S034 plan decision 7.
 targets      = ["dep:fragcap-targets"]
+# The live catalog seeder's HTTP source (issue #78, slice S035). Off by default;
+# implies `targets`. A library consumer that wants to seed from the wire opts in.
+net          = ["targets", "fragcap-targets/net"]
 
 [dependencies]
 fragcap-core.workspace = true

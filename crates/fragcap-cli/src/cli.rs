@@ -365,8 +365,9 @@ pub struct TargetsArgs {
     pub command: TargetsCommand,
 }
 
-/// The `targets` subcommands. Both operate only on local paths, with no network
-/// access.
+/// The `targets` subcommands. `import` and `export` operate only on local paths;
+/// `seed` is offline from a fixture unless the `net` feature and `--steam` select
+/// the live catalog.
 #[derive(Debug, Subcommand)]
 pub enum TargetsCommand {
     /// Load a local JSON seed document into the store, creating it if needed.
@@ -383,6 +384,40 @@ pub enum TargetsCommand {
         #[arg(long)]
         db: PathBuf,
     },
+    /// Seed the catalog tier (Tier 1: appid, name, metrics) into the store.
+    Seed(TargetsSeedArgs),
+}
+
+/// Arguments to `targets seed`.
+///
+/// Exactly one catalog source is required. In a default build that is `--from`; a
+/// `net` build adds `--steam`, and the two are mutually exclusive, so `--from`
+/// with `--steam`, or neither, is a usage error (exit 2) rather than a silent
+/// choice.
+#[derive(Debug, Args)]
+#[cfg_attr(
+    feature = "net",
+    command(group(ArgGroup::new("catalog_source").required(true).args(["from", "steam"])))
+)]
+#[cfg_attr(
+    not(feature = "net"),
+    command(group(ArgGroup::new("catalog_source").required(true).args(["from"])))
+)]
+pub struct TargetsSeedArgs {
+    /// Seed from a local catalog document (offline).
+    #[arg(long)]
+    pub from: Option<PathBuf>,
+    /// Seed from the live Steam catalog over the network. Only present in a build
+    /// with the `net` feature; the maintainer's seeding build.
+    #[cfg(feature = "net")]
+    #[arg(long)]
+    pub steam: bool,
+    /// The store file to seed, created if absent.
+    #[arg(long)]
+    pub db: PathBuf,
+    /// The review-count corpus threshold; a title needs at least this many reviews.
+    #[arg(long, default_value_t = fragcap::targets::DEFAULT_MIN_REVIEWS)]
+    pub min_reviews: u64,
 }
 
 /// Arguments to `doctor`.

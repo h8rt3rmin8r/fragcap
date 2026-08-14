@@ -177,6 +177,33 @@ rusqlite        = { version = "0.40", default-features = false, features = [
     "bundled",
 ] }
 
+# External, optional. Slice S035, research R-1: the HTTP client the targets hint
+# database's live catalog seeder is built on (issue #78), behind the `net` feature
+# on fragcap-targets and off by default, so a default build and the offline test
+# suite pull neither a client nor a TLS stack. On fragcap-targets alone.
+#
+# `native-tls` (not rustls) is load-bearing for two independent reasons. The rustls
+# path forces `webpki-roots`, whose bundled Mozilla root store is licensed
+# CDLA-Permissive-2.0, outside this project's allowed set (MIT/Apache/BSD/ISC/
+# Unicode-DFS/Zlib); native-tls uses the operating system trust store (schannel on
+# Windows) and bundles no roots. And every client built on the `url` crate (ureq,
+# attohttpc) pulls `idna` 1.x and the whole ICU4X stack, measured at 42 packages,
+# the same graph S025 rejected `boon` for. `http_req` does its own URL parsing, so
+# with native-tls it adds 18 packages, no ICU4X and no `ring`, all MIT or
+# Apache-2.0.
+#
+# MSRV is not a binding constraint here: `net` is off by default and
+# `cargo xtask msrv` builds the default-feature workspace, so `http_req` (and a
+# transitive `zeroize` that declares edition 2024) is never compiled under 1.82,
+# exactly as `pcap` behind `live` is not. Verified by building net-off under 1.82
+# and net-on under the pinned toolchain. `http_req` is smaller and less widely used
+# than `ureq`; the risk is bounded because it sits behind the `CatalogSource` trait
+# (swapping it is a one-module change) and is compiled but never run in CI. See the
+# S035 decisions fragment.
+http_req        = { version = "0.13", default-features = false, features = [
+    "native-tls",
+] }
+
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is
 # hand-rolled because its exact byte shape is the deliverable, and this parses
 # every line it emits so validity is judged by something other than the writer.

@@ -87,6 +87,43 @@ impl Store {
         Ok(())
     }
 
+    /// Merge one title's Tier 1 (public catalog) columns: insert the row if the
+    /// appid is new, or update only `name` and the catalog metrics if it exists.
+    ///
+    /// This is deliberately not [`Store::upsert_game`]: the catalog seeder knows
+    /// only appid, name, and metrics, and the whole-game replace would erase any
+    /// launch entries (Tier 2) and engine attribution (Tier 3) a later seeder had
+    /// written. `merge_catalog` leaves `launcher_mediated`, `token_required`, the
+    /// engine columns, and the launch and technology rows untouched. An empty or
+    /// absent name is stored as NULL, never `""` (the S034 guard).
+    pub fn merge_catalog(
+        &mut self,
+        appid: u32,
+        name: Option<&str>,
+        review_count: Option<u64>,
+        owners: Option<u64>,
+        peak_ccu: Option<u64>,
+    ) -> Result<(), TargetsError> {
+        let name = name.filter(|s| !s.is_empty());
+        self.conn.execute(
+            "INSERT INTO games (appid, name, review_count, owners, peak_ccu)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(appid) DO UPDATE SET
+                name         = excluded.name,
+                review_count = excluded.review_count,
+                owners       = excluded.owners,
+                peak_ccu     = excluded.peak_ccu",
+            params![
+                appid,
+                name,
+                review_count.map(|v| v as i64),
+                owners.map(|v| v as i64),
+                peak_ccu.map(|v| v as i64),
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Read every game, each with its launch entries (ordered) and technologies
     /// (ordered), sorted by appid.
     pub fn games(&self) -> Result<Vec<Game>, TargetsError> {
