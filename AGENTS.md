@@ -255,6 +255,23 @@ load-bearing rather than bookkeeping.
 | `serde_json` | runtime (in `fragcap-profile`), dev elsewhere | S07, promoted S25 | Parses target JSON for the master-schema validator (S25); parses the JSON writer's output in tests (S07) |
 | `rusqlite` | runtime, optional | S034 | The embedded SQLite store the targets hint database is built on, behind the `targets` feature |
 | `http_req` | runtime, optional | S035 | The HTTP client the live catalog seeder uses, behind the `net` feature |
+| `winresource` | build, windows-only | S048 | Stamps the exe's PE FileVersion from `CARGO_PKG_VERSION` (issue #104), behind `[target.'cfg(windows)'.build-dependencies]` |
+
+S048 added `winresource`, the workspace's first build-dependency, to stamp the
+Windows exe's version resource so `Get-Command fragcap` reports the real version
+rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
+which is the load-bearing choice: the default `toml` feature pulls the `toml` crate,
+which declares Rust 1.85 and would break the 1.82 MSRV gate exactly as it did in
+S05, so it is dropped and every VERSIONINFO field is set through the API instead.
+The delta to `Cargo.lock` is then exactly two packages, `winresource` and its one
+transitive `version_check`, both MIT or Apache-2.0; no `toml`. It lives only under
+`fragcap-cli`'s `cfg(windows)` build-dependencies, so a non-windows or cross build
+never compiles it, and `cargo xtask deps` ignores build-dependencies, so the first
+`[build-dependencies]` does not touch the runtime-graph gate; the only new gate
+interaction is MSRV, verified green under 1.82. `embed-resource` was rejected because
+its `toml` dependency is unconditional (no feature switch) and it carries a larger
+graph; a hand-rolled `.rc` plus the SDK resource compiler was kept only as the
+fallback had `winresource` failed the 1.82 floor, which it did not.
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
 pcap file is a header and a run of records, the attribution script format is

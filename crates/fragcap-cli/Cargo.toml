@@ -63,6 +63,16 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Registry",
 ] }
 
+# Windows only, at build time: stamps the exe's PE VERSIONINFO (FileVersion and
+# ProductVersion) from CARGO_PKG_VERSION so `Get-Command fragcap` no longer reports
+# 0.0.0.0 (issue #104). `default-features = false` drops winresource's optional
+# `toml` dependency (which declares Rust 1.85 and would break the 1.82 MSRV gate,
+# the trap slice S05 documented); we set every field through the API instead. This
+# is the workspace's first build-dependency; it adds only `winresource` and
+# `version_check` to Cargo.lock, both MIT/Apache-2.0.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1.31", default-features = false }
+
 [dev-dependencies]
 tempfile.workspace   = true
 # The synthetic appinfo generator for the launch-accumulation integration test

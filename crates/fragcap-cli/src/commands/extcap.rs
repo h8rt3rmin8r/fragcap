@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use fragcap::profile::resolve;
 
 use crate::assemble;
-use crate::cli::{ExtcapAction, ExtcapArgs};
+use crate::cli::{ExtcapAction, ExtcapArgs, ExtcapInstallArgs};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 use crate::orchestrator;
@@ -49,8 +49,8 @@ pub fn run(
     // analyzer protocol dispatch below runs exactly as before.
     if let Some(action) = &args.action {
         return match action {
-            ExtcapAction::Install(a) => install(a.dir.as_deref(), out),
-            ExtcapAction::Uninstall(a) => uninstall(a.dir.as_deref(), out),
+            ExtcapAction::Install(a) => install(a, out),
+            ExtcapAction::Uninstall(a) => uninstall(a, out),
         };
     }
     if args.extcap_interfaces {
@@ -76,14 +76,24 @@ pub fn run(
 /// The extcap directory to register into: the explicit `--dir`, else the
 /// per-user platform location (which honors `FRAGCAP_EXTCAP_DIR`). An error when
 /// neither can be determined, so a failed registration is never silent (FR-008).
-fn resolve_dir(dir_override: Option<&Path>) -> Result<PathBuf, CliError> {
-    if let Some(dir) = dir_override {
+/// Resolve the extcap directory the scope selects. `--dir` is an explicit
+/// override; otherwise `--system` selects the machine-wide directory and the
+/// default (or `--user`) selects the per-user one. The three are mutually
+/// exclusive at the CLI layer (the `extcap_scope` arg group), so at most one is
+/// set here. An undeterminable directory names the scope and points at `--dir`.
+fn resolve_dir(args: &ExtcapInstallArgs) -> Result<PathBuf, CliError> {
+    if let Some(dir) = args.dir.as_deref() {
         return Ok(dir.to_path_buf());
     }
-    paths::extcap_dir().ok_or_else(|| {
-        CliError::failure(
-            "could not determine the Wireshark extcap directory on this platform; pass --dir",
-        )
+    let (dir, scope) = if args.system {
+        (paths::system_extcap_dir(), "machine-wide")
+    } else {
+        (paths::extcap_dir(), "per-user")
+    };
+    dir.ok_or_else(|| {
+        CliError::failure(format!(
+            "could not determine the {scope} Wireshark extcap directory on this platform; pass --dir"
+        ))
     })
 }
 
@@ -91,8 +101,8 @@ fn resolve_dir(dir_override: Option<&Path>) -> Result<PathBuf, CliError> {
 /// the extcap directory under the name `doctor` probes for. Idempotent: it
 /// overwrites any existing registration so the registered copy matches the
 /// running fragcap.
-fn install(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let dir = resolve_dir(dir_override)?;
+fn install(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let dir = resolve_dir(args)?;
     let source = std::env::current_exe().map_err(|e| {
         CliError::failure(format!(
             "could not determine the running fragcap binary: {e}"
@@ -140,8 +150,8 @@ fn is_same_existing_file(a: &Path, b: &Path) -> bool {
 
 /// Remove fragcap's Wireshark extcap registration. Idempotent: removing an
 /// absent registration is a success reported as a no-op.
-fn uninstall(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let dir = resolve_dir(dir_override)?;
+fn uninstall(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let dir = resolve_dir(args)?;
     let dest = dir.join(paths::EXTCAP_BINARY);
     // `try_exists` distinguishes "absent" from "could not be checked": a
     // registered binary that is present but inaccessible (ACLs, an I/O error)
