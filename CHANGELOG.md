@@ -16,6 +16,1378 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-14
+
+### Highlights
+
+v0.3.0 makes fragcap installable and lets it capture a game launched any way, not
+just a Steam title started through Steam.
+
+- **Windows installer (MSI).** A one-click installer puts `fragcap` on your PATH,
+  installs the targets hint database, and links the npcap download page. A
+  portable `.zip` and the hint database are also published, each with a SHA-256
+  checksum. The installer is unsigned for this release (see Installing below);
+  code signing is tracked for a later release.
+- **Capture any game, launched any way.** A new target resolution cascade and a
+  `watch` mode capture a game by identity (its executable name plus an optional
+  path anchor), however and wherever it starts. Modded installs launched from a
+  mod manager, standalone titles, and non-Steam games are now capturable, not
+  only Steam-launched ones. Runtime observation is the final arbiter and opens no
+  process handle.
+- **A targets hint database.** An embedded, offline database seeds which client a
+  game runs. It ships empty and grows privately from your own machine as you
+  capture; nothing about your library is shipped or shared.
+- **Engine-aware resolution.** Unreal, Unity, Godot, and Ren'Py installs are
+  recognized by their layout, so the process that actually holds the sockets is
+  found even when the launched executable is a stub.
+- **One schema for every artifact.** Profiles are now JSON governed by a
+  published master schema; `fragcap schema validate <file>` checks any targeting
+  or attribution file and reports every problem in one pass.
+- **Clearer live capture.** Live capture now refuses up front when it is not
+  elevated, explaining how to re-launch, instead of failing later inside the
+  driver.
+
+#### Installing on Windows
+
+1. Download `fragcap-0.3.0-x86_64.msi` and its `.sha256` from the assets below.
+2. Verify it: `Get-FileHash fragcap-0.3.0-x86_64.msi -Algorithm SHA256` should
+   match the value in the `.sha256` file. The installer is unsigned, so Windows
+   shows a SmartScreen "Windows protected your PC" warning with an "Unknown
+   Publisher" note; this is expected. Choose **More info**, then **Run anyway**.
+3. Run the installer. It installs to `Program Files`, adds fragcap to the system
+   PATH, and installs the hint database.
+4. Open a **new** terminal (so the PATH change takes effect) and run
+   `fragcap doctor` to check your setup.
+5. Live capture also needs the **npcap** driver, which the installer cannot
+   bundle. Install it from https://npcap.com (the installer links it on
+   completion) with its two non-default options enabled: **WinPcap API-compatible
+   mode** and **loopback traffic capture support** (fragcap needs both; `fragcap
+   doctor` names either if it is missing).
+
+Prefer no installer? Download the portable
+`fragcap-0.3.0-x86_64-pc-windows-msvc.zip` instead and run `fragcap.exe` from the
+unzipped folder; it carries the hint database beside the binary.
+
+### Added
+
+Live capture (`run`, `tap`, and analyzer capture) now detects when it is not
+running with Administrator rights and refuses before touching the capture driver,
+explaining how to re-launch elevated, instead of failing later with a lower-level
+driver error. Offline and read-only commands still run without elevation.
+
+A master JSON Schema (Draft 2020-12) now governs every machine-readable
+targeting and attribution artifact under one versioned vocabulary: a profile, a
+hand-authored package, a heuristic hint, and a hint-database export share a
+single schema discriminated by a top-level `kind`, each carrying a structured
+`fidelity` tier (authored, verified, heuristic-unverified, observed) and, for the
+loose forms, `provenance`. The schema is embedded in the binary as the single
+source of truth, published under `docs/schema/`, and rendered on the
+documentation site. A new `fragcap schema validate <file>` validates any JSON
+file against it and reports every structural violation in one pass, distinguishing
+a JSON syntax error from a schema violation; `fragcap schema print` emits the
+embedded schema. Structural validation (types, required keys, enums, unknown-key
+refusal, the discriminators) lives in the schema; the semantic invariants of
+profile loading (acyclic ancestry, a single terminal stage, role reachability, no
+ambiguous image match) remain the profile-load path's responsibility, and the
+seam is documented (issue #75).
+
+A target resolution cascade now decides what to capture for a game (issue #77,
+the resolver core). A `TargetResolver` consults an ordered set of providers of
+varying trust and returns the highest-precedence available answer, a `Target`,
+stamped with a targeting fidelity tier (`authored` > `verified` >
+`heuristic-unverified` > `observed`) and a provenance. Two providers carry data:
+the profile provider wraps the section 15.3 lookup and stamps its answer with the
+profile's own declared fidelity, and the runtime-observation provider matches a
+live process by identity (an exe image name plus optional path anchors) and stamps
+an `observed` answer, using only the process snapshot and opening no process
+handle. Three providers (hint database, engine rule, platform walker) are
+registered and decline until their own slices fill them, so adding their data is
+additive. The precedence order is total and imposed rather than incidental,
+proven by a permutation test. The in-memory `Profile` now retains and exposes the
+`kind`, `fidelity`, `provenance`, and `notes` it declares, which it previously
+discarded after validation. The `run` command resolves through the cascade and
+captures byte-identically. This targeting fidelity is separate from the
+attribution fidelity (`live`/`retained`/`none`) and neither is derived from the
+other. No dependency is added and nothing is added to `fragcap-core`.
+
+A `watch` subcommand captures a target by identity, launch-agnostic (issue #77,
+watch mode). It arms the process watcher and sinks and captures the first process
+matching an executable name plus an optional path anchor
+(`--exe`/`--path`/`--path-regex`), however and wherever it was started, with no
+authored profile and no managed launch, which is what makes a modded install
+launched from a mod manager, a standalone title, and every non-storefront game
+capturable at all. Where `tap` matches an executable name only, `watch` adds the
+path anchor that distinguishes a modded install and a `--wait` acquisition
+timeout. Watch mode also attaches to a target already running when it starts: the
+process watcher's query-only startup snapshot is now folded into the capture
+session at arm (a new `CaptureSession::apply_snapshot`), so an already-running
+process is acquired without a later start event, and the offline process-script
+grammar gains a `snapshot` line so this is tier-1 testable. The S027
+runtime-observation provider resolves the identity over the snapshot to report the
+honest observed answer naming the already-running process, while the session
+remains the single acquisition authority. A watch that never sees its target gives
+up at the acquisition timeout with the existing `StopReason::AcquisitionTimeout`
+and its discard accounting surfaced (P-4). Watch mode's output is byte-identical
+to an equivalent single-stage profile capture. The master specification (sections
+7.1 and 10.5) now names watch mode as the default launch-agnostic path, and the
+glossary gains a `watch mode` entry. No dependency is added.
+
+The target resolution cascade (issue #77) gained its first general-purpose
+provider: an engine rule that recognizes a game's socket-holding client from its
+game engine's documented on-disk install layout, with no per-title data. It fills
+the engine-rule provider slice S027 registered as a declining stub. The layout
+signatures track the open `SteamDatabase/FileDetectionRuleSets` ruleset (the
+source behind SteamDB's engine attribution, filename and path based): Unreal by a
+`*-Win64-Shipping.exe` under a `Binaries\Win64` directory (the client a root
+launcher stub relaunches), Unity by a `*_Data` directory beside a `UnityPlayer.dll`
+or a `GameAssembly.dll` (IL2CPP builds), Godot by a `*.pck` archive beside a
+like-named executable, and Ren'Py by a `renpy` directory and `.rpa` archives. The
+provider reads the filesystem only: it opens no process handle, reads no process
+memory, launches nothing, and ignores post-run artifacts such as per-user AppData,
+which do not exist before the first launch. Every answer is stamped
+`heuristic-unverified` with provenance `engine-rule`, never a higher tier, because
+a documented on-disk convention is a good guess rather than an authored fact. When
+a rule recognizes a layout but matches more than one candidate client, the
+provider declines rather than pick one arbitrarily and records the ambiguity; when
+a filesystem error leaves a scan incomplete, it declines with the unreadable path
+recorded rather than resolving from a partial view, so an inaccessible install is
+distinguishable from an unrecognized engine. In both cases the cascade falls
+through to runtime observation, which disambiguates at runtime. A resolution
+request now carries an optional install
+directory (which the S030 platform walker will populate unchanged), and a resolved
+target gained an engine-rule origin naming the client executable and the match
+rules the pipeline binds it by. No dependency is added, nothing is added to
+`fragcap-core`, and the provider lives in `fragcap-profile` beside the rest of the
+cascade.
+
+The target-resolution cascade (issue #77) gained its platform-walker provider,
+completing #77: Steam is now one optional provider feeding the shared resolver
+rather than the spine of targeting. The walker makes a Steam-installed title's
+install directory available to the resolver so the higher-precedence engine-rule
+provider (S029) can name the socket-holding client from layout, and, when the
+engine rule does not recognize the layout, it answers at its own precedence by
+classifying the install directory's executables into a single client. It reuses
+`fragcap-steam`'s existing library enumeration and the scaffold classifier
+predicates, and reads the filesystem and registry only: no process handle, no
+memory, no network. Every walker answer is stamped `heuristic-unverified` with
+provenance `steam-library`, an honest name for the library walk and
+install-directory classification it performs. The walker declines rather than
+guess: it resolves only when exactly one plausible client remains after dropping
+installers and launcher stubs; zero, several, or an unreadable install is a
+decline (with the ambiguity or unreadable path recorded), and the cascade falls
+through to runtime observation, which resolves the game from the live
+socket-holding process. The provider lives in `fragcap-steam` (which already
+depends on `fragcap-profile`; the reverse is forbidden by the dependency-direction
+check), implementing the cascade's provider trait; the no-op stub in
+`fragcap-profile` is retired and the CLI assembles the resolver with the real
+walker. A resolved target gained a platform-walker origin naming the client and
+the match rules the pipeline binds it by, and the resolver gained walker ambiguity
+and unreadable notes. Steam's `steam://` managed launch is unchanged and stays a
+convenience adapter. No dependency is added.
+
+A technology-detection surface (slice S031) reports the technologies present in a
+game's install directory: its game engine, anti-cheat (EasyAntiCheat, BattlEye,
+Vanguard, and the rest), SDK, emulator, container, and launcher. It is built on
+the open SteamDB `SteamDatabase/FileDetectionRuleSets` ruleset (MIT, (c) 2021
+SteamDB), which recognizes technologies from depot file paths alone. The whole
+`rules.ini` is vendored verbatim, pinned to upstream commit
+`243cf741921d2c8fd6b844f83831edf4692cf788`, carried with its MIT attribution
+(`THIRD_PARTY_NOTICES.md`) and integrity-locked by a recorded SHA-256 over its
+bytes (`rules.lock.json`), in the same spirit as `skills-lock.json`. Because
+fragcap runs against a real install the operator already has on disk, the whole
+ruleset applies; the depot-manifest license gate SteamDB itself faces is a
+catalog-scale concern for titles nobody owns and does not apply here.
+
+Detection reads directory entries and matches the ruleset's path regexes against
+the relative paths it finds, using file names and relative paths only: it opens no
+process handle, reads no process memory, reads no file content, launches nothing,
+and makes no network call (P-1). A detected anti-cheat is surfaced as a
+user-safety and consent signal, so an operator knows what watches a game before
+capturing alongside it; fragcap detects it and never interacts with it. Every
+finding is stamped `heuristic-unverified` and names the marker path that produced
+it, as auditable evidence (P-9). The vendored ruleset is authored for a PCRE-style
+engine and contains constructs the project's RE2-family regex engine cannot
+compile (atomic groups); each such pattern is skipped, counted, and recorded with
+the technology it belonged to, never silently dropped, and `compiled + skipped ==
+total` is asserted over the vendored asset (P-4). An unreadable install subtree is
+surfaced distinctly from a clean empty scan.
+
+Findings surface two ways. A new `fragcap technologies --path <dir>` command
+prints them grouped by category, with a heuristic banner and a note when ruleset
+patterns were skipped as incompatible. And the Steam profile scaffold now carries
+the detected set into the target artifact it materializes, as a new multi-category
+`technologies` structure added to the master target schema (categories `engine`,
+`anti_cheat`, `sdk`, `framework`, `emulator`, `container`, `runtime`, `launcher`),
+each finding recording its category, name, marker path, and fidelity. This labels
+technologies; it does not change which executable the resolver picks as the
+socket-holding client, and it does not run inside the live capture loop or alter
+the packet-stream output. The detection engine lives in `fragcap-profile` beside
+the engine rule and adds no dependency (the existing regex engine matches, and a
+hand-rolled SHA-256 locks the asset), so nothing is added to `Cargo.lock` and the
+minimum supported toolchain stays green.
+
+`run` can now capture a target the resolution cascade resolves without an
+authored profile (slice S032). Slices S027 through S030 built a cascade that
+resolves a socket-holding client from install layout (an engine rule, a Steam
+platform walker) or runtime observation, but `run` refused any resolved target
+that had no backing profile, so those providers resolved targets nothing could
+then capture. This slice closes that gap.
+
+`run` takes exactly one of three mutually-exclusive target inputs (a clap group
+enforces it, so supplying none or more than one is a usage error before any
+resolution): `--profile <ref>` (unchanged, byte-identical), `--install-dir <path>`
+(resolve the cascade over a given install directory), and `--steam <app_id>`
+(resolve the app id to its install directory through the local Steam library
+lookup, then take the same path). For a resolved target that has no profile, `run`
+reads the resolved target's match predicates (its image name plus any path
+anchors), synthesizes a one-stage profile from them, and captures it through the
+same launch-agnostic engine `watch` uses.
+
+The synthesized identity is built through the same validating profile
+construction an authored profile takes, and is stamped `heuristic-unverified`,
+never `authored`: it was resolved by an install-layout heuristic or runtime
+observation, not typed by an operator (P-9). Its game identity is a generic
+placeholder, plus the Steam app id carried as a fact on `game.app_id` when the
+input was `--steam`. The capture reaches the target the same passive way as every
+capture: the session arms, folds a query-only startup snapshot to attach to an
+already-running target, and attributes from outside the process; no process handle
+is opened and no process memory is read (P-1). An install location the cascade
+cannot resolve to a single client, an unreadable install tree, or a Steam app id
+that is not installed each produce a surfaced command failure (exit 1) that names
+the reason and captures nothing (P-4), distinguishable from a game that ran but
+sent no traffic; a command-line misuse is a usage error (exit 2). The `--profile`
+path is unchanged and its output byte-identical to the existing goldens. A small
+pure accessor, `Target::identity`, returns the resolved identity for a non-profile
+target. No dependency is added, nothing is added to `fragcap-core`, and the whole
+slice lives in `fragcap-cli` over contracts the other crates already expose.
+
+The master target schema's loose hint-record subschema (issue #75) was revised so
+the targets hint database (#78) can emit conformant JSON, per the Steam catalog
+research #83 absorbed (slice S033). Three optional structures now appear on a
+`hint` at the top level and inside each `export` record: a `launch` array of a
+title's Steam launch configurations (each entry an optional os/arch/launch-type/
+beta-branch filter, a required non-empty `executable`, and optional arguments and
+description), a `launcher_mediated` boolean marking titles Steam starts through a
+publisher launcher, and an `engine` object carrying an optional engine name, a
+`source` (`pcgamingwiki` | `exe_heuristic` | `depot_filename_rules`), and a
+`confidence` (`confirmed` | `high` | `medium` | `low` | `unknown`).
+
+The launch array is carried whole and is never reduced at seeding time to a single
+game binary: for a launcher-mediated title the invoked entry is a publisher
+launcher, not the socket holder, and deciding which entry (or descendant) holds
+the sockets is the resolution cascade's runtime job (#77), not a seeding-time
+transformation. The engine `confidence` is a within-field grading of one heuristic
+guess, deliberately not a rung on the record `fidelity` ladder, so a low-confidence
+engine guess never silently moves the record's overall trust (P-9); the engine
+`source` is likewise distinct from the record's provenance source. A failed engine
+lookup leaves the object absent rather than present with a fabricated value.
+
+The change is additive within schema version 1, applied byte-identically to the
+embedded and published schema copies, so every pre-existing artifact still
+validates and no version bump is made. The three fields are refused on the strict
+`profile` and `package` variants and on the export envelope's own top level, so the
+authored capture format stays free of hint-seeding metadata. The hand-rolled
+variant validator shape-checks the new structures wherever they are permitted, two
+new diagnostic codes name an out-of-enum engine source or confidence, and the
+conformance corpus gained fixtures for a full valid hint, an export record carrying
+the fields, an out-of-enum source, an out-of-enum confidence, a launch entry with
+no executable, and a strict profile that carries a hint-only field (rejected). No
+runtime code consumes these fields yet; that is #78. No dependency is added and the
+minimum supported toolchain stays green.
+
+The targets hint database (issue #78) gained its foundation: a new
+`fragcap-targets` crate holding an embedded SQLite store of known game binaries
+and launch patterns, the three-tier seeding model, and a schema-conformant JSON
+export (slice S034). The store carries a game's Steam application id, name, and
+catalog metrics, its `launcher_mediated` and `token_required` flags, an optional
+engine attribution, its launch entries (carried whole, never flattened to a
+single process name), and per-title technology findings, plus per-tier seed state
+so a later fetch can resume. The three seeding tiers own their columns
+independently: the public catalog owns appid and name, the launch metadata owns
+the launch array and the launcher flag, and the community engine data owns the
+engine attribution. No seeder runs this slice; there is no network fetching, and
+the store is populated offline.
+
+The store exports to the `export` variant of the master target schema: a single
+envelope of records, one per title, each stamped fidelity `heuristic-unverified`
+regardless of engine confidence (P-9), with an unknown engine and an empty launch
+array both represented by omission. The exporter validates its own output against
+the embedded schema before returning it, so it can never emit a document the
+validator rejects. The store cannot hold a row it could not export: SQLite CHECK
+constraints and the value types refuse an out-of-set engine source or confidence
+and an empty launch executable, and an engine attribution must carry both a source
+and a confidence or neither.
+
+A `fragcap targets` command imports a local JSON seed document into a store and
+exports a store to schema-conformant JSON, both offline. Import is transactional
+and idempotent per application id: a duplicate appid within one seed is rejected
+with no partial store, and an appid already present is replaced wholesale rather
+than merged into a half-updated row; a malformed seed leaves no store behind. A
+committed seed fixture (The Elder Scrolls Online as a launcher-mediated title, a
+title carrying an engine, and a catalog-only title) round-trips through the
+command to schema-valid JSON.
+
+The crate is exposed through the facade behind an optional `targets` feature, so a
+default library build compiles no SQLite engine; the shipped command-line tool
+enables it. The one new dependency, `rusqlite` with `default-features = false` and
+`bundled`, adds six packages to `Cargo.lock`, is MIT or Apache-2.0 across the
+delta (the bundled SQLite amalgamation is public domain), and keeps the minimum
+supported toolchain at 1.82, verified by building through it.
+
+The targets hint database gained its first seeder (issue #78, slice S035): the
+Tier 1 catalog seeder that fills a store's public-catalog columns (application id,
+name, and popularity metrics) from a catalog source. A `CatalogSource` trait fixes
+the shape the seeder reads, so its fetch-parse-gate-merge pipeline is driven in
+every test by an offline `FixtureCatalog` over committed data, with no network; the
+live `HttpCatalog` (behind a new `net` feature) is a thin read-only HTTPS adapter
+that continuous integration compiles but never runs, the same posture as live
+packet capture.
+
+A corpus gate scopes the written rows to titles that are games and clear a
+configurable review-count threshold, so the store holds the corpus that matters
+rather than the whole ~150k app-list universe. Every fetched title is accounted for
+in a seed summary as written, excluded, a within-run duplicate, or failed, and the
+counts reconcile (fetched equals written plus excluded plus duplicates plus failed),
+so a corpus that could not handle something, or a repeated appid that would
+otherwise overstate the total, can never read as complete (P-4, P-9). A title whose
+popularity is unknown is excluded rather than admitted on a guess; an entry with a
+present but wrong-typed field is counted as failed rather than coerced to an absent
+value; and a single unparsable entry is counted as failed without aborting the run.
+The offline `targets seed` command requires exactly one catalog source, so `--from`
+together with the live `--steam`, or neither, is a usage error rather than a silent
+choice.
+
+The seed is idempotent and resumable: it merges each title by application id
+through a new `merge_catalog` that writes only the Tier 1 columns, leaving any
+launch entries (Tier 2) and engine attribution (Tier 3) a later seeder wrote intact,
+and it records a resume cursor after each page so an interrupted seed continues
+rather than restarting. It never prunes: a stored title absent from a run is left
+as it is. After a seed the store still exports schema-valid JSON, every record
+`heuristic-unverified`.
+
+A `fragcap targets seed --from <catalog> --db <store>` command drives the offline
+seed and prints the summary; a maintainer builds with `--features net` to seed from
+the live catalog with `--steam`. The one new dependency, `http_req` with
+`native-tls`, is optional behind `net`, adds 18 MIT/Apache packages to `Cargo.lock`,
+and does not touch the minimum supported toolchain, which stays 1.82.
+
+The targets hint database gained its Tier 3 seeder (issue #78, slice S036): the
+engine seeder that fills a store's engine-attribution columns (engine name, source
+`pcgamingwiki`, and a confidence grade) from PCGamingWiki, keyed by Steam
+application id. An `EngineFeed` trait fixes the shape the seeder reads, so its
+fetch-parse-resolve-merge pipeline is driven in every test by an offline
+`FixtureEngineFeed` over committed data, with no network; the live `HttpEngineFeed`
+(behind the existing `net` feature) is a thin read-only HTTPS adapter over
+PCGamingWiki's MediaWiki Cargo query API that continuous integration compiles but
+never runs, the same posture as the S035 catalog source and live packet capture. No
+new dependency is taken: the seeder reuses the `http_req` client S035 chose for the
+whole seeder arc.
+
+The seeder writes an engine only for a title that resolves to a single unambiguous
+engine name; a title with no engine, or an ambiguous one (the feed names more than
+one), is left absent and counted excluded, never guessed (P-9). Every fetched title
+is accounted for in the reused seed summary as written, excluded, a within-run
+duplicate, or failed, and the counts reconcile (fetched equals written plus excluded
+plus duplicates plus failed), so a partial enrichment can never read as complete
+(P-4, P-9). A present but wrong-typed field, or an out-of-set confidence token, is
+counted as failed rather than coerced to a default and reported as excluded, so the
+summary never misattributes why an engine is or is not present; a single unparsable
+entry does not abort the run. The engine confidence is a within-field grade of one
+heuristic field, never a fifth fidelity tier: a seeded engine leaves the record
+`heuristic-unverified` however confident the field grade.
+
+The seed is idempotent and resumable: it merges each engine by application id
+through a new `merge_engine` that writes only the engine columns (source and
+confidence bound together to satisfy the store's both-or-neither invariant),
+leaving any catalog data (Tier 1) and launch data (Tier 2) a prior seeder wrote
+intact, and inserting an engine-only row for an application id the store has not
+seen. It records a resume cursor under the engine tier after each page so an
+interrupted seed continues rather than restarting, and it never prunes: a stored
+title absent from a run is left as it is. After a seed the store still exports
+schema-valid JSON.
+
+A `fragcap targets seed-engine --from <engine-doc> --db <store>` command drives the
+offline seed and prints the summary; a maintainer builds with `--features net` to
+seed from PCGamingWiki with `--pcgamingwiki`. The live flag names its actual source
+rather than `--steam`: the tier is keyed by Steam application id but the data is
+PCGamingWiki's.
+
+The targets hint database is now wired into the live resolution cascade as its
+precedence-2 provider (issue #78, slice S037), the final wiring step of the
+targeting redesign. A new `HintDatabaseProvider` reads a store row for a Steam
+application id carried on the resolution request and, when that row names a single
+usable Windows client executable, answers with a heuristic-unverified target keyed
+on that executable, carrying the row's launcher-mediated flag and engine name as
+facts. It sits below authored and curated profiles and above the engine rule, the
+platform walker, and runtime observation, so a title the community has documented
+resolves without an operator authoring a profile first, while a live observation
+always overrides it.
+
+The provider never guesses. A sparse catalog-only row, an engine-only row with no
+launch executable, a request with no application id, a launcher-mediated row (whose
+launch executable is the publisher launcher rather than the socket-holding client,
+so resolving it would record the launcher as the game and lose the gameplay
+traffic), and a row whose Windows launch entries name more than one distinct
+executable are all declines, so the cascade falls through to the lower providers
+rather than arming a capture against a launcher or a guessed process (P-4); an
+ambiguous decline records the application id and candidate count, surfaced by the
+`run` error, so a not-resolved outcome can explain itself. Launch entries are first restricted
+to those applicable to Windows and reduced to the set of distinct executable file
+names, so one executable repeated across arguments, architectures, and beta
+branches is one candidate, not an ambiguity. Every answer is stamped
+`heuristic-unverified` with provenance `hint-db`, the same name the database's
+export projection uses, and it carries no on-disk path because the store knows the
+executable name but not where a machine installed the title (P-9).
+
+The database is optional and its absence is never an error. A `fragcap run
+--hint-db <path>` option, and a `FRAGCAP_HINT_DB` environment override, supply a
+database for resolution; a `--steam` capture then offers the provider the
+application id while the install root stays available to the lower providers. When
+no database is supplied, or the path does not exist, or the build excludes the
+targets feature, precedence 2 is simply empty and resolution is byte-identical to
+before this slice. A database that is present but cannot be opened (corrupt or a
+wrong schema version) fails loudly at the boundary where the operator named it,
+rather than being silently treated as absent. The whole feature is testable
+offline: the cascade ordering, every decline, and the graceful degradation are
+proven over an in-memory store with no network and no game.
+
+The concrete provider lives in `fragcap-targets`, which already depends on
+`fragcap-profile` and implements its provider trait, so no dependency is
+introduced from the resolver's home crate onto the targets database; the
+no-answer stub the profile crate held at precedence 2 is removed. This mirrors the
+S030 platform walker, which lives in `fragcap-steam` for the same reason. No new
+dependency is taken.
+
+Each copy of fragcap now learns its own Steam games' launch executables locally
+and privately. When a hint database is configured, a capture run first walks the
+installed Steam library and, for each installed title, reads that title's launch
+configuration from the machine's own application-info cache
+(`appcache/appinfo.vdf`) into the local store's launch columns, so the hint
+provider can name a socket-holding client the engine rule and platform walker
+would miss. A hand-rolled parser reads the binary appinfo format (a different
+format from the text VDF of `libraryfolders.vdf` and the `.acf` manifests),
+framing each application's section by size so one malformed section is isolated
+rather than losing the file. Titles already current are skipped by their appinfo
+change-number, so the first run is slower and later runs are mostly skips, and a
+user accumulates a growing personal collection over time. Nothing about any user's
+library is shipped or shared; the distributed database still carries only the
+public catalog and engine data. The read is passive: no network, no process
+handle, only a file Steam already wrote. Every considered title lands in exactly
+one counted outcome and the account is surfaced, so a partial walk cannot read as
+complete.
+
+fragcap now ships an unsigned Windows MSI installer alongside the portable
+archive. The installer places the binary per-machine, adds its directory to the
+system path so `fragcap` resolves in any new terminal, ships the barebones hint
+database beside the binary, best-effort excludes its own install directory from
+Windows Defender (removed on uninstall), and links the npcap download page on
+completion. It is unsigned by design for this release, so the documentation
+explains the expected unrecognized-publisher warning and points at the checksum as
+the integrity check; code signing is tracked separately.
+
+Every release now publishes three downloads, each with its own checksum: the
+portable archive, the installer, and a barebones targets hint database. The hint
+database is an empty store that the local launch-data accumulation fills from the
+user's own machine over time.
+
+The hint database now has a per-user default location, `%APPDATA%\fragcap\hint.db`,
+created on first `run` when no `--hint-db` option or `FRAGCAP_HINT_DB` environment
+variable names one. On first use fragcap seeds it from the database shipped beside
+the executable when present, and otherwise creates an empty store, so hint
+resolution and local accumulation work with no configuration for both the
+installer and the portable archive.
+
+The documentation site gains a License page, a Brand page presenting the brand
+kit (palette, logos, typography, and downloads, single-sourced from `brand/`),
+and a Changelog section generated from `CHANGELOG.md` with a page per version and
+category. The home page now shows the current release version, and the footer
+links to the License and Brand pages beside the Disclaimer.
+
+### Changed
+
+Game profiles are now authored and loaded as JSON rather than TOML, conforming
+to the `profile` variant of the master schema (issue #76, building on #75). A
+profile now declares `kind` and a `fidelity` tier alongside its game identity,
+capture defaults, and stages. `Profile::parse` remains the only constructor, so
+validation still runs before every capture; loading validates structurally
+against the master schema (reusing the S025 validator) and semantically for the
+checks a schema cannot express (acyclic descends_from, a single terminal stage,
+at least one non-service stage, reachable capture roles, no ambiguous image
+match, and glob/regex/duration compilation), reporting every problem across both
+layers in one pass. Profile resolution now finds `<ref>.json`. The Steam
+scaffold emits JSON carrying `fidelity: heuristic-unverified` and a `notes`
+string with the warning that its stage classification is heuristic and must be
+verified against a live capture, so that warning survives as structured data a
+machine can act on rather than a stripped comment. The `toml-span` dependency is
+removed. Capture output is unchanged: an equivalent profile drives byte-identical
+pcapng and JSON Lines.
+
+The distribution archive now also contains the barebones hint database, placed
+beside the binary so the first-run bootstrap can seed the writable per-user copy
+from it. The archive previously held only the binary, the license, and the notice.
+
+The `--hint-db` option and the `FRAGCAP_HINT_DB` environment variable now fall
+back to a per-user default (`%APPDATA%\fragcap\hint.db`) when neither is set,
+rather than leaving hint resolution off. A path named explicitly keeps its exact
+previous semantics: it is used as given and, when absent, is neither created nor an
+error.
+
+`cargo xtask notes` now generates a release body from a version's curated
+Highlights plus a link to the full changelog at the tag, rather than the entire
+Added/Changed/Fixed list. A version with no Highlights block still falls back to
+the fuller body, so a release without curated highlights is never empty (issue
+#53).
+
+The site and README now surface the two external prerequisites up front: npcap
+(the capture driver, detected but never bundled) and Wireshark (how a capture is
+read) are named early on the home page, the docs landing, and the getting-started
+guide, rather than late or in passing. The home page also introduces brand color
+and styles its links so they read as clickable, and the footer visually separates
+the "A ShruggieTech project" endorsement from its links.
+
+### Fixed
+
+`fragcap doctor` now reports whether the live capture and socket-table
+attribution backends are built into the binary, treats a missing live backend as
+a blocking failure rather than reporting a misleading "ready", downgrades a
+missing npcap loopback adapter to a warning (it is only needed with
+`--loopback`), and shows the detected npcap version. `profile list` and
+`profile validate` now honor `--json`, emitting one structured record per
+diagnostic plus a summary instead of collapsing everything into one string.
+`profile show` and `profile validate` now return the same exit code for a
+reference that resolves to nothing. User-facing `--help` no longer exposes
+internal roadmap identifiers or argument-parser implementation notes, and
+`profile validate` no longer prints the profile path twice.
+
+Release builds now enable the live capture, socket-table attribution, and
+process-event tracing features, so the distributed binary can capture and
+attribute traffic instead of failing every capture with "no live capture
+backend" (issue #62). The binary delay-loads npcap's `wpcap.dll`, so it still
+starts and runs `fragcap doctor` on a machine where npcap is not yet installed
+rather than failing to launch, and doctor can tell the operator to install it.
+
+`fragcap steam profile` no longer turns installers and redistributables into
+capture stages or picks an installer as the terminal client. It drops obvious
+non-game executables (installers, redistributables, crash handlers, helper stubs,
+and hash-named temp installers) before classifying, keys launcher detection on the
+executable name rather than its directory (so a folder named `Launcher` no longer
+tags every file under it, including the game client, as a launcher), and orders
+the launcher stages so the most launcher-like image leads (issue #64).
+
+The Windows distribution archive now contains only the binary, `LICENSE`, and
+`NOTICE`. It no longer ships maintainer tooling from `scripts/`, the
+repository-oriented README, the shell wrappers (unnecessary in the archive now
+that the binary handles elevation itself), or a false `INCOMPLETE.txt` that fired
+on the empty profiles directory fragcap never populates (issues #54, #57).
+
+### Decisions
+
+**2026-08-12** Changed the release workflow (`.github/workflows/release.yml`) to
+build the distributed binary with the `live`, `socket-table`, and `etw`
+capability features and to acquire the npcap SDK for the link step, rather than a
+bare `cargo build --release` that shipped a binary unable to capture (issue #62).
+npcap itself remains unbundled; only its SDK import library is used at build time.
+
+**2026-08-12** The master JSON Schema is authored, embedded, and published as a
+standard Draft 2020-12 document, but fragcap validates against it by hand over
+`serde_json::Value` rather than embedding a JSON Schema validator crate. The
+candidate crate `boon` was evaluated and rejected: adding it to `fragcap-profile`
+pulls 42 new transitive crates into `Cargo.lock` (the ICU4X stack via
+`url`/`idna`) to service `$ref` and `format` machinery this schema does not use,
+which is irreconcilable with the project's dependency discipline. The ecosystem
+value of JSON Schema comes from publishing the document (editors, agents, and the
+submission pipeline validate against it natively), not from consuming a validator
+crate in the binary, and fragcap already hand-rolls this class of work (the glob
+matcher, the pcap parser, the profile validator). A conformance corpus test binds
+the published schema to the hand-rolled validator so they cannot drift. The only
+new runtime dependency is `serde_json`, promoted from dev-only to a runtime
+dependency of `fragcap-profile`; it was already in the build graph, so no crate is
+added to `Cargo.lock`. MSRV stays 1.82.
+
+**2026-08-12** The profile format moved from TOML to JSON (issue #76), reversing
+the S05 decision to parse profiles with `toml-span`. The reversal is deliberate:
+S025 published a master JSON Schema and an all-errors-at-once validator, so the
+runtime profile-load path now speaks the same JSON that the schema describes,
+and `toml-span` is removed from `fragcap-profile`. Two consequences were
+recorded rather than left implicit. First, the profile-load path reuses
+`jsonschema::validate_value` for structural conformance so there is one
+structural implementation bound to the published schema, and its
+`SchemaDiagnostics` are mapped into the crate's existing `Diagnostics`; the
+fragcap layer owns only the checks a schema cannot express (glob, regex, and
+duration compilation, the stage-count limit, and the semantic graph checks), so
+the two layers do not overlap. Second, diagnostic locations became JSON pointers
+and byte-offset line/column positions were dropped, because serde_json exposes
+no per-value span; the pointer names the exact value, and adding a
+span-preserving parser would reintroduce a dependency to recover a line number
+the pointer already localizes. `serde_json` was promoted to a runtime dependency
+of `fragcap-steam` and `fragcap-cli` as well, so the scaffold and the ad-hoc tap
+build their JSON through it rather than by hand; it was already in the graph, so
+`Cargo.lock` gains no crate. MSRV stays 1.82.
+
+**2026-08-12** The target resolution cascade (issue #77) landed its resolver
+core, and three decisions were recorded rather than left implicit. First, the
+targeting fidelity tier and the attribution fidelity are kept as separate
+mechanisms on separate types in separate crates: the new `FidelityTier`
+(`authored`/`verified`/`heuristic-unverified`/`observed`) lives in
+`fragcap-profile` and is what the resolver ranks by, while the pre-existing
+`Fidelity` (`Live`/`Retained`/`None`) in `fragcap-core::attribution` describes how
+a packet was attributed. Issue #77's prose draws an analogy between them that is a
+trap; conflating them would let an observed target read as a live attribution.
+`FidelityTier`'s variants are declared in ascending trust order so the derived
+`Ord` makes the more trusted tier the greater value, and a provider precedence that
+inverted the order would be caught by comparing against it. Second, precedence is a
+provider ordering imposed by the resolver (it sorts providers before querying), not
+a property the caller's registration order supplies; a permutation test proves the
+result does not depend on registration order, the same discipline the attribution
+join in `fragcap-attr` already holds. The issue's top two chain positions (authored
+package, verified profile) collapse into one profile provider, because the section
+15.3 lookup already returns one profile and the authored-versus-verified
+distinction is carried by the fidelity the file declares. Third, the resolver, the
+`Target` type, and the providers live in `fragcap-profile`, the crate that already
+reads both the profile schema and the process tree; nothing is added to
+`fragcap-core` (allowlist stays `["bytes"]`) and no external crate is added. The
+CLI `run` path flows through the resolver and maps its outcomes onto the existing
+`CliError` classes so exit codes and messages are unchanged; capture output is
+byte-identical. MSRV stays 1.82.
+
+Four refinements landed from PR review, each tightening an invariant the first
+cut left to convention. First, a capture profile may no longer declare
+`fidelity: observed`: the profile-load path refuses it with a new
+`observed-profile-fidelity` diagnostic, because `observed` is the observation
+provider's runtime stamp and allowing it on a profile would let the
+top-precedence provider answer below a lower one's fidelity, inverting the rank
+the resolver is built to hold. Second, `TargetResolver::new` now returns a
+`Result` and refuses two providers at one `Precedence` (a `DuplicatePrecedence`
+error, mirroring `BundledSet::new`'s duplicate-`game.id` refusal); one provider
+per position is what makes the order total, so registration-order independence
+is guaranteed by construction rather than by the built-in set happening to be
+unique. Third, an observed `Target` now retains the `MatchPredicates` identity
+that selected it, not only the process that was live at resolution, so the
+target carries its match rules (section 15.7) and a later capture can re-match
+after a restart. Fourth, the observation matcher (`first_live_match`) evaluates
+the image-and-path predicates only (`exe`, `path_contains`, `path_regex`) and
+treats an identity with no image-or-path anchor as matching nothing rather than
+every process; `cmdline_contains` and `descends_from` are stage-matching
+concerns outside the section 15.7 observation identity, which reads only the
+image name and path.
+
+**2026-08-12** Watch mode (issue #77, slice 2 of 4) landed, and four decisions
+were recorded, the first because the approved plan's premise changed on contact
+with the code. The plan framed watch mode as greenfield, but the capture path
+already watched on `run` without a managed launch, already had the acquisition
+timeout and a dedicated `StopReason::AcquisitionTimeout`, and already captured a
+synthesized identity in `tap`. The corrected scope, confirmed with the operator,
+was a new `watch` subcommand adding a path anchor and `--wait`, the one genuine
+runtime gap (attach-to-running), and the docs. First, the surface is a `watch`
+subcommand rather than a flag on `run` (which already watches) or an extension of
+`tap` (whose name reads as a quick exe probe); a named command makes the default
+launch-agnostic path discoverable. Second, attach-to-running: the process watcher
+already took a query-only toolhelp startup snapshot but the capture path never
+applied it, so a game already running at arm was never acquired. A new
+`CaptureSession::apply_snapshot` folds the snapshot and matches it, the
+orchestrator applies it at arm for both drivers (empty snapshots are a no-op, so
+existing goldens are byte-identical and `run`/`tap` gain the same
+attach-to-running consistently), and the offline process-script grammar gained a
+`snapshot` line so the path is tier-1 testable. The S027 `ObservationProvider` is
+wired in `watch` to resolve the identity over the snapshot and report the honest
+observed answer naming the already-running process, while the session stays the
+single acquisition authority, so the provider and the session do not race for the
+acquisition. Third, fidelity: the synthesized identity is `authored` (the operator
+typed it, exactly as `tap`'s is), never `observed` (which S027 refuses on a
+profile because `observed` is a runtime result, not an author's claim); the
+`observed` tier belongs to the provider's answer about a live process, a separate
+axis. Fourth, the acquisition timeout is reused, not reinvented: `watch` exposes
+`--wait`, and the give-up is the existing named reason with its discard
+accounting, so P-4 is satisfied without a new counter. MSRV stays 1.82; no
+dependency added.
+
+Two fixes landed from PR review, both about what the toolhelp startup snapshot
+can honestly support. First, the snapshot carries only the executable file name,
+never the full path, because reading a running process's path means opening a
+handle the no-handle P-1 posture declines. A path anchor is matched against the
+full path, so it cannot match an already-running process from the snapshot. The
+first cut's test fabricated full paths a toolhelp enumeration never provides,
+which hid this; the fix makes the behavior honest rather than silent. A path
+anchor now disambiguates a target that starts after arm (the start event supplies
+the path), an already-running target is attached by executable name alone, and
+where a path anchor cannot be checked against an already-running process whose
+executable matches, `watch` warns rather than waiting silently until the
+acquisition timeout (P-9). The tests and the spec, glossary, and help were
+corrected to reflect the file-name-only snapshot. Second, the snapshot is now
+folded parent-first: the tree resolves a record's ancestry against nodes already
+folded with no retroactive linking, and toolhelp gives no creation-order
+guarantee, so a child listed before its parent left its ancestry unresolved and a
+`descends_from` stage never bound when attaching to an already-running multi-stage
+chain. A stable topological ordering before folding fixes it, verified by a test
+that lists a descended client before its launcher.
+
+**2026-08-12** The engine-rule provider (issue #77, slice S029) landed, and five
+decisions were recorded rather than left implicit.
+
+First, a resolved engine-rule answer gets its own `TargetOrigin::EngineRule`
+variant carrying an `EngineRuleTarget`, distinct from the profile and observed
+origins. Reusing the observed origin would have been a lie: it carries a process
+identifier, and an engine rule resolves a file on disk with no process running
+yet. The new origin carries the recognized engine, the resolved client's image
+name and full path, and the `MatchPredicates` the pipeline binds it by, mirroring
+how `ObservedTarget` carries its identity so watch mode (S028) can bind the
+process once it appears.
+
+Second, the resolution request gained an optional `install_root` input and a
+`for_install` constructor, plus a `with_install_root` builder so a request that
+also carries a profile reference can offer the engine-rule provider a directory.
+An engine rule reasons about a directory tree, not a process, and modelling the
+input as a directory is exactly what the S030 platform walker will produce, so the
+walker composes with this provider without changing it. The builder is what lets
+the precedence relationship be tested honestly: a single request carrying both a
+profile reference and an install root resolves to the profile when one matches and
+to the engine rule when none does, regardless of provider registration order.
+
+Third, an ambiguous layout (more than one candidate client under one rule)
+declines rather than picking one, and records an `EngineRuleAmbiguity` note
+surfaced through `Unresolved`. A filesystem heuristic that cannot tell two
+shipping binaries apart must not present an arbitrary pick as the answer (P-9),
+and a silent decline would violate P-4; declining plus a surfaced note satisfies
+both, and runtime observation is the arbiter the cascade already relies on for the
+identical-process case. Ren'Py's common dual-launcher shipping (a 64-bit exe and a
+32-bit sibling) is resolved this same way: the rule declines as ambiguous and lets
+observation choose, rather than encoding a fragile name-based tie-break.
+
+Fourth, the rules key on install-layout convention only, never on launcher tokens
+or AppData artifacts. AppData is written on first run, which is after the moment a
+pre-launch resolver runs, so it is useless here; launcher tokens are
+storefront-specific while an engine rule is engine-general. Layout matching is
+component-based and case-insensitive (a directory named `Win64Extra` does not
+satisfy the `Win64` component) and separator-agnostic, correct on the
+case-insensitive Windows filesystem the rules target. The directory scan is
+depth-bounded rather than an unbounded walk, so it stays cheap on a large install
+and does not match tools buried deep in the tree.
+
+Fifth, the provider stays in `fragcap-profile` as a new `engine_rule` module and
+adds no dependency: `std::fs` and `std::path` are the whole toolkit, `MatchPredicates`
+is built in-crate via `Default` and the existing setters, and nothing is added to
+`fragcap-core` (allowlist stays `["bytes"]`) or to `Cargo.lock`. The targeting
+fidelity this provider stamps (`heuristic-unverified`) remains separate from the
+attribution fidelity (`Live`/`Retained`/`None`) in `fragcap-core::attribution`,
+which this slice does not touch. MSRV stays 1.82.
+
+**2026-08-12** Two further decisions landed from PR review. First, a filesystem
+error is no longer swallowed into a no-match: the scan helpers return the
+unreadable path, a recognizer whose scan cannot complete returns an `Unreadable`
+outcome, and the provider records an `engine_rule_unreadable` note surfaced
+through `Unresolved` and declines rather than resolving from a partial view. This
+was a review finding (Codex P2): swallowing `read_dir` errors both violated
+FR-009 (an inaccessible install must be distinguishable from an unrecognized
+engine) and was unsafe, because an unreadable subtree could hide a second
+`*-Win64-Shipping.exe` and turn a true ambiguity into a false single answer. The
+resolver remembers the first unreadable path but lets a clean lower-precedence
+engine still resolve, so the path surfaces only when nothing resolves. The
+provider keeps its "never `Err`" contract; an unreadable tree is a
+decline-with-note, not a cascade abort, because runtime observation can still
+resolve.
+
+Second, the engine layout signatures were aligned with the open
+`SteamDatabase/FileDetectionRuleSets` ruleset (MIT), the maintained source behind
+SteamDB's engine attribution, which detects engines from depot filenames and
+paths only, exactly fragcap's constraint (no file-content reads, P-1). fragcap
+tracks the subset of that ruleset that also names the client executable. This
+added the `GameAssembly.dll` IL2CPP marker to the Unity rule (alongside
+`UnityPlayer.dll`) and a Godot rule (a `*.pck` archive beside a like-named
+executable, the SteamDB Godot signal). The full ruleset is not vendored or
+executed: it needs license-gated depot manifests and covers anti-cheat, SDKs, and
+emulators the runtime provider does not target; catalog-scale detection is a
+separate concern. The ruleset's own posture, that detection is a set of educated
+guesses, matches the `heuristic-unverified` stamp exactly. No dependency is added.
+
+**2026-08-13** The Steam platform-walker refactor (issue #77, slice S030) landed,
+completing #77, and six decisions were recorded rather than left implicit.
+
+First, the walker provider lives in `fragcap-steam`, not in `fragcap-profile`
+where the rest of the cascade lives. The provider needs Steam knowledge (library
+enumeration, the scaffold classifier), and `xtask/src/deps.rs` allows
+`fragcap-steam -> fragcap-profile` while forbidding the reverse. So the provider
+implements `fragcap_profile::TargetProvider` from `fragcap-steam`, the no-op
+`PlatformWalkerProvider` stub is removed from `fragcap-profile`, and the CLI (which
+reaches both crates through the facade) assembles the resolver. `fragcap-profile`
+gained no dependency on `fragcap-steam`; the dependency-direction check stays green.
+
+Second, a walker answer gets its own `TargetOrigin::PlatformWalker(WalkerTarget)`
+variant, distinct from the profile, engine-rule, and observed origins. It carries
+the storefront (`steam`), the resolved client's image name and full path, and the
+`MatchPredicates` the pipeline binds it by. Two small public constructors were
+added to `fragcap-profile` so an external provider can build an answer without the
+crate-internal setters: `MatchPredicates::with_exe` (build an exe-only identity)
+and a public `Provenance::new`.
+
+Third, the walker declines rather than guess a client. It resolves only when
+exactly one plausible client executable remains after dropping non-game
+executables and launcher stubs (the shared scaffold predicates); zero is a
+no-match and several is an ambiguity, both declines. The scaffold picks the
+largest non-launcher for a human-reviewed skeleton the author then corrects; for
+automatic capture the walker must not present a guess as the answer (P-9), and the
+library research found size-based client selection to be coincidental. Runtime
+observation resolves the ambiguous and launcher-mediated cases from the live
+socket-holding process, so declining and degrading is both honest and correct.
+
+Fourth, the walker's provenance is `steam-library`, not `steam-appinfo`. The
+walker resolves from the library manifests and by classifying install-directory
+files; it does not read Steam's application info. Stamping `steam-appinfo` would
+claim a source it did not consult, which P-9 forbids. This is a deliberate
+deviation from the slice plan's original `steam-appinfo` wording, on honesty
+grounds; `steam-appinfo` is reserved for a future slice that actually reads it.
+
+Fifth, reading Steam application info (the `config.launch` launch array via
+networked PICS or the local binary `appinfo.vdf` cache) is deferred. It requires
+either a heavy networked Steam-client dependency (a large transitive graph and
+network I/O in a passive local tool, P-1-adjacent) or a versioned binary-format
+parser, and the engine rule plus the install-directory classifier already cover
+the common cases while the hard titles degrade to runtime observation. The full
+launch-array model and the launcher-mediated flag belong with the hint-database
+(#78) revision. Consistent with the project's `boon`/`crossbeam` rejections, no
+dependency is added.
+
+Sixth, the walker provider is wired into the production resolver vec but, like the
+S029 engine-rule provider, it cannot yet fire a capture in production: `run`
+errors on a resolved target that carries no profile, and its module doc already
+names driving a non-profile target as a later slice. A profile outranks the walker,
+so the walker only matters for a no-profile capture, which needs that non-profile
+capture path. Building it is a cross-cutting integration that S027 through S029 all
+deferred and that this slice also defers; the enumeration-to-install-root helper
+(`install_root_for`/`install_root_in`) is built and tested so the future path has it
+ready. The walker, its composition with the engine rule, and its degradation to
+runtime observation are proven end to end through the resolver in the facade's
+`walker_cascade` integration test. MSRV stays 1.82.
+
+**2026-08-13** Three review findings (Codex) were fixed. First (P1), the walker's
+`client_for` no longer restores the dropped executables when the non-game filter
+empties the candidate set. That fallback is correct for the human-reviewed
+scaffold (a skeleton to correct) but wrong for automatic capture: an install
+holding only a redistributable or helper would have resolved the installer as the
+sole client. The walker now declines (`NoMatch`) for an installer-only directory,
+as section 15.7.2 requires for zero plausible clients. Second (P1),
+`install_root_in`/`install_root_for` now return an `InstallLookup { install_dir,
+warnings }` instead of a bare `Option<PathBuf>`, so the non-fatal enumeration
+warnings (a malformed manifest, an unreadable configured library, a duplicate app
+id) are carried rather than discarded. A malformed manifest for the requested app
+made the previous helper return `Ok(None)`, silently indistinguishable from an
+uninstalled title; the warning is now preserved (FR-008, P-4). Third (P2), the
+shared `scan` is now strict: it surfaces directory-entry iterator errors and
+per-entry metadata errors as `SteamError::Io` rather than skipping them via
+`flatten()` and `Err(_) => continue`. An incomplete scan could otherwise hide a
+second candidate and let the walker resolve a false single answer, the same
+false-single-answer class the S029 engine-rule unreadable handling prevents; the
+walker now declines with an unreadable outcome. Making `scan` strict also improves
+the scaffold, which no longer builds a skeleton from a partial view.
+
+**2026-08-13** The technology-detection surface (slice S031) landed, and six
+decisions were recorded rather than left implicit.
+
+First, the whole `rules.ini` is vendored verbatim and pinned to a specific
+upstream commit, while only the direct category sections are applied. The lock
+hash is meaningful only over the complete, unmodified file, and the MIT notice
+covers the whole work, so vendoring the whole and applying a subset are
+independent decisions. The ruleset's two-pass `Evidence` deduction (secondary
+hint patterns plus engine inference) is not executed; its section is recognized so
+its lines are not miscounted, but it is deferred as a larger, separable concern.
+Deferring it does not weaken the first-pass engine, anti-cheat, SDK, emulator,
+container, or launcher findings, which are all direct matches.
+
+Second, a ruleset pattern the RE2-family `regex` crate cannot compile is skipped,
+counted, and recorded with its technology, and the vendored bytes are never edited
+to make a pattern compile. Rewriting a possessive quantifier or an atomic group to
+coerce compilation would silently change the ruleset's meaning and break the
+faithful-copy and lock-hash properties; a counted skip is honest where a rewrite
+is not (P-4, P-9). Of the 376 applied-section patterns in the pinned commit, 373
+compile and 3 (atomic-group patterns) are skipped; `compiled + skipped == total`
+is asserted over the real asset.
+
+Third, the asset is integrity-locked with a hand-rolled SHA-256 rather than a
+crypto crate. The slice constraint is no new dependency and no new `Cargo.lock`
+crate; `sha2` would add one even as a dev-dependency. SHA-256 is a fixed,
+fully-specified algorithm, verified here against the published NIST vectors, in
+the same idiom as the project's hand-rolled glob matcher, pcapng writer, and
+schema validator. The check runs inside `cargo test`, already in the gate, so no
+workflow or toolchain (pinned-artifact) change is needed. The hash is computed
+over the committed bytes as stored (LF, UTF-8, no BOM), documented in the lock's
+`note`, so an external `sha256sum` on the committed file reproduces it.
+
+Fourth, the SteamDB attribution is a distinctly named nested file
+(`assets/steamdb/THIRD_PARTY_NOTICES.md`), not a bare `NOTICE`. The `cargo xtask
+license` check mirrors each publishable crate's root `LICENSE`/`NOTICE` byte for
+byte against the repository-root originals (the Apache-2.0 texts); a second file
+named `NOTICE` would collide with that intent. MIT only requires the notice to
+travel with the copy, which a file beside the vendored asset (published inside the
+crate package) satisfies, and MIT is on the constitution's permitted license list,
+so the crate's own `license` field stays `Apache-2.0`.
+
+Fifth, the master target schema gains an optional top-level `technologies` array
+and a `technology` definition (a category enum, a name, an optional marker path,
+and a fidelity reference), applied identically to both the embedded copy and the
+published `docs/schema` copy so the drift check stays green. This is an additive,
+backward-compatible extension of schema version 1: prior artifacts still validate,
+and an artifact carrying `technologies` now validates where the closed property
+set would previously have rejected it. No schema-version bump. The category
+vocabulary is the superset the Steam-Catalog-Research design named (`engine`,
+`anti_cheat`, `sdk`, `framework`, `emulator`, `container`, `runtime`) plus
+`launcher` for the ruleset's `Launcher` section; `framework` and `runtime` are
+defined for future sources and unpopulated by this ruleset. The hand-rolled
+variant validator learned the new property, and a new `invalid-category`
+diagnostic code names an out-of-enum category.
+
+A follow-up from PR review sharpened the scaffold's empty case: the scaffold
+always runs detection, so it always emits the `technologies` array, empty
+included. An empty array says detection ran and found nothing, which a downstream
+consumer must be able to tell apart from an older artifact that predates the
+field and never ran detection; omitting the key would conflate the two (P-9). The
+schema keeps the field optional so those older artifacts still validate. The same
+review made the directory walk surface a directory whose enumeration fails
+partway (a `read_dir` iterator error on an individual entry) as an unreadable
+path rather than skipping it silently, so a partial scan is never reported as a
+complete empty one (P-4).
+
+Sixth, detection surfaces on demand and at scaffold time, and never inside the
+live capture loop. A `fragcap technologies` command prints the report, and the
+Steam scaffold carries the findings into the target artifact it already
+materializes. Running detection during `run` would put a filesystem walk on the
+capture path and tempt writing technologies into the packet stream, changing files
+unmodified analyzers read for no benefit the on-demand-plus-scaffold surface does
+not already deliver (P-5). "Output metadata" for this slice is therefore the
+target artifact, not the pcapng or JSON Lines packet stream, both of which are
+unchanged.
+
+**2026-08-13** The non-profile capture path (slice S032) activated the target
+resolution cascade for capture, and five decisions were recorded rather than left
+implicit.
+
+First, the three target inputs are one required, mutually-exclusive clap group
+(`--profile`, `--install-dir`, `--steam`) rather than a separate subcommand. The
+operation is a capture, and `run` already owns the effective-config overlay, the
+sinks, the orchestrator, and the offline test harness; a clap group expresses the
+exactly-one rule declaratively with the standard usage-error exit (2), so no
+hand-rolled validation is written and existing `run --profile` invocations are
+unchanged. `RunArgs.profile` changed from a required `String` to an
+`Option<String>` in the group.
+
+Second, the non-profile branch reuses `assemble::effective_config(args, &profile)`
+with the synthesized profile rather than a new overlay. A synthesized profile
+declares no capture defaults, so every option comes from the command line, which
+is exactly the intended behavior; this keeps the full `run` option surface (mode,
+roles, direction, interfaces, sinks, bounds) on the non-profile path for free.
+`watch` needed its own `effective_config_for_watch` only because `WatchArgs` is a
+smaller argument set; `RunArgs` is the full set, so there was nothing to
+specialize.
+
+Third, the synthesized identity is stamped `heuristic-unverified`, never
+`authored`. `watch` stamps its synthesized profile `authored` because an operator
+typed the identity; here the identity was resolved by an install-layout heuristic
+or runtime observation, so `authored` would be a lie (P-9). The schema permits
+`heuristic-unverified` on a profile and refuses only `observed`, so the
+synthesized profile parses. The game identity is a generic placeholder, plus the
+Steam app id as a fact for `--steam`; fabricating a title name would be the kind of
+tidy-looking lie the principle forbids.
+
+Fourth, a small pure accessor `Target::identity(&self) -> Option<&MatchPredicates>`
+was added in `fragcap-profile` rather than matching the origin enum inline in the
+command. The three non-profile origins already expose an identity, but
+`TargetOrigin` had no uniform accessor; a single pure accessor keeps the "which
+origins carry an identity" rule in the crate that owns the type and is
+unit-testable there, mirroring the small accessors S029 and S030 added. It adds no
+dependency.
+
+Fifth, a declined non-profile resolution renders the resolver's decline notes
+explicitly. The generic `From<ResolutionError>` reduces an unresolved outcome to a
+profile-not-found class, and the error's `Display` names the unreadable cases but
+not the ambiguity ones, so the ambiguity notes (an engine layout recognized with
+several candidate clients, or several plausible clients in an install directory)
+are rendered by the command so the surfaced failure names the reason (FR-007). The
+`--profile` branch keeps the existing mapping unchanged, preserving its behavior.
+
+One interaction is noted rather than newly handled: `--launch` reads the profile's
+Steam app id, which a `--install-dir` synthesized profile does not carry, so a
+`--launch` with `--install-dir` fails through the existing launch-build error
+rather than a new check; a `--steam` synthesized profile does carry the app id.
+No dependency is added and the minimum supported toolchain stays green.
+
+A follow-up from PR review addressed the attach-to-running case for an anchored
+identity. An engine-rule resolution of an Unreal client carries a `Binaries\Win64`
+path anchor alongside the executable name, and the Windows toolhelp startup
+snapshot carries only the executable name (the no-handle P-1 choice), so the
+anchor cannot be checked against an already-running process. Left alone, a
+`run --install-dir`/`--steam` over an already-running anchored target would wait
+silently until a restart, timeout, or interrupt. The non-profile path now runs the
+same attach-to-running report `watch` uses: it warns that a matching executable is
+already running but the path anchor cannot be checked against the snapshot and the
+target will be captured when it next starts, rather than making acquisition
+silently impossible. The shared logic was extracted from `watch` into a new
+`attach` module used by both commands; the anchor is preserved on the synthesized
+stage for the process-start event that will carry the full path. The `--profile`
+path is unchanged: the report runs only on the non-profile branch.
+
+**2026-08-13** The target-hint-record schema revision (issue #75 follow-up per
+#83, slice S033) landed, and five decisions were recorded rather than left
+implicit.
+
+First, the three new fields live where a single loose record lives. In the JSON
+Schema they are top-level properties (so a `hint`, which is one loose record,
+carries them) and members of the `record` definition (so each `export` record
+carries them), and a new `allOf` conditional forbids them on `profile`, `package`,
+and the `export` envelope top level, mirroring exactly how `records: false` gates
+the records array off the non-export kinds. The strict authored format stays clean:
+a profile that carries a launch array, a launcher flag, or an engine object is
+refused as an unknown key. This keeps the authored-versus-guessed line the fidelity
+model protects.
+
+Second, engine confidence is not a fidelity tier. The research's confidence
+vocabulary (confirmed, high, medium, low, unknown) grades one heuristic field, the
+engine guess, while the record fidelity (authored, verified, heuristic-unverified,
+observed) grades the whole record's trust. Remapping confidence onto fidelity, or
+letting a low engine confidence lower the record's fidelity, would let one guessed
+field silently move the record's overall trust, which P-9 forbids. Both are carried
+as independent fields, which is the reconciliation #83 explicitly permits. The
+engine `source` is likewise separate from the record's provenance `source`: same
+field name across two objects, two different vocabularies, no cross-constraint.
+
+Third, the launch data is modeled as an array and is never flattened. Steam's
+`config.launch` is a list, and for launcher-mediated titles the invoked entry is a
+publisher launcher rather than the socket holder, so the schema preserves the whole
+array with its filters intact and imposes no reduction. Reducing the array to the
+one binary that holds sockets is the resolution cascade's runtime job (#77), not a
+seeding-time transformation; encoding a reduction in the schema would bake a guess
+into the data.
+
+Fourth, the launch-entry filter fields (`os`, `osarch`, `launch_type`,
+`beta_branch`) are free strings, not enums; only the engine `source` and
+`confidence`, whose vocabularies this project's own research fixes, are enums.
+Steam's launch-filter vocabularies are external and evolve, so an enum would reject
+a valid Steam value the moment Steam adds one, a correctness cost with no honesty
+benefit. The engine `name` is likewise a free string.
+
+Fifth, the change is additive within schema version 1 with no bump, applied
+byte-identically to the embedded and published schema copies (the drift check
+enforces it), and the hand-rolled variant validator was extended rather than
+replaced, gaining `check_launch`, `check_launch_entry`, and `check_engine` helpers
+and two new diagnostic codes (`InvalidEngineSource`, `InvalidEngineConfidence`)
+mapped in the profile-load path as `InvalidCategory` was. This is the same
+additive-extension discipline slice S031 used for the `technologies` structure. No
+runtime code consumes the new fields; that is #78. No dependency is added and the
+minimum supported toolchain stays green.
+
+**2026-08-13** The targets hint database foundation (issue #78, slice S034)
+landed, adding the first embedded-database dependency, and the decisions behind it
+were recorded rather than left implicit.
+
+First, `rusqlite` is taken with `default-features = false` and only the `bundled`
+feature. rusqlite 0.40's default set enables a WebAssembly FFI backend
+(`ffi-sqlite-wasm-rs`) that drags roughly fourteen packages into `Cargo.lock` (the
+wasm-bindgen stack, `js-sys`, `thiserror`, `bumpalo`) for machinery this project
+never runs. With defaults off, the delta is six packages: `rusqlite`,
+`libsqlite3-sys`, `fallible-iterator`, `fallible-streaming-iterator`, `smallvec`,
+and `vcpkg`. `cc`, `bitflags`, `shlex`, `find-msvc-tools`, and `pkg-config` are
+already in the graph via `pcap`, so they add nothing. The delta was measured by
+adding the dependency and diffing `Cargo.lock`, not estimated.
+
+Second, the store is bundled, not linked against a system SQLite. `bundled`
+compiles the SQLite amalgamation through `cc`, so the build is deterministic on a
+bare Windows runner with no external database library, and the bundled SQLite
+carries the JSON1 functions a later query slice may use. A hand-rolled indexed,
+transactional on-disk format was rejected (it leaves the hard half to be written),
+as was `sqlx` (an async runtime and a far larger graph for a synchronous
+single-file local store).
+
+Third, the minimum supported toolchain stays 1.82, verified rather than assumed.
+None of the six new crates declares a `rust-version`; all compile under Rust 1.82,
+confirmed by building through `rustup run 1.82` (the same path `cargo xtask msrv`
+takes). The dependency is taken as a `0.40` range rather than exact-pinned, because
+unlike `clap` nothing in its graph breaks the floor today; `cargo xtask msrv` is
+the standing gate should a future lock update raise it.
+
+Fourth, licensing. Every crate in the delta is MIT or Apache-2.0. The SQLite
+amalgamation vendored inside the MIT `libsqlite3-sys` crate is public-domain C, so
+`cargo deny` reads the crate's MIT metadata and the license gate passes; public
+domain imposes no attribution obligation, recorded here for completeness. The new
+`fragcap-targets` crate carries `LICENSE`, `NOTICE`, and `README.md` per the
+license gate.
+
+Fifth, placement and gating. The store lives in a new leaf crate `fragcap-targets`
+depending only on `fragcap-profile`, never on `fragcap-core` (the `cargo xtask
+deps` allowlist gained the two edges and the sibling entry). It is optional and off
+at the facade behind a `targets` feature, so a default library build compiles no
+SQLite engine; the command-line tool enables it unconditionally so the shipped tool
+carries the `targets` subcommand. Unlike `live`, `socket-table`, and `etw`, the
+store needs no capture driver and no elevation, only the C toolchain at build time,
+which is why it is on for the binary rather than off by default.
+
+**2026-08-13** The Tier 1 catalog seeder (issue #78, slice S035) landed, adding the
+project's first HTTP client, and the decisions behind it were recorded.
+
+First, the HTTP client is `http_req` with `default-features = false, features =
+["native-tls"]`, behind an off-by-default `net` feature. Two constraints forced it.
+The license allowlist eliminated the rustls path: `minreq`+`https` is otherwise the
+minimal choice but forces `webpki-roots`, whose bundled Mozilla root store is
+CDLA-Permissive-2.0, outside the constitution's allowed set; native-tls uses the
+operating system trust store (schannel on Windows) and bundles no roots. The
+graph-size rule eliminated every `url`-based client: `ureq` and `attohttpc` pull
+`idna` 1.x and the whole ICU4X stack, measured at 42 packages, the graph S025
+rejected `boon` for. `http_req` does its own URL parsing and, with native-tls, adds
+18 packages (no ICU4X, no `ring`), all MIT or Apache-2.0. The delta was measured by
+adding the dependency and diffing `Cargo.lock`, not estimated.
+
+Second, MSRV 1.82 does not bind the client. The `net` feature is off by default and
+`cargo xtask msrv` builds the default-feature workspace, so `http_req` (and a
+transitive `zeroize` 1.9 that declares edition 2024 / rust-version 1.85) is never
+compiled under 1.82, exactly as `pcap` behind `live` is not. Verified by building
+net-off under `rustup run 1.82` and net-on under the pinned toolchain; the net graph
+must only compile under the `--all-features` clippy gate on 1.96.
+
+Third, the client's maintenance risk is accepted and mitigated. `http_req` is
+smaller and less widely used than `ureq`; it sits behind the `CatalogSource` trait,
+so replacing it later is a one-module change, and it is compiled but never run in
+continuous integration (the offline `FixtureCatalog` drives every test), so a client
+regression cannot break the default build or the tested pipeline.
+
+Fourth, the seeder gets a new `Store::merge_catalog` rather than reusing the S034
+whole-game replace. The replace path deletes the game row (and, by cascade, its
+launch and technology rows) and reinserts; a Tier 1 seeder that knows only appid and
+name would thereby erase Tier 2 and Tier 3 data a prior seeder wrote. `merge_catalog`
+is an `ON CONFLICT(appid) DO UPDATE SET` of only the catalog columns, leaving the
+other tiers intact, which is what the three-tier model requires and is proven by a
+test that seeds Tier 1 over a game already carrying an engine.
+
+Fifth, the live source targets SteamSpy's paginated `all` listing (bulk name and
+review tallies, paged by page number as the cursor). The precise endpoint is an
+operator-facing detail, not a tested contract: any source producing `CatalogEntry`
+values feeds the same gate and merge, and the live path is exercised by the
+maintainer, not by continuous integration.
+
+**2026-08-13** The Tier 3 engine seeder (issue #78, slice S036) landed, and the
+decisions behind it were recorded.
+
+First, no new dependency was taken. The live source reuses the `http_req` client
+and off-by-default `net` feature S035 introduced for the whole seeder arc, rather
+than adding a second HTTP client for PCGamingWiki. The `CatalogSource` / `EngineFeed`
+trait seam already isolates the client, and adding another would violate the
+smallest-graph practice for no benefit. `Cargo.lock` is unchanged, the license set
+is unchanged, and MSRV 1.82 stays non-binding because `net` is off in the default
+and toolchain-check builds, exactly as for `pcap` behind `live`. Re-verified by
+building net-off under `rustup run 1.82` and net-on under the pinned toolchain.
+
+Second, the seeder gets a new `Store::merge_engine`, the engine analogue of S035's
+`merge_catalog`. Neither the S034 whole-game replace (which would erase Tiers 1 and
+2) nor `merge_catalog` (which never writes engine) fits. `merge_engine` is an
+`ON CONFLICT(appid) DO UPDATE SET` of only the three engine columns, leaving name,
+metrics, launcher flags, and the launch and technology rows intact, and inserting an
+engine-only row for an unseen application id. It takes a whole `Engine` value so
+source and confidence are always bound together, satisfying the store's
+both-or-neither CHECK by construction. Proven by a test that seeds an engine over a
+catalog-seeded, launch-bearing game and asserts the name and launch entries survive.
+
+Third, the fetch trait is named `EngineFeed`, not `EngineSource`. `fragcap-targets`
+already exports an `EngineSource` enum (the schema `engine.source` token), so a
+same-named trait would clash at the crate root. The trait names the paged source the
+seeder reads from; the enum names provenance and is always `pcgamingwiki` for this
+tier. The distinct names keep both reachable without ambiguity.
+
+Fourth, the live-source CLI flag is `--pcgamingwiki`, not `--steam`. The engine tier
+is keyed by Steam application id, but the data comes from PCGamingWiki, so naming the
+flag `--steam` (as S035's catalog `--steam` does for a Steam-derived catalog) would
+misattribute the source, a P-9 naming concern. The subcommand is `seed-engine`, its
+own command rather than an extension of `seed`, because no corpus-review threshold
+applies to engine enrichment; the offline `--from` path is always available and the
+`--pcgamingwiki` path is present only under `net`, the two a mutually exclusive
+clap group.
+
+Fifth, the within-field engine confidence is supplied per entry by the feed, and the
+live source maps a cleanly resolved single engine to `high` (a documented, tunable
+default: a well-attested community field, still unverified against the binary, so
+the row stays heuristic-unverified overall). The offline fixture supplies the token
+directly so the store path is exercised across all five confidence values; the
+default is not a load-bearing correctness value.
+
+**2026-08-13** The hint-database provider (issue #78, slice S037) wired the
+targets store into the resolution cascade, and the decisions behind it were
+recorded.
+
+First, the concrete provider lives in `fragcap-targets`, not `fragcap-profile`.
+The resolver trait, the precedence enum, the request, and the target types stay in
+`fragcap-profile`, but a provider that reads the store cannot live there:
+`fragcap-profile` may not depend on `fragcap-targets` (the dependency direction
+`cargo xtask deps` enforces), while `fragcap-targets` already depends on
+`fragcap-profile` for the JSON-schema validator, so implementing the trait there
+adds no edge. This is the exact precedent S030 set by putting the concrete
+`SteamWalkerProvider` in `fragcap-steam` and removing the profile-crate stub; S037
+removes the `HintProvider` no-answer stub from `fragcap-profile` the same way. The
+resolver is assembled and the provider injected at the CLI, the only surface that
+legitimately depends on both crates.
+
+Second, the Steam application id reaches the provider through the resolution
+request, as a new `steam_app_id` input with a `with_steam_app_id` builder mirroring
+`with_install_root`. The request is already the channel by which per-provider
+inputs arrive, and a provider whose input is absent declines, so a single `--steam`
+request can offer the application id to the hint provider and the install root to
+the engine rule and platform walker without the providers interfering. A new
+`TargetOrigin::HintDatabase(HintTarget)` variant carries the answer; unlike the
+engine-rule and walker origins it carries no on-disk path, because the store knows
+the executable name but not the per-install location, and naming a path it did not
+read would violate P-9. The engine fact is carried as a plain string, not the
+`fragcap-targets` engine type, which `fragcap-profile` cannot name.
+
+Third, the executable-selection rule is fixed and disciplined. A row's launch
+entries are restricted to those applicable to Windows (operating-system filter
+unset or naming Windows), then reduced to the set of distinct executable file names
+compared case-insensitively. Exactly one name resolves; zero declines; two or more
+is an ambiguity decline recording the application id and count, mirroring the engine
+rule's and walker's ambiguity notes. Selecting among several by any coincidental
+signal (order, size) is disallowed, the same no-guessing posture the earlier
+providers take.
+
+Fourth, a hint-database read that fails after the store has opened maps to a new
+`ProviderError::Hint(String)` variant that aborts the cascade, rather than
+declining silently (P-4). The variant carries a message so `fragcap-profile` names
+no `fragcap-targets` type. A database that cannot be opened at all never reaches the
+provider: the CLI opens the store once at resolver-assembly time, so a corrupt or
+wrong-version database is surfaced at the boundary where the operator supplied the
+path.
+
+Fifth, the database is supplied for resolution only by an explicit path, through a
+`--hint-db` option and a `FRAGCAP_HINT_DB` environment override, and this slice
+introduces no automatic database-discovery convention. The explicit path matches
+how the existing `targets` subcommands take a `--db`, and the environment override
+lets the offline tests point at a scratch store with no developer-machine
+dependency, exactly as `FRAGCAP_PROFILE_DIR` does. A default discovery location is a
+packaging decision left to a later slice. The provenance label reuses the export's
+existing `hint-db` constant so the database has one honest name across its read and
+write surfaces.
+
+No new dependency is taken and `Cargo.lock` is unchanged: `rusqlite` and
+`serde_json` were already present, and `fragcap-profile` gains no dependency. MSRV
+1.82 stays non-binding because the facade's `targets` feature is off in the
+default and toolchain-check builds, so the store-reading code is not compiled for
+the minimum toolchain, the same posture as `pcap` behind `live`.
+
+**2026-08-14** The last piece of issue #78's launch tier was re-scoped, and two
+architecture-affecting choices were recorded.
+
+First, the maintainer-run Tier 2 seeder was cancelled and replaced by per-user
+local accumulation. A seeder that read the maintainer's own appinfo cache and
+baked launch executables into the shipped database would disclose which games the
+maintainer owns. Instead the launch tier is filled on each end user's own machine
+from that user's own appinfo cache, and the shipped database carries only the
+public catalog and engine tiers. Two alternative sources were rejected: a
+SteamKit-class network client (a large asynchronous, protobuf, and cryptographic
+graph that fails the no-gratuitous-graph test that rejected `ureq` and `boon`, and
+a fresh license-audit surface), and a `steamcmd` subprocess (parsing a subprocess's
+stdout violates the thin-wrapper non-negotiable, P-7). The chosen source is a
+hand-rolled parser of the local binary `appinfo.vdf`: zero new dependency, no `net`
+feature, and P-1 clean by construction, because it only reads a file Steam already
+wrote. Pooling accumulated launch data across users is deferred to issue #94.
+
+Second, this is the embedded store's first schema-version migration (version 1 to
+version 2). Deciding staleness by the appinfo change-number, rather than a plain
+have-it-or-not check, requires recording that number per application, and the store
+had no column for it. The migration adds one nullable `appinfo_change_number`
+column with a single additive `ALTER TABLE`, applied in one transaction alongside
+the version stamp; an existing version-1 store keeps every row and reads the new
+column as NULL, so it refreshes on the first walk. The column is store-internal
+bookkeeping, never exported and never surfaced on the game model, so the export
+projection and the published schema are unchanged. This revises the earlier
+expectation that the launch tier would need no store migration; the migration is
+the cost of honoring change-number staleness rather than mere presence. The
+`token_required` column is left unpopulated: it has no reliable appinfo source and
+is not exportable.
+
+Third, the appinfo parser is a header-first streaming reader rather than a
+parse-everything pass. The reader reads the file header once and then yields one
+section header at a time, skipping each section's key-values body by its size
+field; the orchestrator decides staleness from the cheap section header and
+decodes a body only for an installed application that is missing or stale. An
+unchanged application is therefore never decoded, so a repeat run over a
+multi-megabyte cache does near-zero work, as the performance goal requires. Two
+integrity rules follow the same discipline: a key-values object truncated before
+its end marker is a parse failure rather than a silently-partial launch entry
+(end of input is permitted only at a section's root, not inside a nested object),
+and a file-level fault (an unrecognized magic, a malformed string table, a
+truncated tail, or a size that runs past the end) makes the whole cache
+untrustworthy, so accumulation records nothing and surfaces the fault rather than
+writing the valid-looking prefix (P-4, P-9).
+
+**2026-08-14** Windows distribution gained an unsigned MSI installer, a bundled
+barebones hint database, and a default hint-database location, and several
+choices along the way are recorded (issue #96, decision #58).
+
+The pinned release workflow (`.github/workflows/release.yml`) changed. The
+`artifacts` job now installs WiX and `cargo-wix`, builds the barebones hint
+database offline through `fragcap targets import`, and builds the MSI, and the
+release now publishes three downloads with a checksum each: the portable archive
+(which now also carries `hint.db`), the unsigned MSI, and the hint database on its
+own. This extends the archive contract recorded on 2026-08-12
+(`release-packaging.decisions.md`): the archive previously held only the binary,
+`LICENSE`, and `NOTICE`, and now also holds the barebones hint database beside the
+binary so the first-run bootstrap can seed the per-user copy from it.
+Specification section 24.5 is reconciled to match, and sections 20.2 and 15.3 are
+amended (the no-bundling obligation binds npcap alone, not fragcap's own data
+artifacts; the hint database has a per-user default at `%APPDATA%\fragcap\hint.db`).
+
+The installer is unsigned for this release. Code signing is tracked separately
+(issue #79) and is a non-blocking track gated on a certificate path the project
+does not yet have; withholding the installer until then would deny the whole
+distribution improvement, so it ships unsigned and the documentation explains the
+unrecognized-publisher warning and that verifying the checksum is the integrity
+check (P-9). The installer carries a stable `UpgradeCode` GUID, generated once and
+frozen for the life of the product line (`7F3A2C4E-1D9B-4A6E-9C58-2B0E7D4F6A13`,
+in `crates/fragcap-cli/wix/main.wxs`); it is the identity by which a later version
+replaces rather than duplicates an install, so it must never change.
+
+The installer best-effort excludes its own install directory from Windows
+Defender through a deferred, elevated custom action, removed on uninstall. The
+exclusion is scoped to fragcap's own install directory and runs with the rights
+the installer already holds; it opens no process handle and touches no target
+process, its memory, its traffic, or the network stack, so it is outside the P-1
+technique denylist. It is best-effort: Windows Tamper Protection or a disabled
+Defender can refuse the change even when elevated, and a refusal must not fail the
+install, so the action ignores its own failure. The install path is passed to
+PowerShell as a bound parameter of a script block rather than interpolated into
+the command text, so a directory name containing a quote or a subexpression is
+data and cannot inject code that would then run elevated; a paired rollback action
+removes the exclusion if a later install step fails, so a cancelled install leaves
+none behind.
+
+The hint database default is on. The MSI installs the database under a
+program-files directory a standard user cannot write at runtime, but local
+accumulation (slice S038) writes to the database on every run, so the live store
+must be per-user. The binary therefore bootstraps a writable per-user default on
+first run, copying a read-only template shipped beside the executable when present
+and creating an empty store otherwise; one code path serves both the installer and
+the portable archive, and a future non-empty template needs no code change. A
+consequence is that a plain `fragcap run` with no hint-database option now creates
+`%APPDATA%\fragcap\hint.db` and, through S038, learns launch data from the local
+Steam appinfo cache by default (local only, no network, no process handle);
+sharing that learned data remains a separate opt-in (issue #94).
+
+The shipped hint database is empty. Every hint row is heuristic-unverified, and
+shipping specific titles would bake staleness into the artifact and invite a
+reader to treat a guess as a fact; the substrate grows from the user's own machine
+(S038) and future community sync (#94), and the full curated corpus stays an
+out-of-band maintainer artifact rather than this release file. The installer is
+authored with `cargo-wix` over WiX v3 (mature, single `main.wxs`, `ProductVersion`
+derived from the crate version at tag time); WiX v4/v5 as a dotnet tool was the
+alternative and offered nothing this slice needs. The installed-MSI runtime
+behavior (the unrecognized-publisher prompt, the per-machine install and path
+change, the Defender exclusion, the npcap link, uninstall, and upgrade) is
+verified manually and recorded on the pull request, the same honesty posture the
+project holds for live capture, because it cannot be exercised by the automated
+check set.
+
+**2026-08-12** Changed the distribution archive in `.github/workflows/release.yml`
+to contain only the binary, `LICENSE`, and `NOTICE`. It previously bundled all of
+`scripts/` (shipping the maintainer tooling `cut-release.sh`, `New-Release.ps1`,
+and `lint-docs.sh` alongside the user wrappers), the repo-oriented README, and a
+permanent false `INCOMPLETE.txt` fired by an empty `profiles/` directory that
+fragcap never populates (issue #54). The shell wrappers are no longer shipped in
+the archive at all: since #56 the binary detects elevation itself and `doctor`
+covers driver detection, so a wrapper adds little where it would ship, and the
+wrappers remain in the repository for people who clone it (issue #57).
+Specification section 24.5 is reconciled to match.
+
 ## [0.2.0] - 2026-08-12
 
 ### Highlights
@@ -3374,4 +4746,5 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.3.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.3.0
 [0.2.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.2.0

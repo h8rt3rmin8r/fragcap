@@ -54,7 +54,7 @@
 
 .EXAMPLE
     .\New-Release.ps1 minor
-    Prepare release/0.2.0: bump, assemble changelog, fix goldens, run the checks.
+    Prepare release/X.Y.Z: bump, assemble changelog, fix goldens, run the checks.
 #>
 [CmdletBinding(SupportsShouldProcess=$false,ConfirmImpact='None',DefaultParameterSetName='Default')]
 Param(
