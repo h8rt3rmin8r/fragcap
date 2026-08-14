@@ -42,12 +42,13 @@ published schema rejects.
 
 ## 3. CLI import/export round-trip (User Story 2)
 
-Build the CLI with the `targets` feature and round-trip the committed seed
-fixture through a temporary store, with no network:
+Round-trip the committed seed fixture through a temporary store, with no network.
+The CLI enables the `targets` capability unconditionally (it is not a `fragcap-cli`
+feature flag), so no `--features` is needed:
 
 ```bash
-cargo run -p fragcap-cli --features targets -- targets import crates/fragcap-targets/tests/fixtures/seed.json --db %TEMP%\hint.db
-cargo run -p fragcap-cli --features targets -- targets export --db %TEMP%\hint.db
+cargo run -p fragcap-cli -- targets import crates/fragcap-targets/tests/fixtures/seed.json --db %TEMP%\hint.db
+cargo run -p fragcap-cli -- targets export --db %TEMP%\hint.db
 ```
 
 Expected: the first command creates and populates the store; the second prints a

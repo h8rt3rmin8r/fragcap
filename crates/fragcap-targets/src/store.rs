@@ -42,14 +42,21 @@ impl Store {
         Self::from_connection(conn)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, TargetsError> {
+    fn from_connection(mut conn: Connection) -> Result<Self, TargetsError> {
+        // Set outside any transaction: `foreign_keys` is a no-op within one.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => {
-                // Fresh database: apply the schema and stamp its version.
-                conn.execute_batch(DDL)?;
-                conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+                // Fresh database: apply the schema and stamp its version inside
+                // one transaction, so a failure partway through the DDL rolls the
+                // whole thing back rather than leaving a half-created file whose
+                // user_version is still zero (which the next open would treat as
+                // fresh and then fail on the tables that do exist).
+                let tx = conn.transaction()?;
+                tx.execute_batch(DDL)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.commit()?;
             }
             v if v == SCHEMA_VERSION => {}
             found => return Err(TargetsError::SchemaVersion { found }),
@@ -238,6 +245,16 @@ impl Store {
 /// [`Store::upsert_game`] (its own transaction) and [`Store::upsert_all`] (a
 /// batch transaction).
 fn write_game(conn: &Connection, game: &Game) -> Result<(), TargetsError> {
+    // A present-but-empty name would store cleanly yet export as `game.name: ""`,
+    // which the schema (minLength 1) rejects: the store would then hold a row it
+    // could not export. Refuse it here, before any write, with the CHECK
+    // constraint on `games.name` as the backstop. An absent name (None) is fine.
+    if game.name.as_deref() == Some("") {
+        return Err(TargetsError::Model(
+            "game name must not be empty (use None for an unknown name)".to_string(),
+        ));
+    }
+
     // Wholesale replace: delete the existing game; its launch and technology
     // rows follow through ON DELETE CASCADE.
     conn.execute("DELETE FROM games WHERE appid = ?1", params![game.appid])?;

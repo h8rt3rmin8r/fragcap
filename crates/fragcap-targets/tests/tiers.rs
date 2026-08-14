@@ -75,6 +75,26 @@ fn seed_state_round_trips_per_tier() {
 }
 
 #[test]
+fn an_empty_game_name_is_refused_so_the_store_stays_exportable() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut g = Game::new(1);
+    g.name = Some(String::new());
+    // A present-but-empty name would export as game.name: "" which the schema
+    // rejects (minLength 1); the write must refuse it rather than store an
+    // unexportable row.
+    assert!(store.upsert_game(&g).is_err(), "empty name must be refused");
+    assert!(store.games().unwrap().is_empty(), "nothing is written");
+
+    // An absent name is fine.
+    let ok = Game::new(1);
+    store.upsert_game(&ok).unwrap();
+    assert!(
+        validate_json(&export(&store).unwrap()).is_valid(),
+        "a nameless game still exports valid"
+    );
+}
+
+#[test]
 fn reimport_is_idempotent() {
     let mut store = Store::open_in_memory().unwrap();
     let mut g = Game::new(440);

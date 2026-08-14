@@ -66,7 +66,7 @@ valid output reflecting the seed; a malformed seed exits non-zero leaving no sto
 - [x] T014 [US2] Add `crates/fragcap-cli/src/commands/targets.rs` with `targets import <SEED> --db <DB>` and `targets export --db <DB>` (0/1/2 exit contract), register it in `crates/fragcap-cli/src/commands/mod.rs` and the clap enum in `crates/fragcap-cli/src/cli.rs`, all under `#[cfg(feature = "targets")]`; enable `fragcap = { ..., features = ["targets"] }` (or a `targets` passthrough feature) in `crates/fragcap-cli/Cargo.toml`.
 - [x] T015 [P] [US2] Write `crates/fragcap-cli/tests/targets.rs` (using `tempfile`): import the seed then export, assert the output validates and reflects the seed; assert a malformed seed exits non-zero and writes no store; assert re-import is idempotent.
 
-**Checkpoint**: CLI round-trip works offline; `cargo test -p fragcap-cli --features targets` green.
+**Checkpoint**: CLI round-trip works offline; `cargo test -p fragcap-cli` green (the CLI enables `fragcap/targets` unconditionally, so no `--features` flag is needed).
 
 ## Phase 5: User Story 3 - Independent, resumable seeding tiers (P3)
 

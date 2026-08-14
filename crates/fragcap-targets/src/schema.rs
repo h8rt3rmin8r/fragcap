@@ -15,7 +15,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 pub const DDL: &str = "\
 CREATE TABLE games (
     appid              INTEGER PRIMARY KEY,
-    name               TEXT,
+    name               TEXT CHECK (name IS NULL OR length(name) > 0),
     review_count       INTEGER,
     owners             INTEGER,
     peak_ccu           INTEGER,
