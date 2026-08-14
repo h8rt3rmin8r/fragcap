@@ -62,3 +62,9 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 tempfile.workspace   = true
+# The synthetic appinfo generator for the launch-accumulation integration test
+# (slice S038). This test lives here rather than in the facade because the CLI
+# carries the `targets` feature unconditionally, so the test runs under the
+# default `cargo test --workspace` gate; the facade is tested there with default
+# features only.
+fragcap-steam = { workspace = true, features = ["test-support"] }

@@ -811,6 +811,43 @@ No Silent Loss principle (P-4).
 **See also:** [Catalog seeder](#catalog-seeder), [Engine seeder](#engine-seeder),
 [Corpus gate](#corpus-gate)
 
+## Launch-data accumulation
+
+The local, per-user process by which each copy of fragcap learns its own Steam
+titles' launch executables from the machine's own
+[application-info cache](platform-and-distribution.md#application-info-cache) into
+the user's private [hint database](#hint-database), accumulating across runs. It
+walks the installed library, and for each title reads the cache's launch
+configuration into the launch [seeding tier](#seeding-tier) only when the title's
+data is missing or its cache change-number is newer than the one the store
+recorded (change-number staleness), skipping titles already current so repeat runs
+stay cheap. It is passive: a local file read, no network, no process handle (P-1),
+and it ships nothing, so every learned fact stays on the machine that learned it.
+Pooling accumulated data across users is deferred (issue #94).
+
+{: .matters }
+> Baking a maintainer's launch data into the shipped database would leak which
+> games the maintainer owns. Accumulation moves the launch tier onto the end
+> user's own machine, so the shipped database carries only public catalog and
+> engine data and no one's library is ever disclosed.
+
+**See also:** [Application-info cache](platform-and-distribution.md#application-info-cache),
+[Accumulation account](#accumulation-account), [Launch array](#launch-array),
+[Hint database](#hint-database)
+
+## Accumulation account
+
+The reconciled record a [launch-data accumulation](#launch-data-accumulation) run
+returns: how many installed titles it considered and, for each, whether its launch
+data was written, skipped as already current, failed to parse, or yielded nothing
+to store. The per-title outcomes reconcile to the number considered, so a walk cut
+short or one that skipped unreadable titles cannot read as complete; a file-level
+parse fault is surfaced on a separate axis rather than folded in and hidden. This
+is the accumulation-time form of the No Silent Loss principle (P-4).
+
+**See also:** [Launch-data accumulation](#launch-data-accumulation),
+[Seed summary](#seed-summary)
+
 ## Engine seeder
 
 The [seeding tier](#seeding-tier) that fills the [hint database](#hint-database)'s

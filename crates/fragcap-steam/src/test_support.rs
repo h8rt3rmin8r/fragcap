@@ -37,6 +37,14 @@ impl TempTree {
         std::fs::write(path, contents).expect("write file");
     }
 
+    /// Write a file (creating parent directories) with the given bytes.
+    pub fn write_bytes(&self, path: &Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(path, contents).expect("write file");
+    }
+
     /// Write a placeholder executable of `size` bytes (creating parents).
     pub fn write_exe(&self, path: &Path, size: usize) {
         if let Some(parent) = path.parent() {

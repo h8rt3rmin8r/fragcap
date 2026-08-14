@@ -95,6 +95,17 @@ pub mod targets {
     pub use fragcap_targets::HttpEngineFeed;
 }
 
+/// Local Steam launch-data accumulation (issue #78, slice S038), behind the
+/// `targets` feature. Learns a user's own game launch executables from their local
+/// Steam appinfo cache into their private local hint store; ships nothing.
+#[cfg(feature = "targets")]
+mod accumulate;
+#[cfg(feature = "targets")]
+pub use accumulate::{
+    accumulate_from_local_steam, accumulate_launch_data, AccumulationError, AccumulationProgress,
+    LaunchAccumulationSummary,
+};
+
 /// Packet acquisition.
 pub mod capture {
     pub use fragcap_capture::pcap::{PcapReader, ReplayStats};

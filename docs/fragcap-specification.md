@@ -1973,6 +1973,39 @@ distinct from the record's provenance `source`, which names where the whole reco
 came from. Building the database, the seeding pipeline, and the external lookups
 that fill these fields is issue #78; this schema defines the shape they target.
 
+#### 15.6.2 Local launch-data accumulation
+
+The `launch` field is filled per user, locally, rather than seeded into the
+shipped database. Baking a maintainer's launch data into the distributed database
+would disclose which games the maintainer owns; instead each end user's copy of
+fragcap learns its own titles' launch executables on its own machine, and the
+shipped database carries only the public catalog and engine tiers.
+
+At capture start, when a hint database is configured (the same one the resolution
+cascade of section 15.7 reads), fragcap walks the installed Steam library and, for
+each installed title, reads that title's launch configuration from the machine's
+own application-info cache (`appcache/appinfo.vdf`) into the launch columns of the
+local store. The cache is a binary key-values format distinct from the text VDF of
+section 16.2; fragcap parses it with a hand-rolled parser that frames each
+application's section by a size field, so a malformed section is isolated and the
+walk continues. A title is read only when the store holds no launch data for it or
+the cache's change-number for the title exceeds the one the store recorded; a title
+already at the current change-number is skipped, so the first run is slower and
+later runs are mostly skips. The launch entries are stored exactly as the cache
+records them, never reduced or normalized (constitution P-9), and neither
+`launcher_mediated` nor `token_required` is populated from this source, which has
+no reliable field for either.
+
+The read is passive: it opens no network connection and no process handle, only a
+file Steam already wrote (constitution P-1). Every installed title the walk
+considers lands in exactly one counted outcome (written, skipped as current, failed
+to parse, or yielding nothing to store), and the outcomes reconcile to the number
+considered, so a partial walk cannot read as a complete one (constitution P-4). The
+accumulation never prunes: a title absent from the cache leaves any stored launch
+data in place. The local collection is the substrate for a future opt-in community
+pool (issue #94), which is out of scope here; until then every learned fact stays
+on the machine that learned it.
+
 ### 15.7 Target Resolution Cascade
 
 Deciding what to capture for a given game is a separate question from how
