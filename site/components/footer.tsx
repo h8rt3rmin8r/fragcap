@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 import Link from 'next/link';
 
-// The site-wide footer, rendered once at the body level (app/layout.tsx) so it
-// reaches every page, home and docs alike. Fumadocs' layouts carry no footer
-// slot, so the endorsement and the legal disclaimer link live here rather than
-// in per-page markup. Both stay subordinate (Geist Mono, uppercase, low
-// emphasis) per specification section 23.3 and docs/brand/README.md: the
-// endorsement must not grow louder for being a link.
+// The site-wide footer. It renders once per page, but from two places so it
+// sits in flow under each layout: the home group renders it after HomeLayout
+// (app/(home)/layout.tsx), and docs pages render it inside the docs content
+// column after the body (app/docs/[[...slug]]/page.tsx). A single body-level
+// render does not work for docs, whose fumadocs layout forces a full-viewport
+// grid that would push a body-level footer a full viewport below the content.
+// The endorsement and the legal disclaimer link stay subordinate (Geist Mono,
+// uppercase, low emphasis) per specification section 23.3 and
+// docs/brand/README.md: the endorsement must not grow louder for being a link.
 export function Footer() {
   return (
     <footer

@@ -3,7 +3,6 @@ import './global.css';
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import type { ReactNode } from 'react';
 import type { Metadata, Viewport } from 'next';
-import { Footer } from '@/components/footer';
 
 const url = 'https://fragcap.com';
 
@@ -56,7 +55,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           search={{ options: { type: 'static', api: '/static.json' } }}
         >
           {children}
-          <Footer />
         </RootProvider>
       </body>
     </html>

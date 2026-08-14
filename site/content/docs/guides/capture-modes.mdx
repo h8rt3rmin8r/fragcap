@@ -19,7 +19,7 @@ The default. Packets are written to a file until a stop condition is reached, th
 the file is finalized. Reach for it when you want a capture you can open later.
 
 ```text
-fragcap run --profile eso --out capture.fcapng
+fragcap run --profile <game-id> --out capture.fcapng
 ```
 
 Bound the capture with any of `--duration`, `--max-packets`, or `--max-bytes`, or
@@ -31,7 +31,7 @@ Packets are streamed to a transport as they are captured, for a consumer reading
 live rather than a file read afterward. Sinks name the transport:
 
 ```text
-fragcap run --profile eso --mode stream --sink tcp://127.0.0.1:9000,format=pcapng
+fragcap run --profile <game-id> --mode stream --sink tcp://127.0.0.1:9000,format=pcapng
 ```
 
 A stream sink can be a TCP endpoint (`tcp://HOST:PORT`) or a named pipe
@@ -50,7 +50,7 @@ for it when you want the run-up to an event you cannot predict, without writing
 everything before it.
 
 ```text
-fragcap run --profile eso --mode ring --ring 30s --out capture.fcapng
+fragcap run --profile <game-id> --mode ring --ring 30s --out capture.fcapng
 ```
 
 The `--ring` window is either a duration (`30s`) or a size (`64mb`). Ring mode

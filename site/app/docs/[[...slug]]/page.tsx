@@ -9,6 +9,7 @@ import {
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getMDXComponents } from '@/mdx-components';
+import { Footer } from '@/components/footer';
 
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
@@ -26,6 +27,13 @@ export default async function Page(props: {
       <DocsBody>
         <MDX components={getMDXComponents()} />
       </DocsBody>
+      {/*
+       * The site footer renders inside the docs content column, after the body,
+       * so it sits in the docs scroll flow directly under the content. Rendering
+       * it here (rather than at body level) is what keeps it from being parked a
+       * full viewport below the content by fumadocs' 100dvh docs grid.
+       */}
+      <Footer />
     </DocsPage>
   );
 }

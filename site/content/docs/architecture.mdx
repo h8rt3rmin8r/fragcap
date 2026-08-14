@@ -15,7 +15,7 @@ extcap integration is optional. See the dependency model in the
 [glossary](/docs/glossary/platform-and-distribution#dependency-model).
 
 ```mermaid
-flowchart LR
+flowchart TD
   fragcap["fragcap: capture and attribution"]
   npcap["npcap: capture driver (required)"]
   ws["Wireshark: analyzer (recommended)"]
@@ -75,7 +75,7 @@ accounting is conservation, not decoration: for every sink, received plus droppe
 plus refused equals captured.
 
 ```mermaid
-flowchart LR
+flowchart TD
   nic["Network interface"]
   npcap["npcap driver"]
   cap["fragcap capture: one thread per interface"]
