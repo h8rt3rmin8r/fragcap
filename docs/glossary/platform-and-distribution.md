@@ -147,3 +147,57 @@ doctor` reports which are present, and a release binary ships with all three.
 > fail while the readiness report still read "ready".
 
 **See also:** [npcap](platform-and-distribution.md#npcap), [Readiness check](command-line-and-diagnostics.md#readiness-check), [Socket table](process-and-attribution.md#socket-table)
+
+## MSI installer
+
+The Windows Installer package (`.msi`) fragcap publishes for a release. It
+installs the binary per-machine under the program-files directory, adds that
+directory to the system path, ships the barebones targets hint database beside
+the binary as the template the first-run bootstrap seeds from, registers an
+uninstall entry, best-effort excludes its install directory from Windows
+Defender, and links the npcap download page on completion.
+
+{: .matters }
+> The installer is a convenience over the portable archive, not a second product:
+> it carries the same binary and the same hint database, and the release also
+> publishes both on their own so a user can decline it. It bundles no npcap
+> (specification section 20.2); it only links the download page. Its runtime
+> behavior is verified by hand, like live capture, because the automated check
+> set cannot install it.
+
+**See also:** [Unsigned installer](platform-and-distribution.md#unsigned-installer),
+[Windows Defender exclusion](platform-and-distribution.md#windows-defender-exclusion),
+[npcap](platform-and-distribution.md#npcap)
+
+## Unsigned installer
+
+A distribution installer published without an Authenticode code signature.
+fragcap's [MSI installer](platform-and-distribution.md#msi-installer) is unsigned
+for the current release, so Windows SmartScreen shows an unrecognized-publisher
+warning when it runs.
+
+{: .matters }
+> An unsigned installer is labeled as unsigned rather than implying a trust it
+> cannot prove: the documentation states the SmartScreen warning is expected and
+> that verifying the published SHA-256 checksum is the integrity check in place of
+> a signature (P-9). Code signing is a separate, non-blocking track (issue #79).
+
+**See also:** [MSI installer](platform-and-distribution.md#msi-installer)
+
+## Windows Defender exclusion
+
+A path added to Microsoft Defender's exclusion list so its scanning skips that
+location. fragcap's [MSI installer](platform-and-distribution.md#msi-installer)
+best-effort adds its own install directory on install and removes it on
+uninstall.
+
+{: .matters }
+> The exclusion is scoped to fragcap's own install directory and is an
+> installer and operating-system configuration action, not a capture technique: it
+> opens no process handle and touches no target process, its memory, its traffic,
+> or the network stack, so it is outside the technique denylist (constitution
+> P-1). It is best-effort because Windows Tamper Protection can refuse it even for
+> an elevated installer, and a refusal must not fail the install.
+
+**See also:** [MSI installer](platform-and-distribution.md#msi-installer),
+[Unsigned installer](platform-and-distribution.md#unsigned-installer)

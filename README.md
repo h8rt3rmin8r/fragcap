@@ -62,6 +62,7 @@ capture with fragcap, then open the result in Wireshark.
 | Glossary of every term | [fragcap.com/docs/glossary](https://fragcap.com/docs/glossary) |
 | Architecture of record | [`docs/fragcap-specification.md`](docs/fragcap-specification.md) |
 | Contributor workflow | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Windows installer | [Windows installer (MSI)](#windows-installer-msi) |
 | Releases | [github.com/h8rt3rmin8r/fragcap/releases](https://github.com/h8rt3rmin8r/fragcap/releases) |
 
 ## Status
@@ -179,6 +180,37 @@ Where a game uses transport encryption, payloads are captured as ciphertext.
 fragcap does not decrypt them and does not attempt key recovery. What you get
 is timing, sizing, endpoints, and attribution. That is stated plainly here so
 expectations are correct before you install anything.
+
+## Windows installer (MSI)
+
+**Each release offers three downloads, and you choose: a portable `.zip`, a
+Windows installer (`.msi`), and the targets hint database on its own.** Every
+download has a `.sha256` checksum beside it. The installer is the simplest path
+for a new user; the portable archive needs no installation.
+
+The installer places fragcap under `Program Files`, adds it to your `PATH` (so
+`fragcap` works in any new terminal), installs the barebones hint database, and
+excludes its own install directory from Windows Defender on a best-effort basis
+(removed when you uninstall). On completion it offers to open the npcap download
+page, because npcap is still a separate install (see below). It never downloads,
+bundles, or installs npcap itself.
+
+**The installer is not code-signed.** Windows will show a SmartScreen warning
+("Windows protected your PC") and an "Unknown Publisher" prompt. This is expected
+for this release, not a sign the download is bad. To proceed, choose **More info**
+and then **Run anyway**. Because there is no signature, the integrity check is the
+checksum: compute the SHA-256 of the downloaded `.msi` and confirm it matches the
+published `.sha256`. Code signing is planned and tracked separately (issue #79).
+
+| Download | Use it when |
+| --- | --- |
+| `fragcap-<version>-x86_64-pc-windows-msvc.zip` | You want a portable copy with no installer; unzip and run |
+| `fragcap-<version>-x86_64.msi` | You want a normal install (PATH, uninstall entry, bundled database) |
+| `hint.db` | You only want to refresh the targets hint database |
+
+The `PATH` entry takes effect in newly opened terminals, not the one that was
+already open. The bundled hint database is empty on release; fragcap grows it from
+your own machine as you capture.
 
 ## Prerequisite: npcap
 

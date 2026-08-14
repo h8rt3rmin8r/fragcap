@@ -19,11 +19,21 @@ intend:
 - **A loopback conversation is usually a process talking to itself.** Local
   traffic on the loopback interface is normal and often not what you are after.
 
-## 1. Install the capture driver
+## 1. Install fragcap
 
-Install npcap in WinPcap-compatible mode. This is the one prerequisite.
+Download a release and install it. The Windows installer (`.msi`) puts `fragcap`
+on your `PATH`; the portable `.zip` needs no installation. The installer is not
+code-signed, so Windows shows a SmartScreen "Windows protected your PC" warning
+with an "Unknown Publisher" note; this is expected for this release. Choose **More
+info** then **Run anyway**, and verify the download's `.sha256` checksum, which is
+the integrity check in the absence of a signature.
 
-## 2. Verify the install
+## 2. Install the capture driver
+
+Install npcap in WinPcap-compatible mode. This is the one prerequisite fragcap
+cannot install for you.
+
+## 3. Verify the install
 
 ```text
 fragcap doctor
@@ -32,7 +42,7 @@ fragcap doctor
 `doctor` reports whether the driver is present and whether fragcap can enumerate
 interfaces, without capturing anything.
 
-## 3. Get a profile
+## 4. Get a profile
 
 A capture is driven by a profile that names the client to wait for and how to
 attribute it. No profiles ship bundled, so you obtain one before the first
@@ -47,7 +57,7 @@ fragcap steam profile <APP_ID>
 
 Or author one by hand, following [Writing a profile](/docs/guides/writing-a-profile).
 
-## 4. Capture
+## 5. Capture
 
 ```text
 fragcap run --profile eso --out capture.fcapng
@@ -56,7 +66,7 @@ fragcap run --profile eso --out capture.fcapng
 fragcap arms, waits for the profiled client, attributes its flows, and writes the
 result.
 
-## 5. Open the result in Wireshark
+## 6. Open the result in Wireshark
 
 Open `capture.fcapng` in [Wireshark](https://www.wireshark.org/), or any other
 pcapng-aware analyzer. This is where a capture becomes useful: Wireshark shows the

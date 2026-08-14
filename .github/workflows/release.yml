@@ -97,6 +97,65 @@ jobs:
           }
           Write-Output "OK: no npcap component found in the artifact tree."
 
+      - name: Build the barebones hint database
+        shell: pwsh
+        run: |
+          # Section 24.5: the release ships a barebones targets hint database.
+          # It is built offline from a committed empty seed through the existing
+          # import path (issue #96), so it is an empty, current-schema store with
+          # no rows. Placed beside the binary so both the archive and the MSI pick
+          # it up as the read-only template the first-run bootstrap copies. LICENSE
+          # and NOTICE are staged here too, because the installer sources all four
+          # payload files from the binary directory (CargoTargetBinDir).
+          $ErrorActionPreference = 'Stop'
+          & target/release/fragcap.exe targets import assets/hint-seed.json --db target/release/hint.db
+          Copy-Item LICENSE, NOTICE target/release/
+
+      - name: Install WiX and cargo-wix
+        shell: pwsh
+        run: |
+          # WiX v3 is not reliably preinstalled on windows-latest; install it and
+          # cargo-wix, which drives candle/light over crates/fragcap-cli/wix/main.wxs.
+          $ErrorActionPreference = 'Stop'
+          choco install wixtoolset --no-progress -y
+          cargo install cargo-wix --locked
+
+      - name: Build the MSI installer
+        shell: pwsh
+        run: |
+          # Unsigned MSI (issue #96; signing is #79, out of scope). --no-build
+          # reuses the featured release binary already built above rather than
+          # rebuilding a featureless one; -e links WixUtilExtension for the
+          # best-effort Defender exclusion and the npcap exit-dialog link. The
+          # installer's runtime behavior is verified manually (like live capture).
+          $ErrorActionPreference = 'Stop'
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          New-Item -ItemType Directory -Force dist | Out-Null
+          cargo wix --package fragcap-cli --no-build --nocapture `
+            --ext WixUtilExtension `
+            --install-version $version `
+            --output "dist/fragcap-$version-x86_64.msi"
+
+      - name: Smoke-test the installer (silent install and uninstall)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # Best-effort: install per-machine silently, confirm the binary landed,
+          # then uninstall. Does not assert Defender state (the runner's Defender
+          # posture is not representative). The authoritative check is the manual
+          # verification recorded on the pull request, so a hiccup here does not
+          # fail the release (continue-on-error).
+          $msi = (Get-ChildItem dist -Filter *.msi | Select-Object -First 1).FullName
+          Start-Process msiexec.exe -ArgumentList "/i","`"$msi`"","/qn" -Wait
+          $installed = Join-Path $env:ProgramFiles "fragcap\fragcap.exe"
+          if (-not (Test-Path $installed)) {
+            Write-Error "fragcap.exe not found at $installed after install."
+            exit 1
+          }
+          Write-Output "OK: installed at $installed"
+          Start-Process msiexec.exe -ArgumentList "/x","`"$msi`"","/qn" -Wait
+          Write-Output "OK: uninstalled."
+
       - name: Assemble the distribution archive
         shell: pwsh
         run: |
@@ -116,22 +175,33 @@ jobs:
           # there is no INCOMPLETE marker (issues #54, #57).
           Copy-Item target/release/fragcap.exe $stage
           Copy-Item LICENSE, NOTICE $stage
+          # The barebones hint database ships in the archive beside the binary, so
+          # a portable-archive user gets the same first-run bootstrap as an
+          # installed one (section 24.5, issue #96).
+          Copy-Item target/release/hint.db $stage
 
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force $stage
+          # Also ship the hint database as its own download, so a user can take it
+          # without the archive or the installer.
+          Copy-Item target/release/hint.db "dist/hint.db"
           Get-ChildItem dist
 
       - name: Generate checksums
         shell: pwsh
         run: |
-          # Section 24.5: checksums accompany every artifact.
+          # Section 24.5: checksums accompany every artifact. The release now
+          # publishes three downloads (the portable archive, the unsigned MSI, and
+          # the loose hint database), so hash each of them (issue #96).
           $ErrorActionPreference = 'Stop'
-          Get-ChildItem dist -File -Filter *.zip | ForEach-Object {
-            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-            "$hash  $($_.Name)" |
-              Set-Content "$($_.FullName).sha256" -Encoding utf8NoBOM
-            Write-Output "$hash  $($_.Name)"
-          }
+          Get-ChildItem dist -File |
+            Where-Object { $_.Extension -in '.zip', '.msi', '.db' } |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  $($_.Name)" |
+                Set-Content "$($_.FullName).sha256" -Encoding utf8NoBOM
+              Write-Output "$hash  $($_.Name)"
+            }
 
       - name: Upload the distribution
         uses: actions/upload-artifact@v4
