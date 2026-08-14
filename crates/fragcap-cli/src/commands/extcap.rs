@@ -105,6 +105,19 @@ fn install(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, Cli
         ))
     })?;
     let dest = dir.join(paths::EXTCAP_BINARY);
+    // If this invocation IS the already-registered copy, source and dest are the
+    // same file. Copying a file onto itself fails on Windows (the running image
+    // is locked) and can truncate it on Unix while still returning success, so
+    // treat it as an unchanged success rather than rewriting it. This is the
+    // idempotent case that the running binary already satisfies.
+    if is_same_existing_file(&source, &dest) {
+        let _ = writeln!(
+            out,
+            "fragcap is already registered as a Wireshark extcap source: {}",
+            dest.display()
+        );
+        return Ok(Exit::SUCCESS);
+    }
     fs::copy(&source, &dest)
         .map_err(|e| CliError::failure(format!("could not write {}: {e}", dest.display())))?;
     let _ = writeln!(
@@ -115,12 +128,29 @@ fn install(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, Cli
     Ok(Exit::SUCCESS)
 }
 
+/// Whether two paths resolve to the same existing file. `false` when either
+/// cannot be canonicalized, which includes a destination that does not exist yet
+/// (the first-install case), so the caller then proceeds with the copy.
+fn is_same_existing_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Remove fragcap's Wireshark extcap registration. Idempotent: removing an
 /// absent registration is a success reported as a no-op.
 fn uninstall(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
     let dir = resolve_dir(dir_override)?;
     let dest = dir.join(paths::EXTCAP_BINARY);
-    if dest.exists() {
+    // `try_exists` distinguishes "absent" from "could not be checked": a
+    // registered binary that is present but inaccessible (ACLs, an I/O error)
+    // must not be reported as a clean no-op, which `Path::exists` would do by
+    // collapsing the error to `false`.
+    let present = dest
+        .try_exists()
+        .map_err(|e| CliError::failure(format!("could not check {}: {e}", dest.display())))?;
+    if present {
         fs::remove_file(&dest)
             .map_err(|e| CliError::failure(format!("could not remove {}: {e}", dest.display())))?;
         let _ = writeln!(
@@ -252,4 +282,31 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // a mid-capture failure is a consumer disconnect, not a bad path.
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_same_existing_file;
+    use std::path::Path;
+
+    #[test]
+    fn same_existing_file_is_detected_and_distinct_files_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+
+        // The same path (the self-copy case) is detected as the same file.
+        assert!(is_same_existing_file(&a, &a));
+        // Two distinct files are not, so a genuine refresh still copies.
+        assert!(!is_same_existing_file(&a, &b));
+        // A destination that does not exist yet is not "the same file", so the
+        // first install proceeds with the copy.
+        assert!(!is_same_existing_file(&a, &dir.path().join("missing")));
+        assert!(!is_same_existing_file(
+            Path::new("nope-a"),
+            Path::new("nope-b")
+        ));
+    }
 }
