@@ -20,7 +20,7 @@ Tracing
   process events         ok    process-event session available
 
 Interfaces
-  adapter                ok    192.0.2.10
+  adapter                ok    Ethernet 192.0.2.10
 
 Integration
   analyzer extcap        ok    installed in

@@ -209,6 +209,17 @@ fn tracing(inputs: &Inputs) -> Check {
 }
 
 fn interfaces(inputs: &Inputs) -> Vec<Check> {
+    // A probe that could not run is not an observed-empty machine. When
+    // enumeration was attempted and failed, say so distinctly rather than
+    // reporting "no interfaces were found", which would present a failed
+    // observation as a successful one (P-9).
+    if let Some(error) = &inputs.interface_error {
+        return vec![Check::warn(
+            INTERFACES,
+            "adapters",
+            format!("interface enumeration failed: {error}"),
+        )];
+    }
     if inputs.interfaces.is_empty() {
         // When the live backend is absent, the empty set is a consequence of the
         // missing backend, not an npcap/adapter fault. Name the real cause so the
@@ -225,28 +236,28 @@ fn interfaces(inputs: &Inputs) -> Vec<Check> {
         .interfaces
         .iter()
         .map(|iface| {
-            let addr = iface.addr.as_deref().unwrap_or("no address");
-            let detail = format!(
-                "{}{}",
-                addr,
-                if iface.is_virtual { " (virtual)" } else { "" }
-            );
-            // Never fails: an interface being down is a warning, not a blocking
-            // problem, because another interface may still carry the traffic.
+            let marker = if iface.is_virtual { " (virtual)" } else { "" };
+            // The interface name is folded into the detail: a Check's name is a
+            // fixed &'static str slot, and the name is what tells two adapters
+            // apart and says which interface an address belongs to.
             if iface.up {
-                Check::ok(INTERFACES, iface_name(iface.name.as_str()), detail)
+                let addr = iface.addr.as_deref().unwrap_or("no address");
+                Check::ok(
+                    INTERFACES,
+                    "adapter",
+                    format!("{}  {}{}", iface.name, addr, marker),
+                )
             } else {
-                Check::warn(INTERFACES, iface_name(iface.name.as_str()), "down")
+                // Never a blocking failure: an interface being down is a warning,
+                // because another interface may still carry the traffic.
+                Check::warn(
+                    INTERFACES,
+                    "adapter",
+                    format!("{}  down{}", iface.name, marker),
+                )
             }
         })
         .collect()
-}
-
-/// Interface names arrive from the machine, so a `Check`'s `&'static str` name
-/// field cannot hold them. The name is folded into the detail instead, and the
-/// check is labelled by a fixed slot.
-fn iface_name(_name: &str) -> &'static str {
-    "adapter"
 }
 
 fn integration(inputs: &Inputs) -> Check {
@@ -322,6 +333,7 @@ mod tests {
                 up: true,
                 is_virtual: false,
             }],
+            interface_error: None,
             extcap_installed: true,
             extcap_dir: Some(std::path::PathBuf::from(
                 "C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap",
@@ -516,6 +528,50 @@ mod tests {
             .iter()
             .any(|c| c.section == INTERFACES && c.status == Status::Warn));
         assert!(report.ready());
+    }
+
+    #[test]
+    fn a_failed_enumeration_is_reported_distinctly_not_as_empty() {
+        // A probe that could not run must not be presented as an observed-empty
+        // machine: it names the failure and never says "no interfaces were found".
+        let mut inputs = ready_inputs();
+        inputs.interfaces.clear();
+        inputs.interface_error = Some("backend: enumeration failed".to_string());
+        let ifaces = interfaces(&inputs);
+        assert_eq!(ifaces.len(), 1);
+        assert_eq!(ifaces[0].status, Status::Warn);
+        assert!(
+            ifaces[0].detail.contains("enumeration failed"),
+            "{}",
+            ifaces[0].detail
+        );
+        assert!(!ifaces[0].detail.contains("no interfaces were found"));
+    }
+
+    #[test]
+    fn each_interface_row_names_its_adapter() {
+        // The adapter name is in the detail so two interfaces are distinguishable
+        // and each address is tied to its interface.
+        let mut inputs = ready_inputs();
+        inputs.interfaces = vec![
+            IfaceInfo {
+                name: "Ethernet".to_string(),
+                addr: Some("192.0.2.10".to_string()),
+                up: true,
+                is_virtual: false,
+            },
+            IfaceInfo {
+                name: "Wi-Fi".to_string(),
+                addr: Some("192.0.2.20".to_string()),
+                up: false,
+                is_virtual: false,
+            },
+        ];
+        let ifaces = interfaces(&inputs);
+        assert_eq!(ifaces.len(), 2);
+        assert!(ifaces[0].detail.contains("Ethernet") && ifaces[0].detail.contains("192.0.2.10"));
+        assert_eq!(ifaces[1].status, Status::Warn, "a down interface warns");
+        assert!(ifaces[1].detail.contains("Wi-Fi") && ifaces[1].detail.contains("down"));
     }
 
     #[test]

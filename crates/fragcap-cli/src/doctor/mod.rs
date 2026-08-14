@@ -98,6 +98,12 @@ pub struct Inputs {
     pub socket_table_available: Option<bool>,
     /// The interfaces found.
     pub interfaces: Vec<IfaceInfo>,
+    /// The reason interface enumeration failed, when it was attempted and could
+    /// not run. `None` covers both a clean enumeration (see `interfaces`) and a
+    /// build where enumeration was never attempted; the classifier tells those
+    /// apart by `live_available`. A failed probe is reported distinctly so it is
+    /// never presented as a successfully observed empty machine (P-9).
+    pub interface_error: Option<String>,
     /// Whether the analyzer extcap integration is installed (a fragcap binary is
     /// present in the extcap directory).
     pub extcap_installed: bool,

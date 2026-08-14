@@ -117,29 +117,38 @@ fn socket_table_availability() -> Option<bool> {
 /// compiling (constitution P-2). This mirrors [`live_availability`]. The old
 /// probe hardcoded the empty set and guessed loopback from an unrelated file;
 /// both are gone.
-fn live_probe() -> (Vec<super::IfaceInfo>, Option<bool>) {
+fn live_probe() -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
     #[cfg(all(feature = "live", windows))]
     {
         use fragcap::core::virtual_verdict;
-        let interfaces = match fragcap::enumerate() {
-            Ok(inventory) => inventory
-                .interfaces
-                .iter()
-                .map(|record| super::IfaceInfo {
-                    name: record.name.to_string(),
-                    addr: record.addresses.first().map(|addr| addr.to_string()),
-                    up: record.is_up,
-                    is_virtual: virtual_verdict(record).is_virtual(),
-                })
-                .collect(),
-            Err(_) => Vec::new(),
+        // A failed enumeration is preserved as an error string rather than
+        // flattened to an empty set, so the classifier does not report a probe
+        // that could not run as an observed-empty machine (P-9).
+        let (interfaces, error) = match fragcap::enumerate() {
+            Ok(inventory) => (
+                inventory
+                    .interfaces
+                    .iter()
+                    .map(|record| super::IfaceInfo {
+                        name: record.name.to_string(),
+                        addr: record.addresses.first().map(|addr| addr.to_string()),
+                        up: record.is_up,
+                        is_virtual: virtual_verdict(record).is_virtual(),
+                    })
+                    .collect(),
+                None,
+            ),
+            Err(err) => (Vec::new(), Some(err.to_string())),
         };
         let loopback = fragcap::detect_driver().loopback_supported;
-        (interfaces, loopback)
+        (interfaces, loopback, error)
     }
     #[cfg(not(all(feature = "live", windows)))]
     {
-        (Vec::new(), None)
+        // Enumeration was not attempted (the backend is not linked); that is not
+        // a failure, so the error is None and the classifier attributes the empty
+        // set to the missing backend.
+        (Vec::new(), None, None)
     }
 }
 
@@ -267,7 +276,7 @@ pub fn gather() -> Inputs {
     {
         let (extcap_dir, extcap_installed) = extcap_status();
         let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
-        let (interfaces, _loopback) = live_probe();
+        let (interfaces, _loopback, interface_error) = live_probe();
         Inputs {
             fragcap_version,
             binary_path,
@@ -281,6 +290,7 @@ pub fn gather() -> Inputs {
             live_available: live_availability(),
             socket_table_available: socket_table_availability(),
             interfaces,
+            interface_error,
             extcap_installed,
             extcap_dir,
             bundled_count: crate::paths::bundled().len(),
@@ -305,7 +315,7 @@ fn gather_windows(user_count: usize) -> Inputs {
     // The live backend answers what exists: the interface set, and whether a
     // loopback adapter is among them. It is linked only under the `live` feature,
     // so this returns empty and undetermined on a build without it.
-    let (interfaces, loopback_supported) = live_probe();
+    let (interfaces, loopback_supported, interface_error) = live_probe();
 
     // npcap is present when its own wpcap.dll exists in the Npcap directory. The
     // WinPcap API compatibility option additionally installs wpcap.dll directly
@@ -340,6 +350,7 @@ fn gather_windows(user_count: usize) -> Inputs {
         live_available: live_availability(),
         socket_table_available: socket_table_availability(),
         interfaces,
+        interface_error,
         extcap_installed,
         extcap_dir,
         bundled_count: crate::paths::bundled().len(),
