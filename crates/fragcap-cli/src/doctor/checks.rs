@@ -10,6 +10,7 @@
 //! elevated and the process-event session could not open.
 
 use super::{Check, Inputs, Privilege, Report, Subsystem};
+use fragcap::core::WIRESHARK_DOWNLOAD_URL;
 
 const IDENTITY: &str = "Identity";
 const PLATFORM: &str = "Platform";
@@ -19,10 +20,15 @@ const INTERFACES: &str = "Interfaces";
 const INTEGRATION: &str = "Integration";
 const PROFILES: &str = "Profiles";
 
-/// Where to obtain npcap. fragcap never installs it (the Licensing section).
-const NPCAP_SOURCE: &str = "fragcap does not install npcap; obtain it from https://npcap.com, or \
-     install Wireshark (https://www.wireshark.org), whose installer also provides npcap, then run \
-     doctor again";
+/// Where to obtain npcap. fragcap never installs it (the Licensing section). The
+/// Wireshark URL is single-sourced from [`WIRESHARK_DOWNLOAD_URL`], whose
+/// installer also provides npcap, so one download resolves both.
+fn npcap_source() -> String {
+    format!(
+        "fragcap does not install npcap; obtain it from https://npcap.com, or install Wireshark \
+         ({WIRESHARK_DOWNLOAD_URL}), whose installer also provides npcap, then run doctor again"
+    )
+}
 
 /// Run every classifier in section order.
 pub fn run(inputs: &Inputs) -> Report {
@@ -96,7 +102,7 @@ fn npcap(inputs: &Inputs) -> Check {
         // claim a version it does not have (P-9).
         Some(info) if info.version == "installed" => Check::ok(DRIVER, "npcap", "installed"),
         Some(info) => Check::ok(DRIVER, "npcap", format!("version {}", info.version)),
-        None => Check::fail(DRIVER, "npcap", "npcap is not installed", NPCAP_SOURCE),
+        None => Check::fail(DRIVER, "npcap", "npcap is not installed", npcap_source()),
     }
 }
 
@@ -303,16 +309,21 @@ fn integration(inputs: &Inputs) -> Check {
             // Optional: a warning, never a block. Wireshark's extcap framework is
             // always present; what is not yet in place is fragcap's registration as
             // one of its sources, which `fragcap extcap install` (slice 041) will do.
+            // doctor does no Wireshark-presence detection, so if Wireshark itself
+            // is absent it cannot tell; the download link is named unconditionally,
+            // matching the npcap detect-and-link posture, and its installer also
+            // provides npcap.
             let detail = match &user {
                 Some(dir) => format!(
                     "not registered as a Wireshark extcap source; run `fragcap extcap install` to \
-                     register it in {dir} (optional)"
+                     register it in {dir} (optional). Get Wireshark from {WIRESHARK_DOWNLOAD_URL}; \
+                     its installer also provides npcap"
                 ),
-                None => {
-                    "not registered as a Wireshark extcap source; run `fragcap extcap install` \
-                         to register it (optional)"
-                        .to_string()
-                }
+                None => format!(
+                    "not registered as a Wireshark extcap source; run `fragcap extcap install` to \
+                     register it (optional). Get Wireshark from {WIRESHARK_DOWNLOAD_URL}; its \
+                     installer also provides npcap"
+                ),
             };
             Check::warn(INTEGRATION, "analyzer extcap", detail)
         }
@@ -605,6 +616,42 @@ mod tests {
         let check = integration(&neither);
         assert_eq!(check.status, Status::Warn);
         assert!(check.detail.contains("optional"), "{}", check.detail);
+    }
+
+    #[test]
+    fn doctor_points_at_wireshark_from_the_integration_and_npcap_guidance() {
+        // The not-registered integration guidance names the Wireshark download
+        // URL and stays an optional warning (#107). The URL is single-sourced, so
+        // the assertion is against the constant, not a repeated literal.
+        let url = fragcap::core::WIRESHARK_DOWNLOAD_URL;
+
+        let mut not_registered = ready_inputs();
+        not_registered.extcap_installed = false;
+        not_registered.extcap_system_installed = false;
+        let check = integration(&not_registered);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains(url),
+            "not-registered names the Wireshark URL: {}",
+            check.detail
+        );
+        assert!(check.detail.contains("extcap install"), "{}", check.detail);
+
+        // Still named when the extcap directory cannot be resolved.
+        let mut no_dir = ready_inputs();
+        no_dir.extcap_installed = false;
+        no_dir.extcap_system_installed = false;
+        no_dir.extcap_dir = None;
+        assert!(integration(&no_dir).detail.contains(url));
+
+        // The npcap-absent remediation single-sources the same Wireshark URL.
+        let mut no_npcap = ready_inputs();
+        no_npcap.npcap = None;
+        let remediation = npcap(&no_npcap).remediation.expect("npcap fail remediates");
+        assert!(
+            remediation.contains(url),
+            "npcap remediation single-sources the Wireshark URL: {remediation}"
+        );
     }
 
     #[test]
