@@ -260,6 +260,13 @@ def check_page_fit(problems):
         if "OVERFLOW" in l or "TIGHT" in l:
             problems.append("brand-guide page fit: %s" % " ".join(l.split()))
     pages = [l for l in lines if l.split()[0].isdigit()]
+    # A nonzero exit (Node, Playwright or Chromium failed to launch) or an empty
+    # page report means the clipping check did not actually run: fail rather than
+    # silently reporting zero problems over zero pages.
+    if r.returncode != 0 or not pages:
+        detail = (r.stderr or r.stdout or "no output").strip().splitlines()
+        problems.append("page-fit check did not run (exit %d): %s"
+                        % (r.returncode, detail[-1] if detail else "no output"))
     return len(pages)
 
 

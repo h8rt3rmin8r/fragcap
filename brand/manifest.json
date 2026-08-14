@@ -75,8 +75,8 @@
     },
     {
       "path": "build/print_pdf.js",
-      "bytes": 502,
-      "sha256": "f0fffaefc0341bf1393e8bc4ad9a2a0742e6aee16cff28f4c955102046e4cb14"
+      "bytes": 781,
+      "sha256": "a3a1e3606578eee24cd530326cc68f441f62fc574dad75aa4851e93db5b1800f"
     },
     {
       "path": "build/typeset.py",
@@ -85,8 +85,8 @@
     },
     {
       "path": "build/verify.py",
-      "bytes": 16973,
-      "sha256": "37261943e27d84716f1927abee8ba6bb5877df91042321c81bee8386348e27a0"
+      "bytes": 17455,
+      "sha256": "e7ddc28db1924453b16b986e6815bb0efca7fce3fe605aa9cb7b3b359d3e8fb8"
     },
     {
       "path": "components/README.md",
@@ -95,8 +95,8 @@
     },
     {
       "path": "components/components.css",
-      "bytes": 8845,
-      "sha256": "589e1cd8513a5673bc01308eed15023b1b1d4e84508eefbfe762562900607bd5"
+      "bytes": 8870,
+      "sha256": "a56305093a337c51052c2b4950b298263bc8c6be740598a104cb07c3847eb1f5"
     },
     {
       "path": "components/core/Badge.jsx",
@@ -130,18 +130,18 @@
     },
     {
       "path": "components/forms/Input.jsx",
-      "bytes": 410,
-      "sha256": "af0acc9d81835cc99e6ddd083a3e515f80e6ca2e283036db6bf37c343ad92178"
+      "bytes": 712,
+      "sha256": "f14aacb2e2180d291b3d04627223e55cb3ae9e5f95006b34e0731163cc298500"
     },
     {
       "path": "components/forms/Select.jsx",
-      "bytes": 456,
-      "sha256": "29a1f9bdcc3f7a60ab794eff3fb691b5a65ba657f6daf40f920d360f6fa596a8"
+      "bytes": 759,
+      "sha256": "7b7c494f0ba28938eed1f26fba57c925cf90ded67b05ad05234f5fa7d4dafcd7"
     },
     {
       "path": "components/forms/Textarea.jsx",
-      "bytes": 419,
-      "sha256": "781921d3e4e6714e97db6005ad0f0059c7680575cc52ac190fb7e09737b73e7b"
+      "bytes": 721,
+      "sha256": "ab93ed73b129a83cc8d6600d42b28bc3d099686ca4e92d38c7e0a3da1686b1bf"
     },
     {
       "path": "favicons/android-chrome-192x192.png",
@@ -470,8 +470,8 @@
     },
     {
       "path": "tokens/colors.css",
-      "bytes": 4207,
-      "sha256": "d36e341ea4f5e3dc450d2f7fab5802333dd8fa0c279d3d6809d23e58979b5eee"
+      "bytes": 4500,
+      "sha256": "c8732e11cad4fcfa20fd5c030f58b652af1fe138a57004f132ff46694618fa1f"
     },
     {
       "path": "tokens/spacing.css",
@@ -490,8 +490,8 @@
     },
     {
       "path": "ui_kits/fragcap-web/index.html",
-      "bytes": 8972,
-      "sha256": "bfd9796439fc1177802471039cfd518297deb5b78e3d95f2bd7425c105178e2c"
+      "bytes": 9030,
+      "sha256": "a7b17e9d42bb3527277c1925a4a7e69ae9100a58be7235a1b136ed84afff7f5a"
     }
   ]
 }

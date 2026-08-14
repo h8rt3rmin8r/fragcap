@@ -63,7 +63,12 @@
 }
 
 /* ── Semantic tokens - LIGHT (reading / documentation) ── */
+/* base.css binds background and color on `html` only, so a nested subtree that
+   just rebinds the tokens would inherit the root's already-computed dark values.
+   Paint the surface on the container itself so descendants actually switch. */
 .fc-light {
+  background: var(--fc-bg);
+  color: var(--fc-fg);
   --fc-bg: var(--fc-light-surface);
   --fc-panel: #FFFFFF;
   --fc-panel-raised: #FFFFFF;
