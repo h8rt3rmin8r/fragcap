@@ -140,6 +140,70 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <!--
+      Optional Wireshark extcap registration (slice 043). Two independent opt-ins,
+      both off by default and never forced. They drive the installed binary's own
+      `fragcap extcap install`, so no registration logic lives in the installer.
+
+      Per-user runs impersonated so `extcap install` (no directory) resolves the
+      installing user's %APPDATA%\Wireshark\extcap rather than SYSTEM's. Machine-wide
+      runs non-impersonated (the elevated installer writes under Program Files) into
+      the detected Wireshark system extcap directory, and is a clean no-op when
+      Wireshark is not installed (WIRESHARK_DIR is empty). Each uses the Defender
+      command pattern: an immediate action builds the command line into the deferred
+      action's CustomActionData, and the deferred WixQuietExec runs it with
+      Return="ignore" so a failure never fails the install. The binary path is passed
+      as data, never interpolated into the command text.
+
+      Unlike the Defender exclusion, registration is forward-only: there is no
+      rollback and no unregister-on-uninstall. extcap registration is user-managed,
+      idempotent state (a user may register or unregister independently with `fragcap
+      extcap install` / `uninstall`), so the installer must not delete a registration
+      it does not own. Undoing it would clobber an independently managed per-user or
+      machine registration on uninstall, on a major upgrade, or on rollback of an
+      unrelated failure.
+    -->
+    <!-- Left unset so the CheckBox controls render unchecked: Windows Installer
+         shows a checkbox selected whenever its bound property is non-null, so a
+         "0" value would display as checked while the action conditions require
+         "1". Unset means unchecked, agreeing with the opt-in conditions. -->
+    <Property Id="REGISTEREXTCAP_USER" Secure="yes" />
+    <Property Id="REGISTEREXTCAP_MACHINE" Secure="yes" />
+
+    <!-- Wireshark install directory from its registry entry; empty when absent.
+         The default value of HKLM\SOFTWARE\Wireshark is the install path. -->
+    <Property Id="WIRESHARK_DIR" Secure="yes">
+      <RegistrySearch Id="WiresharkInstallDir"
+                      Root="HKLM"
+                      Key="SOFTWARE\Wireshark"
+                      Type="raw"
+                      Win64="yes" />
+    </Property>
+
+    <!-- Per-user: impersonated, targets the installing user's Wireshark extcap dir. -->
+    <CustomAction Id="SetRegisterExtcapUser"
+                  Property="RegisterExtcapUser"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap install"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapUser"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <!-- Machine-wide: non-impersonated, targets Wireshark's system extcap dir. -->
+    <CustomAction Id="SetRegisterExtcapMachine"
+                  Property="RegisterExtcapMachine"
+                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; extcap install --dir &quot;[WIRESHARK_DIR]\extcap&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="RegisterExtcapMachine"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
       <!-- Install: set the rollback command and queue the rollback immediately
            before the add, so a failure after the add is undone; then add. -->
@@ -147,7 +211,22 @@
       <Custom Action="SetDefenderRollback" After="SetDefenderAdd">NOT Installed</Custom>
       <Custom Action="DefenderRollback" After="SetDefenderRollback">NOT Installed</Custom>
       <Custom Action="DefenderAdd" After="DefenderRollback">NOT Installed</Custom>
-      <!-- Uninstall: remove the exclusion before the files are removed. -->
+
+      <!-- Optional extcap registration, after files exist so fragcap.exe can run.
+           Forward-only and best-effort: Return="ignore" keeps a failure non-fatal,
+           and the installer does not unregister on uninstall or roll back, because
+           extcap registration is user-managed, idempotent state (a user may have
+           registered independently with `fragcap extcap install`). Undoing it here
+           would delete a registration this install does not own. Users unregister
+           with `fragcap extcap uninstall`. Conditioned on the opt-in property (and,
+           for machine-wide, on Wireshark being detected). -->
+      <Custom Action="SetRegisterExtcapUser" After="DefenderAdd">REGISTEREXTCAP_USER = 1 AND NOT Installed</Custom>
+      <Custom Action="RegisterExtcapUser" After="SetRegisterExtcapUser">REGISTEREXTCAP_USER = 1 AND NOT Installed</Custom>
+      <Custom Action="SetRegisterExtcapMachine" After="RegisterExtcapUser">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
+      <Custom Action="RegisterExtcapMachine" After="SetRegisterExtcapMachine">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
+
+      <!-- Uninstall: remove the Defender exclusion before the files are removed.
+           extcap registration is intentionally left in place (see above). -->
       <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
       <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
@@ -176,6 +255,51 @@
                Control="Finish"
                Event="DoAction"
                Value="LaunchNpcap">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+
+      <!--
+        Optional Wireshark extcap registration dialog, inserted after the
+        install-directory dialog. Both checkboxes are off by default (the backing
+        properties are unset), so registration is never forced. The properties are
+        public, so an administrator can also set them on the command line for a
+        silent install (for example REGISTEREXTCAP_MACHINE=1).
+      -->
+      <Dialog Id="ExtcapDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Wireshark integration (optional)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="Register fragcap as a Wireshark extcap capture source." />
+
+        <Control Id="UserCheckBox" Type="CheckBox" X="20" Y="60" Width="330" Height="17" Property="REGISTEREXTCAP_USER" CheckBoxValue="1" Text="Register fragcap for the current user (recommended)" />
+        <Control Id="UserNote" Type="Text" X="35" Y="79" Width="320" Height="26" NoPrefix="yes" Text="Registers into your own Wireshark configuration only, for the account running this installer." />
+
+        <Control Id="MachineCheckBox" Type="CheckBox" X="20" Y="114" Width="330" Height="17" Property="REGISTEREXTCAP_MACHINE" CheckBoxValue="1" Text="Register for all users on this machine (administrators)" />
+        <Control Id="MachineNote" Type="Text" X="35" Y="133" Width="320" Height="26" NoPrefix="yes" Text="Requires Wireshark to be installed; registers into Wireshark's system extcap directory. Ignored if Wireshark is not found." />
+
+        <Control Id="SkipNote" Type="Text" X="20" Y="175" Width="330" Height="26" NoPrefix="yes" Text="You can leave both unchecked and register later at any time by running: fragcap extcap install" />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <!-- Splice ExtcapDlg into the WixUI_InstallDir flow after the install
+           directory is chosen. In WiX 3 WixUI_InstallDir the InstallDirDlg Next
+           button's terminal NewDialog -> VerifyReadyDlg is at Order 4 (after
+           SetTargetPath=1, path validation=2, and the invalid-path SpawnDialog=3),
+           so this Order 3 NewDialog fires first and reaches ExtcapDlg; once a
+           NewDialog control event fires, Windows Installer stops processing the
+           later events, so the stock transition does not also run. Back from the
+           confirm dialog uses the stock route to InstallDirDlg (its Back event is
+           at Order 1, which an appended event cannot preempt); the checkbox state
+           persists in the properties, so clicking Next returns through ExtcapDlg. -->
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ExtcapDlg" Order="3">WIXUI_INSTALLDIR_VALID="1"</Publish>
     </UI>
 
   </Product>
