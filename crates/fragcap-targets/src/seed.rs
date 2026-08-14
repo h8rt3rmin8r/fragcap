@@ -11,8 +11,9 @@
 use std::collections::HashSet;
 
 use crate::catalog::CatalogSource;
+use crate::engine_feed::EngineFeed;
 use crate::gate::CorpusGate;
-use crate::model::{SeedState, SeedTier};
+use crate::model::{Engine, EngineSource, SeedState, SeedTier};
 use crate::store::Store;
 use crate::TargetsError;
 
@@ -98,6 +99,78 @@ pub fn seed_catalog(
         cursor = batch.next_cursor.clone();
         store.set_seed_state(&SeedState {
             tier: SeedTier::Catalog,
+            last_run_at: now.clone(),
+            resume_cursor: cursor.clone(),
+        })?;
+
+        if batch.next_cursor.is_none() {
+            break;
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Seed the store's Tier 3 (engine attribution) columns from an engine source.
+///
+/// Reuses [`SeedSummary`] and its conservation identity. `now` is the run timestamp
+/// recorded in the engine tier's seed state (the caller supplies it, keeping the
+/// seeder free of ambient time and deterministic in tests). A store error aborts the
+/// run and is returned; a per-title parse failure is counted in
+/// [`SeedSummary::failed`] and the run continues.
+///
+/// A title the source resolves a single unambiguous engine for is written
+/// (`engine_source = "pcgamingwiki"`); a title with no engine or an ambiguous engine
+/// is left absent and counted excluded, never guessed (P-9). There is no corpus gate:
+/// unlike Tier 1, the engine tier enriches whatever titles the source names an engine
+/// for. The seeder never prunes.
+pub fn seed_engine(
+    store: &mut Store,
+    source: &dyn EngineFeed,
+    now: Option<String>,
+) -> Result<SeedSummary, TargetsError> {
+    let mut summary = SeedSummary::default();
+    // Appids written in this run, so a repeated appid is merged idempotently but
+    // counted once (the summary must not overstate the enrichment).
+    let mut written_appids: HashSet<u32> = HashSet::new();
+
+    // Resume from the recorded engine-tier cursor, if any.
+    let mut cursor: Option<String> = store
+        .seed_state(SeedTier::Engine)?
+        .and_then(|s| s.resume_cursor);
+
+    loop {
+        let batch = source.fetch_batch(cursor.as_deref())?;
+
+        // Items the source could not parse were still fetched.
+        summary.fetched += batch.failed;
+        summary.failed += batch.failed;
+
+        for entry in &batch.entries {
+            summary.fetched += 1;
+            let Some(resolved) = &entry.engine else {
+                // No engine, or an ambiguous one: left absent, not guessed.
+                summary.excluded += 1;
+                continue;
+            };
+            let engine = Engine {
+                name: Some(resolved.name.clone()),
+                source: EngineSource::Pcgamingwiki,
+                confidence: resolved.confidence,
+            };
+            store.merge_engine(entry.appid, &engine)?;
+            // The merge is idempotent; count a repeated appid once.
+            if written_appids.insert(entry.appid) {
+                summary.written += 1;
+            } else {
+                summary.duplicates += 1;
+            }
+        }
+
+        // Record progress after each page so a later run resumes here.
+        cursor = batch.next_cursor.clone();
+        store.set_seed_state(&SeedState {
+            tier: SeedTier::Engine,
             last_run_at: now.clone(),
             resume_cursor: cursor.clone(),
         })?;

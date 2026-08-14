@@ -77,16 +77,22 @@ pub mod steam {
 #[cfg(feature = "targets")]
 pub mod targets {
     pub use fragcap_targets::{
-        export, import, seed_catalog, CatalogBatch, CatalogEntry, CatalogSource, Classification,
-        CorpusGate, Engine, EngineConfidence, EngineSource, FixtureCatalog, Game, ImportSummary,
-        LaunchEntry, SeedState, SeedSummary, SeedTier, Store, TargetsError, TechCategory,
-        Technology, DEFAULT_MIN_REVIEWS,
+        export, import, seed_catalog, seed_engine, CatalogBatch, CatalogEntry, CatalogSource,
+        Classification, CorpusGate, Engine, EngineBatch, EngineConfidence, EngineEntry, EngineFeed,
+        EngineSource, FixtureCatalog, FixtureEngineFeed, Game, ImportSummary, LaunchEntry,
+        ResolvedEngine, SeedState, SeedSummary, SeedTier, Store, TargetsError, TechCategory,
+        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
 
     /// The live catalog source, behind the `net` feature (slice S035). Compiled
     /// under `net` but run only by the operator, never in CI.
     #[cfg(feature = "net")]
     pub use fragcap_targets::HttpCatalog;
+
+    /// The live engine source (PCGamingWiki), behind the `net` feature (slice S036).
+    /// Compiled under `net` but run only by the operator, never in CI.
+    #[cfg(feature = "net")]
+    pub use fragcap_targets::HttpEngineFeed;
 }
 
 /// Packet acquisition.

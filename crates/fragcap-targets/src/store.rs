@@ -124,6 +124,38 @@ impl Store {
         Ok(())
     }
 
+    /// Merge one title's Tier 3 (engine attribution) columns: insert an engine-only
+    /// row if the appid is new, or update only the engine columns if it exists.
+    ///
+    /// This is the engine analogue of [`Store::merge_catalog`]: the engine seeder
+    /// knows only appid and an engine, and neither the whole-game replace
+    /// ([`Store::upsert_game`]) nor `merge_catalog` (which never writes engine) fits.
+    /// `merge_engine` leaves `name`, the catalog metrics, `launcher_mediated`,
+    /// `token_required`, and the launch and technology rows untouched, so an engine
+    /// enrichment over a catalog-seeded, launch-bearing game preserves Tiers 1 and 2.
+    ///
+    /// `engine.source` and `engine.confidence` are bound together (both non-optional
+    /// on [`Engine`]), satisfying the both-or-neither CHECK by construction;
+    /// `engine.name` binds NULL when absent. An insert for an unseen appid creates a
+    /// row whose other columns are NULL, which is schema-valid on export.
+    pub fn merge_engine(&mut self, appid: u32, engine: &Engine) -> Result<(), TargetsError> {
+        self.conn.execute(
+            "INSERT INTO games (appid, engine_name, engine_source, engine_confidence)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(appid) DO UPDATE SET
+                engine_name       = excluded.engine_name,
+                engine_source     = excluded.engine_source,
+                engine_confidence = excluded.engine_confidence",
+            params![
+                appid,
+                engine.name.as_deref().filter(|s| !s.is_empty()),
+                engine.source.as_str(),
+                engine.confidence.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Read every game, each with its launch entries (ordered) and technologies
     /// (ordered), sorted by appid.
     pub fn games(&self) -> Result<Vec<Game>, TargetsError> {

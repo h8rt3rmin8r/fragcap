@@ -14,9 +14,11 @@
 
 use std::io::Write;
 
-use fragcap::targets::{export, import, seed_catalog, CorpusGate, FixtureCatalog, Store};
+use fragcap::targets::{
+    export, import, seed_catalog, seed_engine, CorpusGate, FixtureCatalog, FixtureEngineFeed, Store,
+};
 
-use crate::cli::{TargetsArgs, TargetsCommand, TargetsSeedArgs};
+use crate::cli::{TargetsArgs, TargetsCommand, TargetsSeedArgs, TargetsSeedEngineArgs};
 use crate::exit::{CliError, Exit};
 
 /// Run the `targets` command, writing results to `out`.
@@ -65,6 +67,7 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             Ok(Exit::SUCCESS)
         }
         TargetsCommand::Seed(args) => seed(args, out),
+        TargetsCommand::SeedEngine(args) => seed_engine_cmd(args, out),
     }
 }
 
@@ -114,6 +117,55 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     let _ = writeln!(
         out,
         "seeded {}: fetched {} written {} excluded {} duplicates {} failed {}",
+        args.db.display(),
+        summary.fetched,
+        summary.written,
+        summary.excluded,
+        summary.duplicates,
+        summary.failed
+    );
+    Ok(Exit::SUCCESS)
+}
+
+/// Run `targets seed-engine`: fill the engine tier from a fixture (offline) or,
+/// under the `net` feature with `--pcgamingwiki`, from the live PCGamingWiki query
+/// API.
+fn seed_engine_cmd(args: &TargetsSeedEngineArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let mut store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let now = now_string();
+
+    let summary = if let Some(from) = &args.from {
+        let text = std::fs::read_to_string(from).map_err(|e| {
+            CliError::failure(format!(
+                "cannot read engine document {}: {e}",
+                from.display()
+            ))
+        })?;
+        let source =
+            FixtureEngineFeed::from_json(&text).map_err(|e| CliError::failure(e.to_string()))?;
+        seed_engine(&mut store, &source, now).map_err(|e| CliError::failure(e.to_string()))?
+    } else {
+        #[cfg(feature = "net")]
+        {
+            if args.pcgamingwiki {
+                let source = fragcap::targets::HttpEngineFeed::new();
+                seed_engine(&mut store, &source, now)
+                    .map_err(|e| CliError::failure(e.to_string()))?
+            } else {
+                return Err(CliError::usage("specify --from <file> or --pcgamingwiki"));
+            }
+        }
+        #[cfg(not(feature = "net"))]
+        {
+            return Err(CliError::usage(
+                "specify --from <file> (live --pcgamingwiki seeding needs the `net` feature)",
+            ));
+        }
+    };
+
+    let _ = writeln!(
+        out,
+        "seeded engine {}: fetched {} written {} excluded {} duplicates {} failed {}",
         args.db.display(),
         summary.fetched,
         summary.written,
@@ -195,6 +247,23 @@ mod tests {
         }
     }
 
+    const ENGINES: &str = r#"[
+      { "appid": 570, "engine": "Source 2", "confidence": "confirmed" },
+      { "appid": 730, "engine": ["Unity", "Custom"] },
+      { "appid": 440, "engine": "" }
+    ]"#;
+
+    fn seed_engine_args(from: &std::path::Path, db: &std::path::Path) -> TargetsArgs {
+        TargetsArgs {
+            command: TargetsCommand::SeedEngine(TargetsSeedEngineArgs {
+                from: Some(from.to_path_buf()),
+                #[cfg(feature = "net")]
+                pcgamingwiki: false,
+                db: db.to_path_buf(),
+            }),
+        }
+    }
+
     #[test]
     fn seed_from_a_fixture_then_export_round_trips_to_valid_json() {
         let dir = tempfile::tempdir().unwrap();
@@ -227,6 +296,40 @@ mod tests {
         let db = dir.path().join("hint.db");
         let mut out: Vec<u8> = Vec::new();
         assert!(run(&seed_args(&missing, &db), &mut out).is_err());
+    }
+
+    #[test]
+    fn seed_engine_from_a_fixture_then_export_round_trips_to_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let engines = dir.path().join("engines.json");
+        let db = dir.path().join("hint.db");
+        std::fs::write(&engines, ENGINES).unwrap();
+
+        let mut out: Vec<u8> = Vec::new();
+        let exit = run(&seed_engine_args(&engines, &db), &mut out).expect("seed-engine succeeds");
+        assert_eq!(exit, Exit::SUCCESS);
+        let report = String::from_utf8(out).unwrap();
+        // Only 570 resolves a single engine; 730 is ambiguous, 440 has no engine.
+        assert!(report.contains("written 1"), "{report}");
+        assert!(report.contains("excluded 2"), "{report}");
+
+        let mut out: Vec<u8> = Vec::new();
+        run(&export_args(&db), &mut out).expect("export succeeds");
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            fragcap::profile::validate_json(&text).is_valid(),
+            "seeded store must export valid JSON: {text}"
+        );
+        assert!(text.contains("\"pcgamingwiki\""), "{text}");
+    }
+
+    #[test]
+    fn seed_engine_from_a_missing_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent.json");
+        let db = dir.path().join("hint.db");
+        let mut out: Vec<u8> = Vec::new();
+        assert!(run(&seed_engine_args(&missing, &db), &mut out).is_err());
     }
 
     #[test]

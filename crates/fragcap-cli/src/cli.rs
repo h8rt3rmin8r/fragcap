@@ -386,6 +386,9 @@ pub enum TargetsCommand {
     },
     /// Seed the catalog tier (Tier 1: appid, name, metrics) into the store.
     Seed(TargetsSeedArgs),
+    /// Seed the engine tier (Tier 3: engine name, source, confidence) into the
+    /// store from PCGamingWiki.
+    SeedEngine(TargetsSeedEngineArgs),
 }
 
 /// Arguments to `targets seed`.
@@ -418,6 +421,38 @@ pub struct TargetsSeedArgs {
     /// The review-count corpus threshold; a title needs at least this many reviews.
     #[arg(long, default_value_t = fragcap::targets::DEFAULT_MIN_REVIEWS)]
     pub min_reviews: u64,
+}
+
+/// Arguments to `targets seed-engine`.
+///
+/// Exactly one engine source is required. In a default build that is `--from`; a
+/// `net` build adds `--pcgamingwiki`, and the two are mutually exclusive, so
+/// `--from` with `--pcgamingwiki`, or neither, is a usage error (exit 2) rather
+/// than a silent choice. There is no corpus threshold: the engine tier enriches
+/// whatever titles the source names an engine for.
+#[derive(Debug, Args)]
+#[cfg_attr(
+    feature = "net",
+    command(group(ArgGroup::new("engine_source").required(true).args(["from", "pcgamingwiki"])))
+)]
+#[cfg_attr(
+    not(feature = "net"),
+    command(group(ArgGroup::new("engine_source").required(true).args(["from"])))
+)]
+pub struct TargetsSeedEngineArgs {
+    /// Seed from a local engine document (offline).
+    #[arg(long)]
+    pub from: Option<PathBuf>,
+    /// Seed from the live PCGamingWiki query API over the network. Only present in
+    /// a build with the `net` feature; the maintainer's seeding build. The flag
+    /// names its actual source rather than `--steam`: the tier is keyed by Steam
+    /// application id but the data is PCGamingWiki's.
+    #[cfg(feature = "net")]
+    #[arg(long)]
+    pub pcgamingwiki: bool,
+    /// The store file to seed, created if absent.
+    #[arg(long)]
+    pub db: PathBuf,
 }
 
 /// Arguments to `doctor`.

@@ -25,10 +25,13 @@
 //! store (P-4).
 
 pub mod catalog;
+pub mod engine_feed;
 pub mod export;
 pub mod gate;
 #[cfg(feature = "net")]
 pub mod http_catalog;
+#[cfg(feature = "net")]
+pub mod http_engine;
 pub mod import;
 pub mod model;
 pub mod schema;
@@ -36,16 +39,22 @@ pub mod seed;
 pub mod store;
 
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
+pub use engine_feed::{
+    EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,
+    DEFAULT_ENGINE_CONFIDENCE,
+};
 pub use export::export;
 pub use gate::{CorpusGate, DEFAULT_MIN_REVIEWS};
 #[cfg(feature = "net")]
 pub use http_catalog::HttpCatalog;
+#[cfg(feature = "net")]
+pub use http_engine::HttpEngineFeed;
 pub use import::{import, ImportSummary};
 pub use model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-pub use seed::{seed_catalog, SeedSummary};
+pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use store::Store;
 
 use std::fmt;
