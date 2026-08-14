@@ -218,16 +218,27 @@ your own machine as you capture.
 before any capture.** Run `fragcap doctor` to check your environment; it reports
 npcap's presence and names any missing option, and captures nothing.
 
-npcap is not redistributable under its standard license, so fragcap does not
-and will not bundle it. fragcap detects it and reports its absence with the
-download location; it never downloads, installs, or invokes an installer.
+npcap is by the [Nmap Project](https://nmap.org) and is not redistributable
+under its standard license, so fragcap does not and will not bundle it. fragcap
+detects it and reports its absence with the download location; it never
+downloads, installs, or invokes an installer. The simplest way to obtain npcap is
+the [Wireshark](https://www.wireshark.org/) installer, which bundles it; the
+[Getting started guide](https://fragcap.com/docs/getting-started) walks through
+that install with screenshots.
 
-Two installation options are required and **not both default**:
+npcap and Wireshark are two of the three tiers in fragcap's dependency model
+(npcap required, Wireshark recommended, the Wireshark extcap integration
+optional); the model is defined once in the
+[glossary](docs/glossary/platform-and-distribution.md#dependency-model).
 
-| Option | Why it is required |
+One installation option matters:
+
+| Option | Why it matters |
 | --- | --- |
-| Support loopback traffic capture | The launcher-to-client handoff and platform service chatter are local, and invisible on a normal adapter |
-| Install in WinPcap API-compatible mode | The `pcap` crate links against the WinPcap-compatible interface |
+| Install Npcap in WinPcap API-compatible mode | The `pcap` crate links against the WinPcap-compatible interface |
+
+Current Npcap installs loopback capture support automatically, so there is no
+longer a separate loopback option to enable.
 
 Building fragcap with the live capture backend additionally requires the npcap
 Software Development Kit, which is likewise not redistributed and is acquired at

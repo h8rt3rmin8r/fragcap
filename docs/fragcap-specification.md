@@ -2714,7 +2714,7 @@ location. It does not download, install, or invoke an installer.
 
 **Documented prerequisite.** Installation documentation states npcap as
 a required separate installation, with the required installation
-options, before any fragcap usage instruction.
+option, before any fragcap usage instruction.
 
 **Linking posture.** The `pcap` crate links against the npcap import
 library at build time and the driver library at runtime. Build
@@ -2722,16 +2722,18 @@ environments require the npcap Software Development Kit, which is
 separately downloadable and is not redistributed either. Continuous
 integration acquires it at build time rather than vendoring it.
 
-### 20.3 Required npcap Installation Options
+### 20.3 Required npcap Installation Option
 
-fragcap requires two npcap installation options that are not both
-default. `fragcap doctor` verifies each and names the specific option
-when it is missing.
-
-Loopback traffic capture support is required for observing local
-launcher-to-client communication. WinPcap API compatibility mode is
-required because the `pcap` crate links against the WinPcap-compatible
+fragcap requires the WinPcap API compatibility installation option, which
+is not default. `fragcap doctor` verifies it and names it when it is
+missing, because the `pcap` crate links against the WinPcap-compatible
 interface.
+
+Current npcap installs loopback capture support automatically, so it is
+no longer a separate installation option to enable. fragcap still
+captures loopback traffic, but reconnaissance found it carries
+intra-process communication rather than an observable launcher-to-client
+handoff (Appendix D), so it is not a capture prerequisite.
 
 ### 20.4 Dependency Licensing
 
@@ -2756,6 +2758,61 @@ model described in section 5 of the license. No separate contributor
 license agreement is required.
 
 Contributed game profiles are data covered by the same license.
+
+### 20.6 Dependency Model Diagrams
+
+The external tools and their relationships. npcap is required, Wireshark
+is recommended, and the Wireshark extcap integration is optional
+(section 20.1, and the dependency-model glossary entry).
+
+```mermaid
+flowchart LR
+  fragcap["fragcap: capture and attribution"]
+  npcap["npcap: capture driver (required)"]
+  ws["Wireshark: analyzer (recommended)"]
+  extcap["Wireshark extcap: optional"]
+  fragcap -->|captures through| npcap
+  fragcap -->|writes captures opened in| ws
+  ws -->|installer bundles| npcap
+  extcap -->|ships with| ws
+  fragcap -.->|registered by fragcap extcap install| extcap
+```
+
+The runtime data flow, from the interface to the outputs, including the
+extcap path into Wireshark.
+
+```mermaid
+flowchart LR
+  nic["Network interface"]
+  npcap["npcap driver"]
+  cap["fragcap capture: one thread per interface"]
+  buf["Bounded buffer: drop-oldest, counted"]
+  attr["Attribution: socket table and process tree"]
+  pcapng["pcapng file"]
+  jsonl["JSON Lines"]
+  ws["Wireshark"]
+  nic --> npcap --> cap --> buf --> attr
+  attr --> pcapng
+  attr --> jsonl
+  pcapng -->|opened in| ws
+  attr -.->|live via extcap| ws
+```
+
+How npcap is acquired: detection only, never bundled by fragcap
+(section 20.2).
+
+```mermaid
+flowchart TD
+  user["You"]
+  ws["Wireshark installer"]
+  npcap["npcap: by the Nmap Project"]
+  fragcap["fragcap"]
+  user -->|installs| ws
+  ws -->|bundles and installs| npcap
+  user -.->|or installs directly| npcap
+  fragcap -->|detects only, never bundles| npcap
+  fragcap -->|reports absence via fragcap doctor| user
+```
 
 ## 21. Repository Layout
 

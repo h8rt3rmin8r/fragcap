@@ -29,6 +29,7 @@ the owning category page.
 - [Catalog seeder](process-and-attribution.md#catalog-seeder)
 - [Completion summary](command-line-and-diagnostics.md#completion-summary)
 - [Corpus gate](process-and-attribution.md#corpus-gate)
+- [Dependency model](platform-and-distribution.md#dependency-model)
 - [Detection ruleset](process-and-attribution.md#detection-ruleset)
 - [Diagnostic record](command-line-and-diagnostics.md#diagnostic-record)
 - [Direction](capture-and-networking.md#direction)

@@ -6,17 +6,46 @@ A Windows packet capture driver and library, the current successor to WinPcap.
 
 {: .matters }
 > **npcap is not redistributable.** fragcap detects it rather than shipping it,
-> and no distribution artifact contains it. Two non-default installation
-> options are required: loopback traffic capture support and WinPcap API
-> compatible mode. Both are verifiable from the registry, which is how
-> `fragcap doctor` names the specific missing option.
+> and no distribution artifact contains it. npcap is by the Nmap Project. The
+> installation option that matters is WinPcap API compatible mode, which fragcap
+> links against; current npcap installs loopback capture support automatically,
+> so it is no longer a separate option to enable. The mode is verifiable from the
+> registry, which is how `fragcap doctor` names it when it is missing.
 
-**See also:** [Loopback](capture-and-networking.md#loopback)
+**See also:** [Dependency model](platform-and-distribution.md#dependency-model),
+[Loopback](capture-and-networking.md#loopback)
 
 **References:**
 
 - npcap project documentation, https://npcap.com. Installation options and
   license terms.
+
+## Dependency model
+
+fragcap's external tools fall into three tiers, which the `fragcap doctor`
+severities mirror exactly:
+
+- **Required: [npcap](platform-and-distribution.md#npcap).** The capture driver.
+  Without it fragcap captures nothing, and `doctor` reports its absence as a
+  failure.
+- **Recommended: Wireshark.** The analyzer captures are opened in. Its installer
+  also bundles and installs npcap, so it is the simplest way to obtain both, and
+  `doctor` reports it as a recommendation rather than a blocker.
+- **Optional: the [extcap](windows-internals.md#extcap) integration.** It ships
+  with Wireshark and lets fragcap feed it live; it needs only `fragcap extcap
+  install` to register, and `doctor` reports it as optional.
+
+{: .matters }
+> This entry is the single source for the tiers. The README and the Getting
+> Started page summarize and link here rather than restating them, and the
+> wording matches the `fragcap doctor` severities, so the tool and the docs
+> cannot disagree over time. npcap is by the Nmap Project, and fragcap detects it
+> rather than bundling it (specification section 20.2).
+
+**See also:** [npcap](platform-and-distribution.md#npcap),
+[extcap](windows-internals.md#extcap),
+[Capability feature](platform-and-distribution.md#capability-feature),
+[Readiness check](command-line-and-diagnostics.md#readiness-check)
 
 ## Game profile
 
