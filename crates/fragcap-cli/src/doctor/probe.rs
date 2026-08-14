@@ -107,6 +107,63 @@ fn socket_table_availability() -> Option<bool> {
     }
 }
 
+/// The enumerated interfaces and the three-valued loopback state, read from the
+/// live capture backend.
+///
+/// The backend is linked only under the `live` feature on Windows, so the
+/// `#[cfg(not(...))]` fallback returns an empty interface set and an undetermined
+/// loopback. That fallback is load-bearing: it keeps the default `cargo test
+/// --workspace` (no features) and the platform-neutral `fragcap-core` build
+/// compiling (constitution P-2). This mirrors [`live_availability`]. The old
+/// probe hardcoded the empty set and guessed loopback from an unrelated file;
+/// both are gone.
+fn live_probe() -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
+    #[cfg(all(feature = "live", windows))]
+    {
+        use fragcap::core::virtual_verdict;
+        // A failed enumeration is preserved as an error string rather than
+        // flattened to an empty set, so the classifier does not report a probe
+        // that could not run as an observed-empty machine (P-9).
+        let (interfaces, error) = match fragcap::enumerate() {
+            Ok(inventory) => (
+                inventory
+                    .interfaces
+                    .iter()
+                    .map(|record| super::IfaceInfo {
+                        name: record.name.to_string(),
+                        addr: record.addresses.first().map(|addr| addr.to_string()),
+                        up: record.is_up,
+                        is_virtual: virtual_verdict(record).is_virtual(),
+                    })
+                    .collect(),
+                None,
+            ),
+            Err(err) => (Vec::new(), Some(err.to_string())),
+        };
+        let loopback = fragcap::detect_driver().loopback_supported;
+        (interfaces, loopback, error)
+    }
+    #[cfg(not(all(feature = "live", windows)))]
+    {
+        // Enumeration was not attempted (the backend is not linked); that is not
+        // a failure, so the error is None and the classifier attributes the empty
+        // set to the missing backend.
+        (Vec::new(), None, None)
+    }
+}
+
+/// The identity facts: which fragcap produced this report and where it keeps its
+/// per-user data. All read-only and computed regardless of whether the paths
+/// exist yet.
+fn identity_fields() -> (String, Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+    (
+        env!("CARGO_PKG_VERSION").to_string(),
+        std::env::current_exe().ok(),
+        crate::paths::user_profile_dir(),
+        crate::paths::default_hint_db_path(),
+    )
+}
+
 /// The npcap version, read from the `wpcap.dll` FileVersion resource, or the
 /// literal "installed" when it cannot be read.
 ///
@@ -218,7 +275,13 @@ pub fn gather() -> Inputs {
     #[cfg(not(windows))]
     {
         let (extcap_dir, extcap_installed) = extcap_status();
+        let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
+        let (interfaces, _loopback, interface_error) = live_probe();
         Inputs {
+            fragcap_version,
+            binary_path,
+            profile_dir,
+            hint_db_path,
             os: format!("{} (capture is Windows-only)", std::env::consts::OS),
             subsystem: Subsystem::Native,
             privilege: Privilege::NotElevated,
@@ -226,7 +289,8 @@ pub fn gather() -> Inputs {
             etw_available: tracing_availability(),
             live_available: live_availability(),
             socket_table_available: socket_table_availability(),
-            interfaces: Vec::new(),
+            interfaces,
+            interface_error,
             extcap_installed,
             extcap_dir,
             bundled_count: crate::paths::bundled().len(),
@@ -248,16 +312,19 @@ fn gather_windows(user_count: usize) -> Inputs {
     let npcap_wpcap = npcap_dir.join("wpcap.dll");
     let system_wpcap = system32.join("wpcap.dll");
 
+    // The live backend answers what exists: the interface set, and whether a
+    // loopback adapter is among them. It is linked only under the `live` feature,
+    // so this returns empty and undetermined on a build without it.
+    let (interfaces, loopback_supported, interface_error) = live_probe();
+
     // npcap is present when its own wpcap.dll exists in the Npcap directory. The
     // WinPcap API compatibility option additionally installs wpcap.dll directly
     // into System32, so its presence there is the signal for that option.
     let npcap = if npcap_wpcap.exists() {
         Some(NpcapInfo {
             version: npcap_version(&npcap_wpcap),
-            // Loopback support installs an "NPF_Loopback" adapter; without an
-            // adapter enumeration this probe cannot see it, so it reports the
-            // conservative answer and the operator confirms.
-            loopback_adapter: npcap_dir.join("npcap_wifi.sys").exists(),
+            // From enumerating the loopback adapter, never a proxy file.
+            loopback_supported,
             winpcap_api_mode: system_wpcap.exists(),
         })
     } else {
@@ -265,7 +332,12 @@ fn gather_windows(user_count: usize) -> Inputs {
     };
 
     let (extcap_dir, extcap_installed) = extcap_status();
+    let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
     Inputs {
+        fragcap_version,
+        binary_path,
+        profile_dir,
+        hint_db_path,
         os: "Windows".to_string(),
         subsystem: Subsystem::Native,
         privilege: if is_elevated() {
@@ -277,9 +349,8 @@ fn gather_windows(user_count: usize) -> Inputs {
         etw_available: tracing_availability(),
         live_available: live_availability(),
         socket_table_available: socket_table_availability(),
-        // Interface enumeration belongs to the capture backend, which is not
-        // linked here; the check warns rather than fails on an empty set.
-        interfaces: Vec::new(),
+        interfaces,
+        interface_error,
         extcap_installed,
         extcap_dir,
         bundled_count: crate::paths::bundled().len(),

@@ -12,12 +12,22 @@ use fragcap_cli::doctor::{checks, IfaceInfo, Inputs, NpcapInfo, Privilege, Statu
 
 fn ready() -> Inputs {
     Inputs {
+        fragcap_version: "0.0.0-test".to_string(),
+        binary_path: Some(std::path::PathBuf::from(
+            "C:\\Program Files\\fragcap\\fragcap.exe",
+        )),
+        profile_dir: Some(std::path::PathBuf::from(
+            "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles",
+        )),
+        hint_db_path: Some(std::path::PathBuf::from(
+            "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\hint.db",
+        )),
         os: "Windows 11".to_string(),
         subsystem: Subsystem::Native,
         privilege: Privilege::Elevated,
         npcap: Some(NpcapInfo {
             version: "1.79".to_string(),
-            loopback_adapter: true,
+            loopback_supported: Some(true),
             winpcap_api_mode: true,
         }),
         etw_available: Some(true),
@@ -29,6 +39,7 @@ fn ready() -> Inputs {
             up: true,
             is_virtual: false,
         }],
+        interface_error: None,
         extcap_installed: true,
         extcap_dir: Some(std::path::PathBuf::from(
             "C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap",
@@ -68,7 +79,7 @@ fn the_two_npcap_options_have_their_own_severities() {
     // block; the WinPcap option is unaffected and the machine stays ready.
     let mut loop_absent = ready();
     if let Some(info) = loop_absent.npcap.as_mut() {
-        info.loopback_adapter = false;
+        info.loopback_supported = Some(false);
     }
     let report = checks::run(&loop_absent);
     let loopback = report
@@ -182,7 +193,7 @@ fn every_failing_check_names_a_remediation() {
     let mut inputs = ready();
     inputs.npcap = Some(NpcapInfo {
         version: "1.79".to_string(),
-        loopback_adapter: false,
+        loopback_supported: Some(false),
         winpcap_api_mode: false,
     });
     inputs.etw_available = Some(false);
@@ -212,6 +223,53 @@ fn the_json_form_is_one_record_per_check() {
         assert!(line.starts_with("{\"section\":"), "record shape: {line}");
         assert!(line.contains("\"status\":"));
     }
+}
+
+#[test]
+fn the_plain_human_report_has_no_color_and_fits_eighty_columns() {
+    let report = checks::run(&ready());
+    let human = report.render_human();
+    assert!(
+        !human.contains('\u{1b}'),
+        "render_human must be plain: no ANSI escapes"
+    );
+    for line in human.lines() {
+        assert!(
+            line.chars().count() <= 80,
+            "line exceeds 80 columns ({}): {line:?}",
+            line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn the_colored_form_wraps_the_status_words_and_leaves_json_plain() {
+    let report = checks::run(&ready());
+    // The colored human form carries ANSI; the plain form does not; the JSON
+    // form is never colorized.
+    assert!(report.render_human_with(true).contains('\u{1b}'));
+    assert!(!report.render_human_with(false).contains('\u{1b}'));
+    assert!(!report.render_json().contains('\u{1b}'));
+}
+
+#[test]
+fn the_identity_section_appears_first_in_both_forms() {
+    let report = checks::run(&ready());
+    let human = report.render_human();
+    assert!(human.starts_with("Identity\n"), "identity leads:\n{human}");
+    for want in ["version", "binary", "profile dir", "hint db"] {
+        assert!(
+            human.contains(want),
+            "identity row {want} missing:\n{human}"
+        );
+    }
+    let json = report.render_json();
+    assert_eq!(json.lines().count(), report.checks.len());
+    assert!(json
+        .lines()
+        .next()
+        .unwrap()
+        .contains("\"section\":\"Identity\""));
 }
 
 #[test]

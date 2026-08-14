@@ -31,8 +31,8 @@ pub mod core {
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
     pub use fragcap_core::flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
     pub use fragcap_core::interface::{
-        select, InterfaceId, InterfaceInventory, InterfaceRecord, SelectedInterface,
-        SelectionError, SelectionOutcome, SelectionSettings,
+        select, virtual_verdict, InterfaceId, InterfaceInventory, InterfaceRecord,
+        SelectedInterface, SelectionError, SelectionOutcome, SelectionSettings, VirtualVerdict,
     };
     pub use fragcap_core::link::LinkType;
     pub use fragcap_core::packet::{

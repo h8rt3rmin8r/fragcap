@@ -1,19 +1,32 @@
+Identity
+  version                ok    0.0.0-test
+  binary                 ok    C:\Program Files\fragcap\fragcap.exe
+  profile dir            ok    C:\Users\gamer\AppData\Roaming\fragcap\profiles
+  hint db                ok    C:\Users\gamer\AppData\Roaming\fragcap\hint.db
+
 Platform
   os                     ok    Windows 11
   subsystem              ok    native
   privilege              ok    elevated
+
 Capture driver
   npcap                  ok    version 1.79
   loopback adapter       ok    loopback capture supported
   winpcap api mode       ok    WinPcap API compatible
   live backend           ok    live capture backend is built in
   socket-table backend   ok    socket-table attribution is built in
+
 Tracing
   process events         ok    process-event session available
+
 Interfaces
-  adapter                ok    192.0.2.10
+  adapter                ok    Ethernet 192.0.2.10
+
 Integration
-  analyzer extcap        ok    installed in C:\Users\gamer\AppData\Roaming\Wireshark\extcap
+  analyzer extcap        ok    installed in
+                               C:\Users\gamer\AppData\Roaming\Wireshark\extcap
+
 Profiles
   profiles               ok    bundled: 0, user: 2
+
 Ready to capture.
