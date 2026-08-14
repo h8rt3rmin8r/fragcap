@@ -113,6 +113,13 @@ pub struct RunArgs {
     #[arg(long)]
     pub steam: Option<String>,
 
+    /// A targets hint database to consult during resolution (issue #78). When set
+    /// and present, a `--steam` capture may resolve its client from the database at
+    /// heuristic-unverified fidelity, above the engine rule. Overrides the
+    /// `FRAGCAP_HINT_DB` environment variable. A missing database is not an error.
+    #[arg(long)]
+    pub hint_db: Option<PathBuf>,
+
     /// The output capture file (pcapng). Shorthand for a file sink.
     #[arg(short = 'o', long)]
     pub out: Option<PathBuf>,

@@ -193,17 +193,88 @@ impl WalkerTarget {
     }
 }
 
+/// A client executable a hint database named for a Steam title, recorded from a
+/// stored row and nothing else.
+///
+/// It carries the Steam application id the row was keyed by, the executable file
+/// name to match, the identity the pipeline binds it by, and the two facts a row
+/// records that a capture wants to keep: whether the title launches through a
+/// mediator, and its game engine's name. Unlike an [`EngineRuleTarget`] or a
+/// [`WalkerTarget`], it carries no full path on disk: the hint database knows the
+/// executable's name but not where this machine installed the title, and naming a
+/// path it did not read would be a lie (constitution P-9). The identity is keyed
+/// on the file name, exactly as an authored profile's `exe` predicate is, so the
+/// capture path binds it the same way once the process appears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HintTarget {
+    app_id: u32,
+    image_name: String,
+    identity: MatchPredicates,
+    launcher_mediated: Option<bool>,
+    engine: Option<String>,
+}
+
+impl HintTarget {
+    /// Build a hint target from the row's application id, the resolved executable
+    /// file name, the identity that binds it, and the carried facts.
+    pub fn new(
+        app_id: u32,
+        image_name: String,
+        identity: MatchPredicates,
+        launcher_mediated: Option<bool>,
+        engine: Option<String>,
+    ) -> HintTarget {
+        HintTarget {
+            app_id,
+            image_name,
+            identity,
+            launcher_mediated,
+            engine,
+        }
+    }
+
+    /// The Steam application id the hint row was keyed by.
+    pub fn app_id(&self) -> u32 {
+        self.app_id
+    }
+
+    /// The resolved client's executable file name.
+    pub fn image_name(&self) -> &str {
+        &self.image_name
+    }
+
+    /// The identity the pipeline binds the client by once it appears.
+    pub fn identity(&self) -> &MatchPredicates {
+        &self.identity
+    }
+
+    /// Whether the row recorded that the title launches through a mediator, when
+    /// it recorded the fact at all.
+    pub fn launcher_mediated(&self) -> Option<bool> {
+        self.launcher_mediated
+    }
+
+    /// The row's game-engine name, when the row recorded one. Carried as a plain
+    /// string because `fragcap-profile` cannot name the `fragcap-targets` engine
+    /// type; the fact is what matters, not the enum.
+    pub fn engine(&self) -> Option<&str> {
+        self.engine.as_deref()
+    }
+}
+
 /// How a resolved target is backed.
 ///
-/// A validated profile (from the profile provider), a client resolved from an
-/// engine's install layout (from the engine-rule provider), a client resolved
-/// from a storefront's installed library (from the platform walker), or a live
-/// process the observation provider matched. Every origin resolves to one
-/// identity to capture.
+/// A validated profile (from the profile provider), a client named by the hint
+/// database (from the hint provider), a client resolved from an engine's install
+/// layout (from the engine-rule provider), a client resolved from a storefront's
+/// installed library (from the platform walker), or a live process the observation
+/// provider matched. Every origin resolves to one identity to capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetOrigin {
     /// Backed by a validated profile. The profile's stages are the match rules.
     Profile(Profile),
+    /// Named by the hint database from a stored row, with no profile.
+    HintDatabase(HintTarget),
     /// Resolved from an engine's documented install layout, with no profile.
     EngineRule(EngineRuleTarget),
     /// Resolved from a storefront's installed library, with no profile.
@@ -255,7 +326,8 @@ impl Target {
     pub fn profile(&self) -> Option<&Profile> {
         match &self.origin {
             TargetOrigin::Profile(p) => Some(p),
-            TargetOrigin::EngineRule(_)
+            TargetOrigin::HintDatabase(_)
+            | TargetOrigin::EngineRule(_)
             | TargetOrigin::PlatformWalker(_)
             | TargetOrigin::Observed(_) => None,
         }
@@ -268,7 +340,8 @@ impl Target {
     pub fn into_profile(self) -> Option<Profile> {
         match self.origin {
             TargetOrigin::Profile(p) => Some(p),
-            TargetOrigin::EngineRule(_)
+            TargetOrigin::HintDatabase(_)
+            | TargetOrigin::EngineRule(_)
             | TargetOrigin::PlatformWalker(_)
             | TargetOrigin::Observed(_) => None,
         }
@@ -276,16 +349,17 @@ impl Target {
 
     /// The recognition identity of a non-profile target.
     ///
-    /// A target resolved by the engine rule, the platform walker, or runtime
-    /// observation carries a [`MatchPredicates`] identity (an image name plus
-    /// optional path anchors) rather than a backing profile. The non-profile
-    /// capture path reads it here to synthesize a one-stage capture identity,
-    /// exactly as `watch` builds one from a typed identity. A profile-backed
-    /// target returns `None`: its identity lives in its stages, and it is
-    /// captured through [`Target::into_profile`] instead.
+    /// A target named by the hint database, resolved by the engine rule, resolved
+    /// by the platform walker, or matched by runtime observation carries a
+    /// [`MatchPredicates`] identity (an image name plus optional path anchors)
+    /// rather than a backing profile. The non-profile capture path reads it here to
+    /// synthesize a one-stage capture identity, exactly as `watch` builds one from
+    /// a typed identity. A profile-backed target returns `None`: its identity lives
+    /// in its stages, and it is captured through [`Target::into_profile`] instead.
     pub fn identity(&self) -> Option<&MatchPredicates> {
         match &self.origin {
             TargetOrigin::Profile(_) => None,
+            TargetOrigin::HintDatabase(t) => Some(t.identity()),
             TargetOrigin::EngineRule(t) => Some(t.identity()),
             TargetOrigin::PlatformWalker(t) => Some(t.identity()),
             TargetOrigin::Observed(t) => Some(t.identity()),
@@ -343,6 +417,48 @@ mod tests {
             )),
         );
         assert!(observed.identity().is_some());
+
+        let hint = Target::new(
+            FidelityTier::HeuristicUnverified,
+            Provenance::new("hint-db".to_string(), None),
+            TargetOrigin::HintDatabase(HintTarget::new(
+                480,
+                "game.exe".to_string(),
+                identity(),
+                Some(true),
+                Some("Unreal".to_string()),
+            )),
+        );
+        assert!(hint.identity().is_some());
+    }
+
+    #[test]
+    fn a_hint_target_carries_its_facts_and_backs_no_profile() {
+        let target = Target::new(
+            FidelityTier::HeuristicUnverified,
+            Provenance::new("hint-db".to_string(), None),
+            TargetOrigin::HintDatabase(HintTarget::new(
+                730,
+                "cs2.exe".to_string(),
+                identity(),
+                Some(false),
+                None,
+            )),
+        );
+        // A hint is not a profile.
+        assert!(target.profile().is_none());
+        assert!(target.clone().into_profile().is_none());
+        // The identity is the capture identity, keyed on the executable.
+        assert!(target.identity().is_some());
+        match target.origin() {
+            TargetOrigin::HintDatabase(t) => {
+                assert_eq!(t.app_id(), 730);
+                assert_eq!(t.image_name(), "cs2.exe");
+                assert_eq!(t.launcher_mediated(), Some(false));
+                assert_eq!(t.engine(), None);
+            }
+            other => panic!("expected a hint-database origin, got {other:?}"),
+        }
     }
 
     #[test]

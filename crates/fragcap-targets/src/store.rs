@@ -167,6 +167,51 @@ impl Store {
         Ok(games)
     }
 
+    /// Read one game by application id, with its launch entries (ordered) and
+    /// technologies (ordered), or `None` when no row exists.
+    ///
+    /// The single-row path the hint provider (S037) resolves through: it reads the
+    /// one row it was asked about rather than loading the whole corpus. An absent
+    /// row is `Ok(None)`, not an error; a read that fails after the store opened is
+    /// an error the caller surfaces.
+    pub fn game(&self, appid: u32) -> Result<Option<Game>, TargetsError> {
+        let Some(mut game) = self.load_game(appid)? else {
+            return Ok(None);
+        };
+        game.launch = self.load_launch(appid)?;
+        game.technologies = self.load_technologies(appid)?;
+        Ok(Some(game))
+    }
+
+    fn load_game(&self, appid: u32) -> Result<Option<Game>, TargetsError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT appid, name, review_count, owners, peak_ccu,
+                    launcher_mediated, token_required,
+                    engine_name, engine_source, engine_confidence
+             FROM games WHERE appid = ?1",
+        )?;
+        let mut rows = stmt.query(params![appid])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let engine_source: Option<String> = row.get(8)?;
+        let engine_confidence: Option<String> = row.get(9)?;
+        let engine_name: Option<String> = row.get(7)?;
+        let r = GameRow {
+            appid: row.get::<_, i64>(0)? as u32,
+            name: row.get(1)?,
+            review_count: row.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+            owners: row.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+            peak_ccu: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+            launcher_mediated: row.get(5)?,
+            token_required: row.get(6)?,
+            engine_name,
+            engine_source,
+            engine_confidence,
+        };
+        Ok(Some(game_from_row(r)?))
+    }
+
     fn load_games(&self) -> Result<Vec<Game>, TargetsError> {
         let mut stmt = self.conn.prepare(
             "SELECT appid, name, review_count, owners, peak_ccu,
@@ -194,29 +239,7 @@ impl Store {
 
         let mut out = Vec::new();
         for row in rows {
-            let r = row?;
-            let engine = match (r.engine_source, r.engine_confidence) {
-                (Some(s), Some(c)) => Some(Engine {
-                    name: r.engine_name,
-                    source: EngineSource::parse(&s)?,
-                    confidence: EngineConfidence::parse(&c)?,
-                }),
-                // The both-or-neither CHECK makes a half-present engine
-                // unstorable; treat any residue as absent rather than guessing.
-                _ => None,
-            };
-            out.push(Game {
-                appid: r.appid,
-                name: r.name,
-                review_count: r.review_count,
-                owners: r.owners,
-                peak_ccu: r.peak_ccu,
-                launcher_mediated: r.launcher_mediated,
-                token_required: r.token_required,
-                engine,
-                launch: Vec::new(),
-                technologies: Vec::new(),
-            });
+            out.push(game_from_row(row?)?);
         }
         Ok(out)
     }
@@ -410,4 +433,61 @@ struct GameRow {
     engine_name: Option<String>,
     engine_source: Option<String>,
     engine_confidence: Option<String>,
+}
+
+/// Fold a raw `games` row into a `Game`, reconstructing its `Engine` from the
+/// both-or-neither source/confidence columns. The launch and technology rows are
+/// loaded separately; this leaves them empty.
+fn game_from_row(r: GameRow) -> Result<Game, TargetsError> {
+    let engine = match (r.engine_source, r.engine_confidence) {
+        (Some(s), Some(c)) => Some(Engine {
+            name: r.engine_name,
+            source: EngineSource::parse(&s)?,
+            confidence: EngineConfidence::parse(&c)?,
+        }),
+        // The both-or-neither CHECK makes a half-present engine unstorable; treat
+        // any residue as absent rather than guessing.
+        _ => None,
+    };
+    Ok(Game {
+        appid: r.appid,
+        name: r.name,
+        review_count: r.review_count,
+        owners: r.owners,
+        peak_ccu: r.peak_ccu,
+        launcher_mediated: r.launcher_mediated,
+        token_required: r.token_required,
+        engine,
+        launch: Vec::new(),
+        technologies: Vec::new(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::LaunchEntry;
+
+    #[test]
+    fn game_reads_one_row_with_its_launch_entries() {
+        let mut store = Store::open_in_memory().expect("in-memory store");
+        let mut game = Game::new(730);
+        game.name = Some("CS2".to_string());
+        game.launcher_mediated = Some(true);
+        game.launch = vec![LaunchEntry::new("cs2.exe").expect("non-empty")];
+        store.upsert_game(&game).expect("upsert");
+
+        let read = store.game(730).expect("read").expect("present");
+        assert_eq!(read.appid, 730);
+        assert_eq!(read.name.as_deref(), Some("CS2"));
+        assert_eq!(read.launcher_mediated, Some(true));
+        assert_eq!(read.launch.len(), 1);
+        assert_eq!(read.launch[0].executable(), "cs2.exe");
+    }
+
+    #[test]
+    fn game_returns_none_for_an_absent_row() {
+        let store = Store::open_in_memory().expect("in-memory store");
+        assert!(store.game(12345).expect("read").is_none());
+    }
 }

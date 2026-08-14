@@ -1119,6 +1119,39 @@ read.
 **See also:** [Provider](#provider), [Resolution cascade](#resolution-cascade),
 [Engine rule](#engine-rule), [Target](#target), [Provenance](#provenance)
 
+## Hint provider
+
+A [provider](#provider) that answers the [resolution cascade](#resolution-cascade)
+at precedence 2 from the [hint database](#hint-database). Given a Steam application
+id carried on the resolution request, it reads the one stored row and, when that
+row names a single usable Windows client executable, answers with a
+[target](#target) keyed on that executable, carrying the
+[launcher-mediated](#launcher-mediated) flag and the row's
+[engine attribution](#engine-attribution) name as facts. It reads the embedded
+database only, opening no process handle, reading no process memory, launching
+nothing, and making no network call (constitution P-1). Introduced by issue #78,
+filled in by slice S037; its [provenance](#provenance) source is `hint-db`, the
+same name the database's export projection uses, so a resolution answer and an
+export name the store's origin identically and never claim a source not read.
+Because the database may be built out or absent, the provider is registered only
+when the operator supplies a present database, and its absence changes nothing.
+
+{: .matters }
+> The hint provider answers only when the row names exactly one usable client, and
+> it never guesses. A sparse catalog-only row, an engine-only row with no launch
+> executable, and a row whose launch entries name more than one distinct
+> executable are all declines, so the cascade falls through to the
+> [engine rule](#engine-rule), the [platform walker](#platform-walker), and
+> [runtime observation](#resolution-cascade) rather than arming a capture against a
+> guessed process (P-4). An ambiguous decline records why, so a not-resolved
+> outcome can explain itself. Every answer is
+> [heuristic-unverified](#fidelity-tier) and a live observation always overrides it
+> (P-9).
+
+**See also:** [Provider](#provider), [Hint database](#hint-database),
+[Resolution cascade](#resolution-cascade), [Engine rule](#engine-rule),
+[Fidelity tier](#fidelity-tier), [Provenance](#provenance)
+
 ## Non-profile capture path
 
 The `run` branch that captures a [target](#target) the

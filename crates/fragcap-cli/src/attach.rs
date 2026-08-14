@@ -19,8 +19,8 @@
 //! surfaced as a warning so the operator is not left watching a silent wait.
 
 use fragcap::profile::{
-    EngineRuleProvider, HintProvider, ObservationProvider, ProfileProvider, ResolutionError,
-    ResolutionRequest, SearchPath, TargetOrigin, TargetResolver,
+    EngineRuleProvider, ObservationProvider, ProfileProvider, ResolutionError, ResolutionRequest,
+    SearchPath, TargetOrigin, TargetResolver,
 };
 use fragcap::steam::SteamWalkerProvider;
 use fragcap::{BundledSet, ProcessTree, Profile};
@@ -52,9 +52,12 @@ pub fn report_attach_to_running(
     );
     let identity = profile.stages()[0].predicates();
 
+    // This resolver answers an observation-only request (the startup snapshot), so
+    // it omits the hint-database provider at precedence 2: a hint answers an app-id
+    // request, which this is not, and precedence 2 empty is behavior-identical to
+    // the no-answer stub that preceded S037.
     let resolver = TargetResolver::new(vec![
         Box::new(ProfileProvider::new()),
-        Box::new(HintProvider::new()),
         Box::new(EngineRuleProvider::new()),
         Box::new(SteamWalkerProvider::new()),
         Box::new(ObservationProvider::new()),

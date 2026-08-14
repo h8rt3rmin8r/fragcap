@@ -156,13 +156,17 @@ impl From<ResolutionError> for CliError {
     /// outcome with no profile detail (no provider answered and none recorded a
     /// reason) is an expected failure (exit 1).
     fn from(e: ResolutionError) -> CliError {
-        let inner = match e {
-            ResolutionError::Provider(ProviderError::Profile(inner)) => Some(inner),
-            ResolutionError::Unresolved(u) => u.into_profile_not_found(),
-        };
-        match inner {
-            Some(re) => CliError::from(re),
-            None => CliError::Failure("no target could be resolved".to_string()),
+        match e {
+            ResolutionError::Provider(ProviderError::Profile(inner)) => CliError::from(inner),
+            // A hint-database read that failed after the store opened is an
+            // operational failure surfaced verbatim (exit 1), not a not-found.
+            ResolutionError::Provider(ProviderError::Hint(message)) => {
+                CliError::Failure(format!("hint database read failed: {message}"))
+            }
+            ResolutionError::Unresolved(u) => match u.into_profile_not_found() {
+                Some(re) => CliError::from(re),
+                None => CliError::Failure("no target could be resolved".to_string()),
+            },
         }
     }
 }
