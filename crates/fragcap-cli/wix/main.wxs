@@ -2,10 +2,11 @@
 <!--
   fragcap Windows installer (unsigned).
 
-  Built with cargo-wix over WiX v3. Link with the WixUtilExtension (the release
-  job passes `-e WixUtilExtension`) for WixQuietExec (the best-effort Defender
-  exclusion) and WixShellExec (the npcap exit-dialog link); WixUIExtension is
-  linked by cargo-wix for WixUI_InstallDir.
+  Built with cargo-wix over WiX v3. cargo-wix links both WixUIExtension (for
+  WixUI_InstallDir) and WixUtilExtension (for WixQuietExec, the best-effort
+  Defender exclusion, and WixShellExec, the npcap exit-dialog link) by default, so
+  the release job passes no extension flags; passing either again makes light fail
+  with duplicate-table or duplicate-symbol collisions.
 
   Payload files (fragcap.exe, hint.db, LICENSE, NOTICE) are read from
   $(var.CargoTargetBinDir): the release job stages hint.db, LICENSE, and NOTICE
