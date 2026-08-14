@@ -21,13 +21,18 @@ cargo test -p fragcap-cli --test cli_schema
 
 Expected: the drift and print tests pass with the `fragcap.com` `$id`.
 
-## Zero-fragcap.dev check
+## Live-identifier check (no fragcap.dev as an identifier)
 
 ```bash
-grep -rn "fragcap.dev" .
+grep -rn "fragcap\.dev" docs/schema crates/fragcap-profile/assets crates/fragcap-cli/tests/cli_schema.rs
 ```
 
-Expected: no matches anywhere in the repository.
+Expected: no matches. The `$id`, the embedded asset, and the CLI assertion carry
+only `fragcap.com`. The identity contract's canonical example line is also
+`fragcap.com`; the repo still contains `fragcap.dev` in deliberate historical
+references (this slice's decision fragment, the contract's dated correction note,
+and the spec artifacts), which FR-005/SC-001 permit, so a whole-repo grep is
+expected to match those and is not the check.
 
 ## Byte-identity spot check
 
@@ -39,5 +44,5 @@ Expected: no differences (the two copies are identical).
 
 ## Done signal
 
-`cargo xtask ci` green, the grep returns nothing, and the two JSON files diff
-clean.
+`cargo xtask ci` green, the scoped live-identifier grep returns nothing, and the
+two JSON files diff clean.

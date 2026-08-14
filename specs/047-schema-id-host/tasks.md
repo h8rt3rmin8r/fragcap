@@ -19,7 +19,7 @@ tests never go red between edits. Verify with `cargo xtask ci`.
 ## Phase 3: Verification
 
 - [ ] T006 Run `cargo xtask ci` in the foreground to green (fmt, clippy, tests incl. the schema drift tests and cli_schema, lint, deps, license, docs).
-- [ ] T007 Run `grep -rn "fragcap.dev" .` and confirm zero matches; run `diff docs/schema/target-schema.v1.json crates/fragcap-profile/assets/target-schema.v1.json` and confirm no differences.
+- [ ] T007 Confirm no `fragcap.dev` remains as a live identifier: `grep -rn "fragcap\.dev" docs/schema crates/fragcap-profile/assets crates/fragcap-cli/tests/cli_schema.rs` returns zero matches, and the contract's canonical `$id` example line reads `fragcap.com` (its only `fragcap.dev` is the historical correction note). Then `diff docs/schema/target-schema.v1.json crates/fragcap-profile/assets/target-schema.v1.json` shows no differences. A whole-repo grep still matches the permitted historical references (decision fragment, contract note, spec artifacts) by design.
 - [ ] T008 Confirm `git diff --stat` touches only the four files above, the changelog decision, and `specs/047-schema-id-host/` (no unrelated file).
 
 ## Dependencies
