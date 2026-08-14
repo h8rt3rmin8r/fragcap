@@ -254,6 +254,7 @@ load-bearing rather than bookkeeping.
 | `windows-sys` | runtime, optional | S10 | The IP Helper socket table, behind the `socket-table` feature |
 | `serde_json` | runtime (in `fragcap-profile`), dev elsewhere | S07, promoted S25 | Parses target JSON for the master-schema validator (S25); parses the JSON writer's output in tests (S07) |
 | `rusqlite` | runtime, optional | S034 | The embedded SQLite store the targets hint database is built on, behind the `targets` feature |
+| `http_req` | runtime, optional | S035 | The HTTP client the live catalog seeder uses, behind the `net` feature |
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
 pcap file is a header and a run of records, the attribution script format is
@@ -389,6 +390,27 @@ building through `rustup run 1.82`; it is taken as a `0.40` range with
 `clap` nothing in the graph actively breaks the floor today. It is optional and
 off at the facade behind the `targets` feature, so a default library build
 compiles no SQLite engine, and it lands only in `fragcap-targets`, never in
+`fragcap-core`.
+
+S035 added `http_req`, the first HTTP client, for the targets hint database's live
+catalog seeder, and the choice was forced by two constraints most 2025-era clients
+fail. The license allowlist eliminated the rustls path: `minreq` with its `https`
+feature is otherwise the minimal choice, but it forces `webpki-roots`, whose bundled
+Mozilla root store is CDLA-Permissive-2.0, outside the allowed set; native-tls uses
+the operating system trust store (schannel on Windows) and bundles no roots. The
+no-gratuitous-graph rule eliminated every client built on the `url` crate: `ureq`
+and `attohttpc` pull `idna` 1.x and the whole ICU4X stack, measured at 42 packages,
+the same graph S025 rejected `boon` for. `http_req` does its own URL parsing, so
+with `default-features = false, features = ["native-tls"]` it adds 18 packages, no
+ICU4X and no `ring`, every one MIT or Apache-2.0. MSRV turned out not to bind it:
+the `net` feature is off by default and `cargo xtask msrv` builds default features
+only, so `http_req` (and a transitive `zeroize` that declares edition 2024) is never
+compiled under 1.82, exactly as `pcap` behind `live` is not. Verified by building
+net-off under 1.82 and net-on under the pinned toolchain. `http_req` is smaller and
+less widely used than `ureq`; the risk is bounded because it sits behind the
+`CatalogSource` trait (replacing it is a one-module change) and is compiled but never
+run in continuous integration, so a client regression can break neither the default
+build nor the tested pipeline. It lands only in `fragcap-targets`, never in
 `fragcap-core`.
 
 `fragcap-core` may depend only on crates named in the allowlist in

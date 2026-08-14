@@ -24,18 +24,28 @@
 //! returning it. A malformed [`import`] fails whole rather than writing a partial
 //! store (P-4).
 
+pub mod catalog;
 pub mod export;
+pub mod gate;
+#[cfg(feature = "net")]
+pub mod http_catalog;
 pub mod import;
 pub mod model;
 pub mod schema;
+pub mod seed;
 pub mod store;
 
+pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
 pub use export::export;
+pub use gate::{CorpusGate, DEFAULT_MIN_REVIEWS};
+#[cfg(feature = "net")]
+pub use http_catalog::HttpCatalog;
 pub use import::{import, ImportSummary};
 pub use model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
+pub use seed::{seed_catalog, SeedSummary};
 pub use store::Store;
 
 use std::fmt;
@@ -67,6 +77,11 @@ pub enum TargetsError {
     /// internal invariant failure: the exporter is wrong, and the document is
     /// surfaced as an error rather than emitted.
     ExportInvalid(String),
+    /// A catalog source could not fetch or parse a page (a network error, a
+    /// non-success status, or an unreadable response body). A whole-page failure,
+    /// distinct from a single unparsable entry, which the seeder counts as failed
+    /// and continues past.
+    Fetch(String),
 }
 
 impl fmt::Display for TargetsError {
@@ -83,6 +98,7 @@ impl fmt::Display for TargetsError {
             TargetsError::ExportInvalid(m) => {
                 write!(f, "export failed self-validation (internal error): {m}")
             }
+            TargetsError::Fetch(m) => write!(f, "catalog fetch failed: {m}"),
         }
     }
 }

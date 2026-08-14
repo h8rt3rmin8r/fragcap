@@ -12,10 +12,19 @@ keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
 
+[features]
+# The live catalog seeder's HTTP source (issue #78, slice S035). Off by default so
+# a default build and the offline test suite compile neither the HTTP client nor a
+# TLS stack; the seeder logic, the offline FixtureCatalog, the gate, and the
+# per-tier merge are all in the default build and fully tested without it. The
+# maintainer builds with `net` to seed from the wire.
+net = ["dep:http_req"]
+
 [dependencies]
 fragcap-profile.workspace = true
 serde_json.workspace      = true
 rusqlite = { workspace = true }
+http_req = { workspace = true, optional = true }
 
 [dev-dependencies]
 fragcap-profile.workspace = true
