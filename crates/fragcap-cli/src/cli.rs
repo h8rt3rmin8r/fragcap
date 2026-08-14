@@ -533,6 +533,32 @@ pub struct ExtcapArgs {
 
     #[command(flatten)]
     pub offline: OfflineArgs,
+
+    /// Register or unregister fragcap as a Wireshark extcap source. Absent for
+    /// the analyzer protocol invocations above, which are driven by the flags.
+    #[command(subcommand)]
+    pub action: Option<ExtcapAction>,
+}
+
+/// The optional `extcap` subcommands that register or unregister fragcap as a
+/// Wireshark extcap capture source, distinct from the analyzer protocol flags on
+/// [`ExtcapArgs`]. The barewords `install` and `uninstall` cannot collide with
+/// those flags (they all start with `--`) or with the top-level extcap routing.
+#[derive(Debug, Subcommand)]
+pub enum ExtcapAction {
+    /// Register fragcap as a Wireshark extcap capture source.
+    Install(ExtcapInstallArgs),
+    /// Remove fragcap's Wireshark extcap registration.
+    Uninstall(ExtcapInstallArgs),
+}
+
+/// Options shared by `extcap install` and `extcap uninstall`.
+#[derive(Args, Debug)]
+pub struct ExtcapInstallArgs {
+    /// The extcap directory to register into. Defaults to the per-user Wireshark
+    /// extcap directory, the same location `doctor` probes.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
 }
 
 /// The catch-all arguments a stub command accepts, so `fragcap replay anything`

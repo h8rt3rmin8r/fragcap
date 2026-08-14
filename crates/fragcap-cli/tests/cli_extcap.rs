@@ -333,3 +333,121 @@ fn an_unknown_extcap_interface_is_a_usage_error() {
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("not a fragcap extcap interface"), "{err}");
 }
+
+// --- extcap install / uninstall registration (slice 041) -------------------
+
+#[test]
+fn extcap_install_registers_the_binary_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_string_lossy().into_owned();
+
+    let (code, out, err) = common::run(&["extcap", "install", "--dir", &d]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("registered"),
+        "reports the registration: {out}"
+    );
+    assert_eq!(
+        fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "exactly the registered binary is present"
+    );
+
+    // A second install refreshes and still succeeds (idempotent, FR-002).
+    let (code, _out, err) = common::run(&["extcap", "install", "--dir", &d]);
+    assert_eq!(code, 0, "second install is idempotent: {err}");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn extcap_uninstall_removes_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_string_lossy().into_owned();
+
+    common::run(&["extcap", "install", "--dir", &d]);
+    let (code, out, err) = common::run(&["extcap", "uninstall", "--dir", &d]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("removed"), "reports the removal: {out}");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+
+    // Uninstall when nothing is registered is a success no-op (FR-003).
+    let (code, out, err) = common::run(&["extcap", "uninstall", "--dir", &d]);
+    assert_eq!(code, 0, "absent uninstall is a no-op success: {err}");
+    assert!(
+        out.contains("nothing to do") || out.contains("not registered"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_failed_registration_reports_an_error_and_never_success() {
+    // A --dir that is an existing file cannot be created as a directory, so the
+    // registration fails loudly rather than claiming success (FR-008, SC-005).
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("not-a-dir");
+    fs::write(&blocker, b"x").unwrap();
+    let (code, out, _err) =
+        common::run(&["extcap", "install", "--dir", &blocker.to_string_lossy()]);
+    assert_ne!(code, 0, "a failed registration is not exit 0");
+    assert!(
+        !out.contains("registered"),
+        "no success line on failure: {out}"
+    );
+}
+
+#[test]
+fn the_new_subcommands_do_not_regress_the_bare_protocol_forms() {
+    // Adding install/uninstall must not break the four analyzer invocations in
+    // the bare top-level form Wireshark uses (route_extcap injects `extcap`).
+    let (code, out, _e) = common::run(&["--extcap-interfaces"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("interface {value=fragcap}"), "{out}");
+
+    let (code, out, _e) = common::run(&["--extcap-interface", "fragcap", "--extcap-dlts"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("dlt {number=1}"), "{out}");
+
+    let (code, out, _e) = common::run(&["--extcap-interface", "fragcap", "--extcap-config"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("{call=--profile}"), "{out}");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let fifo = tmp.path().join("x.fcapng");
+    let mut args: Vec<String> = vec![
+        "--capture".into(),
+        "--extcap-interface".into(),
+        "fragcap".into(),
+        "--fifo".into(),
+        fifo.to_string_lossy().into_owned(),
+    ];
+    args.extend(offline_substrate());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _o, err) = common::run(&refs);
+    assert_eq!(code, 0, "the bare capture form still runs: {err}");
+}
+
+#[test]
+fn doctor_reports_the_integration_after_install_and_not_after_uninstall() {
+    // End-to-end agreement: install writes where doctor probes, so the doctor
+    // integration check flips. doctor reads the extcap dir from
+    // FRAGCAP_EXTCAP_DIR; this is the only test in this file that touches that
+    // variable, so setting it process-wide does not race another test.
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("FRAGCAP_EXTCAP_DIR", dir.path());
+
+    common::run(&["extcap", "install"]);
+    let (_c, out, _e) = common::run(&["doctor"]);
+    assert!(
+        out.contains("installed in"),
+        "doctor reports the integration installed: {out}"
+    );
+
+    common::run(&["extcap", "uninstall"]);
+    let (_c, out, _e) = common::run(&["doctor"]);
+    assert!(
+        out.contains("not registered as a Wireshark extcap source"),
+        "doctor reports it not registered after uninstall: {out}"
+    );
+
+    std::env::remove_var("FRAGCAP_EXTCAP_DIR");
+}

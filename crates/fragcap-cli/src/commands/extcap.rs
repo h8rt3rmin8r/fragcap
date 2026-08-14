@@ -17,12 +17,14 @@
 //! capture (constitution P-5). No new capture or attribution technique is
 //! introduced (P-1, P-3, P-9); extcap is a front half over the existing pipeline.
 
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use fragcap::profile::resolve;
 
 use crate::assemble;
-use crate::cli::ExtcapArgs;
+use crate::cli::{ExtcapAction, ExtcapArgs};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 use crate::orchestrator;
@@ -43,6 +45,14 @@ pub fn run(
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
+    // The register/unregister subcommands are handled first; when absent, the
+    // analyzer protocol dispatch below runs exactly as before.
+    if let Some(action) = &args.action {
+        return match action {
+            ExtcapAction::Install(a) => install(a.dir.as_deref(), out),
+            ExtcapAction::Uninstall(a) => uninstall(a.dir.as_deref(), out),
+        };
+    }
     if args.extcap_interfaces {
         let _ = write!(out, "{}", interfaces_block());
         Ok(Exit::SUCCESS)
@@ -61,6 +71,71 @@ pub fn run(
             "extcap needs one of --extcap-interfaces, --extcap-dlts, --extcap-config, or --capture",
         ))
     }
+}
+
+/// The extcap directory to register into: the explicit `--dir`, else the
+/// per-user platform location (which honors `FRAGCAP_EXTCAP_DIR`). An error when
+/// neither can be determined, so a failed registration is never silent (FR-008).
+fn resolve_dir(dir_override: Option<&Path>) -> Result<PathBuf, CliError> {
+    if let Some(dir) = dir_override {
+        return Ok(dir.to_path_buf());
+    }
+    paths::extcap_dir().ok_or_else(|| {
+        CliError::failure(
+            "could not determine the Wireshark extcap directory on this platform; pass --dir",
+        )
+    })
+}
+
+/// Register fragcap as a Wireshark extcap source: copy the running binary into
+/// the extcap directory under the name `doctor` probes for. Idempotent: it
+/// overwrites any existing registration so the registered copy matches the
+/// running fragcap.
+fn install(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let dir = resolve_dir(dir_override)?;
+    let source = std::env::current_exe().map_err(|e| {
+        CliError::failure(format!(
+            "could not determine the running fragcap binary: {e}"
+        ))
+    })?;
+    fs::create_dir_all(&dir).map_err(|e| {
+        CliError::failure(format!(
+            "could not create the extcap directory {}: {e}",
+            dir.display()
+        ))
+    })?;
+    let dest = dir.join(paths::EXTCAP_BINARY);
+    fs::copy(&source, &dest)
+        .map_err(|e| CliError::failure(format!("could not write {}: {e}", dest.display())))?;
+    let _ = writeln!(
+        out,
+        "registered fragcap as a Wireshark extcap source: {}",
+        dest.display()
+    );
+    Ok(Exit::SUCCESS)
+}
+
+/// Remove fragcap's Wireshark extcap registration. Idempotent: removing an
+/// absent registration is a success reported as a no-op.
+fn uninstall(dir_override: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let dir = resolve_dir(dir_override)?;
+    let dest = dir.join(paths::EXTCAP_BINARY);
+    if dest.exists() {
+        fs::remove_file(&dest)
+            .map_err(|e| CliError::failure(format!("could not remove {}: {e}", dest.display())))?;
+        let _ = writeln!(
+            out,
+            "removed the fragcap Wireshark extcap registration: {}",
+            dest.display()
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "fragcap is not registered as a Wireshark extcap source ({}); nothing to do",
+            dest.display()
+        );
+    }
+    Ok(Exit::SUCCESS)
 }
 
 /// The `--extcap-interfaces` block: the version line and the one interface.

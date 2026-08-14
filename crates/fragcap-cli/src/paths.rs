@@ -33,6 +33,15 @@ pub const HINT_DB_ENV: &str = "FRAGCAP_HINT_DB";
 /// The environment variable that overrides the analyzer extcap directory.
 pub const EXTCAP_DIR_ENV: &str = "FRAGCAP_EXTCAP_DIR";
 
+/// The fragcap binary name inside an analyzer extcap directory. Both the
+/// `extcap install` command (which writes it) and the `doctor` probe (which
+/// checks for it) reference this one constant so the register target and the
+/// readiness check cannot drift.
+#[cfg(windows)]
+pub const EXTCAP_BINARY: &str = "fragcap.exe";
+#[cfg(not(windows))]
+pub const EXTCAP_BINARY: &str = "fragcap";
+
 /// The analyzer's personal extcap directory, or `None` when the platform
 /// location cannot be determined.
 ///

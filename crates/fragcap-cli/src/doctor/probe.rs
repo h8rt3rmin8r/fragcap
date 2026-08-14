@@ -25,16 +25,10 @@ fn extcap_status() -> (Option<PathBuf>, bool) {
     let dir = crate::paths::extcap_dir();
     let installed = dir
         .as_ref()
-        .map(|d| d.join(EXTCAP_BINARY).exists())
+        .map(|d| d.join(crate::paths::EXTCAP_BINARY).exists())
         .unwrap_or(false);
     (dir, installed)
 }
-
-/// The fragcap binary name in the analyzer's extcap directory.
-#[cfg(windows)]
-const EXTCAP_BINARY: &str = "fragcap.exe";
-#[cfg(not(windows))]
-const EXTCAP_BINARY: &str = "fragcap";
 
 /// Count the `.json` profiles directly in a directory, or zero when it cannot
 /// be read.

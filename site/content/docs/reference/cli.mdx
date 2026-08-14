@@ -109,10 +109,36 @@ fragcap doctor
 ## `extcap`
 
 Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an
-extcap capture source; you do not normally run this command by hand. It presents
-one `fragcap` interface whose options (`--profile`, `--roles`, `--direction`,
-`--loopback`) mirror `run`, so the analyzer's capture dialog and the command line
-select capture identically.
+extcap capture source; you do not normally run the protocol form by hand. It
+presents one `fragcap` interface whose options (`--profile`, `--roles`,
+`--direction`, `--loopback`) mirror `run`, so the analyzer's capture dialog and
+the command line select capture identically.
+
+### `extcap install` / `extcap uninstall`
+
+Register or unregister fragcap as a Wireshark extcap source, so Wireshark lists
+it in its capture interfaces.
+
+```text
+fragcap extcap install            # register for the current user (idempotent)
+fragcap extcap uninstall          # unregister (idempotent; a no-op if not registered)
+fragcap extcap install --dir DIR  # register into an explicit directory
+```
+
+**Registration is per user.** It copies the running fragcap binary into your own
+Wireshark extcap directory (the per-user location `doctor` probes), and it needs
+no elevation. Installing fragcap for the whole machine does not register it for
+everyone: on a shared computer, **each user who wants the Wireshark integration
+runs `fragcap extcap install` once.** If Wireshark does not show fragcap as a
+capture source, run `fragcap doctor`, which reports whether the integration is
+registered for you and prints the exact command to fix it.
+
+To register for every user of the machine, an administrator can point `--dir` at
+Wireshark's system extcap directory, for example:
+
+```text
+fragcap extcap install --dir "C:\Program Files\Wireshark\extcap"
+```
 
 ## `replay`
 
