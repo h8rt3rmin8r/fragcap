@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "kind": "export",
+  "fidelity": "heuristic-unverified",
+  "provenance": { "source": "hint-db" },
+  "records": [
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": { "source": "hint-db" },
+      "game": { "app_id": "306130", "platform": "steam", "name": "The Elder Scrolls Online" },
+      "launch": [
+        { "os": "windows", "osarch": "64" }
+      ]
+    }
+  ]
+}

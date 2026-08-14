@@ -163,6 +163,7 @@ fn dispatch(
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
         Command::Technologies(args) => commands::technologies::run(&args, out),
+        Command::Targets(args) => commands::targets::run(&args, out),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
     }
 }

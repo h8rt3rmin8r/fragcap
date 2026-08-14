@@ -147,6 +147,36 @@ clap            = { version = "=4.5.32", features = ["derive"] }
 # `fragcap-cli` alone. MIT or Apache-2.0.
 ctrlc           = "3.4"
 
+# External, optional. Slice S034, research R-1: the embedded SQLite store the
+# targets hint database is built on (issue #78), behind the `targets` feature at
+# the facade, so a default build compiles neither the database engine nor a C
+# toolchain for it. On `fragcap-targets` alone.
+#
+# `default-features = false` is load-bearing. rusqlite 0.40's default set enables
+# a WebAssembly FFI backend (`ffi-sqlite-wasm-rs`) that drags roughly fourteen
+# packages (the wasm-bindgen stack, js-sys, thiserror, bumpalo) into Cargo.lock
+# for machinery this project never runs. With defaults off and only `bundled`,
+# the delta is six packages: rusqlite, libsqlite3-sys, fallible-iterator,
+# fallible-streaming-iterator, smallvec, and vcpkg (cc, bitflags, shlex,
+# find-msvc-tools, and pkg-config are already in the graph via `pcap`).
+#
+# `bundled` compiles the SQLite amalgamation through `cc`, so there is no reliance
+# on a system libsqlite3 and the Windows build is deterministic; the bundled
+# SQLite carries the JSON1 functions. Chosen over a hand-rolled on-disk format,
+# which would re-implement indexing, transactions, and JSON querying (the harder
+# half remains), and over `sqlx`, which brings an async runtime and a far larger
+# graph for a synchronous single-file local store.
+#
+# MIT or Apache-2.0 across the delta; the bundled SQLite amalgamation is
+# public-domain C compiled by the MIT `libsqlite3-sys` crate. None of the six
+# declares a `rust-version`; all compile under Rust 1.82, verified by building
+# through `rustup run 1.82` (research R-3). Taken as a compatible-range 0.40 pin
+# rather than exact, with `cargo xtask msrv` as the standing gate should a future
+# lock update raise the floor. See the S034 decisions fragment.
+rusqlite        = { version = "0.40", default-features = false, features = [
+    "bundled",
+] }
+
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is
 # hand-rolled because its exact byte shape is the deliverable, and this parses
 # every line it emits so validity is judged by something other than the writer.
@@ -166,6 +196,7 @@ fragcap-capture = { version = "0.2.0", path = "crates/fragcap-capture" }
 fragcap-attr    = { version = "0.2.0", path = "crates/fragcap-attr" }
 fragcap-sink    = { version = "0.2.0", path = "crates/fragcap-sink" }
 fragcap-steam   = { version = "0.2.0", path = "crates/fragcap-steam" }
+fragcap-targets = { version = "0.2.0", path = "crates/fragcap-targets" }
 fragcap         = { version = "0.2.0", path = "crates/fragcap" }
 
 [profile.release]

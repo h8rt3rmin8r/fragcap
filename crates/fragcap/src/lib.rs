@@ -67,6 +67,21 @@ pub mod steam {
     };
 }
 
+/// The targets hint database (issue #78, slice S034), behind the `targets`
+/// feature.
+///
+/// An embedded SQLite store of game launch hints and its schema-conformant
+/// `kind: "export"` projection. Off by default so a build that does not want the
+/// store compiles no SQLite engine; the `fragcap-cli` binary enables it so the
+/// shipped tool carries the `targets` subcommand.
+#[cfg(feature = "targets")]
+pub mod targets {
+    pub use fragcap_targets::{
+        export, import, Engine, EngineConfidence, EngineSource, Game, ImportSummary, LaunchEntry,
+        SeedState, SeedTier, Store, TargetsError, TechCategory, Technology,
+    };
+}
+
 /// Packet acquisition.
 pub mod capture {
     pub use fragcap_capture::pcap::{PcapReader, ReplayStats};

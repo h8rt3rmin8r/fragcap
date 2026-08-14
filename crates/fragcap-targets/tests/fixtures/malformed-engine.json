@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "export",
+  "fidelity": "heuristic-unverified",
+  "provenance": { "source": "hint-db" },
+  "records": [
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": { "source": "hint-db" },
+      "game": { "app_id": "570", "platform": "steam", "name": "Dota 2" },
+      "engine": { "source": "unreal_detector", "confidence": "high", "name": "Bogus" }
+    }
+  ]
+}

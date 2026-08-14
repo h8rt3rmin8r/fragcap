@@ -253,6 +253,7 @@ load-bearing rather than bookkeeping.
 | `arc-swap` | runtime | S10 | Lock-free publication of the attribution snapshot |
 | `windows-sys` | runtime, optional | S10 | The IP Helper socket table, behind the `socket-table` feature |
 | `serde_json` | runtime (in `fragcap-profile`), dev elsewhere | S07, promoted S25 | Parses target JSON for the master-schema validator (S25); parses the JSON writer's output in tests (S07) |
+| `rusqlite` | runtime, optional | S034 | The embedded SQLite store the targets hint database is built on, behind the `targets` feature |
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
 pcap file is a header and a run of records, the attribution script format is
@@ -364,6 +365,31 @@ reuses the S025 `jsonschema` validator for structural conformance and keeps only
 the checks a schema cannot express (glob, regex, and duration compilation and the
 semantic graph checks), so there is one structural implementation bound to the
 published schema.
+
+S034 added `rusqlite`, the first embedded-database dependency, and it is worth
+spelling out because the obvious way to take it is wrong. rusqlite 0.40's default
+features enable a WebAssembly FFI backend that drags roughly fourteen packages
+(the wasm-bindgen stack, `js-sys`, `thiserror`, `bumpalo`) into `Cargo.lock` for
+machinery this project never runs; taken with `default-features = false` and only
+`bundled`, the delta is six packages: `rusqlite`, `libsqlite3-sys`,
+`fallible-iterator`, `fallible-streaming-iterator`, `smallvec`, and `vcpkg`, with
+`cc`, `bitflags`, `shlex`, `find-msvc-tools`, and `pkg-config` already in the graph
+via `pcap`. `bundled` compiles the SQLite amalgamation through `cc`, so the store
+needs no system libsqlite3 and the build is deterministic on a bare Windows
+runner; the bundled SQLite carries JSON1. The alternative to the dependency is not
+arithmetic over a byte slice but a hand-rolled indexed, transactional on-disk
+format, which leaves the harder half to be written; `sqlx` was rejected for
+bringing an async runtime and a far larger graph for a synchronous single-file
+store. Every crate in the delta is MIT or Apache-2.0; the bundled SQLite
+amalgamation is public-domain C compiled by the MIT `libsqlite3-sys`, so
+`cargo deny` reads it as MIT and it imposes no attribution obligation. None of the
+six declares a `rust-version`, and all compile under Rust 1.82, verified by
+building through `rustup run 1.82`; it is taken as a `0.40` range with
+`cargo xtask msrv` as the standing gate rather than exact-pinned, because unlike
+`clap` nothing in the graph actively breaks the floor today. It is optional and
+off at the facade behind the `targets` feature, so a default library build
+compiles no SQLite engine, and it lands only in `fragcap-targets`, never in
+`fragcap-core`.
 
 `fragcap-core` may depend only on crates named in the allowlist in
 `xtask/src/deps.rs`, which is checked mechanically. Note that `cargo xtask

@@ -69,6 +69,9 @@ pub enum Command {
     /// Detect the technologies present in a game's install directory (engine,
     /// anti-cheat, SDK, and more), from file paths only.
     Technologies(TechnologiesArgs),
+    /// Manage the targets hint database: import a seed and export it to
+    /// schema-conformant JSON (issue #78).
+    Targets(TargetsArgs),
     /// Report environment readiness.
     Doctor(DoctorArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
@@ -353,6 +356,33 @@ pub struct TechnologiesArgs {
     /// The install directory to scan for technologies.
     #[arg(short = 'p', long)]
     pub path: PathBuf,
+}
+
+/// Arguments to `targets`.
+#[derive(Debug, Args)]
+pub struct TargetsArgs {
+    #[command(subcommand)]
+    pub command: TargetsCommand,
+}
+
+/// The `targets` subcommands. Both operate only on local paths, with no network
+/// access.
+#[derive(Debug, Subcommand)]
+pub enum TargetsCommand {
+    /// Load a local JSON seed document into the store, creating it if needed.
+    Import {
+        /// The seed document (a `kind: "export"` JSON file).
+        seed: PathBuf,
+        /// The store file to write.
+        #[arg(long)]
+        db: PathBuf,
+    },
+    /// Export the store to schema-conformant JSON on standard output.
+    Export {
+        /// The store file to read.
+        #[arg(long)]
+        db: PathBuf,
+    },
 }
 
 /// Arguments to `doctor`.

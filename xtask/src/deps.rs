@@ -30,11 +30,13 @@ pub const EXPECTED: &[(&str, &str)] = &[
     ("fragcap", "fragcap-attr"),
     ("fragcap", "fragcap-sink"),
     ("fragcap", "fragcap-steam"),
+    ("fragcap", "fragcap-targets"),
     ("fragcap-capture", "fragcap-core"),
     ("fragcap-attr", "fragcap-core"),
     ("fragcap-sink", "fragcap-core"),
     ("fragcap-profile", "fragcap-core"),
     ("fragcap-steam", "fragcap-profile"),
+    ("fragcap-targets", "fragcap-profile"),
 ];
 
 /// Crates at the same level below the facade. None may depend on another.
@@ -43,6 +45,7 @@ const SIBLINGS: &[&str] = &[
     "fragcap-attr",
     "fragcap-sink",
     "fragcap-steam",
+    "fragcap-targets",
 ];
 
 /// Extract every dependency name from one manifest's text, workspace-internal
