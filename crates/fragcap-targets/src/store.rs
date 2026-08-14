@@ -16,7 +16,7 @@ use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-use crate::schema::{DDL, SCHEMA_VERSION};
+use crate::schema::{DDL, MIGRATE_1_TO_2, SCHEMA_VERSION};
 use crate::TargetsError;
 
 /// The hint store: a connection to one SQLite file (or an in-memory database for
@@ -55,6 +55,18 @@ impl Store {
                 // fresh and then fail on the tables that do exist).
                 let tx = conn.transaction()?;
                 tx.execute_batch(DDL)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.commit()?;
+            }
+            1 => {
+                // Additive forward migration to version 2: add the nullable
+                // appinfo_change_number column and stamp the new version inside one
+                // transaction, so a failure rolls back rather than leaving a store
+                // whose tables and user_version disagree. Existing rows keep their
+                // data and read the new column as NULL (never learned from appinfo),
+                // so they refresh on the first accumulation walk.
+                let tx = conn.transaction()?;
+                tx.execute_batch(MIGRATE_1_TO_2)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 tx.commit()?;
             }
@@ -154,6 +166,86 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Merge one title's Tier 2 (launch) columns from the local Steam appinfo
+    /// cache: record the appinfo change-number and replace this appid's launch
+    /// entries, leaving every other tier untouched.
+    ///
+    /// This is the launch analogue of [`Store::merge_catalog`] and
+    /// [`Store::merge_engine`]: the accumulator knows only an appid, its appinfo
+    /// change-number, and its launch entries. It ensures a row exists (inserting an
+    /// appid-only row if the appid is new, so the `launch_entries` foreign key
+    /// holds), sets `appinfo_change_number`, and rewrites the launch entries in
+    /// order. It leaves `name`, the catalog metrics, the engine columns,
+    /// `launcher_mediated`, and `token_required` exactly as they were, so a launch
+    /// enrichment over a catalog-seeded or engine-seeded game preserves Tiers 1 and
+    /// 3 (slice S038). All in one transaction: either the change-number and the new
+    /// entries both land, or neither does.
+    pub fn merge_launch(
+        &mut self,
+        appid: u32,
+        change_number: u32,
+        entries: &[LaunchEntry],
+    ) -> Result<(), TargetsError> {
+        let tx = self.conn.transaction()?;
+        // Ensure the row exists without disturbing any existing column. An unseen
+        // appid becomes an appid-only row (every other column NULL, schema-valid on
+        // export); an existing row is left as it is.
+        tx.execute(
+            "INSERT INTO games (appid) VALUES (?1) ON CONFLICT(appid) DO NOTHING",
+            params![appid],
+        )?;
+        tx.execute(
+            "UPDATE games SET appinfo_change_number = ?2 WHERE appid = ?1",
+            params![appid, change_number as i64],
+        )?;
+        // Wholesale replace this appid's launch entries; the change-number and the
+        // entries always move together.
+        tx.execute(
+            "DELETE FROM launch_entries WHERE appid = ?1",
+            params![appid],
+        )?;
+        for (i, entry) in entries.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO launch_entries
+                    (appid, launch_index, os, osarch, launch_type, beta_branch,
+                     executable, arguments, description)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    appid,
+                    i as i64,
+                    entry.os,
+                    entry.osarch,
+                    entry.launch_type,
+                    entry.beta_branch,
+                    entry.executable(),
+                    entry.arguments,
+                    entry.description,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The appinfo change-number recorded the last time launch data was stored for
+    /// this application, or `None` when no row exists or the application was never
+    /// learned from appinfo. The staleness comparison input for accumulation
+    /// (slice S038): a cache change-number greater than this means the launch data
+    /// is stale and must be refreshed.
+    pub fn stored_change_number(&self, appid: u32) -> Result<Option<u32>, TargetsError> {
+        let value: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT appinfo_change_number FROM games WHERE appid = ?1",
+                params![appid],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // Outer None: no row. Inner None: row exists but column is NULL. Both mean
+        // "never learned from appinfo", so both collapse to None.
+        Ok(value.flatten().map(|v| v as u32))
     }
 
     /// Read every game, each with its launch entries (ordered) and technologies
@@ -466,7 +558,117 @@ fn game_from_row(r: GameRow) -> Result<Game, TargetsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::LaunchEntry;
+    use crate::model::{Engine, EngineConfidence, EngineSource, Game, LaunchEntry};
+    use crate::schema::DDL;
+
+    /// Fabricate a schema-version-1 store on an in-memory connection: apply the
+    /// current DDL, drop the version-2 column, and stamp user_version 1. Returns
+    /// the raw connection so a test can hand it to `from_connection` and observe
+    /// the forward migration.
+    fn v1_connection() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory");
+        conn.execute_batch(DDL).expect("apply DDL");
+        conn.execute_batch("ALTER TABLE games DROP COLUMN appinfo_change_number;")
+            .expect("drop column to simulate v1");
+        conn.pragma_update(None, "user_version", 1_i64)
+            .expect("stamp v1");
+        conn
+    }
+
+    #[test]
+    fn opens_and_migrates_a_v1_store_backward_safely() {
+        let conn = v1_connection();
+        // A row written under v1, with no notion of the new column.
+        conn.execute(
+            "INSERT INTO games (appid, name, review_count) VALUES (730, 'CS2', 1234)",
+            [],
+        )
+        .expect("insert v1 row");
+
+        // Opening migrates 1 -> 2 in place, preserving the row.
+        let mut store = Store::from_connection(conn).expect("migrate");
+        assert_eq!(
+            store.stored_change_number(730).expect("read"),
+            None,
+            "an existing row gets the new column as NULL"
+        );
+        let g = store.game(730).expect("read").expect("present");
+        assert_eq!(g.name.as_deref(), Some("CS2"));
+        assert_eq!(g.review_count, Some(1234));
+
+        // And the store is fully usable at v2 afterward.
+        store
+            .merge_launch(730, 42, &[LaunchEntry::new("cs2.exe").expect("exe")])
+            .expect("merge");
+        assert_eq!(store.stored_change_number(730).expect("read"), Some(42));
+        assert_eq!(g.name.as_deref(), Some("CS2"));
+    }
+
+    #[test]
+    fn merge_launch_preserves_tier_1_and_tier_3() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut g = Game::new(620);
+        g.name = Some("Portal 2".to_string());
+        g.review_count = Some(1000);
+        g.launcher_mediated = Some(true);
+        g.token_required = Some(false);
+        g.engine = Some(Engine {
+            name: Some("Source".to_string()),
+            source: EngineSource::Pcgamingwiki,
+            confidence: EngineConfidence::High,
+        });
+        store.upsert_game(&g).expect("seed");
+
+        store
+            .merge_launch(620, 7, &[LaunchEntry::new("portal2.exe").expect("exe")])
+            .expect("merge launch");
+
+        let read = store.game(620).expect("read").expect("present");
+        assert_eq!(read.name.as_deref(), Some("Portal 2"));
+        assert_eq!(read.review_count, Some(1000));
+        assert_eq!(read.launcher_mediated, Some(true));
+        assert_eq!(read.token_required, Some(false));
+        assert_eq!(
+            read.engine.as_ref().unwrap().name.as_deref(),
+            Some("Source")
+        );
+        assert_eq!(read.launch.len(), 1);
+        assert_eq!(read.launch[0].executable(), "portal2.exe");
+        assert_eq!(store.stored_change_number(620).expect("read"), Some(7));
+    }
+
+    #[test]
+    fn stored_change_number_reads_and_defaults_to_none() {
+        let mut store = Store::open_in_memory().expect("store");
+        assert_eq!(store.stored_change_number(1).expect("read"), None);
+
+        let mut g = Game::new(1);
+        g.name = Some("X".to_string());
+        store.upsert_game(&g).expect("seed");
+        assert_eq!(
+            store.stored_change_number(1).expect("read"),
+            None,
+            "a row with no appinfo learned reads None"
+        );
+
+        store
+            .merge_launch(1, 99, &[LaunchEntry::new("x.exe").expect("exe")])
+            .expect("merge");
+        assert_eq!(store.stored_change_number(1).expect("read"), Some(99));
+    }
+
+    #[test]
+    fn merge_launch_inserts_an_appid_only_row_for_an_unseen_app() {
+        let mut store = Store::open_in_memory().expect("store");
+        store
+            .merge_launch(555, 3, &[LaunchEntry::new("g.exe").expect("exe")])
+            .expect("merge");
+        let g = store.game(555).expect("read").expect("present");
+        assert!(g.name.is_none());
+        assert!(g.engine.is_none());
+        assert_eq!(g.launch.len(), 1);
+        assert_eq!(store.stored_change_number(555).expect("read"), Some(3));
+    }
 
     #[test]
     fn game_reads_one_row_with_its_launch_entries() {

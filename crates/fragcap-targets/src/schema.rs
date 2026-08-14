@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The embedded SQLite schema and its single migration.
+//! The embedded SQLite schema and its migrations.
 //!
-//! Version 1. The CHECK constraints make an invalid row impossible to store: the
+//! Version 2. The CHECK constraints make an invalid row impossible to store: the
 //! engine enum sets, the engine both-or-neither invariant, a non-empty
 //! executable, boolean columns restricted to 0/1, and the technology category
 //! set. A store that cannot hold an invalid row cannot export one either.
+//!
+//! Version 2 adds one nullable column, `games.appinfo_change_number`, the
+//! per-application Steam appinfo change-number that the local launch-data
+//! accumulation (slice S038) compares to decide staleness. It is store-internal
+//! bookkeeping: never exported, never surfaced on the [`crate::model::Game`], so
+//! the export projection and the published schema are unchanged by it. The
+//! migration from version 1 is a single additive `ALTER TABLE`, applied in
+//! [`crate::store::Store::open`]; existing rows get NULL and refresh on the first
+//! walk.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
-/// The complete DDL for schema version 1, applied inside one transaction to a
-/// fresh store.
+/// The complete DDL for the current schema version, applied inside one
+/// transaction to a fresh store.
 pub const DDL: &str = "\
 CREATE TABLE games (
     appid              INTEGER PRIMARY KEY,
@@ -21,6 +30,7 @@ CREATE TABLE games (
     peak_ccu           INTEGER,
     launcher_mediated  INTEGER CHECK (launcher_mediated IN (0, 1)),
     token_required     INTEGER CHECK (token_required IN (0, 1)),
+    appinfo_change_number INTEGER,
     engine_name        TEXT,
     engine_source      TEXT CHECK (engine_source IN
                           ('pcgamingwiki', 'exe_heuristic', 'depot_filename_rules')),
@@ -59,3 +69,9 @@ CREATE TABLE seed_state (
     resume_cursor TEXT
 );
 ";
+
+/// The additive migration from schema version 1 to version 2: add the nullable
+/// `appinfo_change_number` column. Backward-safe by construction, an existing v1
+/// store keeps every row and gains the column as NULL. Applied in one transaction
+/// alongside the version stamp.
+pub const MIGRATE_1_TO_2: &str = "ALTER TABLE games ADD COLUMN appinfo_change_number INTEGER;";

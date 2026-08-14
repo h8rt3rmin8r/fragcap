@@ -12,6 +12,13 @@ keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
 
+[features]
+# Exposes the synthetic appinfo byte generator (`appinfo::fixtures`) for other
+# crates' tests, notably the facade's end-to-end launch-accumulation test (slice
+# S038). Off by default and never enabled in a normal build, so the generator is
+# excluded from the shipped library; it is a test scaffold, not product code.
+test-support = []
+
 [dependencies]
 fragcap-profile.workspace = true
 serde_json.workspace      = true

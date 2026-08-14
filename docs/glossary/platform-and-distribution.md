@@ -56,7 +56,31 @@ escapes.
 > (specification section 16.2). A malformed manifest is reported and skipped, not
 > fatal, so one bad file does not hide every good one.
 
-**See also:** [Library discovery](platform-and-distribution.md#library-discovery)
+**See also:** [Library discovery](platform-and-distribution.md#library-discovery),
+[Application-info cache](platform-and-distribution.md#application-info-cache)
+
+## Application-info cache
+
+Steam's local binary file (`appcache/appinfo.vdf`) recording, per application it
+has fetched metadata for, a change-number and a launch configuration. fragcap
+reads it during
+[launch-data accumulation](process-and-attribution.md#launch-data-accumulation) as
+the source of a title's launch executables. It is a distinct format from the text
+[VDF](#vdf) of `libraryfolders.vdf` and the `.acf` manifests: a length-prefixed
+binary key-values format (with a string table for keys in its current version)
+that a hand-rolled parser reads by hand, framing each application's section by a
+size field so a malformed section is isolated and the walk resyncs.
+
+{: .matters }
+> Reading it needs no Steam session and no network: it is a file Steam already
+> wrote, so the read is passive and opens no process handle (P-1). A hand-rolled
+> binary offset can be self-consistent with a synthetic fixture yet wrong against a
+> real file, so the parser is validated offline and against a real cache manually,
+> like live capture.
+
+**See also:** [VDF](#vdf),
+[Launch-data accumulation](process-and-attribution.md#launch-data-accumulation),
+[Game profile](platform-and-distribution.md#game-profile)
 
 ## Library discovery
 

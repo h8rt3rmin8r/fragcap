@@ -49,6 +49,18 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // feature). A missing database is not an error; a present-but-unopenable one
     // is (FR-013, FR-014).
     let hint_db = paths::hint_db_path(args.hint_db.as_deref());
+
+    // Before resolving, learn this machine's own Steam launch executables into the
+    // configured hint store, so the hint provider can name a socket-holding client
+    // the engine rule and the walker would miss (issue #78, slice S038). This runs
+    // only when a hint database is configured (the same one the resolver reads);
+    // it reads the local appinfo cache, writes only launch data, ships nothing, and
+    // never opens a process handle (P-1). A first run is slower and prints progress
+    // so it does not read as hung; later runs are mostly skips.
+    if let Some(path) = hint_db.as_deref() {
+        accumulate_launch(path, emitter);
+    }
+
     let resolver = build_resolver(hint_db.as_deref())?;
 
     // Exactly one target input is present (the clap group guarantees it). A
@@ -95,6 +107,50 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // A sink failure is an unrecoverable end for `run`, not a clean stop.
         false,
     )
+}
+
+/// Learn this machine's Steam launch executables into the configured hint store.
+///
+/// Runs only when the database is present and openable; a missing or unopenable
+/// database is left for [`build_resolver`] to handle (a present-but-unopenable one
+/// is a loud error there, a missing one is not an error at all), so this never
+/// duplicates or pre-empts that decision. Progress and the final account go to the
+/// emitter, which respects the operator's quiet or silent choice. A Steam that is
+/// absent or has no appinfo yields a zero-considered result and stays quiet; a
+/// genuine fault is a warning, never fatal to the capture.
+fn accumulate_launch(hint_db: &Path, emitter: &mut Emitter) {
+    // Only act on a present, openable database. `Ok(false)`/`Err` and an open
+    // failure both defer to build_resolver rather than reporting twice.
+    if !matches!(hint_db.try_exists(), Ok(true)) {
+        return;
+    }
+    let mut store = match fragcap::targets::Store::open(hint_db) {
+        Ok(store) => store,
+        Err(_) => return,
+    };
+
+    let mut ticked = 0usize;
+    let outcome = fragcap::accumulate_from_local_steam(&mut store, &mut |p| {
+        // Bounded progress: the first app, the last, and every 25 in between.
+        if p.total > 0 && (p.done == 1 || p.done == p.total || p.done - ticked >= 25) {
+            ticked = p.done;
+            emitter.progress(&format!(
+                "learning launch data from Steam: {}/{} apps",
+                p.done, p.total
+            ));
+        }
+    });
+
+    match outcome {
+        Ok(summary) if summary.considered > 0 => emitter.progress(&format!(
+            "launch data: {} learned, {} up to date, {} without a launch entry, \
+             {} unreadable (of {} installed)",
+            summary.written, summary.skipped, summary.empty, summary.failed, summary.considered
+        )),
+        // No Steam, or no appinfo cache: nothing to learn, and nothing to say.
+        Ok(_) => {}
+        Err(e) => emitter.warn(&format!("launch-data accumulation skipped: {e}")),
+    }
 }
 
 /// Assemble the resolution cascade, registering the concrete hint-database
