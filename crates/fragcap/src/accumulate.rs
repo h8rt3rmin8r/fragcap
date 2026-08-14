@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
-use fragcap_steam::{AppInfoApp, SteamError, SteamLaunchEntry};
+use fragcap_steam::{AppInfoReader, SectionInfo, SteamError, SteamInstallation, SteamLaunchEntry};
 use fragcap_targets::{LaunchEntry, Store, TargetsError};
 
 /// The reconciled account of one accumulation walk.
@@ -130,20 +130,62 @@ pub fn accumulate_launch_data(
     report: &mut dyn FnMut(AccumulationProgress),
 ) -> Result<LaunchAccumulationSummary, AccumulationError> {
     let installation = fragcap_steam::discover_in(root).map_err(AccumulationError::Steam)?;
-    let parse = fragcap_steam::read_appinfo(root).map_err(AccumulationError::Steam)?;
 
-    let by_id: HashMap<u32, &AppInfoApp> = parse.apps.iter().map(|a| (a.appid, a)).collect();
-    // Section failures attributable to a specific application; a file-level fault
-    // (appid None) is a separate axis counted below.
-    let failed_ids: HashSet<u32> = parse.failures.iter().filter_map(|f| f.appid).collect();
-    let file_faults = parse.failures.iter().filter(|f| f.appid.is_none()).count() as u64;
-
-    let total = installation.titles.len();
-    let mut summary = LaunchAccumulationSummary {
-        file_faults,
-        ..Default::default()
+    // No appinfo cache is not an error: every installed title is considered and
+    // yields nothing to learn.
+    let Some(bytes) = fragcap_steam::read_appinfo_bytes(root).map_err(AccumulationError::Steam)?
+    else {
+        return Ok(empty_walk(&installation, report));
     };
 
+    // A file-level header fault (bad magic, a malformed string table) means nothing
+    // in the file can be trusted: record nothing and surface the fault (spec
+    // 15.6.2, P-4). No per-title outcome is produced, so the conservation identity
+    // holds trivially (considered stays zero).
+    let mut reader = match AppInfoReader::open(&bytes) {
+        Ok(reader) => reader,
+        Err(_) => {
+            return Ok(LaunchAccumulationSummary {
+                file_faults: 1,
+                ..Default::default()
+            })
+        }
+    };
+
+    // Pass 1: stream section headers, collecting the installed applications'
+    // sections and detecting any file-level framing fault, without decoding any
+    // key-values body. A truncated tail or a broken frame is a top-level malformed
+    // file: record nothing rather than write a valid-looking prefix (the review's
+    // P1, spec 15.6.2).
+    let installed_ids: HashSet<u32> = installation
+        .titles
+        .iter()
+        .filter_map(|t| t.app_id.parse::<u32>().ok())
+        .collect();
+    let mut sections: HashMap<u32, SectionInfo> = HashMap::new();
+    loop {
+        match reader.next_section() {
+            None => break, // clean terminator
+            Some(Err(_)) => {
+                return Ok(LaunchAccumulationSummary {
+                    file_faults: 1,
+                    ..Default::default()
+                })
+            }
+            Some(Ok(section)) => {
+                if installed_ids.contains(&section.appid) {
+                    sections.insert(section.appid, section);
+                }
+            }
+        }
+    }
+
+    // Pass 2: classify each installed title, decoding a body only for one that is
+    // present and stale. An unchanged application is skipped from its cheap section
+    // header, never decoded, which is the near-zero repeat-run path (the review's
+    // P2).
+    let total = installation.titles.len();
+    let mut summary = LaunchAccumulationSummary::default();
     for (i, title) in installation.titles.iter().enumerate() {
         summary.considered += 1;
         report(AccumulationProgress { done: i + 1, total });
@@ -153,38 +195,43 @@ pub fn accumulate_launch_data(
             summary.empty += 1;
             continue;
         };
-        if failed_ids.contains(&appid) {
-            summary.failed += 1;
-            continue;
-        }
-        let Some(app) = by_id.get(&appid) else {
+        let Some(section) = sections.get(&appid) else {
             // Installed but absent from the cache: nothing to learn, never pruned.
             summary.empty += 1;
             continue;
         };
 
-        let entries: Vec<LaunchEntry> = app.launch.iter().filter_map(to_launch_entry).collect();
-        if entries.is_empty() {
-            summary.empty += 1;
-            continue;
-        }
-
-        // Staleness by change-number: skip when the store already holds this
-        // version, refresh when the cache is newer or nothing was stored (FR-011a).
+        // Staleness by change-number, decided before decoding: skip when the store
+        // already holds this version (FR-011a).
         let stored = store
             .stored_change_number(appid)
             .map_err(AccumulationError::Store)?;
         if let Some(stored) = stored {
-            if app.change_number <= stored {
+            if section.change_number <= stored {
                 summary.skipped += 1;
                 continue;
             }
         }
 
-        store
-            .merge_launch(appid, app.change_number, &entries)
-            .map_err(AccumulationError::Store)?;
-        summary.written += 1;
+        // Decode the body only now, for a present, stale application.
+        match reader.launch_entries(section) {
+            Ok(steam_entries) => {
+                let entries: Vec<LaunchEntry> =
+                    steam_entries.iter().filter_map(to_launch_entry).collect();
+                if entries.is_empty() {
+                    summary.empty += 1;
+                } else {
+                    store
+                        .merge_launch(appid, section.change_number, &entries)
+                        .map_err(AccumulationError::Store)?;
+                    summary.written += 1;
+                }
+            }
+            // A section whose framing was intact but whose key-values body is
+            // malformed (an unknown type, a truncation inside an object): counted,
+            // not fatal (FR-008).
+            Err(_) => summary.failed += 1,
+        }
     }
 
     debug_assert!(
@@ -192,6 +239,22 @@ pub fn accumulate_launch_data(
         "outcomes must reconcile to considered"
     );
     Ok(summary)
+}
+
+/// Report every installed title as considered-but-empty, used when no appinfo
+/// cache is present (a Steam that has fetched nothing).
+fn empty_walk(
+    installation: &SteamInstallation,
+    report: &mut dyn FnMut(AccumulationProgress),
+) -> LaunchAccumulationSummary {
+    let total = installation.titles.len();
+    let mut summary = LaunchAccumulationSummary::default();
+    for (i, _title) in installation.titles.iter().enumerate() {
+        summary.considered += 1;
+        summary.empty += 1;
+        report(AccumulationProgress { done: i + 1, total });
+    }
+    summary
 }
 
 /// Map a boundary-neutral Steam launch entry to the store's launch entry, verbatim.

@@ -14,7 +14,7 @@ use std::path::Path;
 use fragcap::accumulate_launch_data;
 use fragcap::targets::{Game, LaunchEntry, Store};
 use fragcap_steam::appinfo::fixtures::{
-    appinfo_bytes, appinfo_bytes_with_bad_section, FixtureApp, FixtureLaunch, V29,
+    appinfo_bytes, appinfo_bytes_with_bad_section, FixtureApp, FixtureLaunch, V28, V29,
 };
 
 fn app(appid: u32, change_number: u32, exe: &str) -> FixtureApp {
@@ -137,6 +137,58 @@ fn outcomes_conserve_across_a_mixed_library() {
     assert!(summary.is_conserved());
     // The malformed app 3 did not block app 1 from being written.
     assert!(store.game(1).unwrap().is_some());
+}
+
+#[test]
+fn a_top_level_malformed_cache_records_nothing() {
+    // A cache truncated after a complete section but before the terminating appid
+    // is malformed at the top level: accumulation must record nothing, not write
+    // the valid-looking prefix (spec 15.6.2 edge case, P-4).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let full = appinfo_bytes(V28, &[app(1, 10, "a.exe"), app(2, 20, "b.exe")]);
+    // Drop the 4-byte terminator so the section list ends before it.
+    let truncated = &full[..full.len() - 4];
+    write_root(dir.path(), &[(1, "A"), (2, "B")], truncated);
+
+    let mut store = Store::open_in_memory().expect("store");
+    let summary =
+        accumulate_launch_data(dir.path(), &mut store, &mut noop_progress).expect("accumulate");
+
+    assert_eq!(summary.file_faults, 1);
+    assert_eq!(
+        summary.written, 0,
+        "nothing is written from a malformed file"
+    );
+    assert!(summary.is_conserved());
+    assert!(
+        store.game(1).unwrap().is_none(),
+        "no prefix leaked into the store"
+    );
+    assert!(store.game(2).unwrap().is_none());
+}
+
+#[test]
+fn a_current_app_is_skipped_without_decoding_its_body() {
+    // An installed app that is already current is skipped from its cheap section
+    // header, without decoding the body. Proven by giving it a malformed body: if
+    // it were decoded it would count as failed, but staleness short-circuits first,
+    // so it is skipped (the near-zero repeat-run path).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let appinfo = appinfo_bytes_with_bad_section(V29, &[app(1, 10, "a.exe")], 0);
+    write_root(dir.path(), &[(1, "A")], &appinfo);
+
+    let mut store = Store::open_in_memory().expect("store");
+    // Pre-seed app 1 as current at change 10, matching the cache's header.
+    store
+        .merge_launch(1, 10, &[LaunchEntry::new("a.exe").unwrap()])
+        .expect("pre-seed");
+
+    let summary =
+        accumulate_launch_data(dir.path(), &mut store, &mut noop_progress).expect("accumulate");
+
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.failed, 0, "the malformed body was never decoded");
+    assert!(summary.is_conserved());
 }
 
 #[test]

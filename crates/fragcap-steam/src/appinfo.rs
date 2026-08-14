@@ -114,91 +114,65 @@ pub fn read_appinfo(root: &Path) -> Result<AppInfoParse, SteamError> {
     }
 }
 
+/// Read the raw appinfo cache bytes under a Steam root, or `None` when the file is
+/// absent.
+///
+/// The accumulation orchestrator uses this rather than [`read_appinfo`]: it needs
+/// the bytes to construct an [`AppInfoReader`] and stream section headers, deciding
+/// staleness before decoding a body. A missing file is `Ok(None)` (no cache is not
+/// an error); an unreadable one is a [`SteamError::Io`]. Opens no process handle
+/// (P-1).
+pub fn read_appinfo_bytes(root: &Path) -> Result<Option<Vec<u8>>, SteamError> {
+    let path = root.join("appcache").join("appinfo.vdf");
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(SteamError::Io { path, source }),
+    }
+}
+
 const MAGIC_V27: u32 = 0x0756_4427;
 const MAGIC_V28: u32 = 0x0756_4428;
 const MAGIC_V29: u32 = 0x0756_4429;
 
-/// Parse raw appinfo bytes.
+/// Parse raw appinfo bytes into every section decoded.
 ///
-/// Pure and portable; the whole parser is exercised against synthetic bytes. An
-/// unrecognized magic yields no apps and a single header failure. A recognized but
-/// truncated file yields the apps read before the fault plus a trailing failure.
+/// A convenience over [`AppInfoReader`], used by tests and simple consumers. The
+/// accumulation orchestrator uses the reader directly instead, so it can decide
+/// staleness from a section header and skip decoding an unchanged section's body.
+/// An unrecognized magic yields no apps and a single header failure; a file-level
+/// framing fault (a truncated tail, a size past the end) is recorded with a `None`
+/// appid and stops the walk, because nothing beyond it can be trusted.
 pub fn parse_appinfo(bytes: &[u8]) -> AppInfoParse {
-    let mut c = Cursor::new(bytes);
-
-    let magic = match c.u32() {
-        Some(m) => m,
-        None => return header_failure("appinfo file too short for its magic"),
-    };
-    let (has_binary_sha1, indexed_keys) = match magic {
-        MAGIC_V27 => (false, false),
-        MAGIC_V28 => (true, false),
-        MAGIC_V29 => (true, true),
-        other => return header_failure(format!("unrecognized appinfo magic {other:#010x}")),
-    };
-    if c.u32().is_none() {
-        return header_failure("appinfo truncated after magic");
-    }
-
-    let string_table = if indexed_keys {
-        let offset = match c.i64() {
-            Some(o) => o,
-            None => return header_failure("appinfo truncated before the string-table offset"),
-        };
-        match read_string_table(bytes, offset) {
-            Ok(t) => Some(t),
-            Err(reason) => return header_failure(reason),
-        }
-    } else {
-        None
+    let mut reader = match AppInfoReader::open(bytes) {
+        Ok(reader) => reader,
+        Err(reason) => return header_failure(reason),
     };
 
     let mut apps = Vec::new();
     let mut failures = Vec::new();
-
     loop {
-        let appid = match c.u32() {
-            Some(a) => a,
-            None => {
+        match reader.next_section() {
+            None => break, // clean terminator
+            Some(Err(reason)) => {
                 failures.push(AppInfoFailure {
                     appid: None,
-                    reason: "appinfo ended before the terminating appid".to_string(),
+                    reason,
                 });
                 break;
             }
-        };
-        if appid == 0 {
-            break; // clean end of the section list
-        }
-        let size = match c.u32() {
-            Some(s) => s as usize,
-            None => {
-                failures.push(section_failure(appid, "section truncated before its size"));
-                break;
-            }
-        };
-        let section = match c.take(size) {
-            Some(s) => s,
-            None => {
-                failures.push(section_failure(
-                    appid,
-                    "section size exceeds the remaining bytes",
-                ));
-                break; // cannot resync past a size we do not have
-            }
-        };
-        match parse_section(section, has_binary_sha1, string_table.as_deref()) {
-            Ok((change_number, launch)) => apps.push(AppInfoApp {
-                appid,
-                change_number,
-                launch,
-            }),
-            // The cursor already advanced past this section by `size`, so the loop
-            // resumes at the next section regardless of the inner fault (FR-008).
-            Err(reason) => failures.push(section_failure(appid, reason)),
+            Some(Ok(section)) => match reader.launch_entries(&section) {
+                Ok(launch) => apps.push(AppInfoApp {
+                    appid: section.appid,
+                    change_number: section.change_number,
+                    launch,
+                }),
+                // A per-section key-values fault: the framing was intact, so the
+                // walk resyncs to the next section (FR-008).
+                Err(reason) => failures.push(section_failure(section.appid, reason)),
+            },
         }
     }
-
     AppInfoParse { apps, failures }
 }
 
@@ -216,6 +190,137 @@ fn section_failure(appid: u32, reason: impl Into<String>) -> AppInfoFailure {
     AppInfoFailure {
         appid: Some(appid),
         reason: reason.into(),
+    }
+}
+
+/// A cheap handle to one application's section: its identity and change-number
+/// (read from the fixed section header) and the byte range of its key-values body,
+/// which is decoded only on demand.
+#[derive(Clone, Copy, Debug)]
+pub struct SectionInfo {
+    /// The Steam application id.
+    pub appid: u32,
+    /// The section's change-number; the staleness key.
+    pub change_number: u32,
+    /// The key-values body range within the reader's bytes.
+    body: (usize, usize),
+}
+
+/// A streaming reader over appinfo bytes.
+///
+/// It reads the file header once (magic, universe, and the v29 string table) and
+/// then yields one section header at a time, skipping each section's key-values
+/// body by its size field. A caller decides per section, from the application id
+/// and change-number, whether to decode the body ([`AppInfoReader::launch_entries`])
+/// or skip it. This is what lets accumulation do near-zero work on a repeat run: an
+/// unchanged section is never decoded.
+pub struct AppInfoReader<'a> {
+    bytes: &'a [u8],
+    cursor: usize,
+    has_binary_sha1: bool,
+    string_table: Option<Vec<String>>,
+    ended: bool,
+}
+
+impl<'a> AppInfoReader<'a> {
+    /// Read the file header and prepare to stream sections. A bad magic, a
+    /// truncated header, or a malformed string table is a file-level fault returned
+    /// here, before any section is read.
+    pub fn open(bytes: &'a [u8]) -> Result<Self, String> {
+        let mut c = Cursor::new(bytes);
+        let magic = c.u32().ok_or("appinfo file too short for its magic")?;
+        let (has_binary_sha1, indexed_keys) = match magic {
+            MAGIC_V27 => (false, false),
+            MAGIC_V28 => (true, false),
+            MAGIC_V29 => (true, true),
+            other => return Err(format!("unrecognized appinfo magic {other:#010x}")),
+        };
+        c.u32().ok_or("appinfo truncated after magic")?; // universe
+        let string_table = if indexed_keys {
+            let offset = c
+                .i64()
+                .ok_or("appinfo truncated before the string-table offset")?;
+            Some(read_string_table(bytes, offset)?)
+        } else {
+            None
+        };
+        Ok(AppInfoReader {
+            bytes,
+            cursor: c.position(),
+            has_binary_sha1,
+            string_table,
+            ended: false,
+        })
+    }
+
+    /// The next section header, or `None` at the clean terminator (an appid of
+    /// zero). `Some(Err(..))` is a file-level framing fault: the section list is
+    /// truncated, a size runs past the end, or a section is too short to hold its
+    /// header, so nothing beyond it is trustworthy and the walk must stop.
+    pub fn next_section(&mut self) -> Option<Result<SectionInfo, String>> {
+        if self.ended {
+            return None;
+        }
+        let mut c = Cursor {
+            b: self.bytes,
+            i: self.cursor,
+        };
+        let appid = match c.u32() {
+            Some(a) => a,
+            None => {
+                self.ended = true;
+                return Some(Err("appinfo ended before the terminating appid".to_string()));
+            }
+        };
+        if appid == 0 {
+            self.ended = true;
+            return None; // clean end of the section list
+        }
+        let size = match c.u32() {
+            Some(s) => s as usize,
+            None => {
+                self.ended = true;
+                return Some(Err(format!("section {appid} truncated before its size")));
+            }
+        };
+        let body_start = c.position();
+        let section_end = match body_start.checked_add(size) {
+            Some(end) if end <= self.bytes.len() => end,
+            _ => {
+                self.ended = true;
+                return Some(Err(format!(
+                    "section {appid} size exceeds the remaining bytes"
+                )));
+            }
+        };
+        // Advance past the whole section whether or not the caller decodes it.
+        self.cursor = section_end;
+
+        // The fixed section header: info_state(4) last_updated(4) pics_token(8)
+        // text_sha1(20) change_number(4) [binary_sha1(20)], then the key-values body.
+        let fixed = 4 + 4 + 8 + 20 + 4 + if self.has_binary_sha1 { 20 } else { 0 };
+        if size < fixed {
+            self.ended = true;
+            return Some(Err(format!("section {appid} too short for its header")));
+        }
+        let cn_at = body_start + 4 + 4 + 8 + 20;
+        let cn = &self.bytes[cn_at..cn_at + 4];
+        let change_number = u32::from_le_bytes([cn[0], cn[1], cn[2], cn[3]]);
+        Some(Ok(SectionInfo {
+            appid,
+            change_number,
+            body: (body_start + fixed, section_end),
+        }))
+    }
+
+    /// Decode one section's launch entries, on demand. A malformed key-values body
+    /// is a per-section error the caller counts as a failed application; it does not
+    /// stop the walk.
+    pub fn launch_entries(&self, section: &SectionInfo) -> Result<Vec<SteamLaunchEntry>, String> {
+        let body = &self.bytes[section.body.0..section.body.1];
+        let mut c = Cursor::new(body);
+        let members = parse_kv_members(&mut c, self.string_table.as_deref(), true)?;
+        Ok(extract_launch(&VdfValue::Obj(members)))
     }
 }
 
@@ -242,46 +347,33 @@ fn read_string_table(bytes: &[u8], offset: i64) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Parse one section's body (its header remainder and key-values blob), returning
-/// the change-number and the extracted launch entries.
-fn parse_section(
-    section: &[u8],
-    has_binary_sha1: bool,
-    table: Option<&[String]>,
-) -> Result<(u32, Vec<SteamLaunchEntry>), String> {
-    let mut c = Cursor::new(section);
-    c.skip(4).map_err(|_| "section truncated at info_state")?;
-    c.skip(4).map_err(|_| "section truncated at last_updated")?;
-    c.skip(8).map_err(|_| "section truncated at pics_token")?;
-    c.skip(20)
-        .map_err(|_| "section truncated at the text sha1")?;
-    let change_number = c.u32().ok_or("section truncated before change_number")?;
-    if has_binary_sha1 {
-        c.skip(20)
-            .map_err(|_| "section truncated at the binary sha1")?;
-    }
-    let kv = parse_kv_members(&mut c, table)?;
-    let launch = extract_launch(&VdfValue::Obj(kv));
-    Ok((change_number, launch))
-}
-
-/// Parse a run of binary key-values nodes until a root-level end marker (`0x08`)
-/// or the end of the input.
+/// Parse a run of binary key-values nodes until an end marker (`0x08`), or, at the
+/// root of a section's data (`top`), the end of the input.
 fn parse_kv_members(
     c: &mut Cursor<'_>,
     table: Option<&[String]>,
+    top: bool,
 ) -> Result<Vec<(String, VdfValue)>, String> {
     let mut out = Vec::new();
     loop {
         let node_type = match c.u8() {
             Some(t) => t,
-            None => return Ok(out), // end of the section's data
+            // End of input. Legitimate only at the root of a section's data; inside
+            // a nested object it means the section was truncated before its closing
+            // marker, so the observation is partial and must fail rather than be
+            // stored as if complete (P-9).
+            None => {
+                if top {
+                    return Ok(out);
+                }
+                return Err("truncated before an object's end marker".to_string());
+            }
         };
         match node_type {
             0x08 => return Ok(out), // end of this object
             0x00 => {
                 let key = read_key(c, table)?;
-                let members = parse_kv_members(c, table)?;
+                let members = parse_kv_members(c, table, false)?;
                 out.push((key, VdfValue::Obj(members)));
             }
             0x01 => {
@@ -426,20 +518,9 @@ impl<'a> Cursor<'a> {
         self.u64().map(|v| v as i64)
     }
 
-    fn skip(&mut self, n: usize) -> Result<(), ()> {
-        let end = self.i.checked_add(n).ok_or(())?;
-        if end > self.b.len() {
-            return Err(());
-        }
-        self.i = end;
-        Ok(())
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.i.checked_add(n)?;
-        let s = self.b.get(self.i..end)?;
-        self.i = end;
-        Some(s)
+    /// The current byte offset into the input.
+    fn position(&self) -> usize {
+        self.i
     }
 
     /// Read a NUL-terminated UTF-8 string (lossy). `None` if no terminator is
@@ -516,9 +597,21 @@ pub mod fixtures {
         pub launch: Vec<FixtureLaunch>,
     }
 
+    /// Which section, if any, to corrupt, and how.
+    enum Bad {
+        None,
+        /// A valid size frame but a single unknown key-values type byte.
+        UnknownType(usize),
+        /// A valid size frame but a body truncated inside nested objects (config,
+        /// launch, and an entry are opened and an executable written, with no
+        /// closing markers), so the section is a per-section parse failure rather
+        /// than a silently-partial entry.
+        TruncatedKv(usize),
+    }
+
     /// Build a valid appinfo file for the given apps in the given format version.
     pub fn appinfo_bytes(version: u32, apps: &[FixtureApp]) -> Vec<u8> {
-        build(version, apps, None)
+        build(version, apps, Bad::None)
     }
 
     /// Build an appinfo file where the section at `bad_index` carries a valid
@@ -529,7 +622,17 @@ pub mod fixtures {
         apps: &[FixtureApp],
         bad_index: usize,
     ) -> Vec<u8> {
-        build(version, apps, Some(bad_index))
+        build(version, apps, Bad::UnknownType(bad_index))
+    }
+
+    /// Build an appinfo file where the section at `bad_index` has valid framing but
+    /// a key-values body truncated inside nested objects.
+    pub fn appinfo_bytes_with_truncated_kv(
+        version: u32,
+        apps: &[FixtureApp],
+        bad_index: usize,
+    ) -> Vec<u8> {
+        build(version, apps, Bad::TruncatedKv(bad_index))
     }
 
     enum Node {
@@ -553,7 +656,7 @@ pub mod fixtures {
         }
     }
 
-    fn build(version: u32, apps: &[FixtureApp], bad_index: Option<usize>) -> Vec<u8> {
+    fn build(version: u32, apps: &[FixtureApp], bad: Bad) -> Vec<u8> {
         let indexed = version == V29;
         let has_binary_sha1 = version >= V28;
         let mut table = if indexed {
@@ -564,12 +667,14 @@ pub mod fixtures {
 
         let mut sections = Vec::new();
         for (i, app) in apps.iter().enumerate() {
-            let data = if bad_index == Some(i) {
-                vec![0xFFu8] // an unknown key-values type byte
-            } else {
-                let mut buf = Vec::new();
-                write_node(&mut buf, &app.appid.to_string(), &app_node(app), &mut table);
-                buf
+            let data = match bad {
+                Bad::UnknownType(idx) if idx == i => vec![0xFFu8], // an unknown type byte
+                Bad::TruncatedKv(idx) if idx == i => truncated_kv_body(&mut table),
+                _ => {
+                    let mut buf = Vec::new();
+                    write_node(&mut buf, &app.appid.to_string(), &app_node(app), &mut table);
+                    buf
+                }
             };
 
             let mut body = Vec::new();
@@ -651,6 +756,22 @@ pub mod fixtures {
         ])
     }
 
+    /// A key-values body that opens `config`, `launch`, and an entry, writes an
+    /// `executable` string, and then stops with no end markers: valid framing, a
+    /// body truncated inside nested objects.
+    fn truncated_kv_body(table: &mut Option<StringTable>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for key in ["config", "launch", "0"] {
+            buf.push(0x00);
+            write_key(&mut buf, key, table);
+        }
+        buf.push(0x01);
+        write_key(&mut buf, "executable", table);
+        buf.extend_from_slice(b"x.exe");
+        buf.push(0);
+        buf
+    }
+
     fn write_node(buf: &mut Vec<u8>, key: &str, node: &Node, table: &mut Option<StringTable>) {
         match node {
             Node::Obj(children) => {
@@ -689,7 +810,8 @@ pub mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::fixtures::{
-        appinfo_bytes, appinfo_bytes_with_bad_section, FixtureApp, FixtureLaunch, V28, V29,
+        appinfo_bytes, appinfo_bytes_with_bad_section, appinfo_bytes_with_truncated_kv, FixtureApp,
+        FixtureLaunch, V28, V29,
     };
     use super::*;
     use crate::test_support::TempTree;
@@ -770,6 +892,31 @@ mod tests {
         assert_eq!(ids, vec![1, 3], "resynced past the bad section");
         assert_eq!(parse.failures.len(), 1);
         assert_eq!(parse.failures[0].appid, Some(2));
+    }
+
+    #[test]
+    fn a_section_truncated_inside_nested_objects_is_a_failure_not_a_partial_entry() {
+        // The middle section opens config/launch/entry and writes an executable but
+        // never closes the objects. It must be counted as a failure, not yield a
+        // launch entry from a partial observation (P-9). The framing is intact, so
+        // the walk still resyncs to the third app.
+        for version in [V28, V29] {
+            let apps = [
+                one_windows_app(1, 10, "a.exe"),
+                one_windows_app(2, 20, "b.exe"),
+                one_windows_app(3, 30, "c.exe"),
+            ];
+            let bytes = appinfo_bytes_with_truncated_kv(version, &apps, 1);
+            let parse = parse_appinfo(&bytes);
+            let ids: Vec<u32> = parse.apps.iter().map(|a| a.appid).collect();
+            assert_eq!(
+                ids,
+                vec![1, 3],
+                "version {version:#x}: resynced past the truncated section"
+            );
+            assert_eq!(parse.failures.len(), 1);
+            assert_eq!(parse.failures[0].appid, Some(2));
+        }
     }
 
     #[test]

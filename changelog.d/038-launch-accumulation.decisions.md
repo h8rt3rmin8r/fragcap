@@ -28,3 +28,18 @@ expectation that the launch tier would need no store migration; the migration is
 the cost of honoring change-number staleness rather than mere presence. The
 `token_required` column is left unpopulated: it has no reliable appinfo source and
 is not exportable.
+
+Third, the appinfo parser is a header-first streaming reader rather than a
+parse-everything pass. The reader reads the file header once and then yields one
+section header at a time, skipping each section's key-values body by its size
+field; the orchestrator decides staleness from the cheap section header and
+decodes a body only for an installed application that is missing or stale. An
+unchanged application is therefore never decoded, so a repeat run over a
+multi-megabyte cache does near-zero work, as the performance goal requires. Two
+integrity rules follow the same discipline: a key-values object truncated before
+its end marker is a parse failure rather than a silently-partial launch entry
+(end of input is permitted only at a section's root, not inside a nested object),
+and a file-level fault (an unrecognized magic, a malformed string table, a
+truncated tail, or a size that runs past the end) makes the whole cache
+untrustworthy, so accumulation records nothing and surfaces the fault rather than
+writing the valid-looking prefix (P-4, P-9).

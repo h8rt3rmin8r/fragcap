@@ -39,7 +39,10 @@ mod walker;
 #[cfg(test)]
 mod test_support;
 
-pub use appinfo::{read_appinfo, AppInfoApp, AppInfoFailure, AppInfoParse, SteamLaunchEntry};
+pub use appinfo::{
+    read_appinfo, read_appinfo_bytes, AppInfoApp, AppInfoFailure, AppInfoParse, AppInfoReader,
+    SectionInfo, SteamLaunchEntry,
+};
 pub use launch::{launch, launch_request, LaunchConfigError, LaunchRequest};
 pub use library::{
     discover_in, install_root_in, InstallLookup, InstalledTitle, SteamInstallation, SteamLibrary,

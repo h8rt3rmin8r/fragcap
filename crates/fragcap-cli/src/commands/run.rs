@@ -142,6 +142,13 @@ fn accumulate_launch(hint_db: &Path, emitter: &mut Emitter) {
     });
 
     match outcome {
+        // The appinfo cache was present but malformed at the top level (bad magic,
+        // a broken string table, or a truncated tail): nothing was learned, and
+        // this is a fault the operator must see rather than a quiet zero (P-4/P-9).
+        Ok(summary) if summary.file_faults > 0 => emitter.warn(
+            "the Steam appinfo cache could not be read (unrecognized or truncated); \
+             no launch data was learned this run",
+        ),
         Ok(summary) if summary.considered > 0 => emitter.progress(&format!(
             "launch data: {} learned, {} up to date, {} without a launch entry, \
              {} unreadable (of {} installed)",
