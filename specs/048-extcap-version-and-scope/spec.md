@@ -37,6 +37,19 @@ Resolved from the issue, the approved plan, and the design research:
 - Q: Does the MSI change? -> A: No. It keeps `extcap install --dir
   "[WIRESHARK_DIR]\extcap"` for machine-wide, so no pinned artifact changes.
 
+### Session 2026-08-14 (PR #127 review, Codex)
+
+- Q: How does `--system` resolve the machine-wide directory so it agrees with
+  `doctor`? -> A: Through a single registry-aware `paths::system_extcap_dir()`.
+  The first implementation had `--system` call the Program-Files-only
+  `paths::system_extcap_dir()` while `doctor` used a separate registry-aware
+  resolver in `doctor/probe.rs`, so on a non-default Wireshark install `--system`
+  would write to an unused default directory that `doctor` (and Wireshark) never
+  read. The two resolvers are unified: the registry lookup
+  (`HKLM\SOFTWARE\Wireshark`) moves into `paths::system_extcap_dir()`, which both
+  `extcap install --system` and the `doctor` probe now call, so the register target
+  and the readiness check cannot drift.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - The binary reports a real version (Priority: P1)

@@ -79,28 +79,96 @@ pub fn extcap_dir() -> Option<PathBuf> {
 /// The machine-wide (system) analyzer extcap directory, or `None` when the
 /// platform location cannot be determined.
 ///
-/// This is where the MSI's machine-wide option installs the fragcap binary, so a
-/// registration is visible to every user of the machine. `doctor` reads it
-/// read-only and installs nothing. On Windows it is `%ProgramFiles%\Wireshark\
-/// extcap`; elsewhere it is a conventional system Wireshark extcap location. An
-/// override, `FRAGCAP_SYSTEM_EXTCAP_DIR`, lets a test point it at a scratch
-/// directory on any platform.
+/// This is where the MSI's machine-wide option installs the fragcap binary, and
+/// where `extcap install --system` writes it, so a registration is visible to
+/// every user of the machine. `doctor` reads it read-only and installs nothing.
 ///
-/// This is the default and fallback location. The `doctor` probe first resolves
-/// Wireshark's actual install directory from the registry (the value the MSI
-/// registers into) so a non-default install location is still recognized, and
-/// falls back to this path only when that read yields nothing.
+/// Precedence on Windows: the `FRAGCAP_SYSTEM_EXTCAP_DIR` override (which lets a
+/// test point it at a scratch directory), then Wireshark's actual install
+/// directory from the registry (the value the Wireshark installer records and the
+/// fragcap MSI registers into) plus `extcap`, so a non-default install location is
+/// recognized, then the `%ProgramFiles%\Wireshark\extcap` default. Off Windows it
+/// is the override or a conventional system location. Both `extcap install
+/// --system` and the `doctor` probe resolve through this one function, so the
+/// register target and the readiness check cannot drift.
 pub fn system_extcap_dir() -> Option<PathBuf> {
     if let Some(dir) = env::var_os(SYSTEM_EXTCAP_DIR_ENV) {
         return Some(PathBuf::from(dir));
     }
     #[cfg(windows)]
     {
+        if let Some(dir) = wireshark_install_dir() {
+            return Some(dir.join("extcap"));
+        }
         env::var_os("ProgramFiles").map(|base| PathBuf::from(base).join("Wireshark").join("extcap"))
     }
     #[cfg(not(windows))]
     {
         Some(PathBuf::from("/usr/lib/wireshark/extcap"))
+    }
+}
+
+/// Wireshark's install directory from `HKLM\SOFTWARE\Wireshark`, or `None` when it
+/// is not installed or the value cannot be read.
+///
+/// This is the location the Wireshark installer records and the fragcap MSI's
+/// `RegistrySearch` reads, so resolving the system extcap directory through it
+/// keeps `extcap install --system`, the MSI, and `doctor` in agreement even when
+/// Wireshark is installed outside Program Files. Read-only: it opens no process
+/// handle and modifies nothing (P-1).
+#[cfg(windows)]
+fn wireshark_install_dir() -> Option<PathBuf> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
+    let subkey: Vec<u16> = "SOFTWARE\\Wireshark"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // First call sizes the default value (name null) in bytes.
+    let mut bytes: u32 = 0;
+    // SAFETY: `subkey` is a live null-terminated UTF-16 string; all output
+    // pointers are null except `bytes`, which the API writes.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut bytes,
+        )
+    };
+    if rc != 0 || bytes == 0 {
+        return None;
+    }
+
+    let mut buf: Vec<u16> = vec![0u16; (bytes as usize).div_ceil(2)];
+    let mut cap = bytes;
+    // SAFETY: `buf` has room for `cap` bytes; `RegGetValueW` writes at most that
+    // and null-terminates the string it returns.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            &mut cap,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let dir = String::from_utf16_lossy(&buf[..end]);
+    if dir.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(dir))
     }
 }
 
