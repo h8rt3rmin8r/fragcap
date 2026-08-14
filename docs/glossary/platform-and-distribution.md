@@ -22,25 +22,27 @@ A Windows packet capture driver and library, the current successor to WinPcap.
 
 ## Dependency model
 
-fragcap's external tools fall into three tiers, which the `fragcap doctor`
-severities mirror exactly:
+fragcap's external tools fall into three tiers:
 
 - **Required: [npcap](platform-and-distribution.md#npcap).** The capture driver.
-  Without it fragcap captures nothing, and `doctor` reports its absence as a
-  failure.
+  Without it fragcap captures nothing; `fragcap doctor` fails its npcap check.
 - **Recommended: Wireshark.** The analyzer captures are opened in. Its installer
-  also bundles and installs npcap, so it is the simplest way to obtain both, and
-  `doctor` reports it as a recommendation rather than a blocker.
+  also bundles and installs npcap, so it is the simplest way to obtain both. This
+  tier is documentation guidance rather than a check: `doctor` does not test for
+  Wireshark itself.
 - **Optional: the [extcap](windows-internals.md#extcap) integration.** It ships
   with Wireshark and lets fragcap feed it live; it needs only `fragcap extcap
-  install` to register, and `doctor` reports it as optional.
+  install` to register. `doctor` warns when it is not registered and labels the
+  row optional, never a blocker.
 
 {: .matters }
 > This entry is the single source for the tiers. The README and the Getting
-> Started page summarize and link here rather than restating them, and the
-> wording matches the `fragcap doctor` severities, so the tool and the docs
-> cannot disagree over time. npcap is by the Nmap Project, and fragcap detects it
-> rather than bundling it (specification section 20.2).
+> Started page summarize and link here rather than restating them. Where
+> `fragcap doctor` can enforce a tier it does (npcap as a failing check, the
+> extcap registration as an optional warning), so the tool and the docs do not
+> disagree; the recommended tier is an onboarding recommendation, not a doctor
+> check. npcap is by the Nmap Project, and fragcap detects it rather than
+> bundling it (specification section 20.2).
 
 **See also:** [npcap](platform-and-distribution.md#npcap),
 [extcap](windows-internals.md#extcap),

@@ -68,10 +68,13 @@ export function Mermaid({ chart }: { chart: string }) {
     );
   }
 
+  // No role="img" on the wrapper: that would make the injected SVG descendants
+  // presentational and leave the diagram an unnamed image. Left as a plain
+  // container, mermaid's own SVG carries the semantics (its aria-roledescription
+  // and the node label text), so a screen reader can read the diagram content.
   return (
     <div
       className="mermaid"
-      role="img"
       style={{ display: 'flex', justifyContent: 'center' }}
       dangerouslySetInnerHTML={{ __html: svg }}
     />
