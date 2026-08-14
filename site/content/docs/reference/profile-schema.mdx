@@ -40,7 +40,7 @@ producing a capture you did not intend.
 | --- | --- | --- |
 | `schema` | yes | The schema version. `1`. |
 | `kind` | yes | The artifact form. For a profile, `"profile"`. |
-| `fidelity` | yes | The trust tier: `authored`, `verified`, `heuristic-unverified`, or `observed`. |
+| `fidelity` | yes | The trust tier an author declares: `authored`, `verified`, or `heuristic-unverified`. (`observed` is a fourth tier the schema allows for runtime results, but it is stamped by the observation provider, not claimed by an author, and a profile that declares it is rejected.) |
 | `game` | yes | The game's identity (below). |
 | `capture` | no | Capture defaults (below). |
 | `stage` | yes | One or more `stage` entries; at least one. |

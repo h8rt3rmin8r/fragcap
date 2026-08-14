@@ -34,6 +34,25 @@ Resolved from the issue reports, the approved plan, and the current site source
   full-viewport docs layout) and kept on the home page as it renders correctly
   today, with exactly one footer per page.
 
+### Session 2026-08-14 (PR #122 review, Codex)
+
+- Q: Do the incremental JSON blocks in the guide each have to be a complete
+  valid profile? -> A: No. The guide keeps one complete, conforming profile (the
+  assembled example) and presents the identity-only and single-stage blocks
+  explicitly as fragments. Fragments use schema-valid values so a reader who
+  validates them meets only the "complete profile needs a stage" rule, never a
+  bad value. FR-002 is refined accordingly.
+- Q: What game id value do the JSON examples use? -> A: A slug matching the
+  schema pattern `^[a-z0-9_-]+$` (for example `game-id`), not an angle-bracket
+  token, because `game.id` is pattern-constrained and `<game-id>` would fail
+  validation. Angle-bracket placeholders remain only where the schema imposes no
+  pattern (for example `match.exe`, and command-line `--profile <game-id>`).
+- Q: Which fidelity tiers may a profile declare? -> A: `authored`, `verified`,
+  or `heuristic-unverified`. `observed` is a runtime tier the observation
+  provider stamps; the profile-load path rejects a profile that declares it
+  (`ObservedProfileFidelity`), so the schema reference documents it as
+  runtime-only rather than an authorable choice.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - A profile author reads accurate format docs (Priority: P1)
@@ -153,10 +172,13 @@ one footer renders.
 
 - **FR-001**: The profile-schema reference and the writing-a-profile guide MUST
   describe the profile format as JSON, with no page describing it as TOML.
-- **FR-002**: Every profile example on those pages MUST be valid JSON conforming
-  to `docs/schema/target-schema.v1.json`, carrying the schema's real keys
-  (including the top-level `kind`), with the doc key tables reconciled to the
-  schema.
+- **FR-002**: Every complete-profile example on those pages MUST be valid JSON
+  conforming to `docs/schema/target-schema.v1.json` (structurally and to the
+  profile-load semantics), carrying the schema's real keys (including the
+  top-level `kind`), using a slug-valid `game.id` and an authorable `fidelity`
+  tier, with the doc key tables reconciled to the schema. Incremental blocks
+  presented as fragments (an identity opening, a single stage) MUST use
+  schema-valid values and be framed as fragments, not as complete profiles.
 - **FR-003**: Every command example MUST reference a `.json` profile path, not
   `.toml`.
 - **FR-004**: Exactly one generic game slug MUST remain in the docs, as the

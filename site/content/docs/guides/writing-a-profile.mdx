@@ -18,7 +18,8 @@ list of keys, see [the profile schema](/docs/reference/profile-schema).
 ## Start from the identity
 
 Every profile opens with the schema version, the artifact kind and fidelity, and
-the game's identity:
+the game's identity. This is the top of the file; a profile also needs at least
+one stage, added next:
 
 ```json
 {
@@ -26,20 +27,21 @@ the game's identity:
   "kind": "profile",
   "fidelity": "authored",
   "game": {
-    "id": "<game-id>",
-    "name": "<Game Name>"
+    "id": "game-id",
+    "name": "Game Name"
   }
 }
 ```
 
-The `id` is the slug you pass to `--profile`. `fragcap steam profile <APP_ID>`
-prints a starting skeleton like this for an installed Steam title, which you then
-edit.
+The `id` is a lowercase slug (letters, digits, hyphen, underscore) you pass to
+`--profile`. `fragcap steam profile <APP_ID>` prints a starting skeleton like
+this for an installed Steam title, which you then edit.
 
 ## Name the client stage
 
-A stage is a process fragcap watches for. Stages live in the profile's `stage`
-array; the simplest profile has one, matched by executable name:
+A stage is a process fragcap watches for, written as one object in the profile's
+`stage` array. The simplest profile has a single client stage, matched by
+executable name; that one stage looks like this:
 
 ```json
 {
@@ -60,7 +62,9 @@ Matching by `exe` alone is enough when the name is unique. It is not enough when
 several processes share an image name, or when you need to be sure you are
 capturing the client the launcher started rather than an unrelated copy. That is
 what `descends_from` is for: it matches a process whose ancestor is another
-stage's process. Assembled with the identity above, the whole profile reads:
+stage's process. Assembled with the identity above, the whole profile reads (a
+complete document you can validate as-is, once you replace the placeholder
+executable names):
 
 ```json
 {
@@ -68,8 +72,8 @@ stage's process. Assembled with the identity above, the whole profile reads:
   "kind": "profile",
   "fidelity": "authored",
   "game": {
-    "id": "<game-id>",
-    "name": "<Game Name>"
+    "id": "game-id",
+    "name": "Game Name"
   },
   "stage": [
     {
