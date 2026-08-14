@@ -33,9 +33,8 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of fragcap is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- Add/Remove Programs metadata. -->
+    <!-- Add/Remove Programs metadata. WixUI_InstallDir sets ARPNOMODIFY itself. -->
     <Property Id="ARPURLINFOABOUT" Value="https://fragcap.com" />
-    <Property Id="ARPNOMODIFY" Value="1" />
 
     <!-- Install layout: ProgramFiles (64-bit) \ fragcap. -->
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -158,7 +157,7 @@
       capture). npcap itself is never downloaded, bundled, or installed.
     -->
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
-    <WixVariable Id="WixUILicenseRtf" Value="wix\License.rtf" />
+    <WixVariable Id="WixUILicenseRtf" Value="crates\fragcap-cli\wix\License.rtf" />
 
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
               Value="Open the npcap download page (required before capturing traffic)" />

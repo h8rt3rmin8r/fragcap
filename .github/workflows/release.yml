@@ -139,14 +139,20 @@ jobs:
         run: |
           # Unsigned MSI (issue #96; signing is #79, out of scope). --no-build
           # reuses the featured release binary already built above rather than
-          # rebuilding a featureless one; -e links WixUtilExtension for the
-          # best-effort Defender exclusion and the npcap exit-dialog link. The
-          # installer's runtime behavior is verified manually (like live capture).
+          # rebuilding a featureless one. cargo-wix already links WixUIExtension
+          # and WixUtilExtension (which main.wxs uses for WixUI_InstallDir and the
+          # Defender/npcap custom actions); adding them again makes light fail with
+          # duplicate-table collisions, so no extension flags are passed.
+          # --target-bin-dir is required alongside --no-build so main.wxs's
+          # $(var.CargoTargetBinDir) resolves to the staged payload (fragcap.exe,
+          # hint.db, LICENSE, NOTICE). WiX is located through the WIX env var the
+          # previous step exported. This whole invocation was validated end to end
+          # against WiX 3.14 before it was committed.
           $ErrorActionPreference = 'Stop'
           $version = "${{ github.ref_name }}".TrimStart('v')
           New-Item -ItemType Directory -Force dist | Out-Null
           cargo wix --package fragcap-cli --no-build --nocapture `
-            --ext WixUtilExtension `
+            --target-bin-dir (Resolve-Path target/release).Path `
             --install-version $version `
             --output "dist/fragcap-$version-x86_64.msi"
 
