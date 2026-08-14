@@ -1,31 +1,37 @@
 ---
 title: Profile schema
-description: "The TOML schema a profile declares: game identity, capture defaults, and the stages that match processes."
+description: "The JSON schema a profile declares: game identity, capture defaults, and the stages that match processes."
 ---
 
-A profile is a TOML file that names a game and describes the processes fragcap
+A profile is a JSON file that names a game and describes the processes fragcap
 should attribute its traffic to. It is validated before every capture: a profile
 that does not parse cleanly stops the run, and validation reports every problem it
 finds in one pass rather than the first.
 
 This is schema version 1. Unknown keys are refused, not ignored, so a typo such as
-`payloads = false` for `payload = false` is reported rather than silently
+`"payloads": false` for `"payload": false` is reported rather than silently
 producing a capture you did not intend.
 
 ## A minimal profile
 
-```toml
-schema = 1
-
-[game]
-id = "game"
-name = "Test Game"
-
-[[stage]]
-role = "client"
-lifecycle = "session"
-terminal = true
-match = { exe = "game.exe" }
+```json
+{
+  "schema": 1,
+  "kind": "profile",
+  "fidelity": "authored",
+  "game": {
+    "id": "game",
+    "name": "Test Game"
+  },
+  "stage": [
+    {
+      "role": "client",
+      "lifecycle": "session",
+      "terminal": true,
+      "match": { "exe": "game.exe" }
+    }
+  ]
+}
 ```
 
 ## Top level
@@ -33,11 +39,14 @@ match = { exe = "game.exe" }
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `schema` | yes | The schema version. `1`. |
+| `kind` | yes | The artifact form. For a profile, `"profile"`. |
+| `fidelity` | yes | The trust tier an author declares: `authored`, `verified`, or `heuristic-unverified`. (`observed` is a fourth tier the schema allows for runtime results, but it is stamped by the observation provider, not claimed by an author, and a profile that declares it is rejected.) |
 | `game` | yes | The game's identity (below). |
 | `capture` | no | Capture defaults (below). |
-| `stage` | yes | One or more `[[stage]]` tables; at least one. |
+| `stage` | yes | One or more `stage` entries; at least one. |
+| `notes` | no | Free-form human context, carried as data rather than a comment. |
 
-## `[game]`
+## `game`
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -46,7 +55,7 @@ match = { exe = "game.exe" }
 | `platform` | no | The platform for managed launch, if any. |
 | `app_id` | no | The platform's application id, if any. |
 
-## `[capture]`
+## `capture`
 
 Defaults the command line can override. Each key here corresponds to a `run`
 flag.
@@ -59,10 +68,10 @@ flag.
 | `loopback` | Whether to include the loopback adapter. |
 | `payload` | Whether to record packet payloads. |
 
-## `[[stage]]`
+## `stage`
 
-Each stage names one process fragcap watches for and how its lifecycle affects the
-capture. A profile has one or more stages.
+Each entry in the `stage` array names one process fragcap watches for and how its
+lifecycle affects the capture. A profile has one or more stages.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -73,7 +82,7 @@ capture. A profile has one or more stages.
 
 ### `match`
 
-An inline table of predicates. All that are present must hold for a process to
+An object of predicates. All that are present must hold for a process to
 match. A validated profile always constrains at least one.
 
 | Key | Matches against |
