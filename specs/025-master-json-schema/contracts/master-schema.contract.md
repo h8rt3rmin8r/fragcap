@@ -8,9 +8,12 @@ artifact ships at `crates/fragcap-profile/assets/target-schema.v1.json`.
 ## Identity
 
 - `$schema`: `https://json-schema.org/draft/2020-12/schema`
-- `$id`: a stable fragcap URI for version 1 (for example
-  `https://fragcap.dev/schema/target/v1.json`; the exact host is fixed at
-  authoring time and never changed for a published version).
+- `$id`: a stable fragcap URI for version 1, for example
+  `https://fragcap.com/schema/target/v1.json`. The host is fixed at authoring
+  time and, once published, changed only by a deliberate recorded decision. It
+  was corrected once before 1.0, from `fragcap.dev` to `fragcap.com`, because
+  `fragcap.dev` was never a domain the project owned; see
+  `changelog.d/047-schema-id-host.decisions.md`.
 - Top-level `type`: `object`.
 - `unevaluatedProperties: false` (or `additionalProperties: false` at each
   object) so unknown keys are refused everywhere.

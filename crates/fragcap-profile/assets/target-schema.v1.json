@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fragcap.dev/schema/target/v1.json",
+  "$id": "https://fragcap.com/schema/target/v1.json",
   "title": "fragcap target and attribution schema",
   "description": "The single versioned vocabulary for every machine-readable fragcap targeting and attribution artifact. One shared core, four kind-discriminated variants (profile, package, hint, export). Structural rules only; semantic invariants (acyclic descends_from, single terminal stage, role reachability, ambiguous image match) are enforced by the profile-load path, not by this schema.",
   "type": "object",

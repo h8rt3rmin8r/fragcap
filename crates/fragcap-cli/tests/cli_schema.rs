@@ -76,7 +76,7 @@ fn print_emits_the_schema_document() {
     let (code, out, _err) = run(&["schema", "print"]);
     assert_eq!(code, 0);
     assert!(
-        out.contains("\"$id\": \"https://fragcap.dev/schema/target/v1.json\""),
+        out.contains("\"$id\": \"https://fragcap.com/schema/target/v1.json\""),
         "print emits the master schema"
     );
     assert!(out.contains("json-schema.org/draft/2020-12"), "{out}");
