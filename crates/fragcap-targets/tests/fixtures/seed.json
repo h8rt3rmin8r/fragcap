@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "kind": "export",
+  "fidelity": "heuristic-unverified",
+  "provenance": { "source": "hint-db" },
+  "records": [
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": { "source": "hint-db" },
+      "game": { "app_id": "306130", "platform": "steam", "name": "The Elder Scrolls Online" },
+      "launcher_mediated": true,
+      "launch": [
+        {
+          "executable": "The Elder Scrolls Online.exe",
+          "os": "windows",
+          "osarch": "64",
+          "launch_type": "default",
+          "description": "Launch The Elder Scrolls Online"
+        },
+        {
+          "executable": "eso64.exe",
+          "os": "windows",
+          "osarch": "64",
+          "beta_branch": "pts"
+        }
+      ]
+    },
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": { "source": "hint-db" },
+      "game": { "app_id": "570", "platform": "steam", "name": "Dota 2" },
+      "launcher_mediated": false,
+      "launch": [
+        { "executable": "dota2.exe", "os": "windows", "osarch": "64" }
+      ],
+      "engine": { "source": "exe_heuristic", "confidence": "medium", "name": "Source 2" }
+    },
+    {
+      "fidelity": "heuristic-unverified",
+      "provenance": { "source": "hint-db" },
+      "game": { "app_id": "440", "platform": "steam", "name": "Team Fortress 2" }
+    }
+  ]
+}

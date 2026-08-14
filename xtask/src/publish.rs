@@ -33,6 +33,7 @@ pub const ORDER: &[&str] = &[
     "fragcap-attr",
     "fragcap-sink",
     "fragcap-steam",
+    "fragcap-targets",
     "fragcap",
     "fragcap-cli",
 ];

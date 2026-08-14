@@ -29,6 +29,10 @@ default      = []
 live         = ["fragcap-capture/live"]
 socket-table = ["fragcap-attr/socket-table"]
 etw          = ["fragcap-attr/etw"]
+# The targets hint database (issue #78, slice S034). Off by default so a default
+# build compiles neither the embedded SQLite engine nor a C toolchain for it; a
+# consumer that wants the store opts in. Slice S034 plan decision 7.
+targets      = ["dep:fragcap-targets"]
 
 [dependencies]
 fragcap-core.workspace = true
@@ -37,6 +41,7 @@ fragcap-capture.workspace = true
 fragcap-attr.workspace = true
 fragcap-sink.workspace = true
 fragcap-steam.workspace = true
+fragcap-targets = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

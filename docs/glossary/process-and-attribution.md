@@ -737,6 +737,40 @@ shape.
 
 **See also:** [Master target schema](#master-target-schema), [Target hint record](#target-hint-record)
 
+## Hint database
+
+The embedded store of known game binaries and launch patterns that seeds the
+[resolution cascade](#resolution-cascade) at precedence 2, emitting one
+[target hint record](#target-hint-record) per title. It is never a source of
+truth: every record it emits is `heuristic-unverified` (see
+[fidelity tier](#fidelity-tier)), and a live runtime observation always
+overrides it. The store is populated across three independent
+[seeding tiers](#seeding-tier) and exports to the `export`
+[target artifact kind](#target-artifact-kind), which an unmodified schema
+validator reads.
+
+{: .matters }
+> The database holds auto-generated guesses at scale, not curated facts. Stamping
+> every record heuristic-unverified is what keeps a large, cheaply-seeded corpus
+> from ever outranking what fragcap actually observes at runtime (P-9).
+
+**See also:** [Target hint record](#target-hint-record), [Seeding tier](#seeding-tier),
+[Resolution cascade](#resolution-cascade), [Target artifact kind](#target-artifact-kind)
+
+## Seeding tier
+
+One of the three independent sources that fill the [hint database](#hint-database),
+each owning its own columns so it can run and resume without disturbing the
+others: the public catalog (application id and name), the launch metadata (the
+[launch array](#launch-array) and the [launcher-mediated](#launcher-mediated)
+flag), and the community engine data (the
+[engine attribution](#engine-attribution)). The database records a per-tier seed
+state, which tier last ran and a resume cursor, so a later fetch resumes rather
+than rebuilding the whole corpus.
+
+**See also:** [Hint database](#hint-database), [Launch array](#launch-array),
+[Engine attribution](#engine-attribution)
+
 ## Target hint record
 
 A loose, partial artifact emitted by a heuristic provider or the hint database.

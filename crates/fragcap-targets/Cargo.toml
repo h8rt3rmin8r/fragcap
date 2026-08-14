@@ -1,0 +1,22 @@
+[package]
+name        = "fragcap-targets"
+description = "Targets hint database: an embedded store of game launch hints and its schema-conformant export."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme                 = "README.md"
+
+[dependencies]
+fragcap-profile.workspace = true
+serde_json.workspace      = true
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+fragcap-profile.workspace = true
+serde_json.workspace      = true
