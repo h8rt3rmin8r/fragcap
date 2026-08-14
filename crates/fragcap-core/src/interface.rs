@@ -385,6 +385,12 @@ pub struct DriverReport {
 /// so that a diagnostic can say where to go.
 pub const DRIVER_DOWNLOAD_URL: &str = "https://npcap.com/#download";
 
+/// Where Wireshark is obtained. fragcap never fetches or bundles it; this exists
+/// so that a diagnostic can say where to go. Wireshark is the recommended
+/// analyzer, and its installer also provides npcap, so one download resolves both
+/// the analyzer and the capture driver.
+pub const WIRESHARK_DOWNLOAD_URL: &str = "https://www.wireshark.org/download.html";
+
 /// Apply the specification section 12.1 precedence to an inventory.
 ///
 /// A pure decision. It opens nothing, enumerates nothing, and consults no

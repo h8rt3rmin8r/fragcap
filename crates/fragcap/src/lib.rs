@@ -33,6 +33,7 @@ pub mod core {
     pub use fragcap_core::interface::{
         select, virtual_verdict, InterfaceId, InterfaceInventory, InterfaceRecord,
         SelectedInterface, SelectionError, SelectionOutcome, SelectionSettings, VirtualVerdict,
+        DRIVER_DOWNLOAD_URL, WIRESHARK_DOWNLOAD_URL,
     };
     pub use fragcap_core::link::LinkType;
     pub use fragcap_core::packet::{
