@@ -64,9 +64,10 @@ brand pass.
    `fragcap doctor` to check your setup.
 5. Live capture also needs the **npcap** driver, which the installer cannot
    bundle. Install it from https://npcap.com (the installer links it on
-   completion) with its two non-default options enabled: **WinPcap API-compatible
-   mode** and **loopback traffic capture support** (fragcap needs both; `fragcap
-   doctor` names either if it is missing).
+   completion) with **WinPcap API-compatible mode** enabled, which is not the
+   default; `fragcap doctor` names it if it is missing. Current npcap installs
+   loopback capture support automatically, so there is no separate loopback
+   option to enable.
 
 Prefer no installer? Download the portable
 `fragcap-0.4.0-x86_64-pc-windows-msvc.zip` instead and run `fragcap.exe` from the
