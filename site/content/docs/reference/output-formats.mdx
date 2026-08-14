@@ -62,9 +62,17 @@ The trailer line carries the run's accounting: `packets`, `attributed`,
 observed is accounted for across these; a stream that ends without a trailer did
 not finalize cleanly.
 
-## What is never in the output
+## What is in the payload
 
-Payloads are the game's own bytes, and game traffic is encrypted; fragcap records
-that a conversation happened and which process owned it, not readable content.
-`--no-payload` drops the bytes entirely and keeps the metadata, when even the
-ciphertext is more than you want to store.
+Payloads are the game's own bytes. fragcap records that a conversation happened
+and which process owned it; whether those bytes are readable is something the
+capture lets you find out, not something fragcap presumes. `--no-payload` drops
+the bytes entirely and keeps the metadata, for when the payload is more than you
+want to store.
+
+<Callout type="warn" title="fragcap does not know whether a payload is encrypted">
+fragcap observes at the socket layer and cannot tell ciphertext from plaintext.
+Whether a title's traffic is encrypted is a question the capture helps you
+answer, not an assumption fragcap makes. Surfacing traffic that turns out to be
+plaintext when it should not be is a primary reason the tool exists.
+</Callout>
