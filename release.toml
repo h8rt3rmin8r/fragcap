@@ -18,7 +18,8 @@
 #        with --dry-run first to preview. It wraps, and does not replace:
 #          cargo release minor --execute   # bump and commit, nothing else
 #   2. open a pull request, operator reviews and merges
-#   3. git tag v0.2.0 && git push origin v0.2.0
+#   3. git tag vX.Y.Z && git push origin vX.Y.Z   # X.Y.Z = the version just bumped
+#        (cut-release.sh / New-Release.ps1 print this line with the real version)
 #   4. the release workflow builds artifacts, then waits on the `crates-io`
 #      environment gate before running `cargo xtask publish --execute`
 #

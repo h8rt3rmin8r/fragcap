@@ -58,9 +58,11 @@ just a Steam title started through Steam.
    PATH, and installs the hint database.
 4. Open a **new** terminal (so the PATH change takes effect) and run
    `fragcap doctor` to check your setup.
-5. Live capture also needs the **npcap** driver in WinPcap-compatible mode, which
-   the installer cannot bundle; get it from https://npcap.com (the installer also
-   links it on completion).
+5. Live capture also needs the **npcap** driver, which the installer cannot
+   bundle. Install it from https://npcap.com (the installer links it on
+   completion) with its two non-default options enabled: **WinPcap API-compatible
+   mode** and **loopback traffic capture support** (fragcap needs both; `fragcap
+   doctor` names either if it is missing).
 
 Prefer no installer? Download the portable
 `fragcap-0.3.0-x86_64-pc-windows-msvc.zip` instead and run `fragcap.exe` from the
