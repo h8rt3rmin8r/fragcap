@@ -30,6 +30,13 @@ Resolved under autopilot from the existing doctor design and the slice scope:
   optional `Warn`, unchanged.
 - Q: Does the dependency model change? -> A: No. extcap stays the optional tier
   from slice 042; only the detection is widened.
+- Q: How is the machine-wide directory located on Windows? (added after PR review)
+  -> A: The probe resolves Wireshark's install directory from the same
+  `HKLM\SOFTWARE\Wireshark` registry value the MSI's machine-wide option reads,
+  then appends `extcap`, so a non-default install location is recognized; the
+  `%ProgramFiles%\Wireshark\extcap` default is only a fallback. The read uses the
+  `windows-sys` binding `fragcap-cli` already links (no new crate) and stays
+  read-only.
 
 ## User Scenarios & Testing *(mandatory)*
 

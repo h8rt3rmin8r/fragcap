@@ -85,6 +85,11 @@ pub fn extcap_dir() -> Option<PathBuf> {
 /// extcap`; elsewhere it is a conventional system Wireshark extcap location. An
 /// override, `FRAGCAP_SYSTEM_EXTCAP_DIR`, lets a test point it at a scratch
 /// directory on any platform.
+///
+/// This is the default and fallback location. The `doctor` probe first resolves
+/// Wireshark's actual install directory from the registry (the value the MSI
+/// registers into) so a non-default install location is still recognized, and
+/// falls back to this path only when that read yields nothing.
 pub fn system_extcap_dir() -> Option<PathBuf> {
     if let Some(dir) = env::var_os(SYSTEM_EXTCAP_DIR_ENV) {
         return Some(PathBuf::from(dir));

@@ -29,10 +29,102 @@ fn extcap_status() -> (Option<PathBuf>, bool, Option<PathBuf>, bool) {
             .unwrap_or(false)
     };
     let user_dir = crate::paths::extcap_dir();
-    let system_dir = crate::paths::system_extcap_dir();
+    let system_dir = resolve_system_extcap_dir();
     let user_installed = present(&user_dir);
     let system_installed = present(&system_dir);
     (user_dir, user_installed, system_dir, system_installed)
+}
+
+/// The machine-wide extcap directory `doctor` probes.
+///
+/// Precedence: the `FRAGCAP_SYSTEM_EXTCAP_DIR` override (for tests), then the
+/// Wireshark install directory recorded in the registry (Windows), then the
+/// default location. The registry step reads the same `HKLM\SOFTWARE\Wireshark`
+/// value the MSI's machine-wide option uses (`crates/fragcap-cli/wix/main.wxs`),
+/// so `doctor` and the installer agree even when Wireshark is installed outside
+/// Program Files; the default is only a fallback.
+fn resolve_system_extcap_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        // The override (tests) wins; then the registry-recorded install dir; then
+        // the Program Files default. `paths::system_extcap_dir` returns the
+        // override when set and the default otherwise.
+        if std::env::var_os(crate::paths::SYSTEM_EXTCAP_DIR_ENV).is_some() {
+            return crate::paths::system_extcap_dir();
+        }
+        if let Some(dir) = wireshark_install_dir() {
+            return Some(dir.join("extcap"));
+        }
+        crate::paths::system_extcap_dir()
+    }
+    // No registry to consult off Windows; the override and default both live in
+    // `paths::system_extcap_dir`.
+    #[cfg(not(windows))]
+    {
+        crate::paths::system_extcap_dir()
+    }
+}
+
+/// Wireshark's install directory from the registry, or `None` when it is not
+/// installed or the value cannot be read.
+///
+/// Reads the default value of `HKLM\SOFTWARE\Wireshark`, the location the
+/// Wireshark installer records and the fragcap MSI's `RegistrySearch` reads.
+/// Read-only: it opens no process handle and modifies nothing (P-1).
+#[cfg(windows)]
+fn wireshark_install_dir() -> Option<PathBuf> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
+    let subkey: Vec<u16> = "SOFTWARE\\Wireshark"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // First call sizes the default value (name null) in bytes.
+    let mut bytes: u32 = 0;
+    // SAFETY: `subkey` is a live null-terminated UTF-16 string; all output
+    // pointers are null except `bytes`, which the API writes.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut bytes,
+        )
+    };
+    if rc != 0 || bytes == 0 {
+        return None;
+    }
+
+    let mut buf: Vec<u16> = vec![0u16; (bytes as usize).div_ceil(2)];
+    let mut cap = bytes;
+    // SAFETY: `buf` has room for `cap` bytes; `RegGetValueW` writes at most that
+    // and null-terminates the string it returns.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            &mut cap,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let dir = String::from_utf16_lossy(&buf[..end]);
+    if dir.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(dir))
+    }
 }
 
 /// Count the `.json` profiles directly in a directory, or zero when it cannot
