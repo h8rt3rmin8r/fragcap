@@ -107,6 +107,26 @@ fn strip_leading_section_header(content: &str, section: &str) -> String {
     content.trim().to_string()
 }
 
+/// Strip a leading `<!-- spec-impact: ... -->` comment (and one blank line after
+/// it) from a fragment body. The field is machine-readable metadata the release
+/// gate reads (slice S049); it is the fragment's first line by convention and
+/// must never reach `CHANGELOG.md`, so it is removed here before assembly.
+fn strip_leading_spec_impact(content: &str) -> String {
+    // Recognize the field with the same strict reader the format check and the
+    // release gate use, so what is stripped is exactly what is enforced, never
+    // an unrelated leading comment that merely mentions the field.
+    if crate::spec::extract_spec_impact(content).is_none() {
+        return content.trim().to_string();
+    }
+    let mut lines = content.lines();
+    lines.next(); // the spec-impact comment, confirmed present above
+    let mut rest = lines.peekable();
+    if rest.peek().is_some_and(|l| l.trim().is_empty()) {
+        rest.next();
+    }
+    rest.collect::<Vec<_>>().join("\n").trim().to_string()
+}
+
 /// Merge an `[Unreleased]` body and a set of fragments into one changelog body
 /// in canonical section order.
 ///
@@ -129,7 +149,9 @@ pub fn assemble(unreleased_body: &str, fragments: &[(String, String)]) -> Result
     // redundant leading section header, which is stripped.
     for (section, content) in fragments {
         let key = section.to_lowercase();
-        let body = strip_leading_section_header(content, &key);
+        // Drop the machine-readable spec-impact line first, then a redundant
+        // leading section header, so neither reaches the changelog.
+        let body = strip_leading_section_header(&strip_leading_spec_impact(content), &key);
         chunks.push((key, body));
     }
 
@@ -279,6 +301,94 @@ fn fragment_paths(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(paths)
 }
 
+/// The slice S049 release gate. For each fragment about to be consumed, if its
+/// `spec-impact` names sections, the specification must appear in the release
+/// diff since the last release tag. Returns the number of offending fragments
+/// (0 to proceed), or an `Err` when the gate could not run (a fragment's claim
+/// is unreadable is treated as an offence, but a missing tag or a failed git is
+/// could-not-run).
+fn release_gate_check(root: &Path) -> io::Result<usize> {
+    let mut frags: Vec<(String, crate::spec::SpecImpact)> = Vec::new();
+    let mut problems = 0usize;
+    for path in fragment_paths(root)? {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let body = fs::read_to_string(&path)?;
+        match crate::spec::extract_spec_impact(&body) {
+            Some(val) => match crate::spec::parse_spec_impact(&val) {
+                Ok(impact) => frags.push((name, impact)),
+                Err(e) => {
+                    eprintln!("changelog: {name}: malformed spec-impact ({e})");
+                    problems += 1;
+                }
+            },
+            None => {
+                eprintln!("changelog: {name}: missing a leading spec-impact comment");
+                problems += 1;
+            }
+        }
+    }
+    // The gate cannot judge a fragment whose claim it cannot read; refuse to
+    // assemble past it rather than assume `none`.
+    if problems > 0 {
+        return Ok(problems);
+    }
+
+    let base = last_release_tag(root).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "no v*.*.* release tag found to define the release diff base",
+        )
+    })?;
+    let changed = changed_paths_since(root, &base)?;
+    let violations = crate::spec::release_gate(&frags, &changed);
+    for v in &violations {
+        eprintln!(
+            "changelog: {} names specification section(s) {} but {} is not in the release diff since {}",
+            v.fragment,
+            v.sections.join(", "),
+            crate::spec::SPEC_PATH,
+            base
+        );
+    }
+    Ok(violations.len())
+}
+
+/// The most recent `v*.*.*` release tag, the base for the release diff.
+fn last_release_tag(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(root)
+        .args(["describe", "--tags", "--abbrev=0", "--match", "v*.*.*"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let tag = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if tag.is_empty() {
+        None
+    } else {
+        Some(tag)
+    }
+}
+
+/// The repository-relative paths changed since `base`, via `git diff --name-only`.
+fn changed_paths_since(root: &Path, base: &str) -> io::Result<Vec<String>> {
+    let out = Command::new("git")
+        .current_dir(root)
+        .args(["diff", "--name-only", &format!("{base}..HEAD")])
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other(
+            "git diff failed while computing the release gate diff",
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
 /// Whether a string is a plain `X.Y.Z` release version: exactly three
 /// dot-separated, non-empty, all-ASCII-digit components. The branch name, the
 /// changelog heading, and the release tag link are all built from this, so a
@@ -370,6 +480,14 @@ pub fn run(root: &Path, mode: Mode) -> io::Result<usize> {
             Ok(0)
         }
         Mode::Release { version, date } => {
+            // Slice S049 release gate: refuse before any rewrite or deletion when
+            // a fragment claims a specification change the release diff lacks.
+            let offences = release_gate_check(root)?;
+            if offences > 0 {
+                eprintln!("changelog: release gate blocked assembly ({offences} fragment(s))");
+                return Ok(1);
+            }
+
             let rewritten = rewrite(&changelog, &version, &date, &assembled);
             fs::write(&changelog_path, rewritten)?;
 
@@ -474,6 +592,34 @@ mod tests {
     fn an_unknown_section_is_an_error() {
         let frags = vec![("add".into(), "### Add\n\n- typo\n".into())];
         assert!(assemble("", &frags).is_err());
+    }
+
+    #[test]
+    fn strips_a_leading_spec_impact_comment() {
+        // A fragment whose first line is the machine-readable spec-impact metadata
+        // must not carry that line into the assembled changelog body.
+        let frags = vec![(
+            "added".into(),
+            "<!-- spec-impact: 3.3, 23.1 -->\n\n- a user-facing entry\n".into(),
+        )];
+        let body = assemble("", &frags).unwrap();
+        assert!(body.contains("- a user-facing entry"));
+        assert!(!body.contains("spec-impact"));
+        // A fragment with no such comment is untouched.
+        let plain = vec![("added".into(), "- plain entry\n".into())];
+        let body = assemble("", &plain).unwrap();
+        assert!(body.contains("- plain entry"));
+
+        // A leading comment that merely mentions the phrase is NOT the field and
+        // is preserved: stripping matches the strict `spec-impact:` reader, not a
+        // loose substring.
+        let prose = vec![(
+            "added".into(),
+            "<!-- a note about spec-impact: keep me -->\n\n- kept entry\n".into(),
+        )];
+        let body = assemble("", &prose).unwrap();
+        assert!(body.contains("a note about spec-impact: keep me"));
+        assert!(body.contains("- kept entry"));
     }
 
     #[test]

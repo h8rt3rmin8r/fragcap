@@ -164,6 +164,11 @@ fix_embedded_versions() {
         "$REPO_ROOT/crates/fragcap-sink/src/json/mod.rs"; do
         safe_run sed -i "s#fragcap/${old}#fragcap/${new}#g" "$file"
     done
+    # Applies-To moves with the workspace version. It is bound to that version by
+    # cargo xtask spec (constitution P-11), which runs in the check set below, so
+    # leaving it stale would fail every release preparation deterministically.
+    safe_run sed -i "s#^\*\*Applies-To:\*\* [0-9][0-9.]*#**Applies-To:** ${new}#" \
+        "$REPO_ROOT/docs/fragcap-specification.md"
 }
 
 # Print the sequence the operator runs after this script, so the two remaining

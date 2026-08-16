@@ -20,6 +20,7 @@ mod license;
 mod lint;
 mod notes;
 mod publish;
+mod spec;
 mod wrappers;
 
 use std::path::{Path, PathBuf};
@@ -43,6 +44,7 @@ cargo xtask <command>
   publish    Registry publication in dependency order (--execute to publish)
   notes      Print release notes for a version, from CHANGELOG.md
   changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
+  spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
 
 fn repo_root() -> PathBuf {
@@ -143,6 +145,21 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("wrappers: could not run: {e}");
+                ExitCode::from(2)
+            }
+        },
+
+        "spec" => match spec::run(&root) {
+            Ok(0) => {
+                println!("spec: the specification and the workspace agree on the version");
+                ExitCode::SUCCESS
+            }
+            Ok(n) => {
+                eprintln!("spec: {n} problem(s)");
+                ExitCode::from(1)
+            }
+            Err(e) => {
+                eprintln!("spec: could not run: {e}");
                 ExitCode::from(2)
             }
         },
@@ -342,6 +359,18 @@ fn main() -> ExitCode {
                 _ => {
                     eprintln!("ci: docs check reported failures");
                     return ExitCode::from(1);
+                }
+            }
+            println!("ci: running spec");
+            match spec::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: spec reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: spec could not run: {e}");
+                    return ExitCode::from(2);
                 }
             }
             println!("ci: all checks passed");

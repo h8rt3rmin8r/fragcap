@@ -201,6 +201,14 @@ Param(
             [System.IO.File]::WriteAllText($file, $text)
             Write-Log "updated embedded version in $file" 'Info'
         }
+        # Applies-To moves with the workspace version. It is bound to that version
+        # by cargo xtask spec (constitution P-11), which runs in the check set, so
+        # leaving it stale would fail every release preparation deterministically.
+        $spec = Join-Path $RepoRoot 'docs/fragcap-specification.md'
+        $text = [System.IO.File]::ReadAllText($spec)
+        $text = [regex]::Replace($text, '(?m)^\*\*Applies-To:\*\* [0-9][0-9.]*', "**Applies-To:** $New")
+        [System.IO.File]::WriteAllText($spec, $text)
+        Write-Log "updated Applies-To in $spec" 'Info'
     }
 
     # Print the sequence the operator runs after this script, so the two

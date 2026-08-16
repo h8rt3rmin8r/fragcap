@@ -1,4 +1,23 @@
 <!--
+Sync Impact Report (1.2.0, 2026-08-16)
+- Version change: 1.1.0 -> 1.2.0 (MINOR: two principles added)
+- Added principles:
+  P-10. One Path To A Target
+  P-11. The Specification Describes What Shipped
+- Reason: slice S049 (the v0.5.0 UX overhaul reconciliation) establishes two
+  durable rules that must survive every future agent session. P-10 makes target
+  creation one operation and one storage shape across every source, the guiding
+  light for supporting platforms beyond Steam. P-11 makes the master
+  specification track the shipped release; the specification had drifted two
+  minor versions, describing v0.2.0 as the first functional release while v0.4.0
+  had shipped, and this principle reclassifies that drift as a defect. It is
+  enforced by the new cargo xtask spec version lock-step, which binds the
+  specification's Applies-To field to the workspace version.
+- Templates: no changes required. The Constitution Check gate in
+  plan-template.md reads this file and picks up the new principles
+  automatically.
+- Follow-up TODOs: none
+
 Sync Impact Report (1.1.0, 2026-08-06)
 - Version change: 1.0.0 -> 1.1.0 (MINOR: principle added)
 - Added principle:
@@ -228,6 +247,43 @@ The honest researcher is the user. Treating them as someone to be protected
 from their own data is both a product failure and, given the domain, a
 credibility failure.
 
+### P-10. One Path To A Target
+
+Every target entry, however it was produced, is created by the same operation
+and stored in the same form. Interactive authoring, platform walking, directory
+scanning, and runtime observation are sources that differ only in batch size,
+fidelity stamp, and whether a human reviewed the result. A source that requires
+its own storage shape, its own resolution path, or its own precedence position
+has been implemented wrongly. New platforms are added by implementing
+`TargetSource` and nothing else.
+
+Rationale: the value of supporting a second platform is only realized if the
+second platform reuses the first one's machinery. A source that grows its own
+storage shape or resolution path multiplies the resolution logic by the number
+of platforms and reintroduces the merge-and-precedence problems the single store
+exists to prevent. Making one operation and one form the rule keeps the cost of
+each new platform bounded to a single trait implementation, and it keeps
+fidelity a column the resolver reads rather than a convention spread across
+crates.
+
+### P-11. The Specification Describes What Shipped
+
+The master specification is the architecture of record for the released
+software, not for intended software. A specification that describes a release
+which has not happened, or omits one which has, is a defect of the same severity
+as a failing test. No release is cut while the specification and the released
+artifact disagree.
+
+Rationale: agents are instructed to trust the master specification as the
+architecture of record, so a specification that misstates which release has
+shipped corrupts every decision built on it, silently and durably. The condition
+that produced this principle was real: the specification described v0.2.0 as the
+first functional release for two minor versions after v0.4.0 had shipped. The
+document may still describe forward-looking architecture, as its roadmap section
+always has; what it may not do is misstate the shipped baseline. An `Applies-To`
+field bound to the workspace version by `cargo xtask spec` makes the agreement
+mechanical rather than remembered.
+
 ## Licensing And Third-Party Obligations
 
 fragcap is licensed under Apache-2.0. Every source file carries an SPDX
@@ -318,4 +374,4 @@ raises it, rather than proceeding under an interpretation that weakens it. P-1
 in particular is never reinterpreted; a slice that appears to need a denylisted
 technique is a slice that has been scoped wrong.
 
-**Version**: 1.1.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-06
+**Version**: 1.2.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-16
