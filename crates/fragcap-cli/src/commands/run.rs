@@ -168,15 +168,33 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
 
 /// Whether two store paths identify the same file.
 ///
-/// Prefers canonical identity when both files exist, so an alias, a case
-/// difference, or a symlink to one file is caught; otherwise it falls back to a
-/// lexical comparison, which catches the common "both flags name the same path"
-/// mistake before either file is created.
+/// Compares the canonical identity of each path. A store file may not exist yet
+/// (the defaults are created on first run), so when a path cannot be canonicalized
+/// whole, its existing parent directory is canonicalized and the file name
+/// rejoined, which resolves `.`, `..`, a relative prefix, and a symlinked parent
+/// even before the leaf exists. Only when neither the path nor its parent can be
+/// resolved does it fall back to a lexical comparison.
 fn same_store_file(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(ca), Ok(cb)) => ca == cb,
-        _ => a == b,
+    resolve_store_identity(a) == resolve_store_identity(b)
+}
+
+/// The canonical identity of a store path, resolving as much as exists.
+fn resolve_store_identity(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
     }
+    if let Some(name) = path.file_name() {
+        // An empty parent (a bare file name) resolves against the current
+        // directory, so `x.db` and `./x.db` fold together.
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            return canonical_parent.join(name);
+        }
+    }
+    path.to_path_buf()
 }
 
 /// The read-only catalog store template shipped beside the executable, if present.
@@ -680,6 +698,20 @@ mod tests {
         assert!(
             !same_store_file(&catalog, &local),
             "two distinct files are not the same store"
+        );
+
+        // Lexically different paths to one file are caught even before the file
+        // exists, by resolving the parent: `dir/x.db` and `dir/./x.db` fold.
+        let absent = dir.join("absent.db");
+        let absent_dotted = dir.join(".").join("absent.db");
+        assert!(!absent.exists());
+        assert!(
+            same_store_file(&absent, &absent_dotted),
+            "a dotted path to the same not-yet-created file is the same store"
+        );
+        assert!(
+            !same_store_file(&absent, &dir.join("other.db")),
+            "distinct not-yet-created files are not the same store"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
