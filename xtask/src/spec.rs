@@ -102,16 +102,23 @@ pub fn extract_spec_impact(body: &str) -> Option<String> {
 fn workspace_version_from(text: &str) -> Option<String> {
     let mut in_pkg = false;
     for line in text.lines() {
-        let t = line.trim();
+        // Drop an inline comment before inspecting the line. A version value
+        // never contains '#', so this is safe and stops `version = "x" # note`
+        // from being read with the comment attached.
+        let t = line.split('#').next().unwrap_or(line).trim();
         if t.starts_with('[') {
             in_pkg = t == "[workspace.package]";
             continue;
         }
-        if in_pkg && t.starts_with("version") {
-            return t
-                .split('=')
-                .nth(1)
-                .map(|v| v.trim().trim_matches('"').to_string());
+        if !in_pkg {
+            continue;
+        }
+        // Match the `version` key exactly: the bare word followed by `=`, so a
+        // key like `rust-version` (or a hypothetical `versioned`) never matches.
+        if let Some(rest) = t.strip_prefix("version") {
+            if let Some(value) = rest.trim_start().strip_prefix('=') {
+                return Some(value.trim().trim_matches('"').to_string());
+            }
         }
     }
     None
@@ -212,28 +219,48 @@ fn check_fragments(root: &Path) -> io::Result<usize> {
 /// `Err` when a check could not run at all (the 2 exit code): the workspace
 /// version, the `Applies-To` field, or the fragment directory could not be read.
 pub fn run(root: &Path) -> io::Result<usize> {
-    let ws = workspace_version(root).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "could not read [workspace.package] version from Cargo.toml",
-        )
-    })?;
-    let at = applies_to(root).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("could not read the Applies-To field from {SPEC_PATH}"),
-        )
-    })?;
-
     let mut problems = 0usize;
-    if ws == at {
-        println!("spec: Applies-To ({at}) matches the workspace version");
-    } else {
-        eprintln!("spec: Applies-To ({at}) does NOT match the workspace version ({ws})");
-        problems += 1;
+    let mut could_not_run = false;
+
+    // A. Version lock-step. A field that cannot be read is could-not-run (exit 2)
+    // rather than a mismatch, but it does not short-circuit the fragment
+    // assertion below: a contributor sees every problem in one pass.
+    match (workspace_version(root), applies_to(root)) {
+        (Some(ws), Some(at)) => {
+            if ws == at {
+                println!("spec: Applies-To ({at}) matches the workspace version");
+            } else {
+                eprintln!("spec: Applies-To ({at}) does NOT match the workspace version ({ws})");
+                problems += 1;
+            }
+        }
+        (ws, at) => {
+            if ws.is_none() {
+                eprintln!("spec: could not read [workspace.package] version from Cargo.toml");
+            }
+            if at.is_none() {
+                eprintln!("spec: could not read the Applies-To field from {SPEC_PATH}");
+            }
+            could_not_run = true;
+        }
     }
 
-    problems += check_fragments(root)?;
+    // B. Fragment format. Always runs, so its diagnostics are reported even when
+    // the version check could not run.
+    match check_fragments(root) {
+        Ok(n) => problems += n,
+        Err(e) => {
+            eprintln!("spec: could not read the changelog fragments ({e})");
+            could_not_run = true;
+        }
+    }
+
+    if could_not_run {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a specification currency check could not run",
+        ));
+    }
     Ok(problems)
 }
 
@@ -299,12 +326,15 @@ mod tests {
 members = [\"crates/*\"]
 
 [workspace.package]
-version = \"0.4.0\"
+# The workspace version.
+version      = \"0.4.0\"  # inline comment
 rust-version = \"1.82\"
 
 [workspace.dependencies]
 bytes = { version = \"1\" }
 ";
+        // The value is read past aligned whitespace and an inline comment, and
+        // neither `rust-version` nor the dependency `version` is mistaken for it.
         assert_eq!(workspace_version_from(manifest).as_deref(), Some("0.4.0"));
     }
 

@@ -112,18 +112,19 @@ fn strip_leading_section_header(content: &str, section: &str) -> String {
 /// gate reads (slice S049); it is the fragment's first line by convention and
 /// must never reach `CHANGELOG.md`, so it is removed here before assembly.
 fn strip_leading_spec_impact(content: &str) -> String {
-    let mut lines = content.lines().peekable();
-    if let Some(first) = lines.peek() {
-        let t = first.trim();
-        if t.starts_with("<!--") && t.ends_with("-->") && t.contains("spec-impact:") {
-            lines.next();
-            if lines.peek().is_some_and(|l| l.trim().is_empty()) {
-                lines.next();
-            }
-            return lines.collect::<Vec<_>>().join("\n").trim().to_string();
-        }
+    // Recognize the field with the same strict reader the format check and the
+    // release gate use, so what is stripped is exactly what is enforced, never
+    // an unrelated leading comment that merely mentions the field.
+    if crate::spec::extract_spec_impact(content).is_none() {
+        return content.trim().to_string();
     }
-    content.trim().to_string()
+    let mut lines = content.lines();
+    lines.next(); // the spec-impact comment, confirmed present above
+    let mut rest = lines.peekable();
+    if rest.peek().is_some_and(|l| l.trim().is_empty()) {
+        rest.next();
+    }
+    rest.collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
 /// Merge an `[Unreleased]` body and a set of fragments into one changelog body
@@ -608,6 +609,17 @@ mod tests {
         let plain = vec![("added".into(), "- plain entry\n".into())];
         let body = assemble("", &plain).unwrap();
         assert!(body.contains("- plain entry"));
+
+        // A leading comment that merely mentions the phrase is NOT the field and
+        // is preserved: stripping matches the strict `spec-impact:` reader, not a
+        // loose substring.
+        let prose = vec![(
+            "added".into(),
+            "<!-- a note about spec-impact: keep me -->\n\n- kept entry\n".into(),
+        )];
+        let body = assemble("", &prose).unwrap();
+        assert!(body.contains("a note about spec-impact: keep me"));
+        assert!(body.contains("- kept entry"));
     }
 
     #[test]
