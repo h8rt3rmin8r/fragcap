@@ -19,9 +19,14 @@ fn ready() -> Inputs {
         profile_dir: Some(std::path::PathBuf::from(
             "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles",
         )),
-        hint_db_path: Some(std::path::PathBuf::from(
-            "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\hint.db",
+        catalog_db_path: Some(std::path::PathBuf::from(
+            "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db",
         )),
+        catalog_db_present: true,
+        local_db_path: Some(std::path::PathBuf::from(
+            "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db",
+        )),
+        local_db_present: true,
         os: "Windows 11".to_string(),
         subsystem: Subsystem::Native,
         privilege: Privilege::Elevated,
@@ -261,7 +266,7 @@ fn the_identity_section_appears_first_in_both_forms() {
     let report = checks::run(&ready());
     let human = report.render_human();
     assert!(human.starts_with("Identity\n"), "identity leads:\n{human}");
-    for want in ["version", "binary", "profile dir", "hint db"] {
+    for want in ["version", "binary", "profile dir", "catalog db", "local db"] {
         assert!(
             human.contains(want),
             "identity row {want} missing:\n{human}"

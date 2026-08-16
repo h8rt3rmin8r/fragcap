@@ -113,16 +113,25 @@ pub struct RunArgs {
     #[arg(long)]
     pub steam: Option<String>,
 
-    /// A targets hint database to consult during resolution (issue #78). When set
-    /// and present, a `--steam` capture may resolve its client from the database at
-    /// heuristic-unverified fidelity, above the engine rule. Overrides the
-    /// `FRAGCAP_HINT_DB` environment variable and the default location; a database
-    /// named here that does not exist is not created and is not an error. With
-    /// neither this flag nor the environment variable set, `run` defaults to
-    /// `%APPDATA%\fragcap\hint.db` and creates it on first use (seeding it from the
-    /// bundled database shipped beside the executable when present).
+    /// The shipped catalog store to consult during resolution. When set and
+    /// present, a `--steam` capture may resolve its client from the catalog at
+    /// heuristic-unverified fidelity, above the engine rule. Overrides
+    /// `FRAGCAP_CATALOG_DB` and the default location; a store named here that does
+    /// not exist is not created and is not an error. With neither this flag nor the
+    /// environment variable set, `run` defaults to `%APPDATA%\fragcap\catalog.db`
+    /// and creates it on first use (seeding it from the store shipped beside the
+    /// executable when present).
     #[arg(long)]
-    pub hint_db: Option<PathBuf>,
+    pub catalog_db: Option<PathBuf>,
+
+    /// The local store, where learned launch data accumulates and your own data
+    /// lives. It is consulted before the catalog during resolution. Overrides
+    /// `FRAGCAP_LOCAL_DB` and the default location; a store named here that does
+    /// not exist is not created and is not an error. With neither this flag nor the
+    /// environment variable set, `run` defaults to `%APPDATA%\fragcap\local.db` and
+    /// creates it empty on first use. A catalog refresh never touches this store.
+    #[arg(long)]
+    pub local_db: Option<PathBuf>,
 
     /// The output capture file (pcapng). Shorthand for a file sink.
     #[arg(short = 'o', long)]

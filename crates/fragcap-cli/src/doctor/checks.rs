@@ -61,11 +61,32 @@ fn identity(inputs: &Inputs) -> Vec<Check> {
             None => "undetermined".to_string(),
         }
     }
+    // A store is created on first run, so its path is shown with whether it exists
+    // yet; a missing store is normal before the first capture, not a fault.
+    fn store_detail(path: &Option<std::path::PathBuf>, present: bool) -> String {
+        match path {
+            Some(path) => format!(
+                "{} ({})",
+                path.display(),
+                if present { "present" } else { "absent" }
+            ),
+            None => "undetermined".to_string(),
+        }
+    }
     vec![
         Check::ok(IDENTITY, "version", inputs.fragcap_version.clone()),
         Check::ok(IDENTITY, "binary", path_detail(&inputs.binary_path)),
         Check::ok(IDENTITY, "profile dir", path_detail(&inputs.profile_dir)),
-        Check::ok(IDENTITY, "hint db", path_detail(&inputs.hint_db_path)),
+        Check::ok(
+            IDENTITY,
+            "catalog db",
+            store_detail(&inputs.catalog_db_path, inputs.catalog_db_present),
+        ),
+        Check::ok(
+            IDENTITY,
+            "local db",
+            store_detail(&inputs.local_db_path, inputs.local_db_present),
+        ),
     ]
 }
 
@@ -356,9 +377,14 @@ mod tests {
             profile_dir: Some(std::path::PathBuf::from(
                 "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles",
             )),
-            hint_db_path: Some(std::path::PathBuf::from(
-                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\hint.db",
+            catalog_db_path: Some(std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db",
             )),
+            catalog_db_present: true,
+            local_db_path: Some(std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db",
+            )),
+            local_db_present: true,
             os: "Windows 11".to_string(),
             subsystem: Subsystem::Native,
             privilege: Privilege::Elevated,
@@ -749,7 +775,11 @@ mod tests {
             .iter()
             .filter(|c| c.section == IDENTITY)
             .collect();
-        assert_eq!(identity.len(), 4, "version, binary, profile dir, hint db");
+        assert_eq!(
+            identity.len(),
+            5,
+            "version, binary, profile dir, catalog db, local db"
+        );
         assert!(identity.iter().all(|c| c.status == Status::Ok));
         assert_eq!(report.checks[0].section, IDENTITY, "identity leads");
         assert!(
@@ -761,7 +791,8 @@ mod tests {
         let mut inputs = ready_inputs();
         inputs.binary_path = None;
         inputs.profile_dir = None;
-        inputs.hint_db_path = None;
+        inputs.catalog_db_path = None;
+        inputs.local_db_path = None;
         let report = run(&inputs);
         assert!(report.ready(), "unresolvable paths do not block");
         let binary = report.checks.iter().find(|c| c.name == "binary").unwrap();

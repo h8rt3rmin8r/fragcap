@@ -28,52 +28,97 @@ use fragcap_profile::{
 };
 
 use crate::export::PROVENANCE_SOURCE;
-use crate::model::LaunchEntry;
+use crate::model::{Game, LaunchEntry};
 use crate::store::Store;
 
-/// Resolves a Steam title from the targets hint database. The precedence-2
+/// Resolves a Steam title from the targets hint databases. The precedence-2
 /// provider of the resolution cascade.
+///
+/// Since the two-store split (slice S050) it holds an ordered list of stores and
+/// consults them in turn, returning the first usable answer. The CLI orders them
+/// `[local.db, catalog.db]`, so the user's learned launch data (from this
+/// machine's own Steam install) is preferred over the shipped catalog seed. It
+/// remains one provider at the single `Precedence::HintDatabase` slot; the
+/// resolver rejects two providers at one precedence, and the fidelity-ordered
+/// cascade collapse is a later slice.
 pub struct HintDatabaseProvider {
-    store: Store,
+    stores: Vec<Store>,
 }
 
 impl HintDatabaseProvider {
-    /// Build the provider over an already-opened store.
+    /// Build the provider over a single already-opened store.
     ///
     /// The store is opened once by the caller (the CLI), so a corrupt or
     /// wrong-version database fails at that boundary and is surfaced there, not as
     /// a per-request surprise inside the cascade. Holding the store is sound
     /// because resolution is single-threaded and the store's reads take `&self`.
     pub fn new(store: Store) -> HintDatabaseProvider {
-        HintDatabaseProvider { store }
-    }
-}
-
-impl TargetProvider for HintDatabaseProvider {
-    fn precedence(&self) -> Precedence {
-        Precedence::HintDatabase
+        HintDatabaseProvider {
+            stores: vec![store],
+        }
     }
 
-    fn provide(
-        &self,
-        request: &ResolutionRequest,
+    /// Build the provider over several stores, consulted in the given order.
+    ///
+    /// The first store to yield a usable client wins; a store that is absent of the
+    /// title or declines it (launcher-mediated, ambiguous, or no usable executable)
+    /// yields to the next. The CLI passes `[local, catalog]`.
+    pub fn new_layered(stores: Vec<Store>) -> HintDatabaseProvider {
+        HintDatabaseProvider { stores }
+    }
+
+    /// Combine the row for `app_id` across the layered stores into one game, as
+    /// the single pre-split store held it.
+    ///
+    /// Launch entries and the name and engine come from the highest-priority store
+    /// that carries them (local first). The launcher-mediated fact is authoritative
+    /// wherever it is known, so a title the catalog marks mediated still declines
+    /// even when the local store learned its launcher executable with the flag
+    /// unset: before the split these were one merged row, and the local
+    /// launch-data accumulation inserts an appid-only row with mediation unset, so
+    /// reading the stores independently would resolve the launcher as the client
+    /// and lose the gameplay traffic (P-4, P-9). Returns `None` when no store has
+    /// the row.
+    fn combined_game(&self, app_id: u32) -> Result<Option<Game>, ProviderError> {
+        let mut combined: Option<Game> = None;
+        for store in &self.stores {
+            let game = match store.game(app_id) {
+                Ok(Some(game)) => game,
+                // Absent row: not an error, try the next store.
+                Ok(None) => continue,
+                // A read that failed after the store opened cleanly (a disk fault)
+                // is a real fault, not a decline: abort rather than hide it (P-4).
+                Err(e) => return Err(ProviderError::Hint(e.to_string())),
+            };
+            match combined.as_mut() {
+                None => combined = Some(game),
+                Some(c) => {
+                    // Fill facts the higher-priority store left unset from the lower
+                    // one; the local store's learned launch entries win when present.
+                    if c.name.is_none() {
+                        c.name = game.name;
+                    }
+                    if c.launch.is_empty() {
+                        c.launch = game.launch;
+                    }
+                    if c.engine.is_none() {
+                        c.engine = game.engine;
+                    }
+                    c.launcher_mediated =
+                        merge_mediation(c.launcher_mediated, game.launcher_mediated);
+                }
+            }
+        }
+        Ok(combined)
+    }
+
+    /// Resolve a combined game to a target, or decline. The single-store rule set
+    /// the provider has always applied, now over the combined row.
+    fn resolve_game(
+        game: &Game,
+        app_id: u32,
         notes: &mut ResolutionNotes,
     ) -> Result<Option<Target>, ProviderError> {
-        // No application id on the request: nothing to look up.
-        let Some(app_id) = request.steam_app_id() else {
-            return Ok(None);
-        };
-
-        let game = match self.store.game(app_id) {
-            Ok(Some(game)) => game,
-            // Absent row: not an error, the cascade continues.
-            Ok(None) => return Ok(None),
-            // A read that failed after the store opened cleanly (a disk fault) is a
-            // real fault, not a decline: abort the cascade rather than hide it
-            // (P-4). A store that could not be opened never reaches here.
-            Err(e) => return Err(ProviderError::Hint(e.to_string())),
-        };
-
         // A launcher-mediated title's launch executable is the publisher launcher,
         // not the socket-holding client (specification section 15.6.1): Steam
         // starts the launcher, which then starts the real game. Resolving the
@@ -117,6 +162,42 @@ impl TargetProvider for HintDatabaseProvider {
                 Ok(None)
             }
         }
+    }
+}
+
+impl TargetProvider for HintDatabaseProvider {
+    fn precedence(&self) -> Precedence {
+        Precedence::HintDatabase
+    }
+
+    fn provide(
+        &self,
+        request: &ResolutionRequest,
+        notes: &mut ResolutionNotes,
+    ) -> Result<Option<Target>, ProviderError> {
+        // No application id on the request: nothing to look up.
+        let Some(app_id) = request.steam_app_id() else {
+            return Ok(None);
+        };
+
+        // Combine the row across the stores (the CLI passes [local, catalog]) so
+        // the mediation fact, wherever it lives, is applied to the learned launch
+        // data before resolving; then answer over the combined row.
+        match self.combined_game(app_id)? {
+            Some(game) => Self::resolve_game(&game, app_id, notes),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Combine two launcher-mediated facts, letting a known value win over the unknown
+/// and a known-mediated fact win over not-mediated, so a title any store marks
+/// mediated declines (P-4/P-9).
+fn merge_mediation(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        _ => None,
     }
 }
 
@@ -329,6 +410,87 @@ mod tests {
     fn a_missing_row_declines() {
         let store = Store::open_in_memory().expect("in-memory store");
         assert!(resolve(store, 999).is_none(), "an absent row is no answer");
+    }
+
+    #[test]
+    fn layers_stores_local_first() {
+        // Two stores in [local, catalog] order (slice S050): the user's learned
+        // data is consulted before the shipped catalog seed.
+        let mut catalog = Store::open_in_memory().expect("catalog");
+        let mut c100 = Game::new(100);
+        c100.launch = vec![launch("catalogclient.exe", Some("windows"))];
+        catalog.upsert_game(&c100).expect("upsert catalog 100");
+        let mut c300 = Game::new(300);
+        c300.launch = vec![launch("catalogonly.exe", Some("windows"))];
+        catalog.upsert_game(&c300).expect("upsert catalog 300");
+
+        let mut local = Store::open_in_memory().expect("local");
+        let mut l100 = Game::new(100);
+        l100.launch = vec![launch("localclient.exe", Some("windows"))];
+        local.upsert_game(&l100).expect("upsert local 100");
+        let mut l200 = Game::new(200);
+        l200.launch = vec![launch("localonly.exe", Some("windows"))];
+        local.upsert_game(&l200).expect("upsert local 200");
+
+        let provider = HintDatabaseProvider::new_layered(vec![local, catalog]);
+        let search = fragcap_profile::SearchPath::new();
+        let bundled = fragcap_profile::BundledSet::empty();
+        let image = |app_id: u32| -> Option<String> {
+            let req =
+                ResolutionRequest::for_reference("x", &search, &bundled).with_steam_app_id(app_id);
+            match provider.provide(&req, &mut ResolutionNotes::default()) {
+                Ok(Some(t)) => match t.origin() {
+                    TargetOrigin::HintDatabase(h) => Some(h.image_name().to_string()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+
+        // Present in both: local wins.
+        assert_eq!(image(100).as_deref(), Some("localclient.exe"));
+        // Present only in local.
+        assert_eq!(image(200).as_deref(), Some("localonly.exe"));
+        // Present only in catalog: falls through to the second store.
+        assert_eq!(image(300).as_deref(), Some("catalogonly.exe"));
+        // Absent everywhere.
+        assert_eq!(image(999), None);
+    }
+
+    #[test]
+    fn a_mediated_catalog_row_declines_even_with_learned_local_launch() {
+        // The regression the split could introduce: the local launch-data
+        // accumulation inserts an appid-only row with the learned launcher
+        // executable and mediation unset, while the catalog carries
+        // launcher_mediated = true. Reading the stores independently (local first)
+        // would resolve the launcher as the client and lose gameplay traffic. The
+        // combined row must keep the catalog's mediation fact and decline (P-4/P-9).
+        let mut catalog = Store::open_in_memory().expect("catalog");
+        let mut c = Game::new(306130);
+        c.name = Some("The Elder Scrolls Online".to_string());
+        c.launcher_mediated = Some(true);
+        c.launch = vec![launch("Launcher.exe", Some("windows"))];
+        catalog.upsert_game(&c).expect("upsert catalog");
+
+        let mut local = Store::open_in_memory().expect("local");
+        let mut l = Game::new(306130);
+        // Mediation unset (as merge_launch leaves it), the launcher exe learned
+        // from appinfo (which is what a mediated title's launch config names).
+        l.launch = vec![launch("Launcher.exe", Some("windows"))];
+        local.upsert_game(&l).expect("upsert local");
+
+        let provider = HintDatabaseProvider::new_layered(vec![local, catalog]);
+        let search = fragcap_profile::SearchPath::new();
+        let bundled = fragcap_profile::BundledSet::empty();
+        let req =
+            ResolutionRequest::for_reference("x", &search, &bundled).with_steam_app_id(306130);
+        let result = provider
+            .provide(&req, &mut ResolutionNotes::default())
+            .expect("no error");
+        assert!(
+            result.is_none(),
+            "a launcher-mediated title must decline even with learned local launch data"
+        );
     }
 
     #[test]
