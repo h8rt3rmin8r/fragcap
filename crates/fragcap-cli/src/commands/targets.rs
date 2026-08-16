@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `targets`: manage the targets hint database (issue #78).
+//! `targets`: manage the ShruggieTech catalog store (issue #78). The command
+//! operates on an explicitly named store (`--db`), which the maintainer points at
+//! the catalog seed; it is unrelated to the per-user store bootstrap in `run`.
 //!
 //! Two subcommands, both offline and operating only on local paths: `import`
 //! loads a JSON seed document into a store (creating it if needed), and `export`

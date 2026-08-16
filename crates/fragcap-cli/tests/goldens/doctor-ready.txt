@@ -2,7 +2,8 @@ Identity
   version                ok    0.0.0-test
   binary                 ok    C:\Program Files\fragcap\fragcap.exe
   profile dir            ok    C:\Users\gamer\AppData\Roaming\fragcap\profiles
-  hint db                ok    C:\Users\gamer\AppData\Roaming\fragcap\hint.db
+  catalog db             ok    C:\Users\gamer\AppData\Roaming\fragcap\catalog.db
+  local db               ok    C:\Users\gamer\AppData\Roaming\fragcap\local.db
 
 Platform
   os                     ok    Windows 11

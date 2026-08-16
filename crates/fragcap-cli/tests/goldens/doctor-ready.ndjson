@@ -1,7 +1,8 @@
 {"section":"Identity","name":"version","detail":"0.0.0-test","status":"ok"}
 {"section":"Identity","name":"binary","detail":"C:\\Program Files\\fragcap\\fragcap.exe","status":"ok"}
 {"section":"Identity","name":"profile dir","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles","status":"ok"}
-{"section":"Identity","name":"hint db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\hint.db","status":"ok"}
+{"section":"Identity","name":"catalog db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db","status":"ok"}
+{"section":"Identity","name":"local db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db","status":"ok"}
 {"section":"Platform","name":"os","detail":"Windows 11","status":"ok"}
 {"section":"Platform","name":"subsystem","detail":"native","status":"ok"}
 {"section":"Platform","name":"privilege","detail":"elevated","status":"ok"}

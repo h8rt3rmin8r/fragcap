@@ -754,8 +754,48 @@ validator reads.
 > every record heuristic-unverified is what keeps a large, cheaply-seeded corpus
 > from ever outranking what fragcap actually observes at runtime (P-9).
 
-**See also:** [Target hint record](#target-hint-record), [Seeding tier](#seeding-tier),
+Since the two-store split it spans two files: the [catalog store](#catalog-store),
+which is shipped, and the [local store](#local-store), which is the user's, and it
+consults the local store first.
+
+**See also:** [Catalog store](#catalog-store), [Local store](#local-store),
+[Target hint record](#target-hint-record), [Seeding tier](#seeding-tier),
 [Resolution cascade](#resolution-cascade), [Target artifact kind](#target-artifact-kind)
+
+## Catalog store
+
+The ShruggieTech-shipped store (`catalog.db`) that seeds the
+[resolution cascade](#resolution-cascade): the public catalog, launch metadata,
+and engine attribution tiers, every row
+[heuristic-unverified](#fidelity-tier). It is disposable and replaced wholesale by
+a catalog refresh, so it holds no user data, and it lives in the per-user data
+root alongside the [local store](#local-store), consulted after it.
+
+{: .matters }
+> Splitting the shipped catalog from the user's own store makes a refresh a plain
+> file replacement, with no merge and no possibility of losing learned data. One
+> file is ours and disposable; the other is the user's and is never touched by an
+> update.
+
+**See also:** [Local store](#local-store), [Hint database](#hint-database),
+[Seeding tier](#seeding-tier)
+
+## Local store
+
+The user-owned store (`local.db`) that accumulates data learned or authored on
+this machine: the launch executables learned from the local
+[application-info cache](platform-and-distribution.md#application-info-cache), and
+the target and preference data later work adds. It is never shipped and never
+replaced by a catalog refresh, and the [resolution cascade](#resolution-cascade)
+consults it before the [catalog store](#catalog-store).
+
+{: .matters }
+> Learned launch data is specific to this machine's own installs, so it is the
+> user's, and it outranks the shipped catalog at resolution. Keeping it in its own
+> file is what lets a catalog refresh leave it byte-identical.
+
+**See also:** [Catalog store](#catalog-store), [Hint database](#hint-database),
+[Application-info cache](platform-and-distribution.md#application-info-cache)
 
 ## Seeding tier
 

@@ -75,8 +75,10 @@ pub struct Inputs {
     pub binary_path: Option<std::path::PathBuf>,
     /// The user profile directory, reported regardless of whether it exists yet.
     pub profile_dir: Option<std::path::PathBuf>,
-    /// The default hint-database path, reported regardless of existence.
-    pub hint_db_path: Option<std::path::PathBuf>,
+    /// The default catalog store path, reported regardless of existence.
+    pub catalog_db_path: Option<std::path::PathBuf>,
+    /// The default local store path, reported regardless of existence.
+    pub local_db_path: Option<std::path::PathBuf>,
     /// The operating system description.
     pub os: String,
     /// Native or a subsystem.

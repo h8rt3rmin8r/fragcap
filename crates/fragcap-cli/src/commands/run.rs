@@ -44,55 +44,66 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let search = paths::search_path(&[]);
     let bundled = paths::bundled();
 
-    // Assemble the cascade, registering the hint-database provider only when the
-    // operator supplied a present database (and this build carries the targets
-    // feature). A missing database is not an error; a present-but-unopenable one
-    // is (FR-013, FR-014).
-    // Resolve the hint database. An explicit `--hint-db` flag or `FRAGCAP_HINT_DB`
-    // wins and keeps its exact semantics (absent is non-fatal and never created, a
-    // present one is consulted, an unopenable one is a loud error in
+    // Two stores since slice S050: the ShruggieTech catalog (shipped, disposable,
+    // seeded from a template beside the binary) and the user-owned local store
+    // (learned launch data, and later slices' user data). An explicit flag or
+    // environment override keeps its exact semantics (absent is non-fatal and never
+    // created, a present one is consulted, an unopenable one is a loud error in
     // build_resolver). With neither set, fall back to the per-user default, which
-    // the first-run bootstrap below creates when absent so hint resolution and
-    // local accumulation work with no configuration (issue #96, slice S039).
-    let (mut hint_db, from_default) = match paths::hint_db_path(args.hint_db.as_deref()) {
+    // the first-run bootstrap below creates when absent. Both live in the per-user
+    // AppData root, so neither needs elevation (FR-011).
+    let (mut catalog_db, catalog_default) = match paths::catalog_db_path(args.catalog_db.as_deref())
+    {
         Some(path) => (Some(path), false),
-        None => (paths::default_hint_db_path(), true),
+        None => (paths::default_catalog_db_path(), true),
+    };
+    let (mut local_db, local_default) = match paths::local_db_path(args.local_db.as_deref()) {
+        Some(path) => (Some(path), false),
+        None => (paths::default_local_db_path(), true),
     };
 
-    // Bootstrap only the defaulted location, never a path the operator named: an
-    // explicit absent path stays a non-fatal no-op (FR-002, FR-004). The template,
-    // when present beside the executable (the installer and the portable archive
-    // both ship it there), seeds the writable per-user copy; otherwise an empty
-    // store is created. A bootstrap failure is a warning, never fatal (FR-005).
-    if from_default {
-        if let Some(default) = hint_db.clone() {
-            let template = bundled_hint_db_template();
-            if let Err(e) = ensure_default_hint_db(&default, template.as_deref()) {
+    // Bootstrap only defaulted locations, never a path the operator named: an
+    // explicit absent path stays a non-fatal no-op (FR-002, FR-004). The catalog
+    // seeds from the template beside the executable when present (the installer and
+    // the portable archive both ship it there); the local store is always created
+    // empty (FR-003). A bootstrap failure is a warning that drops that store, never
+    // fatal (FR-005).
+    if catalog_default {
+        if let Some(default) = catalog_db.clone() {
+            let template = bundled_catalog_template();
+            if let Err(e) = ensure_store(&default, template.as_deref()) {
                 emitter.warn(&format!(
-                    "hint database could not be initialized at {}: {e}",
+                    "catalog store could not be initialized at {}: {e}",
                     default.display()
                 ));
-                // The bootstrap left no usable database (any partial output was
-                // removed above). Drop the default so resolution proceeds with no
-                // hint provider, rather than letting build_resolver treat a missing
-                // or invalid default as a fatal error (FR-005).
-                hint_db = None;
+                catalog_db = None;
+            }
+        }
+    }
+    if local_default {
+        if let Some(default) = local_db.clone() {
+            if let Err(e) = ensure_store(&default, None) {
+                emitter.warn(&format!(
+                    "local store could not be initialized at {}: {e}",
+                    default.display()
+                ));
+                local_db = None;
             }
         }
     }
 
     // Before resolving, learn this machine's own Steam launch executables into the
-    // configured hint store, so the hint provider can name a socket-holding client
-    // the engine rule and the walker would miss (issue #78, slice S038). This runs
-    // only when a hint database is configured (the same one the resolver reads);
-    // it reads the local appinfo cache, writes only launch data, ships nothing, and
-    // never opens a process handle (P-1). A first run is slower and prints progress
-    // so it does not read as hung; later runs are mostly skips.
-    if let Some(path) = hint_db.as_deref() {
+    // user-owned local store, so the hint provider can name a socket-holding client
+    // the engine rule and the walker would miss (issue #78, slice S038; redirected
+    // to local.db in S050 so a catalog refresh cannot lose it). It reads the local
+    // appinfo cache, writes only launch data, ships nothing, and never opens a
+    // process handle (P-1). A first run is slower and prints progress so it does
+    // not read as hung; later runs are mostly skips.
+    if let Some(path) = local_db.as_deref() {
         accumulate_launch(path, emitter);
     }
 
-    let resolver = build_resolver(hint_db.as_deref())?;
+    let resolver = build_resolver(catalog_db.as_deref(), local_db.as_deref())?;
 
     // Exactly one target input is present (the clap group guarantees it). A
     // profile reference takes the unchanged profile path; an install location
@@ -140,34 +151,36 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     )
 }
 
-/// The read-only hint database template shipped beside the executable, if present.
+/// The read-only catalog store template shipped beside the executable, if present.
 ///
-/// Both distribution forms place `hint.db` next to `fragcap.exe`: the installer
+/// Both distribution forms place `catalog.db` next to `fragcap.exe`: the installer
 /// under its install directory, the portable archive beside the unzipped binary.
 /// The first-run bootstrap copies it to the writable per-user default. A bare-exe
 /// copy has no sibling template, and the bootstrap creates an empty store instead.
 /// This opens no process and reads no memory; it only inspects the executable's
 /// own directory (P-1).
-fn bundled_hint_db_template() -> Option<PathBuf> {
+fn bundled_catalog_template() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let sibling = exe.parent()?.join("hint.db");
+    let sibling = exe.parent()?.join("catalog.db");
     sibling.is_file().then_some(sibling)
 }
 
-/// Ensure the default hint database exists, so hint resolution and local
-/// accumulation have a store the first time fragcap runs with no configuration.
+/// Ensure a default store exists, so resolution and local accumulation have a
+/// store the first time fragcap runs with no configuration.
 ///
 /// Pure over its arguments and so tested with scratch directories; it touches only
 /// `default`:
 ///
 /// - `default` already exists: it is left exactly as it was (idempotent).
-/// - `default` absent with a `template`: the template is copied to `default`.
-/// - `default` absent with no template: an empty current-schema store is created.
+/// - `default` absent with a `template`: the template is copied to `default`
+///   (the catalog seed).
+/// - `default` absent with no template: an empty current-schema store is created
+///   (the local store always, the catalog on a bare-exe build).
 ///
-/// The parent directory is created as needed. This is only ever called for the
+/// The parent directory is created as needed. This is only ever called for a
 /// per-user default, never for a path the operator named explicitly, so it can
 /// never create or overwrite an operator-supplied file (FR-004).
-fn ensure_default_hint_db(default: &Path, template: Option<&Path>) -> std::io::Result<()> {
+fn ensure_store(default: &Path, template: Option<&Path>) -> std::io::Result<()> {
     if default.exists() {
         return Ok(());
     }
@@ -175,9 +188,9 @@ fn ensure_default_hint_db(default: &Path, template: Option<&Path>) -> std::io::R
         std::fs::create_dir_all(parent)?;
     }
     let result = match template {
-        Some(template) if template.is_file() => copy_writable_hint_db(template, default),
-        // No template shipped: materialize an empty current-schema store. Opening
-        // a store at a fresh path creates a valid, empty database.
+        Some(template) if template.is_file() => copy_writable_store(template, default),
+        // No template: materialize an empty current-schema store. Opening a store
+        // at a fresh path creates a valid, empty database.
         _ => fragcap::targets::Store::open(default)
             .map(|_| ())
             .map_err(|e| std::io::Error::other(e.to_string())),
@@ -185,8 +198,8 @@ fn ensure_default_hint_db(default: &Path, template: Option<&Path>) -> std::io::R
     if result.is_err() {
         // A copy or create that fails partway can leave a truncated file behind.
         // Remove it, so a later `build_resolver` cannot see a present-but-invalid
-        // database and turn a non-fatal bootstrap failure into a fatal one (the
-        // caller also drops the path; this is the on-disk half). FR-005.
+        // store and turn a non-fatal bootstrap failure into a fatal one (the caller
+        // also drops the path; this is the on-disk half). FR-005.
         let _ = std::fs::remove_file(default);
     }
     result
@@ -198,7 +211,7 @@ fn ensure_default_hint_db(default: &Path, template: Option<&Path>) -> std::io::R
 /// that attribute on Windows. The per-user copy must be writable, because local
 /// accumulation persists into it on every run, so the read-only attribute is
 /// cleared on the destination after the copy.
-fn copy_writable_hint_db(template: &Path, default: &Path) -> std::io::Result<()> {
+fn copy_writable_store(template: &Path, default: &Path) -> std::io::Result<()> {
     std::fs::copy(template, default)?;
     let perms = std::fs::metadata(default)?.permissions();
     if perms.readonly() {
@@ -227,22 +240,22 @@ fn make_writable(path: &Path, perms: std::fs::Permissions) -> std::io::Result<()
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
-/// Learn this machine's Steam launch executables into the configured hint store.
+/// Learn this machine's Steam launch executables into the user-owned local store.
 ///
-/// Runs only when the database is present and openable; a missing or unopenable
-/// database is left for [`build_resolver`] to handle (a present-but-unopenable one
-/// is a loud error there, a missing one is not an error at all), so this never
-/// duplicates or pre-empts that decision. Progress and the final account go to the
-/// emitter, which respects the operator's quiet or silent choice. A Steam that is
-/// absent or has no appinfo yields a zero-considered result and stays quiet; a
-/// genuine fault is a warning, never fatal to the capture.
-fn accumulate_launch(hint_db: &Path, emitter: &mut Emitter) {
-    // Only act on a present, openable database. `Ok(false)`/`Err` and an open
+/// Runs only when the store is present and openable; a missing or unopenable store
+/// is left for [`build_resolver`] to handle (a present-but-unopenable one is a loud
+/// error there, a missing one is not an error at all), so this never duplicates or
+/// pre-empts that decision. Progress and the final account go to the emitter, which
+/// respects the operator's quiet or silent choice. A Steam that is absent or has no
+/// appinfo yields a zero-considered result and stays quiet; a genuine fault is a
+/// warning, never fatal to the capture.
+fn accumulate_launch(local_db: &Path, emitter: &mut Emitter) {
+    // Only act on a present, openable store. `Ok(false)`/`Err` and an open
     // failure both defer to build_resolver rather than reporting twice.
-    if !matches!(hint_db.try_exists(), Ok(true)) {
+    if !matches!(local_db.try_exists(), Ok(true)) {
         return;
     }
-    let mut store = match fragcap::targets::Store::open(hint_db) {
+    let mut store = match fragcap::targets::Store::open(local_db) {
         Ok(store) => store,
         Err(_) => return,
     };
@@ -278,18 +291,21 @@ fn accumulate_launch(hint_db: &Path, emitter: &mut Emitter) {
     }
 }
 
-/// Assemble the resolution cascade, registering the concrete hint-database
-/// provider at precedence 2 only when this build carries the `targets` feature and
-/// the operator supplied a present database file.
+/// Assemble the resolution cascade, registering one layered hint provider at
+/// precedence 2 over the present stores (slice S050). The stores are consulted in
+/// resolution order, the user-owned local store before the shipped catalog.
 ///
-/// A missing database (no path, or a path that does not exist) leaves precedence 2
-/// empty, so resolution is identical to a build without the feature (FR-012,
-/// FR-013). A present-but-unopenable database (corrupt or a wrong schema version)
+/// A missing store (no path, or a path that does not exist) contributes nothing,
+/// so a build with neither store resolves identically to one with no hint provider
+/// (FR-013). A present-but-unopenable store (corrupt or a wrong schema version)
 /// fails here, at the boundary where the operator named it, rather than as a
-/// per-request surprise (FR-014). The built-in providers occupy distinct
-/// precedence positions by construction, so `TargetResolver::new` cannot fail for
-/// that reason; the message documents the invariant.
-fn build_resolver(hint_db: Option<&Path>) -> Result<TargetResolver, CliError> {
+/// per-request surprise (FR-014). Both stores feed one provider, so precedence 2
+/// stays a single position; the built-in providers occupy distinct positions by
+/// construction, so `TargetResolver::new` cannot fail for that reason.
+fn build_resolver(
+    catalog_db: Option<&Path>,
+    local_db: Option<&Path>,
+) -> Result<TargetResolver, CliError> {
     let mut providers: Vec<Box<dyn TargetProvider>> = vec![
         Box::new(ProfileProvider::new()),
         Box::new(EngineRuleProvider::new()),
@@ -297,32 +313,36 @@ fn build_resolver(hint_db: Option<&Path>) -> Result<TargetResolver, CliError> {
         Box::new(ObservationProvider::new()),
     ];
 
-    // The shipped tool always carries the targets database, so `fragcap::targets`
-    // is always available here; the graceful "no database" degradation is the
-    // runtime check below, not a compile-time feature gate. A library consumer of
-    // `fragcap` that builds without the `targets` feature never reaches this code.
-    if let Some(path) = hint_db {
-        // `try_exists` distinguishes a genuinely absent file (Ok(false), which is
-        // not an error, FR-013) from a path whose existence cannot be determined
-        // (Err, for example a denying ACL on a parent). `Path::exists` collapses
-        // the latter to `false` and would silently leave precedence 2 empty for a
-        // database the operator explicitly named, so an inaccessible path is
-        // surfaced loudly like an unopenable one (FR-014).
+    // Open the present stores in resolution order: local first, then catalog. Each
+    // present one is opened here (the shipped tool always carries `fragcap::targets`;
+    // a library consumer without the feature never reaches this code). `try_exists`
+    // distinguishes a genuinely absent file (Ok(false), not an error, FR-013) from a
+    // path whose existence cannot be determined (Err), which is surfaced loudly like
+    // an unopenable store rather than silently skipped for a store the operator named
+    // (FR-014).
+    let mut stores = Vec::new();
+    for (label, path) in [("local", local_db), ("catalog", catalog_db)] {
+        let Some(path) = path else { continue };
         match path.try_exists() {
             Ok(true) => {
                 let store = fragcap::targets::Store::open(path).map_err(|e| {
-                    CliError::failure(format!("cannot open hint database {}: {e}", path.display()))
+                    CliError::failure(format!("cannot open {label} store {}: {e}", path.display()))
                 })?;
-                providers.push(Box::new(fragcap::targets::HintDatabaseProvider::new(store)));
+                stores.push(store);
             }
             Ok(false) => {}
             Err(e) => {
                 return Err(CliError::failure(format!(
-                    "cannot access hint database {}: {e}",
+                    "cannot access {label} store {}: {e}",
                     path.display()
                 )))
             }
         }
+    }
+    if !stores.is_empty() {
+        providers.push(Box::new(
+            fragcap::targets::HintDatabaseProvider::new_layered(stores),
+        ));
     }
 
     TargetResolver::new(providers)
@@ -536,7 +556,7 @@ mod tests {
     fn build_resolver_without_a_hint_db_succeeds() {
         // FR-013: no database supplied is not an error; the cascade is assembled
         // without the hint provider, exactly as before this slice.
-        assert!(build_resolver(None).is_ok());
+        assert!(build_resolver(None, None).is_ok());
     }
 
     #[test]
@@ -545,7 +565,7 @@ mod tests {
         // no error.
         let absent = scratch("absent");
         assert!(!absent.exists());
-        assert!(build_resolver(Some(&absent)).is_ok());
+        assert!(build_resolver(Some(&absent), None).is_ok());
     }
 
     #[test]
@@ -555,7 +575,7 @@ mod tests {
         let path = scratch("valid.db");
         // Creating a store makes a valid database file at the path.
         fragcap::targets::Store::open(&path).expect("create store");
-        assert!(build_resolver(Some(&path)).is_ok());
+        assert!(build_resolver(Some(&path), None).is_ok());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -565,9 +585,22 @@ mod tests {
         // SQLite database) fails loudly rather than being treated as absent.
         let path = scratch("corrupt.db");
         std::fs::write(&path, b"this is not a sqlite database").expect("write garbage");
-        let result = build_resolver(Some(&path));
+        let result = build_resolver(Some(&path), None);
         assert!(result.is_err(), "a corrupt database must be a loud error");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn build_resolver_with_both_stores_registers_one_provider() {
+        // FR-008: both present stores are opened and fed to the single layered
+        // provider; the assembly succeeds with precedence 2 occupied once.
+        let catalog = scratch("both-catalog.db");
+        let local = scratch("both-local.db");
+        fragcap::targets::Store::open(&catalog).expect("catalog store");
+        fragcap::targets::Store::open(&local).expect("local store");
+        assert!(build_resolver(Some(&catalog), Some(&local)).is_ok());
+        let _ = std::fs::remove_file(&catalog);
+        let _ = std::fs::remove_file(&local);
     }
 
     #[test]
@@ -577,12 +610,32 @@ mod tests {
         let dir = scratch("bootstrap-empty");
         let default = dir.join("hint.db");
         assert!(!default.exists());
-        ensure_default_hint_db(&default, None).expect("bootstrap creates a store");
+        ensure_store(&default, None).expect("bootstrap creates a store");
         assert!(
             default.is_file(),
             "the default database must exist after bootstrap"
         );
         fragcap::targets::Store::open(&default).expect("the created file is a valid store");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_local_bootstrap_leaves_the_catalog_byte_identical() {
+        // FR-007: the two stores are separate files, so bootstrapping the local
+        // store never reads or writes the catalog. Seed a catalog, hash it, create
+        // the local store beside it, and confirm the catalog is unchanged.
+        let dir = scratch("byte-identical");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let catalog = dir.join("catalog.db");
+        fragcap::targets::Store::open(&catalog).expect("catalog store");
+        let before = std::fs::read(&catalog).expect("read catalog");
+
+        let local = dir.join("local.db");
+        ensure_store(&local, None).expect("bootstrap local");
+        assert!(local.is_file(), "the local store must be created");
+
+        let after = std::fs::read(&catalog).expect("read catalog");
+        assert_eq!(before, after, "the catalog store must be byte-identical");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -596,7 +649,7 @@ mod tests {
         fragcap::targets::Store::open(&template).expect("template store");
         let template_bytes = std::fs::read(&template).expect("read template");
         let default = dir.join("sub").join("hint.db");
-        ensure_default_hint_db(&default, Some(&template)).expect("bootstrap copies");
+        ensure_store(&default, Some(&template)).expect("bootstrap copies");
         assert_eq!(
             std::fs::read(&default).expect("read default"),
             template_bytes,
@@ -619,7 +672,7 @@ mod tests {
         std::fs::set_permissions(&template, ro).expect("mark template read-only");
 
         let default = dir.join("hint.db");
-        ensure_default_hint_db(&default, Some(&template)).expect("bootstrap copies");
+        ensure_store(&default, Some(&template)).expect("bootstrap copies");
         assert!(
             !std::fs::metadata(&default)
                 .expect("meta")
@@ -646,7 +699,7 @@ mod tests {
         std::fs::write(&default, b"sentinel").expect("seed sentinel");
         let template = dir.join("template.db");
         fragcap::targets::Store::open(&template).expect("template store");
-        ensure_default_hint_db(&default, Some(&template)).expect("no-op on a present default");
+        ensure_store(&default, Some(&template)).expect("no-op on a present default");
         assert_eq!(
             std::fs::read(&default).expect("read default"),
             b"sentinel",

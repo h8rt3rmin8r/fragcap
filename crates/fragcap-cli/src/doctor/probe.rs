@@ -170,12 +170,19 @@ fn live_probe(wpcap_loadable: bool) -> (Vec<super::IfaceInfo>, Option<bool>, Opt
 /// The identity facts: which fragcap produced this report and where it keeps its
 /// per-user data. All read-only and computed regardless of whether the paths
 /// exist yet.
-fn identity_fields() -> (String, Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+fn identity_fields() -> (
+    String,
+    Option<PathBuf>,
+    Option<PathBuf>,
+    Option<PathBuf>,
+    Option<PathBuf>,
+) {
     (
         env!("CARGO_PKG_VERSION").to_string(),
         std::env::current_exe().ok(),
         crate::paths::user_profile_dir(),
-        crate::paths::default_hint_db_path(),
+        crate::paths::default_catalog_db_path(),
+        crate::paths::default_local_db_path(),
     )
 }
 
@@ -291,7 +298,8 @@ pub fn gather() -> Inputs {
     {
         let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
             extcap_status();
-        let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
+        let (fragcap_version, binary_path, profile_dir, catalog_db_path, local_db_path) =
+            identity_fields();
         // wpcap.dll is not loadable on a non-Windows build; the live backend is
         // not linked anyway.
         let (interfaces, _loopback, interface_error) = live_probe(false);
@@ -299,7 +307,8 @@ pub fn gather() -> Inputs {
             fragcap_version,
             binary_path,
             profile_dir,
-            hint_db_path,
+            catalog_db_path,
+            local_db_path,
             os: format!("{} (capture is Windows-only)", std::env::consts::OS),
             subsystem: Subsystem::Native,
             privilege: Privilege::NotElevated,
@@ -368,12 +377,14 @@ fn gather_windows(user_count: usize) -> Inputs {
 
     let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
         extcap_status();
-    let (fragcap_version, binary_path, profile_dir, hint_db_path) = identity_fields();
+    let (fragcap_version, binary_path, profile_dir, catalog_db_path, local_db_path) =
+        identity_fields();
     Inputs {
         fragcap_version,
         binary_path,
         profile_dir,
-        hint_db_path,
+        catalog_db_path,
+        local_db_path,
         os: "Windows".to_string(),
         subsystem: Subsystem::Native,
         privilege: if is_elevated() {

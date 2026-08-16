@@ -101,10 +101,10 @@ jobs:
           }
           Write-Output "OK: no npcap component found in the artifact tree."
 
-      - name: Build the barebones hint database
+      - name: Build the barebones catalog store
         shell: pwsh
         run: |
-          # Section 24.5: the release ships a barebones targets hint database.
+          # Section 24.5: the release ships a barebones catalog store (catalog.db).
           # It is built offline from a committed empty seed through the existing
           # import path (issue #96), so it is an empty, current-schema store with
           # no rows. Placed beside the binary so both the archive and the MSI pick
@@ -112,7 +112,7 @@ jobs:
           # and NOTICE are staged here too, because the installer sources all four
           # payload files from the binary directory (CargoTargetBinDir).
           $ErrorActionPreference = 'Stop'
-          & target/release/fragcap.exe targets import assets/hint-seed.json --db target/release/hint.db
+          & target/release/fragcap.exe targets import assets/hint-seed.json --db target/release/catalog.db
           Copy-Item LICENSE, NOTICE target/release/
 
       - name: Install WiX and cargo-wix
@@ -145,7 +145,7 @@ jobs:
           # duplicate-table collisions, so no extension flags are passed.
           # --target-bin-dir is required alongside --no-build so main.wxs's
           # $(var.CargoTargetBinDir) resolves to the staged payload (fragcap.exe,
-          # hint.db, LICENSE, NOTICE). WiX is located through the WIX env var the
+          # catalog.db, LICENSE, NOTICE). WiX is located through the WIX env var the
           # previous step exported. This whole invocation was validated end to end
           # against WiX 3.14 before it was committed.
           $ErrorActionPreference = 'Stop'
@@ -195,16 +195,16 @@ jobs:
           # there is no INCOMPLETE marker (issues #54, #57).
           Copy-Item target/release/fragcap.exe $stage
           Copy-Item LICENSE, NOTICE $stage
-          # The barebones hint database ships in the archive beside the binary, so
+          # The barebones catalog store ships in the archive beside the binary, so
           # a portable-archive user gets the same first-run bootstrap as an
           # installed one (section 24.5, issue #96).
-          Copy-Item target/release/hint.db $stage
+          Copy-Item target/release/catalog.db $stage
 
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force $stage
-          # Also ship the hint database as its own download, so a user can take it
+          # Also ship the catalog store as its own download, so a user can take it
           # without the archive or the installer.
-          Copy-Item target/release/hint.db "dist/hint.db"
+          Copy-Item target/release/catalog.db "dist/catalog.db"
           Get-ChildItem dist
 
       - name: Generate checksums

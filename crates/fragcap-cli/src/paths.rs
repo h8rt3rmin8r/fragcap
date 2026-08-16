@@ -27,8 +27,13 @@ use fragcap::profile::{BundledSet, SearchPath};
 /// The environment variable that overrides the user profile directory.
 pub const PROFILE_DIR_ENV: &str = "FRAGCAP_PROFILE_DIR";
 
-/// The environment variable that supplies a targets hint database for resolution.
-pub const HINT_DB_ENV: &str = "FRAGCAP_HINT_DB";
+/// The environment variable that overrides the catalog store path (slice S050).
+/// The `--catalog-db` flag takes precedence over it.
+pub const CATALOG_DB_ENV: &str = "FRAGCAP_CATALOG_DB";
+
+/// The environment variable that overrides the local store path (slice S050). The
+/// `--local-db` flag takes precedence over it.
+pub const LOCAL_DB_ENV: &str = "FRAGCAP_LOCAL_DB";
 
 /// The environment variable that overrides the analyzer extcap directory.
 pub const EXTCAP_DIR_ENV: &str = "FRAGCAP_EXTCAP_DIR";
@@ -181,41 +186,53 @@ pub fn user_profile_dir() -> Option<PathBuf> {
     env::var_os("APPDATA").map(|base| PathBuf::from(base).join("fragcap").join("profiles"))
 }
 
-/// The targets hint database to consult during resolution, or `None` when the
-/// operator supplied neither the `--hint-db` flag nor the `FRAGCAP_HINT_DB`
-/// override.
+/// The catalog store path an override supplies, or `None` when the operator
+/// supplied neither the `--catalog-db` flag nor the `FRAGCAP_CATALOG_DB` override.
 ///
 /// The flag takes precedence over the environment variable, mirroring how the
 /// profile directory resolves. Returning a path here does not assert the file
 /// exists; the caller decides that a missing file means no provider (not an
 /// error), while a present-but-unopenable one is surfaced loudly.
-pub fn hint_db_path(flag: Option<&Path>) -> Option<PathBuf> {
+pub fn catalog_db_path(flag: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = flag {
         return Some(path.to_path_buf());
     }
-    env::var_os(HINT_DB_ENV).map(PathBuf::from)
+    env::var_os(CATALOG_DB_ENV).map(PathBuf::from)
 }
 
-/// The per-user default hint database location, a sibling of the profile
-/// directory, or `None` when the platform application-data base cannot be
-/// determined.
+/// The local store path an override supplies, or `None` when the operator
+/// supplied neither the `--local-db` flag nor the `FRAGCAP_LOCAL_DB` override.
+/// Flag over environment, as with the catalog store.
+pub fn local_db_path(flag: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = flag {
+        return Some(path.to_path_buf());
+    }
+    env::var_os(LOCAL_DB_ENV).map(PathBuf::from)
+}
+
+/// The per-user default catalog store location (the ShruggieTech-shipped store),
+/// or `None` when the platform application-data base cannot be determined.
 ///
-/// This is the fallback the `run` command uses when the operator supplies
-/// neither the `--hint-db` flag nor the `FRAGCAP_HINT_DB` override (both handled
-/// by [`hint_db_path`], which takes precedence). It mirrors [`user_profile_dir`]:
-/// `%APPDATA%\fragcap\hint.db`, read from the environment so no
-/// platform-directories crate is pulled in. It is the only hint-database source
-/// the first-run bootstrap ever creates; an explicitly named path is never
-/// created on the operator's behalf.
-pub fn default_hint_db_path() -> Option<PathBuf> {
-    default_hint_db_from(env::var_os("APPDATA").map(PathBuf::from))
+/// `%APPDATA%\fragcap\catalog.db`. The first-run bootstrap seeds it from the
+/// template shipped beside the binary; an explicitly named path is never created
+/// on the operator's behalf.
+pub fn default_catalog_db_path() -> Option<PathBuf> {
+    default_db_from(env::var_os("APPDATA").map(PathBuf::from), "catalog.db")
 }
 
-/// The default hint database location given an application-data base. Factored
-/// out from [`default_hint_db_path`] so the join is testable without mutating the
-/// process environment.
-fn default_hint_db_from(appdata: Option<PathBuf>) -> Option<PathBuf> {
-    appdata.map(|base| base.join("fragcap").join("hint.db"))
+/// The per-user default local store location (the user-owned store), or `None`
+/// when the platform application-data base cannot be determined.
+///
+/// `%APPDATA%\fragcap\local.db`. The first-run bootstrap creates it empty; it is
+/// never seeded and never replaced by a catalog refresh.
+pub fn default_local_db_path() -> Option<PathBuf> {
+    default_db_from(env::var_os("APPDATA").map(PathBuf::from), "local.db")
+}
+
+/// A default store location given an application-data base and a file name.
+/// Factored out so the join is testable without mutating the process environment.
+fn default_db_from(appdata: Option<PathBuf>, file: &str) -> Option<PathBuf> {
+    appdata.map(|base| base.join("fragcap").join(file))
 }
 
 /// Assemble the section 15.3 search path from the command-line directories and
@@ -237,27 +254,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_flag_supplies_the_hint_db_path() {
-        // The explicit flag is returned as-is, independent of the environment.
-        let flag = Path::new("C:/scratch/hint.db");
-        assert_eq!(hint_db_path(Some(flag)), Some(flag.to_path_buf()));
+    fn the_flag_supplies_each_store_path() {
+        // Each explicit flag is returned as-is, independent of the environment.
+        let catalog = Path::new("C:/scratch/catalog.db");
+        assert_eq!(catalog_db_path(Some(catalog)), Some(catalog.to_path_buf()));
+        let local = Path::new("C:/scratch/local.db");
+        assert_eq!(local_db_path(Some(local)), Some(local.to_path_buf()));
     }
 
     #[test]
-    fn the_default_hint_db_is_a_sibling_of_the_profile_directory() {
-        // Given an application-data base, the default hint database lives under
-        // fragcap's own subdirectory, beside where profiles resolve.
+    fn the_default_stores_are_siblings_of_the_profile_directory() {
+        // Given an application-data base, both stores live under fragcap's own
+        // subdirectory, beside where profiles resolve.
         let base = PathBuf::from("C:/Users/example/AppData/Roaming");
         assert_eq!(
-            default_hint_db_from(Some(base.clone())),
-            Some(base.join("fragcap").join("hint.db"))
+            default_db_from(Some(base.clone()), "catalog.db"),
+            Some(base.join("fragcap").join("catalog.db"))
+        );
+        assert_eq!(
+            default_db_from(Some(base.clone()), "local.db"),
+            Some(base.join("fragcap").join("local.db"))
         );
     }
 
     #[test]
-    fn the_default_hint_db_is_absent_without_an_application_data_base() {
-        // With no resolvable base the default is unavailable, exactly as the
+    fn the_default_stores_are_absent_without_an_application_data_base() {
+        // With no resolvable base the defaults are unavailable, exactly as the
         // profile directory degrades; the run then proceeds without a default.
-        assert_eq!(default_hint_db_from(None), None);
+        assert_eq!(default_db_from(None, "catalog.db"), None);
+        assert_eq!(default_db_from(None, "local.db"), None);
     }
 }

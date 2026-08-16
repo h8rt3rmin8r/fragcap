@@ -1,6 +1,7 @@
 # fragcap-targets
 
-The targets hint database for fragcap.
+The targets stores for fragcap: the shipped catalog store and the user-owned
+local store, and the hint-database provider that resolves over them.
 
 ## Status
 

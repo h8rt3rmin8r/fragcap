@@ -1843,13 +1843,17 @@ winning.
 4. A profile bundled with the fragcap distribution whose `game.id`
    matches.
 
-The targets hint database has its own per-user default location,
-`%APPDATA%\fragcap\hint.db`, a sibling of the user profile directory. When
-neither the `--hint-db` option nor the `FRAGCAP_HINT_DB` environment
-variable names a database, `run` uses that default and creates it on first
-use: it copies a database shipped beside the binary when one is present,
-and otherwise creates an empty store. A database named explicitly is used
-as given and, when absent, is neither created nor an error.
+fragcap keeps two stores in the per-user data root, `%APPDATA%\fragcap\`, both
+siblings of the user profile directory. `catalog.db` is the ShruggieTech-shipped
+catalog, disposable and replaced wholesale by a catalog refresh; `local.db` is
+the user-owned store, where learned launch data and later user data accumulate
+and which a catalog refresh never touches. When neither the `--catalog-db` option
+nor the `FRAGCAP_CATALOG_DB` environment variable names a catalog, `run` uses the
+default and creates it on first use: it copies a store shipped beside the binary
+when one is present, and otherwise creates an empty store. The local store
+defaults the same way (`--local-db`, `FRAGCAP_LOCAL_DB`) and is always created
+empty. A store named explicitly is used as given and, when absent, is neither
+created nor an error.
 
 Were a profile bundled, a user profile of the same id would shadow it by
 design, so a bundled profile that had drifted from a game update is
@@ -1999,11 +2003,11 @@ would disclose which games the maintainer owns; instead each end user's copy of
 fragcap learns its own titles' launch executables on its own machine, and the
 shipped database carries only the public catalog and engine tiers.
 
-At capture start, when a hint database is configured (the same one the resolution
-cascade of section 15.7 reads), fragcap walks the installed Steam library and, for
-each installed title, reads that title's launch configuration from the machine's
-own application-info cache (`appcache/appinfo.vdf`) into the launch columns of the
-local store. The cache is a binary key-values format distinct from the text VDF of
+At capture start, when a local store is configured (which the resolution cascade
+of section 15.7 consults before the catalog), fragcap walks the installed Steam
+library and, for each installed title, reads that title's launch configuration
+from the machine's own application-info cache (`appcache/appinfo.vdf`) into the
+launch columns of the local store. The cache is a binary key-values format distinct from the text VDF of
 section 16.2; fragcap parses it with a hand-rolled parser that frames each
 application's section by a size field, so a malformed section is isolated and the
 walk continues. A title is read only when the store holds no launch data for it or
@@ -2714,9 +2718,8 @@ the paperwork.
 **No bundling.** No fragcap distribution artifact contains npcap
 binaries, installers, or driver files. This includes release archives,
 installers, and container images. The obligation binds npcap alone:
-fragcap's own data artifacts, such as the barebones targets hint database
-shipped with the release (section 24.5), are not npcap and are not
-restricted by it.
+fragcap's own data artifacts, such as the barebones catalog store shipped
+with the release (section 24.5), are not npcap and are not restricted by it.
 
 **Detection, not installation.** fragcap detects npcap's presence and
 version at runtime and reports its absence with the official download
@@ -3159,11 +3162,12 @@ available before publishing its dependents.
 
 Each release publishes three Windows downloads, and a checksum accompanies
 every one: a portable archive containing the binary, the license, the
-notice file, and the barebones targets hint database; an unsigned MSI
-installer; and the barebones hint database on its own. The user chooses
-among them. The hint database is placed beside the binary in both the
-archive and the installer, so the first-run bootstrap (section 15.3) can
-seed the writable per-user copy from it.
+notice file, and the barebones catalog store; an unsigned MSI installer; and
+the barebones catalog store on its own. The user chooses among them. The
+catalog store (`catalog.db`) is placed beside the binary in both the archive
+and the installer, so the first-run bootstrap (section 15.3) can seed the
+writable per-user copy from it. The user-owned `local.db` is not shipped; it
+is created empty on first run.
 
 The MSI installs the binary per-machine, adds its directory to the system
 path, best-effort excludes its own install directory from Windows Defender
@@ -3178,10 +3182,9 @@ The archive ships no shell wrappers: the binary handles elevation itself
 so a wrapper adds little where it would ship, and the wrappers remain in
 the repository for people who clone it. It ships no game profiles, because
 fragcap bundles none by design; a profile is scaffolded from an installed
-title or authored per title (section 15). The barebones hint database is
-not a game profile: it is fragcap's own data artifact, empty on release and
-grown from the user's own machine, so shipping it is not the profile
-bundling section 15 declines. The archive ships no repository README, which
+title or authored per title (section 15). The barebones catalog store is
+not a game profile: it is fragcap's own data artifact, empty on release, so
+shipping it is not the profile bundling section 15 declines. The archive ships no repository README, which
 is repo-oriented rather than an archive component.
 
 No artifact contains npcap or any component of it, per section 20.2.

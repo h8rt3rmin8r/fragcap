@@ -8,8 +8,8 @@
   the release job passes no extension flags; passing either again makes light fail
   with duplicate-table or duplicate-symbol collisions.
 
-  Payload files (fragcap.exe, hint.db, LICENSE, NOTICE) are read from
-  $(var.CargoTargetBinDir): the release job stages hint.db, LICENSE, and NOTICE
+  Payload files (fragcap.exe, catalog.db, LICENSE, NOTICE) are read from
+  $(var.CargoTargetBinDir): the release job stages catalog.db, LICENSE, and NOTICE
   next to the built fragcap.exe before invoking cargo wix.
 
   UpgradeCode is frozen for the life of the product line; it must never change or
@@ -57,10 +57,10 @@
                          Permanent="no" />
           </Component>
 
-          <Component Id="Comp_hint_db" Guid="A8D4F1C0-2E77-4B95-8A6D-5C3B9E0F1A28">
-            <File Id="hint_db"
-                  Name="hint.db"
-                  Source="$(var.CargoTargetBinDir)\hint.db"
+          <Component Id="Comp_catalog_db" Guid="A8D4F1C0-2E77-4B95-8A6D-5C3B9E0F1A28">
+            <File Id="catalog_db"
+                  Name="catalog.db"
+                  Source="$(var.CargoTargetBinDir)\catalog.db"
                   ReadOnly="yes"
                   KeyPath="yes" />
           </Component>
@@ -85,7 +85,7 @@
 
     <Feature Id="MainFeature" Title="fragcap" Level="1">
       <ComponentRef Id="Comp_fragcap_exe" />
-      <ComponentRef Id="Comp_hint_db" />
+      <ComponentRef Id="Comp_catalog_db" />
       <ComponentRef Id="Comp_license" />
       <ComponentRef Id="Comp_notice" />
     </Feature>
