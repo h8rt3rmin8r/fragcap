@@ -61,12 +61,32 @@ fn identity(inputs: &Inputs) -> Vec<Check> {
             None => "undetermined".to_string(),
         }
     }
+    // A store is created on first run, so its path is shown with whether it exists
+    // yet; a missing store is normal before the first capture, not a fault.
+    fn store_detail(path: &Option<std::path::PathBuf>, present: bool) -> String {
+        match path {
+            Some(path) => format!(
+                "{} ({})",
+                path.display(),
+                if present { "present" } else { "absent" }
+            ),
+            None => "undetermined".to_string(),
+        }
+    }
     vec![
         Check::ok(IDENTITY, "version", inputs.fragcap_version.clone()),
         Check::ok(IDENTITY, "binary", path_detail(&inputs.binary_path)),
         Check::ok(IDENTITY, "profile dir", path_detail(&inputs.profile_dir)),
-        Check::ok(IDENTITY, "catalog db", path_detail(&inputs.catalog_db_path)),
-        Check::ok(IDENTITY, "local db", path_detail(&inputs.local_db_path)),
+        Check::ok(
+            IDENTITY,
+            "catalog db",
+            store_detail(&inputs.catalog_db_path, inputs.catalog_db_present),
+        ),
+        Check::ok(
+            IDENTITY,
+            "local db",
+            store_detail(&inputs.local_db_path, inputs.local_db_present),
+        ),
     ]
 }
 
@@ -360,9 +380,11 @@ mod tests {
             catalog_db_path: Some(std::path::PathBuf::from(
                 "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db",
             )),
+            catalog_db_present: true,
             local_db_path: Some(std::path::PathBuf::from(
                 "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db",
             )),
+            local_db_present: true,
             os: "Windows 11".to_string(),
             subsystem: Subsystem::Native,
             privilege: Privilege::Elevated,

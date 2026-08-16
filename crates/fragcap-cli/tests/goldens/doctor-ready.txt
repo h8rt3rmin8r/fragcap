@@ -3,7 +3,9 @@ Identity
   binary                 ok    C:\Program Files\fragcap\fragcap.exe
   profile dir            ok    C:\Users\gamer\AppData\Roaming\fragcap\profiles
   catalog db             ok    C:\Users\gamer\AppData\Roaming\fragcap\catalog.db
+                               (present)
   local db               ok    C:\Users\gamer\AppData\Roaming\fragcap\local.db
+                               (present)
 
 Platform
   os                     ok    Windows 11

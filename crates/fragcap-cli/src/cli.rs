@@ -126,9 +126,10 @@ pub struct RunArgs {
 
     /// The local store, where learned launch data accumulates and your own data
     /// lives. It is consulted before the catalog during resolution. Overrides
-    /// `FRAGCAP_LOCAL_DB` and the default location; with neither set, `run`
-    /// defaults to `%APPDATA%\fragcap\local.db` and creates it empty on first use.
-    /// A catalog refresh never touches this store.
+    /// `FRAGCAP_LOCAL_DB` and the default location; a store named here that does
+    /// not exist is not created and is not an error. With neither this flag nor the
+    /// environment variable set, `run` defaults to `%APPDATA%\fragcap\local.db` and
+    /// creates it empty on first use. A catalog refresh never touches this store.
     #[arg(long)]
     pub local_db: Option<PathBuf>,
 

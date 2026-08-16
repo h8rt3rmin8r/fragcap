@@ -77,8 +77,12 @@ pub struct Inputs {
     pub profile_dir: Option<std::path::PathBuf>,
     /// The default catalog store path, reported regardless of existence.
     pub catalog_db_path: Option<std::path::PathBuf>,
+    /// Whether the catalog store exists on disk (created on first run).
+    pub catalog_db_present: bool,
     /// The default local store path, reported regardless of existence.
     pub local_db_path: Option<std::path::PathBuf>,
+    /// Whether the local store exists on disk (created on first run).
+    pub local_db_present: bool,
     /// The operating system description.
     pub os: String,
     /// Native or a subsystem.

@@ -62,6 +62,21 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         None => (paths::default_local_db_path(), true),
     };
 
+    // The two stores must be different files. If the catalog and local paths
+    // identify one file, accumulation would write learned user data into the
+    // catalog and the resolver would open it twice as separate layers, defeating
+    // the ownership boundary and letting a future catalog replacement discard the
+    // learned data (FR-007). Refuse before bootstrap or accumulation touches it.
+    if let (Some(catalog), Some(local)) = (catalog_db.as_deref(), local_db.as_deref()) {
+        if same_store_file(catalog, local) {
+            return Err(CliError::failure(format!(
+                "the catalog store and the local store must be different files, \
+                 but both resolve to {}",
+                catalog.display()
+            )));
+        }
+    }
+
     // Bootstrap only defaulted locations, never a path the operator named: an
     // explicit absent path stays a non-fatal no-op (FR-002, FR-004). The catalog
     // seeds from the template beside the executable when present (the installer and
@@ -149,6 +164,19 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // A sink failure is an unrecoverable end for `run`, not a clean stop.
         false,
     )
+}
+
+/// Whether two store paths identify the same file.
+///
+/// Prefers canonical identity when both files exist, so an alias, a case
+/// difference, or a symlink to one file is caught; otherwise it falls back to a
+/// lexical comparison, which catches the common "both flags name the same path"
+/// mistake before either file is created.
+fn same_store_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
 }
 
 /// The read-only catalog store template shipped beside the executable, if present.
@@ -553,14 +581,14 @@ mod tests {
     }
 
     #[test]
-    fn build_resolver_without_a_hint_db_succeeds() {
+    fn build_resolver_without_stores_succeeds() {
         // FR-013: no database supplied is not an error; the cascade is assembled
         // without the hint provider, exactly as before this slice.
         assert!(build_resolver(None, None).is_ok());
     }
 
     #[test]
-    fn a_missing_hint_db_file_is_not_an_error() {
+    fn a_missing_store_file_is_not_an_error() {
         // FR-013: a path that does not exist leaves precedence 2 empty and raises
         // no error.
         let absent = scratch("absent");
@@ -569,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn a_present_valid_hint_db_registers_the_provider() {
+    fn a_present_valid_store_registers_the_provider() {
         // FR-012: a present, openable database registers the provider (the
         // assembly succeeds with the extra precedence position).
         let path = scratch("valid.db");
@@ -580,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn a_present_unopenable_hint_db_is_an_error() {
+    fn a_present_unopenable_store_is_an_error() {
         // FR-014: a present-but-unopenable database (here, a file that is not a
         // SQLite database) fails loudly rather than being treated as absent.
         let path = scratch("corrupt.db");
@@ -636,6 +664,23 @@ mod tests {
 
         let after = std::fs::read(&catalog).expect("read catalog");
         assert_eq!(before, after, "the catalog store must be byte-identical");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn identical_store_paths_are_detected() {
+        // The guard that refuses a catalog and a local path that name one file.
+        let dir = scratch("same-file");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let catalog = dir.join("catalog.db");
+        let local = dir.join("local.db");
+        fragcap::targets::Store::open(&catalog).expect("catalog");
+        fragcap::targets::Store::open(&local).expect("local");
+        assert!(same_store_file(&catalog, &catalog), "one path is one file");
+        assert!(
+            !same_store_file(&catalog, &local),
+            "two distinct files are not the same store"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

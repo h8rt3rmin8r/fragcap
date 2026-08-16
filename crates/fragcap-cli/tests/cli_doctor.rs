@@ -22,9 +22,11 @@ fn ready() -> Inputs {
         catalog_db_path: Some(std::path::PathBuf::from(
             "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db",
         )),
+        catalog_db_present: true,
         local_db_path: Some(std::path::PathBuf::from(
             "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db",
         )),
+        local_db_present: true,
         os: "Windows 11".to_string(),
         subsystem: Subsystem::Native,
         privilege: Privilege::Elevated,
