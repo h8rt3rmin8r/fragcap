@@ -60,6 +60,12 @@ jobs:
       - name: Publication licensing
         run: cargo run --package xtask -- license
 
+      # Constitution P-11: the specification's Applies-To field must equal the
+      # workspace version, and every changelog fragment must carry a valid
+      # spec-impact line. OS-independent (file reads only), so it runs on both legs.
+      - name: Specification version lock-step
+        run: cargo run --package xtask -- spec
+
       # The wrapper compliance gate needs bash (for the vendored PowerShell
       # checker's POSIX twin and bash -n) and pwsh (for the PowerShell parse).
       # The ubuntu runner ships both; the checks are OS-independent, so running

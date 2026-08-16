@@ -37,6 +37,26 @@ drop-counter-overflow.fixed.md
 One change can produce several fragments. A slice that adds a feature and fixes
 a defect found along the way writes two files.
 
+## Spec impact
+
+Every fragment's first line is a machine-readable `spec-impact` field, an HTML
+comment naming which specification sections the change modified:
+
+```text
+<!-- spec-impact: none -->
+<!-- spec-impact: 3.3, 23.1, 27.3 -->
+```
+
+The value is either `none` or a comma-separated list of specification section
+numbers. It is required on every fragment, checked by `cargo xtask spec`, and it
+is stripped before assembly so it never reaches `CHANGELOG.md`.
+
+It exists so a release cannot claim a specification change that did not happen.
+At release assembly, if any fragment names a section, `cargo xtask changelog
+--release` requires `docs/fragcap-specification.md` to have changed in the
+release diff, and refuses otherwise. A fragment that touches no specification
+section carries `none`. See constitution principle P-11.
+
 ## Content
 
 The body is the changelog entry itself: one or two sentences, present tense,

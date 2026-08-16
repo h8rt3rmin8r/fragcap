@@ -1,10 +1,11 @@
-# fragcap v0.1.0 Technical Specification
+# fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.0 \
+**Version:** 0.1.6-draft \
+**Applies-To:** 0.4.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-06 \
+**Date:** 2026-08-16 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -38,17 +39,25 @@
 - [25. Testing Strategy](#25-testing-strategy)
 - [26. Observability and Diagnostics](#26-observability-and-diagnostics)
 - [27. Spec Kit Decomposition](#27-spec-kit-decomposition)
-- [28. Roadmap Beyond v0.2.0](#28-roadmap-beyond-v020)
+- [28. Roadmap Beyond the Current Release](#28-roadmap-beyond-the-current-release)
 - [29. Open Questions](#29-open-questions)
 - [30. Appendices](#30-appendices)
 
 ## 1. Document Control
 
-This document specifies fragcap for its first public release, v0.2.0,
-which comprises the whole roadmap. It defines the product's
-purpose, boundaries, architecture, interfaces, and delivery
+This document is the architecture of record for fragcap. It defines the
+product's purpose, boundaries, architecture, interfaces, and delivery
 requirements at a level sufficient to decompose into implementable work
 without further design negotiation.
+
+Two version fields in the header mean different things. **Applies-To** names the
+released software version this document describes. It tracks the workspace
+package version and is bound to it by `cargo xtask spec`, so the specification
+and the shipped artifact cannot drift (constitution P-11). **Version** is this
+document's own revision, recorded in the history below. As of this revision the
+released software runs from v0.1.0, the crates.io namespace-reservation stub
+carrying no functionality, through v0.4.0; v0.5.0 is in progress. The
+per-release scope is in section 27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -88,6 +97,7 @@ enforcement.
 | 0.1.3-draft | 2026-08-06 | W. Thompson | **Withdraws the redaction rules.** 0.1.1-draft made command line capture opt-in, masked profile paths, redacted parameters by name at the source, and barred command lines from output. All four alter what the instrument reports, contrary to section 2.3 and to the project's stated purpose. Command lines are recorded verbatim, as the original 10.2 specified. Scope remains the operator's control; preparation for publication becomes an explicit downstream operation on a copy. Removes the 15.4 and 10.3 rules that existed only to manage the invented default. Adds constitution principle **P-9, The Instrument Does Not Lie** (constitution 1.1.0), so the reasoning that produced those rules is blocked rather than merely reverted. |
 | 0.1.4-draft | 2026-08-10 | W. Thompson | Codifies the release-versioning scheme. v0.1.0 is the crates.io namespace-reservation stub; the first functional release is v0.2.0 (slices through S14); v0.3.0 completes S15 through S18. Partitions the 3.3 success criteria across the two functional releases, retitles section 28, and updates 9.1, 27.3, and scope prose throughout. |
 | 0.1.5-draft | 2026-08-10 | W. Thompson | **Reverses the two-release split.** There is now one first public release, v0.2.0, comprising the whole roadmap (S01 through S18); it and the crates.io publication of the functional crates happen only after every slice is complete. Un-partitions the 3.3 success criteria (v0.2.0 is complete when SC-1 through SC-7 hold), collapses the 27.3 release table to a single functional release, retitles section 28 "Beyond v0.2.0", and updates the scope prose. v0.1.0 remains the already-published name-reservation stub. |
+| 0.1.6-draft | 2026-08-16 | W. Thompson | **Reconciles the specification with shipped reality (slice S049).** v0.2.0 shipped 2026-08-12 as the first functional release (the S01 through S18 roadmap); v0.3.0 and v0.4.0 followed on 2026-08-14; the document had continued to describe v0.2.0 as unshipped. Adds the **Applies-To** header field (0.4.0), bound to the workspace version by `cargo xtask spec`; makes the title version-neutral; reframes 3.3, updates the 27.3 release table, retitles section 28 version-neutrally, and corrects the scope prose throughout; replaces the 23.1 landing-page paragraph. Adds constitution principles **P-10** (One Path To A Target) and **P-11** (The Specification Describes What Shipped, constitution 1.2.0). Per-release scope beyond v0.2.0 is recorded in CHANGELOG.md rather than restated here. |
 
 ## 2. Purpose and Problem Statement
 
@@ -205,7 +215,7 @@ drivers, not filtering or interception drivers. Section 19 defines the
 allowlist.
 
 **NG-4. No game-specific protocol logic in core.** Protocol dissection
-is a declared plugin seam, deferred beyond v0.2.0 (section 28). No
+is a declared plugin seam, deferred to the roadmap (section 28). No
 dissector ships in the core crates at any version.
 
 **NG-5. Not a proxy, accelerator, or optimizer.** fragcap is not
@@ -218,12 +228,13 @@ and stored as ciphertext.
 
 ### 3.3 Success Criteria
 
-The first public release is v0.2.0, comprising the whole roadmap; v0.1.0
+v0.2.0 was the first functional release, comprising the whole roadmap; v0.1.0
 is a crates.io namespace-reservation stub carrying no functionality
-(section 27.3). The release is complete only when every success
-criterion holds.
+(section 27.3). It shipped on 2026-08-12 meeting the criteria below, which
+remain the standing success criteria for the product's core across every
+functional release.
 
-**v0.2.0 is complete when SC-1 through SC-7 hold.**
+**A functional release holds SC-1 through SC-7.**
 
 **SC-1.** A single `fragcap run --profile eso` invocation, issued
 before the game starts, produces one capture file covering launcher
@@ -242,8 +253,7 @@ when npcap is absent.
 continuous integration on a runner with no capture driver installed and
 no game present, using the replay source and scripted attributor.
 
-SC-5 through SC-7 complete the remaining roadmap capabilities and are
-part of the same v0.2.0 release.
+SC-5 through SC-7 cover the remaining core capabilities and held at v0.2.0.
 
 **SC-5.** A downstream process consumes a live stream over a named pipe
 and over TCP, and Wireshark attaches to a running capture through the
@@ -973,9 +983,9 @@ analysis in a later version.
 
 ## 9. Platform Strategy
 
-### 9.1 v0.2.0 Target
+### 9.1 Target Platform
 
-fragcap v0.2.0 targets Windows 11 on `x86_64-pc-windows-msvc`. The
+fragcap targets Windows 11 on `x86_64-pc-windows-msvc`. The
 capture backend uses npcap through the libpcap API. The attribution
 backend uses the IP Helper API socket tables. The process watcher uses
 the Event Tracing for Windows kernel process provider.
@@ -1571,8 +1581,8 @@ reader can misinterpret the payload. Custom options require a Private
 Enterprise Number that this project does not hold.
 
 The cost is parsing overhead in consumers and a modest size increase.
-Both are accepted for v0.2.0. Section 28 records binary custom options
-as a deferred optimization contingent on measurement.
+Both are accepted. Section 28 records binary custom options as a
+deferred optimization contingent on measurement.
 
 ### 13.4 Attribution Fidelity
 
@@ -1843,7 +1853,7 @@ as given and, when absent, is neither created nor an error.
 
 Were a profile bundled, a user profile of the same id would shadow it by
 design, so a bundled profile that had drifted from a game update is
-corrected locally without waiting for a release. v0.2.0 bundles none
+corrected locally without waiting for a release. fragcap bundles none
 (section 15.5), so step 4 currently matches nothing.
 
 ### 15.4 Validation
@@ -1883,7 +1893,7 @@ validation produces exit code 2 and no capture attempt.
 
 ### 15.5 Bundled Profiles
 
-v0.2.0 ships no bundled profiles. A profile is obtained per title instead:
+fragcap ships no bundled profiles. A profile is obtained per title instead:
 scaffolded from an installed Steam title with `fragcap steam profile
 <app_id>` and refined, or authored by hand. The distribution bundles none,
 which is why `fragcap doctor` reports zero bundled profiles and the release
@@ -3016,21 +3026,24 @@ so local and built output cannot diverge through configuration drift.
 The site is one application serving a landing page and the
 documentation described in section 22, deployed to `fragcap.com`.
 
-The landing page leads with the problem fragcap solves that standard
-tooling does not: capture below the socket layer has already discarded
-the association between a packet and the process that produced it, and
-for a client started indirectly through a launcher the owning process is
-not the launcher. It then states what fragcap is, shows one worked
-invocation with its output, presents a small number of concrete
-capability statements each linking into the documentation that proves it,
-and names the prerequisite plainly, linking to getting started, the
-repository, and the glossary. It does not carry testimonials, feature
-grids, or calls to action; the capability statements are plain facts with
-links, not marketing copy, and the voice stays within section 23.3. The
-earlier assumption that the audience arrives already knowing they need a
-capture tool is retired: the page should still reach a technically
-competent visitor who does not yet know that attribution is the hard
-part.
+The landing page opens with the problem fragcap solves that standard
+tooling does not, stated plainly enough that a technically competent
+visitor who has never thought about attribution understands the gap
+within one screen. It then shows the tool working: a real command and
+its real output, rendered in the interface typeface, which is the page's
+primary persuasive asset. It states what fragcap is, presents a small
+number of concrete capability statements each linking to the
+documentation that proves it, names the prerequisite, and links to
+getting started, the repository, and the glossary.
+
+The page may use rhetorical framing, a diagram of fragcap's relationship
+to its third-party dependencies, and a single primary action directing
+the visitor to getting started. It does not carry testimonials, feature
+grids, badges, pricing, or sponsorship solicitation. Capability
+statements remain plain facts with links rather than marketing claims,
+and the section 23.3 voice remains the acceptance test: the page should
+read as instrument documentation with a strong opening, not as a product
+page.
 
 ### 23.2 Hosting and Domain
 
@@ -3494,20 +3507,25 @@ within a single autopilot run.
 | S17 | Steam integration and managed launch | S05, S12 | 16 |
 | S18 | Extcap, wrappers, documentation site | S14, S15 | 14.5, 18, 22 |
 
-The eighteen slices ship in one first public release, v0.2.0, cut only
-once every slice is complete and operational. v0.1.0 is a crates.io
-namespace-reservation stub carrying no functionality and is not a
-functional release; the crates.io publication of the functional crates
-happens at v0.2.0, that is, only after all slices are complete. There is
-no earlier functional release: the capture-to-file CLI (through S14) and
-the remaining capabilities (streaming transports, ring mode, managed
-launch, and the extcap and documentation surfaces, S15 through S18) ship
-together as v0.2.0.
+The eighteen slices shipped in the first public release, v0.2.0, on 2026-08-12.
+v0.1.0 is a crates.io namespace-reservation stub carrying no functionality and
+is not a functional release; the crates.io publication of the functional crates
+happened at v0.2.0, after every slice was complete. The capture-to-file CLI
+(through S14) and the remaining capabilities (streaming transports, ring mode,
+managed launch, and the extcap and documentation surfaces, S15 through S18)
+shipped together as v0.2.0.
 
-| Release | Scope | Slices |
-| --- | --- | --- |
-| v0.1.0 | crates.io namespace reservation; no functionality | published stub |
-| v0.2.0 | First public release; the complete roadmap | S01 through S18 |
+Releases after v0.2.0 add capabilities through further slices, whose per-slice
+record lives in CHANGELOG.md and the `changelog.d/` fragments rather than being
+restated here. The scope of each release is:
+
+| Release | Date | Scope | Slices |
+| --- | --- | --- | --- |
+| v0.1.0 | - | crates.io namespace reservation; no functionality | published stub |
+| v0.2.0 | 2026-08-12 | First functional release; the complete roadmap | S01 through S18 |
+| v0.3.0 | 2026-08-14 | Windows installer, target resolution and watch mode, targets hint database, engine-aware resolution, one JSON master schema | follow-on slices |
+| v0.4.0 | 2026-08-14 | Wireshark extcap integration, truthful and readable doctor, documentation, schema, and brand pass | follow-on slices |
+| v0.5.0 | in progress | UX overhaul: the targets hero command, unified capture verb, discovery, and this reconciliation | S049 and later |
 
 ### 27.4 Critical Path
 
@@ -3541,10 +3559,10 @@ specification sections it implements, and any deviation discovered
 during implementation is recorded in the slice and promoted to section
 29 of this document at the next version.
 
-## 28. Roadmap Beyond v0.2.0
+## 28. Roadmap Beyond the Current Release
 
-Recorded so that scope pressure during the roadmap has a destination.
-None of the following is in v0.2.0.
+Recorded so that scope pressure has a destination. None of the following has
+shipped as of the release this document applies to.
 
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace

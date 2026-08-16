@@ -1,5 +1,22 @@
 # Rust and Tooling
 
+## Applies-To
+
+A field in the master specification's document-control block naming the released
+software version the document describes. It tracks the workspace package version
+and is bound to it by `cargo xtask spec`, so the specification and the shipped
+artifact cannot silently drift.
+
+{: .matters }
+> The specification is the architecture of record agents are told to trust. When
+> it described v0.2.0 as the first functional release while v0.4.0 had shipped,
+> every decision built on it inherited a false baseline. Applies-To is the
+> anchor the lock-step check binds, making constitution principle P-11
+> mechanical rather than remembered.
+
+**See also:** [spec-impact](rust-and-tooling.md#spec-impact),
+[xtask](rust-and-tooling.md#xtask)
+
 ## MSRV
 
 **Also known as:** minimum supported Rust version
@@ -17,6 +34,23 @@ promise to consumers; the second is a reproducibility control for the project.
 > the workspace has no external dependencies, and it says so in its own output.
 
 **See also:** [xtask](rust-and-tooling.md#xtask)
+
+## spec-impact
+
+A field on each `changelog.d/` changelog fragment, written as a leading
+`<!-- spec-impact: ... -->` comment, whose value is either `none` or a list of
+specification section numbers the change modified. The release gate reads it to
+refuse a release whose fragment claims a specification change the release diff
+does not contain.
+
+{: .matters }
+> It closes the reverse of specification drift: a change that claims it touched a
+> section without the section actually changing. The value is machine readable
+> and stripped before the changelog is assembled, so the claim is checked
+> without cluttering the published changelog.
+
+**See also:** [Applies-To](rust-and-tooling.md#applies-to),
+[xtask](rust-and-tooling.md#xtask)
 
 ## Test tier
 

@@ -1,3 +1,5 @@
+<!-- spec-impact: none -->
+
 `fragcap doctor` no longer aborts on a machine where the capture DLL cannot be
 loaded. The real-interface enumeration reaches the delay-loaded `wpcap.dll`, and
 it was called before that DLL's presence was established, so the first call
