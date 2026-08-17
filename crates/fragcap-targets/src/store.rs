@@ -17,7 +17,8 @@ use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-use crate::schema::{DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, SCHEMA_VERSION};
+use crate::schema::{DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, SCHEMA_VERSION};
+use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
 use fragcap_profile::FidelityTier;
 
@@ -83,6 +84,15 @@ impl Store {
             tx.pragma_update(None, "user_version", 3i64)?;
             tx.commit()?;
             version = 3;
+        }
+        if version == 3 {
+            // 3 -> 4: create the volume eligibility allowlist table (slice S052).
+            // Existing rows are untouched; the new table starts empty.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_3_TO_4)?;
+            tx.pragma_update(None, "user_version", 4i64)?;
+            tx.commit()?;
+            version = 4;
         }
 
         if version != SCHEMA_VERSION {
@@ -647,11 +657,153 @@ impl Store {
         tx.commit()?;
         Ok(new)
     }
+
+    // --- Volume eligibility (slice S052) ---------------------------------------
+
+    /// Whether the volume eligibility allowlist has ever been seeded. Empty means
+    /// no first run has happened yet, which is what [`Store::seed_volume_eligibility`]
+    /// keys the one-time permissive seeding on (FR-016a).
+    pub fn volume_eligibility_is_empty(&self) -> Result<bool, TargetsError> {
+        let count: i64 =
+            self.conn
+                .query_row("SELECT count(*) FROM volume_eligibility", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(count == 0)
+    }
+
+    /// Permissively seed the allowlist with the given fixed volumes, once. If the
+    /// table already holds any row this is a no-op (the seeding is first-run only),
+    /// so a later-appearing volume is never auto-added (FR-016a). Each seeded volume
+    /// is recorded eligible with reason `seeded-first-run`.
+    pub fn seed_volume_eligibility(&mut self, volumes: &[Volume]) -> Result<(), TargetsError> {
+        if !self.volume_eligibility_is_empty()? {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        for v in volumes {
+            tx.execute(
+                "INSERT OR IGNORE INTO volume_eligibility
+                    (volume_id, mount_point, drive_type, eligible, reason, first_seen)
+                 VALUES (?1, ?2, ?3, 1, 'seeded-first-run', datetime('now'))",
+                params![v.identity, v.mount_point, v.drive_type.as_str()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record an explicit eligibility decision for one volume: a user opt-in
+    /// (`eligible = true`, reason `user-added`) or a user exclusion
+    /// (`eligible = false`, reason `user-excluded`). Upserts by volume identity.
+    pub fn set_volume_eligibility(
+        &mut self,
+        volume: &Volume,
+        eligible: bool,
+        reason: EligibilityReason,
+    ) -> Result<(), TargetsError> {
+        self.conn.execute(
+            "INSERT INTO volume_eligibility
+                (volume_id, mount_point, drive_type, eligible, reason, first_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+             ON CONFLICT(volume_id) DO UPDATE SET
+                mount_point = excluded.mount_point,
+                drive_type  = excluded.drive_type,
+                eligible    = excluded.eligible,
+                reason      = excluded.reason",
+            params![
+                volume.identity,
+                volume.mount_point,
+                volume.drive_type.as_str(),
+                eligible as i64,
+                reason.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The recorded eligibility decision for one volume identity, or `None` if the
+    /// volume is unseen (not in the allowlist, hence not walked).
+    pub fn volume_eligibility(
+        &self,
+        volume_id: &str,
+    ) -> Result<Option<VolumeEligibility>, TargetsError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT volume_id, mount_point, drive_type, eligible, reason, first_seen
+                 FROM volume_eligibility WHERE volume_id = ?1",
+                params![volume_id],
+                read_eligibility_row,
+            )
+            .optional()?;
+        row.transpose_eligibility()
+    }
+
+    /// Every volume recorded eligible. A volume absent from the result is either
+    /// recorded ineligible or unseen; either way the walk does not touch it.
+    pub fn eligible_volumes(&self) -> Result<Vec<VolumeEligibility>, TargetsError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT volume_id, mount_point, drive_type, eligible, reason, first_seen
+             FROM volume_eligibility WHERE eligible = 1 ORDER BY volume_id",
+        )?;
+        let rows = stmt.query_map([], read_eligibility_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            // `r?` unwraps the SQLite read; the inner `?` surfaces a reason-parse
+            // failure as a TargetsError rather than dropping the row.
+            out.push(r??);
+        }
+        Ok(out)
+    }
 }
 
 /// Serialize a carried-whole JSON value to its stored text.
 fn json_text(v: &serde_json::Value) -> String {
     v.to_string()
+}
+
+/// Read one `volume_eligibility` row. Reason parsing that can fail is deferred so
+/// the rusqlite closure stays infallible in the column reads.
+fn read_eligibility_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<Result<VolumeEligibility, TargetsError>> {
+    let volume_id: String = row.get(0)?;
+    let mount_point: Option<String> = row.get(1)?;
+    let drive_type: Option<String> = row.get(2)?;
+    let eligible: i64 = row.get(3)?;
+    let reason_text: String = row.get(4)?;
+    let first_seen: Option<String> = row.get(5)?;
+    let parsed = match EligibilityReason::parse(&reason_text) {
+        Some(reason) => Ok(VolumeEligibility {
+            volume_id,
+            mount_point,
+            drive_type,
+            eligible: eligible != 0,
+            reason,
+            first_seen,
+        }),
+        None => Err(TargetsError::Model(format!(
+            "unknown eligibility reason {reason_text:?}"
+        ))),
+    };
+    Ok(parsed)
+}
+
+/// Transpose the nested `Option<Result<..>>` an eligibility read produces, matching
+/// the pattern the target reads use.
+trait TransposeEligibility {
+    fn transpose_eligibility(self) -> Result<Option<VolumeEligibility>, TargetsError>;
+}
+
+impl TransposeEligibility for Option<Result<VolumeEligibility, TargetsError>> {
+    fn transpose_eligibility(self) -> Result<Option<VolumeEligibility>, TargetsError> {
+        match self {
+            Some(Ok(e)) => Ok(Some(e)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
 }
 
 /// Read one `targets` row into a [`TargetEntry`]. Enum and JSON parsing that can
@@ -856,9 +1008,10 @@ mod tests {
 
     /// Fabricate a schema-version-1 store on an in-memory connection: apply the
     /// current DDL, then undo every change made after version 1 (drop the version-2
-    /// column and the version-3 target tables) and stamp user_version 1. Returns
-    /// the raw connection so a test can hand it to `from_connection` and observe
-    /// the forward migration step through 1 -> 2 -> 3.
+    /// column, the version-3 target tables, and the version-4 eligibility table) and
+    /// stamp user_version 1. Returns the raw connection so a test can hand it to
+    /// `from_connection` and observe the forward migration step through
+    /// 1 -> 2 -> 3 -> 4.
     fn v1_connection() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory");
         conn.execute_batch(DDL).expect("apply DDL");
@@ -866,6 +1019,8 @@ mod tests {
             .expect("drop column to simulate v1");
         conn.execute_batch("DROP TABLE target_id_aliases; DROP TABLE targets;")
             .expect("drop v3 tables to simulate v1");
+        conn.execute_batch("DROP TABLE volume_eligibility;")
+            .expect("drop v4 table to simulate v1");
         conn.pragma_update(None, "user_version", 1_i64)
             .expect("stamp v1");
         conn
@@ -923,31 +1078,37 @@ mod tests {
     }
 
     #[test]
-    fn fresh_store_is_v3_with_an_empty_targets_table() {
+    fn fresh_store_is_v4_with_empty_targets_and_eligibility_tables() {
         let store = Store::open_in_memory().expect("store");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         assert!(store.targets().expect("targets").is_empty());
+        assert!(store
+            .volume_eligibility_is_empty()
+            .expect("eligibility empty"));
     }
 
     #[test]
-    fn v1_store_migrates_to_v3_with_catalog_rows_intact() {
+    fn v1_store_migrates_to_v4_with_catalog_rows_intact() {
         let conn = v1_connection();
         conn.execute(
             "INSERT INTO games (appid, name, review_count) VALUES (730, 'CS2', 1234)",
             [],
         )
         .expect("insert v1 row");
-        let store = Store::from_connection(conn).expect("migrate to v3");
+        let store = Store::from_connection(conn).expect("migrate to v4");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         assert!(store.targets().expect("targets").is_empty());
+        assert!(store
+            .volume_eligibility_is_empty()
+            .expect("eligibility empty"));
         assert!(
             store.game(730).expect("read").is_some(),
             "catalog row survives"

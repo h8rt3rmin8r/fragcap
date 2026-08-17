@@ -25,6 +25,7 @@
 //! store (P-4).
 
 pub mod catalog;
+pub mod classifier;
 pub mod engine_feed;
 pub mod entry;
 pub mod export;
@@ -41,9 +42,15 @@ pub mod model;
 pub mod schema;
 pub mod seed;
 pub mod selector;
+pub mod source;
+pub mod sources;
 pub mod store;
+pub mod volume;
 
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
+pub use classifier::{
+    ClassifierVerdict, DirectoryClassifier, FixtureClassifier, KnownRootChildIsGame,
+};
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,
     DEFAULT_ENGINE_CONFIDENCE,
@@ -63,7 +70,18 @@ pub use model::{
 };
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use selector::{resolve_id, resolve_positional, Selection};
+pub use source::{
+    discover_all, CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, FixtureSource,
+    TargetSource,
+};
+pub use sources::directory::DirectorySource;
+pub use sources::interactive::{Confirm, InteractiveSource, ScriptedConfirm};
+pub use sources::known_roots::{KnownRootsSource, KNOWN_ROOTS};
+pub use sources::{DirListing, DirectoryLister, FixtureTree, FsDirectoryLister};
 pub use store::Store;
+pub use volume::{
+    DriveType, EligibilityReason, FixtureInventory, Volume, VolumeEligibility, VolumeInventory,
+};
 
 use std::fmt;
 
@@ -99,6 +117,10 @@ pub enum TargetsError {
     /// distinct from a single unparsable entry, which the seeder counts as failed
     /// and continues past.
     Fetch(String),
+    /// A discovery source could not complete its run (a platform walk that failed
+    /// wholesale). Distinct from a single item a source counts and continues past
+    /// (the discovery account's `parse_failed`); this aborts the source's run.
+    Discovery(String),
 }
 
 impl fmt::Display for TargetsError {
@@ -116,6 +138,7 @@ impl fmt::Display for TargetsError {
                 write!(f, "export failed self-validation (internal error): {m}")
             }
             TargetsError::Fetch(m) => write!(f, "catalog fetch failed: {m}"),
+            TargetsError::Discovery(m) => write!(f, "discovery failed: {m}"),
         }
     }
 }

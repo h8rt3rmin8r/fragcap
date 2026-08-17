@@ -20,13 +20,14 @@ use std::path::Path;
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
     export, handle, identifier, import, resolve_id, resolve_positional, seed_catalog, seed_engine,
-    ClassificationSource, CorpusGate, FixtureCatalog, FixtureEngineFeed, Selection, Store,
-    TargetClassification, TargetEntry,
+    CandidateIdentity, ClassificationSource, CorpusGate, DirectorySource, Discovery,
+    FixtureCatalog, FixtureEngineFeed, Selection, Store, TargetClassification, TargetEntry,
+    TargetSource,
 };
 
 use crate::cli::{
-    TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsSeedArgs, TargetsSeedEngineArgs,
-    TargetsShowArgs,
+    TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsSeedArgs,
+    TargetsSeedEngineArgs, TargetsShowArgs,
 };
 use crate::exit::{CliError, Exit};
 
@@ -80,7 +81,115 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         TargetsCommand::Add(args) => add(args, out),
         TargetsCommand::List { db } => list(db, out),
         TargetsCommand::Show(args) => show(args, out),
+        TargetsCommand::Discover(args) => discover(args, out),
+        TargetsCommand::Scan { dir } => scan(dir, out),
     }
+}
+
+/// Run `targets scan <dir>`: point discovery at one directory and list it as a
+/// single candidate (the tier-3 [`DirectorySource`], slice S052).
+fn scan(dir: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let source = DirectorySource::new(dir.to_string_lossy().into_owned());
+    let discovery = source
+        .discover()
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    print_discovery(&discovery, out);
+    Ok(Exit::SUCCESS)
+}
+
+/// Run `targets discover`: walk Steam (tier 1) and the known game-install roots
+/// (tier 2) and list the candidates found (slice S052). Reads only; nothing is
+/// persisted except the first-run volume eligibility seeding the cross-volume walk
+/// needs to be safe.
+fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let catalog = Store::open(&args.catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
+
+    // Locate the Steam root: the explicit flag, else Steam's own installation.
+    let steam_root = match &args.steam_root {
+        Some(root) => Some(root.clone()),
+        None => fragcap::steam::discover().ok().map(|i| i.root),
+    };
+    let steam = steam_root
+        .as_ref()
+        .map(|root| fragcap::SteamSource::new(root, &catalog));
+
+    // The known-roots walk enumerates fixed volumes, which is a platform operation;
+    // it runs on Windows, where the tool captures. The eligibility allowlist lives
+    // in local.db and is seeded permissively on first run (FR-016a).
+    #[cfg(windows)]
+    let mut local = Store::open(&args.local_db).map_err(|e| CliError::failure(e.to_string()))?;
+    #[cfg(windows)]
+    let inventory = fragcap::WindowsVolumeInventory::new();
+    #[cfg(windows)]
+    {
+        use fragcap::targets::VolumeInventory;
+        let volumes = inventory.fixed_volumes();
+        local
+            .seed_volume_eligibility(&volumes)
+            .map_err(|e| CliError::failure(e.to_string()))?;
+    }
+    #[cfg(windows)]
+    let eligible: std::collections::HashSet<String> = local
+        .eligible_volumes()
+        .map_err(|e| CliError::failure(e.to_string()))?
+        .into_iter()
+        .map(|v| v.volume_id)
+        .collect();
+    #[cfg(windows)]
+    let lister = fragcap::targets::FsDirectoryLister;
+    #[cfg(windows)]
+    let classifier = fragcap::targets::KnownRootChildIsGame;
+    #[cfg(windows)]
+    let known_roots =
+        fragcap::targets::KnownRootsSource::new(&inventory, &eligible, &lister, &classifier);
+
+    // Compose the sources into one listing through the shared driver (SC-006).
+    let mut sources: Vec<&dyn TargetSource> = Vec::new();
+    if let Some(steam) = &steam {
+        sources.push(steam);
+    }
+    #[cfg(windows)]
+    sources.push(&known_roots);
+
+    let discovery =
+        fragcap::targets::discover_all(&sources).map_err(|e| CliError::failure(e.to_string()))?;
+    print_discovery(&discovery, out);
+    Ok(Exit::SUCCESS)
+}
+
+/// Print a discovery listing: one line per candidate (source, identity, name,
+/// classification) then the conserved account, so an excluded volume or an
+/// unparsable title is visible rather than silent (P-4).
+fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
+    if discovery.candidates.is_empty() {
+        let _ = writeln!(out, "no candidates discovered");
+    }
+    for c in &discovery.candidates {
+        let identity = match &c.identity {
+            CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
+            CandidateIdentity::Path(path) => path.clone(),
+        };
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}\t{}",
+            c.source_name,
+            identity,
+            c.classification.as_str(),
+            c.display_name
+        );
+    }
+    let a = &discovery.account;
+    let _ = writeln!(
+        out,
+        "account: considered={} produced={} parse_failed={} declined={} not_a_game={} volume_skipped={} access_error={}",
+        a.considered,
+        a.produced,
+        a.parse_failed,
+        a.declined_by_user,
+        a.considered_not_a_game,
+        a.volume_skipped,
+        a.access_error,
+    );
 }
 
 /// Register a target from a name (slice S051): derive a unique handle, assign a

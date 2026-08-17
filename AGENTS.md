@@ -296,9 +296,22 @@ other crate offers MIT/Apache/BSD/Zlib. `default-features = false` on `blake3`
 drops the `std` feature the one-shot `blake3::hash` does not need; `rayon` is a
 separate non-default feature never enabled.
 
-S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
-pcap file is a header and a run of records, the attribution script format is
-deliberately trivial, and pcapng is length-prefixed binary over a byte sink.
+S03, S04, S06, S08, and S052 added none. The parser is arithmetic over a byte
+slice, a pcap file is a header and a run of records, the attribution script format
+is deliberately trivial, and pcapng is length-prefixed binary over a byte sink.
+
+S052 (the TargetSource discovery seam and tiers) is the other worth noting for what
+it did not add. The discovery model, the seam, the account, the known-roots and
+user-pointed sources, the directory-shape classifier seam, and the volume
+eligibility store, is pure computation and SQLite over crates already in the graph,
+so it lands in `fragcap-targets` with no new dependency. Its two platform adapters,
+the Steam walk and the Win32 fixed-volume inventory, land in the `fragcap` facade,
+the one crate that already depends on both `fragcap-steam` and `fragcap-targets`, so
+they add no new inter-crate edge either; the volume inventory reuses the
+already-pinned `windows-sys` 0.36 (as a direct facade dependency behind
+`cfg(windows)`, adding no `Cargo.lock` package). The schema advanced from version 3
+to version 4 for the `volume_eligibility` table, and `TargetsError` gained a
+`Discovery` variant for a whole-run source failure.
 
 S08 is the one worth spelling out, because a concurrency crate is the obvious
 reach and it would not have helped. Section 12.4 needs bounded, drop-oldest, and

@@ -333,6 +333,7 @@ dependencies = [
  "fragcap-steam",
  "fragcap-targets",
  "serde_json",
+ "windows-sys 0.36.1",
 ]
 
 [[package]]
