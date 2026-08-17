@@ -256,6 +256,10 @@ load-bearing rather than bookkeeping.
 | `rusqlite` | runtime, optional | S034 | The embedded SQLite store the targets hint database is built on, behind the `targets` feature |
 | `http_req` | runtime, optional | S035 | The HTTP client the live catalog seeder uses, behind the `net` feature |
 | `winresource` | build, windows-only | S048 | Stamps the exe's PE FileVersion from `CARGO_PKG_VERSION` (issue #104), behind `[target.'cfg(windows)'.build-dependencies]` |
+| `blake3` | runtime | S051 | The 63-bit anchor identifier, a durable exported contract; `default-features = false` |
+| `unicode-normalization` | runtime | S051 | The NFKD step of handle normalization |
+| `unicode-properties` | runtime | S051 | The `So`/`Sk`/`Cf`/`Mn` general-category tests of handle normalization |
+| `getrandom` | runtime | S051 | OS entropy for the unanchored 63-bit identifier (already in the graph; a direct edge only) |
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
@@ -272,6 +276,25 @@ interaction is MSRV, verified green under 1.82. `embed-resource` was rejected be
 its `toml` dependency is unconditional (no feature switch) and it carries a larger
 graph; a hand-rolled `.rc` plus the SDK resource compiler was kept only as the
 fallback had `winresource` failed the 1.82 floor, which it did not.
+
+S051 added four, all on `fragcap-targets` alone and all non-optional there (the
+crate is the unit gated at the facade behind `targets`, the same arrangement as
+`rusqlite`, so a default build and the 1.82 MSRV gate compile none of them). The
+lock delta is nine crates: `blake3` and its graph (`arrayref`, `arrayvec`,
+`constant_time_eq`, `cpufeatures`), `unicode-normalization` with `tinyvec` and
+`tinyvec_macros`, and `unicode-properties`; `getrandom` was already present, so
+it adds only a direct edge. `blake3` computes the 63-bit anchor identifier, a
+durable exported contract the handoff plan names it for; reusing the hand-rolled
+SHA-256 was rejected because a durable id contract deserves the algorithm named,
+and hand-rolling BLAKE3 was rejected because a wrong identity hash is a P-9 defect
+that ships silently. NFKD and the Unicode general categories are large generated
+tables, so `unicode-normalization` and `unicode-properties` are the
+absurd-transcription case dependencies exist to avoid; a slug crate was rejected
+because it would not reproduce the exact Appendix A vectors. `blake3` is
+`CC0-1.0 OR Apache-2.0` (the OR resolves to the allowlisted Apache-2.0); every
+other crate offers MIT/Apache/BSD/Zlib. `default-features = false` on `blake3`
+drops the `std` feature the one-shot `blake3::hash` does not need; `rayon` is a
+separate non-default feature never enabled.
 
 S03, S04, S06, and S08 added none. The parser is arithmetic over a byte slice, a
 pcap file is a header and a run of records, the attribution script format is

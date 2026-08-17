@@ -409,6 +409,53 @@ pub enum TargetsCommand {
     /// Seed the engine tier (Tier 3: engine name, source, confidence) into the
     /// store from PCGamingWiki.
     SeedEngine(TargetsSeedEngineArgs),
+    /// Register a target from a name, deriving a unique handle (slice S051).
+    Add(TargetsAddArgs),
+    /// List registered targets with their row index, handle, and identifier.
+    List {
+        /// The store file (local.db) to read.
+        #[arg(long)]
+        db: PathBuf,
+    },
+    /// Show one target resolved by a selector (handle, name, row index, or `--id`).
+    Show(TargetsShowArgs),
+}
+
+/// Arguments to `targets add`.
+#[derive(Debug, Args)]
+pub struct TargetsAddArgs {
+    /// The display name to register; its handle is derived automatically.
+    pub name: String,
+    /// The store file (local.db) to write, created if absent.
+    #[arg(long)]
+    pub db: PathBuf,
+    /// A platform anchor (for example `steam:620`) giving the target a stable,
+    /// deterministic identity. Without one the target gets a random identity.
+    #[arg(long)]
+    pub anchor: Option<String>,
+    /// A launch executable name, so the target names something capturable.
+    #[arg(long)]
+    pub exe: Option<String>,
+    /// Override the derived handle, subject to the same validity rules
+    /// (unique, not purely numeric, normalized shape).
+    #[arg(long = "handle")]
+    pub handle_override: Option<String>,
+}
+
+/// Arguments to `targets show`. Exactly one of a positional selector or `--id`
+/// is required; the clap group enforces it (a usage error, exit 2, otherwise).
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("target_selector").required(true).args(["selector", "id"])))]
+pub struct TargetsShowArgs {
+    /// A selector: an exact handle, a case-insensitive exact name, or a 1-based
+    /// ephemeral row index over the current listing.
+    pub selector: Option<String>,
+    /// Select by stable identifier: the durable, machine-facing form.
+    #[arg(long)]
+    pub id: Option<i64>,
+    /// The store file (local.db) to read.
+    #[arg(long)]
+    pub db: PathBuf,
 }
 
 /// Arguments to `targets seed`.

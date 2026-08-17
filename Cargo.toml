@@ -204,6 +204,39 @@ http_req        = { version = "0.13", default-features = false, features = [
     "native-tls",
 ] }
 
+# External. Slice S051, research D-1: the 63-bit anchor identifier is a BLAKE3
+# truncation over a canonical anchor string. On `fragcap-targets` alone, so it is
+# gated at the facade behind `targets` (the whole crate is the optional unit, the
+# same arrangement as `rusqlite`) and a default build compiles no hasher.
+# `default-features = false` drops the `std` feature the one-shot `blake3::hash`
+# does not need; `rayon` is a separate non-default feature and is never enabled.
+# Chosen over reusing the hand-rolled SHA-256 because the exported identifier is a
+# durable contract the handoff plan names BLAKE3 for, and over a hand-rolled
+# BLAKE3 because a wrong identity hash is a P-9 defect that ships silently.
+# `CC0-1.0 OR Apache-2.0`; the OR resolves to the allowlisted Apache-2.0.
+blake3          = { version = "1", default-features = false }
+
+# External. Slice S051, research D-2: the NFKD step of handle normalization
+# (specification section 5.2). On `fragcap-targets` alone. NFKD and Unicode
+# general categories are large generated tables; hand-rolling them is the
+# absurd-transcription case the project adds dependencies to avoid (the same
+# argument as `pcap`'s struct layouts). MIT or Apache-2.0, low MSRV.
+unicode-normalization = "0.1"
+
+# External. Slice S051, research D-2: the general-category tests (`So`/`Sk`/`Cf`
+# stripped before NFKD, `Mn` after) of handle normalization. On `fragcap-targets`
+# alone. `default-features = false` with `general-category` drops the emoji data
+# the algorithm does not consult. MIT or Apache-2.0.
+unicode-properties = { version = "0.1", default-features = false, features = [
+    "general-category",
+] }
+
+# External. Slice S051, research D-6: OS entropy for the unanchored 63-bit
+# identifier. Already present in the graph (pulled transitively), so this adds
+# only a direct edge, not a Cargo.lock crate. On `fragcap-targets` alone. MIT or
+# Apache-2.0. The anchored path is deterministic and uses no entropy.
+getrandom       = "0.4"
+
 # External, test-only. Slice S07, research R-1: the JSON Lines writer is
 # hand-rolled because its exact byte shape is the deliverable, and this parses
 # every line it emits so validity is judged by something other than the writer.

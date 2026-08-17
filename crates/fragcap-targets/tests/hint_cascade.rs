@@ -14,7 +14,113 @@ use fragcap_profile::{
     BundledSet, EngineRuleProvider, FidelityTier, Profile, ProfileProvider, ResolutionError,
     ResolutionRequest, SearchPath, TargetOrigin, TargetProvider, TargetResolver,
 };
+use fragcap_targets::entry::{ClassificationSource, TargetClassification, TargetEntry};
+use fragcap_targets::identifier::{anchored_id, steam_anchor};
 use fragcap_targets::{Game, HintDatabaseProvider, LaunchEntry, Store};
+
+/// Insert a local target entry for a Steam anchor at a given fidelity, with an
+/// optional single Windows launch executable (slice S051).
+fn insert_target(store: &mut Store, app_id: u32, exe: Option<&str>, fidelity: FidelityTier) {
+    let anchor = steam_anchor(app_id);
+    let launch_entries = exe.map(|e| serde_json::json!([{ "executable": e, "os": "windows" }]));
+    let entry = TargetEntry {
+        id: None,
+        stable_id: anchored_id(&anchor),
+        handle: format!("target_a{app_id}"),
+        name: format!("Target {app_id}"),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity,
+        provenance: None,
+        anchor: Some(anchor),
+        launch_entries,
+        install_root: None,
+        evidence: None,
+    };
+    store.insert_target(&entry).expect("insert target");
+}
+
+/// Resolve a Steam app id through a lone hint provider over the given store.
+fn resolve_hint(store: Store, app_id: u32) -> Result<fragcap_profile::Target, ResolutionError> {
+    let resolver = TargetResolver::new(vec![Box::new(HintDatabaseProvider::new(store))])
+        .expect("one provider");
+    let search = SearchPath::new();
+    let bundled = BundledSet::empty();
+    let request =
+        ResolutionRequest::for_reference("unused", &search, &bundled).with_steam_app_id(app_id);
+    resolver.resolve(&request)
+}
+
+#[test]
+fn an_authored_local_entry_beats_the_catalog_heuristic() {
+    // The same app id is present as a catalog games row (heuristic-unverified) and
+    // as a locally authored target entry. The entry's higher fidelity wins, and its
+    // executable is the one resolved (slice S051, fidelity-ordered store read).
+    let mut store = store_with_launch(620, "catalog.exe");
+    insert_target(
+        &mut store,
+        620,
+        Some("authored.exe"),
+        FidelityTier::Authored,
+    );
+
+    let target = resolve_hint(store, 620).expect("resolves");
+    assert_eq!(target.fidelity(), FidelityTier::Authored);
+    match target.origin() {
+        TargetOrigin::HintDatabase(t) => assert_eq!(t.image_name(), "authored.exe"),
+        other => panic!("expected a hint origin, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_local_entry_with_no_executable_declines_to_the_catalog() {
+    // A sparse local entry (registered by name, no launch executable) cannot name a
+    // client, so it declines and the catalog games row answers at
+    // heuristic-unverified. The decline is preserved as a fidelity-aware condition.
+    let mut store = store_with_launch(730, "catalog.exe");
+    insert_target(&mut store, 730, None, FidelityTier::Authored);
+
+    let target = resolve_hint(store, 730).expect("resolves");
+    assert_eq!(target.fidelity(), FidelityTier::HeuristicUnverified);
+    match target.origin() {
+        TargetOrigin::HintDatabase(t) => assert_eq!(t.image_name(), "catalog.exe"),
+        other => panic!("expected the catalog answer, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_local_entry_naming_two_executables_declines() {
+    // A local entry naming two distinct Windows clients cannot reduce to one, so it
+    // declines exactly as an ambiguous catalog row does; the catalog games answer
+    // takes over. The multi-executable decline is preserved for entries too.
+    let mut store = store_with_launch(570, "catalog.exe");
+    let anchor = steam_anchor(570);
+    let entry = TargetEntry {
+        id: None,
+        stable_id: anchored_id(&anchor),
+        handle: "target_multi".to_string(),
+        name: "Multi".to_string(),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Authored,
+        provenance: None,
+        anchor: Some(anchor),
+        launch_entries: Some(serde_json::json!([
+            { "executable": "one.exe", "os": "windows" },
+            { "executable": "two.exe", "os": "windows" },
+        ])),
+        install_root: None,
+        evidence: None,
+    };
+    store.insert_target(&entry).expect("insert");
+
+    let target = resolve_hint(store, 570).expect("resolves");
+    assert_eq!(target.fidelity(), FidelityTier::HeuristicUnverified);
+    match target.origin() {
+        TargetOrigin::HintDatabase(t) => assert_eq!(t.image_name(), "catalog.exe"),
+        other => panic!("expected the catalog answer, got {other:?}"),
+    }
+}
 
 /// A store holding one game with one Windows launch executable.
 fn store_with_launch(app_id: u32, exe: &str) -> Store {

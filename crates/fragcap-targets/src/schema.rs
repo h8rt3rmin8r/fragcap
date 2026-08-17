@@ -15,9 +15,19 @@
 //! migration from version 1 is a single additive `ALTER TABLE`, applied in
 //! [`crate::store::Store::open`]; existing rows get NULL and refresh on the first
 //! walk.
+//!
+//! Version 3 (slice S051) adds the target entry model: a `targets` table and a
+//! `target_id_aliases` table. Conceptually these live only in `local.db`, but the
+//! store type is shared with `catalog.db` (the S050 split), so both files carry
+//! the tables and `catalog.db` simply leaves them empty. The `targets` CHECK
+//! constraints make the classification, classification-source, and fidelity enum
+//! sets and the non-numeric-handle rule unstorable-if-violated, so the store
+//! cannot hold a row the model would reject (P-9). The migration from version 2
+//! is additive: two `CREATE TABLE`s, applied transactionally, leaving every
+//! existing row untouched.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -67,6 +77,60 @@ CREATE TABLE seed_state (
     tier          TEXT PRIMARY KEY CHECK (tier IN ('catalog', 'launch', 'engine')),
     last_run_at   TEXT,
     resume_cursor TEXT
+);
+
+CREATE TABLE targets (
+    id                    INTEGER PRIMARY KEY,
+    stable_id             INTEGER NOT NULL UNIQUE,
+    handle                TEXT NOT NULL UNIQUE
+                            CHECK (length(handle) > 0 AND handle GLOB '*[^0-9]*'),
+    name                  TEXT NOT NULL CHECK (length(name) > 0),
+    classification        TEXT NOT NULL CHECK (classification IN
+                            ('game', 'launcher', 'tool', 'mod', 'emulator', 'unknown')),
+    classification_source TEXT NOT NULL CHECK (classification_source IN
+                            ('catalog', 'engine-signature', 'platform', 'user', 'unset')),
+    fidelity              TEXT NOT NULL CHECK (fidelity IN
+                            ('authored', 'verified', 'heuristic-unverified', 'observed')),
+    provenance            TEXT,
+    anchor                TEXT,
+    launch_entries        TEXT,
+    install_root          TEXT,
+    evidence              TEXT
+);
+
+CREATE TABLE target_id_aliases (
+    alias_stable_id INTEGER PRIMARY KEY,
+    target_id       INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE
+);
+";
+
+/// The additive migration from schema version 2 to version 3: create the target
+/// entry model's two tables (slice S051). Backward-safe by construction, an
+/// existing v2 store keeps every row and gains two empty tables. Applied in one
+/// transaction alongside the version stamp.
+pub const MIGRATE_2_TO_3: &str = "\
+CREATE TABLE targets (
+    id                    INTEGER PRIMARY KEY,
+    stable_id             INTEGER NOT NULL UNIQUE,
+    handle                TEXT NOT NULL UNIQUE
+                            CHECK (length(handle) > 0 AND handle GLOB '*[^0-9]*'),
+    name                  TEXT NOT NULL CHECK (length(name) > 0),
+    classification        TEXT NOT NULL CHECK (classification IN
+                            ('game', 'launcher', 'tool', 'mod', 'emulator', 'unknown')),
+    classification_source TEXT NOT NULL CHECK (classification_source IN
+                            ('catalog', 'engine-signature', 'platform', 'user', 'unset')),
+    fidelity              TEXT NOT NULL CHECK (fidelity IN
+                            ('authored', 'verified', 'heuristic-unverified', 'observed')),
+    provenance            TEXT,
+    anchor                TEXT,
+    launch_entries        TEXT,
+    install_root          TEXT,
+    evidence              TEXT
+);
+
+CREATE TABLE target_id_aliases (
+    alias_stable_id INTEGER PRIMARY KEY,
+    target_id       INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE
 );
 ";
 

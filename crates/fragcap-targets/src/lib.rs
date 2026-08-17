@@ -26,17 +26,21 @@
 
 pub mod catalog;
 pub mod engine_feed;
+pub mod entry;
 pub mod export;
 pub mod gate;
+pub mod handle;
 pub mod hint_provider;
 #[cfg(feature = "net")]
 pub mod http_catalog;
 #[cfg(feature = "net")]
 pub mod http_engine;
+pub mod identifier;
 pub mod import;
 pub mod model;
 pub mod schema;
 pub mod seed;
+pub mod selector;
 pub mod store;
 
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
@@ -44,6 +48,7 @@ pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,
     DEFAULT_ENGINE_CONFIDENCE,
 };
+pub use entry::{ClassificationSource, TargetClassification, TargetEntry};
 pub use export::export;
 pub use gate::{CorpusGate, DEFAULT_MIN_REVIEWS};
 pub use hint_provider::HintDatabaseProvider;
@@ -57,6 +62,7 @@ pub use model::{
     Technology,
 };
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
+pub use selector::{resolve_id, resolve_positional, Selection};
 pub use store::Store;
 
 use std::fmt;

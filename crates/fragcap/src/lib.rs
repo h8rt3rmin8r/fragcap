@@ -78,12 +78,16 @@ pub mod steam {
 #[cfg(feature = "targets")]
 pub mod targets {
     pub use fragcap_targets::{
-        export, import, seed_catalog, seed_engine, CatalogBatch, CatalogEntry, CatalogSource,
-        Classification, CorpusGate, Engine, EngineBatch, EngineConfidence, EngineEntry, EngineFeed,
-        EngineSource, FixtureCatalog, FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary,
-        LaunchEntry, ResolvedEngine, SeedState, SeedSummary, SeedTier, Store, TargetsError,
-        TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        export, import, resolve_id, resolve_positional, seed_catalog, seed_engine, CatalogBatch,
+        CatalogEntry, CatalogSource, Classification, ClassificationSource, CorpusGate, Engine,
+        EngineBatch, EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog,
+        FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary, LaunchEntry, ResolvedEngine,
+        SeedState, SeedSummary, SeedTier, Selection, Store, TargetClassification, TargetEntry,
+        TargetsError, TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
+
+    /// The handle and identifier helpers for registering a target (slice S051).
+    pub use fragcap_targets::{handle, identifier};
 
     /// The live catalog source, behind the `net` feature (slice S035). Compiled
     /// under `net` but run only by the operator, never in CI.
