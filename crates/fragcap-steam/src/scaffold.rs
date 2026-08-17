@@ -345,17 +345,14 @@ specification section 16.3.";
 /// construction and the output re-parses (the caller asserts it validates). The
 /// stage classification is a heuristic, which the `fidelity` and `notes` fields
 /// declare.
-/// The profile schema's `technologies.category` value for a detection category, or
-/// `None` when the profile vocabulary has no slot for it. The profile schema
-/// predates DRM as a first-class detected category, so a DRM finding is not carried
-/// in the scaffold skeleton; it is surfaced by the standalone `technologies`
-/// command instead. Compatibility outranks richness (P-5): the published schema is
-/// left unchanged.
-fn profile_tech_category(category: SignatureCategory) -> Option<&'static str> {
+/// The profile schema's `technologies.category` value for a detection category. The
+/// master target schema carries `engine`, `anti_cheat`, and `drm`, so every detected
+/// category is serialized into the scaffold rather than silently dropped (P-4).
+fn profile_tech_category(category: SignatureCategory) -> &'static str {
     match category {
-        SignatureCategory::Engine => Some("engine"),
-        SignatureCategory::AntiCheat => Some("anti_cheat"),
-        SignatureCategory::Drm => None,
+        SignatureCategory::Engine => "engine",
+        SignatureCategory::AntiCheat => "anti_cheat",
+        SignatureCategory::Drm => "drm",
     }
 }
 
@@ -423,14 +420,12 @@ fn render(
     // optional so those older artifacts still validate.
     let techs: Vec<Value> = technologies
         .iter()
-        .filter_map(|t| {
-            profile_tech_category(t.category).map(|category| {
-                json!({
-                    "category": category,
-                    "name": t.product,
-                    "marker_path": t.evidence,
-                    "fidelity": t.fidelity.as_str(),
-                })
+        .map(|t| {
+            json!({
+                "category": profile_tech_category(t.category),
+                "name": t.product,
+                "marker_path": t.evidence,
+                "fidelity": t.fidelity.as_str(),
             })
         })
         .collect();
@@ -711,8 +706,8 @@ mod tests {
             install_dir: install,
         };
         // The caller (slice S053) injects detection findings: an engine, an
-        // anti-cheat, and a DRM product. The DRM one has no profile-schema category
-        // and must not appear in the skeleton (it is surfaced by `technologies`).
+        // anti-cheat, and a DRM product. All three are carried in the skeleton; the
+        // master target schema now includes the `drm` category (P-4: no silent drop).
         let techs = vec![
             DetectionFinding {
                 category: SignatureCategory::Engine,
@@ -744,11 +739,9 @@ mod tests {
         assert!(text.contains("\"name\": \"EasyAntiCheat\""));
         assert!(text.contains("\"category\": \"engine\""));
         assert!(text.contains("\"name\": \"Unreal\""));
-        // DRM has no profile technologies category and is not carried in the skeleton.
-        assert!(
-            !text.contains("Steam DRM"),
-            "drm is not carried in the profile skeleton: {text}"
-        );
+        // DRM is now a first-class technology category and is carried, not dropped.
+        assert!(text.contains("\"category\": \"drm\""));
+        assert!(text.contains("\"name\": \"Steam DRM\""));
     }
 
     #[test]

@@ -441,10 +441,17 @@ pub enum TargetsCommand {
     /// stored target when acted on (`targets add`).
     Discover(TargetsDiscoverArgs),
     /// Scan one directory the user points at and list it as a single candidate
-    /// (slice S052). Backs pointing discovery straight at a known game folder.
+    /// (slice S052). Backs pointing discovery straight at a known game folder. With
+    /// `--catalog-db`, detects the engine, anti-cheat, and DRM technologies in the
+    /// directory and carries them as evidence (slice S053).
     Scan {
         /// The directory to treat as a single game location.
         dir: PathBuf,
+        /// An optional catalog store (`catalog.db`) whose signature table labels the
+        /// technologies in the directory. Without it the candidate carries no
+        /// detected evidence.
+        #[arg(long)]
+        catalog_db: Option<PathBuf>,
     },
 }
 

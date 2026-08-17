@@ -342,23 +342,34 @@ impl SignatureSet {
                 SignatureKind::DirectoryShape => {
                     entries.iter().find(|e| rule.regex.is_match(&e.match_path))
                 }
-                SignatureKind::PeVersionString => entries
-                    .iter()
-                    .find(|e| !e.is_dir && pe_version_matches(&e.full, &rule.regex)),
+                // Only a file that could be a PE image is opened, so a large tree of
+                // data files is not read byte-for-byte on the chance one matches.
+                SignatureKind::PeVersionString => entries.iter().find(|e| {
+                    !e.is_dir
+                        && is_pe_image_name(&e.base)
+                        && pe_version_matches(&e.full, &rule.regex)
+                }),
                 SignatureKind::BinaryMarker => None,
             };
             if let Some(entry) = hit {
-                let key = (rule.category, rule.product.clone());
-                if !findings
-                    .iter()
-                    .any(|f| (f.category, f.product.clone()) == key)
+                let candidate = DetectionFinding {
+                    category: rule.category,
+                    product: rule.product.clone(),
+                    evidence: entry.display.clone(),
+                    fidelity: rule.fidelity,
+                };
+                // Deduplicate per (category, product), but keep the strongest
+                // fidelity: a definitive marker must not be shadowed by a weaker
+                // shape whose row happened to come first.
+                match findings
+                    .iter_mut()
+                    .find(|f| f.category == candidate.category && f.product == candidate.product)
                 {
-                    findings.push(DetectionFinding {
-                        category: rule.category,
-                        product: rule.product.clone(),
-                        evidence: entry.display.clone(),
-                        fidelity: rule.fidelity,
-                    });
+                    Some(existing) if candidate.fidelity > existing.fidelity => {
+                        *existing = candidate
+                    }
+                    Some(_) => {}
+                    None => findings.push(candidate),
                 }
             }
         }
@@ -438,21 +449,31 @@ struct Entry {
 ///
 /// A filename glob matches a basename: `*` becomes `.*`, `?` becomes `.`, anchored
 /// full-match, case-insensitive. A directory-shape glob matches within a relative
-/// path: `*` becomes `[^/]*`, `?` becomes `[^/]`, searched (unanchored) so a nested
-/// tree such as `Engine/Binaries/` matches anywhere in the path. A
-/// pe-version-string pattern is a literal-insensitive substring, compiled as a
-/// case-insensitive regex-escaped needle.
+/// path but only at a path-component boundary: the pattern is prefixed with
+/// `(?:^|/)` so `GameGuard/` matches `GameGuard/` or `sub/GameGuard/` but not
+/// `NotGameGuard/`, and `Engine/Binaries/` does not match `MyEngine/Binaries/`.
+/// Inside it `*` becomes `[^/]*` and `?` becomes `[^/]`. A pe-version-string pattern
+/// is a literal-insensitive substring, compiled as a case-insensitive regex-escaped
+/// needle.
 fn compile_pattern(kind: SignatureKind, pattern: &str) -> Result<Regex, String> {
     if pattern.is_empty() {
         return Err("empty pattern".to_string());
     }
     let body = match kind {
         SignatureKind::Filename => format!("^{}$", glob_to_regex(pattern, false)),
-        SignatureKind::DirectoryShape => glob_to_regex(pattern, true),
+        SignatureKind::DirectoryShape => format!("(?:^|/){}", glob_to_regex(pattern, true)),
         SignatureKind::PeVersionString => regex::escape(pattern),
         SignatureKind::BinaryMarker => unreachable!("binary-marker is inert"),
     };
     Regex::new(&format!("(?i){body}")).map_err(|e| e.to_string())
+}
+
+/// Whether a file name looks like a Windows PE image (`.exe`, `.dll`, or `.sys`),
+/// so a `pe-version-string` signature reads only files that could carry a version
+/// resource rather than every file in the tree.
+fn is_pe_image_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".exe") || lower.ends_with(".dll") || lower.ends_with(".sys")
 }
 
 /// Convert a glob to a regex body. When `path_aware`, `*` matches within a path
@@ -696,6 +717,101 @@ mod tests {
             .find(|f| f.product == "Unity")
             .expect("unity by data shape");
         assert_eq!(unity.fidelity, FidelityTier::HeuristicUnverified);
+    }
+
+    #[test]
+    fn a_directory_shape_matches_only_on_a_component_boundary() {
+        let set = SignatureSet::compile(&[sig(
+            SignatureCategory::AntiCheat,
+            SignatureKind::DirectoryShape,
+            "GameGuard/",
+            "nProtect GameGuard",
+            SignatureConfidence::Definitive,
+        )]);
+        // A directory whose name only ends with the pattern must not match.
+        let tree = TempTree::new("notgameguard");
+        tree.mkdir("NotGameGuard");
+        assert!(
+            set.detect(tree.path())
+                .expect("readable")
+                .findings
+                .is_empty(),
+            "NotGameGuard/ must not match GameGuard/"
+        );
+        // The real component does match, at the root or nested.
+        let tree2 = TempTree::new("gameguard");
+        tree2.mkdir("bin/GameGuard");
+        assert!(set
+            .detect(tree2.path())
+            .expect("readable")
+            .findings
+            .iter()
+            .any(|f| f.product == "nProtect GameGuard"));
+    }
+
+    #[test]
+    fn a_nested_engine_tree_does_not_match_a_prefixed_sibling() {
+        let set = SignatureSet::compile(&[sig(
+            SignatureCategory::Engine,
+            SignatureKind::DirectoryShape,
+            "Engine/Binaries/",
+            "Unreal",
+            SignatureConfidence::Definitive,
+        )]);
+        let tree = TempTree::new("myengine");
+        tree.mkdir("MyEngine/Binaries/Win64");
+        assert!(
+            set.detect(tree.path())
+                .expect("readable")
+                .findings
+                .is_empty(),
+            "MyEngine/Binaries/ must not match Engine/Binaries/"
+        );
+    }
+
+    #[test]
+    fn the_strongest_fidelity_row_wins_regardless_of_row_order() {
+        // A heuristic shape row precedes a definitive filename row for the same
+        // product; a directory carrying both must be reported verified.
+        let set = SignatureSet::compile(&[
+            sig(
+                SignatureCategory::Engine,
+                SignatureKind::DirectoryShape,
+                "*_Data/",
+                "Unity",
+                SignatureConfidence::Heuristic,
+            ),
+            sig(
+                SignatureCategory::Engine,
+                SignatureKind::Filename,
+                "UnityPlayer.dll",
+                "Unity",
+                SignatureConfidence::Definitive,
+            ),
+        ]);
+        let tree = TempTree::new("unity-both");
+        tree.mkdir("Game_Data");
+        tree.touch("UnityPlayer.dll");
+        let engine = set
+            .detect(tree.path())
+            .expect("readable")
+            .detected_engine()
+            .cloned()
+            .expect("unity detected");
+        assert_eq!(
+            engine.fidelity,
+            FidelityTier::Verified,
+            "definitive wins over heuristic"
+        );
+        // And exactly one Unity finding, not two.
+        let count = set
+            .detect(tree.path())
+            .expect("readable")
+            .findings
+            .iter()
+            .filter(|f| f.product == "Unity")
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]

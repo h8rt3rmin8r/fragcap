@@ -94,7 +94,14 @@ impl<'a> KnownRootsSource<'a> {
             DirListing::Present(children) => {
                 for child in children {
                     out.account.considered += 1;
-                    match self.classifier.classify(&child) {
+                    let classification = self.classifier.classify(&child);
+                    // A subtree the classifier could not read reduces detection
+                    // coverage; name it so a partial scan is visible, not silent (P-4).
+                    for path in classification.unreadable {
+                        out.warnings
+                            .push(format!("could not read subtree during detection: {path}"));
+                    }
+                    match classification.verdict {
                         ClassifierVerdict::Hit {
                             classification,
                             fidelity,

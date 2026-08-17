@@ -50,8 +50,8 @@ pub mod volume;
 
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
 pub use classifier::{
-    ClassifierVerdict, DirectoryClassifier, FixtureClassifier, KnownRootChildIsGame,
-    SignatureClassifier,
+    ClassifierResult, ClassifierVerdict, DirectoryClassifier, FixtureClassifier,
+    KnownRootChildIsGame, SignatureClassifier,
 };
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,

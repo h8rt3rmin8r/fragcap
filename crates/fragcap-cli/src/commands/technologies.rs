@@ -83,6 +83,17 @@ pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliErro
         );
     }
 
+    // A signature of an implemented kind that failed to compile (for example a
+    // pattern that exceeds the regex size limit) also reduced coverage; name each so
+    // an operator-added row that silently stopped matching is visible (P-4).
+    for skip in set.skipped() {
+        let _ = writeln!(
+            out,
+            "  warning: signature for {} was skipped: {}",
+            skip.product, skip.error
+        );
+    }
+
     Ok(Exit::SUCCESS)
 }
 

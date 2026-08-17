@@ -26,9 +26,10 @@ const MATCH_PREDICATES: [&str; 5] = [
     "cmdline_contains",
     "descends_from",
 ];
-const TECHNOLOGY_CATEGORIES: [&str; 8] = [
+const TECHNOLOGY_CATEGORIES: [&str; 9] = [
     "engine",
     "anti_cheat",
+    "drm",
     "sdk",
     "framework",
     "emulator",

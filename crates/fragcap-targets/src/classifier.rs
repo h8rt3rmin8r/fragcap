@@ -48,11 +48,34 @@ pub enum ClassifierVerdict {
     Miss,
 }
 
+/// A classification result: the verdict plus any subtree paths the signature scan
+/// could not read. Surfacing the latter keeps reduced detection coverage visible
+/// rather than presenting a partial scan as complete (P-4); the walk folds them into
+/// [`crate::source::Discovery::warnings`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassifierResult {
+    /// Whether the directory is a target.
+    pub verdict: ClassifierVerdict,
+    /// Subtree paths that could not be read during classification.
+    pub unreadable: Vec<String>,
+}
+
+impl ClassifierResult {
+    /// A classification with a verdict and no unreadable paths.
+    fn just(verdict: ClassifierVerdict) -> Self {
+        ClassifierResult {
+            verdict,
+            unreadable: Vec::new(),
+        }
+    }
+}
+
 /// Decides, from a directory's shape, whether it is a target. A seam so S053's
 /// signature matcher drops in without touching the walk.
 pub trait DirectoryClassifier {
-    /// Classify one directory by its path and its shape.
-    fn classify(&self, dir: &str) -> ClassifierVerdict;
+    /// Classify one directory by its path and its shape, reporting any subtree it
+    /// could not read alongside the verdict.
+    fn classify(&self, dir: &str) -> ClassifierResult;
 }
 
 /// The S052 placeholder classifier: every immediate subdirectory of a known root is
@@ -63,12 +86,12 @@ pub trait DirectoryClassifier {
 pub struct KnownRootChildIsGame;
 
 impl DirectoryClassifier for KnownRootChildIsGame {
-    fn classify(&self, _dir: &str) -> ClassifierVerdict {
-        ClassifierVerdict::Hit {
+    fn classify(&self, _dir: &str) -> ClassifierResult {
+        ClassifierResult::just(ClassifierVerdict::Hit {
             classification: TargetClassification::Game,
             fidelity: FidelityTier::HeuristicUnverified,
             evidence: Vec::new(),
-        }
+        })
     }
 }
 
@@ -118,13 +141,14 @@ impl SignatureClassifier {
 }
 
 impl DirectoryClassifier for SignatureClassifier {
-    fn classify(&self, dir: &str) -> ClassifierVerdict {
+    fn classify(&self, dir: &str) -> ClassifierResult {
         let outcome = match self.signatures.detect(Path::new(dir)) {
             Ok(outcome) => outcome,
-            // Unreadable. In known-root mode the structural prior still holds (it is a
-            // game we could not scan); in pointed mode it cannot be confirmed a game.
-            Err(_) => {
-                return if self.assume_game {
+            // The root itself is unreadable. In known-root mode the structural prior
+            // still holds (it is a game we could not scan); in pointed mode it cannot
+            // be confirmed a game. Either way the unreadable root is surfaced.
+            Err(e) => {
+                let verdict = if self.assume_game {
                     ClassifierVerdict::Hit {
                         classification: TargetClassification::Game,
                         fidelity: FidelityTier::HeuristicUnverified,
@@ -133,9 +157,20 @@ impl DirectoryClassifier for SignatureClassifier {
                 } else {
                     ClassifierVerdict::Miss
                 };
+                return ClassifierResult {
+                    verdict,
+                    unreadable: vec![e.path.to_string_lossy().into_owned()],
+                };
             }
         };
-        match outcome.detected_engine() {
+        // A subtree the scan could not read reduces coverage; carry it so a partial
+        // scan is never presented as complete (P-4).
+        let unreadable: Vec<String> = outcome
+            .unreadable
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let verdict = match outcome.detected_engine() {
             // A detected engine: a game at the fidelity the signature earns, carrying
             // every finding (engine, anti-cheat, DRM) as neutral evidence.
             Some(engine) => ClassifierVerdict::Hit {
@@ -152,6 +187,10 @@ impl DirectoryClassifier for SignatureClassifier {
                 evidence: outcome.findings,
             },
             None => ClassifierVerdict::Miss,
+        };
+        ClassifierResult {
+            verdict,
+            unreadable,
         }
     }
 }
@@ -172,8 +211,8 @@ impl FixtureClassifier {
 }
 
 impl DirectoryClassifier for FixtureClassifier {
-    fn classify(&self, dir: &str) -> ClassifierVerdict {
-        if self.hits.iter().any(|h| h == dir) {
+    fn classify(&self, dir: &str) -> ClassifierResult {
+        ClassifierResult::just(if self.hits.iter().any(|h| h == dir) {
             ClassifierVerdict::Hit {
                 classification: TargetClassification::Game,
                 fidelity: FidelityTier::HeuristicUnverified,
@@ -181,7 +220,7 @@ impl DirectoryClassifier for FixtureClassifier {
             }
         } else {
             ClassifierVerdict::Miss
-        }
+        })
     }
 }
 
@@ -255,7 +294,7 @@ mod tests {
         tree.touch("UnityPlayer.dll");
         tree.touch("EasyAntiCheat/EasyAntiCheat_x64.dll");
         let classifier = SignatureClassifier::new(engine_set());
-        match classifier.classify(&tree.path_str()) {
+        match classifier.classify(&tree.path_str()).verdict {
             ClassifierVerdict::Hit {
                 classification,
                 fidelity,
@@ -278,7 +317,7 @@ mod tests {
         tree.touch("EasyAntiCheat/EasyAntiCheat_x64.dll"); // anti-cheat alone: not a game
         let classifier = SignatureClassifier::new(engine_set());
         assert_eq!(
-            classifier.classify(&tree.path_str()),
+            classifier.classify(&tree.path_str()).verdict,
             ClassifierVerdict::Miss
         );
     }
@@ -292,7 +331,7 @@ mod tests {
         tree.touch("readme.txt");
         tree.touch("EasyAntiCheat/EasyAntiCheat_x64.dll");
         let classifier = SignatureClassifier::for_known_root(engine_set());
-        match classifier.classify(&tree.path_str()) {
+        match classifier.classify(&tree.path_str()).verdict {
             ClassifierVerdict::Hit {
                 classification,
                 fidelity,
@@ -311,7 +350,7 @@ mod tests {
         let tree = TempTree::new("known-root-unity");
         tree.touch("UnityPlayer.dll");
         let classifier = SignatureClassifier::for_known_root(engine_set());
-        match classifier.classify(&tree.path_str()) {
+        match classifier.classify(&tree.path_str()).verdict {
             ClassifierVerdict::Hit { fidelity, .. } => {
                 assert_eq!(fidelity, FidelityTier::Verified);
             }
@@ -320,13 +359,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_directory_is_a_miss() {
+    fn an_unreadable_directory_is_a_miss_and_is_surfaced() {
         let missing =
             std::env::temp_dir().join(format!("fragcap-classifier-absent-{}", std::process::id()));
         let classifier = SignatureClassifier::new(engine_set());
-        assert_eq!(
-            classifier.classify(&missing.to_string_lossy()),
-            ClassifierVerdict::Miss
-        );
+        let c = classifier.classify(&missing.to_string_lossy());
+        assert_eq!(c.verdict, ClassifierVerdict::Miss);
+        // The unreadable root is surfaced rather than silently swallowed (P-4).
+        assert!(!c.unreadable.is_empty(), "an unreadable root is reported");
     }
 }

@@ -25,11 +25,47 @@
 
 use std::path::{Path, PathBuf};
 
-use fragcap_profile::FidelityTier;
+use fragcap_profile::signature::SignatureSet;
+use fragcap_profile::{DetectionFinding, FidelityTier};
 use fragcap_targets::{
     CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, Store, TargetClassification,
     TargetSource, TargetsError,
 };
+
+/// Detect the technologies in an install directory (slice S053), returning the
+/// fidelity the local evidence earns and the findings as neutral evidence. A
+/// detected engine raises the fidelity to what its signature earns (a definitive
+/// marker is verified, which outranks a remote catalog attribution, P-9); a subtree
+/// or root that could not be read is surfaced into `warnings` rather than dropped
+/// (P-4).
+fn detect_evidence(
+    signatures: &SignatureSet,
+    install_dir: &Path,
+    warnings: &mut Vec<String>,
+) -> (FidelityTier, Vec<DetectionFinding>) {
+    match signatures.detect(install_dir) {
+        Ok(outcome) => {
+            for path in &outcome.unreadable {
+                warnings.push(format!(
+                    "could not read subtree during detection: {}",
+                    path.display()
+                ));
+            }
+            let fidelity = outcome
+                .detected_engine()
+                .map(|e| e.fidelity)
+                .unwrap_or(FidelityTier::HeuristicUnverified);
+            (fidelity, outcome.findings)
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "could not read install directory during detection: {}",
+                e.path.display()
+            ));
+            (FidelityTier::HeuristicUnverified, Vec::new())
+        }
+    }
+}
 
 /// Tier 1 discovery: Steam. Wraps `fragcap-steam`'s library walk and joins each
 /// installed title's appid to the shipped catalog.
@@ -58,6 +94,12 @@ impl TargetSource for SteamSource<'_> {
         let installation = fragcap_steam::discover_in(&self.steam_root)
             .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
 
+        // Detection is signature-driven and runs in every source's scan phase
+        // (FR-006): load the catalog's signatures once and classify each installed
+        // title's install directory below.
+        let signature_set = SignatureSet::compile(&self.catalog.load_signatures()?);
+        let mut warnings = installation.warnings;
+
         let mut account = DiscoveryAccount::default();
         // A manifest that was present but would not parse is one title omitted from
         // the walk. Count each as considered-and-parse-failed so the account
@@ -84,15 +126,18 @@ impl TargetSource for SteamSource<'_> {
                 None => TargetClassification::Unknown,
             };
             account.produced += 1;
+            // Scan the install directory for technologies (FR-006): a detected engine
+            // rides as evidence and raises the fidelity to `verified`, outranking the
+            // remote catalog attribution (P-9); any anti-cheat or DRM rides as neutral
+            // evidence. A title with no local engine keeps heuristic-unverified.
+            let (fidelity, evidence) =
+                detect_evidence(&signature_set, &title.install_dir, &mut warnings);
             candidates.push(CandidateTarget {
                 identity: CandidateIdentity::SteamAppId(appid),
                 display_name: title.name.clone(),
-                fidelity: self.default_fidelity(),
+                fidelity,
                 classification,
-                // A Steam candidate is identified by appid, not by an install-tree
-                // scan; local signature detection attaches when a directory is
-                // classified (the known-roots and scan paths), not here.
-                evidence: Vec::new(),
+                evidence,
                 source_name: self.name().to_string(),
             });
         }
@@ -100,9 +145,9 @@ impl TargetSource for SteamSource<'_> {
             candidates,
             account,
             // Surface every non-fatal Steam diagnostic (a malformed manifest, a
-            // duplicate appid, an unreadable library) so an omission is visible
-            // rather than left on an unused side channel.
-            warnings: installation.warnings,
+            // duplicate appid, an unreadable library) plus any detection coverage gap,
+            // so an omission is visible rather than left on an unused side channel.
+            warnings,
         })
     }
 
