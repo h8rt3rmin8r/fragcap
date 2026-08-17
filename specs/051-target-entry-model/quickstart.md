@@ -64,12 +64,13 @@ Integration test over the CLI selector:
   resolving nothing.
 - A bare integer selects by ephemeral row index.
 
-## 6. Retirement (SC-007)
+## 6. Retirement (SC-007) - DEFERRED to S054
 
-- `fragcap --profile <path> ...` is unrecognized (clap error, exit 2).
-- `fragcap profile validate ...` is unrecognized.
-- No AppData profile directory is created or read on a fresh run.
-- `fragcap schema validate <file>` still validates against the published schema.
+Not applicable in S051. Retiring `--profile`, the AppData profile directory, and
+the `profile` command is deferred to S054's capture rework (they are the only
+capture entry point; see the deferrals clarification). In S051 those surfaces are
+unchanged and `fragcap schema validate <file>` still validates against the
+published schema. This step's validation runs when S054 lands.
 
 ## 7. Full gate
 

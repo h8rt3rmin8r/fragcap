@@ -2306,12 +2306,16 @@ marks, lowercase, delete apostrophes, collapse runs outside `[a-z0-9]` to a sing
 underscore, trim, truncate to 64). A handle is never purely numeric (a bare
 integer is a row-index selector); a name that would normalize to digits falls back
 to the executable stem, then `target_<n>`, and a collision suffixes the new item
-`_2`, `_3`. An anchored target's identifier is a 63-bit BLAKE3 truncation over its
+`_2`, `_3`. An anchored target's identifier is the low 63 bits of BLAKE3 over its
 canonical anchor string (`steam:<appid>`, `epic:<catalogItemId>`,
 `gog:<productId>`), so independent registrations of one title collide on identity
-and merge; an unanchored target's identifier is random with a reserved locality
-bit, replaced by the anchored value (and kept as a superseded alias) when the
-target later gains an anchor. The identifier derives only from the anchor.
+and merge; a non-canonical anchor prefix (`STEAM:620`) is canonicalized before
+hashing so it resolves to the same identifier. An unanchored target's identifier
+is a random 63-bit value, replaced by the anchored value (and kept as a superseded
+alias) when the target later gains an anchor. Both occupy the low 63 bits so the
+value is non-negative; whether an entry is anchored is read from its `anchor`
+column, not from a bit of the identifier. The identifier derives only from the
+anchor.
 
 Resolution over the stores is fidelity-ordered: a local entry resolves at its own
 fidelity, a `catalog.db` row always answers heuristic-unverified, and a runtime

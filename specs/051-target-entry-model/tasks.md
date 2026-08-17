@@ -22,11 +22,13 @@ SQLite-backed crates with `cargo +1.96.0-x86_64-pc-windows-gnu ... --features ta
 CI runs the real MSVC build. Tasks that require a linker-capable machine
 (dependency-graph and license verification) are marked accordingly.
 
-**Revision note**: this list incorporates the `/speckit-analyze` remediations.
-I2: the identifier primitives are Foundational (T009), so US1 registration no
-longer forward-depends on US2. C1: T022 extends the published schema so an
-exported entry validates. I1: the whole `profile` command is retired (T034),
-matching the reconciled FR-023.
+**Revision note**: this list incorporates the `/speckit-analyze` remediations, as
+later narrowed by the implementation deferrals (spec Clarifications). I2: the
+identifier primitives are Foundational (T009), so US1 registration no longer
+forward-depends on US2. Two stories were then deferred and their tasks marked
+DEFERRED below: US2 (the schema extension and entry export/import, originally C1)
+to S055/S057, and US5 (retiring the `profile` command and capture surface,
+originally I1) to S054's capture rework.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -65,7 +67,7 @@ under `docs/`.
 - [X] T006 Bump `SCHEMA_VERSION` 2 -> 3 and add the `targets` and `target_id_aliases` table DDL plus `MIGRATE_2_TO_3` (with the non-numeric-handle CHECK `handle GLOB '*[^0-9]*'` and all enum CHECKs) in `crates/fragcap-targets/src/schema.rs`.
 - [X] T007 Add the v2 -> v3 migration arm to `Store::open` in `crates/fragcap-targets/src/store.rs`, transactional and mirroring the existing v1 -> v2 arm (apply DDL + stamp `user_version` in one transaction).
 - [X] T008 [P] Migration test in `crates/fragcap-targets/tests/` (or `store.rs` unit tests): a fresh store opens at v3 with the `targets` table; a synthetic v2 store upgrades in place with existing catalog rows intact and the `targets` table empty.
-- [X] T009 Implement the identifier primitives in `crates/fragcap-targets/src/identifier.rs` (depends on T001): anchor canonicalization (`steam:<appid>`, `epic:<catalogItemId>`, `gog:<productId>`); the anchored 63-bit BLAKE3 truncation (anchor-only input, top bit clear); the unanchored random 63-bit generator (locality bit set, via `getrandom`). These are shared by US1 registration and US2 merge, so they are Foundational.
+- [X] T009 Implement the identifier primitives in `crates/fragcap-targets/src/identifier.rs` (depends on T001): anchor canonicalization (`steam:<appid>`, `epic:<catalogItemId>`, `gog:<productId>`); the anchored identifier (low 63 bits of BLAKE3 over the canonicalized anchor); the unanchored random 63-bit generator (via `getrandom`, no reserved bit). These are shared by US1 registration and US2 merge, so they are Foundational.
 
 **Checkpoint**: schema v3 exists and migrates; enums, `TargetEntry`, and identifier primitives compile. User stories can begin independently.
 
@@ -103,7 +105,7 @@ under `docs/`.
 
 ### Tests for User Story 2
 
-- [X] T018 [P] [US2] Identifier determinism tests in `crates/fragcap-targets/tests/identifier.rs`: two entries from `steam:2221490` have equal `stable_id`; `steam:2221490` vs `steam:620` differ; every anchored id is non-negative (top bit clear); an unanchored id has the locality bit set and two unanchored ids differ.
+- [X] T018 [P] [US2] Identifier determinism tests in `crates/fragcap-targets/tests/identifier.rs`: two entries from `steam:2221490` have equal `stable_id`; `steam:2221490` vs `steam:620` differ; every anchored id is non-negative; a non-canonical prefix (STEAM:620) yields the same id; two unanchored ids differ.
 - [ ] T019 [P] [US2] DEFERRED to S055/S057 -- Supersession + export/import round-trip test in `crates/fragcap-targets/tests/identifier.rs`: an unanchored entry matched to an anchor adopts the anchored id, its old value lands in `target_id_aliases`, `--id <old>` still resolves it, and export-then-import into a fresh store yields one entry (no duplicate).
 
 ### Implementation for User Story 2

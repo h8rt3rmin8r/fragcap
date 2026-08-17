@@ -80,8 +80,9 @@ fn collision_suffixes_the_new_item() {
     assert_eq!(first, "portal_2");
     let taken = [first.clone()];
     let second = disambiguate(&normalize("Portal 2").expect("handle"), |h| {
-        taken.iter().any(|t| t == h)
-    });
+        Ok::<_, ()>(taken.iter().any(|t| t == h))
+    })
+    .unwrap();
     assert_eq!(second, "portal_2_2");
 }
 

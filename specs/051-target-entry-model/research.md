@@ -142,14 +142,16 @@ launcher-mediated row, row with more than one distinct Windows executable) are
 re-expressed as fidelity-aware query conditions on the read, preserving their
 behavior. The engine-layout and platform-walker providers stay at their
 precedence slots this slice (operator decision, session 2); the Profile *file*
-provider and file search are retired because profiles-as-files are retired.
+provider and file search also stay, because the whole profile-file surface is
+retired together by S054 (deferrals clarification), not in S051.
 
 **Rationale**: The declines are load-bearing P-9 behavior (`hint_provider.rs`
 documents each); the permutation and mediation tests already guard them and must
 keep passing. Keeping engine/walker avoids a transitional window where installed-
 but-unregistered titles stop resolving before S052 reintroduces them as sources.
-Retiring only the Profile *file* provider (not the whole crate) is safe because
-selector resolution (FR-015) replaces `--profile` reference resolution.
+The Profile file provider is likewise kept until S054, so `run --profile` (the
+only capture entry point) keeps working until its handle/`--id` replacement is
+wired into capture.
 
 **Alternatives considered**: removing engine/walker now (the literal three-
 position collapse). Rejected by the operator for the transitional-gap reason;
@@ -161,11 +163,13 @@ deferred to S052 where those providers become `TargetSource`s.
 over the current listing; a token matches an exact handle, then a case-
 insensitive exact name; `--id <n>` selects by `stable_id`. A name matching more
 than one row prints the matches with handles and identifiers and exits 2
-(configuration error, matching the existing `profile validate` exit convention),
-resolving nothing. Retire `--profile <path>`, the AppData profile directory
-(`paths.rs` `user_profile_dir`/`search_path` and the profile-dir env override),
-and the `profile validate` subcommand; keep `schema validate` under the separate
-`schema` command (already independent).
+(configuration error), resolving nothing; a no-match follows the selector kind (a
+handle/name miss exits 0, an unknown `--id` or out-of-range row index exits 2).
+Retiring `--profile <path>`, the AppData profile directory (`paths.rs`
+`user_profile_dir`/`search_path` and the profile-dir env override), and the
+`profile` command is deferred to S054's capture rework (deferrals clarification),
+because that surface is the only capture entry point; `schema validate` under the
+separate `schema` command is untouched.
 
 **Rationale**: Exit 2 for ambiguity reuses the established
 configuration-error code and keeps the instrument from guessing (P-9). The
@@ -183,9 +187,10 @@ what `targets` covers.
 
 ## D-6. Randomness source for the unanchored identifier
 
-**Decision**: Generate the unanchored 63-bit value (with the locality bit set)
-from OS entropy via `getrandom`, taken as a direct dependency of
-`fragcap-targets` behind the `targets` feature.
+**Decision**: Generate the unanchored 63-bit value from OS entropy via
+`getrandom`, taken as a direct dependency of `fragcap-targets` behind the
+`targets` feature. (No locality bit is reserved; an entry is anchored iff its
+`anchor` column is non-null. See the code-review clarification.)
 
 **Rationale**: The unanchored id must be unique and uncoordinated across
 independent registrations; OS entropy is the direct way to get that without a

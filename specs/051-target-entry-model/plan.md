@@ -13,15 +13,16 @@ at the storage layer), the deterministic handle-normalization algorithm and its
 uniqueness and fallback rules, the anchored/unanchored stable identifier, and the
 selector resolution that refuses to guess. It makes resolution over the two
 stores fidelity-ordered while preserving the four hint-database declines as
-fidelity-aware query conditions, and it retires the profile-file surface
-(`--profile`, the AppData profile directory, `profile validate`) while keeping
-`schema validate`.
+fidelity-aware query conditions. Retiring the profile-file surface (`--profile`,
+the AppData profile directory, the `profile` command) is deferred to S054's
+capture rework, since that surface is the only capture entry point; `schema
+validate` is untouched (see spec Clarifications, deferrals session).
 
-Two settled operator decisions (spec Clarifications, session 2 "operator") shape
-the approach: the identifier is a 63-bit BLAKE3 truncation (add the `blake3`
-crate), and the engine-layout and platform-walker providers remain in the
-resolver this slice, becoming sources in S052, so the literal reduction to three
-provider positions completes there.
+Operator and code-review decisions shape the approach: the identifier is the low
+63 bits of BLAKE3 over the canonical anchor (add the `blake3` crate; the anchor
+prefix is canonicalized and no locality bit is reserved), and the engine-layout
+and platform-walker providers remain in the resolver this slice, becoming sources
+in S052, so the literal reduction to three provider positions completes there.
 
 ## Technical Context
 

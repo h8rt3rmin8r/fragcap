@@ -12,7 +12,7 @@ One capture target. One row in the `targets` table.
 | Field | Type | Rules |
 | --- | --- | --- |
 | `id` | INTEGER PK | Row identity, autoincrement. Also the durable target key inside a store. |
-| `stable_id` | INTEGER UNIQUE | The 63-bit stable identifier (D-1). Anchored: BLAKE3(canonical anchor) low 63 bits. Unanchored: random 63-bit with the locality bit set. Selected by `--id`. |
+| `stable_id` | INTEGER UNIQUE | The 63-bit stable identifier (D-1). Anchored: BLAKE3(canonical anchor) low 63 bits. Unanchored: random 63-bit. Selected by `--id`. |
 | `handle` | TEXT UNIQUE | Normalized slug (FR-004). `UNIQUE`; CHECK not purely numeric; collision auto-increments the new item. |
 | `name` | TEXT | Display name; source of the derived handle. Non-empty. |
 | `classification` | TEXT | Enum {game, launcher, tool, mod, emulator, unknown}. CHECK-constrained. `unknown` is first-class (P-9). |
@@ -107,21 +107,21 @@ Constraints and fallback:
   Steam is the only platform a source populates today; `epic:` and `gog:` forms
   are fixed now for forward compatibility (identifier stability must predate the
   second platform).
-- **Anchored StableIdentifier** = low 63 bits of `BLAKE3(anchor_bytes)`.
+- **Anchored StableIdentifier** = low 63 bits of `BLAKE3(canonicalize(anchor))`,
+  where canonicalization lowercases the platform prefix and trims whitespace.
   Deterministic; independent registrations of one anchor collide and merge
   (FR-010). Derived only from the anchor (FR-011).
-- **Unanchored StableIdentifier** = random 63-bit value with a designated
-  locality bit set (FR-012). The reserved locality bit position is a fixed
-  constant (implementation detail; documented at the call site).
+- **Unanchored StableIdentifier** = random 63-bit value (FR-012). No bit is
+  reserved; an entry is anchored iff its `anchor` column is non-null.
 
 ### State transition: unanchored -> anchored
 
 ```text
-[unanchored entry]  stable_id = R (random, locality bit set)
+[unanchored entry]  stable_id = R (random 63-bit), anchor = NULL
         |
         |  later matched to anchor A
         v
-[anchored entry]    stable_id = BLAKE3(A) low 63 bits (active)
+[anchored entry]    stable_id = BLAKE3(canonicalize(A)) low 63 bits (active)
                     target_id_aliases += R   (superseded, never reissued)
 ```
 

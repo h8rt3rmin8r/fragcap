@@ -7,7 +7,7 @@
 //! first, then a case-insensitive exact name; `--id <n>` is the explicit, durable,
 //! machine-facing form that resolves by stable identifier (or a superseded alias).
 //!
-//! A name that matches more than one target is an [`Selection::Ambiguous`]: the
+//! A name that matches more than one target is a [`Selection::Ambiguous`]: the
 //! caller must print the matches and refuse to guess (P-9), never pick one. A name
 //! that matches nothing is a clean [`Selection::NoMatch`], distinct from ambiguity.
 

@@ -21,18 +21,22 @@ total and deterministic: the same logical title always produces the same string.
 
 ## Identifier
 
-- **Anchored**: `stable_id = BLAKE3(utf8_bytes(canonical_anchor))` truncated to the
-  low 63 bits. Deterministic and derived **only** from the anchor (never name,
-  handle, or install path).
+- **Anchored**: `stable_id` = the low 63 bits of
+  `BLAKE3(utf8_bytes(canonicalize(anchor)))`, where canonicalization lowercases the
+  platform prefix and trims whitespace. This is the durable, cross-implementation
+  contract: anything computing the low 63 bits of BLAKE3 of the canonical anchor
+  arrives at the same value. Deterministic and derived **only** from the anchor
+  (never name, handle, or install path).
   - Contract test: two `TargetEntry` values built independently from `steam:2221490`
     have identical `stable_id`.
   - Contract test: `steam:2221490` and `steam:620` have different `stable_id`.
-- **Unanchored**: `stable_id` is a random 63-bit value with a fixed locality bit
-  set, so an unanchored id is distinguishable from an anchored one and two
-  unanchored entries do not collide.
+  - Contract test: `STEAM:620` and `steam:620` have identical `stable_id`.
+- **Unanchored**: `stable_id` is a random 63-bit value. No bit is reserved; an
+  entry is anchored iff its `anchor` field is non-null, so the anchored value is
+  the full 63-bit truncation rather than 62 bits.
 
 63 bits (not 64) keeps the value non-negative in SQLite's signed 64-bit integer
-column and leaves the top bit free.
+column and leaves the sign bit clear.
 
 ## Merge and supersession
 

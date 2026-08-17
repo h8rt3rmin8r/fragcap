@@ -3,10 +3,10 @@
 A capture target can now be a stored entry rather than a profile file. `fragcap
 targets add <name>` registers a target in `local.db`, deriving a unique,
 human-readable handle from the name (Unicode-normalized, never purely numeric,
-collisions suffixed `_2`), and assigning a durable 63-bit identifier: a BLAKE3
-truncation over a platform anchor such as `steam:620` when one is given, so two
-independent registrations of a title merge on identity, or a random value with a
-reserved locality bit otherwise. `fragcap targets list` and `fragcap targets show`
+collisions suffixed `_2`), and assigning a durable 63-bit identifier: the low 63
+bits of BLAKE3 over a canonical platform anchor such as `steam:620` when one is
+given, so two independent registrations of a title merge on identity, or a random
+63-bit value otherwise. `fragcap targets list` and `fragcap targets show`
 select a target by handle, case-insensitive name, row index, or `--id`; a name
 that matches more than one target lists the matches and exits 2 rather than
 guessing.

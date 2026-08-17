@@ -1303,11 +1303,12 @@ slice S051.
 ## Stable identifier
 
 The 63-bit value identifying a [target entry](#target-entry) across registrations
-and exports. Anchored: a BLAKE3 truncation over the canonical [anchor](#anchor),
-so independent registrations of one title collide on identity and merge.
-Unanchored: a random value with a reserved locality bit set, replaced by the
-anchored value (and kept as a [superseded alias](#superseded-alias)) when the
-target later gains an anchor. Introduced by slice S051.
+and exports. Anchored: the low 63 bits of BLAKE3 over the canonical
+[anchor](#anchor), so independent registrations of one title collide on identity
+and merge. Unanchored: a random 63-bit value, replaced by the anchored value (and
+kept as a [superseded alias](#superseded-alias)) when the target later gains an
+anchor. Whether an entry is anchored is read from its anchor, not from a bit of
+the identifier. Introduced by slice S051.
 
 {: .matters }
 > The identifier derives only from the anchor, never from the name, handle, or

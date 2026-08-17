@@ -118,22 +118,40 @@ pub fn derive_handle(name: &str, exe_stem: Option<&str>, index: u64) -> String {
 
 /// Resolve a base handle against existing handles, appending `_2`, `_3`, ... until
 /// it is unique. The suffix lands on the new item; an existing entry is never
-/// touched.
+/// touched, and the result never exceeds the 64-character limit.
 ///
-/// `exists` reports whether a candidate handle is already taken. The base is
-/// returned unchanged when free.
-pub fn disambiguate(base: &str, mut exists: impl FnMut(&str) -> bool) -> String {
-    if !exists(base) {
-        return base.to_string();
+/// `exists` reports whether a candidate handle is already taken, and may fail: a
+/// store error propagates rather than being swallowed into a false "free", which
+/// would risk a duplicate insert or hide a real fault. The base is returned
+/// unchanged when free.
+pub fn disambiguate<E>(
+    base: &str,
+    mut exists: impl FnMut(&str) -> Result<bool, E>,
+) -> Result<String, E> {
+    if !exists(base)? {
+        return Ok(base.to_string());
     }
     let mut n: u64 = 2;
     loop {
-        let candidate = format!("{base}_{n}");
-        if !exists(&candidate) {
-            return candidate;
+        let candidate = with_suffix(base, &format!("_{n}"));
+        if !exists(&candidate)? {
+            return Ok(candidate);
         }
         n += 1;
     }
+}
+
+/// Append a collision suffix while keeping the whole handle within [`MAX_LEN`]
+/// characters: truncate the base on a character boundary to leave room, then trim
+/// any trailing `_` the cut leaves, so a suffixed handle is never longer than one
+/// normalization itself could produce.
+fn with_suffix(base: &str, suffix: &str) -> String {
+    let room = MAX_LEN.saturating_sub(suffix.chars().count());
+    let mut kept: String = base.chars().take(room).collect();
+    while kept.ends_with('_') {
+        kept.pop();
+    }
+    format!("{kept}{suffix}")
 }
 
 /// Validate a user-supplied handle override under the same rules as a derived
@@ -196,8 +214,29 @@ mod tests {
     #[test]
     fn disambiguate_suffixes_the_new_item() {
         let taken = ["portal_2"];
-        let out = disambiguate("portal_2", |h| taken.contains(&h));
+        let out = disambiguate("portal_2", |h| Ok::<_, ()>(taken.contains(&h))).unwrap();
         assert_eq!(out, "portal_2_2");
+    }
+
+    #[test]
+    fn disambiguate_propagates_a_lookup_error() {
+        let out = disambiguate("portal_2", |_h| Err::<bool, _>("store down"));
+        assert_eq!(out, Err("store down"));
+    }
+
+    #[test]
+    fn collision_suffix_stays_within_the_limit() {
+        // A base already at the 64-character limit must not grow past it when a
+        // suffix is appended: the base is truncated to make room.
+        let base = "a".repeat(64);
+        let taken = [base.clone()];
+        let out = disambiguate(&base, |h| Ok::<_, ()>(taken.iter().any(|t| t == h))).unwrap();
+        assert!(
+            out.chars().count() <= 64,
+            "got {} chars",
+            out.chars().count()
+        );
+        assert!(out.ends_with("_2"));
     }
 
     #[test]

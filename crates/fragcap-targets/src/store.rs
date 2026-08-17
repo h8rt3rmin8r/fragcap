@@ -452,12 +452,18 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Insert a target entry, returning its assigned row id. The CHECK constraints
-    /// reject an out-of-set enum, an empty name, or a purely numeric handle before
-    /// any row is written, so an invalid entry is a storage error rather than a
-    /// silently stored lie (P-9).
+    /// Insert a target entry, returning its assigned row id.
+    ///
+    /// This is the low-level insert; the merge-on-anchor guarantee is provided by
+    /// the caller checking [`Store::target_by_anchor`] first (the CLI does), so a
+    /// re-registration reports the existing target rather than reaching here. If a
+    /// duplicate identity or handle does reach the insert, the UNIQUE violation is
+    /// surfaced as a clear [`TargetsError::Model`] rather than a raw SQLite error;
+    /// a CHECK violation (an out-of-set enum, an empty name, a purely numeric
+    /// handle) is likewise a model error, so an invalid entry is a named storage
+    /// failure rather than a silently stored lie (P-9).
     pub fn insert_target(&mut self, entry: &TargetEntry) -> Result<i64, TargetsError> {
-        self.conn.execute(
+        let result = self.conn.execute(
             "INSERT INTO targets
                 (stable_id, handle, name, classification, classification_source,
                  fidelity, provenance, anchor, launch_entries, install_root, evidence)
@@ -475,8 +481,25 @@ impl Store {
                 entry.install_root,
                 entry.evidence.as_ref().map(json_text),
             ],
-        )?;
-        Ok(self.conn.last_insert_rowid())
+        );
+        match result {
+            Ok(_) => Ok(self.conn.last_insert_rowid()),
+            Err(rusqlite::Error::SqliteFailure(e, msg))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                let detail = msg.unwrap_or_else(|| "constraint violation".to_string());
+                if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
+                    Err(TargetsError::Model(format!(
+                        "a target with this identity or handle already exists \
+                         (stable_id {}, handle {:?}): {detail}",
+                        entry.stable_id, entry.handle
+                    )))
+                } else {
+                    Err(TargetsError::Model(format!("invalid target: {detail}")))
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Read a target by its row id, or `None`.
@@ -528,19 +551,19 @@ impl Store {
 
     /// Resolve targets by case-insensitive exact name. More than one match is an
     /// ambiguity the caller must refuse to guess (P-9); zero is a clean no-match.
+    ///
+    /// The fold is Unicode-aware (Rust's `to_lowercase`), not SQLite's `NOCASE`
+    /// collation, which folds ASCII only: a stored `Élan` must match a selector
+    /// `élan`, and two names differing only in non-ASCII case must be detected as
+    /// an ambiguity rather than slip past it. The target table is small (a user's
+    /// registered titles), so folding every row in memory is inexpensive.
     pub fn targets_by_name(&self, name: &str) -> Result<Vec<TargetEntry>, TargetsError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, stable_id, handle, name, classification,
-                    classification_source, fidelity, provenance, anchor,
-                    launch_entries, install_root, evidence
-             FROM targets WHERE name = ?1 COLLATE NOCASE ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![name], read_target_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r??);
-        }
-        Ok(out)
+        let needle = name.to_lowercase();
+        Ok(self
+            .targets()?
+            .into_iter()
+            .filter(|t| t.name.to_lowercase() == needle)
+            .collect())
     }
 
     /// Resolve a target by its stable identifier, consulting superseded aliases so
@@ -595,11 +618,25 @@ impl Store {
             params![target_id],
             |row| row.get(0),
         )?;
-        let new = crate::identifier::anchored_id(anchor);
+        let canonical = crate::identifier::canonicalize_anchor(anchor);
+        let new = crate::identifier::anchored_id(&canonical);
+
+        // If another target already owns this anchored identity, this is a
+        // collision with an existing registration, not a supersede: report it
+        // clearly before the transaction rather than failing on a raw UNIQUE error.
+        if let Some(existing) = self.target_by_stable_id(new)? {
+            if existing.id != Some(target_id) {
+                return Err(TargetsError::Model(format!(
+                    "anchor {canonical:?} is already registered to target {} (handle {})",
+                    existing.stable_id, existing.handle
+                )));
+            }
+        }
+
         let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE targets SET stable_id = ?1, anchor = ?2 WHERE id = ?3",
-            params![new, anchor, target_id],
+            params![new, canonical, target_id],
         )?;
         // Keep the former id resolvable. INSERT OR IGNORE so re-running is a no-op.
         tx.execute(

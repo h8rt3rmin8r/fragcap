@@ -90,11 +90,18 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     let mut store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
 
+    // Canonicalize the anchor once (lowercase the platform prefix, trim) so a
+    // CLI-supplied `STEAM:620` matches and is stored identically to `steam:620`.
+    let anchor = args
+        .anchor
+        .as_ref()
+        .map(|a| identifier::canonicalize_anchor(a));
+
     // An anchor already present means this title is registered: report it rather
     // than creating a duplicate (identity is deterministic from the anchor, P-10).
-    if let Some(anchor) = &args.anchor {
+    if let Some(a) = &anchor {
         if let Some(existing) = store
-            .target_by_anchor(anchor)
+            .target_by_anchor(a)
             .map_err(|e| CliError::failure(e.to_string()))?
         {
             let _ = writeln!(
@@ -108,6 +115,8 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 
     // Derive or validate the handle, then disambiguate against existing handles so
     // a collision suffixes the new item (_2, _3) and leaves the existing untouched.
+    // A store error during the existence check propagates rather than being
+    // swallowed into a false "free", which could attempt a duplicate insert.
     let exe_stem = args.exe.as_deref().map(exe_stem);
     let base = match &args.handle_override {
         Some(h) => handle::validate_override(h).map_err(CliError::usage)?,
@@ -121,9 +130,10 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
                 + 1,
         ),
     };
-    let handle_value = handle::disambiguate(&base, |h| store.handle_exists(h).unwrap_or(false));
+    let handle_value = handle::disambiguate(&base, |h| store.handle_exists(h))
+        .map_err(|e| CliError::failure(e.to_string()))?;
 
-    let stable_id = match &args.anchor {
+    let stable_id = match &anchor {
         Some(a) => identifier::anchored_id(a),
         None => identifier::unanchored_id(),
     };
@@ -141,7 +151,7 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         classification_source: ClassificationSource::User,
         fidelity: FidelityTier::Authored,
         provenance: Some(serde_json::json!({ "source": "user", "command": "targets add" })),
-        anchor: args.anchor.clone(),
+        anchor,
         launch_entries,
         install_root: None,
         evidence: None,
@@ -170,17 +180,24 @@ fn list(db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
     Ok(Exit::SUCCESS)
 }
 
-/// Show one target resolved by a selector. An ambiguous name lists its matches
-/// and exits 2 rather than guessing (P-9); a no-match exits 1.
+/// Show one target resolved by a selector.
+///
+/// The no-match exit code follows the selector kind (the section 5.4 contract): a
+/// handle or name that matches nothing is a clean miss (exit 0), while an unknown
+/// `--id` or an out-of-range row index is a bad machine reference (exit 2). An
+/// ambiguous name lists its matches and exits 2 rather than guessing (P-9).
 fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     let store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
-    let selection = match (args.id, &args.selector) {
-        (Some(id), _) => resolve_id(&store, id),
-        (None, Some(token)) => resolve_positional(&store, token),
+    let (selection, miss_exit) = match (args.id, &args.selector) {
+        (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
+        (None, Some(token)) if is_row_index(token) => {
+            (resolve_positional(&store, token), Exit::USAGE)
+        }
+        (None, Some(token)) => (resolve_positional(&store, token), Exit::SUCCESS),
         // The clap group guarantees exactly one is present.
         (None, None) => return Err(CliError::usage("a selector or --id is required")),
-    }
-    .map_err(|e| CliError::failure(e.to_string()))?;
+    };
+    let selection = selection.map_err(|e| CliError::failure(e.to_string()))?;
 
     match selection {
         Selection::Resolved(t) => {
@@ -189,7 +206,7 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         }
         Selection::NoMatch => {
             let _ = writeln!(out, "no target matches");
-            Ok(Exit::FAILURE)
+            Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {
             let _ = writeln!(
@@ -203,6 +220,12 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             Ok(Exit::USAGE)
         }
     }
+}
+
+/// Whether a positional selector is a bare integer, i.e. a row index rather than a
+/// handle or name. Handles are never purely numeric, so this never shadows one.
+fn is_row_index(token: &str) -> bool {
+    !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Print one resolved target's fields.

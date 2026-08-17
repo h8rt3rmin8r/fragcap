@@ -186,3 +186,77 @@ fn list_is_empty_on_a_fresh_store() {
     assert_eq!(code, 0);
     assert!(out.contains("no targets registered"), "{out}");
 }
+
+#[test]
+fn no_match_exit_codes_distinguish_the_selector_kind() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets",
+        "add",
+        "Portal 2",
+        "--db",
+        &store,
+        "--anchor",
+        "steam:620",
+    ]);
+    // A handle/name miss is a clean miss: exit 0.
+    let (code, out, _err) = run(&["targets", "show", "nonexistent", "--db", &store]);
+    assert_eq!(code, 0, "text-selector miss is a clean 0: {out}");
+    // An unknown --id is a bad machine reference: exit 2.
+    let (code, _o, _e) = run(&["targets", "show", "--id", "123456789", "--db", &store]);
+    assert_eq!(code, 2, "unknown --id is a usage error");
+    // An out-of-range row index is a bad reference: exit 2.
+    let (code, _o, _e) = run(&["targets", "show", "99", "--db", &store]);
+    assert_eq!(code, 2, "out-of-range row index is a usage error");
+}
+
+#[test]
+fn a_non_canonical_anchor_prefix_merges_with_the_canonical_one() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets",
+        "add",
+        "Portal 2",
+        "--db",
+        &store,
+        "--anchor",
+        "steam:620",
+    ]);
+    // STEAM:620 canonicalizes to steam:620, so it is the same identity.
+    let (code, out, _err) = run(&[
+        "targets",
+        "add",
+        "Portal 2 again",
+        "--db",
+        &store,
+        "--anchor",
+        "STEAM:620",
+    ]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("already registered"),
+        "a non-canonical prefix resolves to the same identity: {out}"
+    );
+}
+
+#[test]
+fn a_unicode_name_resolves_case_insensitively() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    // A stored name with non-ASCII letters must match a differently-cased selector,
+    // which SQLite's ASCII-only NOCASE would miss.
+    run(&[
+        "targets",
+        "add",
+        "Pokémon Élan",
+        "--db",
+        &store,
+        "--anchor",
+        "steam:1",
+    ]);
+    let (code, out, _err) = run(&["targets", "show", "pokémon élan", "--db", &store]);
+    assert_eq!(code, 0, "Unicode-cased name resolves: {out}");
+    assert!(out.contains("handle:"));
+}

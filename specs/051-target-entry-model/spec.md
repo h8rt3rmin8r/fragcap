@@ -122,6 +122,25 @@ own them.
   its handle/`--id` replacement into capture. This supersedes the earlier
   "FR-023 lands in full here" note. FR-022 and FR-023 both complete in S054.
 
+### Session 2026-08-17 (code review, PR #147)
+
+- Q (P1): The anchored identifier is documented as a "63-bit BLAKE3 truncation",
+  but the implementation reserved a locality bit, making it a 62-bit value that
+  disagrees with anything computing the low 63 bits -> A: The anchored identifier
+  is now the full low 63 bits of BLAKE3 over the canonical anchor (the durable,
+  cross-implementation contract). The locality bit is removed; whether an entry is
+  anchored is read from its `anchor` field, which always exists, so no bit is
+  reserved. FR-012 and the identifier docs are revised to match.
+- Q: A CLI-supplied anchor with a non-canonical prefix (`STEAM:620`) produced a
+  different identifier and failed to resolve against `steam:620` -> A: The anchor
+  is canonicalized before hashing and before storage: the platform prefix is
+  lowercased and surrounding whitespace trimmed, so logically identical anchors
+  produce identical identifiers (FR-010).
+- Q: `targets show` returned exit 1 for every no-match, losing the selector kind
+  -> A: The no-match exit code now follows the section 5.4 contract: a handle or
+  name miss is a clean 0, an unknown `--id` or an out-of-range row index is a
+  usage error (2). An ambiguous name still exits 2.
+
 ## User Scenarios & Testing *(mandatory)*
 
 The actors are the user, who registers the games they want to capture and later
@@ -386,13 +405,17 @@ runs.
 - **FR-010**: An anchored target MUST receive a 63-bit identifier computed as a
   truncation of a cryptographic hash over a canonical anchor string, where the
   canonical form is the platform-prefixed anchor (for example `steam:2221490`,
-  `epic:<catalogItemId>`, `gog:<productId>`). The computation MUST be
-  deterministic so that independent registrations of one title collide on
-  identity and merge.
+  `epic:<catalogItemId>`, `gog:<productId>`) with the platform prefix lowercased
+  and surrounding whitespace trimmed, so a non-canonical input such as `STEAM:620`
+  resolves to the same identifier. The computation MUST be deterministic so that
+  independent registrations of one title collide on identity and merge.
 - **FR-011**: The identifier MUST derive only from the anchor, never from the
   name, the handle, or the install path.
-- **FR-012**: An unanchored target MUST receive a random 63-bit identifier with a
-  designated locality bit set, distinguishing it from an anchored identifier.
+- **FR-012**: An unanchored target MUST receive a random 63-bit identifier.
+  Whether an entry is anchored is read from its `anchor` field, not from a bit of
+  the identifier, so no bit is reserved and an anchored identifier is the full
+  63-bit truncation of FR-010. (Revised from a "designated locality bit" during
+  code review; see the P1 remediation in the code-review clarifications.)
 - **FR-013**: When an unanchored target is later matched to an anchor, it MUST
   adopt the anchored identifier as its active identifier and MUST retain the
   former random value as a superseded alias; the superseded value is never
@@ -469,8 +492,8 @@ deferrals session.
   id, GOG product id) rendered as a canonical prefixed string; the sole input to
   an anchored identifier.
 - **Stable identifier**: a 63-bit value identifying a target across registrations
-  and exports; deterministic from the anchor when anchored, random with a
-  locality bit when not, and mergeable on import.
+  and exports; the low 63 bits of the anchor hash when anchored, random when not,
+  and mergeable on import.
 - **Fidelity**: the confidence stamp on a resolution, ordered `authored` >
   `verified` > `heuristic-unverified` > `observed`; the column the resolver reads
   to choose among competing answers.
@@ -511,9 +534,10 @@ deferrals session.
 - Retiring the profile file path means dropping it, not migrating it: existing
   loose profile files are neither read nor auto-imported, consistent with the
   v0.5.0 no-deprecation-shims stance established in S050.
-- The "designated locality bit" that marks an unanchored identifier is a fixed,
-  reserved bit position within the 63-bit value; which bit is an implementation
-  detail settled in planning, not a user-facing choice.
+- An unanchored identifier reserves no bit: an anchored identifier is the full
+  low-63-bit truncation of the anchor hash (the durable contract), and whether an
+  entry is anchored is read from its `anchor` field. (Revised from an earlier
+  "locality bit" during code review; see the code-review clarifications.)
 - The canonical anchor strings for platforms beyond Steam (`epic:<catalogItemId>`,
   `gog:<productId>`) are specified now for forward compatibility even though
   Steam is the only platform a source populates today; the identifier scheme must
