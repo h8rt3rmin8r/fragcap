@@ -20,11 +20,15 @@ fn enumerates_this_machines_fixed_volumes() {
         !volumes.is_empty(),
         "expected at least one fixed volume on a Windows host"
     );
+    // The system drive letter is not always C: (unusual installs and CI images
+    // differ), so assert against %SystemDrive% rather than a hard-coded letter.
+    let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    let system_drive = system_drive.trim_end_matches('\\');
     assert!(
         volumes
             .iter()
-            .any(|v| v.mount_point.eq_ignore_ascii_case("C:")),
-        "expected the system volume C: among the fixed volumes"
+            .any(|v| v.mount_point.eq_ignore_ascii_case(system_drive)),
+        "expected the system volume {system_drive} among the fixed volumes"
     );
 
     for v in &volumes {

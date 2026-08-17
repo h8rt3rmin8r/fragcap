@@ -44,10 +44,22 @@ impl DirectoryLister for FsDirectoryLister {
             Err(_) => return DirListing::AccessError,
         };
         let mut out = Vec::new();
-        for entry in read.flatten() {
-            // A subdirectory is a candidate location; a file is not. An entry whose
-            // type cannot be read is skipped rather than guessed.
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        for entry in read {
+            // An entry that cannot be read, or whose type cannot be determined,
+            // means the directory was not fully enumerated. Reporting the partial
+            // list as complete would present an interrupted walk as a finished one,
+            // so the whole directory is an access error, counted rather than a
+            // silently truncated success (P-4).
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => return DirListing::AccessError,
+            };
+            let is_dir = match entry.file_type() {
+                Ok(file_type) => file_type.is_dir(),
+                Err(_) => return DirListing::AccessError,
+            };
+            // A subdirectory is a candidate location; a file is not.
+            if is_dir {
                 out.push(entry.path().to_string_lossy().into_owned());
             }
         }

@@ -187,4 +187,13 @@ fn an_unreadable_root_is_counted_access_error() {
     assert_eq!(d.account.access_error, 1);
     assert_eq!(d.account.produced, 0);
     assert!(d.account.is_conserved());
+    // The failing root is named, so "some access error" is recoverable to which
+    // of the eleven roots failed (FR-017, review finding).
+    assert!(
+        d.warnings
+            .iter()
+            .any(|w| w.contains("C:/Program Files/Epic Games")),
+        "the unreadable root is named in the warnings: {:?}",
+        d.warnings
+    );
 }

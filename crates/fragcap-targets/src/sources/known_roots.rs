@@ -15,9 +15,7 @@ use std::collections::HashSet;
 use fragcap_profile::FidelityTier;
 
 use crate::classifier::{ClassifierVerdict, DirectoryClassifier};
-use crate::source::{
-    CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, TargetSource,
-};
+use crate::source::{CandidateIdentity, CandidateTarget, Discovery, TargetSource};
 use crate::sources::{base_name, DirListing, DirectoryLister};
 use crate::volume::VolumeInventory;
 use crate::TargetsError;
@@ -87,6 +85,11 @@ impl<'a> KnownRootsSource<'a> {
             DirListing::AccessError => {
                 out.account.considered += 1;
                 out.account.access_error += 1;
+                // Name the root that failed so "some access error occurred" is
+                // recoverable to which of the eleven roots on which volume failed,
+                // while the scalar count stays conserved (P-4).
+                out.warnings
+                    .push(format!("could not read known root: {dir}"));
             }
             DirListing::Present(children) => {
                 for child in children {
@@ -122,10 +125,7 @@ impl TargetSource for KnownRootsSource<'_> {
     }
 
     fn discover(&self) -> Result<Discovery, TargetsError> {
-        let mut out = Discovery {
-            candidates: Vec::new(),
-            account: DiscoveryAccount::default(),
-        };
+        let mut out = Discovery::default();
         for volume in self.inventory.fixed_volumes() {
             // An ineligible or unseen volume is never enumerated; the skip is
             // counted so it is visible, not silent (FR-017, SC-003).

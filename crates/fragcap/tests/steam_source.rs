@@ -184,3 +184,41 @@ fn candidate_set_matches_the_underlying_steam_walk_no_regression() {
     );
     assert_eq!(source_appids, BTreeSet::from([620, 730, 400500]));
 }
+
+#[test]
+fn a_malformed_manifest_is_counted_parse_failed_and_surfaced() {
+    // One good title plus one appmanifest that is present but unparseable: the
+    // library walk drops it from the title set, and SteamSource must reflect the
+    // omission in the account rather than reporting a clean run (P-4).
+    let tree = TempTree::new();
+    let steamapps = tree.path().join("steamapps");
+    std::fs::create_dir_all(&steamapps).unwrap();
+    std::fs::write(
+        steamapps.join("appmanifest_620.acf"),
+        "\"AppState\"\n{\n  \"appid\" \"620\"\n  \"name\" \"Portal 2\"\n  \
+         \"installdir\" \"Portal 2\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        steamapps.join("appmanifest_999.acf"),
+        "this is not valid vdf {{{ \"unterminated",
+    )
+    .unwrap();
+
+    let catalog = Store::open_in_memory().unwrap();
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+
+    assert_eq!(d.account.produced, 1, "the good title is produced");
+    assert_eq!(
+        d.account.parse_failed, 1,
+        "the malformed manifest is counted, not silently dropped"
+    );
+    assert_eq!(d.account.considered, 2);
+    assert!(d.account.is_conserved());
+    assert!(
+        d.warnings.iter().any(|w| w.contains("appmanifest_999")),
+        "the failing manifest is named in the warnings: {:?}",
+        d.warnings
+    );
+}

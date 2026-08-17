@@ -24,6 +24,7 @@ fn one_candidate(name: &str, source: &str, fidelity: FidelityTier) -> Discovery 
             source_name: source.to_string(),
         }],
         account,
+        ..Discovery::default()
     }
 }
 

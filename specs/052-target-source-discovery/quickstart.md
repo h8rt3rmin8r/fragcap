@@ -85,9 +85,13 @@ discard path with no counter fails here.
 ## CLI smoke (US3, FR-013)
 
 ```sh
-fragcap targets scan <dir>     # DirectorySource / InteractiveSource path
-fragcap targets add <exe>      # single-executable candidate -> author on accept
+fragcap targets discover --catalog-db <c> --local-db <l>   # tier 1 + tier 2 listing
+fragcap targets scan <dir>                                 # DirectorySource listing
+fragcap targets add <name> --exe <exe>                     # author (persist on use)
 ```
 
-Assert `scan` lists candidates found under the directory and `add` authors the
-named executable as a target entry (the persist-on-first-use trigger, FR-021).
+Assert `discover` lists Steam and known-roots candidates with the conserved
+account, `scan` lists the pointed-at directory as one candidate, and `add` authors
+a target entry (the persist-on-first-use step, FR-021). The interactive one-step
+scan-confirm-author flow that wires `InteractiveSource` into the command line is
+deferred to the S055 targets hero command.

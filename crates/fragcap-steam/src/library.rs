@@ -44,6 +44,11 @@ pub struct SteamInstallation {
     /// Non-fatal diagnostics: manifests skipped as malformed and duplicate
     /// app_id collisions. Reported, never silently dropped (FR-004).
     pub warnings: Vec<String>,
+    /// The count of application manifests that were present but could not be
+    /// parsed, each a title omitted from `titles`. A structured tally distinct from
+    /// the human `warnings`, so a consumer that keeps a conserved discovery account
+    /// can count the omission rather than infer it from warning strings (P-4).
+    pub malformed_manifests: u64,
 }
 
 impl SteamInstallation {
@@ -105,6 +110,7 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
     }
 
     let mut titles: Vec<InstalledTitle> = Vec::new();
+    let mut malformed_manifests: u64 = 0;
     for (i, lib) in libraries.iter().enumerate() {
         // The implicit root (index 0) is not a configured library; a missing
         // `steamapps` there is benign. Every other library came from
@@ -112,7 +118,12 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
         // disconnected drive, a permission error) that is a title-omitting fault
         // worth reporting rather than swallowing (Codex review of PR #31).
         let warn_unreadable = i != 0;
-        for title in read_library_titles(&lib.path, &mut warnings, warn_unreadable) {
+        for title in read_library_titles(
+            &lib.path,
+            &mut warnings,
+            &mut malformed_manifests,
+            warn_unreadable,
+        ) {
             if let Some(existing) = titles.iter().find(|t| t.app_id == title.app_id) {
                 warnings.push(format!(
                     "app_id {} found in more than one library; keeping {} and ignoring {}",
@@ -131,6 +142,7 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
         libraries,
         titles,
         warnings,
+        malformed_manifests,
     })
 }
 
@@ -196,6 +208,7 @@ fn read_library_folders(root: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf>
 fn read_library_titles(
     library: &Path,
     warnings: &mut Vec<String>,
+    malformed: &mut u64,
     warn_unreadable: bool,
 ) -> Vec<InstalledTitle> {
     let steamapps = library.join("steamapps");
@@ -224,7 +237,13 @@ fn read_library_titles(
         }
         match read_manifest(&path, &steamapps) {
             Ok(title) => out.push(title),
-            Err(reason) => warnings.push(format!("skipping {}: {reason}", path.display())),
+            Err(reason) => {
+                // A present manifest that will not parse is one title omitted:
+                // counted structurally as well as reported, so a consumer's
+                // discovery account can reflect the loss (P-4).
+                *malformed += 1;
+                warnings.push(format!("skipping {}: {reason}", path.display()));
+            }
         }
     }
     // Deterministic order regardless of directory iteration order.

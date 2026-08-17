@@ -100,13 +100,21 @@ impl DiscoveryAccount {
     }
 }
 
-/// What a discovery run returned: the produced candidates and the account.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a discovery run returned: the produced candidates, the conserved account,
+/// and any non-fatal diagnostics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Discovery {
     /// What the source produced this run.
     pub candidates: Vec<CandidateTarget>,
     /// The conserved tally of every item considered.
     pub account: DiscoveryAccount,
+    /// Non-fatal, named diagnostics a source surfaces so a loss is visible rather
+    /// than silent: the path of a root it could not read, a manifest it could not
+    /// parse, a duplicate it merged. These name what the scalar account counts, so
+    /// "some access error occurred" is recoverable to "which root failed" (P-4).
+    /// A warning is a report, not an outcome bucket: it does not affect
+    /// [`DiscoveryAccount::is_conserved`].
+    pub warnings: Vec<String>,
 }
 
 /// The discovery seam. Every origin of a capture target implements it.
@@ -130,23 +138,20 @@ pub trait TargetSource {
 /// new source is the whole cost of extending discovery, the driver does not change
 /// (S052 spec SC-006). A source that fails returns its `Err` unchanged.
 pub fn discover_all(sources: &[&dyn TargetSource]) -> Result<Discovery, TargetsError> {
-    let mut candidates = Vec::new();
-    let mut account = DiscoveryAccount::default();
+    let mut merged = Discovery::default();
     for source in sources {
         let d = source.discover()?;
-        candidates.extend(d.candidates);
-        account.considered += d.account.considered;
-        account.produced += d.account.produced;
-        account.parse_failed += d.account.parse_failed;
-        account.declined_by_user += d.account.declined_by_user;
-        account.considered_not_a_game += d.account.considered_not_a_game;
-        account.volume_skipped += d.account.volume_skipped;
-        account.access_error += d.account.access_error;
+        merged.candidates.extend(d.candidates);
+        merged.warnings.extend(d.warnings);
+        merged.account.considered += d.account.considered;
+        merged.account.produced += d.account.produced;
+        merged.account.parse_failed += d.account.parse_failed;
+        merged.account.declined_by_user += d.account.declined_by_user;
+        merged.account.considered_not_a_game += d.account.considered_not_a_game;
+        merged.account.volume_skipped += d.account.volume_skipped;
+        merged.account.access_error += d.account.access_error;
     }
-    Ok(Discovery {
-        candidates,
-        account,
-    })
+    Ok(merged)
 }
 
 /// A source backed by a canned candidate list and account.
@@ -222,6 +227,7 @@ mod tests {
             Discovery {
                 candidates: vec![candidate("alpha", "a")],
                 account: acc_a,
+                ..Discovery::default()
             },
         );
         let mut acc_b = DiscoveryAccount::default();
@@ -234,6 +240,7 @@ mod tests {
             Discovery {
                 candidates: vec![candidate("beta", "b")],
                 account: acc_b,
+                ..Discovery::default()
             },
         );
 

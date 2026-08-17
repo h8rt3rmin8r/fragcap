@@ -129,10 +129,13 @@ with no filesystem access in the test.
 A user who knows exactly where their game is can point discovery straight at it. A
 directory source takes one path and yields one candidate. An interactive source
 wraps the directory source with a human confirmation step and stamps the accepted
-candidate at the authored fidelity, because a human vouched for it. These back the
-`targets scan <dir>` and `targets add <exe>` entry points. Authoring one target by
-hand and walking a whole platform are, as P-10 requires, the same operation
-producing the same kind of candidate.
+candidate at the authored fidelity, because a human vouched for it. The directory
+source backs the `targets scan <dir>` entry point in this slice; authoring a
+target (the persist-on-first-use step) is the existing `targets add <name>` (with
+an optional `--exe`), and the interactive one-step scan-confirm-author flow that
+wires the interactive source into the command line is deferred to the S055 targets
+hero command. Authoring one target by hand and walking a whole platform are, as
+P-10 requires, the same operation producing the same kind of candidate.
 
 **Why this priority**: It closes the discovery model to the case the automatic
 tiers cannot cover (a standalone title in an unusual place) and gives the user
@@ -266,8 +269,12 @@ never enumerates the excluded volume while still enumerating the eligible ones.
   `DirectorySource` with a human confirmation step and stamps an accepted
   candidate at authored fidelity; a rejected candidate MUST be counted as declined
   by the user, not lost.
-- **FR-013**: `DirectorySource` and `InteractiveSource` MUST be the discovery
-  mechanism behind the `targets scan <dir>` and `targets add <exe>` entry points.
+- **FR-013**: `DirectorySource` MUST be the discovery mechanism behind the
+  `targets scan <dir>` entry point. `InteractiveSource` (the confirmation-gated
+  authoring wrapper) is built and unit-tested here; wiring its console flow into a
+  one-step `targets add`-from-a-scan is deferred to the S055 targets hero command,
+  where authoring today is the existing `targets add <name>` (with optional
+  `--exe`).
 
 **Shared descent discipline (seam for S053)**
 

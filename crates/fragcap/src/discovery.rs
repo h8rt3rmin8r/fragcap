@@ -6,10 +6,10 @@
 //! user-pointed sources, and the volume eligibility store, lives in
 //! `fragcap-targets`. The two adapters that touch a platform live here in the
 //! facade, the one crate that legitimately depends on both `fragcap-steam` and
-//! `fragcap-targets` (the S07/S08/S038 composition precedent). This module carries
-//! [`SteamSource`], which expresses the existing Steam library walk as a
-//! [`fragcap_targets::TargetSource`]; the real Windows volume inventory adapter
-//! joins it here in a later task.
+//! `fragcap-targets` (the S07/S08/S038 composition precedent): [`SteamSource`],
+//! which expresses the existing Steam library walk as a
+//! [`fragcap_targets::TargetSource`], and [`WindowsVolumeInventory`], the real
+//! fixed-volume enumeration the known-roots walk consumes.
 //!
 //! `SteamSource` is a thin wrapper: it calls `fragcap-steam`'s library walk
 //! unchanged, so the observable set of Steam candidates does not change (FR-006),
@@ -17,9 +17,11 @@
 //! joins the title's appid against the shipped catalog for a classification. A
 //! title whose appid is not a number is counted `parse_failed` and the rest
 //! survive (P-4); an appid absent from the catalog is classified `Unknown`, never
-//! dropped (P-9). Manifest-level faults (a malformed `appmanifest`) are
-//! `fragcap-steam`'s own accounting: it drops them from the title set and reports
-//! them as enumeration warnings, which [`SteamSource::warnings`] surfaces.
+//! dropped (P-9). A manifest that was present but would not parse is a title the
+//! walk omitted: `fragcap-steam` counts them, and this adapter folds that count
+//! into the discovery account's `parse_failed` and surfaces every Steam warning on
+//! the discovery result, so a damaged install cannot omit games while the account
+//! reports a clean run (P-4).
 
 use std::path::{Path, PathBuf};
 
@@ -45,17 +47,6 @@ impl<'a> SteamSource<'a> {
             catalog,
         }
     }
-
-    /// The enumeration warnings from the most recent walk are not collected here;
-    /// callers that want the manifest-level diagnostics call
-    /// [`fragcap_steam::discover_in`] directly. This method exists so the
-    /// composition point is documented: `fragcap-steam` owns manifest-fault
-    /// accounting, `SteamSource` owns title-to-candidate accounting.
-    pub fn warnings(&self) -> Result<Vec<String>, TargetsError> {
-        let installation = fragcap_steam::discover_in(&self.steam_root)
-            .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
-        Ok(installation.warnings)
-    }
 }
 
 impl TargetSource for SteamSource<'_> {
@@ -68,6 +59,12 @@ impl TargetSource for SteamSource<'_> {
             .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
 
         let mut account = DiscoveryAccount::default();
+        // A manifest that was present but would not parse is one title omitted from
+        // the walk. Count each as considered-and-parse-failed so the account
+        // reflects the loss rather than silently reporting a clean run (P-4); the
+        // per-manifest reason is surfaced through the warnings below.
+        account.considered += installation.malformed_manifests;
+        account.parse_failed += installation.malformed_manifests;
         let mut candidates = Vec::new();
         for title in &installation.titles {
             account.considered += 1;
@@ -98,6 +95,10 @@ impl TargetSource for SteamSource<'_> {
         Ok(Discovery {
             candidates,
             account,
+            // Surface every non-fatal Steam diagnostic (a malformed manifest, a
+            // duplicate appid, an unreadable library) so an omission is visible
+            // rather than left on an unused side channel.
+            warnings: installation.warnings,
         })
     }
 
@@ -179,15 +180,17 @@ impl fragcap_targets::VolumeInventory for WindowsVolumeInventory {
                     name.len() as u32,
                 )
             };
-            let identity = if ok != 0 {
-                let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
-                String::from_utf16_lossy(&name[..len])
-            } else {
-                // No volume GUID available (some userspace mounts): fall back to the
-                // drive letter. The allowlist still requires an explicit opt-in for
-                // an unseen volume, so a misreporting mount is not silently walked.
-                format!("{letter}:")
-            };
+            if ok == 0 {
+                // No stable volume GUID: this is exactly the userspace or
+                // misreporting mount the eligibility allowlist exists to keep out.
+                // Falling back to the reassignable drive letter as the identity
+                // would let a later, different volume reusing that letter inherit
+                // this one's eligibility, so the volume is instead omitted from the
+                // inventory entirely and is never walked (research.md D3).
+                continue;
+            }
+            let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+            let identity = String::from_utf16_lossy(&name[..len]);
 
             out.push(Volume {
                 identity,

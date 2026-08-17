@@ -190,6 +190,11 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
         a.volume_skipped,
         a.access_error,
     );
+    // Surface the named diagnostics so a loss the account counts (an unreadable
+    // root, a malformed manifest) is recoverable to which one failed (P-4).
+    for warning in &discovery.warnings {
+        let _ = writeln!(out, "warning: {warning}");
+    }
 }
 
 /// Register a target from a name (slice S051): derive a unique handle, assign a

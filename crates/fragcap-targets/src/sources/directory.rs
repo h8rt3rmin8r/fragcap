@@ -56,6 +56,7 @@ impl TargetSource for DirectorySource {
         Ok(Discovery {
             candidates,
             account,
+            ..Discovery::default()
         })
     }
 
