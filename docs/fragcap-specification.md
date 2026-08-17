@@ -2290,6 +2290,49 @@ captures nothing (P-4), distinguishable from a game that ran but sent no traffic
 The `--profile` path is unchanged and its output byte-identical. This path was
 filled in by slice S032, activating the providers slices S029 and S030 registered.
 
+### 15.8 Target Entries
+
+As of v0.5.0 (slice S051) a capture target is representable as a stored entry in
+`local.db` rather than as a profile file. A target entry carries a stable
+identifier, a handle, a display name, a classification and the source that
+assigned it, a fidelity, and the launch entries, install root, provenance, and
+evidence carried whole. Every source that produces a target (interactive
+authoring, platform walking, directory scanning, runtime observation) writes the
+same row in the same store, read by one resolution path (P-10).
+
+A handle is the unique human selector, derived deterministically from the name by
+the normalization of section 5.2 (strip decorative symbols, NFKD, strip combining
+marks, lowercase, delete apostrophes, collapse runs outside `[a-z0-9]` to a single
+underscore, trim, truncate to 64). A handle is never purely numeric (a bare
+integer is a row-index selector); a name that would normalize to digits falls back
+to the executable stem, then `target_<n>`, and a collision suffixes the new item
+`_2`, `_3`. An anchored target's identifier is the low 63 bits of BLAKE3 over its
+canonical anchor string (`steam:<appid>`, `epic:<catalogItemId>`,
+`gog:<productId>`), so independent registrations of one title collide on identity
+and merge; a non-canonical anchor prefix (`STEAM:620`) is canonicalized before
+hashing so it resolves to the same identifier. An unanchored target's identifier
+is a random 63-bit value, replaced by the anchored value (and kept as a superseded
+alias) when the target later gains an anchor. Both occupy the low 63 bits so the
+value is non-negative; whether an entry is anchored is read from its `anchor`
+column, not from a bit of the identifier. The identifier derives only from the
+anchor.
+
+Resolution over the stores is fidelity-ordered: a local entry resolves at its own
+fidelity, a `catalog.db` row always answers heuristic-unverified, and a runtime
+observation may promote a match to verified, with the highest fidelity winning
+(`authored > verified > heuristic-unverified > observed`). The four declines of
+section 15.7 (a sparse row, an engine-only row, a launcher-mediated row, and a row
+naming more than one distinct client) are preserved as fidelity-aware conditions
+for entries as well.
+
+The transition away from profile files is staged: the fidelity-ordered store read,
+the entry model, the handle and identifier scheme, and the selector ship in S051.
+The engine and platform-walker providers become target sources in S052; the JSON
+export and import of entry documents and their unification with the master schema
+land in S055 and S057; and the profile-file surface (the `profile` command, the
+AppData directory, and the `--profile` capture selector) is retired by S054's
+command rework. Until then those surfaces are unchanged.
+
 ## 16. Steam Integration
 
 ### 16.1 Scope

@@ -12,12 +12,14 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::entry::{ClassificationSource, TargetClassification, TargetEntry};
 use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-use crate::schema::{DDL, MIGRATE_1_TO_2, SCHEMA_VERSION};
+use crate::schema::{DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, SCHEMA_VERSION};
 use crate::TargetsError;
+use fragcap_profile::FidelityTier;
 
 /// The hint store: a connection to one SQLite file (or an in-memory database for
 /// tests), migrated to the current schema version.
@@ -45,33 +47,48 @@ impl Store {
     fn from_connection(mut conn: Connection) -> Result<Self, TargetsError> {
         // Set outside any transaction: `foreign_keys` is a no-op within one.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        match version {
-            0 => {
-                // Fresh database: apply the schema and stamp its version inside
-                // one transaction, so a failure partway through the DDL rolls the
-                // whole thing back rather than leaving a half-created file whose
-                // user_version is still zero (which the next open would treat as
-                // fresh and then fail on the tables that do exist).
-                let tx = conn.transaction()?;
-                tx.execute_batch(DDL)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-                tx.commit()?;
-            }
-            1 => {
-                // Additive forward migration to version 2: add the nullable
-                // appinfo_change_number column and stamp the new version inside one
-                // transaction, so a failure rolls back rather than leaving a store
-                // whose tables and user_version disagree. Existing rows keep their
-                // data and read the new column as NULL (never learned from appinfo),
-                // so they refresh on the first accumulation walk.
-                let tx = conn.transaction()?;
-                tx.execute_batch(MIGRATE_1_TO_2)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-                tx.commit()?;
-            }
-            v if v == SCHEMA_VERSION => {}
-            found => return Err(TargetsError::SchemaVersion { found }),
+        let mut version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+        // Fresh database: apply the whole schema and stamp its version inside one
+        // transaction, so a failure partway through the DDL rolls the whole thing
+        // back rather than leaving a half-created file whose user_version is still
+        // zero (which the next open would treat as fresh and then fail on the
+        // tables that do exist).
+        if version == 0 {
+            let tx = conn.transaction()?;
+            tx.execute_batch(DDL)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
+            version = SCHEMA_VERSION;
+        }
+
+        // Additive forward migrations, applied in sequence so a v1 store steps
+        // through 1 -> 2 -> 3. Each step is its own transaction stamping the
+        // intermediate version, so an interrupted upgrade leaves a store whose
+        // tables and user_version agree at some version this build can resume from.
+        if version == 1 {
+            // 1 -> 2: add the nullable appinfo_change_number column (slice S038).
+            // Existing rows read it as NULL and refresh on the first walk.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_1_TO_2)?;
+            tx.pragma_update(None, "user_version", 2i64)?;
+            tx.commit()?;
+            version = 2;
+        }
+        if version == 2 {
+            // 2 -> 3: create the target entry model's two tables (slice S051).
+            // Existing catalog rows are untouched; the new tables start empty.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_2_TO_3)?;
+            tx.pragma_update(None, "user_version", 3i64)?;
+            tx.commit()?;
+            version = 3;
+        }
+
+        if version != SCHEMA_VERSION {
+            // A file whose schema version is newer than this build understands is
+            // an error, not a silent operation on an incompatible layout.
+            return Err(TargetsError::SchemaVersion { found: version });
         }
         Ok(Store { conn })
     }
@@ -422,6 +439,282 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // -- Target entry model (slice S051) ----------------------------------------
+
+    /// Whether a handle is already taken in the `targets` table.
+    pub fn handle_exists(&self, handle: &str) -> Result<bool, TargetsError> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM targets WHERE handle = ?1",
+            params![handle],
+            |row| row.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Insert a target entry, returning its assigned row id.
+    ///
+    /// This is the low-level insert; the merge-on-anchor guarantee is provided by
+    /// the caller checking [`Store::target_by_anchor`] first (the CLI does), so a
+    /// re-registration reports the existing target rather than reaching here. If a
+    /// duplicate identity or handle does reach the insert, the UNIQUE violation is
+    /// surfaced as a clear [`TargetsError::Model`] rather than a raw SQLite error;
+    /// a CHECK violation (an out-of-set enum, an empty name, a purely numeric
+    /// handle) is likewise a model error, so an invalid entry is a named storage
+    /// failure rather than a silently stored lie (P-9).
+    pub fn insert_target(&mut self, entry: &TargetEntry) -> Result<i64, TargetsError> {
+        let result = self.conn.execute(
+            "INSERT INTO targets
+                (stable_id, handle, name, classification, classification_source,
+                 fidelity, provenance, anchor, launch_entries, install_root, evidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                entry.stable_id,
+                entry.handle,
+                entry.name,
+                entry.classification.as_str(),
+                entry.classification_source.as_str(),
+                entry.fidelity.as_str(),
+                entry.provenance.as_ref().map(json_text),
+                entry.anchor,
+                entry.launch_entries.as_ref().map(json_text),
+                entry.install_root,
+                entry.evidence.as_ref().map(json_text),
+            ],
+        );
+        match result {
+            Ok(_) => Ok(self.conn.last_insert_rowid()),
+            Err(rusqlite::Error::SqliteFailure(e, msg))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                let detail = msg.unwrap_or_else(|| "constraint violation".to_string());
+                if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
+                    Err(TargetsError::Model(format!(
+                        "a target with this identity or handle already exists \
+                         (stable_id {}, handle {:?}): {detail}",
+                        entry.stable_id, entry.handle
+                    )))
+                } else {
+                    Err(TargetsError::Model(format!("invalid target: {detail}")))
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Read a target by its row id, or `None`.
+    pub fn target(&self, id: i64) -> Result<Option<TargetEntry>, TargetsError> {
+        self.conn
+            .query_row(
+                "SELECT id, stable_id, handle, name, classification,
+                        classification_source, fidelity, provenance, anchor,
+                        launch_entries, install_root, evidence
+                 FROM targets WHERE id = ?1",
+                params![id],
+                read_target_row,
+            )
+            .optional()?
+            .transpose_targets()
+    }
+
+    /// Every target, ordered by row id, for the ephemeral row-index selector and
+    /// listing.
+    pub fn targets(&self) -> Result<Vec<TargetEntry>, TargetsError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, stable_id, handle, name, classification,
+                    classification_source, fidelity, provenance, anchor,
+                    launch_entries, install_root, evidence
+             FROM targets ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], read_target_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    /// Resolve a target by exact handle, or `None`.
+    pub fn target_by_handle(&self, handle: &str) -> Result<Option<TargetEntry>, TargetsError> {
+        self.conn
+            .query_row(
+                "SELECT id, stable_id, handle, name, classification,
+                        classification_source, fidelity, provenance, anchor,
+                        launch_entries, install_root, evidence
+                 FROM targets WHERE handle = ?1",
+                params![handle],
+                read_target_row,
+            )
+            .optional()?
+            .transpose_targets()
+    }
+
+    /// Resolve targets by case-insensitive exact name. More than one match is an
+    /// ambiguity the caller must refuse to guess (P-9); zero is a clean no-match.
+    ///
+    /// The fold is Unicode-aware (Rust's `to_lowercase`), not SQLite's `NOCASE`
+    /// collation, which folds ASCII only: a stored `Élan` must match a selector
+    /// `élan`, and two names differing only in non-ASCII case must be detected as
+    /// an ambiguity rather than slip past it. The target table is small (a user's
+    /// registered titles), so folding every row in memory is inexpensive.
+    pub fn targets_by_name(&self, name: &str) -> Result<Vec<TargetEntry>, TargetsError> {
+        let needle = name.to_lowercase();
+        Ok(self
+            .targets()?
+            .into_iter()
+            .filter(|t| t.name.to_lowercase() == needle)
+            .collect())
+    }
+
+    /// Resolve a target by its stable identifier, consulting superseded aliases so
+    /// a reference to a former (unanchored) id still lands on the merged entry.
+    pub fn target_by_stable_id(&self, stable_id: i64) -> Result<Option<TargetEntry>, TargetsError> {
+        if let Some(t) = self
+            .conn
+            .query_row(
+                "SELECT id, stable_id, handle, name, classification,
+                        classification_source, fidelity, provenance, anchor,
+                        launch_entries, install_root, evidence
+                 FROM targets WHERE stable_id = ?1",
+                params![stable_id],
+                read_target_row,
+            )
+            .optional()?
+            .transpose_targets()?
+        {
+            return Ok(Some(t));
+        }
+        // Not an active id: try the alias table.
+        let target_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT target_id FROM target_id_aliases WHERE alias_stable_id = ?1",
+                params![stable_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match target_id {
+            Some(id) => self.target(id),
+            None => Ok(None),
+        }
+    }
+
+    /// Look up an existing target by its anchor's stable identifier, for merge.
+    pub fn target_by_anchor(&self, anchor: &str) -> Result<Option<TargetEntry>, TargetsError> {
+        let stable_id = crate::identifier::anchored_id(anchor);
+        self.target_by_stable_id(stable_id)
+    }
+
+    /// Promote an unanchored target to an anchor: adopt the anchored stable id and
+    /// retain the former value as a superseded alias (never reissued). Idempotent
+    /// on the alias insert.
+    pub fn supersede_with_anchor(
+        &mut self,
+        target_id: i64,
+        anchor: &str,
+    ) -> Result<i64, TargetsError> {
+        let old: i64 = self.conn.query_row(
+            "SELECT stable_id FROM targets WHERE id = ?1",
+            params![target_id],
+            |row| row.get(0),
+        )?;
+        let canonical = crate::identifier::canonicalize_anchor(anchor);
+        let new = crate::identifier::anchored_id(&canonical);
+
+        // If another target already owns this anchored identity, this is a
+        // collision with an existing registration, not a supersede: report it
+        // clearly before the transaction rather than failing on a raw UNIQUE error.
+        if let Some(existing) = self.target_by_stable_id(new)? {
+            if existing.id != Some(target_id) {
+                return Err(TargetsError::Model(format!(
+                    "anchor {canonical:?} is already registered to target {} (handle {})",
+                    existing.stable_id, existing.handle
+                )));
+            }
+        }
+
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE targets SET stable_id = ?1, anchor = ?2 WHERE id = ?3",
+            params![new, canonical, target_id],
+        )?;
+        // Keep the former id resolvable. INSERT OR IGNORE so re-running is a no-op.
+        tx.execute(
+            "INSERT OR IGNORE INTO target_id_aliases (alias_stable_id, target_id)
+             VALUES (?1, ?2)",
+            params![old, target_id],
+        )?;
+        tx.commit()?;
+        Ok(new)
+    }
+}
+
+/// Serialize a carried-whole JSON value to its stored text.
+fn json_text(v: &serde_json::Value) -> String {
+    v.to_string()
+}
+
+/// Read one `targets` row into a [`TargetEntry`]. Enum and JSON parsing that can
+/// fail is deferred to [`TransposeTargets`] so the rusqlite closure stays
+/// infallible in the column reads.
+fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEntry, TargetsError>> {
+    let id: i64 = row.get(0)?;
+    let stable_id: i64 = row.get(1)?;
+    let handle: String = row.get(2)?;
+    let name: String = row.get(3)?;
+    let classification: String = row.get(4)?;
+    let classification_source: String = row.get(5)?;
+    let fidelity: String = row.get(6)?;
+    let provenance: Option<String> = row.get(7)?;
+    let anchor: Option<String> = row.get(8)?;
+    let launch_entries: Option<String> = row.get(9)?;
+    let install_root: Option<String> = row.get(10)?;
+    let evidence: Option<String> = row.get(11)?;
+
+    Ok((|| {
+        Ok(TargetEntry {
+            id: Some(id),
+            stable_id,
+            handle,
+            name,
+            classification: TargetClassification::parse(&classification)?,
+            classification_source: ClassificationSource::parse(&classification_source)?,
+            fidelity: FidelityTier::parse(&fidelity)
+                .ok_or_else(|| TargetsError::Model(format!("unknown fidelity {fidelity:?}")))?,
+            provenance: parse_json_opt(provenance)?,
+            anchor,
+            launch_entries: parse_json_opt(launch_entries)?,
+            install_root,
+            evidence: parse_json_opt(evidence)?,
+        })
+    })())
+}
+
+/// Parse an optional stored JSON text back to a value, mapping a parse failure to
+/// a model error rather than panicking.
+fn parse_json_opt(text: Option<String>) -> Result<Option<serde_json::Value>, TargetsError> {
+    match text {
+        None => Ok(None),
+        Some(s) => serde_json::from_str(&s)
+            .map(Some)
+            .map_err(|e| TargetsError::Model(format!("stored JSON is invalid: {e}"))),
+    }
+}
+
+/// Flatten a `query_row`/`optional` result whose row closure itself returns a
+/// fallible parse, so callers get `Result<Option<TargetEntry>, TargetsError>`.
+trait TransposeTargets {
+    fn transpose_targets(self) -> Result<Option<TargetEntry>, TargetsError>;
+}
+
+impl TransposeTargets for Option<Result<TargetEntry, TargetsError>> {
+    fn transpose_targets(self) -> Result<Option<TargetEntry>, TargetsError> {
+        match self {
+            None => Ok(None),
+            Some(Ok(t)) => Ok(Some(t)),
+            Some(Err(e)) => Err(e),
+        }
+    }
 }
 
 /// Write one game and its launch and technology rows onto an open connection or
@@ -562,14 +855,17 @@ mod tests {
     use crate::schema::DDL;
 
     /// Fabricate a schema-version-1 store on an in-memory connection: apply the
-    /// current DDL, drop the version-2 column, and stamp user_version 1. Returns
+    /// current DDL, then undo every change made after version 1 (drop the version-2
+    /// column and the version-3 target tables) and stamp user_version 1. Returns
     /// the raw connection so a test can hand it to `from_connection` and observe
-    /// the forward migration.
+    /// the forward migration step through 1 -> 2 -> 3.
     fn v1_connection() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory");
         conn.execute_batch(DDL).expect("apply DDL");
         conn.execute_batch("ALTER TABLE games DROP COLUMN appinfo_change_number;")
             .expect("drop column to simulate v1");
+        conn.execute_batch("DROP TABLE target_id_aliases; DROP TABLE targets;")
+            .expect("drop v3 tables to simulate v1");
         conn.pragma_update(None, "user_version", 1_i64)
             .expect("stamp v1");
         conn
@@ -602,6 +898,132 @@ mod tests {
             .expect("merge");
         assert_eq!(store.stored_change_number(730).expect("read"), Some(42));
         assert_eq!(g.name.as_deref(), Some("CS2"));
+    }
+
+    /// Build a target entry for tests with the given handle, anchor, and fidelity.
+    fn sample_target(handle: &str, anchor: Option<&str>, fidelity: FidelityTier) -> TargetEntry {
+        let stable_id = match anchor {
+            Some(a) => crate::identifier::anchored_id(a),
+            None => crate::identifier::unanchored_id(),
+        };
+        TargetEntry {
+            id: None,
+            stable_id,
+            handle: handle.to_string(),
+            name: handle.to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity,
+            provenance: None,
+            anchor: anchor.map(|a| a.to_string()),
+            launch_entries: Some(serde_json::json!([{ "executable": "game.exe" }])),
+            install_root: None,
+            evidence: None,
+        }
+    }
+
+    #[test]
+    fn fresh_store_is_v3_with_an_empty_targets_table() {
+        let store = Store::open_in_memory().expect("store");
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, 3);
+        assert!(store.targets().expect("targets").is_empty());
+    }
+
+    #[test]
+    fn v1_store_migrates_to_v3_with_catalog_rows_intact() {
+        let conn = v1_connection();
+        conn.execute(
+            "INSERT INTO games (appid, name, review_count) VALUES (730, 'CS2', 1234)",
+            [],
+        )
+        .expect("insert v1 row");
+        let store = Store::from_connection(conn).expect("migrate to v3");
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, 3);
+        assert!(store.targets().expect("targets").is_empty());
+        assert!(
+            store.game(730).expect("read").is_some(),
+            "catalog row survives"
+        );
+    }
+
+    #[test]
+    fn insert_and_read_a_target_round_trips() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut t = sample_target("portal_2", Some("steam:620"), FidelityTier::Authored);
+        let id = store.insert_target(&t).expect("insert");
+        t.id = Some(id);
+        assert!(store.handle_exists("portal_2").expect("exists"));
+        let read = store.target(id).expect("read").expect("present");
+        assert_eq!(read, t);
+        assert_eq!(
+            store
+                .target_by_handle("portal_2")
+                .expect("by handle")
+                .unwrap()
+                .id,
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn a_purely_numeric_handle_is_rejected_by_the_store() {
+        let mut store = Store::open_in_memory().expect("store");
+        let t = sample_target("2048", None, FidelityTier::Observed);
+        assert!(
+            store.insert_target(&t).is_err(),
+            "the handle GLOB CHECK rejects a purely numeric handle"
+        );
+    }
+
+    #[test]
+    fn supersede_adopts_the_anchor_and_keeps_the_old_id_resolvable() {
+        let mut store = Store::open_in_memory().expect("store");
+        let t = sample_target("my_game", None, FidelityTier::Observed);
+        let old_id = t.stable_id;
+        let row = store.insert_target(&t).expect("insert");
+        let new_id = store
+            .supersede_with_anchor(row, "steam:2221490")
+            .expect("supersede");
+        assert_eq!(new_id, crate::identifier::anchored_id("steam:2221490"));
+        // The active id resolves.
+        assert_eq!(
+            store
+                .target_by_stable_id(new_id)
+                .expect("active")
+                .unwrap()
+                .id,
+            Some(row)
+        );
+        // The old id still resolves via the alias table.
+        assert_eq!(
+            store
+                .target_by_stable_id(old_id)
+                .expect("alias")
+                .unwrap()
+                .id,
+            Some(row)
+        );
+    }
+
+    #[test]
+    fn name_lookup_is_case_insensitive_and_reports_all_matches() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut a = sample_target("portal_2", Some("steam:620"), FidelityTier::Authored);
+        a.name = "Portal 2".to_string();
+        let mut b = sample_target("portal_2_2", Some("steam:200"), FidelityTier::Observed);
+        b.name = "Portal 2".to_string();
+        store.insert_target(&a).expect("a");
+        store.insert_target(&b).expect("b");
+        let matches = store.targets_by_name("portal 2").expect("by name");
+        assert_eq!(matches.len(), 2, "both same-named targets are returned");
     }
 
     #[test]

@@ -27,6 +27,7 @@ use fragcap_profile::{
     ResolutionNotes, ResolutionRequest, Target, TargetOrigin, TargetProvider,
 };
 
+use crate::entry::TargetEntry;
 use crate::export::PROVENANCE_SOURCE;
 use crate::model::{Game, LaunchEntry};
 use crate::store::Store;
@@ -163,6 +164,56 @@ impl HintDatabaseProvider {
             }
         }
     }
+
+    /// Resolve a locally registered target entry for a Steam anchor, at the
+    /// entry's own fidelity, or decline (slice S051).
+    ///
+    /// The four declines are preserved as fidelity-aware query conditions: an
+    /// entry with no usable Windows executable (a sparse or engine-only entry, or
+    /// one whose launch entries are all for other platforms) declines, and one
+    /// naming more than one distinct Windows executable declines and records the
+    /// ambiguity, exactly as the catalog games path does. Only a single-client
+    /// entry resolves, so the entry read cannot name a launcher as the game or
+    /// guess among clients (P-9). Local stores are consulted first.
+    fn resolve_entry(
+        &self,
+        app_id: u32,
+        notes: &mut ResolutionNotes,
+    ) -> Result<Option<Target>, ProviderError> {
+        let anchor = crate::identifier::steam_anchor(app_id);
+        for store in &self.stores {
+            let entry = match store.target_by_anchor(&anchor) {
+                Ok(Some(entry)) => entry,
+                Ok(None) => continue,
+                Err(e) => return Err(ProviderError::Hint(e.to_string())),
+            };
+            let executables = windows_executables(&entry_launch_entries(&entry));
+            match executables.len() {
+                // Sparse or other-platform-only entry: decline, try the next store.
+                0 => continue,
+                1 => {
+                    let image_name = executables.into_iter().next().expect("length checked");
+                    let Ok(identity) = MatchPredicates::with_exe(&image_name) else {
+                        continue;
+                    };
+                    // A user-registered entry names its client directly, so it is
+                    // not launcher-mediated; it carries no engine fact.
+                    let hint = HintTarget::new(app_id, image_name, identity, Some(false), None);
+                    return Ok(Some(Target::new(
+                        entry.fidelity,
+                        Provenance::new(PROVENANCE_SOURCE.to_string(), None),
+                        TargetOrigin::HintDatabase(hint),
+                    )));
+                }
+                n => {
+                    // More than one distinct client the entry cannot reduce to one.
+                    notes.note_hint_ambiguous(app_id, n);
+                    continue;
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 impl TargetProvider for HintDatabaseProvider {
@@ -180,13 +231,23 @@ impl TargetProvider for HintDatabaseProvider {
             return Ok(None);
         };
 
-        // Combine the row across the stores (the CLI passes [local, catalog]) so
-        // the mediation fact, wherever it lives, is applied to the learned launch
-        // data before resolving; then answer over the combined row.
-        match self.combined_game(app_id)? {
-            Some(game) => Self::resolve_game(&game, app_id, notes),
-            None => Ok(None),
-        }
+        // Fidelity-ordered store read (slice S051). A locally authored/verified
+        // target entry for this anchor resolves at its own fidelity; the catalog
+        // games row always answers heuristic-unverified. The higher fidelity wins,
+        // so an authored local entry beats a shipped catalog hint for the same
+        // title (P-10: fidelity is a column the resolver reads, not a convention).
+        let entry_answer = self.resolve_entry(app_id, notes)?;
+
+        // Combine the games row across the stores (the CLI passes [local, catalog])
+        // so the mediation fact, wherever it lives, is applied to the learned launch
+        // data before resolving; then answer over the combined row. The four
+        // declines (sparse, engine-only, launcher-mediated, multi-exe) still hold.
+        let catalog_answer = match self.combined_game(app_id)? {
+            Some(game) => Self::resolve_game(&game, app_id, notes)?,
+            None => None,
+        };
+
+        Ok(highest_fidelity(entry_answer, catalog_answer))
     }
 }
 
@@ -231,6 +292,44 @@ fn windows_executables(launch: &[LaunchEntry]) -> Vec<String> {
         }
         seen_folded.push(folded);
         out.push(name.to_string());
+    }
+    out
+}
+
+/// Choose the higher-fidelity of two candidate answers, preferring the first on a
+/// tie. The store read's ordering key: `Authored > Verified > HeuristicUnverified
+/// > Observed` (slice S051). A `None` yields to the other.
+fn highest_fidelity(a: Option<Target>, b: Option<Target>) -> Option<Target> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if a.fidelity() >= b.fidelity() {
+                Some(a)
+            } else {
+                Some(b)
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
+}
+
+/// The launch entries a target entry carries, parsed from its `launch_entries`
+/// JSON (an array of objects with an `executable` and an optional `os`). Reuses
+/// the model's [`LaunchEntry`] so the same Windows filter and dedup apply to an
+/// entry as to a catalog games row. A malformed or absent value yields none.
+fn entry_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
+    let mut out = Vec::new();
+    if let Some(serde_json::Value::Array(items)) = &entry.launch_entries {
+        for item in items {
+            let Some(exe) = item.get("executable").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(mut le) = LaunchEntry::new(exe) else {
+                continue;
+            };
+            le.os = item.get("os").and_then(|v| v.as_str()).map(str::to_string);
+            out.push(le);
+        }
     }
     out
 }

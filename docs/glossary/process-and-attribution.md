@@ -1257,3 +1257,92 @@ at a dead end. Introduced by slice S032.
 **See also:** [Resolution cascade](#resolution-cascade), [Target](#target),
 [Engine rule](#engine-rule), [Platform walker](#platform-walker),
 [Fidelity tier](#fidelity-tier)
+
+## Target entry
+
+A capture target stored as a row in `local.db` rather than as a profile file.
+Carries a stable identifier, a handle, a display name, a classification and the
+source that assigned it, a fidelity, and the launch entries, install root,
+provenance, and evidence carried whole. Introduced by slice S051.
+
+{: .matters }
+> Making a target a row rather than a file removes the file format, the directory
+> search order, and the up-front schema a user used to need before capturing
+> anything. Every source that produces a target (interactive authoring, platform
+> walking, directory scanning, runtime observation) writes the same row in the
+> same store, read by the same resolution path (P-10).
+
+**See also:** [Handle](#handle), [Stable identifier](#stable-identifier),
+[Fidelity ordering](#fidelity-ordering), [Attribution](#attribution)
+
+## Handle
+
+The unique, human-readable selector for a [target entry](#target-entry), derived
+deterministically from its name by a fixed normalization (strip decorative
+symbols, NFKD, strip combining marks, lowercase, delete apostrophes, collapse
+runs outside `[a-z0-9]` to a single underscore, trim, truncate to 64).
+Introduced by slice S051.
+
+{: .matters }
+> A handle is never purely numeric, because a bare integer is a row-index
+> selector; a name that would normalize to digits falls back to the executable
+> stem, then to `target_<n>`, and a collision suffixes the new item `_2`, `_3`.
+> The fallback never errors and never loops.
+
+**See also:** [Target entry](#target-entry), [Anchor](#anchor)
+
+## Anchor
+
+A platform-scoped title reference (a Steam app id, an Epic catalog item id, a GOG
+product id) rendered as a canonical prefixed string such as `steam:2221490`. The
+sole input to an anchored [stable identifier](#stable-identifier). Introduced by
+slice S051.
+
+**See also:** [Stable identifier](#stable-identifier), [Target entry](#target-entry)
+
+## Stable identifier
+
+The 63-bit value identifying a [target entry](#target-entry) across registrations
+and exports. Anchored: the low 63 bits of BLAKE3 over the canonical
+[anchor](#anchor), so independent registrations of one title collide on identity
+and merge. Unanchored: a random 63-bit value, replaced by the anchored value (and
+kept as a [superseded alias](#superseded-alias)) when the target later gains an
+anchor. Whether an entry is anchored is read from its anchor, not from a bit of
+the identifier. Introduced by slice S051.
+
+{: .matters }
+> The identifier derives only from the anchor, never from the name, handle, or
+> install path, so two entries built independently from the same anchor are the
+> same entry. It is the merge key on import and the durable, machine-facing
+> selector (`--id`).
+
+**See also:** [Anchor](#anchor), [Superseded alias](#superseded-alias),
+[Handle](#handle)
+
+## Superseded alias
+
+A former [stable identifier](#stable-identifier) retained on a [target
+entry](#target-entry) after the entry gained an anchor and adopted the anchored
+identifier. The superseded value still resolves to the merged entry and is never
+reissued. Introduced by slice S051.
+
+**See also:** [Stable identifier](#stable-identifier), [Target entry](#target-entry)
+
+## Fidelity ordering
+
+The rule that the resolution cascade's store read prefers the higher
+[fidelity tier](#fidelity-tier) among competing answers: `authored` beats
+`verified` beats `heuristic-unverified` beats `observed`. A local
+[target entry](#target-entry) resolves at its own fidelity; a `catalog.db` row
+always answers `heuristic-unverified`; a runtime observation may promote a match
+to `verified`. Introduced by slice S051.
+
+{: .matters }
+> Fidelity is a column the resolver reads, not a convention spread across crates
+> (P-10). The four declines the store read preserves (a sparse row, an
+> engine-only row, a launcher-mediated row, and a row naming more than one
+> distinct client) keep it from naming a launcher as the game or guessing among
+> clients (P-9).
+
+**See also:** [Fidelity tier](#fidelity-tier), [Target entry](#target-entry),
+[Resolution cascade](#resolution-cascade)

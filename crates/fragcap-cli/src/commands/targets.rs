@@ -15,12 +15,19 @@
 //! is removed rather than left as a stray empty file (P-4).
 
 use std::io::Write;
+use std::path::Path;
 
+use fragcap::profile::FidelityTier;
 use fragcap::targets::{
-    export, import, seed_catalog, seed_engine, CorpusGate, FixtureCatalog, FixtureEngineFeed, Store,
+    export, handle, identifier, import, resolve_id, resolve_positional, seed_catalog, seed_engine,
+    ClassificationSource, CorpusGate, FixtureCatalog, FixtureEngineFeed, Selection, Store,
+    TargetClassification, TargetEntry,
 };
 
-use crate::cli::{TargetsArgs, TargetsCommand, TargetsSeedArgs, TargetsSeedEngineArgs};
+use crate::cli::{
+    TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsSeedArgs, TargetsSeedEngineArgs,
+    TargetsShowArgs,
+};
 use crate::exit::{CliError, Exit};
 
 /// Run the `targets` command, writing results to `out`.
@@ -70,7 +77,177 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         }
         TargetsCommand::Seed(args) => seed(args, out),
         TargetsCommand::SeedEngine(args) => seed_engine_cmd(args, out),
+        TargetsCommand::Add(args) => add(args, out),
+        TargetsCommand::List { db } => list(db, out),
+        TargetsCommand::Show(args) => show(args, out),
     }
+}
+
+/// Register a target from a name (slice S051): derive a unique handle, assign a
+/// stable identity (anchored when an `--anchor` is given, otherwise random), and
+/// store it. A user-registered target is `authored` with a `user`
+/// classification source and, until enriched, an `unknown` classification.
+fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let mut store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+
+    // Canonicalize the anchor once (lowercase the platform prefix, trim) so a
+    // CLI-supplied `STEAM:620` matches and is stored identically to `steam:620`.
+    let anchor = args
+        .anchor
+        .as_ref()
+        .map(|a| identifier::canonicalize_anchor(a));
+
+    // An anchor already present means this title is registered: report it rather
+    // than creating a duplicate (identity is deterministic from the anchor, P-10).
+    if let Some(a) = &anchor {
+        if let Some(existing) = store
+            .target_by_anchor(a)
+            .map_err(|e| CliError::failure(e.to_string()))?
+        {
+            let _ = writeln!(
+                out,
+                "already registered as {} (id {})",
+                existing.handle, existing.stable_id
+            );
+            return Ok(Exit::SUCCESS);
+        }
+    }
+
+    // Derive or validate the handle, then disambiguate against existing handles so
+    // a collision suffixes the new item (_2, _3) and leaves the existing untouched.
+    // A store error during the existence check propagates rather than being
+    // swallowed into a false "free", which could attempt a duplicate insert.
+    let exe_stem = args.exe.as_deref().map(exe_stem);
+    let base = match &args.handle_override {
+        Some(h) => handle::validate_override(h).map_err(CliError::usage)?,
+        None => handle::derive_handle(
+            &args.name,
+            exe_stem.as_deref(),
+            store
+                .targets()
+                .map_err(|e| CliError::failure(e.to_string()))?
+                .len() as u64
+                + 1,
+        ),
+    };
+    let handle_value = handle::disambiguate(&base, |h| store.handle_exists(h))
+        .map_err(|e| CliError::failure(e.to_string()))?;
+
+    let stable_id = match &anchor {
+        Some(a) => identifier::anchored_id(a),
+        None => identifier::unanchored_id(),
+    };
+    let launch_entries = args
+        .exe
+        .as_ref()
+        .map(|exe| serde_json::json!([{ "executable": exe }]));
+
+    let entry = TargetEntry {
+        id: None,
+        stable_id,
+        handle: handle_value.clone(),
+        name: args.name.clone(),
+        classification: TargetClassification::Unknown,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Authored,
+        provenance: Some(serde_json::json!({ "source": "user", "command": "targets add" })),
+        anchor,
+        launch_entries,
+        install_root: None,
+        evidence: None,
+    };
+    store
+        .insert_target(&entry)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+
+    let _ = writeln!(out, "registered {handle_value} (id {stable_id})");
+    Ok(Exit::SUCCESS)
+}
+
+/// List registered targets: the 1-based row index, handle, identifier, and name.
+fn list(db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
+    let targets = store
+        .targets()
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    if targets.is_empty() {
+        let _ = writeln!(out, "no targets registered");
+        return Ok(Exit::SUCCESS);
+    }
+    for (i, t) in targets.iter().enumerate() {
+        let _ = writeln!(out, "{}\t{}\t{}\t{}", i + 1, t.handle, t.stable_id, t.name);
+    }
+    Ok(Exit::SUCCESS)
+}
+
+/// Show one target resolved by a selector.
+///
+/// The no-match exit code follows the selector kind (the section 5.4 contract): a
+/// handle or name that matches nothing is a clean miss (exit 0), while an unknown
+/// `--id` or an out-of-range row index is a bad machine reference (exit 2). An
+/// ambiguous name lists its matches and exits 2 rather than guessing (P-9).
+fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let (selection, miss_exit) = match (args.id, &args.selector) {
+        (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
+        (None, Some(token)) if is_row_index(token) => {
+            (resolve_positional(&store, token), Exit::USAGE)
+        }
+        (None, Some(token)) => (resolve_positional(&store, token), Exit::SUCCESS),
+        // The clap group guarantees exactly one is present.
+        (None, None) => return Err(CliError::usage("a selector or --id is required")),
+    };
+    let selection = selection.map_err(|e| CliError::failure(e.to_string()))?;
+
+    match selection {
+        Selection::Resolved(t) => {
+            print_target(&t, out);
+            Ok(Exit::SUCCESS)
+        }
+        Selection::NoMatch => {
+            let _ = writeln!(out, "no target matches");
+            Ok(miss_exit)
+        }
+        Selection::Ambiguous(matches) => {
+            let _ = writeln!(
+                out,
+                "ambiguous: {} targets match; select by handle or --id:",
+                matches.len()
+            );
+            for t in &matches {
+                let _ = writeln!(out, "  {}\t{}\t{}", t.handle, t.stable_id, t.name);
+            }
+            Ok(Exit::USAGE)
+        }
+    }
+}
+
+/// Whether a positional selector is a bare integer, i.e. a row index rather than a
+/// handle or name. Handles are never purely numeric, so this never shadows one.
+fn is_row_index(token: &str) -> bool {
+    !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Print one resolved target's fields.
+fn print_target(t: &TargetEntry, out: &mut dyn Write) {
+    let _ = writeln!(out, "handle:         {}", t.handle);
+    let _ = writeln!(out, "name:           {}", t.name);
+    let _ = writeln!(out, "id:             {}", t.stable_id);
+    let _ = writeln!(out, "classification: {}", t.classification.as_str());
+    let _ = writeln!(out, "fidelity:       {}", t.fidelity.as_str());
+    if let Some(anchor) = &t.anchor {
+        let _ = writeln!(out, "anchor:         {anchor}");
+    }
+}
+
+/// The file stem of an executable name (drop a trailing extension), for the
+/// handle fallback chain.
+fn exe_stem(exe: &str) -> String {
+    Path::new(exe)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(exe)
+        .to_string()
 }
 
 /// A Unix-epoch-seconds stamp for the seed state's last-run field. Informational;
