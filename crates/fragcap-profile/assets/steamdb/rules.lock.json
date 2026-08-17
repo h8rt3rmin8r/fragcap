@@ -1,8 +1,0 @@
-{
-  "note": "Integrity and provenance lock for the vendored SteamDB FileDetectionRuleSets rules.ini. sha256 is computed over the committed rules.ini bytes as stored (UTF-8 without BOM, LF line endings), so an external `sha256sum rules.ini` on a fresh checkout reproduces it, matching .gitattributes normalization. A drift test in fragcap-profile recomputes it from the embedded bytes.",
-  "source": "https://github.com/SteamDatabase/FileDetectionRuleSets",
-  "path": "rules.ini",
-  "commit": "243cf741921d2c8fd6b844f83831edf4692cf788",
-  "license": "MIT",
-  "sha256": "719633617b1cbb394c837203889414bba6c6b310d6e6229c0e70efa5c2b2507d"
-}

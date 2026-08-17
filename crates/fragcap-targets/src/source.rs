@@ -23,7 +23,7 @@
 //! fails [`DiscoveryAccount::is_conserved`] rather than dropping a candidate
 //! silently (P-4).
 
-use fragcap_profile::FidelityTier;
+use fragcap_profile::{DetectionFinding, FidelityTier};
 
 use crate::entry::TargetClassification;
 use crate::TargetsError;
@@ -55,6 +55,11 @@ pub struct CandidateTarget {
     /// The classification joined from the catalog or asserted by the source;
     /// `Unknown` when none applies.
     pub classification: TargetClassification,
+    /// The technologies detected in the candidate's directory (slice S053), carried
+    /// as neutral evidence: the detected engine plus any anti-cheat or DRM. Empty
+    /// when the producing source ran no signature detection. A fact set only; no
+    /// field here characterizes a title as off limits (specification section 3.6).
+    pub evidence: Vec<DetectionFinding>,
     /// The name of the source that produced this candidate.
     pub source_name: String,
 }
@@ -201,6 +206,7 @@ mod tests {
             display_name: name.to_string(),
             fidelity: FidelityTier::HeuristicUnverified,
             classification: TargetClassification::Unknown,
+            evidence: Vec::new(),
             source_name: source.to_string(),
         }
     }

@@ -2271,40 +2271,51 @@ container, and launcher. It labels what a game is built on and what watches it;
 it does not choose a capture target, and it does not change which executable the
 resolver picks.
 
-Detection is built on the open `SteamDatabase/FileDetectionRuleSets` ruleset
-(MIT), the maintained source behind SteamDB's technology attribution, which
-recognizes technologies from depot file paths alone, never from file contents.
-That is exactly the passive constraint of P-1, so the whole ruleset is vendored
-verbatim (pinned to an upstream commit, carried with its MIT notice, and
-integrity-locked by a recorded SHA-256 over its bytes) and applied to a real
-install the operator already has on disk. The depot-manifest license gate SteamDB
-itself faces is a catalog-scale concern for titles nobody owns; it does not apply
-to a local install. The engine rule (section 15.7.1) tracks a hand-written subset
-of the same ruleset, the part that also names the client executable.
+Detection is data, not code (slice S053). The signature set lives in a table in
+the shipped catalog database, `signature(id, category, kind, pattern, product,
+confidence)`, where a category is `engine`, `anti-cheat`, or `drm` and a kind is a
+filename, a directory shape, a PE version string, or a binary marker. A single
+generic matcher evaluates the table against a directory: detection behavior is a
+function of the table's contents, not of per-product code, so adding a signature of
+an implemented kind is honored on the next scan with no code change and no release.
+`fragcap targets seed-signatures` fills the table from a bundled document,
+refreshing detection capability through the same catalog-seed path that refreshes
+the title catalog. This replaced an earlier vendored SteamDB ruleset that was
+compiled into the binary, authored for depot manifests rather than on-disk
+installs, and never validated against a real game; the seeded set is authored for
+on-disk install layouts instead.
 
-The engine reads directory entries and matches the ruleset's path regexes against
-the relative paths it finds, using file names and relative paths only. It opens no
-process handle, reads no process memory, reads no file content, launches nothing,
-and makes no network call (P-1). A detected anti-cheat is surfaced as a
-user-safety and consent signal, so an operator knows what watches a game before
-capturing alongside it; fragcap detects it and never interacts with it. Every
-finding is stamped `heuristic-unverified`, because a path match is a guess, and
-names the marker path that produced it as auditable evidence (P-9). The ruleset is
-authored for a PCRE-style engine and contains constructs the project's RE2-family
-regex engine cannot compile; each such pattern is skipped, counted, and recorded
-with the technology it belonged to, never silently dropped, and the vendored bytes
-are never edited to force compilation (P-4). An unreadable install subtree is
-surfaced distinctly from a clean empty scan.
+The matcher reads directory entries and, for a PE version string, the version
+resource in a binary's own on-disk bytes. It opens no process handle, reads no
+process memory, launches nothing, and makes no network call (P-1). A locally
+detected engine is stamped `verified`, which outranks the `heuristic-unverified`
+engine attribution a remote catalog carries: local evidence on disk outranks a
+remote claim (P-9). Loading the table partitions its rows into applied, inert (a
+match kind not yet implemented, carried but not evaluated), and skipped (a
+malformed pattern), and the three counts reconcile to the rows loaded, so reduced
+coverage is visible rather than silent (P-4); an unreadable install subtree is
+surfaced distinctly from a clean empty scan. Of the four kinds, filename,
+directory-shape, and PE-version-string are evaluated; the binary-marker kind is
+carried in the schema for the deep-protection DRM products (Denuvo, Arxan,
+VMProtect) and left inert this slice.
 
-Findings are surfaced to the operator through a dedicated command and are carried
-in a target artifact as a multi-category `technologies` structure defined in the
-master target schema (section 15.2 vocabulary), each finding recording its
-category, technology name, marker path, and fidelity. Detection does not run
-inside the live capture loop and does not alter the packet-stream output, which
-stays byte-compatible with unmodified analyzers (P-5). The ruleset's second-pass
-`Evidence` deduction is not applied; only the direct category sections are. The
-detection engine lives in the `fragcap-profile` crate beside the engine rule,
-adds no dependency, and was filled in by slice S031.
+A detected anti-cheat or DRM product is neutral evidence, never a gate. fragcap
+does not restrict, block, warn against, or discourage capture based on what it
+detects, and no output value, color, or wording frames a title as off limits,
+risky, or discouraged; a title with no recorded online mode is still fully
+capturable, because a single-player title that produces network traffic is one of
+the most interesting results the tool can surface. The matcher runs automatically
+in the scan phase of every discovery source (a directory whose shape matches an
+engine signature is a game, and the walk stops descending on the hit) and also
+backs the standalone `fragcap technologies` command a researcher uses to inventory
+a directory without registering it. Findings are carried in a target artifact as
+the multi-category `technologies` structure defined in the master target schema
+(section 15.2 vocabulary), each recording its category, technology name, marker
+path, and fidelity. Detection does not run inside the live capture loop and does
+not alter the packet-stream output, which stays byte-compatible with unmodified
+analyzers (P-5). The `Signature` value type and the matcher live in the
+`fragcap-profile` crate; the table, its seed, and the discovery classifier live in
+`fragcap-targets`; neither adds a dependency.
 
 #### 15.7.4 Non-profile capture
 

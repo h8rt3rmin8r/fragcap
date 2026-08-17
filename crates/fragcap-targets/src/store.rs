@@ -17,10 +17,14 @@ use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-use crate::schema::{DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, SCHEMA_VERSION};
+use crate::schema::{
+    DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, SCHEMA_VERSION,
+};
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
-use fragcap_profile::FidelityTier;
+use fragcap_profile::{
+    FidelityTier, Signature, SignatureCategory, SignatureConfidence, SignatureKind,
+};
 
 /// The hint store: a connection to one SQLite file (or an in-memory database for
 /// tests), migrated to the current schema version.
@@ -93,6 +97,15 @@ impl Store {
             tx.pragma_update(None, "user_version", 4i64)?;
             tx.commit()?;
             version = 4;
+        }
+        if version == 4 {
+            // 4 -> 5: create the detection signature table (slice S053). Existing
+            // rows are untouched; the new table starts empty.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_4_TO_5)?;
+            tx.pragma_update(None, "user_version", 5i64)?;
+            tx.commit()?;
+            version = 5;
         }
 
         if version != SCHEMA_VERSION {
@@ -756,11 +769,86 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// Replace the detection signature table with `signatures`, transactionally
+    /// (slice S053). Idempotent: re-seeding the same set yields the same table, so a
+    /// catalog refresh through the seed path leaves no stale rows. The table is a
+    /// `catalog.db` table; seeding it on a `local.db` is allowed but pointless (the
+    /// matcher reads the catalog).
+    pub fn seed_signatures(&mut self, signatures: &[Signature]) -> Result<(), TargetsError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM signature", [])?;
+        for s in signatures {
+            tx.execute(
+                "INSERT INTO signature (category, kind, pattern, product, confidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    s.category.as_str(),
+                    s.kind.as_str(),
+                    s.pattern,
+                    s.product,
+                    s.confidence.as_str(),
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Load every detection signature row (slice S053). Returns the raw signatures;
+    /// the caller compiles them into a [`fragcap_profile::SignatureSet`], which is
+    /// where the applied/inert/skipped partition and its P-4 surfacing live. A row
+    /// whose stored enum text is somehow out of vocabulary (the CHECK constraints
+    /// make it unstorable) is surfaced as an error, never dropped.
+    pub fn load_signatures(&self) -> Result<Vec<Signature>, TargetsError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, kind, pattern, product, confidence
+             FROM signature ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], read_signature_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
 }
 
 /// Serialize a carried-whole JSON value to its stored text.
 fn json_text(v: &serde_json::Value) -> String {
     v.to_string()
+}
+
+/// Read one `signature` row into a [`Signature`]. Enum parsing that can fail is
+/// deferred so the rusqlite closure stays infallible in the column reads; the CHECK
+/// constraints make an out-of-vocabulary value unstorable, so a parse failure means
+/// a corrupt file, surfaced rather than dropped (P-4).
+fn read_signature_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<Result<Signature, TargetsError>> {
+    let category_text: String = row.get(0)?;
+    let kind_text: String = row.get(1)?;
+    let pattern: String = row.get(2)?;
+    let product: String = row.get(3)?;
+    let confidence_text: String = row.get(4)?;
+    let parsed = (|| {
+        let category = SignatureCategory::parse(&category_text).ok_or_else(|| {
+            TargetsError::Model(format!("unknown signature category {category_text:?}"))
+        })?;
+        let kind = SignatureKind::parse(&kind_text)
+            .ok_or_else(|| TargetsError::Model(format!("unknown signature kind {kind_text:?}")))?;
+        let confidence = SignatureConfidence::parse(&confidence_text).ok_or_else(|| {
+            TargetsError::Model(format!("unknown signature confidence {confidence_text:?}"))
+        })?;
+        Ok(Signature {
+            category,
+            kind,
+            pattern,
+            product,
+            confidence,
+        })
+    })();
+    Ok(parsed)
 }
 
 /// Read one `volume_eligibility` row. Reason parsing that can fail is deferred so
@@ -1021,6 +1109,8 @@ mod tests {
             .expect("drop v3 tables to simulate v1");
         conn.execute_batch("DROP TABLE volume_eligibility;")
             .expect("drop v4 table to simulate v1");
+        conn.execute_batch("DROP TABLE signature;")
+            .expect("drop v5 table to simulate v1");
         conn.pragma_update(None, "user_version", 1_i64)
             .expect("stamp v1");
         conn
@@ -1078,41 +1168,82 @@ mod tests {
     }
 
     #[test]
-    fn fresh_store_is_v4_with_empty_targets_and_eligibility_tables() {
+    fn fresh_store_is_v5_with_empty_targets_and_eligibility_tables() {
         let store = Store::open_in_memory().expect("store");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         assert!(store.targets().expect("targets").is_empty());
         assert!(store
             .volume_eligibility_is_empty()
             .expect("eligibility empty"));
+        assert!(store.load_signatures().expect("signatures").is_empty());
     }
 
     #[test]
-    fn v1_store_migrates_to_v4_with_catalog_rows_intact() {
+    fn v1_store_migrates_to_v5_with_catalog_rows_intact() {
         let conn = v1_connection();
         conn.execute(
             "INSERT INTO games (appid, name, review_count) VALUES (730, 'CS2', 1234)",
             [],
         )
         .expect("insert v1 row");
-        let store = Store::from_connection(conn).expect("migrate to v4");
+        let store = Store::from_connection(conn).expect("migrate to v5");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         assert!(store.targets().expect("targets").is_empty());
         assert!(store
             .volume_eligibility_is_empty()
             .expect("eligibility empty"));
+        assert!(store.load_signatures().expect("signatures").is_empty());
         assert!(
             store.game(730).expect("read").is_some(),
             "catalog row survives"
         );
+    }
+
+    #[test]
+    fn seed_signatures_round_trips_and_is_idempotent() {
+        let mut store = Store::open_in_memory().expect("store");
+        let sigs = vec![
+            Signature {
+                category: SignatureCategory::Engine,
+                kind: SignatureKind::Filename,
+                pattern: "UnityPlayer.dll".to_string(),
+                product: "Unity".to_string(),
+                confidence: SignatureConfidence::Definitive,
+            },
+            Signature {
+                category: SignatureCategory::Drm,
+                kind: SignatureKind::BinaryMarker,
+                pattern: "denuvo-marker".to_string(),
+                product: "Denuvo".to_string(),
+                confidence: SignatureConfidence::Definitive,
+            },
+        ];
+        store.seed_signatures(&sigs).expect("seed");
+        assert_eq!(store.load_signatures().expect("load"), sigs);
+
+        // Re-seeding the same set yields the same table (no duplication, no stale
+        // rows): a catalog refresh through the seed path is idempotent.
+        store.seed_signatures(&sigs).expect("re-seed");
+        assert_eq!(store.load_signatures().expect("load"), sigs);
+
+        // Re-seeding a different set replaces wholesale.
+        let replacement = vec![Signature {
+            category: SignatureCategory::AntiCheat,
+            kind: SignatureKind::Filename,
+            pattern: "vgk.sys".to_string(),
+            product: "Vanguard".to_string(),
+            confidence: SignatureConfidence::Definitive,
+        }];
+        store.seed_signatures(&replacement).expect("replace");
+        assert_eq!(store.load_signatures().expect("load"), replacement);
     }
 
     #[test]

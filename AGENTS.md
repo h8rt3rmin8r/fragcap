@@ -296,9 +296,26 @@ other crate offers MIT/Apache/BSD/Zlib. `default-features = false` on `blake3`
 drops the `std` feature the one-shot `blake3::hash` does not need; `rayon` is a
 separate non-default feature never enabled.
 
-S03, S04, S06, S08, and S052 added none. The parser is arithmetic over a byte
+S03, S04, S06, S08, S052, and S053 added none. The parser is arithmetic over a byte
 slice, a pcap file is a header and a run of records, the attribution script format
 is deliberately trivial, and pcapng is length-prefixed binary over a byte sink.
+
+S053 (the data-driven detection signatures) not only added no dependency, it
+removed one thing worth recording: the vendored SteamDB `FileDetectionRuleSets`
+asset (`crates/fragcap-profile/assets/steamdb/`, MIT, hash-locked) and the
+`fragcap-profile::technologies` module that compiled it, along with the crate's
+hand-rolled `sha256` module that existed only to integrity-lock those bytes.
+Detection moved from that embedded ruleset to a `signature` table in the catalog
+database, matched by a generic matcher. The matcher and the `Signature` value type
+live in `fragcap-profile` (the one crate both `fragcap-steam` and `fragcap-targets`
+already depend on, so both detection consumers reach it with no new edge); the
+table, its seed, and the discovery classifier live in `fragcap-targets`;
+`fragcap-steam`'s scaffold takes an injected finding set rather than a new edge to
+its sibling. The catalog schema advanced from version 4 to version 5 for the
+`signature` table. Filename, directory-shape, and PE-version-string matching are
+evaluated; the PE reader hand-parses a binary's version resource over its own bytes
+(no `goblin`/`object` crate, no OS call), consistent with the hand-rolled pcap and
+pcapng parsers. The binary-marker kind is carried but inert.
 
 S052 (the TargetSource discovery seam and tiers) is the other worth noting for what
 it did not add. The discovery model, the seam, the account, the known-roots and

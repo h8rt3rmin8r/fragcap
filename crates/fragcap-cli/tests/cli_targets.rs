@@ -19,6 +19,24 @@ fn db(dir: &TempDir) -> String {
 }
 
 #[test]
+fn seed_signatures_populates_the_catalog_and_is_idempotent() {
+    let dir = TempDir::new().expect("tempdir");
+    let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
+
+    let (code, out, _err) = run(&["targets", "seed-signatures", "--db", &catalog]);
+    assert_eq!(code, 0, "seed-signatures succeeds: {out}");
+    assert!(
+        out.contains("detection signatures"),
+        "reports the seeded count: {out}"
+    );
+
+    // Idempotent: re-running succeeds and reports the same count.
+    let (code2, out2, _err) = run(&["targets", "seed-signatures", "--db", &catalog]);
+    assert_eq!(code2, 0);
+    assert_eq!(out, out2, "re-seeding is idempotent");
+}
+
+#[test]
 fn add_derives_a_handle_and_show_resolves_it() {
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);

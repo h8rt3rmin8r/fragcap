@@ -42,6 +42,7 @@ pub mod model;
 pub mod schema;
 pub mod seed;
 pub mod selector;
+pub mod signatures;
 pub mod source;
 pub mod sources;
 pub mod store;
@@ -50,6 +51,7 @@ pub mod volume;
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
 pub use classifier::{
     ClassifierVerdict, DirectoryClassifier, FixtureClassifier, KnownRootChildIsGame,
+    SignatureClassifier,
 };
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,
@@ -70,6 +72,7 @@ pub use model::{
 };
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use selector::{resolve_id, resolve_positional, Selection};
+pub use signatures::{parse_seed_document, seed_bundled, BUNDLED_SIGNATURES};
 pub use source::{
     discover_all, CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, FixtureSource,
     TargetSource,

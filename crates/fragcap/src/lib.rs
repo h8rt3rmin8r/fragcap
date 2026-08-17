@@ -94,8 +94,13 @@ pub mod targets {
         DirectoryClassifier, DirectorySource, Discovery, DiscoveryAccount, DriveType,
         EligibilityReason, FixtureClassifier, FixtureInventory, FixtureSource, FixtureTree,
         FsDirectoryLister, InteractiveSource, KnownRootChildIsGame, KnownRootsSource,
-        ScriptedConfirm, TargetSource, Volume, VolumeEligibility, VolumeInventory, KNOWN_ROOTS,
+        ScriptedConfirm, SignatureClassifier, TargetSource, Volume, VolumeEligibility,
+        VolumeInventory, KNOWN_ROOTS,
     };
+
+    /// The detection signature seed (slice S053): the bundled Appendix B document and
+    /// the seed entry points that fill the catalog's `signature` table.
+    pub use fragcap_targets::{parse_seed_document, seed_bundled, BUNDLED_SIGNATURES};
 
     /// The handle and identifier helpers for registering a target (slice S051).
     pub use fragcap_targets::{handle, identifier};
@@ -199,11 +204,18 @@ pub mod profile {
         CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
         PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
     };
+    /// The data-driven detection signature matcher (slice S053): the `Signature`
+    /// value type, the generic matcher, and the PE version-resource reader. The
+    /// whole `signature` module is re-exported so callers reach `SignatureSet` and
+    /// its `ScanOutcome`/`DetectError`. It replaced the vendored SteamDB ruleset that
+    /// `fragcap-profile::technologies` carried before S053.
+    pub use fragcap_profile::signature;
     pub use fragcap_profile::target::{
         EngineRuleTarget, HintTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
     };
-    pub use fragcap_profile::technologies::{
-        Category, CompiledRuleset, DetectError, ScanOutcome, SkippedPattern, TechnologyFinding,
+    pub use fragcap_profile::{
+        DetectionFinding, Signature, SignatureCategory, SignatureConfidence, SignatureKind,
+        SignatureSet,
     };
 }
 

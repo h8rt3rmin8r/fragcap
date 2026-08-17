@@ -50,6 +50,10 @@ impl TargetSource for DirectorySource {
                 display_name: base_name(&self.path),
                 fidelity: self.default_fidelity(),
                 classification: crate::entry::TargetClassification::Unknown,
+                // A bare pointed-at path runs no signature detection; the scan and
+                // technologies surfaces (slice S053 US3) attach evidence where a
+                // signature set is loaded.
+                evidence: Vec::new(),
                 source_name: self.name().to_string(),
             });
         }

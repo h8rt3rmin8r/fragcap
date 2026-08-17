@@ -89,6 +89,10 @@ impl TargetSource for SteamSource<'_> {
                 display_name: title.name.clone(),
                 fidelity: self.default_fidelity(),
                 classification,
+                // A Steam candidate is identified by appid, not by an install-tree
+                // scan; local signature detection attaches when a directory is
+                // classified (the known-roots and scan paths), not here.
+                evidence: Vec::new(),
                 source_name: self.name().to_string(),
             });
         }
