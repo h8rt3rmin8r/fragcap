@@ -46,5 +46,15 @@ fragcap-sink.workspace = true
 fragcap-steam.workspace = true
 fragcap-targets = { workspace = true, optional = true }
 
+# The Windows volume inventory adapter (slice S052) enumerates fixed volumes for
+# the known-roots walk through GetLogicalDrives/GetDriveTypeW and reads each
+# volume's stable GUID identity through GetVolumeNameForVolumeMountPointW, all in
+# Win32_Storage_FileSystem, which the workspace pin already enables. windows-sys is
+# already pinned at 0.36 across the workspace (via pcap), so this adds no Cargo.lock
+# package. The adapter is `cfg(windows)` and only compiled behind the `targets`
+# feature; a non-windows or non-targets build never touches it.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
 serde_json.workspace = true

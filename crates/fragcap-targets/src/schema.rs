@@ -25,9 +25,17 @@
 //! cannot hold a row the model would reject (P-9). The migration from version 2
 //! is additive: two `CREATE TABLE`s, applied transactionally, leaving every
 //! existing row untouched.
+//!
+//! Version 4 (slice S052) adds the `volume_eligibility` table: the persistent,
+//! user-editable allowlist of fixed volumes the cross-volume known-roots walk may
+//! enumerate. Like the `targets` tables it is conceptually `local.db` only; the
+//! catalog leaves it empty. A row is keyed on a stable volume identity (the volume
+//! GUID path, not the drive letter, which is reassignable), and the `reason` CHECK
+//! set records why a volume is or is not eligible so each decision is statable
+//! (FR-017). The migration from version 3 is one additive `CREATE TABLE`.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -101,6 +109,32 @@ CREATE TABLE targets (
 CREATE TABLE target_id_aliases (
     alias_stable_id INTEGER PRIMARY KEY,
     target_id       INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE
+);
+
+CREATE TABLE volume_eligibility (
+    volume_id   TEXT PRIMARY KEY CHECK (length(volume_id) > 0),
+    mount_point TEXT,
+    drive_type  TEXT,
+    eligible    INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+    reason      TEXT NOT NULL CHECK (reason IN
+                  ('seeded-first-run', 'user-added', 'user-excluded')),
+    first_seen  TEXT
+);
+";
+
+/// The additive migration from schema version 3 to version 4: create the volume
+/// eligibility allowlist table (slice S052). Backward-safe by construction, an
+/// existing v3 store keeps every row and gains one empty table. Applied in one
+/// transaction alongside the version stamp.
+pub const MIGRATE_3_TO_4: &str = "\
+CREATE TABLE volume_eligibility (
+    volume_id   TEXT PRIMARY KEY CHECK (length(volume_id) > 0),
+    mount_point TEXT,
+    drive_type  TEXT,
+    eligible    INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+    reason      TEXT NOT NULL CHECK (reason IN
+                  ('seeded-first-run', 'user-added', 'user-excluded')),
+    first_seen  TEXT
 );
 ";
 

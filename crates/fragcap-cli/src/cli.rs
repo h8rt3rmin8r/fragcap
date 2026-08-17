@@ -419,6 +419,31 @@ pub enum TargetsCommand {
     },
     /// Show one target resolved by a selector (handle, name, row index, or `--id`).
     Show(TargetsShowArgs),
+    /// Discover installed games: walk Steam and the known game-install roots and
+    /// list the candidates found (slice S052). Reads only; a candidate becomes a
+    /// stored target when acted on (`targets add`).
+    Discover(TargetsDiscoverArgs),
+    /// Scan one directory the user points at and list it as a single candidate
+    /// (slice S052). Backs pointing discovery straight at a known game folder.
+    Scan {
+        /// The directory to treat as a single game location.
+        dir: PathBuf,
+    },
+}
+
+/// Arguments to `targets discover`.
+#[derive(Debug, Args)]
+pub struct TargetsDiscoverArgs {
+    /// The catalog store (`catalog.db`) whose appids classify Steam titles.
+    #[arg(long)]
+    pub catalog_db: PathBuf,
+    /// The user store (`local.db`) holding the volume eligibility allowlist.
+    #[arg(long)]
+    pub local_db: PathBuf,
+    /// The Steam installation root. Without it, discovery locates Steam itself and
+    /// skips the Steam tier if none is installed.
+    #[arg(long)]
+    pub steam_root: Option<PathBuf>,
 }
 
 /// Arguments to `targets add`.

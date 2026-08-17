@@ -1346,3 +1346,130 @@ to `verified`. Introduced by slice S051.
 
 **See also:** [Fidelity tier](#fidelity-tier), [Target entry](#target-entry),
 [Resolution cascade](#resolution-cascade)
+
+## Discovery source
+
+An origin of capture [candidate targets](#candidate-target), expressed as the one
+`TargetSource` seam: a stable name, a discover operation yielding candidates plus a
+[discovery account](#discovery-account), and a default [fidelity tier](#fidelity-tier)
+it stamps. Steam, the [known-roots source](#known-roots-source), a
+[directory source](#directory-source), and an [interactive source](#interactive-source)
+are all instances. Introduced by slice S052.
+
+{: .matters }
+> Single-target authoring and bulk platform walking are the same operation at
+> different batch sizes (P-10): adding Epic, GOG, Xbox, Battle.net, or an emulator
+> ROM directory is a new implementor of this seam with no downstream change.
+
+**See also:** [Candidate target](#candidate-target),
+[Discovery account](#discovery-account), [Discovery tier](#discovery-tier)
+
+## Candidate target
+
+What a [discovery source](#discovery-source) produces: what was found (a filesystem
+path or a platform identity such as a Steam app id), a display name, the fidelity
+its source stamped, and any classification joined from the [catalog store](#catalog-store).
+It is not yet a stored [target entry](#target-entry); a candidate becomes a durable
+entry through the entry model only when the user acts on it (captures or selects it).
+Introduced by slice S052.
+
+**See also:** [Discovery source](#discovery-source), [Target entry](#target-entry)
+
+## Discovery tier
+
+One of the three v0.5.0 layers a [discovery source](#discovery-source) belongs to,
+ordered by how directly it names a game: tier 1, platform walkers (Steam); tier 2,
+the [known-roots source](#known-roots-source); tier 3, the user-pointed
+[directory source](#directory-source) and [interactive source](#interactive-source).
+Exhaustive enumeration of every executable on the machine is deliberately not a
+tier: a normal machine carries thousands of non-Windows executables that would bury
+the game. Introduced by slice S052.
+
+**See also:** [Discovery source](#discovery-source),
+[Known-roots source](#known-roots-source)
+
+## Known-roots source
+
+The tier-2 [discovery source](#discovery-source) that walks a fixed, hard-coded list
+of directories that only ever contain games (the Epic, GOG, Riot, Battle.net,
+Ubisoft, EA, Origin, Xbox, and Steam-library roots), across every eligible fixed
+volume. It classifies each directory by shape through the descent contract
+([descent stop-on-hit](#descent-stop-on-hit)) rather than a curated per-title list.
+Introduced by slice S052.
+
+{: .matters }
+> A machine with no Steam still lists games whenever a known root exists, and a
+> second or third drive is walked as readily as the system drive. Which volumes are
+> walked is governed by the [volume eligibility table](#volume-eligibility-table).
+
+**See also:** [Volume eligibility table](#volume-eligibility-table),
+[Descent stop-on-hit](#descent-stop-on-hit)
+
+## Directory source
+
+The tier-3 [discovery source](#discovery-source) that takes one path a user points
+at and yields at most one [candidate target](#candidate-target) for it. It asserts no
+classification, since the user vouches for the location, not for what the tool should
+call it. Introduced by slice S052.
+
+**See also:** [Interactive source](#interactive-source),
+[Candidate target](#candidate-target)
+
+## Interactive source
+
+The tier-3 [discovery source](#discovery-source) that wraps a
+[directory source](#directory-source) with a human confirmation step: an accepted
+candidate is stamped at `authored` [fidelity](#fidelity-tier) because a human vouched
+for it; a rejected one is counted declined, never lost. Introduced by slice S052.
+
+**See also:** [Directory source](#directory-source), [Fidelity tier](#fidelity-tier)
+
+## Discovery account
+
+The truthful per-run tally a [discovery source](#discovery-source) returns alongside
+its candidates, mirroring the [seed summary](#seed-summary): every item considered
+lands in exactly one named outcome (produced, parse-failed, declined, not-a-game,
+volume-skipped, access-error) and the outcomes reconcile to the number considered.
+Introduced by slice S052.
+
+{: .matters }
+> A discard path added later with no counter fails the conservation check rather
+> than dropping a candidate silently (P-4). An excluded volume's skip is counted and
+> surfaced, so the eligibility decision is auditable.
+
+**See also:** [Seed summary](#seed-summary), [Discovery source](#discovery-source)
+
+## Volume eligibility table
+
+The persistent, user-editable allowlist in the [local store](#local-store) naming
+which fixed volumes the [known-roots source](#known-roots-source) may enumerate. It
+is an allowlist rather than a denylist because a static denylist cannot recognize a
+userspace or FUSE mount that reports itself as an ordinary fixed drive. On first run
+it is seeded with the fixed volumes then present; afterward a later-appearing or
+misreporting volume is walked only after an explicit user opt-in. Each volume is
+keyed on a stable identity (its volume GUID path), not its reassignable drive letter.
+Introduced by slice S052.
+
+{: .matters }
+> Widening the walk to an unseen volume without opt-in, or keying eligibility on the
+> drive letter so a reassigned letter inherits a prior volume's decision, are the
+> failures the allowlist and the stable identity exist to prevent (P-9).
+
+**See also:** [Known-roots source](#known-roots-source), [Local store](#local-store)
+
+## Descent stop-on-hit
+
+The rule the [known-roots source](#known-roots-source) walk follows: test each
+directory for a game signature and, on a hit, emit one [candidate target](#candidate-target)
+and stop descending into that directory's subtree; never enumerate a directory's
+executables first and then ask whether each is a game. The signature matcher itself
+is a separate seam (slice S053); slice S052 ships the descent contract and a
+stand-in classifier. Introduced by slice S052.
+
+{: .matters }
+> Performance is load-bearing: stopping on a hit is what keeps the walk from
+> descending into a game's thousands of asset files, and testing directory shape
+> before executables is what keeps it from enumerating every binary on the machine.
+
+**See also:** [Known-roots source](#known-roots-source),
+[Candidate target](#candidate-target)

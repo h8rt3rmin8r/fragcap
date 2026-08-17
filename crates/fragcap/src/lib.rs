@@ -86,6 +86,17 @@ pub mod targets {
         TargetsError, TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
 
+    /// The discovery seam and its model (slice S052): the `TargetSource` trait,
+    /// the candidate and account types, the discovery tiers, the classifier seam,
+    /// and the volume eligibility vocabulary.
+    pub use fragcap_targets::{
+        discover_all, CandidateIdentity, CandidateTarget, ClassifierVerdict, Confirm, DirListing,
+        DirectoryClassifier, DirectorySource, Discovery, DiscoveryAccount, DriveType,
+        EligibilityReason, FixtureClassifier, FixtureInventory, FixtureSource, FixtureTree,
+        FsDirectoryLister, InteractiveSource, KnownRootChildIsGame, KnownRootsSource,
+        ScriptedConfirm, TargetSource, Volume, VolumeEligibility, VolumeInventory, KNOWN_ROOTS,
+    };
+
     /// The handle and identifier helpers for registering a target (slice S051).
     pub use fragcap_targets::{handle, identifier};
 
@@ -110,6 +121,16 @@ pub use accumulate::{
     accumulate_from_local_steam, accumulate_launch_data, AccumulationError, AccumulationProgress,
     LaunchAccumulationSummary,
 };
+
+/// Platform discovery source adapters (slice S052), behind the `targets` feature.
+/// The Steam adapter expresses the existing library walk as a `TargetSource`; the
+/// pure discovery model and the other tiers live in `fragcap-targets`.
+#[cfg(feature = "targets")]
+pub mod discovery;
+#[cfg(feature = "targets")]
+pub use discovery::SteamSource;
+#[cfg(all(feature = "targets", windows))]
+pub use discovery::WindowsVolumeInventory;
 
 /// Packet acquisition.
 pub mod capture {

@@ -681,6 +681,53 @@ runtime case is the one a hint database marks `launcher_mediated` (issue
 #78): the launch entry is the stub or publisher launcher, and watch mode is
 what attributes the socket-holding descendant.
 
+**FR-6a. One discovery seam.** Every origin of a capture target, a platform
+walk, a scan of the known game-install roots, a directory the user points at, is
+a discovery source implementing one seam. Each yields the same kind of value, a
+candidate target, plus a discovery account whose named outcomes reconcile to the
+number of items it considered (constitution P-4). Single-target authoring and bulk
+platform walking are the same operation at different batch sizes (constitution
+P-10), so adding a new platform is a new implementor of the seam with no
+downstream change. A candidate is surfaced live and becomes a durable target entry
+(section 15.8) only when the user acts on it; discovery itself writes nothing
+durable except the volume eligibility table below.
+
+**FR-6b. Discovery tiers.** Discovery runs in three tiers ordered by how directly
+each names a game. Tier 1 is the platform walkers (Steam today). Tier 2 is the
+known-roots source, which walks a fixed list of directories that only ever contain
+games across every eligible fixed volume, so a machine without Steam still lists
+games and a second or third drive is walked as readily as the system drive. Tier 3
+is the user-pointed directory and interactive sources. Exhaustive enumeration of
+every executable on the machine is rejected: a normal machine carries thousands of
+non-Windows executables that would bury the game.
+
+**FR-6c. Directory-shape descent.** Tiers 2 and 3 classify a directory by its
+shape (an engine signature such as a Unity player library or an Unreal
+engine-binaries tree), not a curated per-title list. The walk tests each directory
+and stops descending on a hit, emitting one candidate; it never enumerates a
+directory's executables first and then asks whether each is a game. The signature
+matcher is a separate concern (a later slice); the descent-and-stop contract and
+the seam it plugs into are the discovery layer's.
+
+**FR-6d. Volume eligibility.** The cross-volume walk enumerates known roots only
+on volumes the volume eligibility table marks eligible. The table is a persistent,
+user-editable allowlist in the user-owned store, not a denylist, because a static
+denylist cannot recognize a userspace or FUSE mount that reports itself as an
+ordinary fixed drive. On first run it is seeded with the fixed volumes then
+present; afterward a later-appearing or misreporting volume is walked only after an
+explicit user opt-in. Each volume is keyed on a stable identity (its volume GUID
+path), never its reassignable drive letter, and each eligibility decision is
+recoverable rather than silent (constitution P-9, P-4).
+
+Deep filesystem scanning beyond the shallow known-roots walk is deferred to a later
+release, and three hazards it must handle are recorded here so they are not
+rediscovered: cloud placeholder hydration (a file marked recall-on-open or
+recall-on-data-access must not be forced to hydrate by the walk), reparse-point
+loops (junctions and symlinks can form cycles a deep walk must detect), and the
+within-volume skip list (system, temporary, and package-cache directories a deep
+walk should not descend). The shallow walk needs none of these; the eligibility
+machinery ships with it because the walk already crosses fixed volumes.
+
 ### 7.2 Capture Modes
 
 **FR-6. Bounded capture.** fragcap captures for a bounded window

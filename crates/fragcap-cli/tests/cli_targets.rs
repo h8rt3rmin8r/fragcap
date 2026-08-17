@@ -8,6 +8,8 @@
 
 mod common;
 
+use std::path::Path;
+
 use common::run;
 use tempfile::TempDir;
 
@@ -259,4 +261,67 @@ fn a_unicode_name_resolves_case_insensitively() {
     let (code, out, _err) = run(&["targets", "show", "pokémon élan", "--db", &store]);
     assert_eq!(code, 0, "Unicode-cased name resolves: {out}");
     assert!(out.contains("handle:"));
+}
+
+// --- Discovery subcommands (slice S052) ------------------------------------
+
+/// Write a minimal fixture Steam root: one installed title under the root
+/// library's `steamapps`. `discover_in` reads the implicit root library, so no
+/// `libraryfolders.vdf` is needed.
+fn write_steam_fixture(root: &Path) {
+    let steamapps = root.join("steamapps");
+    std::fs::create_dir_all(&steamapps).expect("steamapps dir");
+    std::fs::write(
+        steamapps.join("appmanifest_620.acf"),
+        "\"AppState\"\n{\n  \"appid\" \"620\"\n  \"name\" \"Portal 2\"\n  \
+         \"installdir\" \"Portal 2\"\n}\n",
+    )
+    .expect("write manifest");
+}
+
+#[test]
+fn scan_lists_a_directory_as_one_candidate() {
+    let (code, out, _err) = run(&["targets", "scan", "D:/Games/Celeste"]);
+    assert_eq!(code, 0, "scan succeeds: {out}");
+    assert!(
+        out.contains("Celeste"),
+        "the pointed-at directory is listed: {out}"
+    );
+    assert!(
+        out.contains("directory"),
+        "attributed to the directory source: {out}"
+    );
+    assert!(
+        out.contains("account:"),
+        "the conserved account is surfaced: {out}"
+    );
+}
+
+#[test]
+fn discover_lists_steam_titles_through_the_cli() {
+    let dir = TempDir::new().expect("tempdir");
+    let steam_root = dir.path().join("steam");
+    write_steam_fixture(&steam_root);
+
+    let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
+    let local = dir.path().join("local.db").to_string_lossy().into_owned();
+    let steam_root_s = steam_root.to_string_lossy().into_owned();
+
+    let (code, out, _err) = run(&[
+        "targets",
+        "discover",
+        "--catalog-db",
+        &catalog,
+        "--local-db",
+        &local,
+        "--steam-root",
+        &steam_root_s,
+    ]);
+    assert_eq!(code, 0, "discover succeeds: {out}");
+    assert!(out.contains("Portal 2"), "a Steam title is listed: {out}");
+    assert!(
+        out.contains("steam:620"),
+        "the appid identity is shown: {out}"
+    );
+    assert!(out.contains("account:"), "the account is surfaced: {out}");
 }
