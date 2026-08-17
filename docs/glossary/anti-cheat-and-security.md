@@ -62,3 +62,36 @@ information by observing from the outside.
 > read as a tool for reaching into a game.
 
 **See also:** [Anti-cheat](anti-cheat-and-security.md#anti-cheat)
+
+## Detection signature
+
+A row of data that identifies a game technology (an engine, an anti-cheat, or a
+DRM product) from an install directory. It names a category, a match kind (a
+filename, a directory shape, a PE version string, or a binary marker), a pattern,
+the product, and a confidence. Signatures live in a table in the shipped catalog
+database, so `fragcap targets seed-signatures` refreshes detection capability as
+data rather than through a code change and a release.
+
+{: .matters }
+> A detected anti-cheat or DRM product is neutral evidence, never a gate
+> (specification section 3.6). fragcap does not restrict, block, warn against, or
+> discourage capture based on what it detects, and no output frames a title as off
+> limits, risky, or discouraged. A single-player title that produces network
+> traffic is one of the most interesting results the tool can surface, so a title
+> with no recorded online mode is still fully capturable.
+
+**See also:** [Signature matcher](anti-cheat-and-security.md#signature-matcher)
+
+## Signature matcher
+
+The single generic routine that evaluates the detection signatures against a
+directory's shape. Detection behavior is a function of the signature table's
+contents, not of per-product code, so adding a signature of an implemented kind is
+honored on the next scan with no code change. A locally detected engine is stamped
+`verified`, which outranks the `heuristic-unverified` engine attribution a remote
+catalog carries: local evidence outranks a remote claim (principle P-9). The
+matcher reads directory entries and, for a PE version string, the version resource
+in a binary's own on-disk bytes; it opens no process handle and reads no process
+memory (principle P-1).
+
+**See also:** [Detection signature](anti-cheat-and-security.md#detection-signature)

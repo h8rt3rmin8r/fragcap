@@ -21,6 +21,7 @@ fn one_candidate(name: &str, source: &str, fidelity: FidelityTier) -> Discovery 
             display_name: name.to_string(),
             fidelity,
             classification: TargetClassification::Unknown,
+            evidence: Vec::new(),
             source_name: source.to_string(),
         }],
         account,

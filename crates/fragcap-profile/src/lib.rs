@@ -63,13 +63,13 @@ pub mod glob;
 pub mod jsonschema;
 pub mod matching;
 pub mod parse;
+pub mod pe;
 pub mod providers;
 pub mod resolve;
 pub mod resolver;
 pub mod schema;
-pub mod sha256;
+pub mod signature;
 pub mod target;
-pub mod technologies;
 pub mod validate;
 
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Position};
@@ -90,10 +90,10 @@ pub use schema::{
     CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
     PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
 };
+pub use signature::{
+    DetectionFinding, Signature, SignatureCategory, SignatureConfidence, SignatureKind,
+    SignatureSet, SkippedSignature,
+};
 pub use target::{
     EngineRuleTarget, HintTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,
-};
-pub use technologies::{
-    Category, CompiledRuleset, DetectError, ScanOutcome, SkippedPattern, TechnologyFinding,
-    MAX_SCAN_DEPTH, RULES_INI, RULES_LOCK,
 };

@@ -78,18 +78,31 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         }
         TargetsCommand::Seed(args) => seed(args, out),
         TargetsCommand::SeedEngine(args) => seed_engine_cmd(args, out),
+        TargetsCommand::SeedSignatures { db } => seed_signatures_cmd(db, out),
         TargetsCommand::Add(args) => add(args, out),
         TargetsCommand::List { db } => list(db, out),
         TargetsCommand::Show(args) => show(args, out),
         TargetsCommand::Discover(args) => discover(args, out),
-        TargetsCommand::Scan { dir } => scan(dir, out),
+        TargetsCommand::Scan { dir, catalog_db } => scan(dir, catalog_db.as_deref(), out),
     }
 }
 
 /// Run `targets scan <dir>`: point discovery at one directory and list it as a
-/// single candidate (the tier-3 [`DirectorySource`], slice S052).
-fn scan(dir: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let source = DirectorySource::new(dir.to_string_lossy().into_owned());
+/// single candidate (the tier-3 [`DirectorySource`], slice S052). With a catalog,
+/// the directory is scanned for technologies and they ride as evidence (slice S053).
+fn scan(dir: &Path, catalog_db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let path = dir.to_string_lossy().into_owned();
+    let source = match catalog_db {
+        Some(catalog_db) => {
+            let catalog = Store::open(catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
+            let signatures = catalog
+                .load_signatures()
+                .map_err(|e| CliError::failure(e.to_string()))?;
+            let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
+            DirectorySource::with_signatures(path, set)
+        }
+        None => DirectorySource::new(path),
+    };
     let discovery = source
         .discover()
         .map_err(|e| CliError::failure(e.to_string()))?;
@@ -137,8 +150,19 @@ fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, Cli
         .collect();
     #[cfg(windows)]
     let lister = fragcap::targets::FsDirectoryLister;
+    // Detection is signature-driven (slice S053): the classifier scans each known-root
+    // child against the catalog's signature table, stamping a detected engine
+    // `verified` and carrying any anti-cheat or DRM as neutral evidence. A child with
+    // no detected engine is still a game (the known-root structural prior), at
+    // heuristic-unverified. An unseeded catalog yields no detections, only the prior.
     #[cfg(windows)]
-    let classifier = fragcap::targets::KnownRootChildIsGame;
+    let classifier = {
+        let signatures = catalog
+            .load_signatures()
+            .map_err(|e| CliError::failure(e.to_string()))?;
+        let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
+        fragcap::targets::SignatureClassifier::for_known_root(set)
+    };
     #[cfg(windows)]
     let known_roots =
         fragcap::targets::KnownRootsSource::new(&inventory, &eligible, &lister, &classifier);
@@ -171,12 +195,24 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
         };
         let _ = writeln!(
             out,
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             c.source_name,
             identity,
             c.classification.as_str(),
+            c.fidelity.as_str(),
             c.display_name
         );
+        // Detected technologies ride as neutral evidence (slice S053): a fact per
+        // line, never a status that frames the title as off limits (spec 3.6).
+        for f in &c.evidence {
+            let _ = writeln!(
+                out,
+                "    {}: {} ({})",
+                f.category.as_str(),
+                f.product,
+                f.fidelity.as_str()
+            );
+        }
     }
     let a = &discovery.account;
     let _ = writeln!(
@@ -416,6 +452,22 @@ fn seed(args: &TargetsSeedArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         summary.excluded,
         summary.duplicates,
         summary.failed
+    );
+    Ok(Exit::SUCCESS)
+}
+
+/// Run `targets seed-signatures`: fill the detection signature table from the
+/// bundled Appendix B document (slice S053). Offline and idempotent: re-running
+/// reloads the same table. This is the catalog-seed-family path FR-005 names.
+fn seed_signatures_cmd(db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
+    let count =
+        fragcap::targets::seed_bundled(&mut store).map_err(|e| CliError::failure(e.to_string()))?;
+    let _ = writeln!(
+        out,
+        "seeded {} detection signatures into {}",
+        count,
+        db.display()
     );
     Ok(Exit::SUCCESS)
 }

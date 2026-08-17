@@ -347,6 +347,11 @@ pub enum SteamCommand {
     Profile {
         /// The Steam application identifier of an installed title.
         app_id: String,
+        /// An optional catalog store (`catalog.db`) whose signature table labels the
+        /// engine, anti-cheat, and DRM technologies in the install directory (slice
+        /// S053). Without it the skeleton carries an empty technologies array.
+        #[arg(long)]
+        catalog_db: Option<PathBuf>,
     },
 }
 
@@ -376,6 +381,10 @@ pub struct TechnologiesArgs {
     /// The install directory to scan for technologies.
     #[arg(short = 'p', long)]
     pub path: PathBuf,
+    /// The catalog store (`catalog.db`) whose signature table drives detection
+    /// (slice S053). Seed it with `targets seed-signatures`.
+    #[arg(long)]
+    pub catalog_db: PathBuf,
 }
 
 /// Arguments to `targets`.
@@ -409,6 +418,14 @@ pub enum TargetsCommand {
     /// Seed the engine tier (Tier 3: engine name, source, confidence) into the
     /// store from PCGamingWiki.
     SeedEngine(TargetsSeedEngineArgs),
+    /// Seed the detection signature table (slice S053) from the bundled Appendix B
+    /// document, so `technologies` and discovery detect engines, anti-cheat, and DRM
+    /// from a store rather than from compiled-in code. Offline; idempotent.
+    SeedSignatures {
+        /// The catalog store (`catalog.db`) to write the signatures into.
+        #[arg(long)]
+        db: PathBuf,
+    },
     /// Register a target from a name, deriving a unique handle (slice S051).
     Add(TargetsAddArgs),
     /// List registered targets with their row index, handle, and identifier.
@@ -424,10 +441,17 @@ pub enum TargetsCommand {
     /// stored target when acted on (`targets add`).
     Discover(TargetsDiscoverArgs),
     /// Scan one directory the user points at and list it as a single candidate
-    /// (slice S052). Backs pointing discovery straight at a known game folder.
+    /// (slice S052). Backs pointing discovery straight at a known game folder. With
+    /// `--catalog-db`, detects the engine, anti-cheat, and DRM technologies in the
+    /// directory and carries them as evidence (slice S053).
     Scan {
         /// The directory to treat as a single game location.
         dir: PathBuf,
+        /// An optional catalog store (`catalog.db`) whose signature table labels the
+        /// technologies in the directory. Without it the candidate carries no
+        /// detected evidence.
+        #[arg(long)]
+        catalog_db: Option<PathBuf>,
     },
 }
 

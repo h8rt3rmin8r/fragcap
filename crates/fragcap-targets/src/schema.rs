@@ -33,9 +33,17 @@
 //! GUID path, not the drive letter, which is reassignable), and the `reason` CHECK
 //! set records why a volume is or is not eligible so each decision is statable
 //! (FR-017). The migration from version 3 is one additive `CREATE TABLE`.
+//!
+//! Version 5 (slice S053) adds the `signature` table: the data-driven detection
+//! signature set, moved out of the vendored ruleset that was compiled into
+//! `fragcap-profile`. Unlike the `targets` and `volume_eligibility` tables it is a
+//! `catalog.db` table (shipped, refreshable catalog data seeded like the `games`
+//! rows); `local.db` leaves it empty. The `category`, `kind`, and `confidence`
+//! CHECK sets make an out-of-vocabulary signature unstorable (P-9). The migration
+//! from version 4 is one additive `CREATE TABLE`.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -119,6 +127,32 @@ CREATE TABLE volume_eligibility (
     reason      TEXT NOT NULL CHECK (reason IN
                   ('seeded-first-run', 'user-added', 'user-excluded')),
     first_seen  TEXT
+);
+
+CREATE TABLE signature (
+    id          INTEGER PRIMARY KEY,
+    category    TEXT NOT NULL CHECK (category IN ('engine', 'anti-cheat', 'drm')),
+    kind        TEXT NOT NULL CHECK (kind IN
+                  ('filename', 'directory-shape', 'pe-version-string', 'binary-marker')),
+    pattern     TEXT NOT NULL CHECK (length(pattern) > 0),
+    product     TEXT NOT NULL CHECK (length(product) > 0),
+    confidence  TEXT NOT NULL CHECK (confidence IN ('definitive', 'heuristic'))
+);
+";
+
+/// The additive migration from schema version 4 to version 5: create the detection
+/// signature table (slice S053). Backward-safe by construction, an existing v4 store
+/// keeps every row and gains one empty table. Applied in one transaction alongside
+/// the version stamp.
+pub const MIGRATE_4_TO_5: &str = "\
+CREATE TABLE signature (
+    id          INTEGER PRIMARY KEY,
+    category    TEXT NOT NULL CHECK (category IN ('engine', 'anti-cheat', 'drm')),
+    kind        TEXT NOT NULL CHECK (kind IN
+                  ('filename', 'directory-shape', 'pe-version-string', 'binary-marker')),
+    pattern     TEXT NOT NULL CHECK (length(pattern) > 0),
+    product     TEXT NOT NULL CHECK (length(product) > 0),
+    confidence  TEXT NOT NULL CHECK (confidence IN ('definitive', 'heuristic'))
 );
 ";
 

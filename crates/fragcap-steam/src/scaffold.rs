@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fragcap_profile::{CompiledRuleset, Profile, TechnologyFinding};
+use fragcap_profile::{DetectionFinding, Profile, SignatureCategory};
 
 use crate::library::InstalledTitle;
 use crate::SteamError;
@@ -85,7 +85,17 @@ struct StageProposal {
 }
 
 /// Scaffold a validated profile skeleton for an installed title.
-pub fn scaffold(title: &InstalledTitle) -> Result<String, SteamError> {
+///
+/// Technology detection (slice S053) is data-driven and lives in `fragcap-targets`
+/// and the matcher in `fragcap-profile`; the caller runs it against the catalog's
+/// signature table and passes the findings in, so this crate takes no dependency on
+/// a detection ruleset. Pass an empty slice to scaffold without labeled
+/// technologies (the array is still emitted; an empty array says detection carried
+/// nothing, distinct from an older artifact that predates the field).
+pub fn scaffold(
+    title: &InstalledTitle,
+    technologies: &[DetectionFinding],
+) -> Result<String, SteamError> {
     let images = scan(&title.install_dir)?;
     if images.is_empty() {
         return Err(SteamError::NoExecutables {
@@ -93,21 +103,7 @@ pub fn scaffold(title: &InstalledTitle) -> Result<String, SteamError> {
         });
     }
     let proposals = classify(images, &title.install_dir);
-
-    // Label the technologies present in the install directory (engine,
-    // anti-cheat, SDK, and so on) and carry them in the scaffolded target. This
-    // labels technologies; it does not change which image the classifier picked
-    // as the client. The install directory just scanned readably above, so a
-    // detect error here is an unexpected race, surfaced rather than swallowed
-    // (P-4).
-    let findings = CompiledRuleset::embedded()
-        .detect(&title.install_dir)
-        .map_err(|e| SteamError::Io {
-            path: e.path,
-            source: e.source,
-        })?
-        .findings;
-    let text = render(title, &proposals, &findings);
+    let text = render(title, &proposals, technologies);
 
     // Validity by construction (D4): never emit a profile the validator rejects.
     match Profile::parse(&text) {
@@ -349,10 +345,21 @@ specification section 16.3.";
 /// construction and the output re-parses (the caller asserts it validates). The
 /// stage classification is a heuristic, which the `fidelity` and `notes` fields
 /// declare.
+/// The profile schema's `technologies.category` value for a detection category. The
+/// master target schema carries `engine`, `anti_cheat`, and `drm`, so every detected
+/// category is serialized into the scaffold rather than silently dropped (P-4).
+fn profile_tech_category(category: SignatureCategory) -> &'static str {
+    match category {
+        SignatureCategory::Engine => "engine",
+        SignatureCategory::AntiCheat => "anti_cheat",
+        SignatureCategory::Drm => "drm",
+    }
+}
+
 fn render(
     title: &InstalledTitle,
     proposals: &[StageProposal],
-    technologies: &[TechnologyFinding],
+    technologies: &[DetectionFinding],
 ) -> String {
     use serde_json::{json, Map, Value};
 
@@ -415,9 +422,9 @@ fn render(
         .iter()
         .map(|t| {
             json!({
-                "category": t.category.as_str(),
-                "name": t.name,
-                "marker_path": t.marker_path,
+                "category": profile_tech_category(t.category),
+                "name": t.product,
+                "marker_path": t.evidence,
                 "fidelity": t.fidelity.as_str(),
             })
         })
@@ -669,7 +676,7 @@ mod tests {
             name: "The Elder Scrolls Online".to_string(),
             install_dir: install,
         };
-        let text = scaffold(&title).unwrap();
+        let text = scaffold(&title, &[]).unwrap();
         // scaffold() validates internally; assert it again and check the shape.
         let p = Profile::parse(&text).expect("scaffold must validate");
         // The heuristic warning survives as structured data, not a comment.
@@ -687,27 +694,41 @@ mod tests {
     }
 
     #[test]
-    fn a_scaffold_carries_detected_technologies_and_still_validates() {
+    fn a_scaffold_carries_injected_technologies_and_still_validates() {
         use crate::test_support::TempTree;
+        use fragcap_profile::FidelityTier;
         let tree = TempTree::new();
         let install = tree.path().join("game");
-        // A client executable the classifier picks, plus technology markers the
-        // ruleset recognizes: an Unreal asset and an EasyAntiCheat dll.
         tree.write_exe(&install.join("Game.exe"), 100);
-        tree.write(
-            &install.join("Content").join("Maps").join("Level.uasset"),
-            "x",
-        );
-        tree.write(
-            &install.join("EasyAntiCheat").join("EasyAntiCheat_x64.dll"),
-            "x",
-        );
         let title = InstalledTitle {
             app_id: "555".to_string(),
             name: "Marker Game".to_string(),
             install_dir: install,
         };
-        let text = scaffold(&title).unwrap();
+        // The caller (slice S053) injects detection findings: an engine, an
+        // anti-cheat, and a DRM product. All three are carried in the skeleton; the
+        // master target schema now includes the `drm` category (P-4: no silent drop).
+        let techs = vec![
+            DetectionFinding {
+                category: SignatureCategory::Engine,
+                product: "Unreal".to_string(),
+                evidence: "Engine/Binaries/Win64".to_string(),
+                fidelity: FidelityTier::Verified,
+            },
+            DetectionFinding {
+                category: SignatureCategory::AntiCheat,
+                product: "EasyAntiCheat".to_string(),
+                evidence: "EasyAntiCheat/EasyAntiCheat_x64.dll".to_string(),
+                fidelity: FidelityTier::Verified,
+            },
+            DetectionFinding {
+                category: SignatureCategory::Drm,
+                product: "Steam DRM".to_string(),
+                evidence: "steam_api64.dll".to_string(),
+                fidelity: FidelityTier::Verified,
+            },
+        ];
+        let text = scaffold(&title, &techs).unwrap();
         // The artifact still validates against the master schema.
         Profile::parse(&text).expect("scaffold with technologies must validate");
         assert!(
@@ -718,6 +739,9 @@ mod tests {
         assert!(text.contains("\"name\": \"EasyAntiCheat\""));
         assert!(text.contains("\"category\": \"engine\""));
         assert!(text.contains("\"name\": \"Unreal\""));
+        // DRM is now a first-class technology category and is carried, not dropped.
+        assert!(text.contains("\"category\": \"drm\""));
+        assert!(text.contains("\"name\": \"Steam DRM\""));
     }
 
     #[test]
@@ -732,7 +756,7 @@ mod tests {
             name: "Plain Game".to_string(),
             install_dir: install,
         };
-        let text = scaffold(&title).unwrap();
+        let text = scaffold(&title, &[]).unwrap();
         Profile::parse(&text).expect("scaffold must validate");
         // The scaffold ran detection and found nothing: the array is present and
         // empty, distinct from an older artifact that never had the field.
@@ -756,7 +780,7 @@ mod tests {
             name: "The Division 2".to_string(),
             install_dir: install,
         };
-        let text = scaffold(&title).unwrap();
+        let text = scaffold(&title, &[]).unwrap();
         Profile::parse(&text).expect("shared-basename scaffold must validate");
         assert!(text.contains("path_contains"), "expected a disambiguator");
     }
@@ -773,7 +797,7 @@ mod tests {
             install_dir: install,
         };
         assert!(matches!(
-            scaffold(&title),
+            scaffold(&title, &[]),
             Err(SteamError::NoExecutables { .. })
         ));
     }

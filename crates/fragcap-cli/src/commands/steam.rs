@@ -11,8 +11,11 @@
 //! error so they never contaminate the profile on stdout.
 
 use std::io::Write;
+use std::path::Path;
 
+use fragcap::profile::signature::SignatureSet;
 use fragcap::steam::{self, SteamError};
+use fragcap::targets::Store;
 
 use crate::cli::{SteamArgs, SteamCommand};
 use crate::emit::Emitter;
@@ -22,12 +25,40 @@ use crate::exit::{CliError, Exit};
 /// through `emitter`.
 pub fn run(args: &SteamArgs, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
     match &args.command {
-        SteamCommand::Profile { app_id } => profile(app_id, out, emitter),
+        SteamCommand::Profile { app_id, catalog_db } => {
+            profile(app_id, catalog_db.as_deref(), out, emitter)
+        }
     }
 }
 
+/// Detect the technologies in an install directory from the catalog's signature
+/// table, or an empty set when no catalog is given (slice S053). A catalog that
+/// cannot be opened or scanned is a surfaced failure, not a silent empty result.
+fn detect_technologies(
+    catalog_db: Option<&Path>,
+    install_dir: &Path,
+) -> Result<Vec<fragcap::profile::DetectionFinding>, CliError> {
+    let Some(catalog_db) = catalog_db else {
+        return Ok(Vec::new());
+    };
+    let store = Store::open(catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
+    let signatures = store
+        .load_signatures()
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    let set = SignatureSet::compile(&signatures);
+    let outcome = set
+        .detect(install_dir)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    Ok(outcome.findings)
+}
+
 /// Scaffold a profile for one installed title.
-fn profile(app_id: &str, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
+fn profile(
+    app_id: &str,
+    catalog_db: Option<&Path>,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     let installation = steam::discover().map_err(map_steam_error)?;
 
     // Discovery diagnostics (a skipped malformed manifest, a duplicate app_id, an
@@ -47,7 +78,8 @@ fn profile(app_id: &str, out: &mut dyn Write, emitter: &mut Emitter) -> Result<E
         ));
     };
 
-    let text = steam::scaffold(title).map_err(map_steam_error)?;
+    let technologies = detect_technologies(catalog_db, &title.install_dir)?;
+    let text = steam::scaffold(title, &technologies).map_err(map_steam_error)?;
     let _ = write!(out, "{text}");
     Ok(Exit::SUCCESS)
 }

@@ -94,14 +94,28 @@ impl<'a> KnownRootsSource<'a> {
             DirListing::Present(children) => {
                 for child in children {
                     out.account.considered += 1;
-                    match self.classifier.classify(&child) {
-                        ClassifierVerdict::Hit { classification } => {
+                    let classification = self.classifier.classify(&child);
+                    // A subtree the classifier could not read reduces detection
+                    // coverage; name it so a partial scan is visible, not silent (P-4).
+                    for path in classification.unreadable {
+                        out.warnings
+                            .push(format!("could not read subtree during detection: {path}"));
+                    }
+                    match classification.verdict {
+                        ClassifierVerdict::Hit {
+                            classification,
+                            fidelity,
+                            evidence,
+                        } => {
                             out.account.produced += 1;
                             out.candidates.push(CandidateTarget {
                                 identity: CandidateIdentity::Path(child.clone()),
                                 display_name: base_name(&child),
-                                fidelity: FidelityTier::HeuristicUnverified,
+                                // The classifier earns the fidelity: a definitive
+                                // local engine marker is Verified (P-9).
+                                fidelity,
                                 classification,
+                                evidence,
                                 source_name: self.name().to_string(),
                             });
                             // Stop-on-hit: do not descend into a hit's subtree.

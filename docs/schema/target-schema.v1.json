@@ -278,7 +278,7 @@
       "properties": {
         "category": {
           "description": "Technology category.",
-          "enum": ["engine", "anti_cheat", "sdk", "framework", "emulator", "container", "runtime", "launcher"]
+          "enum": ["engine", "anti_cheat", "drm", "sdk", "framework", "emulator", "container", "runtime", "launcher"]
         },
         "name": {
           "description": "Technology name (the ruleset key as a readable label).",

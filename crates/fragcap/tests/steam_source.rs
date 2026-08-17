@@ -121,6 +121,51 @@ fn steam_source_produces_one_candidate_per_numeric_title() {
 }
 
 #[test]
+fn a_title_with_a_local_engine_marker_is_verified_with_evidence() {
+    // Detection runs in the Steam scan phase (FR-006): a title whose install
+    // directory carries a definitive engine marker is stamped verified, outranking
+    // the remote catalog attribution (P-9), and carries the engine plus any
+    // anti-cheat as neutral evidence.
+    let tree = TempTree::new();
+    fixture_steam_root(&tree);
+    // CS2's install directory (steamapps/common/cs2) carries a Unity marker and an
+    // anti-cheat marker.
+    let install = tree.path().join("steamapps").join("common").join("cs2");
+    tree.write(&install.join("UnityPlayer.dll"), "");
+    tree.write(
+        &install.join("EasyAntiCheat").join("EasyAntiCheat_x64.dll"),
+        "",
+    );
+
+    let mut catalog = catalog_with_cs2();
+    fragcap::targets::seed_bundled(&mut catalog).expect("seed signatures");
+
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+
+    let cs2 = d
+        .candidates
+        .iter()
+        .find(|c| c.identity == CandidateIdentity::SteamAppId(730))
+        .expect("CS2 candidate present");
+    assert_eq!(
+        cs2.fidelity,
+        FidelityTier::Verified,
+        "a local definitive engine marker is verified (P-9)"
+    );
+    assert!(cs2.evidence.iter().any(|f| f.product == "Unity"));
+    assert!(cs2.evidence.iter().any(|f| f.product == "Easy Anti-Cheat"));
+
+    // A title with no local marker stays heuristic-unverified.
+    let portal = d
+        .candidates
+        .iter()
+        .find(|c| c.identity == CandidateIdentity::SteamAppId(620))
+        .expect("Portal 2 candidate present");
+    assert_eq!(portal.fidelity, FidelityTier::HeuristicUnverified);
+}
+
+#[test]
 fn the_catalog_join_classifies_a_hit_and_leaves_a_miss_unknown() {
     let tree = TempTree::new();
     fixture_steam_root(&tree);
