@@ -901,6 +901,18 @@ fn acquire(
         match packet.attribution_state() {
             AttributionState::Resolved => {
                 stats.packets_attributed = stats.packets_attributed.saturating_add(1);
+                // Tally the socket-holding image, so the run can name the
+                // dominant observed holder a launch-and-observe capture promotes
+                // an unresolved target to (slice S059). Resolved implies an
+                // attribution is present. The key is the shared image string, so
+                // this is a refcount bump, not an allocation.
+                if let Some(attr) = packet.attribution.as_ref() {
+                    let slot = stats
+                        .holder_tally
+                        .entry(Arc::clone(&attr.process))
+                        .or_insert(0);
+                    *slot = slot.saturating_add(1);
+                }
             }
             AttributionState::Unresolved => {
                 stats.packets_unattributed = stats.packets_unattributed.saturating_add(1);

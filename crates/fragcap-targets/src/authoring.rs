@@ -77,6 +77,23 @@ pub fn launch_is_unresolved(entry: &TargetEntry) -> bool {
         == Some("unresolved")
 }
 
+/// The executable an unresolved launch chain observed, if any (slice S059).
+///
+/// A `no` answer records the executable under `executable` (it is a launcher
+/// stage whose socket-holding child is unknown); an `unsure` answer records it
+/// under `observed_exe` (the socket holder is unknown, so only the observed
+/// process is named). This reads `observed_exe` first, then `executable`, so
+/// either unresolved shape yields the process the operator pointed at. A
+/// resolved (array) chain or an object with neither key returns `None`: there is
+/// no single observed executable to build an observe-mode capture from.
+pub fn observed_executable(entry: &TargetEntry) -> Option<&str> {
+    let launch = entry.launch_entries.as_ref()?;
+    launch
+        .get("observed_exe")
+        .or_else(|| launch.get("executable"))
+        .and_then(|v| v.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +153,25 @@ mod tests {
             );
             assert!(launch_is_unresolved(&e), "{answer:?} is unresolved");
         }
+    }
+
+    #[test]
+    fn observed_executable_reads_both_unresolved_shapes() {
+        // The `no` shape records the launcher under `executable`.
+        let no = entry_with_launch(launch_entries_for(SocketHolderAnswer::No, "launcher.exe"));
+        assert_eq!(observed_executable(&no), Some("launcher.exe"));
+
+        // The `unsure` shape records the observed process under `observed_exe`.
+        let unsure = entry_with_launch(launch_entries_for(SocketHolderAnswer::Unsure, "game.exe"));
+        assert_eq!(observed_executable(&unsure), Some("game.exe"));
+
+        // A resolved (array) chain has no single observed executable to read.
+        let yes = entry_with_launch(launch_entries_for(SocketHolderAnswer::Yes, "game.exe"));
+        assert_eq!(observed_executable(&yes), None);
+
+        // An object with neither key names nothing to observe from.
+        let empty = entry_with_launch(json!({ "socket_holder": "unresolved" }));
+        assert_eq!(observed_executable(&empty), None);
     }
 
     #[test]

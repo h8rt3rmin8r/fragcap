@@ -10,6 +10,11 @@ mod common;
 use std::fs;
 
 use common::{data, fixture};
+use fragcap::profile::FidelityTier;
+use fragcap::targets::{
+    capture_readiness, launch_is_unresolved, resolve_positional, CaptureReadiness, Selection,
+    Store, TargetEntry,
+};
 
 /// Run with the standard offline substrate, appending `extra`.
 fn run_offline(extra: &[String]) -> (u8, String, String) {
@@ -600,6 +605,152 @@ fn capture_steam_anchored_target_rejects_a_path_anchor() {
         err.contains("do not apply to a Steam-anchored target"),
         "{err}"
     );
+}
+
+// Slice S059: launch-and-observe capture and capture-time promotion.
+
+/// Register an unresolved target: `--socket-holder no` records the executable as a
+/// launcher stage with the holder unresolved, so the stored launch chain names no
+/// client and CAPTURE reads "needs a target" until a run observes one. Returns
+/// `(db_path, handle)`.
+fn register_unresolved_target(dir: &tempfile::TempDir, name: &str, exe: &str) -> (String, String) {
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, out, err) = common::run(&[
+        "targets",
+        "add",
+        name,
+        "--db",
+        &db,
+        "--exe",
+        exe,
+        "--socket-holder",
+        "no",
+    ]);
+    assert_eq!(code, 0, "targets add --socket-holder no: {err}");
+    let rest = out
+        .lines()
+        .find_map(|l| l.strip_prefix("registered "))
+        .expect("a registered line");
+    let handle = rest.split_whitespace().next().unwrap().to_string();
+    (db, handle)
+}
+
+/// Read a stored target back by its handle, so a test can assert what a capture
+/// wrote to the store.
+fn read_target(db: &str, handle: &str) -> TargetEntry {
+    let store = Store::open(db).expect("open the local store");
+    match resolve_positional(&store, handle).expect("resolve the handle") {
+        Selection::Resolved(entry) => *entry,
+        other => panic!("expected exactly one target for {handle}, got {other:?}"),
+    }
+}
+
+/// Capture an unresolved target through the observe-mode substrate: a launcher
+/// spawns the child that holds the sockets. `attributed` chooses whether the attr
+/// script attributes the child's flow (a dominant holder is observed) or not
+/// (nothing is observed). The catalog store points at a fresh path so no per-user
+/// store is bootstrapped as a side effect.
+fn capture_observe_offline(db: &str, selector: &str, attributed: bool) -> (u8, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let jsonl = dir.path().join("o.jsonl");
+    let catalog = dir.path().join("catalog.db");
+    let mut args: Vec<String> = vec![
+        "capture".into(),
+        selector.into(),
+        "--local-db".into(),
+        db.into(),
+        "--catalog-db".into(),
+        catalog.to_string_lossy().into_owned(),
+        "--sink".into(),
+        format!("jsonl:{}", jsonl.to_string_lossy()),
+        "--replay-source".into(),
+        fixture("udp-gameplay.pcap"),
+        "--process-script".into(),
+        data("observe.procscript"),
+        "--local-addr".into(),
+        "192.0.2.10".into(),
+    ];
+    // With the attr script the child (game.exe) holds the flow and is attributed;
+    // without it the empty scripted attributor attributes nothing, so the target is
+    // acquired (the launcher binds) but no socket holder is observed.
+    if attributed {
+        args.push("--attr-script".into());
+        args.push(fixture("udp-gameplay.script"));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _o, err) = common::run(&refs);
+    (code, err)
+}
+
+#[test]
+fn an_unresolved_target_is_captured_and_promoted_to_its_observed_holder() {
+    // US1 scenario 1: a `no`-authored target names launcher.exe as the observed
+    // executable but no client. A capture observes the child game.exe holding the
+    // sockets and promotes the target to that resolved client at verified fidelity.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, handle) = register_unresolved_target(&dir, "Observe Game", "launcher.exe");
+
+    // Before capture: unresolved, needs a target.
+    let before = read_target(&db, &handle);
+    assert!(launch_is_unresolved(&before), "registered unresolved");
+    assert_eq!(capture_readiness(&before), CaptureReadiness::NeedsTarget);
+
+    let (code, err) = capture_observe_offline(&db, &handle, true);
+    assert_eq!(code, 0, "the observe-mode capture succeeds: {err}");
+    assert!(
+        err.contains("promoted the target to its observed socket holder game.exe"),
+        "the promotion is surfaced: {err}"
+    );
+
+    // After capture: resolved to the observed child, verified, and now ready.
+    let after = read_target(&db, &handle);
+    assert!(
+        !launch_is_unresolved(&after),
+        "the promoted target is no longer unresolved"
+    );
+    assert_eq!(after.fidelity, FidelityTier::Verified, "raised to verified");
+    assert_eq!(capture_readiness(&after), CaptureReadiness::Ready);
+    let launch = after.launch_entries.expect("a resolved launch chain");
+    let clients = launch.as_array().expect("a resolved client array");
+    assert_eq!(clients.len(), 1, "one resolved client");
+    assert_eq!(
+        clients[0].get("executable").and_then(|v| v.as_str()),
+        Some("game.exe"),
+        "the observed child is the resolved client"
+    );
+    assert_eq!(
+        clients[0].get("role").and_then(|v| v.as_str()),
+        Some("client")
+    );
+}
+
+#[test]
+fn an_unresolved_target_that_observes_nothing_is_left_unchanged() {
+    // US1 scenario 2 (the P-9 branch): the target is acquired (the launcher binds)
+    // but nothing is attributed, so no socket holder is observed and the stored
+    // target is left exactly as registered. Promoting on no observation would
+    // fabricate a holder the run never saw.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, handle) = register_unresolved_target(&dir, "Observe Game", "launcher.exe");
+    let before = read_target(&db, &handle);
+
+    let (code, err) = capture_observe_offline(&db, &handle, false);
+    assert_eq!(code, 0, "the capture completes without error: {err}");
+    assert!(
+        err.contains("observed no socket-holding process"),
+        "the no-observation outcome is surfaced: {err}"
+    );
+
+    let after = read_target(&db, &handle);
+    assert!(
+        launch_is_unresolved(&after),
+        "the target is still unresolved"
+    );
+    assert_eq!(
+        after.launch_entries, before.launch_entries,
+        "the launch chain is byte-identical to what was registered"
+    );
+    assert_eq!(after.fidelity, before.fidelity, "the fidelity is unchanged");
 }
 
 #[test]

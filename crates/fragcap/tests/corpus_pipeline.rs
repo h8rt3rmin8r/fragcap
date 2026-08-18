@@ -116,6 +116,31 @@ fn one_pipeline_carrying_both_writers_produces_both_outputs_in_one_pass() {
     assert!(run.report.is_clean());
 }
 
+// Slice S059. The dominant-holder tally rides in the pipeline report: over the
+// tcp-session fixture, whose flow is owned by game.exe throughout, the tally
+// names game.exe with a count equal to the attributed packets, and the dominant
+// holder is game.exe. The goldens above are byte-identical whether or not the
+// tally is present, which is what keeps it out of every written surface (P-9).
+#[test]
+fn the_dominant_holder_tally_rides_in_the_pipeline_report() {
+    let run = render_via_pipeline("tcp-session", ROOMY);
+    let stats = &run.report.stats;
+    assert_eq!(
+        stats.holder_tally.get("game.exe").copied(),
+        Some(stats.packets_attributed),
+        "every attributed packet tallies its socket-holding image"
+    );
+    assert_eq!(
+        stats.dominant_holder().as_deref(),
+        Some("game.exe"),
+        "the single owner is the dominant observed holder"
+    );
+    // The tally is additive: a fixture that reproduces its goldens byte for byte
+    // carries the tally without leaking it into either writer.
+    assert_matches_golden("tcp-session", "fcapng", &run.pcapng);
+    assert_matches_golden("tcp-session", "jsonl", &run.jsonl);
+}
+
 // T073, SC-009.
 #[test]
 fn two_runs_over_one_fixture_produce_identical_bytes() {
