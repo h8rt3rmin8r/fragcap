@@ -643,6 +643,21 @@ step names which golden belongs to which binary so the next rename is caught by
 reading rather than by a failed release. Recorded as a dated decision per the
 pinned-artifact rule (`scripts/**` changes only with one).
 
+**2026-08-18** Corrected the catalog-seeding step in the release workflow
+(`.github/workflows/release.yml`). It called `fragcap targets import` and
+`fragcap targets seed-signatures`, both of which the S054 command-line surface
+rework moved into the new `catalog` namespace that owns every write to the
+shipped, disposable store. On the v0.5.0 tag the step failed with `invalid target
+value: import must be a JSON array of targets` (the user-store importer rejecting
+a catalog seed document) and `unrecognized subcommand 'seed-signatures'`, ending
+the run before the MSI, the archive, or the release were built. The two calls now
+name `catalog import` and `catalog seed-signatures`, verified locally against the
+committed `assets/hint-seed.json`: the import creates the store and the seed loads
+23 detection signatures into it. A stale `targets seed-signatures` reference in
+the `fragcap-cli` help text is corrected in the same change. Recorded as a dated
+decision per the pinned-artifact rule (`.github/workflows/**` changes only with
+one).
+
 ## [0.4.0] - 2026-08-14
 
 ### Highlights
