@@ -479,10 +479,23 @@ fn capture_process_with_launch_is_a_usage_error() {
     assert_eq!(code, 2, "a process capture cannot launch: {err}");
 }
 
-/// Register a target with a stored exe and return `(db_path, handle, stable_id)`.
+/// Register a target with a stored exe as the resolved client and return
+/// `(db_path, handle, stable_id)`. `--socket-holder yes` records the executable as
+/// the client the capture will address; without an answer the chain would be left
+/// unresolved (the tool never assumes the holder, P-9).
 fn register_exe_target(dir: &tempfile::TempDir, name: &str, exe: &str) -> (String, String, String) {
     let db = dir.path().join("local.db").to_string_lossy().into_owned();
-    let (code, out, err) = common::run(&["targets", "add", name, "--db", &db, "--exe", exe]);
+    let (code, out, err) = common::run(&[
+        "targets",
+        "add",
+        name,
+        "--db",
+        &db,
+        "--exe",
+        exe,
+        "--socket-holder",
+        "yes",
+    ]);
     assert_eq!(code, 0, "targets add: {err}");
     // "registered <handle> (id <id>)"
     let rest = out

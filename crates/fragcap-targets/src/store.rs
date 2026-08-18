@@ -733,6 +733,86 @@ impl Store {
         }
     }
 
+    /// Merge a batch of imported targets in one transaction: each element updates
+    /// the row whose `stable_id` matches in place, or inserts a new row. This is
+    /// all-or-nothing (FR-019): if any element violates a constraint (for example a
+    /// new stable id whose handle collides with an existing row) the whole batch
+    /// rolls back, so a partially applied import cannot happen. Returns the count of
+    /// rows inserted and updated.
+    pub fn merge_targets(&mut self, entries: &[TargetEntry]) -> Result<(u64, u64), TargetsError> {
+        let tx = self.conn.transaction()?;
+        let mut inserted = 0u64;
+        let mut updated = 0u64;
+        for entry in entries {
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM targets WHERE stable_id = ?1",
+                    params![entry.stable_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            // Both statements bind ?1..?11 in the same order, so one parameter list
+            // serves both. The JSON renderings are bound to locals so they outlive
+            // the `params!` borrow.
+            let provenance = entry.provenance.as_ref().map(json_text);
+            let launch_entries = entry.launch_entries.as_ref().map(json_text);
+            let evidence = entry.evidence.as_ref().map(json_text);
+            let bound = params![
+                entry.stable_id,
+                entry.handle,
+                entry.name,
+                entry.classification.as_str(),
+                entry.classification_source.as_str(),
+                entry.fidelity.as_str(),
+                provenance,
+                entry.anchor,
+                launch_entries,
+                entry.install_root,
+                evidence,
+            ];
+            let result = if exists {
+                tx.execute(
+                    "UPDATE targets SET
+                        handle = ?2, name = ?3, classification = ?4,
+                        classification_source = ?5, fidelity = ?6, provenance = ?7,
+                        anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11
+                     WHERE stable_id = ?1",
+                    bound,
+                )
+            } else {
+                tx.execute(
+                    "INSERT INTO targets
+                        (stable_id, handle, name, classification, classification_source,
+                         fidelity, provenance, anchor, launch_entries, install_root, evidence)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    bound,
+                )
+            };
+            match result {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(e, msg))
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    let detail = msg.unwrap_or_else(|| "constraint violation".to_string());
+                    return Err(TargetsError::Model(format!(
+                        "import element (stable_id {}, handle {:?}) violates a constraint, \
+                         nothing was applied: {detail}",
+                        entry.stable_id, entry.handle
+                    )));
+                }
+                Err(e) => return Err(e.into()),
+            }
+            if exists {
+                updated += 1;
+            } else {
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok((inserted, updated))
+    }
+
     /// Promote a target after a capture observed its real socket-holding process:
     /// rewrite its `launch_entries` to the resolved chain and raise its `fidelity`.
     /// The caller passes only an observed result; nothing here fabricates a holder
@@ -1369,6 +1449,42 @@ mod tests {
         assert_eq!(after.fidelity, FidelityTier::Verified);
         assert!(!launch_is_unresolved(&after));
         assert_eq!(capture_readiness(&after), CaptureReadiness::Ready);
+    }
+
+    #[test]
+    fn merge_targets_is_all_or_nothing_on_a_constraint_violation() {
+        let mut store = Store::open_in_memory().expect("store");
+        store
+            .insert_target(&sample_target(
+                "existing",
+                Some("steam:1"),
+                FidelityTier::Authored,
+            ))
+            .expect("insert baseline");
+
+        // A batch whose first element is a clean insert and whose second reuses the
+        // existing handle under a new stable id: the whole batch must roll back.
+        let good = sample_target("fresh", Some("steam:2"), FidelityTier::Authored);
+        let mut collides = sample_target("existing", Some("steam:3"), FidelityTier::Authored);
+        collides.stable_id = crate::identifier::anchored_id("steam:3");
+        let batch = vec![good, collides];
+
+        assert!(
+            store.merge_targets(&batch).is_err(),
+            "handle collision fails the batch"
+        );
+        // Nothing from the batch persisted: only the baseline row remains.
+        let handles: Vec<_> = store
+            .targets()
+            .expect("targets")
+            .into_iter()
+            .map(|t| t.handle)
+            .collect();
+        assert_eq!(
+            handles,
+            vec!["existing".to_string()],
+            "the batch rolled back"
+        );
     }
 
     #[test]

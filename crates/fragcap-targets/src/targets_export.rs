@@ -103,9 +103,9 @@ fn value_to_entry(value: &Value) -> Result<TargetEntry, TargetsError> {
         classification_source,
         fidelity,
         provenance: obj.get("provenance").cloned(),
-        anchor: optional_str(obj, "anchor"),
+        anchor: optional_str(obj, "anchor")?,
         launch_entries: obj.get("launch_entries").cloned(),
-        install_root: optional_str(obj, "install_root"),
+        install_root: optional_str(obj, "install_root")?,
         evidence: obj.get("evidence").cloned(),
     })
 }
@@ -118,8 +118,18 @@ fn required_str(obj: &Map<String, Value>, key: &str) -> Result<String, TargetsEr
         .ok_or_else(|| TargetsError::Model(format!("a target is missing a non-empty {key}")))
 }
 
-fn optional_str(obj: &Map<String, Value>, key: &str) -> Option<String> {
-    obj.get(key).and_then(Value::as_str).map(str::to_string)
+/// An optional string field: absent is `Ok(None)`, a present string is `Ok(Some)`,
+/// and a present value of any other JSON type is an error rather than silently
+/// dropped. Dropping it would let `"anchor": 123` clear a valid stored anchor on a
+/// merge-update, against the reject-nonconforming contract (FR-019).
+fn optional_str(obj: &Map<String, Value>, key: &str) -> Result<Option<String>, TargetsError> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(TargetsError::Model(format!(
+            "a target's {key} must be a string"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +160,17 @@ mod tests {
         let doc = export_targets(&entries);
         let parsed = import_targets(&doc).expect("import");
         assert_eq!(parsed, entries);
+    }
+
+    #[test]
+    fn import_rejects_a_wrong_typed_optional_field() {
+        // A present non-string `anchor` is rejected, not silently dropped: on a
+        // merge-update it would otherwise clear a valid stored anchor.
+        let doc = r#"[{"stable_id":1,"handle":"g","name":"G","classification":"game","classification_source":"user","fidelity":"authored","anchor":123}]"#;
+        assert!(import_targets(doc).is_err(), "a numeric anchor is rejected");
+        // An absent optional field is still fine.
+        let ok = r#"[{"stable_id":1,"handle":"g","name":"G","classification":"game","classification_source":"user","fidelity":"authored"}]"#;
+        assert!(import_targets(ok).is_ok());
     }
 
     #[test]

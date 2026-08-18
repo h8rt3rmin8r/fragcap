@@ -63,6 +63,11 @@ pub fn register_candidate(
         CandidateIdentity::SteamAppId(_) => None,
     };
 
+    // Read the table once and reuse it for both the install-root dedup and the
+    // handle-derivation index, so registering a discovery set is one table read per
+    // candidate rather than two.
+    let existing = store.targets()?;
+
     // Idempotency. An anchored identity is deterministic, so an existing anchor is a
     // duplicate. A path candidate has no durable id, so dedup on its install root.
     if let Some(anchor) = &anchor {
@@ -70,8 +75,7 @@ pub fn register_candidate(
             return Ok(false);
         }
     } else if let Some(root) = &install_root {
-        if store
-            .targets()?
+        if existing
             .iter()
             .any(|t| t.install_root.as_deref() == Some(root.as_str()))
         {
@@ -83,7 +87,7 @@ pub fn register_candidate(
         CandidateIdentity::Path(path) => path_stem(path),
         CandidateIdentity::SteamAppId(_) => None,
     };
-    let index = store.targets()?.len() as u64 + 1;
+    let index = existing.len() as u64 + 1;
     let base = handle::derive_handle(&candidate.display_name, exe_stem.as_deref(), index);
     let handle_value = handle::disambiguate(&base, |h| store.handle_exists(h))?;
 

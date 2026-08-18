@@ -33,12 +33,20 @@ impl CaptureReadiness {
 }
 
 /// Derive the CAPTURE readiness of a target. `Ready` when the entry names at least
-/// one Windows client (the S054 reduction) or carries a non-empty anchor a
-/// `capture --target` can resolve; `NeedsTarget` otherwise. Derived, never stored.
+/// one Windows client (the S054 reduction) or carries an anchor `capture --target`
+/// can actually resolve; `NeedsTarget` otherwise. Derived, never stored.
+///
+/// Only a `steam:` anchor is treated as resolvable, matching what `capture --target`
+/// resolves through the install-layout cascade: an anchor of any other form (say
+/// `epic:foo`) that names no client would otherwise be listed `ready` and offered as
+/// the next command, then fail at capture because it resolves no Windows client.
 pub fn capture_readiness(entry: &TargetEntry) -> CaptureReadiness {
     let has_client = !entry_windows_clients(entry).is_empty();
-    let has_anchor = entry.anchor.as_deref().is_some_and(|a| !a.is_empty());
-    if has_client || has_anchor {
+    let has_resolvable_anchor = entry
+        .anchor
+        .as_deref()
+        .is_some_and(|a| a.starts_with("steam:"));
+    if has_client || has_resolvable_anchor {
         CaptureReadiness::Ready
     } else {
         CaptureReadiness::NeedsTarget
@@ -120,6 +128,14 @@ mod tests {
     fn a_steam_anchor_alone_is_ready() {
         let e = entry(Some("steam:620"), None, None);
         assert_eq!(capture_readiness(&e), CaptureReadiness::Ready);
+    }
+
+    #[test]
+    fn a_non_steam_anchor_with_no_client_needs_a_target() {
+        // Only a `steam:` anchor is resolvable by capture; an anchor of another form
+        // that names no client must not be listed ready and offered as next command.
+        let e = entry(Some("epic:foo"), None, None);
+        assert_eq!(capture_readiness(&e), CaptureReadiness::NeedsTarget);
     }
 
     #[test]

@@ -38,12 +38,21 @@ pub enum Selection {
 /// yet, is a [`Selection::NoMatch`] on the row-index path (callers map that to a
 /// usage error for a bare integer).
 pub fn resolve_positional(store: &Store, token: &str) -> Result<Selection, TargetsError> {
-    if let Some(position) = parse_position(token) {
-        return Ok(match store.listing_snapshot_nth(position)? {
-            Some(stable_id) => match store.target_by_stable_id(stable_id)? {
-                Some(t) => Selection::Resolved(Box::new(t)),
-                None => Selection::NoMatch,
+    // A bare integer is always the row-index path, never a handle or name: a numeric
+    // token that is out of range (or `"0"`, which is not a valid 1-based position) is
+    // a clean row-index no-match, which the caller maps to a usage error. It must not
+    // fall through to a name lookup, or `0` would read as a name miss (exit 0)
+    // instead of an invalid position (exit 2).
+    if is_row_index(token) {
+        let resolved = match parse_position(token) {
+            Some(position) => match store.listing_snapshot_nth(position)? {
+                Some(stable_id) => store.target_by_stable_id(stable_id)?,
+                None => None,
             },
+            None => None,
+        };
+        return Ok(match resolved {
+            Some(t) => Selection::Resolved(Box::new(t)),
             None => Selection::NoMatch,
         });
     }
@@ -67,24 +76,26 @@ pub fn resolve_id(store: &Store, id: i64) -> Result<Selection, TargetsError> {
     })
 }
 
-/// Whether a token is a bare integer row index. A purely numeric, non-empty token
-/// is a row index; handles are never purely numeric (enforced at derivation and by
-/// the schema CHECK), so a numeric token never shadows a handle. `"0"` is not a
-/// valid 1-based index and is therefore not treated as one. This is the single
-/// source for the row-index predicate the CLI dispatch also consults.
+/// Whether a token is a bare integer row index: purely numeric and non-empty,
+/// including `"0"`. Handles are never purely numeric (enforced at derivation and by
+/// the schema CHECK), so a numeric token never shadows a handle. This is the single
+/// source for the row-index predicate the CLI dispatch also consults, so the
+/// dispatch's miss-exit choice and this resolution agree that every numeric token is
+/// the row-index path (an invalid position, `"0"` included, is a usage error, not a
+/// clean name miss).
 pub fn is_row_index(token: &str) -> bool {
-    parse_position(token).is_some()
+    !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// A purely numeric token is a 1-based row index (returned as-is, 1-based, for the
-/// snapshot lookup). `"0"`, empty, and non-numeric tokens return `None`.
+/// The valid 1-based position a numeric token names, or `None` when it is out of
+/// range for a position (`"0"`, or a value that does not parse). A non-numeric token
+/// is not a position either; callers gate on [`is_row_index`] first.
 fn parse_position(token: &str) -> Option<usize> {
-    if !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit()) {
-        match token.parse::<usize>().ok() {
-            Some(n) if n >= 1 => Some(n),
-            _ => None,
-        }
-    } else {
-        None
+    if !is_row_index(token) {
+        return None;
+    }
+    match token.parse::<usize>().ok() {
+        Some(n) if n >= 1 => Some(n),
+        _ => None,
     }
 }

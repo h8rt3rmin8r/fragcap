@@ -90,6 +90,13 @@ fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, Cl
     targets.sort_by(|a, b| a.handle.cmp(&b.handle));
 
     if targets.is_empty() {
+        // The most recent listing displayed no rows: replace the snapshot with an
+        // empty set so a stale row index from an earlier listing cannot resolve
+        // through it after the row it named is gone (a re-registered stable id must
+        // not silently inherit an old position).
+        store
+            .write_listing_snapshot(&[])
+            .map_err(|e| CliError::failure(e.to_string()))?;
         empty_listing(out, footer);
         return Ok(Exit::SUCCESS);
     }
@@ -203,9 +210,11 @@ fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
 
 /// Run `targets scan <dir>`: point discovery at one directory (the tier-3
 /// [`DirectorySource`], slice S052). With a catalog, the directory is scanned for
-/// technologies and they ride as evidence (slice S053). With `--db`, the discovered
-/// titles are registered into the local store (FR-016); without it the scan lists
-/// what it finds and registers nothing.
+/// technologies and they ride as evidence (slice S053). The discovered titles are
+/// registered into the local store the same idempotent way the hero listing
+/// registers (FR-016): `--db` names it explicitly, otherwise it resolves to the
+/// default local store so the `targets scan <dir>` the empty listing recommends
+/// actually populates it.
 fn scan(
     dir: &Path,
     catalog_db: Option<&Path>,
@@ -229,11 +238,16 @@ fn scan(
         .map_err(|e| CliError::failure(e.to_string()))?;
     print_discovery(&discovery, out);
 
-    // Register the discovered titles when a local store is given (FR-016). Uses the
-    // same idempotent registration as the hero listing, so a rescan does not
-    // duplicate (P-10). The conserved account is surfaced (P-4).
+    // Register the discovered titles (FR-016). The `--db` flag wins, else the local
+    // store resolves like the rest of the surface (the `FRAGCAP_LOCAL_DB` override,
+    // else the per-user default). Registration is idempotent, so a rescan does not
+    // duplicate (P-10), and the conserved account is surfaced (P-4).
+    let db = db
+        .map(Path::to_path_buf)
+        .or_else(|| paths::local_db_path(None))
+        .or_else(paths::default_local_db_path);
     if let Some(db) = db {
-        let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
+        let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
         let outcome = fragcap::targets::register_candidates(&mut store, &discovery.candidates)
             .map_err(|e| CliError::failure(e.to_string()))?;
         let _ = writeln!(
@@ -287,8 +301,11 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
 }
 
 /// Run `targets export [selector]`: emit the target-entry JSON array to stdout. No
-/// selector exports every target; a selector exports the one it resolves (an empty
-/// array on a clean miss, exit 0); an ambiguous name refuses (exit 2) (FR-018).
+/// selector exports every target; a selector exports the one it resolves. The
+/// no-match behavior follows the selector kind (the section 5.4 contract, as `show`
+/// and `remove` do): an unmatched handle or name is a clean miss that emits `[]` and
+/// exits 0, while an out-of-range row index or an unknown `--id` is an invalid
+/// machine reference (exit 2). An ambiguous name refuses (exit 2) (FR-018).
 fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     let store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
     let entries = match (args.id, &args.selector) {
@@ -296,15 +313,21 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
             .targets()
             .map_err(|e| CliError::failure(e.to_string()))?,
         (id, selector) => {
-            let selection = match (id, selector) {
-                (Some(id), _) => resolve_id(&store, id),
-                (None, Some(token)) => resolve_positional(&store, token),
+            let (selection, miss_exit) = match (id, selector) {
+                (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
+                (None, Some(token)) if is_row_index(token) => {
+                    (resolve_positional(&store, token), Exit::USAGE)
+                }
+                (None, Some(token)) => (resolve_positional(&store, token), Exit::SUCCESS),
                 (None, None) => unreachable!("covered by the first arm"),
-            }
-            .map_err(|e| CliError::failure(e.to_string()))?;
-            match selection {
+            };
+            match selection.map_err(|e| CliError::failure(e.to_string()))? {
                 Selection::Resolved(t) => vec![*t],
-                Selection::NoMatch => Vec::new(),
+                Selection::NoMatch if miss_exit == Exit::SUCCESS => Vec::new(),
+                Selection::NoMatch => {
+                    let _ = writeln!(out, "no target matches");
+                    return Ok(miss_exit);
+                }
                 Selection::Ambiguous(matches) => {
                     let _ = writeln!(
                         out,
@@ -329,24 +352,11 @@ fn import(file: &Path, db: &Path, out: &mut dyn Write) -> Result<Exit, CliError>
     let entries =
         fragcap::targets::import_targets(&json).map_err(|e| CliError::usage(e.to_string()))?;
     let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
-    let (mut inserted, mut updated) = (0u64, 0u64);
-    for entry in &entries {
-        let exists = store
-            .target_by_stable_id(entry.stable_id)
-            .map_err(|e| CliError::failure(e.to_string()))?
-            .is_some();
-        if exists {
-            store
-                .update_target(entry)
-                .map_err(|e| CliError::failure(e.to_string()))?;
-            updated += 1;
-        } else {
-            store
-                .insert_target(entry)
-                .map_err(|e| CliError::failure(e.to_string()))?;
-            inserted += 1;
-        }
-    }
+    // The whole batch merges in one transaction: all-or-nothing, so a constraint
+    // violation partway through leaves the store untouched (FR-019).
+    let (inserted, updated) = store
+        .merge_targets(&entries)
+        .map_err(|e| CliError::usage(e.to_string()))?;
     let _ = writeln!(out, "imported {inserted} new, {updated} updated");
     Ok(Exit::SUCCESS)
 }
@@ -586,11 +596,17 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 
     // The socket-holder answer decides the stored launch chain. Interactive when
     // stdin is a terminal and no `--socket-holder` was given; otherwise the flag.
-    // No answer with an `--exe` keeps the pre-S055 behavior (the exe is the client).
+    // When an `--exe` is given with no answer (non-interactive, no flag), the chain
+    // is recorded unresolved rather than assuming the executable is the client: the
+    // tool never claims a socket holder the user did not (P-9). To register the exe
+    // as the client, answer `--socket-holder yes`.
     let answer = resolve_socket_holder(args, out)?;
     let launch_entries = match (&args.exe, answer) {
         (Some(exe), Some(a)) => Some(fragcap::targets::launch_entries_for(a, exe)),
-        (Some(exe), None) => Some(serde_json::json!([{ "executable": exe }])),
+        (Some(exe), None) => Some(fragcap::targets::launch_entries_for(
+            SocketHolderAnswer::Unsure,
+            exe,
+        )),
         (None, _) => None,
     };
 

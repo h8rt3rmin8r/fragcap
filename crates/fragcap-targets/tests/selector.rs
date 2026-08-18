@@ -102,6 +102,19 @@ fn a_bare_integer_with_no_snapshot_is_a_no_match() {
 }
 
 #[test]
+fn zero_is_an_invalid_row_index_not_a_name() {
+    use fragcap_targets::is_row_index;
+    // `0` is a numeric token, so it is the row-index path (an invalid position), not
+    // a handle/name lookup. Callers map a row-index no-match to a usage error.
+    assert!(is_row_index("0"), "0 is classified as a row index");
+    let store = store_with(&[target("only", "Only", Some("steam:1"))]);
+    assert!(matches!(
+        resolve_positional(&store, "0").expect("resolve"),
+        Selection::NoMatch
+    ));
+}
+
+#[test]
 fn a_name_matching_more_than_one_is_ambiguous() {
     let store = store_with(&[
         target("portal_2", "Portal 2", Some("steam:620")),

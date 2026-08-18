@@ -365,6 +365,100 @@ fn socket_holder_answer_decides_the_launch_chain() {
 }
 
 #[test]
+fn exe_without_a_socket_holder_answer_is_unresolved_not_a_fabricated_client() {
+    // Non-interactive `add --exe X` with no `--socket-holder` must not assume the
+    // executable is the client (P-9): the row is unresolved, needs a target.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets",
+        "add",
+        "Launcher Game",
+        "--db",
+        &store,
+        "--exe",
+        "launcher.exe",
+    ]);
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    let line = out
+        .lines()
+        .find(|l| l.contains("launcher_game"))
+        .expect("row");
+    assert!(
+        line.contains("needs a target"),
+        "unresolved, not fabricated: {line}"
+    );
+}
+
+#[test]
+fn export_preserves_the_selector_kind_on_a_miss() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&["targets", "list", "--db", &store]);
+
+    // An unmatched handle/name is a clean miss: empty array, exit 0.
+    let (code, out, _err) = run(&["targets", "export", "nonesuch", "--db", &store]);
+    assert_eq!(code, 0, "unmatched name is a clean miss: {out}");
+    assert_eq!(out.trim(), "[]", "emits an empty array: {out}");
+
+    // An out-of-range row index and an unknown --id are invalid machine references.
+    let (code, _o, _e) = run(&["targets", "export", "9", "--db", &store]);
+    assert_eq!(code, 2, "out-of-range row index is a usage error");
+    let (code, _o, _e) = run(&["targets", "export", "--id", "999999", "--db", &store]);
+    assert_eq!(code, 2, "unknown --id is a usage error");
+}
+
+#[test]
+fn zero_and_out_of_range_row_indexes_are_usage_errors() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&["targets", "list", "--db", &store]);
+    let (code, _o, _e) = run(&["targets", "show", "0", "--db", &store]);
+    assert_eq!(
+        code, 2,
+        "row index 0 is a usage error, not a clean name miss"
+    );
+    let (code, _o, _e) = run(&["targets", "remove", "0", "--db", &store]);
+    assert_eq!(code, 2, "remove 0 is a usage error too");
+}
+
+#[test]
+fn import_rejects_a_constraint_violating_batch_whole() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Existing", "--db", &store, "--anchor", "steam:1",
+    ]);
+    // A two-element import: a clean new row, then one whose new stable id reuses the
+    // existing handle. The whole batch must roll back, leaving only "existing".
+    let bad = dir.path().join("bad.json");
+    std::fs::write(
+        &bad,
+        r#"[
+          {"stable_id":2,"handle":"fresh","name":"Fresh","classification":"game","classification_source":"user","fidelity":"authored"},
+          {"stable_id":3,"handle":"existing","name":"Dup","classification":"game","classification_source":"user","fidelity":"authored"}
+        ]"#,
+    )
+    .expect("write");
+    let bad = bad.to_string_lossy().into_owned();
+    let (code, _o, _e) = run(&["targets", "import", &bad, "--db", &store]);
+    assert_eq!(code, 2, "a constraint-violating batch is rejected");
+    // Only the original row survived; "fresh" was rolled back.
+    let (_c, shown, _e) = run(&["targets", "show", "fresh", "--db", &store]);
+    assert!(
+        shown.contains("no target matches"),
+        "fresh was rolled back: {shown}"
+    );
+}
+
+#[test]
 fn socket_holder_requires_exe_and_rejects_a_bad_value() {
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);

@@ -23,9 +23,13 @@ Obligations:
 - The final line names the next command (`fragcap capture <n>`), n being the first
   `ready` row when one exists (FR-006).
 - CAPTURE derivation (D2): `ready` when a resolved launch chain reduces to a client
-  image or a resolved anchor gives one; `needs a target` otherwise.
-- KNOWN derivation (D3): evidence products, else launcher-mediation + client image,
-  else "no online mode recorded" / "no launch data known". Neutral (FR-021).
+  image or a `steam:` anchor (which `capture --target` resolves) is present; `needs
+  a target` otherwise.
+- KNOWN derivation (D3): the distinct evidence products (engine, anti-cheat, DRM),
+  else "no online mode recorded" for a ready row that carries no such evidence, else
+  "no launch data known". Neutral (FR-021). A launcher-mediation phrasing was
+  considered but not shipped, because a target entry carries no mediation flag; it
+  would require a data-model field and is left to a follow-up.
 - Non-destructive: writes only the listing snapshot; the registered target set is
   byte-identical afterward (SC-007).
 
