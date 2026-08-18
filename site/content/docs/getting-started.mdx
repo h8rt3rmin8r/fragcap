@@ -107,11 +107,13 @@ your PC" warning with an "Unknown Publisher" note; this is expected for this
 release. Choose **More info** then **Run anyway**, and verify the download against
 its `.sha256` checksum, which is the integrity check in the absence of a signature.
 
-On completion the installer offers to open the npcap download page, because npcap
-is a separate install (see [Before you begin](#before-you-begin)). This is the same
-npcap prerequisite, surfaced once more; if you already installed it with Wireshark
-above, you can decline. The installer never downloads, bundles, or installs npcap
-itself.
+On completion the installer offers to open the npcap download page, because npcap is
+a separate install (see [Before you begin](#before-you-begin)). It checks whether the
+capture driver is already present and only pre-selects that option when it is not, so
+if you installed npcap with Wireshark above the box is left unchecked and you can
+click Finish straight through; if the driver is missing the box is pre-checked and
+Finish opens the vendor's page. Either way you can toggle it, and the installer never
+downloads, bundles, or installs npcap itself.
 
 The installer also offers an optional step to register fragcap with Wireshark, for
 the current user or (for administrators) for all users on the machine. It is off by
