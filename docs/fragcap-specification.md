@@ -3398,9 +3398,10 @@ is created empty on first run.
 The MSI installs the binary per-machine, adds its directory to the system
 path, best-effort excludes its own install directory from Windows Defender
 (an action scoped to fragcap's own files and removed on uninstall), and
-surfaces the npcap download page on completion without downloading,
-bundling, or installing npcap (section 20.2). It is unsigned for this
-release; code signing is tracked separately, so the checksum is the
+offers on completion to open the npcap download page, pre-selected only when
+the WinPcap-API capture driver fragcap loads is not already present, without
+downloading, bundling, or installing npcap (section 20.2). It is unsigned for
+this release; code signing is tracked separately, so the checksum is the
 integrity check a user verifies.
 
 The archive ships no shell wrappers: the binary handles elevation itself
