@@ -11,12 +11,39 @@ use std::fs;
 
 use common::{data, fixture};
 
-/// The offline substrate flags an extcap capture is driven with at tier 1, the
-/// same recorded source, scripted attributor, and scripted timeline `run` uses.
-fn offline_substrate() -> Vec<String> {
+/// Register a single-client `game.exe` target in a fresh local store (slice S058),
+/// returning the `TempDir` (the caller keeps it alive), the store path, and the
+/// selector handle. The extcap capture resolves this through the shared stored-target
+/// seam, the same resolution `capture --target` uses.
+fn registered_target() -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let local_db = dir.path().join("targets.db").to_string_lossy().into_owned();
+    let (code, _out, err) = common::run(&[
+        "targets",
+        "add",
+        "Extcap Game",
+        "--exe",
+        "game.exe",
+        "--socket-holder",
+        "yes",
+        "--handle",
+        "extcap_game",
+        "--db",
+        &local_db,
+    ]);
+    assert_eq!(code, 0, "register the extcap target: {err}");
+    (dir, local_db, "extcap_game".to_string())
+}
+
+/// The offline substrate flags an extcap (or `capture`) invocation is driven with at
+/// tier 1: the stored-target selector resolved from `local_db`, plus the recorded
+/// source, scripted attributor, and scripted timeline `capture` uses.
+fn offline_substrate(selector: &str, local_db: &str) -> Vec<String> {
     vec![
-        "--profile".into(),
-        data("game.json"),
+        "--target".into(),
+        selector.into(),
+        "--local-db".into(),
+        local_db.into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -107,7 +134,7 @@ fn extcap_config_declares_exactly_the_four_options() {
     // Exactly four arg lines, with the four run flag names as their calls.
     let arg_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("arg ")).collect();
     assert_eq!(arg_lines.len(), 4, "four options: {out}");
-    assert!(out.contains("{call=--profile}"), "{out}");
+    assert!(out.contains("{call=--target}"), "{out}");
     assert!(out.contains("{call=--roles}"), "{out}");
     assert!(out.contains("{call=--direction}"), "{out}");
     assert!(out.contains("{call=--loopback}"), "{out}");
@@ -127,6 +154,7 @@ fn extcap_config_declares_exactly_the_four_options() {
 
 #[test]
 fn an_extcap_capture_reproduces_the_run_golden_and_conserves() {
+    let (_store, local_db, selector) = registered_target();
     let dir = tempfile::tempdir().unwrap();
     let fifo = dir.path().join("extcap.fcapng");
 
@@ -136,7 +164,7 @@ fn an_extcap_capture_reproduces_the_run_golden_and_conserves() {
         "--fifo".into(),
         fifo.to_string_lossy().into_owned(),
     ];
-    args.extend(offline_substrate());
+    args.extend(offline_substrate(&selector, &local_db));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code, _out, err) = common::run(&refs);
     assert_eq!(code, 0, "the extcap capture succeeds: {err}");
@@ -204,6 +232,7 @@ fn a_direct_extcap_dlts_invocation_is_routed() {
 
 #[test]
 fn a_direct_extcap_capture_without_a_subcommand_reproduces_the_golden() {
+    let (_store, local_db, selector) = registered_target();
     let dir = tempfile::tempdir().unwrap();
     let fifo = dir.path().join("extcap.fcapng");
     // The Wireshark capture form: no `extcap` subcommand, protocol flags first.
@@ -214,7 +243,7 @@ fn a_direct_extcap_capture_without_a_subcommand_reproduces_the_golden() {
         "--fifo".into(),
         fifo.to_string_lossy().into_owned(),
     ];
-    args.extend(offline_substrate());
+    args.extend(offline_substrate(&selector, &local_db));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code, _out, err) = common::run(&refs);
     assert_eq!(code, 0, "the direct extcap capture succeeds: {err}");
@@ -226,6 +255,7 @@ fn a_direct_extcap_capture_without_a_subcommand_reproduces_the_golden() {
 
 /// Capture to a temp pcapng through `command`, returning the written bytes.
 fn capture_bytes(command: &str, scope: &[&str]) -> Vec<u8> {
+    let (_store, local_db, selector) = registered_target();
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.fcapng");
     let mut args: Vec<String> = vec![command.into()];
@@ -237,7 +267,7 @@ fn capture_bytes(command: &str, scope: &[&str]) -> Vec<u8> {
         args.push("--out".into());
         args.push(out.to_string_lossy().into_owned());
     }
-    args.extend(offline_substrate());
+    args.extend(offline_substrate(&selector, &local_db));
     args.extend(scope.iter().map(|s| s.to_string()));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code, _o, err) = common::run(&refs);
@@ -247,36 +277,35 @@ fn capture_bytes(command: &str, scope: &[&str]) -> Vec<u8> {
 
 #[test]
 fn the_roles_option_is_applied_through_the_overlay() {
-    // The roles option reaches the same overlay `run` uses (it scopes which stages
-    // trigger). Scoping to the profiled `client` role captures the gameplay and
-    // reproduces the golden; the option is accepted and applied, not ignored.
-    let bytes = capture_bytes("extcap", &["--roles", "client"]);
+    // The roles option reaches the same overlay `capture` uses (it scopes which stages
+    // trigger). A stored target synthesizes a single `target`-role stage, so scoping to
+    // `target` captures the gameplay and reproduces the golden; the option is accepted
+    // and applied, not ignored.
+    let bytes = capture_bytes("extcap", &["--roles", "target"]);
     common::assert_golden("run.fcapng", &bytes);
 }
 
 #[test]
-fn a_malformed_profile_is_a_configuration_error_before_capture() {
-    // A profile that fails validation is a configuration error (exit 2), reported
-    // before any capture starts, exactly as `run` treats it: an extcap capture
-    // never becomes a started-but-empty stream on a bad profile. (A profile that
-    // is simply not found is exit 1 by the resolver's own mapping, the same as
-    // `run`; validation failure is the exit-2 configuration error tested here.)
+fn an_unresolvable_target_is_a_configuration_error_before_capture() {
+    // A target selector that matches nothing in the local store is a configuration
+    // error (exit 2), reported before any capture starts, exactly as `capture` treats
+    // it: an extcap capture never becomes a started-but-empty stream on a selection
+    // that resolves to no target (P-4, P-9).
     let dir = tempfile::tempdir().unwrap();
     let fifo = dir.path().join("extcap.fcapng");
-    let bad = dir.path().join("bad.json");
-    // schema declared but no [game] and no stage: the profile validator reports
-    // diagnostics rather than parsing a capture target.
-    fs::write(&bad, "schema = 1\n").unwrap();
+    let empty_db = dir.path().join("empty.db").to_string_lossy().into_owned();
 
     let (code, _out, err) = common::run(&[
         "extcap",
         "--capture",
         "--fifo",
         &fifo.to_string_lossy(),
-        "--profile",
-        &bad.to_string_lossy(),
+        "--target",
+        "no_such_target",
+        "--local-db",
+        &empty_db,
     ]);
-    assert_eq!(code, 2, "a malformed profile exits 2: {err}");
+    assert_eq!(code, 2, "an unresolvable target exits 2: {err}");
     assert!(
         !fifo.exists() || fs::read(&fifo).unwrap().is_empty(),
         "no capture was written"
@@ -297,7 +326,7 @@ fn extcap_with_no_mode_flag_is_a_usage_error() {
 
 #[test]
 fn capture_without_a_fifo_is_a_usage_error() {
-    let (code, _out, err) = common::run(&["extcap", "--capture", "--profile", &data("game.json")]);
+    let (code, _out, err) = common::run(&["extcap", "--capture", "--target", "extcap_game"]);
     assert_eq!(code, 2, "{err}");
     assert!(err.to_lowercase().contains("fifo"), "{err}");
 }
@@ -396,8 +425,9 @@ fn the_new_subcommands_do_not_regress_the_bare_protocol_forms() {
 
     let (code, out, _e) = common::run(&["--extcap-interface", "fragcap", "--extcap-config"]);
     assert_eq!(code, 0);
-    assert!(out.contains("{call=--profile}"), "{out}");
+    assert!(out.contains("{call=--target}"), "{out}");
 
+    let (_store, local_db, selector) = registered_target();
     let tmp = tempfile::tempdir().unwrap();
     let fifo = tmp.path().join("x.fcapng");
     let mut args: Vec<String> = vec![
@@ -407,7 +437,7 @@ fn the_new_subcommands_do_not_regress_the_bare_protocol_forms() {
         "--fifo".into(),
         fifo.to_string_lossy().into_owned(),
     ];
-    args.extend(offline_substrate());
+    args.extend(offline_substrate(&selector, &local_db));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (code, _o, err) = common::run(&refs);
     assert_eq!(code, 0, "the bare capture form still runs: {err}");

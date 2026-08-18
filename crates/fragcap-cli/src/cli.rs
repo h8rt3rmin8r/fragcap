@@ -358,9 +358,11 @@ pub enum TargetsCommand {
     Add(TargetsAddArgs),
     /// List registered targets with their row index, handle, and identifier.
     List {
-        /// The store file (local.db) to read.
+        /// The store file (local.db) to read. Defaults to the local store the bare
+        /// `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override, else the
+        /// per-user default) when omitted.
         #[arg(long)]
-        db: PathBuf,
+        db: Option<PathBuf>,
     },
     /// Show one target resolved by a selector (handle, name, row index, or `--id`).
     Show(TargetsShowArgs),
@@ -396,9 +398,11 @@ pub enum TargetsCommand {
     Import {
         /// The JSON file to import.
         file: PathBuf,
-        /// The store file (local.db) to merge into, created if absent.
+        /// The store file (local.db) to merge into, created if absent. Defaults to the
+        /// local store the bare `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB`
+        /// override, else the per-user default) when omitted.
         #[arg(long)]
-        db: PathBuf,
+        db: Option<PathBuf>,
     },
 }
 
@@ -430,9 +434,11 @@ pub struct TargetsAddArgs {
     /// The display name to register; its handle is derived automatically. Optional
     /// when `--steam` supplies the name from the installed title.
     pub name: Option<String>,
-    /// The store file (local.db) to write, created if absent.
+    /// The store file (local.db) to write, created if absent. Defaults to the local
+    /// store the bare `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override,
+    /// else the per-user default) when omitted.
     #[arg(long)]
-    pub db: PathBuf,
+    pub db: Option<PathBuf>,
     /// A platform anchor (for example `steam:620`) giving the target a stable,
     /// deterministic identity. Without one the target gets a random identity.
     #[arg(long)]
@@ -516,9 +522,11 @@ pub struct TargetsShowArgs {
     /// Select by stable identifier: the durable, machine-facing form.
     #[arg(long)]
     pub id: Option<i64>,
-    /// The store file (local.db) to read.
+    /// The store file (local.db) to read. Defaults to the local store the bare
+    /// `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override, else the
+    /// per-user default) when omitted.
     #[arg(long)]
-    pub db: PathBuf,
+    pub db: Option<PathBuf>,
 }
 
 /// Arguments to `targets export`. The selector is optional: with none, every
@@ -531,9 +539,11 @@ pub struct TargetsExportArgs {
     /// Select by stable identifier: the durable, machine-facing form.
     #[arg(long)]
     pub id: Option<i64>,
-    /// The store file (local.db) to read.
+    /// The store file (local.db) to read. Defaults to the local store the bare
+    /// `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override, else the
+    /// per-user default) when omitted.
     #[arg(long)]
-    pub db: PathBuf,
+    pub db: Option<PathBuf>,
 }
 
 /// Arguments to `targets seed`.
@@ -626,11 +636,12 @@ pub struct DoctorArgs {
 /// The extcap protocol drives this command four ways: three declaration queries
 /// that print the extcap control grammar to standard output, and a capture that
 /// streams pcapng to the analyzer's FIFO. The configurable options are declared
-/// by `--extcap-config` and passed back at capture under the same names the `run`
-/// command uses (`--profile`, `--roles`, `--direction`, `--loopback`), so the
-/// analyzer's native dialog and the command line select capture identically.
+/// by `--extcap-config` and passed back at capture under the same names the
+/// `capture` command uses (`--target`, `--roles`, `--direction`, `--loopback`), so
+/// the analyzer's native dialog and the command line select a stored target
+/// identically.
 ///
-/// The hidden offline flags are flattened in for the same reason `run` carries
+/// The hidden offline flags are flattened in for the same reason `capture` carries
 /// them: the whole capture path is driven from a tier-1 test with no capture
 /// driver and no analyzer.
 #[derive(Debug, Args)]
@@ -663,9 +674,22 @@ pub struct ExtcapArgs {
     #[arg(long)]
     pub extcap_version: Option<String>,
 
-    /// Config option: the profile to capture with.
+    /// Config option: the stored target to capture, named by a selector (an exact
+    /// handle, a case-insensitive exact name, or a 1-based row index over the current
+    /// listing), resolved against the local store the same way `capture --target`
+    /// resolves it.
     #[arg(long)]
-    pub profile: Option<String>,
+    pub target: Option<String>,
+
+    /// The catalog store consulted while resolving a Steam-anchored target. Defaults
+    /// like `capture`'s when omitted.
+    #[arg(long)]
+    pub catalog_db: Option<PathBuf>,
+
+    /// The local store the target selector resolves against. Defaults like
+    /// `capture`'s when omitted.
+    #[arg(long)]
+    pub local_db: Option<PathBuf>,
 
     /// Config option: the roles to scope to, comma-separated.
     // The analyzer sends this as one comma-separated value; `value_delimiter`

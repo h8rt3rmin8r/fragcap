@@ -157,17 +157,12 @@ terminal.
 
 Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an
 extcap capture source; you do not normally run the protocol form by hand. It
-presents one `fragcap` interface, and the analyzer supplies the capture
-configuration through its own dialog. The part you use directly is registration,
-below.
-
-<Callout title="Live capture from the analyzer dialog is a legacy path">
-Registration (`install` / `uninstall`) is the supported, current extcap feature.
-Launching a live capture from Wireshark's own capture dialog still selects its
-subject through the older profile field rather than the target store, so it has not
-yet been converged onto the `targets` model that `capture` uses; treat it as
-legacy. Registration is unaffected.
-</Callout>
+presents one `fragcap` interface whose capture dialog selects a stored **target**
+and mirrors `capture`'s options (`--target`, `--roles`, `--direction`,
+`--loopback`), so the analyzer dialog and the command line select capture
+identically: you pick a registered target (by handle, name, or row index) in the
+dialog exactly as you would pass `--target` to `capture`. The other part you use
+directly is registration, below.
 
 #### `extcap install` / `extcap uninstall`
 

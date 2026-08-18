@@ -15,5 +15,6 @@ pub mod extcap;
 pub mod schema;
 pub mod steam;
 pub mod stub;
+pub mod target_resolve;
 pub mod targets;
 pub mod technologies;

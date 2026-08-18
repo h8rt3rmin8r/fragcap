@@ -11,7 +11,7 @@
 //! store, the same listing a bare `fragcap` invocation prints.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fragcap::profile::FidelityTier;
 use std::io::IsTerminal;
@@ -37,7 +37,22 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     };
     match command {
         TargetsCommand::Add(args) => add(args, out),
-        TargetsCommand::List { db } => hero_listing(db, false, out),
+        // `list` mirrors the bare `fragcap targets`: an omitted `--db` resolves the
+        // default store, and an unresolvable location degrades to the empty listing
+        // rather than erroring, since there is nothing to list either way.
+        TargetsCommand::List { db } => {
+            let path = db
+                .clone()
+                .or_else(|| paths::local_db_path(None))
+                .or_else(paths::default_local_db_path);
+            match path {
+                Some(path) => hero_listing(&path, false, out),
+                None => {
+                    empty_listing(out, false);
+                    Ok(Exit::SUCCESS)
+                }
+            }
+        }
         TargetsCommand::Show(args) => show(args, out),
         TargetsCommand::Discover(args) => discover(args, out),
         TargetsCommand::Scan {
@@ -47,7 +62,7 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         } => scan(dir, catalog_db.as_deref(), db.as_deref(), out),
         TargetsCommand::Remove(args) => remove(args, out),
         TargetsCommand::Export(args) => export(args, out),
-        TargetsCommand::Import { file, db } => import(file, db, out),
+        TargetsCommand::Import { file, db } => import(file, db.as_deref(), out),
     }
 }
 
@@ -68,6 +83,22 @@ pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError>
         }
     };
     Ok(exit)
+}
+
+/// Resolve the local store a subcommand operates on when `--db` is omitted: the flag
+/// wins, else the `FRAGCAP_LOCAL_DB` override, else the per-user default, the same
+/// order the bare `fragcap targets` command uses. A subcommand that must open a store
+/// treats an unresolvable location as a named failure rather than a panic or a silent
+/// no-op (FR-003).
+fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
+    db.map(Path::to_path_buf)
+        .or_else(|| paths::local_db_path(None))
+        .or_else(paths::default_local_db_path)
+        .ok_or_else(|| {
+            CliError::failure(
+                "the local store path could not be determined; pass --db or set FRAGCAP_LOCAL_DB",
+            )
+        })
 }
 
 /// The hero listing: run discovery and register newly found titles (so each row is
@@ -282,7 +313,8 @@ fn scan(
 /// name lists its matches and refuses (exit 2, P-9); a clean handle/name miss reports
 /// it and exits 0; an out-of-range row index or unknown `--id` exits 2 (FR-017).
 fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let mut store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let db = resolve_store(args.db.as_deref())?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let (selection, miss_exit) = match (args.id, &args.selector) {
         (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
         (None, Some(token)) if is_row_index(token) => {
@@ -326,7 +358,8 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
 /// exits 0, while an out-of-range row index or an unknown `--id` is an invalid
 /// machine reference (exit 2). An ambiguous name refuses (exit 2) (FR-018).
 fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let db = resolve_store(args.db.as_deref())?;
+    let store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let entries = match (args.id, &args.selector) {
         (None, None) => store
             .targets()
@@ -365,12 +398,13 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
 /// Run `targets import <file>`: parse the target-entry array and merge each element
 /// on its stable identifier (update in place, or insert). A nonconforming file is
 /// rejected whole, applying nothing (FR-019).
-fn import(file: &Path, db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn import(file: &Path, db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
     let json = std::fs::read_to_string(file)
         .map_err(|e| CliError::failure(format!("cannot read {}: {e}", file.display())))?;
     let entries =
         fragcap::targets::import_targets(&json).map_err(|e| CliError::usage(e.to_string()))?;
-    let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
+    let db = resolve_store(db)?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     // The whole batch merges in one transaction: all-or-nothing, so a constraint
     // violation partway through leaves the store untouched (FR-019).
     let (inserted, updated) = store
@@ -552,7 +586,8 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         (name, None)
     };
 
-    let mut store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let db = resolve_store(args.db.as_deref())?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
 
     // Canonicalize the anchor once (lowercase the platform prefix, trim) so a
     // CLI-supplied `STEAM:620` matches and is stored identically to `steam:620`. The
@@ -745,7 +780,8 @@ fn scan_exe_evidence(exe: &str, out: &mut dyn Write) -> Option<serde_json::Value
 /// `--id` or an out-of-range row index is a bad machine reference (exit 2). An
 /// ambiguous name lists its matches and exits 2 rather than guessing (P-9).
 fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let db = resolve_store(args.db.as_deref())?;
+    let store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let (selection, miss_exit) = match (args.id, &args.selector) {
         (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
         (None, Some(token)) if is_row_index(token) => {

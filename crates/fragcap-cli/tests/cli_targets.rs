@@ -717,3 +717,34 @@ fn discover_lists_steam_titles_through_the_cli() {
     );
     assert!(out.contains("account:"), "the account is surfaced: {out}");
 }
+
+#[test]
+fn a_subcommand_defaults_to_the_local_store_when_db_is_omitted() {
+    // Slice S058 (#157): a targets subcommand run with no `--db` resolves the same
+    // default local store the bare `fragcap targets` command uses. The test harness
+    // points `FRAGCAP_LOCAL_DB` at a per-process scratch store, so an add with no
+    // `--db` writes there and a show with no `--db` reads the same store back. No
+    // other test in this binary reads that default store, so this does not race them;
+    // every explicit-`--db` test keeps operating on its own temp store.
+    let name = "S058 Default Store Game";
+    let (add_code, _out, add_err) = run(&[
+        "targets",
+        "add",
+        name,
+        "--exe",
+        "game.exe",
+        "--socket-holder",
+        "unsure",
+    ]);
+    assert_eq!(add_code, 0, "add against the default store: {add_err}");
+
+    let (show_code, show_out, show_err) = run(&["targets", "show", name]);
+    assert_eq!(
+        show_code, 0,
+        "show resolves the same default store with no --db: {show_err}"
+    );
+    assert!(
+        show_out.contains("game.exe") || show_out.to_lowercase().contains("s058"),
+        "the target added with no --db is found by show with no --db: {show_out}"
+    );
+}

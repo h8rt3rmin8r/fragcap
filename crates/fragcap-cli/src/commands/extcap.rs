@@ -10,9 +10,10 @@
 //! link type, and `--extcap-config` the four configurable options. The fourth,
 //! `--capture --fifo <path>`, streams pcapng to the analyzer's FIFO.
 //!
-//! The capture is the same back half `run` reaches: the options the analyzer
-//! passes back (profile, roles, direction, loopback) are overlaid on the profile
-//! exactly as the `run` flags are, and the FIFO is one sink over the unchanged
+//! The capture is the same back half `capture` reaches: the target the analyzer
+//! passes back is resolved through the shared stored-target seam (slice S058) and
+//! the options (roles, direction, loopback) are overlaid on the resolved profile
+//! exactly as the `capture` flags are, and the FIFO is one sink over the unchanged
 //! pcapng writer, so the stream an analyzer reads is byte-identical to a file
 //! capture (constitution P-5). No new capture or attribution technique is
 //! introduced (P-1, P-3, P-9); extcap is a front half over the existing pipeline.
@@ -21,10 +22,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fragcap::profile::resolve;
-
 use crate::assemble;
 use crate::cli::{ExtcapAction, ExtcapArgs, ExtcapInstallArgs};
+use crate::commands::target_resolve::{self, StoredRef, TargetInputs};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 use crate::orchestrator;
@@ -213,14 +213,15 @@ fn dlts_block() -> String {
 
 /// The `--extcap-config` block: the four configurable options.
 ///
-/// The `call` names are the `run` flag names, so the capture invocation the
-/// analyzer builds is parsed by the same grammar and overlaid the same way
-/// (specification 14.5, FR-006).
+/// The `call` names are the `capture` flag names, so the capture invocation the
+/// analyzer builds is parsed by the same grammar and overlaid the same way; the
+/// number=0 option selects a stored target, resolved exactly as `capture --target`
+/// resolves it (specification 14.5, slice S058).
 fn config_block() -> String {
     let mut block = String::new();
     block.push_str(
-        "arg {number=0}{call=--profile}{display=Profile}\
-         {tooltip=The profile to capture with: a path, a name, or a game id}\
+        "arg {number=0}{call=--target}{display=Target}\
+         {tooltip=The target to capture: a handle, a name, or a row index}\
          {type=string}{required=true}\n",
     );
     block.push_str(
@@ -275,24 +276,32 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
             return Err(unknown_interface(name));
         }
     }
-    let Some(profile_ref) = &args.profile else {
+    let Some(selector) = &args.target else {
         return Err(CliError::usage(
-            "extcap --capture needs a profile; the analyzer supplies it from the configuration \
-             dialog (--profile)",
+            "extcap --capture needs a target; the analyzer supplies it from the configuration \
+             dialog (--target)",
         ));
     };
 
-    let search = paths::search_path(&[]);
-    let bundled = paths::bundled();
-    let resolved = resolve(profile_ref, &search, &bundled)?;
+    // Resolve the stored target through the same seam `capture` uses (slice S058), so
+    // the analyzer dialog and the command line select capture identically. extcap
+    // carries no path anchors; a Steam-anchored target still resolves through the
+    // install-layout cascade.
+    let inputs = TargetInputs {
+        catalog_db: args.catalog_db.as_deref(),
+        local_db: args.local_db.as_deref(),
+        path_contains: None,
+        path_regex: None,
+    };
+    let profile = target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?;
 
-    let config = assemble::effective_config_for_extcap(args, &resolved.profile);
+    let config = assemble::effective_config_for_extcap(args, &profile);
     let components = assemble::components(&args.offline, &config)?;
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();
     orchestrator::capture(
-        resolved.profile,
+        profile,
         &config,
         components,
         emitter,
