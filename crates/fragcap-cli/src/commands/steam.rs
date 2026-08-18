@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `steam`: enumerate installed titles and scaffold profiles (specification
-//! section 16.3, roadmap slice S17).
+//! `steam`: Steam-specific inspection (specification section 16.3).
 //!
-//! `steam profile <app_id>` discovers the Steam installation, resolves the
-//! app_id to an installed title, scaffolds a profile skeleton, and prints it to
-//! standard output (FR-019: command results go to stdout). The scaffold is a
-//! validated starting point the operator reviews and redirects; discovery
-//! warnings (a skipped malformed manifest, a duplicate app_id) go to standard
-//! error so they never contaminate the profile on stdout.
+//! `steam list` discovers the Steam installation and prints the installed titles
+//! it can enumerate, one per line (FR-019: command results go to stdout).
+//! Enumeration diagnostics (a skipped malformed manifest, a duplicate app id) go to
+//! standard error so they never contaminate the listing on stdout.
+//!
+//! Registering an installed title as a capture target is `targets add --steam
+//! <app_id>` (it lands in the user store); the retired `steam profile <app_id>`
+//! scaffolding is gone.
 
 use std::io::Write;
-use std::path::Path;
 
-use fragcap::profile::signature::SignatureSet;
 use fragcap::steam::{self, SteamError};
-use fragcap::targets::Store;
 
 use crate::cli::{SteamArgs, SteamCommand};
 use crate::emit::Emitter;
@@ -25,70 +23,34 @@ use crate::exit::{CliError, Exit};
 /// through `emitter`.
 pub fn run(args: &SteamArgs, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
     match &args.command {
-        SteamCommand::Profile { app_id, catalog_db } => {
-            profile(app_id, catalog_db.as_deref(), out, emitter)
-        }
+        SteamCommand::List => list(out, emitter),
     }
 }
 
-/// Detect the technologies in an install directory from the catalog's signature
-/// table, or an empty set when no catalog is given (slice S053). A catalog that
-/// cannot be opened or scanned is a surfaced failure, not a silent empty result.
-fn detect_technologies(
-    catalog_db: Option<&Path>,
-    install_dir: &Path,
-) -> Result<Vec<fragcap::profile::DetectionFinding>, CliError> {
-    let Some(catalog_db) = catalog_db else {
-        return Ok(Vec::new());
-    };
-    let store = Store::open(catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
-    let signatures = store
-        .load_signatures()
-        .map_err(|e| CliError::failure(e.to_string()))?;
-    let set = SignatureSet::compile(&signatures);
-    let outcome = set
-        .detect(install_dir)
-        .map_err(|e| CliError::failure(e.to_string()))?;
-    Ok(outcome.findings)
-}
-
-/// Scaffold a profile for one installed title.
-fn profile(
-    app_id: &str,
-    catalog_db: Option<&Path>,
-    out: &mut dyn Write,
-    emitter: &mut Emitter,
-) -> Result<Exit, CliError> {
+/// List the installed Steam titles this machine can enumerate.
+fn list(out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
     let installation = steam::discover().map_err(map_steam_error)?;
 
-    // Discovery diagnostics (a skipped malformed manifest, a duplicate app_id, an
-    // unreadable library) go through the emitter so they honor the configured
-    // writer, verbosity, and output format, and never contaminate the profile on
-    // stdout (Codex review of PR #31).
+    // Enumeration diagnostics go through the emitter so they honor the configured
+    // writer, verbosity, and format, and never contaminate the listing on stdout.
     for warning in &installation.warnings {
         emitter.warn(warning);
     }
 
-    let Some(title) = installation.find(app_id) else {
-        return Err(CliError::usage(
-            SteamError::TitleNotFound {
-                app_id: app_id.to_string(),
-            }
-            .to_string(),
-        ));
-    };
-
-    let technologies = detect_technologies(catalog_db, &title.install_dir)?;
-    let text = steam::scaffold(title, &technologies).map_err(map_steam_error)?;
-    let _ = write!(out, "{text}");
+    if installation.titles.is_empty() {
+        let _ = writeln!(out, "no installed titles enumerated");
+        return Ok(Exit::SUCCESS);
+    }
+    for title in &installation.titles {
+        let _ = writeln!(out, "{}\t{}", title.app_id, title.name);
+    }
     Ok(Exit::SUCCESS)
 }
 
 /// Map a Steam error to the CLI exit contract.
 ///
 /// A missing Steam installation or an unsupported platform is a configuration
-/// problem (exit 2); a filesystem or launch failure is an expected runtime
-/// failure (exit 1).
+/// problem (exit 2); a filesystem failure is an expected runtime failure (exit 1).
 fn map_steam_error(error: SteamError) -> CliError {
     match error {
         SteamError::NotInstalled

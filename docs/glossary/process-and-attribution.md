@@ -458,14 +458,17 @@ duration bound or an operator interrupt.
 
 ## Watch mode
 
-The default launch-agnostic capture path: fragcap arms its
+The launch-agnostic capture path, reached since S054 through `fragcap capture
+--process <image>` (the dedicated `watch` verb it names was retired when the three
+capture verbs collapsed into one): fragcap arms its
 [process watcher](#process-watcher) and sinks and captures the first process
 matching a [target](#target) identity, however and wherever it was started,
 including one already running at arm (found in the
 [startup snapshot](#startup-snapshot)). The identity is an executable name plus a
-path anchor; a target that starts after arm is acquired on its start event, and
-one already running is acquired when the snapshot is folded in, both by runtime
-observation. Managed launch is a convenience layered on top, never the spine.
+path anchor (`--path`/`--path-regex`); a target that starts after arm is acquired on
+its start event, and one already running is acquired when the snapshot is folded in,
+both by runtime observation. Managed launch is a convenience layered on top, never
+the spine.
 
 {: .matters }
 > The path anchor is matched against the full image path. A process starting
@@ -1232,17 +1235,17 @@ when the operator supplies a present database, and its absence changes nothing.
 
 ## Non-profile capture path
 
-The `run` branch that captures a [target](#target) the
+The `fragcap capture --target` branch that captures a [target](#target) the
 [resolution cascade](#resolution-cascade) resolved without a
-[game profile](platform-and-distribution.md#game-profile). When `run` is given an
-install location instead of a profile reference (an install directory or a Steam
-app id resolved to one), the [engine rule](#engine-rule), the
-[platform walker](#platform-walker), or runtime observation resolve a client
-identity, and `run` synthesizes a one-stage capture identity from that resolved
-target's [match predicates](#match-predicate) and captures it through the same
-launch-agnostic engine an authored profile uses. It is what activates the
-cascade's install-layout providers for capture rather than leaving their answers
-at a dead end. Introduced by slice S032.
+[game profile](platform-and-distribution.md#game-profile). When the selected target
+carries a Steam anchor, its install root is looked up from the anchor's app id and
+the [engine rule](#engine-rule), the [platform walker](#platform-walker), or runtime
+observation resolve a client identity, from which `capture` synthesizes a one-stage
+identity and captures through the same launch-agnostic engine an authored profile
+used. It is what activates the cascade's install-layout providers for capture rather
+than leaving their answers at a dead end. Introduced by slice S032; S054 routed it
+through `capture --target` when the ad-hoc `run --install-dir`/`--steam` inputs were
+retired.
 
 {: .matters }
 > The synthesized identity is stamped [heuristic-unverified](#fidelity-tier),

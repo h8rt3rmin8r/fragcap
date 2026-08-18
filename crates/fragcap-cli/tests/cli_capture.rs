@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `run` and `tap` end to end over the offline substrate: a replay source, a
-//! scripted attributor, and a scripted process timeline. No capture driver, no
-//! elevation, no game.
+//! `capture` end to end over the offline substrate: a replay source, a scripted
+//! attributor, and a scripted process timeline. No capture driver, no elevation, no
+//! game. The identity is a `--process` image name synthesizing a single
+//! `target`-role stage, the path the retired `run`, `tap`, and `watch` all fed.
 
 mod common;
 
@@ -13,9 +14,9 @@ use common::{data, fixture};
 /// Run with the standard offline substrate, appending `extra`.
 fn run_offline(extra: &[String]) -> (u8, String, String) {
     let mut args: Vec<String> = vec![
-        "run".into(),
-        "--profile".into(),
-        data("game.json"),
+        "capture".into(),
+        "--process".into(),
+        "game.exe".into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -46,44 +47,44 @@ fn a_run_produces_the_capture_goldens_with_stamped_role_and_stage() {
 
     let fcapng_bytes = fs::read(&fcapng).expect("the pcapng file was written");
     let jsonl_bytes = fs::read(&jsonl).expect("the jsonl file was written");
-    common::assert_golden("run.fcapng", &fcapng_bytes);
-    common::assert_golden("run.jsonl", &jsonl_bytes);
+    common::assert_golden("capture.fcapng", &fcapng_bytes);
+    common::assert_golden("capture.jsonl", &jsonl_bytes);
 
     let jsonl_text = String::from_utf8(jsonl_bytes).unwrap();
     assert!(
-        jsonl_text.contains("\"role\":\"client\""),
+        jsonl_text.contains("\"role\":\"target\""),
         "every attributed packet carries the role"
     );
     assert!(
-        jsonl_text.contains("\"stage\":\"client\""),
+        jsonl_text.contains("\"stage\":\"target\""),
         "every attributed packet carries the stage"
     );
 }
 
-// Regression: `run --roles client` once panicked at access time because
-// `RunArgs.roles` used a `value_parser` returning `Vec<String>` against a
-// `Vec<String>` field (clap could not downcast the element). The flag now uses
-// `value_delimiter`, so the run parses, succeeds, and scopes to the named role.
+// Regression: `--roles target` once panicked at access time because the roles flag
+// used a `value_parser` returning `Vec<String>` against a `Vec<String>` field (clap
+// could not downcast the element). The flag now uses `value_delimiter`, so the
+// capture parses, succeeds, and scopes to the named role.
 #[test]
 fn run_with_roles_succeeds_and_scopes_to_the_named_role() {
-    let (code, _out, err) = run_offline(&["--roles".into(), "client".into()]);
-    assert_eq!(code, 0, "run --roles client parses and captures: {err}");
+    let (code, _out, err) = run_offline(&["--roles".into(), "target".into()]);
+    assert_eq!(code, 0, "capture --roles target parses and captures: {err}");
     assert!(
-        err.contains("roles client (enforced)"),
+        err.contains("roles target (enforced)"),
         "the capture is scoped to the named role: {err}"
     );
 }
 
-// The comma-separated form splits into the role list, and a trailing comma is
-// harmless: the profile's `client` stage is still in the allowed set, so the run
-// succeeds and stays scoped. This documents the accepted behavior change from
-// dropping the empty-role rejection, matching the `extcap` surface.
+// The comma-separated form splits into the role list: the synthesized `target`
+// stage is still in the allowed set, so the capture succeeds and stays scoped. This
+// documents the accepted behavior of dropping the empty-role rejection, matching the
+// `extcap` surface.
 #[test]
 fn run_with_a_comma_separated_role_list_splits_and_scopes() {
-    let (code, _out, err) = run_offline(&["--roles".into(), "client,launcher".into()]);
+    let (code, _out, err) = run_offline(&["--roles".into(), "target,launcher".into()]);
     assert_eq!(code, 0, "a comma-separated role list parses: {err}");
     assert!(
-        err.contains("roles client,launcher (enforced)"),
+        err.contains("roles target,launcher (enforced)"),
         "both roles are carried into the enforced scope: {err}"
     );
 }
@@ -125,16 +126,16 @@ fn the_json_event_sequence_matches_the_golden() {
     let (code, _out, err) = run_offline(&["--json".into()]);
     assert_eq!(code, 0);
     let normalized = common::normalize_timestamps(&err);
-    common::assert_golden("run-events.ndjson", normalized.as_bytes());
+    common::assert_golden("capture-events.ndjson", normalized.as_bytes());
 }
 
 #[test]
 fn a_fired_interrupt_stops_cleanly_and_exits_zero() {
     // A process script whose target never exits, so the interrupt is the stop.
     let args: Vec<String> = vec![
-        "run".into(),
-        "--profile".into(),
-        data("game.json"),
+        "capture".into(),
+        "--process".into(),
+        "game.exe".into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -296,9 +297,9 @@ fn a_byte_bound_produces_an_exactly_bounded_file() {
 fn an_acquisition_timeout_with_no_target_captures_nothing_and_exits_one() {
     // No process script, so no target is ever acquired.
     let args = [
-        "run",
-        "--profile",
-        &data("game.json"),
+        "capture",
+        "--process",
+        "game.exe",
         "--replay-source",
         &fixture("udp-gameplay.pcap"),
         "--attr-script",
@@ -328,9 +329,9 @@ fn a_ring_capture_dumps_the_recent_tail_on_interrupt() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("ring.fcapng");
     let args: Vec<String> = vec![
-        "run".into(),
-        "--profile".into(),
-        data("game.json"),
+        "capture".into(),
+        "--process".into(),
+        "game.exe".into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -421,11 +422,11 @@ fn a_large_ring_window_dumps_the_whole_capture_on_a_non_interrupt_stop() {
 }
 
 #[test]
-fn tap_captures_a_named_process_through_the_same_engine() {
+fn capture_by_process_name_produces_a_target_role_stage() {
     let dir = tempfile::tempdir().unwrap();
     let jsonl = dir.path().join("tap.jsonl");
     let args = [
-        "tap",
+        "capture",
         "--process",
         "game.exe",
         "--sink",
@@ -440,7 +441,7 @@ fn tap_captures_a_named_process_through_the_same_engine() {
         "192.0.2.10",
     ];
     let (code, _out, err) = common::run(&args);
-    assert_eq!(code, 0, "tap captures like run: {err}");
+    assert_eq!(code, 0, "capture --process succeeds: {err}");
     assert!(err.contains("capture complete"), "{err}");
 
     let text = fs::read_to_string(&jsonl).unwrap();
@@ -451,7 +452,40 @@ fn tap_captures_a_named_process_through_the_same_engine() {
 }
 
 #[test]
-fn tap_without_a_process_is_a_usage_error() {
-    let (code, _out, _err) = common::run(&["tap"]);
+fn capture_without_a_target_input_is_a_usage_error() {
+    // Neither --target nor --process: the clap group requires exactly one.
+    let (code, _out, _err) = common::run(&["capture"]);
     assert_eq!(code, 2);
+}
+
+#[test]
+fn capture_with_both_target_inputs_is_a_usage_error() {
+    // --target and --process are mutually exclusive.
+    let (code, _out, _err) = common::run(&["capture", "--target", "eso", "--process", "eso64.exe"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn capture_process_with_launch_is_a_usage_error() {
+    // A raw process image carries no launchable platform anchor, so --launch is a
+    // usage error rather than a silent no-op (FR-005).
+    let (code, _out, err) = common::run(&["capture", "--process", "game.exe", "--launch"]);
+    assert_eq!(code, 2, "a process capture cannot launch: {err}");
+}
+
+#[test]
+fn the_retired_verbs_and_profile_command_do_not_parse() {
+    // No aliases, no shims: run/tap/watch and the profile command are gone.
+    for argv in [
+        vec!["run", "--profile", "game"],
+        vec!["tap", "--process", "game.exe"],
+        vec!["watch", "--exe", "game.exe"],
+        vec!["profile", "validate", "game"],
+    ] {
+        let (code, _out, _err) = common::run(&argv);
+        assert_eq!(code, 2, "retired command still parses: {argv:?}");
+    }
+    // schema validate remains the general artifact validator.
+    let (code, _out, _err) = common::run(&["schema", "--help"]);
+    assert_eq!(code, 0, "schema stays available");
 }

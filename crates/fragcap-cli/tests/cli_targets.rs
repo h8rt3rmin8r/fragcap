@@ -23,7 +23,7 @@ fn seed_signatures_populates_the_catalog_and_is_idempotent() {
     let dir = TempDir::new().expect("tempdir");
     let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
 
-    let (code, out, _err) = run(&["targets", "seed-signatures", "--db", &catalog]);
+    let (code, out, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
     assert_eq!(code, 0, "seed-signatures succeeds: {out}");
     assert!(
         out.contains("detection signatures"),
@@ -31,7 +31,7 @@ fn seed_signatures_populates_the_catalog_and_is_idempotent() {
     );
 
     // Idempotent: re-running succeeds and reports the same count.
-    let (code2, out2, _err) = run(&["targets", "seed-signatures", "--db", &catalog]);
+    let (code2, out2, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
     assert_eq!(code2, 0);
     assert_eq!(out, out2, "re-seeding is idempotent");
 }
@@ -41,7 +41,7 @@ fn scan_with_a_catalog_detects_and_reports_evidence() {
     let dir = TempDir::new().expect("tempdir");
     let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
     // Seed the signature table, then point scan at a Unity game directory.
-    let (code, _out, _err) = run(&["targets", "seed-signatures", "--db", &catalog]);
+    let (code, _out, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
     assert_eq!(code, 0);
 
     let game = dir.path().join("MyGame");

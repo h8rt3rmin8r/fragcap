@@ -1,27 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `run`: resolve a target, build the effective configuration, assemble the
-//! pipeline and session, and capture.
+//! `capture`: identify a target, build the effective configuration, assemble the
+//! pipeline and session, and capture. The single capture verb (section 17.2),
+//! superseding the retired `run`, `tap`, and `watch`.
 //!
 //! The command is the front half; the capture engine in [`crate::orchestrator`]
-//! is the shared back half `tap` and `watch` also reach. Resolution and overlay
-//! decide what to capture and with what options; the orchestrator arms, waits for
-//! the target, captures, stops on a bound or interrupt, and reports.
+//! is the shared back half. Identification and overlay decide what to capture and
+//! with what options; the orchestrator arms, waits for the target, captures, stops
+//! on a bound or interrupt, and reports.
 //!
-//! `run` has three mutually-exclusive target inputs (a clap group enforces
-//! exactly one):
+//! `capture` has two mutually-exclusive, required target inputs (a clap group
+//! enforces exactly one):
 //!
-//! - `--profile <ref>` resolves a profile through the cascade and captures with
-//!   it, unchanged and byte-identical to before the cascade existed.
-//! - `--install-dir <path>` and `--steam <app_id>` resolve a target from an
-//!   install location with no authored profile. When the cascade answers with a
-//!   non-profile target (an engine rule, the platform walker, or runtime
-//!   observation), `run` synthesizes a one-stage capture identity from the
-//!   resolved target's `MatchPredicates`, stamps it `heuristic-unverified`
-//!   (never `authored`, because it was resolved by a heuristic rather than typed
-//!   by an operator, P-9), and captures it through the same launch-agnostic
-//!   engine `watch` uses. No process handle is opened and no process memory is
-//!   read (P-1).
+//! - `--target <selector>` resolves a stored target from the user store (local.db)
+//!   by an S051 selector. A target carrying a Steam anchor is resolved through the
+//!   same install-layout cascade the retired `run --steam` used, keyed on the
+//!   anchor's app id, so its client executable and (for `--launch`) its app id are
+//!   recovered; a target carrying a stored launch executable synthesizes directly
+//!   from it. No process handle is opened and no process memory is read (P-1).
+//! - `--process <image>` names a raw process image directly, with optional
+//!   `--path`/`--path-regex` anchors to disambiguate two processes sharing the
+//!   name (the capability the retired `watch` carried).
+//!
+//! In every case a one-stage capture identity is synthesized and validated through
+//! `Profile::parse`, the same path an authored profile took, so an unusable
+//! identity surfaces as a profile diagnostic (exit 2).
 
 use std::path::{Path, PathBuf};
 
@@ -30,28 +33,195 @@ use fragcap::profile::{
     ResolutionError, ResolutionRequest, TargetProvider, TargetResolver,
 };
 use fragcap::steam::SteamWalkerProvider;
+use fragcap::targets::{resolve_positional, Selection, Store, TargetEntry};
 
 use crate::assemble;
 use crate::attach;
-use crate::cli::RunArgs;
+use crate::cli::CaptureArgs;
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 use crate::orchestrator;
 use crate::paths;
 
-/// Run `run`.
-pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
-    let search = paths::search_path(&[]);
-    let bundled = paths::bundled();
+/// Run `capture`.
+pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
+    // Exactly one target input is present (the clap group guarantees it). A stored
+    // target resolves against the local store (and, when Steam-anchored, through the
+    // install-layout cascade); a raw process image synthesizes an identity directly.
+    let profile = match (&args.target, &args.process) {
+        (Some(selector), _) => resolve_target(selector, args, emitter)?,
+        (None, Some(process)) => {
+            synthesize_named_profile(process, args.path.as_deref(), args.path_regex.as_deref())?
+        }
+        // The clap group guarantees exactly one target input; this documents it.
+        (None, None) => {
+            return Err(CliError::usage(
+                "exactly one of --target or --process is required",
+            ))
+        }
+    };
 
-    // Two stores since slice S050: the ShruggieTech catalog (shipped, disposable,
-    // seeded from a template beside the binary) and the user-owned local store
-    // (learned launch data, and later slices' user data). An explicit flag or
-    // environment override keeps its exact semantics (absent is non-fatal and never
-    // created, a present one is consulted, an unopenable one is a loud error in
-    // build_resolver). With neither set, fall back to the per-user default, which
-    // the first-run bootstrap below creates when absent. Both live in the per-user
-    // AppData root, so neither needs elevation (FR-011).
+    let config = assemble::effective_config(args, &profile)?;
+    let components = assemble::components(&args.offline, &config)?;
+
+    // Capture is launch-agnostic: report an already-running attach, and warn when a
+    // resolved path anchor cannot be checked against the executable-only startup
+    // snapshot, so acquisition is never silently impossible (review of PR #88).
+    attach::report_attach_to_running(&profile, &components, emitter);
+
+    orchestrator::install_interrupt_handler();
+    let allowed_roles = config.roles.clone();
+    orchestrator::capture(
+        profile,
+        &config,
+        components,
+        emitter,
+        &orchestrator::INTERRUPT,
+        args.offline.fire_interrupt,
+        allowed_roles,
+        // A sink failure is an unrecoverable end for `capture`, not a clean stop.
+        false,
+    )
+}
+
+/// Resolve a `--target` selector against the local store into the profile that
+/// captures it.
+///
+/// The selector is an S051 positional selector (handle, exact name, or 1-based row
+/// index). A Steam-anchored target is resolved through the install-layout cascade
+/// keyed on its app id, recovering its client executable and carrying the app id so
+/// `--launch` can reach it. A target carrying a stored launch executable synthesizes
+/// directly from it. A target that names neither is a usage error rather than a
+/// silent empty capture (P-4).
+fn resolve_target(
+    selector: &str,
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+) -> Result<Profile, CliError> {
+    let (catalog_db, local_db) = setup_stores(args, emitter)?;
+
+    // Resolve the selector against the local store (S051 section 5.4). A store the
+    // operator never created has no targets, so a selector matches nothing there.
+    let local_path = local_db.clone().ok_or_else(|| {
+        CliError::usage("no local store is available to resolve --target; register a target first")
+    })?;
+    let store = Store::open(&local_path)
+        .map_err(|e| CliError::failure(format!("cannot open local store: {e}")))?;
+    let entry =
+        match resolve_positional(&store, selector).map_err(|e| CliError::failure(e.to_string()))? {
+            Selection::Resolved(t) => t,
+            Selection::NoMatch => {
+                return Err(CliError::usage(format!(
+                    "no target matches selector {selector:?}; list targets with `fragcap targets`"
+                )))
+            }
+            Selection::Ambiguous(matches) => {
+                return Err(CliError::usage(format!(
+                    "selector {selector:?} is ambiguous ({} targets match); select by handle or id",
+                    matches.len()
+                )))
+            }
+        };
+
+    // A Steam anchor recovers the client through the cascade; a stored launch
+    // executable synthesizes directly; neither is a named usage error.
+    if let Some(app_id) = steam_app_id(&entry) {
+        let search = paths::search_path(&[]);
+        let bundled = paths::bundled();
+        let resolver = build_resolver(catalog_db.as_deref(), local_db.as_deref())?;
+        let lookup = fragcap::steam::install_root_for(&app_id)
+            .map_err(|e| CliError::failure(format!("cannot look up Steam app {app_id}: {e}")))?;
+        for warning in &lookup.warnings {
+            emitter.warn(warning);
+        }
+        let install_root = lookup.install_dir.ok_or_else(|| {
+            CliError::failure(format!(
+                "Steam app {app_id} is not installed in any library"
+            ))
+        })?;
+        resolve_from_install(&resolver, &install_root, Some(&app_id), &search, &bundled)
+    } else if let Some(exe) = stored_launch_exe(&entry) {
+        synthesize_named_profile(&exe, None, None)
+    } else {
+        Err(CliError::usage(format!(
+            "target {} names no capturable executable; re-register it with `targets add --exe` \
+             or `--steam`",
+            entry.handle
+        )))
+    }
+}
+
+/// The Steam app id a target's anchor names, if it is a `steam:<app_id>` anchor.
+fn steam_app_id(entry: &TargetEntry) -> Option<String> {
+    entry
+        .anchor
+        .as_deref()
+        .and_then(|a| a.strip_prefix("steam:"))
+        .map(|id| id.to_string())
+}
+
+/// The single launch executable a target's `launch_entries` names, if any. The
+/// stored shape is an array of objects each carrying an `executable`; a target
+/// registered with `--exe` carries exactly one.
+fn stored_launch_exe(entry: &TargetEntry) -> Option<String> {
+    let serde_json::Value::Array(items) = entry.launch_entries.as_ref()? else {
+        return None;
+    };
+    items
+        .iter()
+        .find_map(|item| item.get("executable").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// Build a validated one-stage `authored` profile from an executable name and the
+/// optional path anchors, the identity the retired `tap` and `watch` synthesized.
+///
+/// The identity is placed into a JSON profile (serde_json handles escaping) and
+/// validated through `Profile::parse`, so an empty match or a glob or path regex
+/// that does not compile surfaces as the profile's own diagnostics (exit 2).
+fn synthesize_named_profile(
+    exe: &str,
+    path_contains: Option<&str>,
+    path_regex: Option<&str>,
+) -> Result<Profile, CliError> {
+    let mut predicates = serde_json::Map::new();
+    predicates.insert(
+        "exe".to_string(),
+        serde_json::Value::String(exe.to_string()),
+    );
+    if let Some(path) = path_contains {
+        predicates.insert(
+            "path_contains".to_string(),
+            serde_json::Value::String(path.to_string()),
+        );
+    }
+    if let Some(re) = path_regex {
+        predicates.insert(
+            "path_regex".to_string(),
+            serde_json::Value::String(re.to_string()),
+        );
+    }
+    let profile = serde_json::json!({
+        "schema": 1,
+        "kind": "profile",
+        "fidelity": "authored",
+        "game": { "id": "capture", "name": "ad hoc capture" },
+        "stage": [
+            { "role": "target", "lifecycle": "session", "terminal": true, "match": predicates }
+        ]
+    });
+    Profile::parse(&profile.to_string()).map_err(CliError::from)
+}
+
+/// Set up the catalog and local stores (slice S050): resolve their paths from the
+/// flags, environment, or per-user defaults, refuse a shared file, bootstrap the
+/// defaulted locations, and learn this machine's Steam launch executables into the
+/// local store. Returns the resolved (catalog, local) paths, either possibly `None`
+/// when a store could not be made available (a warning was emitted).
+fn setup_stores(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+) -> Result<(Option<PathBuf>, Option<PathBuf>), CliError> {
     let (mut catalog_db, catalog_default) = match paths::catalog_db_path(args.catalog_db.as_deref())
     {
         Some(path) => (Some(path), false),
@@ -62,11 +232,9 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         None => (paths::default_local_db_path(), true),
     };
 
-    // The two stores must be different files. If the catalog and local paths
-    // identify one file, accumulation would write learned user data into the
-    // catalog and the resolver would open it twice as separate layers, defeating
-    // the ownership boundary and letting a future catalog replacement discard the
-    // learned data (FR-007). Refuse before bootstrap or accumulation touches it.
+    // The two stores must be different files, or accumulation would write learned
+    // user data into the catalog and a future catalog replacement would discard it
+    // (FR-007). Refuse before bootstrap or accumulation touches it.
     if let (Some(catalog), Some(local)) = (catalog_db.as_deref(), local_db.as_deref()) {
         if same_store_file(catalog, local) {
             return Err(CliError::failure(format!(
@@ -77,12 +245,8 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         }
     }
 
-    // Bootstrap only defaulted locations, never a path the operator named: an
-    // explicit absent path stays a non-fatal no-op (FR-002, FR-004). The catalog
-    // seeds from the template beside the executable when present (the installer and
-    // the portable archive both ship it there); the local store is always created
-    // empty (FR-003). A bootstrap failure is a warning that drops that store, never
-    // fatal (FR-005).
+    // Bootstrap only defaulted locations, never a path the operator named. A
+    // bootstrap failure is a warning that drops that store, never fatal (FR-005).
     if catalog_default {
         if let Some(default) = catalog_db.clone() {
             let template = bundled_catalog_template();
@@ -107,63 +271,15 @@ pub fn run(args: &RunArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         }
     }
 
-    // Before resolving, learn this machine's own Steam launch executables into the
-    // user-owned local store, so the hint provider can name a socket-holding client
-    // the engine rule and the walker would miss (issue #78, slice S038; redirected
-    // to local.db in S050 so a catalog refresh cannot lose it). It reads the local
-    // appinfo cache, writes only launch data, ships nothing, and never opens a
-    // process handle (P-1). A first run is slower and prints progress so it does
-    // not read as hung; later runs are mostly skips.
+    // Learn this machine's own Steam launch executables into the local store, so the
+    // hint provider can name a socket-holding client the engine rule and the walker
+    // would miss (issue #78). It reads the local appinfo cache, writes only launch
+    // data, ships nothing, and never opens a process handle (P-1).
     if let Some(path) = local_db.as_deref() {
         accumulate_launch(path, emitter);
     }
 
-    let resolver = build_resolver(catalog_db.as_deref(), local_db.as_deref())?;
-
-    // Exactly one target input is present (the clap group guarantees it). A
-    // profile reference takes the unchanged profile path; an install location
-    // takes the non-profile path.
-    let (profile, nonprofile) = if let Some(reference) = args.profile.as_deref() {
-        let request = ResolutionRequest::for_reference(reference, &search, &bundled);
-        let target = resolver.resolve(&request)?;
-        let profile = target.into_profile().ok_or_else(|| {
-            // A profile reference is answered only by the profile provider, so a
-            // non-profile target cannot arise here; this documents the invariant.
-            CliError::failure("resolved a target with no profile from a profile reference")
-        })?;
-        (profile, false)
-    } else {
-        (
-            resolve_nonprofile(&resolver, args, emitter, &search, &bundled)?,
-            true,
-        )
-    };
-
-    let config = assemble::effective_config(args, &profile)?;
-    let components = assemble::components(&args.offline, &config)?;
-
-    // The non-profile path is launch-agnostic like `watch`: report an
-    // already-running attach, and warn when a resolved path anchor (an engine-rule
-    // Unreal client carries one) cannot be checked against the executable-only
-    // startup snapshot, so acquisition is never silently impossible (review of PR
-    // #88). The `--profile` path keeps its existing behavior unchanged.
-    if nonprofile {
-        attach::report_attach_to_running(&profile, &components, emitter);
-    }
-
-    orchestrator::install_interrupt_handler();
-    let allowed_roles = config.roles.clone();
-    orchestrator::capture(
-        profile,
-        &config,
-        components,
-        emitter,
-        &orchestrator::INTERRUPT,
-        args.offline.fire_interrupt,
-        allowed_roles,
-        // A sink failure is an unrecoverable end for `run`, not a clean stop.
-        false,
-    )
+    Ok((catalog_db, local_db))
 }
 
 /// Whether two store paths identify the same file.
@@ -395,49 +511,30 @@ fn build_resolver(
         .map_err(|e| CliError::failure(format!("provider precedence conflict: {e}")))
 }
 
-/// Resolve a non-profile target from an install location and synthesize the
-/// one-stage profile that captures it.
-fn resolve_nonprofile(
+/// Resolve a target from an install location and synthesize the one-stage profile
+/// that captures it.
+///
+/// Used for a `--target` carrying a Steam anchor: the anchor's app id looked up the
+/// install root, and the cascade recovers the client executable from it. The app id
+/// is carried as a fact on the synthesized profile so `--launch` can reach it.
+fn resolve_from_install(
     resolver: &TargetResolver,
-    args: &RunArgs,
-    emitter: &mut Emitter,
+    install_root: &Path,
+    app_id: Option<&str>,
     search: &fragcap::profile::SearchPath,
     bundled: &fragcap::profile::BundledSet,
 ) -> Result<Profile, CliError> {
-    // Resolve the install root, either given directly or looked up from a Steam
-    // app id. A Steam lookup surfaces its enumeration warnings and fails loudly
-    // when the title is not installed (P-4).
-    let (install_root, app_id): (PathBuf, Option<&str>) = if let Some(dir) = &args.install_dir {
-        (dir.clone(), None)
-    } else {
-        let app_id = args
-            .steam
-            .as_deref()
-            .expect("the clap group guarantees exactly one target input");
-        let lookup = fragcap::steam::install_root_for(app_id)
-            .map_err(|e| CliError::failure(format!("cannot look up Steam app {app_id}: {e}")))?;
-        for warning in &lookup.warnings {
-            emitter.warn(warning);
-        }
-        let root = lookup.install_dir.ok_or_else(|| {
-            CliError::failure(format!(
-                "Steam app {app_id} is not installed in any library"
-            ))
-        })?;
-        (root, Some(app_id))
-    };
-
-    // Offer the hint provider the Steam app id (when the target is a Steam title
-    // and the id is numeric) while the install root stays available to the engine
-    // rule and platform walker: the higher-precedence hint answer wins when the
-    // database names a client, and the lower providers answer when it does not.
-    let mut request = ResolutionRequest::for_install(&install_root, search, bundled);
+    // Offer the hint provider the Steam app id (when numeric) while the install root
+    // stays available to the engine rule and platform walker: the higher-precedence
+    // hint answer wins when the database names a client, and the lower providers
+    // answer when it does not.
+    let mut request = ResolutionRequest::for_install(install_root, search, bundled);
     if let Some(id) = app_id.and_then(|s| s.parse::<u32>().ok()) {
         request = request.with_steam_app_id(id);
     }
     let target = match resolver.resolve(&request) {
         Ok(target) => target,
-        Err(error) => return Err(nonprofile_resolution_error(error, &install_root)),
+        Err(error) => return Err(nonprofile_resolution_error(error, install_root)),
     };
 
     match target.identity() {

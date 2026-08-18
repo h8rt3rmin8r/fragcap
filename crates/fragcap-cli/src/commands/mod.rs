@@ -8,14 +8,12 @@
 //! timeout whose summary was printed) returns the code directly; an error means
 //! "print this and stop".
 
+pub mod capture;
+pub mod catalog;
 pub mod doctor;
 pub mod extcap;
-pub mod profile;
-pub mod run;
 pub mod schema;
 pub mod steam;
 pub mod stub;
-pub mod tap;
 pub mod targets;
 pub mod technologies;
-pub mod watch;

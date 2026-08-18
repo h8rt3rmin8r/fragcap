@@ -10,17 +10,69 @@ mod common;
 use common::run;
 
 #[test]
-fn help_lists_all_seven_commands() {
+fn help_lists_the_grouped_command_surface() {
     let (code, out, _err) = run(&["--help"]);
     assert_eq!(code, 0, "help is a success");
+    // The four presentational headings (section 17.3), nothing hidden.
+    for heading in ["Capture:", "Targets:", "Environment:", "Data:"] {
+        assert!(
+            out.contains(heading),
+            "`--help` is missing the `{heading}` group:\n{out}"
+        );
+    }
+    // Every command appears exactly once under a heading.
     for command in [
-        "run", "tap", "replay", "profile", "steam", "doctor", "extcap",
+        "capture",
+        "replay",
+        "targets",
+        "technologies",
+        "steam",
+        "doctor",
+        "extcap",
+        "catalog",
+        "schema",
     ] {
         assert!(
             out.contains(command),
             "`--help` does not list `{command}`:\n{out}"
         );
     }
+    // The retired verbs are gone.
+    for gone in ["run ", "tap ", "watch ", "profile "] {
+        assert!(
+            !out.contains(gone),
+            "`--help` still lists retired command `{gone}`:\n{out}"
+        );
+    }
+}
+
+const FOOTER: &str = "Run `fragcap --help` to see all commands.";
+
+#[test]
+fn bare_invocation_lists_targets_with_a_footer() {
+    // A bare `fragcap` runs the targets listing and appends the `--help` footer
+    // (section 17.4). Both calls read the same default store, so they differ only by
+    // the footer, whatever targets happen to be registered.
+    let (bare_code, bare_out, _err) = run(&[]);
+    assert_eq!(bare_code, 0, "bare invocation is a success");
+    assert!(
+        bare_out.contains(FOOTER),
+        "bare `fragcap` appends the footer:\n{bare_out}"
+    );
+
+    let (targets_code, targets_out, _err) = run(&["targets"]);
+    assert_eq!(targets_code, 0, "explicit targets is a success");
+    assert!(
+        !targets_out.contains(FOOTER),
+        "explicit `targets` omits the footer:\n{targets_out}"
+    );
+
+    // The two listings are identical except for the footer line.
+    assert_eq!(
+        bare_out.replace(FOOTER, "").trim_end(),
+        targets_out.trim_end(),
+        "bare and explicit listings differ only by the footer"
+    );
 }
 
 #[test]
@@ -38,12 +90,9 @@ fn a_bad_subcommand_is_a_usage_error() {
 
 #[test]
 fn a_missing_required_flag_is_a_usage_error() {
-    // `run` requires exactly one target input (--profile / --install-dir /
-    // --steam); supplying none is a usage error.
-    let (code, _out, _err) = run(&["run"]);
-    assert_eq!(code, 2);
-    // `tap` requires --process.
-    let (code, _out, _err) = run(&["tap"]);
+    // `capture` requires exactly one target input (--target / --process); supplying
+    // none is a usage error.
+    let (code, _out, _err) = run(&["capture"]);
     assert_eq!(code, 2);
 }
 
@@ -51,17 +100,17 @@ fn a_missing_required_flag_is_a_usage_error() {
 fn the_value_grammars_reject_bad_values_with_exit_two() {
     let cases: &[&[&str]] = &[
         // A bare integer duration has no unit.
-        &["run", "-p", "x", "--duration", "30"],
+        &["capture", "--process", "x", "--duration", "30"],
         // A bare integer size has no unit.
-        &["run", "-p", "x", "--max-bytes", "4"],
+        &["capture", "--process", "x", "--max-bytes", "4"],
         // A sink with no scheme.
-        &["run", "-p", "x", "--sink", "out.fcapng"],
+        &["capture", "--process", "x", "--sink", "out.fcapng"],
         // A sink with an unknown scheme.
-        &["run", "-p", "x", "--sink", "bogus:x"],
+        &["capture", "--process", "x", "--sink", "bogus:x"],
         // A bad direction.
-        &["run", "-p", "x", "--direction", "sideways"],
+        &["capture", "--process", "x", "--direction", "sideways"],
         // A ring window that is neither a duration nor a size.
-        &["run", "-p", "x", "--ring", "nonsense"],
+        &["capture", "--process", "x", "--ring", "nonsense"],
     ];
     for case in cases {
         let (code, _out, _err) = run(case);
