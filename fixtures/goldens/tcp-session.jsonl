@@ -1,4 +1,4 @@
-{"type":"header","version":"fragcap/0.4.0","interfaces":["tcp-session"]}
+{"type":"header","version":"fragcap/0.5.0","interfaces":["tcp-session"]}
 {"ts":1700000000.000000,"iface":"tcp-session","pid":4242,"proc":"game.exe","dir":"out","attr":"live","proto":"tcp","src":"192.0.2.10:51000","dst":"198.51.100.5:443","len":70,"orig_len":70,"data":"0200000000020200000000010800450000380000000040060000c000020ac6336405c73801bb00000000000000005000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"}
 {"ts":1700000000.005000,"iface":"tcp-session","pid":4242,"proc":"game.exe","dir":"in","attr":"live","proto":"tcp","src":"198.51.100.5:443","dst":"192.0.2.10:51000","len":70,"orig_len":70,"data":"0200000000020200000000010800450000380000000040060000c6336405c000020a01bbc73800000000000000005000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"}
 {"ts":1700000000.010000,"iface":"tcp-session","pid":4242,"proc":"game.exe","dir":"out","attr":"live","proto":"tcp","src":"192.0.2.10:51000","dst":"198.51.100.5:443","len":70,"orig_len":70,"data":"0200000000020200000000010800450000380000000040060000c000020ac6336405c73801bb00000000000000005000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"}

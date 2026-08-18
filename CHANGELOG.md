@@ -16,6 +16,633 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-18
+
+### Highlights
+
+v0.5.0 is the targeting release. fragcap now finds your installed games itself,
+so you no longer hand-write a profile file to capture one. Run `fragcap targets`
+to see what is on your machine, then `fragcap capture <n>` to capture it.
+
+- **`fragcap targets` is the hero command.** A bare `fragcap` (or `fragcap
+  targets`) runs discovery, registers what it finds, and prints your titles as a
+  numbered table with a CAPTURE column telling you which are ready to capture and
+  a neutral KNOWN column naming the engine, anti-cheat, and DRM detected for each.
+  The listing ends by naming the next command. An empty result prints the commands
+  that populate it rather than an empty table.
+- **Games are discovered, not described.** Discovery walks Steam, and on Windows
+  the known game-install roots across every eligible fixed volume, not just the
+  system drive; `fragcap targets scan <dir>` points it at one folder. Every origin
+  of a target sits behind one seam, so adding Epic, GOG, Xbox, or Battle.net later
+  is a new implementor rather than a new code path. The cross-volume walk is
+  governed by a persistent volume allowlist keyed on stable volume identity, and
+  every listing surfaces a conserved account, so an excluded volume or an
+  unparsable title is counted and shown rather than dropped silently.
+- **Technology detection is data, not code.** The engine, anti-cheat, and DRM
+  signatures that identify a game from its install directory now live in a table
+  in the shipped catalog database, evaluated by one generic matcher. Adding a
+  signature of an implemented kind is honored on the next scan with no code change
+  and no release. The bundled set covers the engines Unity, Unreal, Source, Godot,
+  CryEngine, and RE Engine; the anti-cheat products Easy Anti-Cheat, BattlEye,
+  Vanguard, mhyprot, nProtect GameGuard, and Xigncode3; and the DRM products
+  Denuvo, Steam DRM, Arxan, and VMProtect. A detected product is neutral evidence,
+  never a gate: nothing in any output frames a title as off limits or discouraged.
+- **Two stores: one shipped, one yours.** `hint.db` splits into a disposable
+  `catalog.db` (shipped, replaced wholesale by a catalog refresh) and a
+  user-owned `local.db` (where your targets and learned launch data accumulate).
+  A catalog refresh never touches `local.db`. Resolution is fidelity-ordered, so
+  a target you authored or that was verified on disk outranks the shipped
+  catalog's heuristic hint for the same title.
+- **One capture verb.** `run`, `tap`, and `watch` collapse into `capture`, which
+  takes exactly one of `--target <selector>` or `--process <image>`, with every
+  other flag orthogonal. Five previously inexpressible captures (a named process
+  into a ring buffer, a named process waited for, a registered title launched
+  under capture, and so on) are now expressible. `--help` groups the surface under
+  four headings that hide nothing.
+- **`fragcap doctor --fix`.** doctor itself is unchanged, still a read-only
+  classifier that names a remediation for every blocking failure. `--fix` adds an
+  action layer above it that offers to perform those remediations one at a time
+  under your confirmation, and only ones the report already printed.
+- **Launch and observe.** A target whose launch chain is unresolved can now be
+  captured: fragcap builds a two-stage profile from the executable you did record,
+  captures normally, and promotes the stored target to the client image that
+  actually held the sockets.
+- **The documentation describes the tool that shipped.** The landing page and
+  getting-started guide are rewritten around `fragcap targets` and `fragcap
+  capture <n>`, ending at a capture file on disk. The specification gains an
+  `Applies-To` field bound to the workspace version, and a continuous-integration
+  gate now refuses to assemble a release whose changelog fragment claims a
+  specification change the release diff does not contain.
+
+#### Upgrading from v0.4.0
+
+Below 1.0.0 a minor release may carry breaking changes, and this one does. There
+are no aliases and no deprecation shims:
+
+| v0.4.0 | v0.5.0 |
+| --- | --- |
+| `fragcap run` / `tap` / `watch` | `fragcap capture` |
+| `--profile <file>` capture selector | `--target <selector>` or `--process <image>` |
+| `fragcap profile ...` | `fragcap targets ...` (`schema validate` still validates a JSON artifact) |
+| `fragcap steam profile <app_id>` | `fragcap targets add --steam <app_id>` |
+| `fragcap targets seed-signatures` | `fragcap catalog seed-signatures` |
+| `--hint-db` / `FRAGCAP_HINT_DB` | `--catalog-db` / `--local-db` (`FRAGCAP_CATALOG_DB` / `FRAGCAP_LOCAL_DB`) |
+| `hint.db` | `catalog.db` (shipped) plus `local.db` (yours) |
+
+The Wireshark extcap integration still advertises a `--profile` analyzer-config
+option; migrating it to the stored-target model is follow-up work in its own
+slice, because it changes the analyzer dialog contract.
+
+#### Installing on Windows
+
+1. Download `fragcap-0.5.0-x86_64.msi` and its `.sha256` from the assets below.
+2. Verify it: `Get-FileHash fragcap-0.5.0-x86_64.msi -Algorithm SHA256` should
+   match the value in the `.sha256` file. The installer is unsigned, so Windows
+   shows a SmartScreen "Windows protected your PC" warning with an "Unknown
+   Publisher" note; this is expected. Choose **More info**, then **Run anyway**.
+3. Run the installer. It installs to `Program Files`, adds fragcap to the system
+   PATH, and installs the catalog database. It can optionally register fragcap as
+   a Wireshark extcap source; both registration choices are off by default.
+4. Open a **new** terminal (so the PATH change takes effect) and run `fragcap
+   doctor` to check your setup, then `fragcap targets` to see your games.
+5. Live capture also needs the **npcap** driver, which the installer cannot
+   bundle. Install it from https://npcap.com with **WinPcap API-compatible mode**
+   enabled, which is not the default; `fragcap doctor` names it if it is missing,
+   and `fragcap doctor --fix` offers to fetch and launch the vendor's own
+   installer for you. Current npcap installs loopback capture support
+   automatically, so there is no separate loopback option to enable.
+
+Prefer no installer? Download the portable
+`fragcap-0.5.0-x86_64-pc-windows-msvc.zip` instead and run `fragcap.exe` from the
+unzipped folder; it carries the catalog database beside the binary.
+
+### Added
+
+`cargo xtask spec` checks that the specification's `Applies-To` field matches the
+workspace version and that every changelog fragment declares its `spec-impact`,
+and the changelog release step now refuses to assemble a release whose fragment
+claims a specification change the release diff does not contain.
+
+A capture target can now be a stored entry rather than a profile file. `fragcap
+targets add <name>` registers a target in `local.db`, deriving a unique,
+human-readable handle from the name (Unicode-normalized, never purely numeric,
+collisions suffixed `_2`), and assigning a durable 63-bit identifier: the low 63
+bits of BLAKE3 over a canonical platform anchor such as `steam:620` when one is
+given, so two independent registrations of a title merge on identity, or a random
+63-bit value otherwise. `fragcap targets list` and `fragcap targets show`
+select a target by handle, case-insensitive name, row index, or `--id`; a name
+that matches more than one target lists the matches and exits 2 rather than
+guessing.
+
+Resolution over the two stores is now fidelity-ordered: a locally authored or
+verified target entry outranks the shipped catalog's heuristic hint for the same
+title, with the order `authored > verified > heuristic-unverified > observed`. The
+four declines that keep the resolver from naming a launcher as the game or
+guessing among clients (a sparse row, an engine-only row, a launcher-mediated row,
+and a row naming more than one distinct client) are preserved for entries as well.
+
+This slice ships the entry model, handles, the identifier scheme, the selector,
+and the fidelity-ordered store read. The remaining v0.5.0 target work is staged
+across later slices: the engine and platform-walker providers become target
+sources in S052; the JSON export and import of entry documents and their
+unification with the master schema land in S055 and S057; and the profile-file
+surface is retired by S054's command rework. Until then the `profile` command and
+the `--profile` capture selector are unchanged.
+
+Installed games can now be discovered rather than described by hand. Every origin
+of a capture target, a Steam walk, a scan of the known game-install roots, or a
+directory the user points at, is a discovery source behind one seam, so single
+authoring and bulk platform walking are the same operation at different batch
+sizes: adding Epic, GOG, Xbox, Battle.net, or an emulator ROM directory later is a
+new implementor with no downstream change.
+
+`fragcap targets discover` walks Steam (each installed title joined to the shipped
+catalog for its classification) and, on Windows, the known game-install roots
+across every eligible fixed volume, and lists what it finds. A machine with no
+Steam still lists games whenever a known root exists, on any drive, not only the
+system drive. `fragcap targets scan <dir>` points discovery straight at one folder.
+Each listing surfaces a conserved account, so an excluded volume or an unparsable
+title is counted and shown rather than dropped silently.
+
+The cross-volume walk is kept safe by a persistent volume eligibility allowlist in
+`local.db`, seeded permissively with the fixed volumes present at first run and
+requiring an explicit opt-in for any volume that appears later or misreports itself
+as fixed (a userspace or FUSE mount). Volumes are keyed on their stable GUID
+identity, not a reassignable drive letter. The known-roots walk classifies a
+directory by its shape and stops descending on a hit rather than enumerating every
+executable on the machine; the signature matcher that generalizes this beyond
+curated roots lands in a later slice, along with deep filesystem scanning.
+
+Two operator decisions shaped the slice and are recorded in the spec's
+clarifications: the eligibility table is permissive-seeded then behaves as an
+allowlist, and discovery surfaces candidates live and persists one only when the
+user acts on it, so a scan result becomes a stored target through the same entry
+model every source shares. The pure discovery model (the seam, the tiers, the
+account, the classifier seam, and the eligibility store) lives in `fragcap-targets`
+and adds no new dependency and no new inter-crate edge; the two platform adapters
+(the Steam walk and the Win32 volume inventory) live in the `fragcap` facade, the
+one crate that already depends on both leaf crates. Wiring the interactive,
+one-step scan-confirm-author flow into the command line is deferred to the S055
+targets hero command; the `InteractiveSource` seam it uses ships here.
+
+Technology detection is now data, not code. The engine, anti-cheat, and DRM
+signatures that identify a game from its install directory live in a `signature`
+table in the shipped catalog database, and one generic matcher evaluates them.
+Adding a signature of an implemented kind is honored on the next scan with no code
+change and no release: `fragcap targets seed-signatures` refreshes detection
+capability through the same catalog-seed path that refreshes the title catalog,
+seeded from a bundled set that covers the engines Unity, Unreal, Source, Godot,
+CryEngine, and RE Engine; the anti-cheat products Easy Anti-Cheat, BattlEye,
+Vanguard, mhyprot, nProtect GameGuard, and Xigncode3; and the DRM products Denuvo,
+Steam DRM, Arxan, and VMProtect.
+
+Detection now runs automatically in the scan phase of every discovery source: a
+directory whose shape matches an engine signature is a game, the walk stops
+descending on the hit, and the candidate carries the detected engine and any
+anti-cheat or DRM found alongside it as evidence. A locally detected engine is
+stamped `verified`, which outranks the `heuristic-unverified` attribution a remote
+catalog carries, because evidence on disk outranks a remote claim. The standalone
+`fragcap technologies --path <dir> --catalog-db <catalog.db>` command a researcher
+uses to inventory an unknown binary reads the same table, and `fragcap steam
+profile` labels a scaffolded profile's technologies from it when a catalog is
+given.
+
+A detected anti-cheat or DRM product is neutral evidence, never a gate. Nothing in
+any output frames a title as off limits, risky, or discouraged, and a title with
+no recorded online mode is still fully capturable.
+
+Filename, directory-shape, and PE-version-string matching are evaluated this
+slice; the binary-marker kind is carried in the schema for the deep-protection DRM
+products (Denuvo, Arxan, VMProtect) and left inert, counted and surfaced as
+not-yet-matchable rather than dropped. The `signature` table is an additive
+migration advancing the catalog schema to version 5. The change adds no dependency
+and removes the vendored SteamDB ruleset that was compiled into the binary,
+authored for depot manifests rather than on-disk installs, and never validated
+against a real game.
+
+### Command line surface rework (slice S054)
+
+The three capture verbs `run`, `tap`, and `watch` collapse into a single `capture`
+verb, with no aliases and no deprecation shims. A target is identified by exactly
+one of two mutually exclusive, required inputs: `--target <selector>` (a stored
+target resolved against `local.db` by an S051 selector) or `--process <image>` (a
+raw process image name). Every other flag is orthogonal to the target input, so all
+five previously-inexpressible captures become expressible: a named process into a
+ring buffer, a named process waited for, a registered title launched under capture,
+a profile-equivalent capture with a give-up timeout, and a named process with a ring
+buffer. `--launch` requires the resolved `--target` to carry a Steam anchor; a
+`--process` capture, or an anchorless target, is refused (exit 2) rather than
+silently ignored. The optional path anchors (`--path`, `--path-regex`) the retired
+`watch` carried survive on `capture`.
+
+The profile-file capture surface is retired (completing the S051 US5 deferral): the
+`profile` command and its subcommands, the AppData profile directory, the
+`--profile-dir` global, and the `run`/`tap`/`watch --profile` capture selector are
+removed. `schema validate <file>` remains as the general JSON-artifact validator.
+The file-backed profile provider itself is retained for now, because the Wireshark
+`extcap` integration (section 14.5) still advertises and resolves a `--profile`
+analyzer-config option; migrating extcap to the stored-target/raw-process model is
+follow-up work in its own slice, since it changes the analyzer dialog contract
+rather than the capture verb this slice reworks.
+
+The command namespaces now follow the two stores. A new `catalog` namespace owns
+every operation that writes the shipped, disposable `catalog.db`: `import`,
+`export`, `seed`, `seed-engine`, `seed-signatures` (moved from `targets`), and a new
+`catalog update` that fetches the published catalog behind the `net` feature. The
+`targets` namespace keeps only user-store operations, and registering an installed
+Steam title moved from `steam profile <app_id>` to `targets add --steam <app_id>`;
+the `steam` namespace keeps `steam list`.
+
+`--help` groups the surface under four presentational headings (Capture, Targets,
+Environment, Data) that hide nothing, rendered through a custom help template
+because the pinned clap 4.5.32 cannot group subcommands natively. A bare `fragcap`
+lists the registered targets and prints a footer pointing at `--help`; an explicit
+`fragcap targets` prints the same listing without the footer.
+
+No capture, attribution, pipeline, sink, or core code changed, and no dependency was
+added or removed; the change is confined to the `fragcap-cli` argument grammar,
+dispatch, and assembly seam, plus documentation and the master-specification command
+surface (section 17).
+
+### The targets hero command and interactive authoring (slice S055)
+
+`fragcap targets` (and a bare `fragcap`) becomes the hero command: it runs
+discovery across its tiers, registers any newly found titles into `local.db`
+idempotently, and presents the registered targets as a numbered table with a
+CAPTURE column (`ready` or `needs a target`, derived from whether the entry names a
+Windows client or carries a resolvable anchor) and a neutral KNOWN column (the
+detected engine, anti-cheat, and DRM products, else "no online mode recorded", else
+"no launch data known"). Rows are ordered by handle, the listing ends by naming the
+next command (`fragcap capture <n>`), and an empty result prints the concrete
+commands that populate the store rather than an empty table. Registration is
+additive and idempotent: a repeat listing over an unchanged environment registers
+nothing new and never modifies or removes an existing entry.
+
+The listing now writes a durable snapshot of what it displayed to `local.db` (a new
+`listing_snapshot` table, schema version 5 to 6), and a bare-integer selector
+resolves against that snapshot rather than the live store order. So `fragcap capture
+3` names the row the user just saw, even after an intervening add or remove shifts
+the live order; a position past the snapshot, or before any listing has run, is an
+out-of-range usage error (exit 2), distinct from a clean handle or name miss. This
+changes the S054 behavior where `capture <n>` resolved over the live order.
+
+`targets add` gains interactive authoring. Pointed at an executable, it runs
+detection on the executable's directory and shows the engine, anti-cheat, and DRM
+evidence inline, then asks whether that executable is the process that holds the
+sockets: `[Y/n/unsure]`. The `unsure` branch is a first-class outcome and the reason
+the prompt exists: it registers the entry with its launch chain unresolved and
+records no socket holder the tool did not observe (P-9). `yes` records the executable
+as the resolved client; `no` records it as a launcher with the holder unresolved.
+When standard input is not a terminal, the same decision is supplied by
+`--socket-holder yes|no|unsure` (which requires `--exe`), so every branch is
+reachable without a terminal and a required-but-missing value is a usage error rather
+than a blocking prompt.
+
+The target lifecycle is rounded out: `targets scan <dir> --db <local.db>` registers
+the titles it discovers (through the same idempotent registration the listing uses);
+`targets remove <selector>` deletes exactly the resolved target and refuses an
+ambiguous name (exit 2); and `targets export [selector]` / `targets import <file>`
+move targets between stores as a dedicated JSON array of target-entry objects
+(carrying each entry's identity), merging on the stable identifier so an export
+round-trips through an import with identical identifiers and no duplicate rows. This
+representation is deliberately not the published capture schema, whose export records
+are catalog games and omit the entry identity that merge-on-id requires (operator
+decision, 2026-08-18); the published schema is neither used for targets nor changed.
+
+The capture-time promotion of an `unsure`-authored row to `verified` is partially
+delivered and partially deferred, stated here rather than reported as complete. The
+promotion mechanism ships and is tested: `Store::promote_target_launch` rewrites an
+entry's launch chain and raises its fidelity, and the launch-chain resolution logic
+is unit-tested end to end. The capture-time trigger is deferred: capturing an
+unresolved target requires a capture-by-observation mode this architecture does not
+have, since `capture --target` refuses a target that names no single Windows client.
+Wiring that trigger is follow-up work in its own slice (issue #152); no dead or
+fabricated promotion path was added to stand in for it.
+
+### doctor gains an action layer (`doctor --fix`, slice S056)
+
+`fragcap doctor` is unchanged: it stays a read-only classifier that probes the
+environment, reports each check, names a remediation for every blocking failure,
+and exits 1 when anything blocks. A new `fragcap doctor --fix` adds an action
+layer above that same classifier. It prints the same report, then offers to
+perform the remediations the report named, one at a time, under the operator's
+confirmation. It acts only on remediations `doctor` already printed: each
+actionable check now carries a structured action alongside its human-readable
+remediation, constructed together so the two cannot drift, and `--fix` offers only
+the actions carried by a check present in the current report.
+
+`--fix` is interactive and confirmation-driven, so it is refused (usage error,
+exit 2) when combined with `--json`, when stdout is not an interactive terminal,
+and, without `--yes`, when stdin is not a terminal. `--yes` pre-confirms every
+offered action for unattended interactive use but still requires a terminal
+stdout; `--yes` without `--fix` is a usage error. After the action phase, the
+classifier is re-run and the updated verdict is printed. Every action reports its
+honest outcome (performed, skipped, degraded, or failed); a failed action is never
+reported as success.
+
+The actions offered map to the findings `doctor` already reports: obtain npcap
+(fetch and launch the vendor's own signed installer in a `net`-capable build, or
+open the official download page otherwise), relaunch the npcap installer for the
+WinPcap API mode, relaunch elevated (offered first so escalation precedes
+privilege-gated work; the elevated child re-checks and the parent stops), register
+the analyzer extcap integration, fetch the published catalog, and run discovery
+(tiers 1 and 2). The catalog and npcap fetch actions are gated on the `net`
+capability and degrade in a default build (the catalog finding becomes guidance
+naming `catalog update`; the npcap finding opens or names the download page). The
+extcap, catalog, and discovery actions reuse the existing `extcap install`,
+`catalog update`, and discovery-composition paths, so there is one path to each
+effect.
+
+Two findings the classifier did not previously name are added as new, additive
+pure checks so `--fix` can act on them: a missing catalog store (warns, carries
+the fetch action) and no registered target entries (warns, carries the discovery
+action). Both are warnings, never blocking failures, so a ready machine, one with
+a catalog and at least one target entry, still passes and exits 0 with unchanged
+output. The classifier remains a pure function from an injected `Inputs` to a
+`Report`; the new target-entry count enters through the thin probe, and the action
+layer lives entirely in `fragcap-cli` above the classifier.
+
+This change amends constitution Licensing rule 2 to permit the user-confirmed
+vendor-installer fetch; see the decisions fragment for the npcap license
+determination and the amendment.
+
+### Landing page and getting-started rewrite, and site docs convergence (slice S057)
+
+The public site and the first-run documentation now describe the tool that
+shipped in S054/S055 rather than the profile-file tool that preceded it. The
+landing page opens with the problem fragcap solves that standard capture does not,
+stated for a visitor who has never thought about attribution, shows the real
+`fragcap targets` hero listing as its worked example, carries the dependency-model
+diagram (npcap required, Wireshark recommended, extcap optional), and directs the
+visitor to getting started with a single call to action. The getting-started guide
+is rewritten to end at a capture file on disk using `fragcap targets` then
+`fragcap capture <n>`: prerequisites are acquired in "Before you begin" (framed
+conditionally), the install step links the releases page and names the `.msi` /
+`.zip` / `.sha256` assets, the verify step tells the reader to run the terminal as
+Administrator and is the single home of the optional `fragcap extcap install`, and
+the target step presents automatic discovery as the happy path and defines a Steam
+App ID inline. The npcap narrative across the guide, the installer exit-dialog
+prompt, and the S056 `doctor --fix` action now tell one coherent story
+(detection-only, with the user-confirmed vendor-installer fetch permitted).
+
+This resolves the getting-started QA batch: issues #130 (extcap command surfaced
+before fragcap is installed), #131 (no download link), #132 (prerequisites
+installed as a numbered step), #134 (run as Administrator; extcap home), #135 ("Get
+a profile" unclear), and the documentation half of #133 (installer npcap
+exit-dialog contradicting the docs narrative).
+
+The reference set is converged onto the shipped command surface: the CLI reference
+is rewritten to `capture`, `replay`, `targets`, `technologies`, `steam`, `doctor`,
+`extcap`, `catalog`, and `schema` (no `run`/`tap`/`watch`/`profile`/`steam
+profile`); the capture-modes guide uses `fragcap capture`; and the two pages that
+taught authoring profile files (`guides/writing-a-profile`,
+`reference/profile-schema`) are removed, with their navigation and inbound links
+rerouted. No documentation page references the retired verbs, the retired profile
+directory, the `--profile` selector, or a profile slug that no longer exists.
+
+`fragcap capture` now accepts a stored-target selector positionally, so the
+`fragcap capture <n>` form the `targets` listing hints (and the README and site
+docs show) works as advertised: the positional is equivalent to `--target` and
+mutually exclusive with it, resolving a handle, name, or row index the same way.
+Before this, only the `--target` flag form parsed, so the listing's own hint was
+rejected as an unexpected argument.
+
+A small companion change removes the leftover `profile dir` identity row and the
+`Profiles` section from `fragcap doctor` (in both the human report and `--json`),
+so the getting-started sample is faithful to the binary and free of the retired
+directory. The bundled profile set was already permanently empty and the user
+profile directory unwritable after S054, so the rows reported dead surface; the
+classifier keeps its exit status and every other row unchanged, and the internal
+`Profile` capture-config type is untouched. Specification sections 15.5 and 26.3
+are reconciled to match.
+
+IGDB enrichment and its credential walkthrough (issue #144 stretch goal) are
+deferred to a dedicated slice: the codebase has no IGDB or credential-storage
+plumbing (the S050 local.db columns the handoff plan assumed were never built), so
+documenting a credential-registration flow with no consumer would describe unbuilt
+functionality (P-11). A dedicated slice should carry the storage, the fetch, and
+the walkthrough together.
+
+### CLI targets convergence: default `--db` and extcap by target selection (slice S058)
+
+Two parts of the `fragcap-cli` surface now speak the targets model the rest of the
+tool adopted in S054/S055.
+
+The explicit `targets` subcommands (`add`, `show`, `remove`, `export`, `import`,
+`list`) no longer require an explicit `--db`. When it is omitted they resolve the
+same default local store the bare `fragcap targets` hero command uses (the
+`FRAGCAP_LOCAL_DB` override, else the per-user default), so `fragcap targets add
+--steam <app_id>` and its siblings run with no store path, exactly as the listing
+does. An explicit `--db` still overrides, and a subcommand that must open a store
+with no resolvable location fails with a named error rather than a panic. This
+resolves the manual-registration path the S057 getting-started guide had to defer to
+the reference (issue #157).
+
+The Wireshark extcap capture path now selects a stored **target** instead of
+resolving a retired profile file. The stored-target resolution that `capture` uses
+is extracted into one shared implementation (`commands/target_resolve.rs`), and
+`extcap` calls it: its configuration dialog presents a target selector (a handle, a
+name, or a row index), resolved against the local store exactly as `capture
+--target` resolves it, so the analyzer dialog and the command line select capture
+identically. The extcap control grammar is otherwise unchanged (interfaces, link
+types, the four-option config block, and FIFO streaming), so unmodified Wireshark
+still drives fragcap; only the meaning of the number=0 selection option changes from
+a profile reference to a target selector. No code path in the extcap capture handler
+resolves a profile file through the search-path or bundled-set cascade any longer.
+The S057 CLI-reference "legacy" callout is removed and the converged options are
+documented (issue #156).
+
+The extracted `target_resolve` seam takes its inputs explicitly rather than from the
+`capture` argument struct, so both commands share one resolution body; it is also
+the single place the follow-up launch-and-observe slice (S059, issue #152) extends.
+
+`fragcap-cli` only: no change to `fragcap-core`, the pipeline, attribution, or the
+capture orchestrator's behavior, and no new dependency or `Cargo.lock` delta. The
+extcap capture golden is regenerated to reflect the synthesized stored-target
+profile (a single `target`-role stage, as `capture` synthesizes), with the
+conservation identity and packet count unchanged.
+
+### Launch-and-observe capture and capture-time promotion (slice S059)
+
+A stored target whose launch chain is unresolved, the record an interactive
+`targets add` writes when the user answers `no` or `unsure` to whether the executable
+they pointed at holds the sockets, can now be captured. Before this it named no
+client and `capture` refused it; S055 shipped the promotion mechanism but deferred
+the capture-time trigger (issue #152).
+
+Capturing such a target runs in launch-and-observe mode: fragcap builds a profile
+from the executable the user did record (a two-stage profile whose observed
+executable is a launcher stage and whose terminal client stage matches the process
+that descends from it and holds the sockets), captures normally, and aggregates which
+process image the run attributed the most packets to. When the run observes a
+dominant socket-holding image, the stored target is promoted to that resolved client
+at verified fidelity (capture-time promotion), so a second capture addresses the
+client directly and the target reads `ready`. A run that observes nothing leaves the
+target exactly as it was: promoting on no observation would record a socket holder
+the tool never saw, which it does not do.
+
+The observe-mode resolution is added to the shared `commands/target_resolve.rs` seam
+S058 extracted, so both `capture` and the Wireshark `extcap` path resolve an
+unresolved target identically; only `capture` writes the promotion back (extcap is a
+streaming bridge, not the store owner). The run's dominant socket-holder rides on an
+additive per-image tally on `CaptureStats`, folded across capture threads and kept
+out of every counter total, completion summary, and written file, so every committed
+golden is reproduced byte for byte.
+
+This slice adds no direct-executable launcher: live launch stays restricted to the
+existing Steam-anchored path, so an unresolved target with no platform anchor is
+started by the operator (by any means) and observe-mode captures it. The whole
+resolve, observe, and promote-or-leave decision is verified offline over the scripted
+fixture pipeline; only the literal `steam://run` launch is Tier 2 and is not
+exercised in continuous integration.
+
+No new dependency and no `Cargo.lock` delta. New glossary terms: launch-and-observe,
+observed socket-holder, capture-time promotion.
+
+### Changed
+
+The project constitution gains two principles: P-10 (One Path To A Target),
+which requires every capture target to be created by one operation and stored in
+one form, and P-11 (The Specification Describes What Shipped), which makes the
+master specification track the released software.
+
+The master specification now describes shipped reality. It carries an
+`Applies-To` field naming the released version it documents, records the v0.2.0
+through v0.4.0 release history, retitles version-specific sections
+version-neutrally, and no longer describes v0.2.0 as an unshipped release.
+
+`fragcap run` replaces the `--hint-db` flag (and `FRAGCAP_HINT_DB`) with
+`--catalog-db` and `--local-db` (and `FRAGCAP_CATALOG_DB` / `FRAGCAP_LOCAL_DB`),
+one per store; `doctor` now reports both store paths. There is no `--hint-db`
+alias.
+
+fragcap now keeps two stores in its per-user data directory: a shipped
+`catalog.db` (disposable, replaced wholesale by a future catalog refresh) and a
+user-owned `local.db` (where learned launch data accumulates and later user data
+lives). A catalog refresh never touches `local.db`. Both are created on first run
+with no elevation, and resolution consults the local store before the catalog.
+
+### Fixed
+
+### Installer npcap exit-dialog prompt reconciled with the docs (slice S060)
+
+The Windows installer's exit-dialog npcap prompt no longer reads as an unconditional
+requirement to a user who already installed the capture driver. It now detects, via
+core WiX `FileSearch`es under `[System64Folder]`, the same two markers `fragcap doctor`
+probes: npcap's own driver copy (`System32\Npcap\wpcap.dll`) and the WinPcap-API-mode
+copy the live backend loads (`System32\wpcap.dll`). The "open the npcap download page"
+option is pre-checked unless both are present. On a machine that installed npcap in
+WinPcap-API mode as the prerequisite (through Wireshark), the option is shown unchecked
+so the user can click Finish straight through; on a machine without npcap, with npcap
+but no WinPcap-API mode, or with only a stray legacy WinPcap copy, the option is
+pre-checked and Finish opens the vendor's page, matching what `doctor` reports. The
+label is reworded to name npcap as the capture driver and frame the page as for a user
+who does not already have it, rather than asserting it is "required before capturing
+traffic" (issue #133).
+
+The policy is unchanged: fragcap still downloads, bundles, and installs no npcap; the
+checkbox only opens the vendor's page, and only when left checked. This is a
+presentation fix. No new WiX extension is introduced (`FileSearch`, `AppSearch`, and
+`SetProperty` are core WiX 3), and there is no code, dependency, or `Cargo.lock`
+change. The getting-started guide and the specification's distribution note are
+reconciled with the conditional behavior.
+
+`fragcap doctor` no longer aborts on a machine where the capture DLL cannot be
+loaded. The real-interface enumeration reaches the delay-loaded `wpcap.dll`, and
+it was called before that DLL's presence was established, so the first call
+raised a delay-load exception (0xC06D007E) and the process exited before doctor
+could report the very condition it was checking for. This defeated the delay-load
+design, whose whole purpose is to let doctor run and say what to install on
+exactly that machine. doctor now probes the live backend only when the
+WinPcap-API-compatible `wpcap.dll` the backend actually delay-loads (the System32
+copy, installed by npcap's WinPcap API compatibility option) is present; when it
+is absent nothing is attempted and the npcap and WinPcap-API checks carry the
+remediation, so doctor runs to its normal not-ready exit instead of crashing.
+This covers both a machine with no npcap at all and npcap installed without the
+compatibility option. It surfaced only in the release build (features `live`,
+`socket-table`, `etw`) run without a loadable `wpcap.dll`, which the default test
+build does not exercise.
+
+### Decisions
+
+**2026-08-16** Added a `Specification version lock-step` step to `ci.yml`
+(slice S049), running `cargo xtask spec`. It asserts the specification's
+`Applies-To` field equals the workspace version and that every `changelog.d`
+fragment carries a valid `spec-impact` line, making constitution principle P-11
+enforceable in continuous integration.
+
+**2026-08-16** Extended the release-preparation scripts (`scripts/cut-release.sh`
+and `scripts/New-Release.ps1`, slice S049) to move the specification's
+`Applies-To` field to the new version alongside the workspace bump. The field is
+bound to the workspace version by the new `cargo xtask spec` check that runs in
+`cargo xtask ci` during release preparation, so without this the check would fail
+on the stale field on every release.
+
+**2026-08-16** Renamed the shipped seed store from `hint.db` to `catalog.db` in
+`.github/workflows/release.yml` (slice S050): the release now builds, stages,
+archives, and checksums `catalog.db` beside the binary, which the first-run
+bootstrap copies into the per-user catalog store. The MSI (`wix/main.wxs`)
+installs the same file under the new name.
+
+2026-08-17: The release workflow (`.github/workflows/release.yml`) now seeds the
+detection signature table into the shipped `catalog.db`. Before slice S053 the
+release built a barebones catalog by importing the committed empty hint seed, which
+under the S053 schema (version 5) creates an empty `signature` table; the shipped
+catalog would then detect no engine, anti-cheat, or DRM until an operator ran
+`targets seed-signatures` by hand. The build step now runs `fragcap targets
+seed-signatures --db target/release/catalog.db` immediately after the import, so the
+archive and the MSI both ship a catalog whose detection works out of the box. The
+seed is offline (from the bundled Appendix B document embedded in the binary) and
+idempotent, so it adds no network dependency and re-running is safe. This is a
+dated decision recorded per the pinned-artifact rule (constitution: workflows change
+only with a `changelog.d/*.decisions.md` fragment).
+
+**2026-08-18** npcap license determination for the `doctor --fix` fetch action
+(slice S056, issue #143). The npcap LICENSE
+(https://github.com/nmap/npcap/blob/master/LICENSE) grants free use (install and
+use five copies, unlimited when used only with Nmap, Wireshark, or Microsoft
+Defender for Identity) and prohibits redistribution and transfer of the Software
+Product ("not open source software and may not be redistributed or used in other
+software without special permission"; a licensee "may not ... redistribute,
+encumber, sell, rent, lease, sublicense, or otherwise transfer" it). No clause
+restricts a user, or a tool acting on the user's machine, from downloading the
+vendor's official installer and running it. Determination: fragcap fetching the
+vendor's own signed installer from the official location and launching it, while
+embedding, copying, hosting, or caching nothing in any fragcap artifact, does not
+redistribute npcap and is permitted. Guardrails carried into the implementation:
+fetch only from the vendor's official location, store nothing as fragcap's own,
+and act only under an explicit interactive confirmation.
+
+**2026-08-18** Constitution amendment authorized by the operator (slice S056):
+Licensing rule 2 changed from an absolute ("It never downloads, installs, or
+invokes an installer") to a narrow, user-confirmed carve-out permitting fragcap to
+fetch and launch the vendor's own signed installer under an explicit interactive
+confirmation (as in `doctor --fix`), storing nothing in any fragcap artifact and
+redistributing nothing. Rules 1 (no bundling), 3 (documented prerequisite), and 4
+(no SDK vendoring) stay absolute; P-1 and P-9 are untouched. Constitution version
+1.2.0 -> 1.3.0 (MINOR: an existing section materially expanded). Recorded here per
+the amendment policy; the reasoning is in the constitution's Sync Impact Report.
+
+**2026-08-18** `http_req` added as an optional dependency of `fragcap-cli` behind
+the `net` feature, for the npcap installer fetch. It is already in the workspace
+graph via `fragcap-targets`, so this adds no package to `Cargo.lock`; the `net`
+feature is off by default, so the shipped end-user build never compiles it, and
+`cargo xtask msrv` (default features) never sees it.
+
+**2026-08-18** Corrected the golden-regeneration step in the release-preparation
+scripts (`scripts/cut-release.sh` and `scripts/New-Release.ps1`). Both named a
+`fragcap-cli` test binary `cli_run`, which the S054 command-line surface rework
+removed when it collapsed `run`, `tap`, and `watch` into `capture`. The goldens
+that carry the embedded `fragcap/<version>` string moved with it: `cli_capture`
+now owns `capture.fcapng` and `capture.jsonl`, and `cli_extcap` owns
+`run.fcapng`. Preparing v0.5.0 failed at that step with `no test target named
+cli_run`, after the version bump had already been committed, leaving a
+half-prepared release branch. Both scripts now regenerate through the three
+binaries that actually own the version-bearing goldens, and the comment above the
+step names which golden belongs to which binary so the next rename is caught by
+reading rather than by a failed release. Recorded as a dated decision per the
+pinned-artifact rule (`scripts/**` changes only with one).
+
 ## [0.4.0] - 2026-08-14
 
 ### Highlights
@@ -5084,6 +5711,7 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.5.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.4.0
 [0.3.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.3.0
 [0.2.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.2.0
