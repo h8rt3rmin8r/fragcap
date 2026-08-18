@@ -345,7 +345,13 @@ fn a_blocked_machine_surfaces_actions_bound_to_its_findings() {
     inputs.target_entry_count = Some(0); // -> RunDiscovery
     let report = checks::run(&inputs);
 
-    let net = offered_actions(&report, Capabilities { net: true });
+    let net = offered_actions(
+        &report,
+        Capabilities {
+            net: true,
+            elevation: true,
+        },
+    );
     let kinds: Vec<ActionKind> = net.iter().map(|a| a.kind).collect();
     assert_eq!(
         kinds[0],
@@ -361,7 +367,13 @@ fn a_blocked_machine_surfaces_actions_bound_to_its_findings() {
         "net-capable: no degradation"
     );
 
-    let off = offered_actions(&report, Capabilities { net: false });
+    let off = offered_actions(
+        &report,
+        Capabilities {
+            net: false,
+            elevation: true,
+        },
+    );
     let npcap = off
         .iter()
         .find(|a| a.kind == ActionKind::ObtainNpcap)
@@ -388,5 +400,12 @@ fn a_ready_machine_offers_no_actions() {
     // The ready fixture has a catalog and target entries, so the preparation checks
     // stay silent and there is nothing to fix.
     let report = checks::run(&ready());
-    assert!(offered_actions(&report, Capabilities { net: true }).is_empty());
+    assert!(offered_actions(
+        &report,
+        Capabilities {
+            net: true,
+            elevation: true
+        }
+    )
+    .is_empty());
 }

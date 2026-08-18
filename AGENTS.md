@@ -254,7 +254,7 @@ load-bearing rather than bookkeeping.
 | `windows-sys` | runtime, optional | S10 | The IP Helper socket table, behind the `socket-table` feature |
 | `serde_json` | runtime (in `fragcap-profile`), dev elsewhere | S07, promoted S25 | Parses target JSON for the master-schema validator (S25); parses the JSON writer's output in tests (S07) |
 | `rusqlite` | runtime, optional | S034 | The embedded SQLite store the targets hint database is built on, behind the `targets` feature |
-| `http_req` | runtime, optional | S035 | The HTTP client the live catalog seeder uses, behind the `net` feature |
+| `http_req` | runtime, optional | S035 | The HTTP client the live catalog seeder uses, behind the `net` feature; since S056 also `fragcap-cli`'s `doctor --fix` npcap installer fetch, same `net` gate (already in the graph, no `Cargo.lock` package added) |
 | `winresource` | build, windows-only | S048 | Stamps the exe's PE FileVersion from `CARGO_PKG_VERSION` (issue #104), behind `[target.'cfg(windows)'.build-dependencies]` |
 | `blake3` | runtime | S051 | The 63-bit anchor identifier, a durable exported contract; `default-features = false` |
 | `unicode-normalization` | runtime | S051 | The NFKD step of handle normalization |
@@ -619,8 +619,14 @@ authoritative; this list is the one to keep in working memory.
   a target with no capture backend.
 - **Every discard path has a named counter.** A dropped packet that is not
   counted and surfaced is a defect.
-- **npcap is never bundled, never downloaded, never installed by fragcap, and
-  its SDK is never vendored.** Detection only.
+- **npcap is never bundled, hosted, embedded, or redistributed by fragcap, and
+  its SDK is never vendored.** fragcap detects it and reports its absence with the
+  official download location. It may fetch and launch the vendor's own signed
+  installer, storing nothing of it in any fragcap artifact, only under an explicit
+  interactive confirmation (as in `doctor --fix`); absent that confirmation, and in
+  any non-interactive or machine-readable context, it neither fetches nor launches.
+  This carve-out was authorized in constitution 1.3.0 (slice S056); the
+  redistribution, bundling, and SDK-vendoring prohibitions remain absolute.
 - **Compatibility outranks richness.** Output stays readable by unmodified
   analyzers.
 - **A new term gets a glossary entry in the same change that introduces it.**

@@ -62,6 +62,9 @@ pub fn run(args: &DoctorArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
 
     let caps = Capabilities {
         net: cfg!(feature = "net"),
+        // Relaunching elevated is a Windows operation; on other platforms the action
+        // is not offered rather than offered only to fail.
+        elevation: cfg!(windows),
     };
     Ok(fix::run_fix(caps, args.yes, use_color(), out))
 }

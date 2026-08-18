@@ -111,7 +111,9 @@ pub fn drive_actions(
         if action.guidance_only() {
             // No performable form in this build: surface the guidance, record the
             // degraded fallback as what happened, and never prompt for a step it
-            // cannot perform.
+            // cannot perform. The outcome line is printed like every other action's,
+            // so the phase reports one honest result per action.
+            report_outcome(out, &ActionOutcome::Degraded);
             outcomes.push((action.kind, ActionOutcome::Degraded));
             continue;
         }
@@ -159,7 +161,18 @@ pub fn run_fix(caps: Capabilities, yes: bool, color: bool, out: &mut dyn Write) 
 
     let offered = offered_actions(&report, caps);
     if offered.is_empty() {
-        let _ = writeln!(out, "\nNothing to fix.");
+        // Distinguish a ready machine from one that is blocked but for which the
+        // action layer has nothing it can do, so the message is never misleading in
+        // exactly the blocked case.
+        if report.ready() {
+            let _ = writeln!(out, "\nNothing to fix.");
+        } else {
+            let _ = writeln!(
+                out,
+                "\nNo automatic fixes are available for the remaining problems; \
+                 see the remediations above."
+            );
+        }
         return report.exit();
     }
 
@@ -169,7 +182,7 @@ pub fn run_fix(caps: Capabilities, yes: bool, color: bool, out: &mut dyn Write) 
     } else {
         Box::new(ConsoleConfirm)
     };
-    let mut performer = RealPerformer;
+    let mut performer = RealPerformer { yes };
     let outcomes = drive_actions(&report, caps, confirm.as_mut(), &mut performer, out);
 
     // A confirmed, performed elevation hands off to the elevated child, which
@@ -204,7 +217,11 @@ pub fn run_fix(caps: Capabilities, yes: bool, color: bool, out: &mut dyn Write) 
 /// paths (`extcap install`, `catalog update`, the discovery composition) so there
 /// is one path to each effect (P-10), and does the platform work (open the vendor
 /// page, fetch and launch the installer, relaunch elevated) for the rest.
-pub struct RealPerformer;
+pub struct RealPerformer {
+    /// Whether `--yes` was set, so an elevated relaunch carries it forward and the
+    /// elevated child stays unattended.
+    yes: bool,
+}
 
 impl ActionPerformer for RealPerformer {
     fn perform(&mut self, action: &Action, out: &mut dyn Write) -> ActionOutcome {
@@ -232,15 +249,19 @@ impl ActionPerformer for RealPerformer {
                     fetch_and_launch_installer(out)
                 }
             }
-            ActionKind::RelaunchElevated => relaunch_elevated(out),
+            ActionKind::RelaunchElevated => relaunch_elevated(self.yes, out),
         }
     }
 }
 
-/// Map a command result to an outcome, keeping a failure honest (P-9).
+/// Map a command result to an outcome, keeping a failure honest (P-9). Only an
+/// `Exit::SUCCESS` is a performed action; a completed command that reported a
+/// non-zero exit (an expected failure or a usage error) is a failed action, never
+/// a performed one.
 fn to_outcome(result: Result<Exit, CliError>) -> ActionOutcome {
     match result {
-        Ok(_) => ActionOutcome::Performed,
+        Ok(exit) if exit == Exit::SUCCESS => ActionOutcome::Performed,
+        Ok(exit) => ActionOutcome::Failed(format!("the action exited with code {}", exit.code())),
         Err(e) => ActionOutcome::Failed(e.message().to_string()),
     }
 }
@@ -277,6 +298,16 @@ fn open_download_page(out: &mut dyn Write) -> ActionOutcome {
     ActionOutcome::Degraded
 }
 
+/// A per-invocation nonce for the installer's temporary filename, so the launched
+/// path is not predictable.
+#[cfg(feature = "net")]
+fn installer_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
 /// The primary npcap action (a `net`-capable build): fetch the vendor's own signed
 /// installer to a temporary file and launch it. Tier 2 (not run in continuous
 /// integration). Without the `net` feature this arm is never offered as primary
@@ -298,10 +329,31 @@ fn fetch_and_launch_installer(out: &mut dyn Write) -> ActionOutcome {
             response.status_code()
         ));
     }
+    // A per-invocation unique name in the temp directory, so a fetch does not
+    // clobber an existing file and the path an installer is launched from is not a
+    // predictable, pre-creatable target. `create_new` refuses to overwrite an
+    // existing file, so a name collision fails loudly rather than reusing a file
+    // this run did not write.
     let dir = std::env::temp_dir();
-    let path = dir.join("fragcap-npcap-installer.exe");
-    if let Err(e) = std::fs::write(&path, &body) {
-        return ActionOutcome::Failed(format!("could not write the installer: {e}"));
+    let unique = format!(
+        "fragcap-npcap-installer-{}-{}.exe",
+        std::process::id(),
+        installer_nonce()
+    );
+    let path = dir.join(unique);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if let Err(e) = std::io::Write::write_all(&mut file, &body) {
+                return ActionOutcome::Failed(format!("could not write the installer: {e}"));
+            }
+        }
+        Err(e) => {
+            return ActionOutcome::Failed(format!("could not create the installer file: {e}"))
+        }
     }
     #[cfg(windows)]
     {
@@ -331,7 +383,7 @@ fn fetch_and_launch_installer(out: &mut dyn Write) -> ActionOutcome {
 /// elevated child re-checks in its own context; the caller stops the parent on a
 /// performed elevation.
 #[cfg(windows)]
-fn relaunch_elevated(out: &mut dyn Write) -> ActionOutcome {
+fn relaunch_elevated(yes: bool, out: &mut dyn Write) -> ActionOutcome {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
 
@@ -342,7 +394,14 @@ fn relaunch_elevated(out: &mut dyn Write) -> ActionOutcome {
         |s: &std::ffi::OsStr| -> Vec<u16> { s.encode_wide().chain(std::iter::once(0)).collect() };
     let verb: Vec<u16> = "runas\0".encode_utf16().collect();
     let file = to_wide(exe.as_os_str());
-    let params: Vec<u16> = "doctor --fix\0".encode_utf16().collect();
+    // Carry `--yes` across the handoff so an unattended `doctor --fix --yes` stays
+    // unattended in the elevated child rather than prompting for every action.
+    let command_line = if yes {
+        "doctor --fix --yes\0"
+    } else {
+        "doctor --fix\0"
+    };
+    let params: Vec<u16> = command_line.encode_utf16().collect();
     // SAFETY: all string pointers are to NUL-terminated wide buffers that outlive
     // the call; the null hwnd (0) and null directory are the documented values,
     // and SW_SHOWNORMAL is a valid show flag, for a shell verb invocation. On the
@@ -366,9 +425,10 @@ fn relaunch_elevated(out: &mut dyn Write) -> ActionOutcome {
     }
 }
 
-/// Elevation is a Windows concept; on other targets it cannot run.
+/// Elevation is a Windows concept; on other targets it cannot run. (The action is
+/// not offered on non-Windows platforms, so this is a defensive fallback.)
 #[cfg(not(windows))]
-fn relaunch_elevated(_out: &mut dyn Write) -> ActionOutcome {
+fn relaunch_elevated(_yes: bool, _out: &mut dyn Write) -> ActionOutcome {
     ActionOutcome::Failed("relaunching elevated is Windows-only".to_string())
 }
 
@@ -407,7 +467,10 @@ mod tests {
     }
 
     fn caps() -> Capabilities {
-        Capabilities { net: true }
+        Capabilities {
+            net: true,
+            elevation: true,
+        }
     }
 
     #[test]
@@ -497,7 +560,10 @@ mod tests {
         let mut out = Vec::new();
         let outcomes = drive_actions(
             &rpt,
-            Capabilities { net: false },
+            Capabilities {
+                net: false,
+                elevation: true,
+            },
             &mut confirm,
             &mut performer,
             &mut out,

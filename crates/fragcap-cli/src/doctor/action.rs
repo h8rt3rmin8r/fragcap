@@ -12,13 +12,19 @@
 
 use super::Report;
 
-/// The compile-time capabilities that shape which actions can run in their primary
-/// form. Injected (rather than read from `cfg!`) so the selection is tested both
-/// ways without a build matrix.
+/// The compile-time and platform capabilities that shape which actions can be
+/// offered and in which form. Injected (rather than read from `cfg!`) so the
+/// selection is tested every way without a build matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     /// Whether the network-fetch capability (the `net` feature) is present.
     pub net: bool,
+    /// Whether relaunching elevated is possible on this platform (Windows). When
+    /// false, a `RelaunchElevated` action is not offered at all rather than offered
+    /// only to fail: the non-Windows probe reports every session as not elevated,
+    /// so without this the action would surface on platforms that cannot perform
+    /// it.
+    pub elevation: bool,
 }
 
 /// Which Wireshark extcap directory an `InstallExtcap` action targets.
@@ -65,7 +71,8 @@ impl ActionKind {
                     .to_string()
             }
             ActionKind::RelaunchNpcapInstaller => {
-                "Fetch and launch the npcap installer to enable WinPcap API compatible mode"
+                "Fetch and launch the Wireshark installer, which runs npcap setup where the \
+                 WinPcap API compatible mode can be enabled"
                     .to_string()
             }
             ActionKind::RelaunchElevated => "Relaunch doctor --fix elevated".to_string(),
@@ -88,7 +95,8 @@ impl ActionKind {
     fn degraded_label(self) -> String {
         match self {
             ActionKind::ObtainNpcap | ActionKind::RelaunchNpcapInstaller => {
-                "Open the official npcap download page (this build cannot fetch the installer)"
+                "Open the official download page for npcap (npcap.com, or the Wireshark installer \
+                 that provides it); this build cannot fetch the installer"
                     .to_string()
             }
             ActionKind::FetchCatalog => {
@@ -153,8 +161,9 @@ pub enum ActionOutcome {
 
 /// The pure selection: the actions `--fix` will offer for a report.
 ///
-/// Walks the report in order, collecting each check's action; degrades a
-/// net-required action when the capability is absent; and moves a
+/// Walks the report in order, collecting each check's action; drops an action the
+/// platform cannot perform (elevation off this platform); degrades a net-required
+/// action when the capability is absent; and moves a
 /// [`ActionKind::RelaunchElevated`] to the front so escalation precedes any
 /// privilege-gated action (FR-014). The result is always a subset of the actions
 /// carried by checks in `report` (FR-003): there is no other source of actions.
@@ -164,6 +173,12 @@ pub fn offered_actions(report: &Report, caps: Capabilities) -> Vec<Action> {
         let Some(action) = &check.action else {
             continue;
         };
+        // Never offer an action the platform cannot perform: the non-Windows probe
+        // reports every session as not elevated, so a RelaunchElevated action would
+        // otherwise surface only to fail.
+        if action.kind == ActionKind::RelaunchElevated && !caps.elevation {
+            continue;
+        }
         let mut action = action.clone();
         if action.net_required && !caps.net {
             action.degraded = true;
@@ -216,7 +231,13 @@ mod tests {
             None,
             Some(Action::new(ActionKind::RunDiscovery)),
         ]);
-        let offered = offered_actions(&report, Capabilities { net: true });
+        let offered = offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: true,
+            },
+        );
         let kinds: Vec<ActionKind> = offered.iter().map(|a| a.kind).collect();
         assert_eq!(
             kinds,
@@ -231,7 +252,13 @@ mod tests {
     fn an_action_whose_check_is_absent_is_never_offered() {
         // A report with no npcap action never yields ObtainNpcap (SC-003).
         let report = report_with(vec![Some(Action::new(ActionKind::RunDiscovery))]);
-        let offered = offered_actions(&report, Capabilities { net: true });
+        let offered = offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: true,
+            },
+        );
         assert!(offered.iter().all(|a| a.kind != ActionKind::ObtainNpcap));
     }
 
@@ -242,13 +269,25 @@ mod tests {
             Some(Action::new(ActionKind::FetchCatalog)),
         ]);
 
-        let capable = offered_actions(&report, Capabilities { net: true });
+        let capable = offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: true,
+            },
+        );
         assert!(capable.iter().all(|a| !a.degraded));
         assert!(capable[0]
             .label
             .contains("Fetch the vendor's Wireshark installer"));
 
-        let degraded = offered_actions(&report, Capabilities { net: false });
+        let degraded = offered_actions(
+            &report,
+            Capabilities {
+                net: false,
+                elevation: true,
+            },
+        );
         assert!(degraded.iter().all(|a| a.degraded));
         assert!(degraded[0].label.contains("download page"));
         // The degraded catalog action is guidance, not a performable prompt.
@@ -265,7 +304,16 @@ mod tests {
             Some(Action::new(ActionKind::InstallExtcap(ExtcapScope::Machine))),
             Some(Action::new(ActionKind::RunDiscovery)),
         ]);
-        for caps in [Capabilities { net: true }, Capabilities { net: false }] {
+        for caps in [
+            Capabilities {
+                net: true,
+                elevation: true,
+            },
+            Capabilities {
+                net: false,
+                elevation: true,
+            },
+        ] {
             let offered = offered_actions(&report, caps);
             assert!(offered.iter().all(|a| !a.degraded), "caps {caps:?}");
         }
@@ -280,7 +328,13 @@ mod tests {
             Some(Action::new(ActionKind::RelaunchElevated)),
             Some(Action::new(ActionKind::RunDiscovery)),
         ]);
-        let offered = offered_actions(&report, Capabilities { net: true });
+        let offered = offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: true,
+            },
+        );
         assert_eq!(offered[0].kind, ActionKind::RelaunchElevated);
         // The others keep their relative order after the elevation move.
         assert_eq!(
@@ -291,8 +345,35 @@ mod tests {
     }
 
     #[test]
+    fn relaunch_elevated_is_dropped_when_the_platform_cannot_elevate() {
+        // On a platform without elevation (the non-Windows probe reports every
+        // session as not elevated), the elevation action is not offered at all
+        // rather than offered only to fail.
+        let report = report_with(vec![
+            Some(Action::new(ActionKind::RelaunchElevated)),
+            Some(Action::new(ActionKind::RunDiscovery)),
+        ]);
+        let offered = offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: false,
+            },
+        );
+        let kinds: Vec<ActionKind> = offered.iter().map(|a| a.kind).collect();
+        assert_eq!(kinds, vec![ActionKind::RunDiscovery]);
+    }
+
+    #[test]
     fn a_report_with_no_actions_offers_nothing() {
         let report = report_with(vec![None, None]);
-        assert!(offered_actions(&report, Capabilities { net: true }).is_empty());
+        assert!(offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: true
+            }
+        )
+        .is_empty());
     }
 }

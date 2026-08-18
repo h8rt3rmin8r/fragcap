@@ -362,12 +362,22 @@ fn integration(inputs: &Inputs) -> Check {
                      installer also provides npcap"
                 ),
             };
+            // Scope the offered registration by elevation: machine-wide
+            // registration writes a system directory that needs an elevated
+            // session, so an elevated doctor offers machine-wide (the scope only it
+            // can perform) and an unelevated one offers the per-user scope. Both are
+            // reachable across runs, and the action label names the scope before the
+            // operator confirms it.
+            let scope = match inputs.privilege {
+                Privilege::Elevated => ExtcapScope::Machine,
+                Privilege::NotElevated => ExtcapScope::User,
+            };
             Check::warn_action(
                 INTEGRATION,
                 "analyzer extcap",
                 detail,
                 "run `fragcap extcap install` to register the analyzer integration",
-                Action::new(ActionKind::InstallExtcap(ExtcapScope::User)),
+                Action::new(ActionKind::InstallExtcap(scope)),
             )
         }
     }
