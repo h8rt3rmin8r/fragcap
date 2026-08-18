@@ -139,3 +139,72 @@ output.
 > automation to prose that may be reworded without notice.
 
 **See also:** [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event), [Readiness check](command-line-and-diagnostics.md#readiness-check)
+
+## Hero listing
+
+The output of `fragcap targets` (and a bare `fragcap`): a numbered table of the
+user's registered, capturable targets, each row showing a 1-based index, the
+target handle, a capture-readiness status, and neutral known evidence, ending by
+naming the next command to run. Producing it runs discovery across its tiers and
+registers any newly found titles first, so a fresh install lists the user's own
+software; an empty result prints the commands that populate the store instead of
+an empty table.
+
+{: .matters }
+> The listing is the one command a new user runs successfully on their own
+> machine that makes attribution concrete using their own data. Every listed row
+> is capturable in principle; the readiness column reports how close, never
+> whether the row is valid.
+
+**See also:** [Listing snapshot](command-line-and-diagnostics.md#listing-snapshot), [Capture readiness](command-line-and-diagnostics.md#capture-readiness)
+
+## Listing snapshot
+
+The ordered set of targets the most recent hero listing displayed, persisted to
+`local.db` so a bare-integer selector resolves to the row the user saw. A row
+index resolves through the snapshot (position to stable identifier to entry), not
+through the live store order, so `fragcap capture 3` names the row that occupied
+position 3 in the listing even after an intervening add or remove shifts the live
+order. A new listing replaces the snapshot; a position past it, or one taken
+before any listing has run, is an out-of-range usage error.
+
+{: .matters }
+> Without the snapshot a row number would silently change meaning between the
+> listing and the capture whenever the target set changed, attributing a capture
+> to a different target than the one the user pointed at.
+
+**See also:** [Hero listing](command-line-and-diagnostics.md#hero-listing), [Stable identifier](process-and-attribution.md#stable-identifier)
+
+## Capture readiness
+
+The presentational status a hero listing shows for a target in its CAPTURE
+column: `ready` when the entry names a Windows client executable or carries an
+anchor a capture can resolve, or `needs a target` when its launch chain is
+unresolved and no anchor gives a client. Derived from the entry at listing time
+and stored nowhere.
+
+{: .matters }
+> Readiness reports how close a row is to a capture, never whether the row is
+> valid: every registered target is capturable in principle, and a `needs a
+> target` row becomes ready once a capture observes its socket holder.
+
+**See also:** [Unresolved launch chain](process-and-attribution.md#unresolved-launch-chain), [Hero listing](command-line-and-diagnostics.md#hero-listing)
+
+## Target-entry export
+
+A dedicated JSON array of target-entry objects, each carrying an entry's identity
+(its stable identifier and handle) alongside its classification, fidelity,
+anchor, launch chain, install root, and evidence, produced by `targets export`
+and consumed by `targets import`. Import merges each element on its stable
+identifier, so an export round-trips through an import with identical identifiers
+and no duplicate rows. It is deliberately not the published capture schema, whose
+export records are catalog games and omit the entry identity that merge-on-id
+requires.
+
+{: .matters }
+> The identity travels with the record, so the same target moved between two
+> machines converges to one row rather than duplicating. A representation that
+> dropped the stable identifier, as the capture-schema export does, could not
+> merge and would multiply the target on every import.
+
+**See also:** [Stable identifier](process-and-attribution.md#stable-identifier), [Anchor](process-and-attribution.md#anchor)

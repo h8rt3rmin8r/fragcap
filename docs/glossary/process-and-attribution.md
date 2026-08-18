@@ -1476,3 +1476,21 @@ stand-in classifier. Introduced by slice S052.
 
 **See also:** [Known-roots source](#known-roots-source),
 [Candidate target](#candidate-target)
+
+## Unresolved launch chain
+
+The launch information a target carries when the process that holds its sockets
+is not yet known: the marker an interactive `targets add` writes when the user
+answers `no` or `unsure` to whether the pointed-at executable holds the sockets.
+An entry with an unresolved chain names no client, so its capture readiness is
+`needs a target`, and a capture that observes the real holder can promote it to a
+resolved chain at a higher fidelity. The tool never fills the chain with a socket
+holder it did not observe.
+
+{: .matters }
+> The unresolved marker is the honest record of a genuine unknown. Guessing the
+> socket holder and presenting the guess as a resolved chain would be the
+> instrument lying about what it observed; leaving the chain unresolved keeps the
+> answer truthful until a capture supplies it.
+
+**See also:** [Stable identifier](process-and-attribution.md#stable-identifier), [Anchor](process-and-attribution.md#anchor)

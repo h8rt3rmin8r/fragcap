@@ -141,7 +141,27 @@ The command-line tool exposes one capture verb, `capture`, alongside `targets`,
 `technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. Anything
 reachable through the CLI is reachable through the public Rust API.
 
-Example invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
+Start with `fragcap targets`: it lists the capturable titles on your machine and
+ends by naming the next command.
+
+```bash
+# The hero command: discover and list your own targets, then follow the hint
+fragcap targets
+#   #  TARGET                     CAPTURE          KNOWN
+#   1  the_elder_scrolls_online   ready            no online mode recorded
+#   2  the_division_2             ready            Denuvo, EasyAntiCheat
+#
+#   fragcap capture 1
+
+# Register an installed Steam title, or author one interactively
+fragcap targets add --steam 306130
+fragcap targets add "My Game" --exe game.exe        # asks who holds the sockets
+```
+
+The row numbers `fragcap targets` shows are the numbers `fragcap capture <n>`
+honors, so `fragcap capture 1` captures what you just saw.
+
+Example capture invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
 for the full surface):
 
 ```bash
