@@ -2,23 +2,31 @@
 
 ## Decisions
 
-### D-1. Detect the WinPcap-API `wpcap.dll`, not npcap's own directory copy
+### D-1. Require both of `doctor`'s markers, not just the WinPcap-API copy
 
-**Decision**: The presence marker is `wpcap.dll` in the native system directory
-(`[System64Folder]`), the copy the npcap "WinPcap API compatible mode" option installs
-into `System32`.
+**Decision**: Suppress the pre-check only when npcap is fully present in the form
+fragcap needs: `System32\Npcap\wpcap.dll` (npcap's own driver copy, `NPCAP_INSTALLED`)
+**and** `System32\wpcap.dll` (the WinPcap-API-mode copy the loader resolves,
+`NPCAP_WINPCAP_API`), both under `[System64Folder]`. Pre-check when either is absent.
 
 **Why**: `crates/fragcap-cli/src/doctor/probe.rs::gather_windows` distinguishes two
-markers: `System32\Npcap\wpcap.dll` (npcap installed at all) and `System32\wpcap.dll`
-(the WinPcap-API copy fragcap's delay-loaded live backend actually resolves by name).
-fragcap requires the latter (spec 20.3); npcap installed without the compatibility
-option cannot be used, and the download page (to reinstall with it) is still the right
-destination. Gating on `System32\wpcap.dll` makes the installer agree with `doctor` on
-what "present" means, so the two never disagree in front of the user.
+markers, and `doctor`'s checks (`checks.rs`) read them independently: the **npcap**
+check fails when `System32\Npcap\wpcap.dll` is absent ("npcap is not installed"), and
+the **winpcap-api** check fails when npcap is present but `System32\wpcap.dll` is
+absent ("reinstall npcap with the WinPcap API-compatible Mode option"). The installer
+must agree with `doctor` on when the prerequisite is satisfied, which is only when both
+pass. This was refined during PR #160 review (Codex): an earlier draft gated on
+`System32\wpcap.dll` alone, which a **legacy WinPcap** install also satisfies (it drops
+a `System32\wpcap.dll` with no `Npcap` directory), so it would have left the option
+unchecked on a machine `doctor` reports as "npcap is not installed". Requiring
+`NPCAP_INSTALLED` as well closes that case, and also correctly pre-checks the
+npcap-without-WinPcap-API case (the `Npcap` copy present, the `System32` copy absent).
 
-**Alternatives rejected**: A `RegistrySearch` for npcap's registry key would report
-npcap-installed-at-all, which over-counts the not-usable case and diverges from
-`doctor`.
+**Alternatives rejected**: Gating on `System32\wpcap.dll` alone (the loadability
+marker) reads a legacy WinPcap as satisfied and diverges from `doctor`. Gating on
+`Npcap\wpcap.dll` alone reads npcap-without-compat as satisfied, though fragcap cannot
+load it. A `RegistrySearch` for npcap's key would not match `doctor`'s filesystem
+markers.
 
 ### D-2. `[System64Folder]`, not `[SystemFolder]`
 

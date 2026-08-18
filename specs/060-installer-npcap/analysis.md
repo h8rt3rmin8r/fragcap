@@ -32,10 +32,13 @@ Every task maps to a requirement or is setup (T001) / polish (T007-T010). No orp
   `WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT` stays non-empty; only the default checked state
   (`WIXUI_EXITDIALOGOPTIONALCHECKBOX`) changes. A present-driver machine shows it
   unchecked; the user can still opt in. FR-002/FR-003 hold.
-- **C4 (resolved)** The marker matches `doctor` (`system_wpcap = System32\wpcap.dll`,
-  the `wpcap_loadable` gate), so the installer and `doctor` agree on "present", including
-  the npcap-without-WinPcap-compat edge case (treated as absent by both). FR-001,
-  Edge Cases.
+- **C4 (resolved, refined in PR #160 review)** The installer requires both of `doctor`'s
+  markers, so the two agree on "satisfied": `System32\Npcap\wpcap.dll` (doctor's npcap
+  check) and `System32\wpcap.dll` (doctor's winpcap-api check). This closes the
+  legacy-WinPcap case (a stray `System32\wpcap.dll` with no npcap, which `doctor` reports
+  as "npcap is not installed") and the npcap-without-WinPcap-API case; both pre-check the
+  prompt. Gating on a single marker was the reviewer's finding and is rejected in D-1.
+  FR-001, FR-002, Edge Cases.
 - **C5 (resolved)** `[System64Folder]` maps to the native `System32` regardless of MSI
   bitness, matching what `doctor` reads; `[SystemFolder]` could resolve to `SysWOW64`.
   Assumptions.

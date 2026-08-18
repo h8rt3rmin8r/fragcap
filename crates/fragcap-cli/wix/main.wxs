@@ -238,35 +238,53 @@
       the checkbox only opens the vendor's page, and only when the user leaves it
       checked (slice S060, issue #133).
 
-      The checkbox is pre-checked only when that driver is not already present, so a
-      machine that installed npcap as the prerequisite (via Wireshark) is not told it
-      still needs it. Presence is the WinPcap-API-mode wpcap.dll in the native system
-      directory, the same copy `doctor` probes and the live backend resolves by name;
-      NPCAP_WINPCAP_PRESENT is set to its path by AppSearch when it exists, and the
-      SetProperty below leaves WIXUI_EXITDIALOGOPTIONALCHECKBOX pre-checked only when
-      it is absent. The checkbox text stays non-empty, so the option is shown (just
-      unchecked) when the driver is present, and a user who wants it can still opt in.
+      The checkbox is pre-checked unless npcap is fully present in the form fragcap
+      needs, so a machine that installed npcap as the prerequisite (via Wireshark) is
+      not told it still needs it, while a machine without it, or with a driver fragcap
+      cannot use, still gets the guidance. "Fully present" mirrors `doctor` exactly
+      (PR #160 review, Codex): the npcap check requires npcap's own driver copy
+      ([System64Folder]\Npcap\wpcap.dll, NPCAP_INSTALLED), and the winpcap-api check
+      requires the WinPcap-API-mode copy the loader resolves by name
+      ([System64Folder]\wpcap.dll, NPCAP_WINPCAP_API, spec 20.3). Both are required,
+      so npcap installed without WinPcap-API mode, and a legacy WinPcap that dropped
+      only the System32 copy, both still pre-check the option, matching what `doctor`
+      reports. AppSearch populates each property with its path when the file exists,
+      and the SetProperty below leaves WIXUI_EXITDIALOGOPTIONALCHECKBOX pre-checked
+      unless both are present. The checkbox text stays non-empty, so the option is
+      shown (just unchecked) when the driver is present, and a user who wants it can
+      still opt in. [System64Folder] is the native System32 regardless of the MSI's
+      bitness, matching the paths `doctor` reads.
     -->
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
     <WixVariable Id="WixUILicenseRtf" Value="crates\fragcap-cli\wix\License.rtf" />
 
-    <!-- The WinPcap-API-mode wpcap.dll fragcap requires (spec 20.3): present when
-         [System64Folder]\wpcap.dll exists, matching doctor's system_wpcap marker.
-         [System64Folder] is the native System32 regardless of the MSI's bitness. -->
-    <Property Id="NPCAP_WINPCAP_PRESENT" Secure="yes">
+    <!-- npcap's own driver copy: present when [System64Folder]\Npcap\wpcap.dll
+         exists, matching doctor's npcap_present marker (its npcap check). -->
+    <Property Id="NPCAP_INSTALLED" Secure="yes">
       <DirectorySearch Id="System64Dir" Path="[System64Folder]" Depth="0">
+        <DirectorySearch Id="NpcapDir" Path="Npcap" Depth="0">
+          <FileSearch Id="NpcapWpcapDll" Name="wpcap.dll" />
+        </DirectorySearch>
+      </DirectorySearch>
+    </Property>
+
+    <!-- The WinPcap-API-mode wpcap.dll the loader resolves by name (spec 20.3):
+         present when [System64Folder]\wpcap.dll exists, matching doctor's
+         system_wpcap marker (its winpcap-api check). -->
+    <Property Id="NPCAP_WINPCAP_API" Secure="yes">
+      <DirectorySearch Id="System64DirApi" Path="[System64Folder]" Depth="0">
         <FileSearch Id="WpcapDll" Name="wpcap.dll" />
       </DirectorySearch>
     </Property>
 
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
               Value="Open the npcap download page (fragcap needs the npcap capture driver, if you do not already have it)" />
-    <!-- Pre-check the option only when the driver is absent. Left unset it renders
-         unchecked; SetProperty runs after AppSearch (which populates the marker) and
-         before the exit dialog, so the default reflects detection. -->
+    <!-- Pre-check the option unless npcap is fully present (both markers). Left unset
+         it renders unchecked; SetProperty runs after AppSearch (which populates the
+         markers) and before the exit dialog, so the default reflects detection. -->
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Secure="yes" />
     <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"
-                 After="AppSearch" Sequence="ui">NOT NPCAP_WINPCAP_PRESENT</SetProperty>
+                 After="AppSearch" Sequence="ui">NOT (NPCAP_INSTALLED AND NPCAP_WINPCAP_API)</SetProperty>
     <Property Id="WixShellExecTarget" Value="https://npcap.com" />
     <CustomAction Id="LaunchNpcap"
                   BinaryKey="WixCA"

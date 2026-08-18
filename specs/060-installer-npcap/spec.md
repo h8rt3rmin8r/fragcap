@@ -71,9 +71,13 @@ driver, or the fix would trade one confusion for a silent gap.
 ### Edge Cases
 
 - npcap installed without the WinPcap API compatibility option (its own directory
-  copy present but the System32 copy absent) is treated as absent, because that is
-  the copy fragcap's live backend loads; the download page (to reinstall with the
+  copy present but the System32 copy absent) is treated as not-satisfied, because that
+  is the copy fragcap's live backend loads; the download page (to reinstall with the
   compatibility option) is still the right destination.
+- A legacy WinPcap install (a `System32\wpcap.dll` present with no npcap directory) is
+  treated as not-satisfied: `doctor` reports "npcap is not installed" for it, so the
+  installer pre-checks the download page rather than reading the stray WinPcap copy as
+  npcap being present.
 - A silent or unattended install shows no exit dialog, so the checkbox state is
   irrelevant there; the detection must not fail such an install.
 - An administrator can still override the pre-check by checking or unchecking the box
@@ -83,11 +87,12 @@ driver, or the fix would trade one confusion for a silent gap.
 
 ### Functional Requirements
 
-- **FR-001**: The installer MUST detect whether the npcap capture driver fragcap uses
-  (the WinPcap-API-mode `wpcap.dll` in the native system directory) is present, using
-  the same marker `doctor` uses, without any new WiX extension.
-- **FR-002**: The exit-dialog download-page checkbox MUST be pre-checked only when
-  that driver is absent. When it is present, the checkbox MUST default to unchecked.
+- **FR-001**: The installer MUST detect whether npcap is present in the form fragcap
+  uses, using the same two markers `doctor` uses: npcap's own driver copy and the
+  WinPcap-API-mode copy the live backend loads. It MUST use no new WiX extension.
+- **FR-002**: The exit-dialog download-page checkbox MUST be pre-checked unless both
+  markers are present. When both are present, the checkbox MUST default to unchecked;
+  when either is absent, it MUST be pre-checked, matching what `doctor` reports.
 - **FR-003**: The checkbox label MUST state why npcap is wanted (it is the capture
   driver) and MUST NOT assert an unconditional requirement that reads as "you still
   need this" to a user who already has it.
@@ -108,9 +113,10 @@ driver, or the fix would trade one confusion for a silent gap.
 
 ### Key Entities
 
-- **npcap presence marker**: the `wpcap.dll` file in the native system directory, the
-  WinPcap-API-mode copy fragcap's live backend loads and `doctor` probes. Its presence
-  decides the checkbox default.
+- **npcap presence markers**: the two files `doctor` probes: `Npcap\wpcap.dll` in the
+  native system directory (npcap's own driver copy) and `wpcap.dll` in that directory
+  (the WinPcap-API-mode copy fragcap's live backend loads). Both present is what
+  decides the checkbox defaults to unchecked.
 - **Exit-dialog download-page checkbox**: the optional exit-dialog control that opens
   the npcap vendor page; this slice changes its default checked state and its label,
   not its action.
@@ -131,8 +137,8 @@ driver, or the fix would trade one confusion for a silent gap.
 ## Assumptions
 
 - The native system directory is addressed by the WiX `[System64Folder]` property, so
-  the marker is found regardless of the MSI's own bitness; this matches `doctor`,
-  which reads the real `System32\wpcap.dll`.
+  both markers are found regardless of the MSI's own bitness; this matches `doctor`,
+  which reads the real `System32\Npcap\wpcap.dll` and `System32\wpcap.dll`.
 - A WiX `AppSearch`-backed property populated by a `FileSearch` is available in core
   WiX 3 (no extension), and a `SetProperty` conditioned on that property can set the
   checkbox default before the exit dialog renders.
