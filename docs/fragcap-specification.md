@@ -2913,9 +2913,17 @@ installers, and container images. The obligation binds npcap alone:
 fragcap's own data artifacts, such as the barebones catalog store shipped
 with the release (section 24.5), are not npcap and are not restricted by it.
 
-**Detection, not installation.** fragcap detects npcap's presence and
-version at runtime and reports its absence with the official download
-location. It does not download, install, or invoke an installer.
+**Detection, and user-confirmed fetch of the vendor installer.** fragcap
+detects npcap's presence and version at runtime and reports its absence with
+the official download location. It never bundles, hosts, embeds, caches as its
+own, or redistributes npcap or its installer. It may, only under an explicit
+interactive user confirmation (as in `fragcap doctor --fix`), download the
+vendor's own signed installer from the official location and launch it,
+storing nothing in any fragcap artifact and redistributing nothing; absent
+that confirmation, and in every non-interactive or machine-readable context,
+it reports the download location and neither fetches nor launches. The npcap
+license permits this: it restricts redistribution and transfer of the Software
+Product, not a user obtaining the vendor's own installer.
 
 **Documented prerequisite.** Installation documentation states npcap as
 a required separate installation, with the required installation
@@ -3610,6 +3618,35 @@ version it did not read.
 
 `--json` produces the same content as structured records for
 consumption by the shell wrappers and other automation.
+
+`fragcap doctor --fix` adds an action layer above the same classifier. It
+prints the same report, then offers to perform the remediations the report
+named, one at a time, under the operator's confirmation. It acts only on
+remediations `doctor` already printed: each actionable check carries a
+structured action alongside its human-readable remediation, constructed
+together so the two cannot drift, and `--fix` offers only the actions carried
+by a check present in the current report. Because the action layer is
+interactive and confirmation-driven, it is refused as a usage error (exit 2)
+when combined with `--json`, when stdout is not an interactive terminal, and,
+without `--yes`, when stdin is not a terminal. `--yes` pre-confirms every
+offered action for unattended interactive use but still requires a terminal
+stdout. After the action phase the classifier is re-run and the updated
+verdict is printed, and every action reports its honest outcome (performed,
+skipped, degraded, or failed); a failed action is never reported as success.
+
+The actions map to the findings the report already names: obtain npcap (in a
+network-capable build, fetch and launch the vendor's own signed installer;
+otherwise open or name the official download page), relaunch the npcap
+installer for the WinPcap API mode, relaunch elevated (offered first so
+escalation precedes privilege-gated work, with the elevated child re-checking
+and the parent stopping), register the analyzer extcap integration, fetch the
+published catalog, and run discovery. Two findings the read-only report added
+for this purpose, a missing catalog store and no registered target entries,
+are non-blocking warnings that carry the fetch and discovery actions, so a
+ready machine still passes and exits 0 with unchanged output. The npcap and
+catalog fetch actions are network-gated and degrade in a default build. The
+classifier itself is unchanged: it remains a pure function from injected
+inputs to a report, and the action layer lives entirely above it.
 
 ### 26.4 Failure Reporting
 

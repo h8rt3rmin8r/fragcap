@@ -285,6 +285,23 @@ fn npcap_version(wpcap: &std::path::Path) -> String {
     }
 }
 
+/// Count the registered target entries in the local store, for the no-targets
+/// check. Resolves the store path the same way the discovery action does, honoring
+/// the `FRAGCAP_LOCAL_DB` override, so the count and the action it drives read the
+/// same store (the identity section shows the default path, which may differ). A
+/// store path that does not exist yet is a real empty store (zero entries),
+/// reported without opening anything so the read-only probe creates no file. An
+/// existing store that cannot be opened or read returns `None` (undetermined),
+/// never a fabricated zero (P-9).
+fn read_target_entry_count() -> Option<usize> {
+    let path = crate::paths::local_db_path(None).or_else(crate::paths::default_local_db_path)?;
+    if !path.exists() {
+        return Some(0);
+    }
+    let store = fragcap::targets::Store::open(&path).ok()?;
+    store.targets().ok().map(|targets| targets.len())
+}
+
 /// Gather the environment facts for `doctor`.
 pub fn gather() -> Inputs {
     let user_dir = crate::paths::user_profile_dir();
@@ -303,6 +320,7 @@ pub fn gather() -> Inputs {
         // wpcap.dll is not loadable on a non-Windows build; the live backend is
         // not linked anyway.
         let (interfaces, _loopback, interface_error) = live_probe(false);
+        let target_entry_count = read_target_entry_count();
         Inputs {
             fragcap_version,
             binary_path,
@@ -326,6 +344,7 @@ pub fn gather() -> Inputs {
             extcap_system_dir,
             bundled_count: crate::paths::bundled().len(),
             user_count,
+            target_entry_count,
         }
     }
 }
@@ -381,6 +400,7 @@ fn gather_windows(user_count: usize) -> Inputs {
         extcap_status();
     let (fragcap_version, binary_path, profile_dir, catalog_db_path, local_db_path) =
         identity_fields();
+    let target_entry_count = read_target_entry_count();
     Inputs {
         fragcap_version,
         binary_path,
@@ -408,6 +428,7 @@ fn gather_windows(user_count: usize) -> Inputs {
         extcap_system_dir,
         bundled_count: crate::paths::bundled().len(),
         user_count,
+        target_entry_count,
     }
 }
 

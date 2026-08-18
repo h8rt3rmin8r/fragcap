@@ -8,6 +8,7 @@
 
 mod common;
 
+use fragcap_cli::doctor::action::{offered_actions, ActionKind, Capabilities, ExtcapScope};
 use fragcap_cli::doctor::{checks, IfaceInfo, Inputs, NpcapInfo, Privilege, Status, Subsystem};
 
 fn ready() -> Inputs {
@@ -55,6 +56,7 @@ fn ready() -> Inputs {
         )),
         bundled_count: 0,
         user_count: 2,
+        target_entry_count: Some(3),
     }
 }
 
@@ -295,4 +297,115 @@ fn the_command_runs_end_to_end_and_returns_a_valid_exit() {
         out.contains("\"section\":"),
         "json records on stdout: {out}"
     );
+}
+
+// --- The --fix action layer (slice S056) ---
+
+#[test]
+fn fix_is_refused_with_json() {
+    // --fix is interactive; combined with --json it is a usage error (exit 2) and
+    // performs no action (FR-007, SC-004).
+    let (code, out, _err) = common::run(&["doctor", "--fix", "--json"]);
+    assert_eq!(code, 2, "--fix --json is a usage error");
+    assert!(
+        !out.contains("Proposed actions"),
+        "no action phase runs: {out}"
+    );
+}
+
+#[test]
+fn fix_is_refused_without_an_interactive_terminal() {
+    // In the test process stdout is not a terminal, so --fix is refused (exit 2),
+    // even with --yes, and no action runs (FR-008, SC-004).
+    let (code, out, _err) = common::run(&["doctor", "--fix"]);
+    assert_eq!(code, 2, "--fix needs a terminal");
+    assert!(!out.contains("Proposed actions"), "no action phase: {out}");
+
+    let (code, _out, _err) = common::run(&["doctor", "--fix", "--yes"]);
+    assert_eq!(code, 2, "--fix --yes still needs a terminal stdout");
+}
+
+#[test]
+fn yes_without_fix_is_a_usage_error() {
+    let (code, _out, _err) = common::run(&["doctor", "--yes"]);
+    assert_eq!(code, 2, "--yes has no effect without --fix");
+}
+
+#[test]
+fn a_blocked_machine_surfaces_actions_bound_to_its_findings() {
+    // Each finding the report names carries the action --fix would offer, and the
+    // selection is a subset of those (FR-003), with elevation first (FR-014) and
+    // the network actions degraded when the capability is absent (FR-012, FR-016).
+    let mut inputs = ready();
+    inputs.npcap = None; // -> ObtainNpcap
+    inputs.privilege = Privilege::NotElevated; // -> RelaunchElevated
+    inputs.extcap_installed = false;
+    inputs.extcap_system_installed = false; // -> InstallExtcap(User)
+    inputs.catalog_db_present = false; // -> FetchCatalog
+    inputs.target_entry_count = Some(0); // -> RunDiscovery
+    let report = checks::run(&inputs);
+
+    let net = offered_actions(
+        &report,
+        Capabilities {
+            net: true,
+            elevation: true,
+        },
+    );
+    let kinds: Vec<ActionKind> = net.iter().map(|a| a.kind).collect();
+    assert_eq!(
+        kinds[0],
+        ActionKind::RelaunchElevated,
+        "elevation offered first"
+    );
+    assert!(kinds.contains(&ActionKind::ObtainNpcap));
+    assert!(kinds.contains(&ActionKind::InstallExtcap(ExtcapScope::User)));
+    assert!(kinds.contains(&ActionKind::FetchCatalog));
+    assert!(kinds.contains(&ActionKind::RunDiscovery));
+    assert!(
+        net.iter().all(|a| !a.degraded),
+        "net-capable: no degradation"
+    );
+
+    let off = offered_actions(
+        &report,
+        Capabilities {
+            net: false,
+            elevation: true,
+        },
+    );
+    let npcap = off
+        .iter()
+        .find(|a| a.kind == ActionKind::ObtainNpcap)
+        .unwrap();
+    assert!(npcap.degraded, "npcap fetch degrades without net");
+    let catalog = off
+        .iter()
+        .find(|a| a.kind == ActionKind::FetchCatalog)
+        .unwrap();
+    assert!(
+        catalog.guidance_only(),
+        "catalog is guidance-only without net"
+    );
+    // A non-network action is unaffected by the capability.
+    let discovery = off
+        .iter()
+        .find(|a| a.kind == ActionKind::RunDiscovery)
+        .unwrap();
+    assert!(!discovery.degraded);
+}
+
+#[test]
+fn a_ready_machine_offers_no_actions() {
+    // The ready fixture has a catalog and target entries, so the preparation checks
+    // stay silent and there is nothing to fix.
+    let report = checks::run(&ready());
+    assert!(offered_actions(
+        &report,
+        Capabilities {
+            net: true,
+            elevation: true
+        }
+    )
+    .is_empty());
 }

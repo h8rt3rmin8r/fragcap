@@ -236,13 +236,20 @@ your own machine as you capture.
 
 **fragcap requires [npcap](https://npcap.com) to be installed separately,
 before any capture.** Run `fragcap doctor` to check your environment; it reports
-npcap's presence and names any missing option, and captures nothing.
+npcap's presence and names any missing option, and captures nothing. Run
+`fragcap doctor --fix` to be walked through the remediations it names, one at a
+time, under your confirmation (register the analyzer integration, fetch the
+catalog, run discovery, and, with your explicit yes, obtain npcap). `--fix` is
+interactive: it is refused with `--json` and when the session is not a terminal,
+and it acts only on what `doctor` first printed.
 
 npcap is by the [Nmap Project](https://nmap.org) and is not redistributable
 under its standard license, so fragcap does not and will not bundle it. fragcap
-detects it and reports its absence with the download location; it never
-downloads, installs, or invokes an installer. The simplest way to obtain npcap is
-the [Wireshark](https://www.wireshark.org/) installer, which bundles it; the
+detects it and reports its absence with the download location, and only fetches
+and launches the vendor's own signed installer when you explicitly confirm it in
+`fragcap doctor --fix`, storing nothing of it in any fragcap artifact. The
+simplest way to obtain npcap is the [Wireshark](https://www.wireshark.org/)
+installer, which bundles it; the
 [Getting started guide](https://fragcap.com/docs/getting-started) walks through
 that install with screenshots.
 

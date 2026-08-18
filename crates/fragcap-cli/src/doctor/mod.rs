@@ -10,11 +10,14 @@
 //! describes. The thin [`probe`] gathers real inputs on Windows and is not unit
 //! tested; everything that decides or renders is here and in [`checks`].
 
+pub mod action;
 pub mod checks;
+pub mod fix;
 pub mod probe;
 
 use fragcap::write_json_string;
 
+use crate::doctor::action::Action;
 use crate::exit::Exit;
 
 /// Whether the tool is running on native Windows or a subsystem.
@@ -128,6 +131,12 @@ pub struct Inputs {
     pub bundled_count: usize,
     /// How many user profiles are available.
     pub user_count: usize,
+    /// How many target entries are registered in the local store, when it could be
+    /// read. `None` means the count could not be determined (for example the store
+    /// could not be opened); it is never presented as zero, so a probe failure is
+    /// not reported as an observed-empty store (P-9). `Some(0)` is a real empty
+    /// store and carries the "run discovery" action.
+    pub target_entry_count: Option<usize>,
 }
 
 /// The classification of one check.
@@ -168,6 +177,13 @@ pub struct Check {
     pub status: Status,
     /// The remediation, mandatory when the status is `Fail`.
     pub remediation: Option<String>,
+    /// The structured, machine-facing counterpart of `remediation`: the action the
+    /// `--fix` layer may perform for this check. `None` for informational checks and
+    /// for checks whose remedy has no automatable form. When present it is
+    /// constructed together with `remediation` (see [`Check::warn_action`] and
+    /// [`Check::fail_action`]) so the printed remediation and the offered action
+    /// cannot drift.
+    pub action: Option<Action>,
 }
 
 impl Check {
@@ -179,6 +195,7 @@ impl Check {
             detail: detail.into(),
             status: Status::Ok,
             remediation: None,
+            action: None,
         }
     }
 
@@ -190,6 +207,7 @@ impl Check {
             detail: detail.into(),
             status: Status::Warn,
             remediation: None,
+            action: None,
         }
     }
 
@@ -201,6 +219,7 @@ impl Check {
             detail: detail.into(),
             status: Status::Skip,
             remediation: None,
+            action: None,
         }
     }
 
@@ -217,6 +236,47 @@ impl Check {
             detail: detail.into(),
             status: Status::Fail,
             remediation: Some(remediation.into()),
+            action: None,
+        }
+    }
+
+    /// A `Warn` check that carries both a human remediation and the structured
+    /// action `--fix` can perform for it. The two are set together here so they
+    /// cannot drift (FR-004).
+    pub fn warn_action(
+        section: &'static str,
+        name: &'static str,
+        detail: impl Into<String>,
+        remediation: impl Into<String>,
+        action: Action,
+    ) -> Check {
+        Check {
+            section,
+            name,
+            detail: detail.into(),
+            status: Status::Warn,
+            remediation: Some(remediation.into()),
+            action: Some(action),
+        }
+    }
+
+    /// A `Fail` check that carries both a human remediation and the structured
+    /// action `--fix` can perform for it, set together so they cannot drift
+    /// (FR-004).
+    pub fn fail_action(
+        section: &'static str,
+        name: &'static str,
+        detail: impl Into<String>,
+        remediation: impl Into<String>,
+        action: Action,
+    ) -> Check {
+        Check {
+            section,
+            name,
+            detail: detail.into(),
+            status: Status::Fail,
+            remediation: Some(remediation.into()),
+            action: Some(action),
         }
     }
 }

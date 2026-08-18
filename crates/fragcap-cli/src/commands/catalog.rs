@@ -237,6 +237,16 @@ fn update(db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
     }
 }
 
+/// Fetch the published catalog into the default catalog store, for the
+/// `doctor --fix` FetchCatalog action (slice S056). Reuses [`update`] against the
+/// resolved default catalog path; net-gated exactly as `catalog update` is.
+pub(crate) fn update_default(out: &mut dyn Write) -> Result<Exit, CliError> {
+    let db = crate::paths::catalog_db_path(None)
+        .or_else(crate::paths::default_catalog_db_path)
+        .ok_or_else(|| CliError::failure("the catalog store path could not be determined"))?;
+    update(&db, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

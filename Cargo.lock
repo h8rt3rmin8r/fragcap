@@ -361,6 +361,7 @@ dependencies = [
  "ctrlc",
  "fragcap",
  "fragcap-steam",
+ "http_req",
  "serde_json",
  "tempfile",
  "windows-sys 0.36.1",

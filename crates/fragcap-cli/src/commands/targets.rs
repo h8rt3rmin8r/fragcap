@@ -171,41 +171,60 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
     }
 }
 
-/// Run discovery with the default catalog, local, and Steam locations and register
-/// any newly found titles into `store`, surfacing the account (P-4). Best-effort: a
-/// failure to compose or run discovery is reported and swallowed so a listing still
-/// shows what is already registered.
-fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
+/// Discover and register into `store`, returning the number of newly registered
+/// targets or the first hard error. A missing or absent catalog is not an error:
+/// there is simply nothing to classify against, so it returns `Ok(0)`. A discovery
+/// composition failure or a registration failure is a real error and is returned,
+/// so a caller that must report an honest outcome (the `doctor --fix` action) can.
+fn discover_and_register(store: &mut Store, out: &mut dyn Write) -> Result<usize, CliError> {
     let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path);
     let Some(catalog_db) = catalog_db else {
-        return;
+        return Ok(0);
     };
     if !catalog_db.exists() {
-        return;
+        return Ok(0);
     }
-    let discovery = match compose_and_discover(&catalog_db, store, None) {
-        Ok(d) => d,
-        Err(e) => {
-            let _ = writeln!(out, "warning: discovery skipped: {}", e.message());
-            return;
-        }
-    };
+    let discovery = compose_and_discover(&catalog_db, store, None)?;
     for warning in &discovery.warnings {
         let _ = writeln!(out, "warning: {warning}");
     }
-    match fragcap::targets::register_candidates(store, &discovery.candidates) {
-        Ok(outcome) if outcome.registered > 0 => {
+    let outcome = fragcap::targets::register_candidates(store, &discovery.candidates)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    Ok(outcome.registered)
+}
+
+/// The hero listing's best-effort bootstrap: discover and register, but never let a
+/// discovery failure sink the listing. A failure is reported as a warning and the
+/// listing continues with whatever is already registered.
+fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
+    match discover_and_register(store, out) {
+        Ok(registered) if registered > 0 => {
             let _ = writeln!(
                 out,
-                "  registered {} newly discovered target(s).\n",
-                outcome.registered
+                "  registered {registered} newly discovered target(s).\n"
             );
         }
         Ok(_) => {}
         Err(e) => {
-            let _ = writeln!(out, "warning: registration failed: {e}");
+            let _ = writeln!(out, "warning: discovery skipped: {}", e.message());
         }
     }
+}
+
+/// Run discovery into the default local store, for the `doctor --fix` RunDiscovery
+/// action (slice S056). Reuses the same discovery composition the hero listing runs
+/// (P-10), but propagates a real discovery or registration failure so `doctor --fix`
+/// reports a failed action rather than a false success (P-9). A missing catalog or
+/// an absent platform source registers nothing and is reported as such, not a
+/// failure.
+pub(crate) fn run_discovery_default(out: &mut dyn Write) -> Result<Exit, CliError> {
+    let db = paths::local_db_path(None)
+        .or_else(paths::default_local_db_path)
+        .ok_or_else(|| CliError::failure("the local store path could not be determined"))?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
+    let registered = discover_and_register(&mut store, out)?;
+    let _ = writeln!(out, "  discovery registered {registered} target(s).");
+    Ok(Exit::SUCCESS)
 }
 
 /// Run `targets scan <dir>`: point discovery at one directory (the tier-3
