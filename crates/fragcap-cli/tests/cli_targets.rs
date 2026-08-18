@@ -40,6 +40,9 @@ fn seed_signatures_populates_the_catalog_and_is_idempotent() {
 fn scan_with_a_catalog_detects_and_reports_evidence() {
     let dir = TempDir::new().expect("tempdir");
     let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
+    // A scratch local store, so these scan calls register into their own db rather
+    // than the shared default store other tests observe.
+    let local = db(&dir);
     // Seed the signature table, then point scan at a Unity game directory.
     let (code, _out, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
     assert_eq!(code, 0);
@@ -49,7 +52,15 @@ fn scan_with_a_catalog_detects_and_reports_evidence() {
     std::fs::write(game.join("UnityPlayer.dll"), b"").unwrap();
     let game_path = game.to_string_lossy().into_owned();
 
-    let (code, out, _err) = run(&["targets", "scan", &game_path, "--catalog-db", &catalog]);
+    let (code, out, _err) = run(&[
+        "targets",
+        "scan",
+        &game_path,
+        "--catalog-db",
+        &catalog,
+        "--db",
+        &local,
+    ]);
     assert_eq!(code, 0, "scan succeeds: {out}");
     assert!(
         out.contains("Unity"),
@@ -61,7 +72,7 @@ fn scan_with_a_catalog_detects_and_reports_evidence() {
     );
 
     // Without a catalog, scan still works but carries no evidence.
-    let (code, out, _err) = run(&["targets", "scan", &game_path]);
+    let (code, out, _err) = run(&["targets", "scan", &game_path, "--db", &local]);
     assert_eq!(code, 0);
     assert!(
         !out.contains("Unity"),
@@ -673,7 +684,11 @@ fn write_steam_fixture(root: &Path) {
 
 #[test]
 fn scan_lists_a_directory_as_one_candidate() {
-    let (code, out, _err) = run(&["targets", "scan", "D:/Games/Celeste"]);
+    // A scratch local store, so this registers into its own db rather than the shared
+    // default store other tests observe.
+    let dir = TempDir::new().expect("tempdir");
+    let local = db(&dir);
+    let (code, out, _err) = run(&["targets", "scan", "D:/Games/Celeste", "--db", &local]);
     assert_eq!(code, 0, "scan succeeds: {out}");
     assert!(
         out.contains("Celeste"),
@@ -716,4 +731,36 @@ fn discover_lists_steam_titles_through_the_cli() {
         "the appid identity is shown: {out}"
     );
     assert!(out.contains("account:"), "the account is surfaced: {out}");
+}
+
+#[test]
+fn a_subcommand_defaults_to_the_local_store_when_db_is_omitted() {
+    // Slice S058 (#157): a targets subcommand run with no `--db` resolves the same
+    // default local store the bare `fragcap targets` command uses. The test harness
+    // points `FRAGCAP_LOCAL_DB` at a per-process scratch store, so an add with no
+    // `--db` writes there and a show with no `--db` reads the same store back. This is
+    // the only test in this binary that operates on that default store without `--db`
+    // (the scan tests pass an explicit `--db` for exactly this reason), so it does not
+    // race another test's connection to the shared store.
+    let name = "S058 Default Store Game";
+    let (add_code, _out, add_err) = run(&[
+        "targets",
+        "add",
+        name,
+        "--exe",
+        "game.exe",
+        "--socket-holder",
+        "unsure",
+    ]);
+    assert_eq!(add_code, 0, "add against the default store: {add_err}");
+
+    let (show_code, show_out, show_err) = run(&["targets", "show", name]);
+    assert_eq!(
+        show_code, 0,
+        "show resolves the same default store with no --db: {show_err}"
+    );
+    assert!(
+        show_out.contains("game.exe") || show_out.to_lowercase().contains("s058"),
+        "the target added with no --db is found by show with no --db: {show_out}"
+    );
 }

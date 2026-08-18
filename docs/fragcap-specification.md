@@ -1788,11 +1788,14 @@ Four invocations constitute the contract.
 | `--extcap-config` | Declares configurable options |
 | `--capture --fifo <path>` | Streams pcapng to the named pipe |
 
-Configurable options exposed through extcap are the profile selection,
-role filter, direction filter, and loopback inclusion. The analyzer
-renders these as a native configuration dialog from the declaration, so
-a full graphical interface exists without fragcap containing any
-graphical code.
+Configurable options exposed through extcap are the target selection,
+role filter, direction filter, and loopback inclusion. The target is a
+stored-target selector resolved against the local store exactly as
+`capture --target` resolves it, through one shared resolution
+implementation, so the analyzer's dialog and the command line select
+capture identically. The analyzer renders these as a native
+configuration dialog from the declaration, so a full graphical interface
+exists without fragcap containing any graphical code.
 
 Installation places the fragcap binary in the analyzer's extcap
 directory. The `fragcap doctor` command reports whether this has been
@@ -2681,7 +2684,11 @@ The listing writes a snapshot of the rows it displayed to `local.db`, and a
 bare-integer selector resolves against that snapshot (section 17.2), so a row
 number keeps naming the row the user saw across an intervening mutation.
 
-The subcommands manage the local store:
+The subcommands manage the local store. Each takes an optional `--db <local.db>`;
+when it is omitted the subcommand resolves the same default local store the bare
+`fragcap targets` listing uses (the `FRAGCAP_LOCAL_DB` override, else the per-user
+default), so registering, showing, removing, exporting, importing, and listing a
+target need no store path unless one is named explicitly.
 
 - `targets add [NAME] [--exe <EXE>] [--steam <APP_ID>] [--anchor <A>]` registers
   a target. Pointed at an executable interactively, it shows the detected engine,
