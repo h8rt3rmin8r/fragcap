@@ -101,10 +101,22 @@ fn a_positional_selector_is_accepted_as_a_target() {
     // `fragcap capture <n>` (the form the `targets` listing hints, and the README
     // and site docs show) is a valid target input: the positional selector is
     // equivalent to `--target`. It must reach target resolution rather than be
-    // rejected by the parser as an unexpected argument. Against the isolated empty
-    // store it resolves to no match, a usage error (exit 2) with a resolution
-    // message, not a parse error.
-    let (code, _out, err) = run(&["capture", "1", "--out", "unused.fcapng"]);
+    // rejected by the parser as an unexpected argument. Explicit throwaway stores
+    // keep this off the shared default store the other tests use (so it never races
+    // another test's connection to it); resolving against its own empty local store
+    // yields no match, a usage error (exit 2) with a resolution message, not a
+    // parse error.
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let catalog = dir.path().join("catalog.db");
+    let (code, _out, err) = run(&[
+        "capture",
+        "1",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--catalog-db",
+        catalog.to_str().unwrap(),
+    ]);
     assert_eq!(
         code, 2,
         "an unresolvable positional selector is a usage error"
