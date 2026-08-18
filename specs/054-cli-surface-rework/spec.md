@@ -231,8 +231,11 @@ prints the same listing without the footer.
 - **FR-007**: The `profile` management command and all its subcommands MUST be
   removed.
 - **FR-008**: The profile directory concept, the `--profile-dir` selector, and the
-  file-backed profile provider MUST be removed, together with the `--profile`
-  capture selector, as one coherent surface.
+  `--profile` capture selector MUST be removed as one coherent surface. The
+  file-backed profile provider is retained only for the Wireshark `extcap`
+  integration (section 14.5), which still advertises a `--profile` analyzer-config
+  option; migrating extcap off it is deferred to its own slice because it changes
+  the analyzer dialog contract rather than the capture verb this slice reworks.
 - **FR-009**: `schema validate <file>` MUST remain as the general JSON-artifact
   validator and MUST be documented as an advanced operation for someone about to
   share a JSON export.

@@ -2515,12 +2515,13 @@ shipped, disposable `catalog.db`; `targets` writes the user-owned `local.db`.
 ### 17.2 Capture Invocation
 
 ```text
-fragcap capture (--target <SELECTOR> | --process <IMAGE>) [OPTIONS]
+fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
 
       --target <SELECTOR>    A stored target: handle, name, or row index
+      --id <ID>              A stored target by durable identifier (for automation)
       --process <IMAGE>      A raw process image name, no stored target
-      --path <SUBSTR>        Image-path substring anchor (with --process)
-      --path-regex <RE>      Image-path regex anchor (with --process)
+      --path <SUBSTR>        Image-path substring anchor
+      --path-regex <RE>      Image-path regex anchor
   -m, --mode <MODE>          file | stream | ring        [default: file]
   -o, --out <PATH>           Output path for file and ring modes
       --sink <SPEC>          Sink specification, repeatable
@@ -2542,12 +2543,18 @@ fragcap capture (--target <SELECTOR> | --process <IMAGE>) [OPTIONS]
   -V, --version              Print version
 ```
 
-`--target` and `--process` are mutually exclusive and exactly one is
-required. Every other flag is orthogonal to the target input, so a named
-process, a ring buffer, a wait-for-start, and a launch-under-capture all
-compose freely. `--launch` needs the resolved `--target` to carry a platform
-anchor (a Steam app id); a `--process` capture, or an anchorless target,
-cannot be launched and is refused (exit 2).
+`--target`, `--id`, and `--process` are mutually exclusive and exactly one
+is required. `--target` is the human selector (handle, name, or ephemeral
+row index); `--id` addresses a stored target by its durable identifier, the
+stable form automation uses because a row index shifts as the store changes.
+Every other flag is orthogonal to the target input, so a named process, a
+ring buffer, a wait-for-start, and a launch-under-capture all compose freely.
+`--launch` needs the resolved stored target to carry a platform anchor (a
+Steam app id); a `--process` capture, or an anchorless target, cannot be
+launched and is refused (exit 2). A path anchor (`--path`/`--path-regex`)
+rides onto a `--process` or a stored-executable target; against a
+Steam-anchored target, whose client the install-layout cascade determines, a
+path anchor is refused (exit 2) rather than discarded.
 
 ### 17.3 Worked Invocations
 

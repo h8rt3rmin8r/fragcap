@@ -139,12 +139,18 @@ pub enum ModeArg {
 /// anchor; a `--process` capture, or a target with no anchor, cannot be launched
 /// and is refused (exit 2) rather than ignored.
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("target_input").required(true).args(["target", "process"])))]
+#[command(group(ArgGroup::new("target_input").required(true).args(["target", "id", "process"])))]
 pub struct CaptureArgs {
     /// A stored-target selector: an exact handle, a case-insensitive exact name,
     /// or a 1-based row index over the current listing (S051).
     #[arg(long)]
     pub target: Option<String>,
+
+    /// Select a stored target by its durable stable identifier, the machine-facing
+    /// form automation addresses (a bare integer given to `--target` is a row index,
+    /// not this). Mutually exclusive with `--target` and `--process`.
+    #[arg(long)]
+    pub id: Option<i64>,
 
     /// The image name of the process to capture, named directly with no stored
     /// target.

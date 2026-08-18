@@ -51,7 +51,9 @@ fn list(out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, CliError> {
 ///
 /// A missing Steam installation or an unsupported platform is a configuration
 /// problem (exit 2); a filesystem failure is an expected runtime failure (exit 1).
-fn map_steam_error(error: SteamError) -> CliError {
+/// Shared with `targets add --steam` so the two Steam entry points classify the
+/// same error the same way.
+pub(crate) fn map_steam_error(error: SteamError) -> CliError {
     match error {
         SteamError::NotInstalled
         | SteamError::UnsupportedPlatform

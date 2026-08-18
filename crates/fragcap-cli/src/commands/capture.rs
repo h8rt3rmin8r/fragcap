@@ -33,7 +33,7 @@ use fragcap::profile::{
     ResolutionError, ResolutionRequest, TargetProvider, TargetResolver,
 };
 use fragcap::steam::SteamWalkerProvider;
-use fragcap::targets::{resolve_positional, Selection, Store, TargetEntry};
+use fragcap::targets::{resolve_id, resolve_positional, Selection, Store, TargetEntry};
 
 use crate::assemble;
 use crate::attach;
@@ -43,20 +43,31 @@ use crate::exit::{CliError, Exit};
 use crate::orchestrator;
 use crate::paths;
 
+/// How a stored target was named: a positional selector or a durable identifier.
+enum StoredRef<'a> {
+    /// A positional selector: a handle, an exact name, or a 1-based row index.
+    Selector(&'a str),
+    /// A durable stable identifier, the machine-facing form automation addresses.
+    Id(i64),
+}
+
 /// Run `capture`.
 pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     // Exactly one target input is present (the clap group guarantees it). A stored
     // target resolves against the local store (and, when Steam-anchored, through the
     // install-layout cascade); a raw process image synthesizes an identity directly.
-    let profile = match (&args.target, &args.process) {
-        (Some(selector), _) => resolve_target(selector, args, emitter)?,
-        (None, Some(process)) => {
+    let profile = match (&args.target, args.id, &args.process) {
+        (Some(selector), None, None) => {
+            resolve_stored(StoredRef::Selector(selector), args, emitter)?
+        }
+        (None, Some(id), None) => resolve_stored(StoredRef::Id(id), args, emitter)?,
+        (None, None, Some(process)) => {
             synthesize_named_profile(process, args.path.as_deref(), args.path_regex.as_deref())?
         }
         // The clap group guarantees exactly one target input; this documents it.
-        (None, None) => {
+        _ => {
             return Err(CliError::usage(
-                "exactly one of --target or --process is required",
+                "exactly one of --target, --id, or --process is required",
             ))
         }
     };
@@ -84,48 +95,68 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
     )
 }
 
-/// Resolve a `--target` selector against the local store into the profile that
-/// captures it.
+/// Resolve a stored target against the local store into the profile that captures
+/// it.
 ///
-/// The selector is an S051 positional selector (handle, exact name, or 1-based row
-/// index). A Steam-anchored target is resolved through the install-layout cascade
-/// keyed on its app id, recovering its client executable and carrying the app id so
-/// `--launch` can reach it. A target carrying a stored launch executable synthesizes
-/// directly from it. A target that names neither is a usage error rather than a
-/// silent empty capture (P-4).
-fn resolve_target(
-    selector: &str,
+/// The target is named by a positional selector (handle, exact name, or 1-based row
+/// index) or a durable `--id`. A Steam-anchored target is resolved through the
+/// install-layout cascade keyed on its app id, recovering its client executable and
+/// carrying the app id so `--launch` can reach it. A target carrying stored launch
+/// entries synthesizes from its single Windows client, refusing an empty or
+/// ambiguous set rather than guessing (P-9). A target that names neither is a usage
+/// error rather than a silent empty capture (P-4).
+fn resolve_stored(
+    target: StoredRef,
     args: &CaptureArgs,
     emitter: &mut Emitter,
 ) -> Result<Profile, CliError> {
     let (catalog_db, local_db) = setup_stores(args, emitter)?;
 
-    // Resolve the selector against the local store (S051 section 5.4). A store the
-    // operator never created has no targets, so a selector matches nothing there.
+    // Resolve against the local store (S051 section 5.4). A store the operator never
+    // created has no targets, so a target matches nothing there.
     let local_path = local_db.clone().ok_or_else(|| {
-        CliError::usage("no local store is available to resolve --target; register a target first")
+        CliError::usage("no local store is available to resolve the target; register one first")
     })?;
     let store = Store::open(&local_path)
         .map_err(|e| CliError::failure(format!("cannot open local store: {e}")))?;
-    let entry =
-        match resolve_positional(&store, selector).map_err(|e| CliError::failure(e.to_string()))? {
-            Selection::Resolved(t) => t,
-            Selection::NoMatch => {
-                return Err(CliError::usage(format!(
-                    "no target matches selector {selector:?}; list targets with `fragcap targets`"
-                )))
+    let selection = match target {
+        StoredRef::Selector(s) => resolve_positional(&store, s),
+        StoredRef::Id(id) => resolve_id(&store, id),
+    }
+    .map_err(|e| CliError::failure(e.to_string()))?;
+    let entry = match selection {
+        Selection::Resolved(t) => t,
+        Selection::NoMatch => {
+            return Err(CliError::usage(
+                "no target matches; list targets with `fragcap targets`".to_string(),
+            ))
+        }
+        Selection::Ambiguous(matches) => {
+            // List the matches rather than only the count, so the operator can pick
+            // one by its durable id (P-9, the selector contract).
+            let mut msg = format!(
+                "the selector is ambiguous ({} targets match); select by handle or `--id`:",
+                matches.len()
+            );
+            for t in &matches {
+                msg.push_str(&format!("\n  {}\t{}\t{}", t.handle, t.stable_id, t.name));
             }
-            Selection::Ambiguous(matches) => {
-                return Err(CliError::usage(format!(
-                    "selector {selector:?} is ambiguous ({} targets match); select by handle or id",
-                    matches.len()
-                )))
-            }
-        };
+            return Err(CliError::usage(msg));
+        }
+    };
 
-    // A Steam anchor recovers the client through the cascade; a stored launch
-    // executable synthesizes directly; neither is a named usage error.
+    // A Steam anchor recovers the client through the cascade; stored launch entries
+    // synthesize directly; neither is a named usage error.
     if let Some(app_id) = steam_app_id(&entry) {
+        // The install-layout cascade determines the client identity for a
+        // Steam-anchored target, so an operator path anchor has nothing to attach to
+        // here; refuse it rather than silently discard it (P-9).
+        if args.path.is_some() || args.path_regex.is_some() {
+            return Err(CliError::usage(
+                "--path/--path-regex do not apply to a Steam-anchored target; the install-layout \
+                 cascade determines the client identity",
+            ));
+        }
         let search = paths::search_path(&[]);
         let bundled = paths::bundled();
         let resolver = build_resolver(catalog_db.as_deref(), local_db.as_deref())?;
@@ -140,14 +171,31 @@ fn resolve_target(
             ))
         })?;
         resolve_from_install(&resolver, &install_root, Some(&app_id), &search, &bundled)
-    } else if let Some(exe) = stored_launch_exe(&entry) {
-        synthesize_named_profile(&exe, None, None)
     } else {
-        Err(CliError::usage(format!(
-            "target {} names no capturable executable; re-register it with `targets add --exe` \
-             or `--steam`",
-            entry.handle
-        )))
+        // Reduce the stored launch entries to their distinct Windows clients by the
+        // same filter, file-name reduction, and case-insensitive dedup the hint
+        // provider applies (P-10). Exactly one is capturable; zero or more than one
+        // is refused rather than an arbitrary pick (P-9). The operator path anchors
+        // ride onto the synthesized identity, so `--target ... --path ...` is honored
+        // rather than discarded.
+        let clients = fragcap::targets::entry_windows_clients(&entry);
+        match clients.as_slice() {
+            [exe] => {
+                synthesize_named_profile(exe, args.path.as_deref(), args.path_regex.as_deref())
+            }
+            [] => Err(CliError::usage(format!(
+                "target {} names no Windows client executable; re-register it with \
+                 `targets add --exe` or `--steam`",
+                entry.handle
+            ))),
+            many => Err(CliError::usage(format!(
+                "target {} names {} distinct Windows client executables ({}); it is ambiguous, so \
+                 register a single-client target or capture the process directly with `--process`",
+                entry.handle,
+                many.len(),
+                many.join(", ")
+            ))),
+        }
     }
 }
 
@@ -158,19 +206,6 @@ fn steam_app_id(entry: &TargetEntry) -> Option<String> {
         .as_deref()
         .and_then(|a| a.strip_prefix("steam:"))
         .map(|id| id.to_string())
-}
-
-/// The single launch executable a target's `launch_entries` names, if any. The
-/// stored shape is an array of objects each carrying an `executable`; a target
-/// registered with `--exe` carries exactly one.
-fn stored_launch_exe(entry: &TargetEntry) -> Option<String> {
-    let serde_json::Value::Array(items) = entry.launch_entries.as_ref()? else {
-        return None;
-    };
-    items
-        .iter()
-        .find_map(|item| item.get("executable").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
 }
 
 /// Build a validated one-stage `authored` profile from an executable name and the

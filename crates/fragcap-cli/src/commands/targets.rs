@@ -221,8 +221,11 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     // enumeration warnings go to `out` as surfaced diagnostics rather than being
     // dropped (P-4). A `--steam` app id that is not installed is a usage error.
     let (name, steam_anchor) = if let Some(app_id) = &args.steam {
+        // A missing Steam or an unsupported platform is a usage error (exit 2); a
+        // filesystem read failure is an expected runtime failure (exit 1). Reuse the
+        // `steam` command's own mapping so the two entry points agree.
         let installation =
-            fragcap::steam::discover().map_err(|e| CliError::usage(e.to_string()))?;
+            fragcap::steam::discover().map_err(crate::commands::steam::map_steam_error)?;
         for warning in &installation.warnings {
             let _ = writeln!(out, "warning: {warning}");
         }

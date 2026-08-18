@@ -459,10 +459,16 @@ fn capture_without_a_target_input_is_a_usage_error() {
 }
 
 #[test]
-fn capture_with_both_target_inputs_is_a_usage_error() {
-    // --target and --process are mutually exclusive.
-    let (code, _out, _err) = common::run(&["capture", "--target", "eso", "--process", "eso64.exe"]);
-    assert_eq!(code, 2);
+fn the_three_target_inputs_are_mutually_exclusive() {
+    // --target, --id, and --process form one required, exactly-one group.
+    for argv in [
+        vec!["capture", "--target", "eso", "--process", "eso64.exe"],
+        vec!["capture", "--target", "eso", "--id", "1"],
+        vec!["capture", "--id", "1", "--process", "eso64.exe"],
+    ] {
+        let (code, _out, _err) = common::run(&argv);
+        assert_eq!(code, 2, "mutually exclusive target inputs: {argv:?}");
+    }
 }
 
 #[test]
@@ -471,6 +477,116 @@ fn capture_process_with_launch_is_a_usage_error() {
     // usage error rather than a silent no-op (FR-005).
     let (code, _out, err) = common::run(&["capture", "--process", "game.exe", "--launch"]);
     assert_eq!(code, 2, "a process capture cannot launch: {err}");
+}
+
+/// Register a target with a stored exe and return `(db_path, handle, stable_id)`.
+fn register_exe_target(dir: &tempfile::TempDir, name: &str, exe: &str) -> (String, String, String) {
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, out, err) = common::run(&["targets", "add", name, "--db", &db, "--exe", exe]);
+    assert_eq!(code, 0, "targets add: {err}");
+    // "registered <handle> (id <id>)"
+    let rest = out
+        .lines()
+        .find_map(|l| l.strip_prefix("registered "))
+        .expect("a registered line");
+    let handle = rest.split_whitespace().next().unwrap().to_string();
+    let id = rest
+        .rsplit_once("(id ")
+        .unwrap()
+        .1
+        .trim_end_matches(')')
+        .to_string();
+    (db, handle, id)
+}
+
+/// Capture a stored target through the offline substrate. The catalog store points
+/// at a fresh nonexistent path so no per-user store is bootstrapped as a side effect.
+fn capture_target_offline(db: &str, selector: &[&str]) -> (u8, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let jsonl = dir.path().join("t.jsonl");
+    let catalog = dir.path().join("catalog.db");
+    let mut args: Vec<String> = vec!["capture".into()];
+    args.extend(selector.iter().map(|s| s.to_string()));
+    args.extend([
+        "--local-db".into(),
+        db.into(),
+        "--catalog-db".into(),
+        catalog.to_string_lossy().into_owned(),
+        "--sink".into(),
+        format!("jsonl:{}", jsonl.to_string_lossy()),
+        "--replay-source".into(),
+        fixture("udp-gameplay.pcap"),
+        "--attr-script".into(),
+        fixture("udp-gameplay.script"),
+        "--process-script".into(),
+        data("game.procscript"),
+        "--local-addr".into(),
+        "192.0.2.10".into(),
+    ]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _o, err) = common::run(&refs);
+    let text = fs::read_to_string(&jsonl).unwrap_or_default();
+    (code, err, text)
+}
+
+#[test]
+fn capture_by_stored_target_selector_and_id() {
+    // A target registered with a launch executable captures that client, addressed
+    // by its handle selector and by its durable id.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, handle, id) = register_exe_target(&dir, "Test Game", "game.exe");
+
+    let (code, err, text) = capture_target_offline(&db, &["--target", &handle]);
+    assert_eq!(code, 0, "capture --target <handle>: {err}");
+    assert!(
+        text.contains("\"role\":\"target\""),
+        "captured the stored client: {text}"
+    );
+
+    let (code, err, text) = capture_target_offline(&db, &["--id", &id]);
+    assert_eq!(code, 0, "capture --id <stable_id>: {err}");
+    assert!(
+        text.contains("\"role\":\"target\""),
+        "the durable id selects the same client: {text}"
+    );
+}
+
+#[test]
+fn capture_target_with_no_client_executable_is_refused() {
+    // A name-only target names no launch executable, so it is refused rather than
+    // captured empty (P-4).
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, _o, err) = common::run(&["targets", "add", "Nameless", "--db", &db]);
+    assert_eq!(code, 0, "add: {err}");
+    let (code, err, _t) = capture_target_offline(&db, &["--target", "nameless"]);
+    assert_eq!(code, 2, "a target with no client is refused: {err}");
+    assert!(err.contains("no Windows client"), "{err}");
+}
+
+#[test]
+fn capture_steam_anchored_target_rejects_a_path_anchor() {
+    // A path anchor cannot attach to a Steam-anchored target (the cascade determines
+    // the client), so it is refused rather than silently discarded (P-9). No Steam
+    // install is needed: the anchor check precedes the install lookup.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, _o, err) = common::run(&[
+        "targets",
+        "add",
+        "Anchored",
+        "--db",
+        &db,
+        "--anchor",
+        "steam:620",
+    ]);
+    assert_eq!(code, 0, "add: {err}");
+    let (code, err, _t) = capture_target_offline(&db, &["--target", "anchored", "--path", "Games"]);
+    assert_eq!(code, 2, "a path anchor on a steam target is refused: {err}");
+    assert!(
+        err.contains("do not apply to a Steam-anchored target"),
+        "{err}"
+    );
 }
 
 #[test]

@@ -78,12 +78,13 @@ pub mod steam {
 #[cfg(feature = "targets")]
 pub mod targets {
     pub use fragcap_targets::{
-        export, import, resolve_id, resolve_positional, seed_catalog, seed_engine, CatalogBatch,
-        CatalogEntry, CatalogSource, Classification, ClassificationSource, CorpusGate, Engine,
-        EngineBatch, EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog,
-        FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary, LaunchEntry, ResolvedEngine,
-        SeedState, SeedSummary, SeedTier, Selection, Store, TargetClassification, TargetEntry,
-        TargetsError, TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        entry_windows_clients, export, import, resolve_id, resolve_positional, seed_catalog,
+        seed_engine, CatalogBatch, CatalogEntry, CatalogSource, Classification,
+        ClassificationSource, CorpusGate, Engine, EngineBatch, EngineConfidence, EngineEntry,
+        EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed, Game, HintDatabaseProvider,
+        ImportSummary, LaunchEntry, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
+        Store, TargetClassification, TargetEntry, TargetsError, TechCategory, Technology,
+        DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
 
     /// The discovery seam and its model (slice S052): the `TargetSource` trait,

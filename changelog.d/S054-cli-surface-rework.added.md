@@ -15,11 +15,15 @@ buffer. `--launch` requires the resolved `--target` to carry a Steam anchor; a
 silently ignored. The optional path anchors (`--path`, `--path-regex`) the retired
 `watch` carried survive on `capture`.
 
-The profile-file surface is retired whole (completing the S051 US5 deferral): the
+The profile-file capture surface is retired (completing the S051 US5 deferral): the
 `profile` command and its subcommands, the AppData profile directory, the
-`--profile-dir` global, the file-backed profile provider, and the `--profile`
-capture selector are all removed. `schema validate <file>` remains as the general
-JSON-artifact validator.
+`--profile-dir` global, and the `run`/`tap`/`watch --profile` capture selector are
+removed. `schema validate <file>` remains as the general JSON-artifact validator.
+The file-backed profile provider itself is retained for now, because the Wireshark
+`extcap` integration (section 14.5) still advertises and resolves a `--profile`
+analyzer-config option; migrating extcap to the stored-target/raw-process model is
+follow-up work in its own slice, since it changes the analyzer dialog contract
+rather than the capture verb this slice reworks.
 
 The command namespaces now follow the two stores. A new `catalog` namespace owns
 every operation that writes the shipped, disposable `catalog.db`: `import`,
