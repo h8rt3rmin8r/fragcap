@@ -72,6 +72,7 @@
 
 pub(crate) mod buffer;
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -901,18 +902,6 @@ fn acquire(
         match packet.attribution_state() {
             AttributionState::Resolved => {
                 stats.packets_attributed = stats.packets_attributed.saturating_add(1);
-                // Tally the socket-holding image, so the run can name the
-                // dominant observed holder a launch-and-observe capture promotes
-                // an unresolved target to (slice S059). Resolved implies an
-                // attribution is present. The key is the shared image string, so
-                // this is a refcount bump, not an allocation.
-                if let Some(attr) = packet.attribution.as_ref() {
-                    let slot = stats
-                        .holder_tally
-                        .entry(Arc::clone(&attr.process))
-                        .or_insert(0);
-                    *slot = slot.saturating_add(1);
-                }
             }
             AttributionState::Unresolved => {
                 stats.packets_unattributed = stats.packets_unattributed.saturating_add(1);
@@ -1004,6 +993,16 @@ fn output_loop(
     let mut sink_dropped: u64 = 0;
     let mut gate_dropped: u64 = 0;
     let mut all_retired = false;
+    // The per-image socket-holder tally (slice S059). Accumulated here on the
+    // output side, past the gate, so it counts only packets actually admitted to
+    // the capture: the dominant observed holder a launch-and-observe promotion
+    // records is chosen from what the run wrote, never from pre-acquisition or
+    // post-stop traffic the write gate rejected on the run-from-arm live path, nor
+    // from traffic beyond a volume bound. See PR #159 review (Codex). On the live
+    // path the kernel filter is already narrowed to profiled endpoints (section
+    // 12.2), so an admitted packet is a profiled one; offline the scripted
+    // attributor resolves only the scripted flows, so the same holds.
+    let mut holder_tally: BTreeMap<Arc<str>, u64> = BTreeMap::new();
     // Default rather than an option: an acquisition thread that panicked sends
     // no terminal item, and the output side still has to report what it
     // counted.
@@ -1026,6 +1025,14 @@ fn output_loop(
                 gate_dropped = gate_dropped.saturating_add(1);
                 continue;
             }
+        }
+        // The packet is admitted. Tally its socket-holding image, so the run can
+        // name the dominant observed holder a launch-and-observe promotion records
+        // (slice S059). The key is the shared image string, so this is a refcount
+        // bump, not an allocation.
+        if let Some(attr) = packet.attribution.as_ref() {
+            let slot = holder_tally.entry(Arc::clone(&attr.process)).or_insert(0);
+            *slot = slot.saturating_add(1);
         }
         for (index, sink) in sinks.iter_mut().enumerate() {
             if retired[index] {
@@ -1058,6 +1065,10 @@ fn output_loop(
     stats.buffer_dropped = rx.evicted();
     stats.sink_dropped = sink_dropped;
     stats.gate_dropped = gate_dropped;
+    // The output side owns the holder tally: it saw every admitted packet from
+    // every interface, so the tally is already capture-wide and needs no fold
+    // (slice S059).
+    stats.holder_tally = holder_tally;
 
     for (index, sink) in sinks.iter_mut().enumerate() {
         if let Err(error) = sink.flush() {

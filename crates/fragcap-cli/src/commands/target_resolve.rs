@@ -230,15 +230,29 @@ pub(crate) fn resolve_stored(
 ///
 /// An unresolved target names the process the operator pointed at but not the
 /// socket holder: a `no` answer says a different, child process holds the sockets,
-/// and an `unsure` answer leaves it open. The profile therefore has the observed
-/// executable as a non-terminal `launcher` stage plus a terminal `client` stage
-/// matching its descendants. Both shapes bind the socket holder: the child case
-/// through the terminal `descends_from` stage, the case where the observed
-/// executable itself holds the sockets through the launcher stage. It is not a
-/// wildcard: `descends_from` is a non-empty predicate and carries no `exe`, so the
-/// profile passes validation (an empty-predicate stage is a hard error, and
-/// `ambiguous_image_match` only fires when two stages both carry an `exe`). The
-/// identity is placed into JSON (serde_json handles escaping) and validated through
+/// and an `unsure` answer leaves it open. The profile has a terminal `client` stage
+/// matching descendants of a `launcher` stage that matches the observed executable.
+/// Both shapes bind the socket holder: the child case through the terminal
+/// `descends_from` stage, the case where the observed executable itself holds the
+/// sockets through the launcher stage.
+///
+/// The terminal `client` stage is declared before the `launcher` stage on purpose.
+/// Stage matching binds a process to the first declared stage whose predicates hold
+/// ([`fragcap::profile`] `stage_for`), and a game that relaunches a child under the
+/// same image name as the observed executable would otherwise match the `exe`
+/// launcher stage first and bind as a launcher, so the terminal client stage would
+/// never bind and its exit could not stop the capture. Declaring `descends_from`
+/// first makes such a descendant bind as the terminal client; the root observed
+/// executable still binds as the launcher, because when it is evaluated (in creation
+/// order, before any descendant) nothing is yet bound to `launcher`, so its
+/// `descends_from` predicate does not hold.
+///
+/// It is not a wildcard: `descends_from` is a non-empty predicate and carries no
+/// `exe`, so the profile passes validation (an empty-predicate stage is a hard
+/// error, and `ambiguous_image_match` only fires when two stages both carry an
+/// `exe`). Stage order is not otherwise validated: at most one terminal stage and a
+/// `descends_from` naming a declared role are both order-independent. The identity is
+/// placed into JSON (serde_json handles escaping) and validated through
 /// `Profile::parse`, so an unusable executable glob surfaces as a diagnostic
 /// (exit 2). The fidelity is `heuristic-unverified`: the identity was synthesized,
 /// not typed by an operator, so `authored` would be a lie (P-9). Promotion of the
@@ -250,13 +264,13 @@ fn synthesize_observe_profile(exe: &str) -> Result<Profile, CliError> {
         "fidelity": "heuristic-unverified",
         "game": { "id": "observe", "name": "launch-and-observe" },
         "stage": [
-            { "role": "launcher", "lifecycle": "session", "match": { "exe": exe } },
             {
                 "role": "client",
                 "lifecycle": "session",
                 "terminal": true,
                 "match": { "descends_from": "launcher" }
-            }
+            },
+            { "role": "launcher", "lifecycle": "session", "match": { "exe": exe } }
         ]
     });
     Profile::parse(&profile.to_string()).map_err(CliError::from)
@@ -1046,8 +1060,10 @@ mod tests {
         let stages = profile.stages();
         assert_eq!(stages.len(), 2, "launcher stage plus terminal client stage");
 
-        let launcher = &stages[0];
-        assert_eq!(launcher.role(), "launcher");
+        let launcher = stages
+            .iter()
+            .find(|s| s.role() == "launcher")
+            .expect("a launcher stage");
         assert!(
             !launcher.is_terminal(),
             "the launcher stage is not terminal"
@@ -1058,8 +1074,10 @@ mod tests {
             "the launcher stage matches the observed executable"
         );
 
-        let client = &stages[1];
-        assert_eq!(client.role(), "client");
+        let client = stages
+            .iter()
+            .find(|s| s.role() == "client")
+            .expect("a client stage");
         assert!(client.is_terminal(), "the client stage is terminal");
         assert_eq!(
             client.predicates().descends_from(),
@@ -1069,6 +1087,64 @@ mod tests {
         assert!(
             client.predicates().exe().is_none(),
             "the client stage carries no exe, so ambiguous_image_match cannot fire"
+        );
+    }
+
+    // Slice S059, PR #159 review (Codex P1). The terminal client stage is declared
+    // before the launcher stage, so a descendant whose image name equals the observed
+    // executable binds as the terminal client (via descends_from) rather than as the
+    // launcher. Were the launcher (exe) stage declared first, stage matching would
+    // bind such a child to it and the terminal client would never bind, leaving the
+    // capture without a terminal exit to stop it. The root observed executable still
+    // binds as the launcher, because it descends from nothing bound to `launcher`.
+    #[test]
+    fn a_same_named_child_binds_the_terminal_client_not_the_launcher() {
+        use fragcap::core::{ProcessEvent, ProcessTree, Timestamp};
+        use fragcap::profile::{bind_stages, stage_for};
+
+        let profile = synthesize_observe_profile("game.exe").expect("valid observe profile");
+
+        // A tree where game.exe (the observed executable) relaunches a child also
+        // named game.exe. Applied in creation order, as the session folds events.
+        let mut tree = ProcessTree::new();
+        tree.apply(ProcessEvent::started(
+            100,
+            0,
+            "C:\\G\\game.exe",
+            "g",
+            Timestamp::from_nanos(1),
+        ));
+        tree.apply(ProcessEvent::started(
+            200,
+            100,
+            "C:\\G\\game.exe",
+            "g",
+            Timestamp::from_nanos(2),
+        ));
+        bind_stages(&profile, &mut tree);
+
+        let node_id = |pid: u32| {
+            tree.nodes()
+                .find(|n| n.pid().get() == pid)
+                .unwrap_or_else(|| panic!("a node for pid {pid}"))
+                .id()
+        };
+
+        assert_eq!(
+            stage_for(&profile, &tree, node_id(100)).map(|s| s.role()),
+            Some("launcher"),
+            "the root observed executable binds as the launcher"
+        );
+        let child_stage =
+            stage_for(&profile, &tree, node_id(200)).expect("the same-named child binds a stage");
+        assert_eq!(
+            child_stage.role(),
+            "client",
+            "a same-named descendant binds the terminal client, not the launcher"
+        );
+        assert!(
+            child_stage.is_terminal(),
+            "the descendant binds the terminal stage, so its exit can stop the capture"
         );
     }
 

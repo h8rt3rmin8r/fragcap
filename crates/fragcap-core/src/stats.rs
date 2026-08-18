@@ -258,13 +258,22 @@ pub struct CaptureStats {
     /// no flow key is retained and marked, per P-4, and reporting it as loss
     /// would be a P-9 problem rather than only an arithmetic one.
     pub parse: ParseStats,
-    /// Per socket-holding process image, the count of attributed packets in
-    /// this run (slice S059).
+    /// Per socket-holding process image, the count of admitted packets in this
+    /// run (slice S059).
     ///
     /// The dominant image is the observed socket-holder a launch-and-observe
     /// capture promotes an unresolved target to. The image already exists on
     /// every [`Attribution`](crate::attribution::Attribution); this is the only
     /// place it is aggregated.
+    ///
+    /// Populated by the output loop, past the write gate. Counting there rather
+    /// than at the attribution site is deliberate: a packet the gate rejects
+    /// (pre-acquisition or post-stop traffic on the run-from-arm live path, or
+    /// traffic beyond a volume bound) never reaches the output and must not vote
+    /// for a holder (PR #159 review, Codex). On the live path the kernel filter is
+    /// already narrowed to profiled endpoints (section 12.2), so an admitted
+    /// packet is a profiled one; offline the scripted attributor resolves only the
+    /// scripted flows.
     ///
     /// An ordered map, not a hash map, on purpose: the dominant-image choice
     /// must be a total order so a two-way tie resolves the same image on every
@@ -273,9 +282,10 @@ pub struct CaptureStats {
     /// holds, so an increment is a refcount bump rather than an allocation.
     ///
     /// Additive: this contributes to no drop total, no conservation term, no
-    /// writer output, and no completion summary. It is folded in
-    /// [`CaptureStats::absorb`] and rides in the pipeline report, and nothing
-    /// downstream that a golden observes reads it.
+    /// writer output, and no completion summary. The output loop sees every
+    /// admitted packet from every interface, so it is already capture-wide and is
+    /// not folded per capture thread. Nothing downstream that a golden observes
+    /// reads it.
     pub holder_tally: BTreeMap<Arc<str>, u64>,
 }
 
@@ -332,12 +342,10 @@ impl CaptureStats {
         for (id, stats) in other.sources {
             self.set_source(id, stats);
         }
-        // Several capture threads each tally their own attributed images; the
-        // dominant image is decided over the merged counts (slice S059).
-        for (image, count) in other.holder_tally {
-            let slot = self.holder_tally.entry(image).or_insert(0);
-            *slot = slot.saturating_add(count);
-        }
+        // `holder_tally` is deliberately not folded here. It is populated once by
+        // the output loop, which already sees every admitted packet from every
+        // interface, so a per-capture-thread fold would double count it (slice
+        // S059).
     }
 
     /// The image the run attributed the most packets to, the observed
@@ -697,20 +705,25 @@ mod tests {
         }
     }
 
-    // Slice S059. The per-image tally folds across capture threads, so the
-    // dominant image is decided over the merged counts.
+    // Slice S059, PR #159 review. The tally is owned by the output loop, which
+    // sees every admitted packet from every interface, so `absorb` (the per-
+    // capture-thread fold) must not touch it: folding it per thread would double
+    // count. A capture thread's stats carry an empty tally, and absorbing them
+    // leaves the output-owned tally untouched.
     #[test]
-    fn the_holder_tally_folds_across_threads_in_absorb() {
+    fn absorb_does_not_fold_the_holder_tally() {
         let mut a = CaptureStats::default();
         a.holder_tally.insert(Arc::from("game.exe"), 3);
-        a.holder_tally.insert(Arc::from("launcher.exe"), 1);
         let mut b = CaptureStats::default();
+        // A per-thread stats value never carries a tally in practice; even if it
+        // did, absorb must not merge it.
         b.holder_tally.insert(Arc::from("game.exe"), 4);
-        b.holder_tally.insert(Arc::from("overlay.exe"), 2);
         a.absorb(b);
-        assert_eq!(a.holder_tally.get("game.exe"), Some(&7));
-        assert_eq!(a.holder_tally.get("launcher.exe"), Some(&1));
-        assert_eq!(a.holder_tally.get("overlay.exe"), Some(&2));
+        assert_eq!(
+            a.holder_tally.get("game.exe"),
+            Some(&3),
+            "absorb leaves the holder tally untouched"
+        );
     }
 
     // Slice S059, FR-005. The tally is additive: it reaches no drop total and
