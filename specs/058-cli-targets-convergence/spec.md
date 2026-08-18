@@ -64,10 +64,11 @@ wins. The full `cargo xtask ci` is green.
 ### User Story 2 - Capturing through Wireshark by target selection (Priority: P1)
 
 A user drives fragcap as a Wireshark extcap capture source. The capture
-configuration the analyzer dialog presents selects a **stored target** (by handle,
-name, row index, or stable id), resolved against the local store exactly as
-`fragcap capture` resolves a target. No part of the extcap capture path resolves a
-profile file through the retired search-path / bundled-set cascade.
+configuration the analyzer dialog presents selects a **stored target** by a single
+selector string (a handle, a case-insensitive exact name, or a 1-based row index),
+resolved against the local store exactly as `fragcap capture` resolves a positional
+`--target`. No part of the extcap capture path resolves a profile file through the
+retired search-path / bundled-set cascade.
 
 **Why this priority**: extcap capture is currently bound to the retired profile-file
 mechanism, which after S054 resolves nothing usable; converging it onto targets is
@@ -165,15 +166,21 @@ proceed; surface, do not present confirmation menus). Recorded for traceability.
   `FRAGCAP_LOCAL_DB`, and no resolvable application-data base, MUST fail with a named
   error, not a panic or a silent no-op.
 - **FR-004**: `add` and `import` against a defaulted, not-yet-existing store MUST
-  continue to work (the store is created on first open).
+  work on first use, including on a clean machine where the per-user application-data
+  directory does not exist yet: resolving the per-user default MUST ensure its parent
+  directory exists before opening, since the store layer does not create missing
+  parent directories. An explicit `--db` or `FRAGCAP_LOCAL_DB` path is operator-named
+  and used as given.
 - **FR-005**: The `discover` subcommand's separate two-store `catalog_db`/`local_db`
   flag pattern MUST remain unchanged (out of scope for this slice).
 
 **Part B (#156) - extcap uses target selection**
 
-- **FR-006**: The extcap capture path MUST resolve a stored target selector (handle,
-  name, row index, or stable id) against the local store, using the same resolution
-  the `capture` command uses.
+- **FR-006**: The extcap capture path MUST resolve a stored target from a single
+  positional selector string (a handle, a case-insensitive exact name, or a 1-based
+  row index) against the local store, using the same resolution the `capture` command
+  uses for a positional `--target`. The durable stable-id form (`--id`) is a
+  `capture`-command flag and is out of scope for the extcap single-string dialog.
 - **FR-007**: No code path in the extcap capture handler MUST resolve a profile file
   through the retired profile search-path / bundled-set cascade.
 - **FR-008**: The extcap configuration declaration MUST present a target-selection
@@ -203,9 +210,10 @@ proceed; surface, do not present confirmation menus). Recorded for traceability.
 
 - **Local store (`local.db`)**: the user-owned store of registered targets; the
   default the hero command and (after this slice) the subcommands resolve.
-- **Target selector**: an exact handle, a case-insensitive exact name, a 1-based row
-  index over the current listing, or a stable id (`--id`); the input `capture` (and,
-  after this slice, extcap) resolves.
+- **Target selector**: an exact handle, a case-insensitive exact name, or a 1-based
+  row index over the current listing -- the positional selector both `capture` and
+  (after this slice) `extcap` resolve. The durable stable id (`--id`) is an additional
+  `capture`-command flag, not part of the extcap single-string dialog.
 - **Shared target-resolution seam**: the one implementation of stored-target
   resolution (selector to a synthesized capture `Profile`), called by both `capture`
   and `extcap`.
@@ -233,8 +241,9 @@ proceed; surface, do not present confirmation menus). Recorded for traceability.
 - The existing `paths` helpers (`local_db_path`, `default_local_db_path`) and the
   default-resolution chain already used by the `scan` variant and the bare hero
   listing are the mechanism to reuse; no new path helper is added.
-- The `Store::open` behavior of creating a fresh store at a nonexistent path is
-  relied on for defaulted `add`/`import`, unchanged.
+- The store layer creates a fresh store at a nonexistent path but does not create a
+  missing parent directory, so the default-store resolution creates the per-user
+  default's parent before opening (as `capture`'s store bootstrap does).
 - The extcap analyzer wire contract passes back a single selection string; that stays
   one string, with only its meaning changing from profile reference to target
   selector.

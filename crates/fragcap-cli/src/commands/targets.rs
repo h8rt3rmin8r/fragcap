@@ -41,10 +41,7 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         // default store, and an unresolvable location degrades to the empty listing
         // rather than erroring, since there is nothing to list either way.
         TargetsCommand::List { db } => {
-            let path = db
-                .clone()
-                .or_else(|| paths::local_db_path(None))
-                .or_else(paths::default_local_db_path);
+            let path = db.clone().or_else(default_local_store);
             match path {
                 Some(path) => hero_listing(&path, false, out),
                 None => {
@@ -73,9 +70,8 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 /// listing, not an error.
 pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError> {
     // Resolve like the rest of the surface: the FRAGCAP_LOCAL_DB override, else the
-    // per-user default.
-    let path = paths::local_db_path(None).or_else(paths::default_local_db_path);
-    let exit = match path {
+    // per-user default (whose parent is created for first use).
+    let exit = match default_local_store() {
         Some(path) => hero_listing(&path, footer, out)?,
         None => {
             empty_listing(out, footer);
@@ -85,20 +81,50 @@ pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError>
     Ok(exit)
 }
 
-/// Resolve the local store a subcommand operates on when `--db` is omitted: the flag
-/// wins, else the `FRAGCAP_LOCAL_DB` override, else the per-user default, the same
-/// order the bare `fragcap targets` command uses. A subcommand that must open a store
-/// treats an unresolvable location as a named failure rather than a panic or a silent
-/// no-op (FR-003).
+/// Resolve the default local store when no `--db` is given: the `FRAGCAP_LOCAL_DB`
+/// override, else the per-user default, the same order the bare `fragcap targets`
+/// command uses. `None` only when no location can be determined at all.
+///
+/// The per-user default is created on first use, but SQLite does not create a missing
+/// parent directory, so this ensures the default's parent exists before the store is
+/// opened (FR-004, the first-use flow). Only the per-user default has its parent
+/// created; an explicit `--db` and the `FRAGCAP_LOCAL_DB` override are operator-named
+/// and used as given, matching `capture`'s rule of bootstrapping only defaulted
+/// locations. A create failure is left for the subsequent open to surface.
+fn default_local_store() -> Option<PathBuf> {
+    if let Some(env) = paths::local_db_path(None) {
+        return Some(env);
+    }
+    let path = paths::default_local_db_path()?;
+    ensure_parent_dir(&path);
+    Some(path)
+}
+
+/// Best-effort creation of a store path's parent directory, so a first-use open can
+/// create the database: the store layer opens SQLite, which does not create a missing
+/// parent directory, so on a clean machine the per-user application-data directory
+/// must be made first. A create failure is left for the subsequent open to surface.
+fn ensure_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+}
+
+/// Resolve the local store a subcommand operates on: an explicit `--db` wins, else the
+/// default resolution above. A subcommand that must open a store treats an
+/// unresolvable location as a named failure rather than a panic or a silent no-op
+/// (FR-003).
 fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
-    db.map(Path::to_path_buf)
-        .or_else(|| paths::local_db_path(None))
-        .or_else(paths::default_local_db_path)
-        .ok_or_else(|| {
-            CliError::failure(
-                "the local store path could not be determined; pass --db or set FRAGCAP_LOCAL_DB",
-            )
-        })
+    if let Some(db) = db {
+        return Ok(db.to_path_buf());
+    }
+    default_local_store().ok_or_else(|| {
+        CliError::failure(
+            "the local store path could not be determined; pass --db or set FRAGCAP_LOCAL_DB",
+        )
+    })
 }
 
 /// The hero listing: run discovery and register newly found titles (so each row is
@@ -249,8 +275,7 @@ fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
 /// an absent platform source registers nothing and is reported as such, not a
 /// failure.
 pub(crate) fn run_discovery_default(out: &mut dyn Write) -> Result<Exit, CliError> {
-    let db = paths::local_db_path(None)
-        .or_else(paths::default_local_db_path)
+    let db = default_local_store()
         .ok_or_else(|| CliError::failure("the local store path could not be determined"))?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
     let registered = discover_and_register(&mut store, out)?;
@@ -292,10 +317,7 @@ fn scan(
     // store resolves like the rest of the surface (the `FRAGCAP_LOCAL_DB` override,
     // else the per-user default). Registration is idempotent, so a rescan does not
     // duplicate (P-10), and the conserved account is surfaced (P-4).
-    let db = db
-        .map(Path::to_path_buf)
-        .or_else(|| paths::local_db_path(None))
-        .or_else(paths::default_local_db_path);
+    let db = db.map(Path::to_path_buf).or_else(default_local_store);
     if let Some(db) = db {
         let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
         let outcome = fragcap::targets::register_candidates(&mut store, &discovery.candidates)
@@ -836,4 +858,58 @@ fn exe_stem(exe: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(exe)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_parent_dir;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A unique scratch base under the system temp dir, never created.
+    fn scratch(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "fragcap-targets-store-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ))
+    }
+
+    #[test]
+    fn ensure_parent_dir_creates_a_missing_parent() {
+        // The first-use flow on a clean machine (FR-004): a defaulted store path whose
+        // parent directory does not exist yet must have that parent created before the
+        // store is opened, since the store layer does not create missing parents.
+        let base = scratch("first-use");
+        let _ = std::fs::remove_dir_all(&base);
+        let store = base.join("fragcap").join("local.db");
+        let parent = store.parent().unwrap().to_path_buf();
+        assert!(!parent.exists(), "the parent does not exist yet");
+
+        ensure_parent_dir(&store);
+
+        assert!(
+            parent.exists(),
+            "the parent directory is created for first use"
+        );
+        assert!(
+            !store.exists(),
+            "only the parent is created, not the store file"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn ensure_parent_dir_is_idempotent_when_the_parent_exists() {
+        let base = scratch("exists");
+        let parent = base.join("fragcap");
+        std::fs::create_dir_all(&parent).unwrap();
+        // A second call over an existing parent is a no-op, never an error.
+        ensure_parent_dir(&parent.join("local.db"));
+        assert!(parent.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
