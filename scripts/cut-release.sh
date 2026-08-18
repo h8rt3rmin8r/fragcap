@@ -304,14 +304,21 @@ fi
 
 # The bump moved fragcap/<version>, embedded in two assertions and every golden.
 fix_embedded_versions "$old_version" "$target_version"
-# Regenerate the goldens the embedded version moved. Target the two regenerating
-# test binaries specifically rather than the whole workspace: the corpus and
-# extcap conservation checks read these same goldens and refuse to regenerate on
+# Regenerate the goldens the embedded version moved. Target the three
+# regenerating test binaries specifically rather than the whole workspace: the
+# corpus conservation checks read these same goldens and refuse to regenerate on
 # principle, so running them in the same pass would race the rewrite (or compare
 # the new output against a not-yet-rewritten golden) and fail.
+#
+# The three own every golden carrying the embedded fragcap/<version> string:
+# fragcap's goldens binary owns the fixture corpus, fragcap-cli's cli_capture
+# owns capture.fcapng and capture.jsonl, and its cli_extcap owns run.fcapng.
+# Keep this list in step with the goldens; a binary named here that no longer
+# exists fails the cut, and one omitted leaves a stale version in a golden.
 log_info "regenerating the golden corpus for the new version"
 FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test -p fragcap --test goldens --quiet
-FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test -p fragcap-cli --test cli_run --quiet
+FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test -p fragcap-cli --test cli_capture --quiet
+FRAGCAP_UPDATE_GOLDENS=1 safe_run cargo test -p fragcap-cli --test cli_extcap --quiet
 
 # Assemble the changelog and fold everything into the single release commit.
 safe_run cargo run --quiet --package xtask -- changelog --release "$target_version" "$release_date"

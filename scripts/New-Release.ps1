@@ -316,15 +316,23 @@ Next steps (each is a deliberate, authorized act this script does not perform):
 
         # The bump moved fragcap/<version>, in two assertions and every golden.
         Update-EmbeddedVersion -Old $oldVersion -New $targetVersion
-        # Target the two regenerating test binaries specifically rather than the
-        # whole workspace: the corpus and extcap conservation checks read these
-        # same goldens and refuse to regenerate on principle, so running them in
-        # the same pass would race the rewrite and fail.
+        # Target the three regenerating test binaries specifically rather than
+        # the whole workspace: the corpus conservation checks read these same
+        # goldens and refuse to regenerate on principle, so running them in the
+        # same pass would race the rewrite and fail.
+        #
+        # The three own every golden carrying the embedded fragcap/<version>
+        # string: fragcap's goldens binary owns the fixture corpus,
+        # fragcap-cli's cli_capture owns capture.fcapng and capture.jsonl, and
+        # its cli_extcap owns run.fcapng. Keep this list in step with the
+        # goldens; a binary named here that no longer exists fails the cut, and
+        # one omitted leaves a stale version in a golden.
         Write-Log 'regenerating the golden corpus for the new version' 'Info'
         $env:FRAGCAP_UPDATE_GOLDENS = '1'
         try {
             Invoke-Native cargo test -p fragcap --test goldens --quiet
-            Invoke-Native cargo test -p fragcap-cli --test cli_run --quiet
+            Invoke-Native cargo test -p fragcap-cli --test cli_capture --quiet
+            Invoke-Native cargo test -p fragcap-cli --test cli_extcap --quiet
         } finally {
             Remove-Item Env:FRAGCAP_UPDATE_GOLDENS -ErrorAction SilentlyContinue
         }
