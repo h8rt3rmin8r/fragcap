@@ -9,9 +9,11 @@ WinPcap-compatible mode. Run `fragcap doctor` first; it reports the driver's
 presence without capturing anything.
 </Callout>
 
-fragcap has one binary and a small set of commands. This page lists what each one
-does and the flags it accepts. The binary's own `--help` is authoritative and is
-generated from the same definitions; this page is the readable version.
+fragcap has one binary and a small set of commands, grouped into Capture, Targets,
+Environment, and Data. This page lists what each one does and the flags it accepts.
+The binary's own `--help` is authoritative and is generated from the same
+definitions; this page is the readable version. Running `fragcap` with no command
+lists your registered targets and points at `--help`.
 
 ## Global options
 
@@ -21,21 +23,30 @@ These apply to every command:
 | --- | --- |
 | `--quiet` | Suppress progress; keep warnings and errors. |
 | `--silent` | Suppress everything except errors. |
-| `--json` | Emit newline-delimited structured events on standard error. |
+| `--json` | Emit machine-readable structured output instead of human text. |
 
-## `run`
+## Capture
 
-Capture a game using a profile. This is the primary command.
+### `capture`
+
+Capture a target's traffic. This is the primary command. Name the target one of
+three ways, exactly one of which is required:
 
 ```text
-fragcap run --profile eso --out capture.fcapng
+fragcap capture 1 --out capture.fcapng
+fragcap capture --target the_elder_scrolls_online --out capture.fcapng
+fragcap capture --process eso64.exe --out capture.fcapng
 ```
 
 | Flag | Meaning |
 | --- | --- |
-| `-p, --profile <REF>` | The profile to capture with: a path, a name, or a game id. Required. |
+| `--target <SELECTOR>` | A stored target: an exact handle, a case-insensitive exact name, or a 1-based row index from the `targets` listing. A bare number given here is a row index. |
+| `--id <N>` | Select a stored target by its durable stable identifier (the machine-facing form automation uses). |
+| `--process <NAME>` | Capture a running process by image name, with no stored target. |
+| `--path <SUBSTR>` | A case-insensitive substring the target's full image path must contain (disambiguates a shared image name). |
+| `--path-regex <RE>` | A regular expression the target's full image path must match. |
 | `-o, --out <PATH>` | The output capture file (pcapng). Shorthand for a file sink. |
-| `--mode <MODE>` | Capture mode: `file`, `stream`, or `ring`. Defaults to the profile's, or `file`. |
+| `--mode <MODE>` | Capture mode: `file`, `stream`, or `ring`. Defaults to `file`. |
 | `--sink <SPEC>` | An output sink, repeatable: `file:PATH`, `jsonl:PATH`, `pipe:NAME`, or `tcp://HOST:PORT`. |
 | `-d, --duration <DUR>` | The capture duration bound, measured from arm. |
 | `--wait <DUR>` | How long to wait for the target before giving up (the acquisition timeout). |
@@ -47,11 +58,15 @@ fragcap run --profile eso --out capture.fcapng
 | `--loopback` | Include the loopback adapter. |
 | `--no-payload` | Write metadata only, no packet payloads. |
 | `--ring <WINDOW>` | The ring window, for `--mode ring` (a duration or a size). |
-| `--launch` | Launch the game through its platform before capturing. |
+| `--launch` | Launch the game through its platform launcher before capturing (Windows only; requires a `--target` carrying a Steam app id). |
+| `--catalog-db <PATH>` | Override the catalog store consulted while resolving a `--target`. |
+| `--local-db <PATH>` | Override the local store where `--target` selectors resolve. |
 
 Durations accept the same grammar throughout: an integer and a unit, such as
 `30s`, `5m`, or `2h`. See [capture modes](/docs/guides/capture-modes) for what
-`--mode` and `--ring` do.
+`--mode` and `--ring` do. A non-file sink (`pipe:`, `tcp://`) has no extension to
+infer a format from, so it names one explicitly with `,format=pcapng` or
+`,format=jsonl`.
 
 <Callout title="Directional filtering is not yet enforced">
 `--direction in` or `--direction out` is recorded on the effective configuration
@@ -61,63 +76,95 @@ output still contains both directions. `--roles` scoping, by contrast, is
 enforced.
 </Callout>
 
-## `tap`
+### `replay`
 
-Capture a running process ad hoc, without an authored profile. Names the process
-by image name rather than resolving a profile.
+Play a capture file back. Not yet implemented; the command parses and reports that
+it is unavailable rather than the parser rejecting it.
+
+## Targets
+
+Capture targets live in your local store (`local.db`). fragcap discovers installed
+titles and registers them for you; you can also register, inspect, and remove them
+by hand.
+
+### `targets`
+
+With no subcommand, `fragcap targets` runs discovery, registers any newly found
+titles, and prints the numbered listing (the row numbers are what `fragcap capture
+<n>` honors). See [Getting started](/docs/getting-started#3-find-a-target).
+
+- `fragcap targets add [NAME] --db <local.db>` registers a target and derives a
+  unique handle. `--steam <APP_ID>` registers an installed Steam title (anchored to
+  `steam:<APP_ID>`, taking its name from the installation); `--anchor <PLATFORM:ID>`
+  gives a deterministic identity (mutually exclusive with `--steam`); `--exe <NAME>`
+  names a launch executable; `--handle <OVERRIDE>` overrides the derived handle; and
+  `--socket-holder yes|no|unsure` is the non-interactive form of the "which process
+  holds the sockets" question (requires `--exe`).
+- `fragcap targets list --db <local.db>` lists registered targets with their row
+  index, handle, and identifier.
+- `fragcap targets show <SELECTOR> --db <local.db>` (or `--id <N>`) shows how one
+  target resolves.
+- `fragcap targets remove <SELECTOR> --db <local.db>` (or `--id <N>`) removes one
+  target; an ambiguous name lists its matches and refuses.
+- `fragcap targets export [SELECTOR] --db <local.db>` writes registered targets as
+  a JSON array to standard output; `fragcap targets import <FILE> --db <local.db>`
+  merges a target-entry array back in on the stable identifier.
+- `fragcap targets discover --catalog-db <catalog.db> --local-db <local.db>
+  [--steam-root <PATH>]` walks Steam and the known install roots and lists the
+  candidates found (reads only).
+- `fragcap targets scan <DIR> [--catalog-db <catalog.db>] [--db <local.db>]` treats
+  one directory as a single candidate; with `--catalog-db` it detects the engine,
+  anti-cheat, and DRM technologies present and carries them as evidence; with
+  `--db` it registers what it finds.
+
+### `technologies`
+
+Detect the technologies present in a game's install directory (engine, anti-cheat,
+and DRM), from the catalog's signature table.
 
 ```text
-fragcap tap --process discord.exe --out capture.fcapng
+fragcap technologies --path "C:\Games\MyGame" --catalog-db catalog.db
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `-p, --process <NAME>` | The image name of the process to capture. Required. |
-| `-d, --duration <DUR>` | The capture duration bound. |
-| `-o, --out <PATH>` | The output capture file (pcapng). |
-| `--sink <SPEC>` | An output sink, repeatable. |
-| `--no-payload` | Write metadata only, no packet payloads. |
+### `steam`
 
-## `profile`
+Steam-specific inspection. `fragcap steam list` enumerates the installed Steam
+titles this machine can see. Registering a Steam title as a capture target is
+`fragcap targets add --steam <APP_ID>`, not a `steam` subcommand.
 
-Manage and validate profiles. A `--profile-dir <PATH>` may be repeated to add
-directories to the search.
+## Environment
 
-- `fragcap profile validate <REF>` reports every diagnostic in one pass. A
-  profile with four mistakes reports four; see [the schema](/docs/reference/profile-schema).
-- `fragcap profile list` lists the bundled and user profiles with counts.
-- `fragcap profile show <REF>` shows how a reference resolves and which source
-  supplied it.
+### `doctor`
 
-## `steam`
-
-Enumerate titles and scaffold profiles from a Steam installation.
-
-- `fragcap steam profile <APP_ID>` reads Steam's local metadata for an installed
-  title and prints a validating profile skeleton to standard output. It captures
-  nothing and touches no process; it is a starting point you then edit.
-
-## `doctor`
-
-Report environment readiness: whether the capture driver is present and whether
-fragcap can enumerate interfaces. It captures nothing.
+Report environment readiness: identity, platform, the capture driver, tracing,
+interfaces, and the Wireshark integration. It captures nothing.
 
 ```text
 fragcap doctor
 ```
 
-## `extcap`
+`fragcap doctor --fix` adds an interactive action layer above the same report: it
+offers to perform the remediations the report named, one at a time, under your
+confirmation (for example relaunching elevated, registering the extcap integration,
+fetching the catalog, or, in a network-capable build, fetching and launching
+npcap's own signed installer). It acts only on remediations the plain report
+already printed and never installs anything without asking. `--yes` pre-confirms
+every offered action for unattended interactive use. `--fix` is refused with
+`--json`, and when stdout (or, without `--yes`, stdin) is not an interactive
+terminal.
+
+### `extcap`
 
 Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an
 extcap capture source; you do not normally run the protocol form by hand. It
-presents one `fragcap` interface whose options (`--profile`, `--roles`,
-`--direction`, `--loopback`) mirror `run`, so the analyzer's capture dialog and
-the command line select capture identically.
+presents one `fragcap` interface whose capture options (`--roles`, `--direction`,
+`--loopback`) mirror `capture`, so the analyzer's capture dialog and the command
+line select capture identically.
 
-### `extcap install` / `extcap uninstall`
+#### `extcap install` / `extcap uninstall`
 
-Register or unregister fragcap as a Wireshark extcap source, so Wireshark lists
-it in its capture interfaces.
+Register or unregister fragcap as a Wireshark extcap source, so Wireshark lists it
+in its capture interfaces.
 
 ```text
 fragcap extcap install            # register for the current user (the default; idempotent)
@@ -127,48 +174,44 @@ fragcap extcap install --dir DIR  # register into an explicit directory
 ```
 
 The scope selectors `--user`, `--system`, and `--dir` are mutually exclusive; with
-none given, the default is the current user. `--user`/`--system` register into the
-per-user and machine-wide Wireshark extcap directories `doctor` probes, and `--dir`
-is an explicit override (the same directory selected by a scope, named literally).
-The flags apply to `uninstall` as well.
+none given, the default is the current user. The per-user form copies the running
+fragcap binary into your own Wireshark extcap directory and needs no elevation. On a
+shared computer, **each user who wants the Wireshark integration runs `fragcap
+extcap install` once.** If Wireshark does not show fragcap as a capture source, run
+`fragcap doctor`, which reports whether the integration is registered for you and
+prints the exact command to fix it. To register for every user, an administrator
+runs the machine-wide form (writing into Wireshark's system extcap directory needs
+the privilege to write there).
 
-**The default is per user.** It copies the running fragcap binary into your own
-Wireshark extcap directory and needs no elevation. Installing fragcap for the whole
-machine does not register it for everyone: on a shared computer, **each user who
-wants the Wireshark integration runs `fragcap extcap install` once.** If Wireshark
-does not show fragcap as a capture source, run `fragcap doctor`, which reports
-whether the integration is registered for you and prints the exact command to fix
-it.
+The Windows installer (`.msi`) can also register the integration for you, for the
+current user or machine-wide, through its optional Wireshark integration step (both
+choices off by default). Both are exposed as installer properties
+(`REGISTEREXTCAP_USER`, `REGISTEREXTCAP_MACHINE`) for a silent install.
 
-To register for every user of the machine, an administrator runs the machine-wide
-form (writing into Wireshark's system extcap directory needs the privilege to write
-there):
+## Data
 
-```text
-fragcap extcap install --system
-```
+### `catalog`
 
-`--system` resolves the system Wireshark extcap directory for you; to target a
-non-standard location, name it explicitly instead, for example
-`fragcap extcap install --dir "C:\Program Files\Wireshark\extcap"`.
+Maintain the shipped, disposable catalog store (`catalog.db`): the maintainer seeds
+it, and any user refreshes it.
 
-### From the installer
+- `fragcap catalog import <SEED> --db <catalog.db>` loads a local JSON seed
+  document.
+- `fragcap catalog export --db <catalog.db>` exports the store to
+  schema-conformant JSON on standard output.
+- `fragcap catalog seed --db <catalog.db>` and `fragcap catalog seed-engine --db
+  <catalog.db>` seed the catalog and engine tiers (offline from a `--from` document;
+  a network-capable build adds live `--steam` / `--pcgamingwiki` sources).
+- `fragcap catalog seed-signatures --db <catalog.db>` fills the detection signature
+  table from the bundled document, so `technologies` and discovery detect engines,
+  anti-cheat, and DRM from the store.
+- `fragcap catalog update --db <catalog.db>` fetches the current published catalog
+  (needs the network-capable build).
 
-The Windows installer (`.msi`) can register the integration for you. Its optional
-Wireshark integration step offers two independent, opt-out choices, both off by
-default so nothing is registered unless you ask:
+### `schema`
 
-- **For the current user** runs the per-user registration above as the installing
-  account, so it lands in your own Wireshark extcap directory.
-- **For all users on this machine** registers into Wireshark's system extcap
-  directory when Wireshark is detected. It is ignored if Wireshark is not found.
+Validate JSON artifacts against the master schema, or print it.
 
-A failed registration never fails the install, and leaving both unchecked
-registers nothing; you can always run `fragcap extcap install` later. Both choices
-are also public installer properties (`REGISTEREXTCAP_USER`,
-`REGISTEREXTCAP_MACHINE`), so an administrator can set them for a silent install.
-
-## `replay`
-
-Play a capture file back. Not yet implemented; the command parses and reports that
-it is unavailable rather than the parser rejecting it.
+- `fragcap schema validate <FILE>` reports every structural violation in one pass.
+  See [the target schema](/docs/reference/target-schema).
+- `fragcap schema print` writes the embedded master schema to standard output.

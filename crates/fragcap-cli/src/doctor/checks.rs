@@ -19,7 +19,6 @@ const DRIVER: &str = "Capture driver";
 const TRACING: &str = "Tracing";
 const INTERFACES: &str = "Interfaces";
 const INTEGRATION: &str = "Integration";
-const PROFILES: &str = "Profiles";
 const PREPARATION: &str = "Preparation";
 
 /// Where to obtain npcap. fragcap never installs it (the Licensing section). The
@@ -48,7 +47,6 @@ pub fn run(inputs: &Inputs) -> Report {
     ]);
     checks.extend(interfaces(inputs));
     checks.push(integration(inputs));
-    checks.push(profiles(inputs));
     // The two preparation checks surface a row only when there is something to do,
     // so a ready machine (a catalog present, at least one target entry) is
     // unchanged. Each carries the action the `--fix` layer performs (slice S056).
@@ -83,7 +81,6 @@ fn identity(inputs: &Inputs) -> Vec<Check> {
     vec![
         Check::ok(IDENTITY, "version", inputs.fragcap_version.clone()),
         Check::ok(IDENTITY, "binary", path_detail(&inputs.binary_path)),
-        Check::ok(IDENTITY, "profile dir", path_detail(&inputs.profile_dir)),
         Check::ok(
             IDENTITY,
             "catalog db",
@@ -383,17 +380,6 @@ fn integration(inputs: &Inputs) -> Check {
     }
 }
 
-fn profiles(inputs: &Inputs) -> Check {
-    Check::ok(
-        PROFILES,
-        "profiles",
-        format!(
-            "bundled: {}, user: {}",
-            inputs.bundled_count, inputs.user_count
-        ),
-    )
-}
-
 /// The shipped catalog store, surfaced only when it is absent (slice S056). A
 /// present catalog needs no row here (its path already appears in the identity
 /// section), so a ready machine is unchanged. Absence is a warning, not a block:
@@ -444,9 +430,6 @@ mod tests {
             binary_path: Some(std::path::PathBuf::from(
                 "C:\\Program Files\\fragcap\\fragcap.exe",
             )),
-            profile_dir: Some(std::path::PathBuf::from(
-                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles",
-            )),
             catalog_db_path: Some(std::path::PathBuf::from(
                 "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db",
             )),
@@ -481,8 +464,6 @@ mod tests {
             extcap_system_dir: Some(std::path::PathBuf::from(
                 "C:\\Program Files\\Wireshark\\extcap",
             )),
-            bundled_count: 0,
-            user_count: 2,
             target_entry_count: Some(3),
         }
     }
@@ -840,28 +821,35 @@ mod tests {
     #[test]
     fn the_identity_section_leads_and_is_informational() {
         let report = run(&ready_inputs());
-        // The first four rows are the identity section, all ok.
+        // The identity section is the four leading rows, all ok. The retired profile
+        // directory row and the Profiles section were removed with the profile-file
+        // surface (slice S057); the section is version, binary, catalog db, local db.
         let identity: Vec<_> = report
             .checks
             .iter()
             .filter(|c| c.section == IDENTITY)
             .collect();
-        assert_eq!(
-            identity.len(),
-            5,
-            "version, binary, profile dir, catalog db, local db"
-        );
+        assert_eq!(identity.len(), 4, "version, binary, catalog db, local db");
         assert!(identity.iter().all(|c| c.status == Status::Ok));
         assert_eq!(report.checks[0].section, IDENTITY, "identity leads");
         assert!(
             report.checks[0].detail.contains("0.0.0-test"),
             "version row"
         );
+        // The retired profile surface is gone: no identity row names a profile
+        // directory, and no section is named Profiles.
+        assert!(
+            !report.checks.iter().any(|c| c.name == "profile dir"),
+            "no profile dir row"
+        );
+        assert!(
+            !report.checks.iter().any(|c| c.section == "Profiles"),
+            "no Profiles section"
+        );
         // Identity is informational: an unresolvable path is an ok note, and the
         // machine stays ready.
         let mut inputs = ready_inputs();
         inputs.binary_path = None;
-        inputs.profile_dir = None;
         inputs.catalog_db_path = None;
         inputs.local_db_path = None;
         let report = run(&inputs);

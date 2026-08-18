@@ -35,21 +35,6 @@ fn extcap_status() -> (Option<PathBuf>, bool, Option<PathBuf>, bool) {
     (user_dir, user_installed, system_dir, system_installed)
 }
 
-/// Count the `.json` profiles directly in a directory, or zero when it cannot
-/// be read.
-fn count_profiles(dir: &Option<PathBuf>) -> usize {
-    let Some(dir) = dir else {
-        return 0;
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .count()
-}
-
 /// Whether the process-event tracing capability is built into this binary, and
 /// whether its session can open.
 ///
@@ -170,17 +155,10 @@ fn live_probe(wpcap_loadable: bool) -> (Vec<super::IfaceInfo>, Option<bool>, Opt
 /// The identity facts: which fragcap produced this report and where it keeps its
 /// per-user data. All read-only and computed regardless of whether the paths
 /// exist yet.
-fn identity_fields() -> (
-    String,
-    Option<PathBuf>,
-    Option<PathBuf>,
-    Option<PathBuf>,
-    Option<PathBuf>,
-) {
+fn identity_fields() -> (String, Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
     (
         env!("CARGO_PKG_VERSION").to_string(),
         std::env::current_exe().ok(),
-        crate::paths::user_profile_dir(),
         crate::paths::default_catalog_db_path(),
         crate::paths::default_local_db_path(),
     )
@@ -304,19 +282,15 @@ fn read_target_entry_count() -> Option<usize> {
 
 /// Gather the environment facts for `doctor`.
 pub fn gather() -> Inputs {
-    let user_dir = crate::paths::user_profile_dir();
-    let user_count = count_profiles(&user_dir);
-
     #[cfg(windows)]
     {
-        gather_windows(user_count)
+        gather_windows()
     }
     #[cfg(not(windows))]
     {
         let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
             extcap_status();
-        let (fragcap_version, binary_path, profile_dir, catalog_db_path, local_db_path) =
-            identity_fields();
+        let (fragcap_version, binary_path, catalog_db_path, local_db_path) = identity_fields();
         // wpcap.dll is not loadable on a non-Windows build; the live backend is
         // not linked anyway.
         let (interfaces, _loopback, interface_error) = live_probe(false);
@@ -324,7 +298,6 @@ pub fn gather() -> Inputs {
         Inputs {
             fragcap_version,
             binary_path,
-            profile_dir,
             catalog_db_present: catalog_db_path.as_ref().is_some_and(|p| p.exists()),
             catalog_db_path,
             local_db_present: local_db_path.as_ref().is_some_and(|p| p.exists()),
@@ -342,8 +315,6 @@ pub fn gather() -> Inputs {
             extcap_dir,
             extcap_system_installed,
             extcap_system_dir,
-            bundled_count: crate::paths::bundled().len(),
-            user_count,
             target_entry_count,
         }
     }
@@ -353,7 +324,7 @@ pub fn gather() -> Inputs {
 /// without a registry API, which is a best-effort detection the operator reads
 /// as guidance; it installs nothing.
 #[cfg(windows)]
-fn gather_windows(user_count: usize) -> Inputs {
+fn gather_windows() -> Inputs {
     use super::NpcapInfo;
 
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
@@ -398,13 +369,11 @@ fn gather_windows(user_count: usize) -> Inputs {
 
     let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
         extcap_status();
-    let (fragcap_version, binary_path, profile_dir, catalog_db_path, local_db_path) =
-        identity_fields();
+    let (fragcap_version, binary_path, catalog_db_path, local_db_path) = identity_fields();
     let target_entry_count = read_target_entry_count();
     Inputs {
         fragcap_version,
         binary_path,
-        profile_dir,
         catalog_db_present: catalog_db_path.as_ref().is_some_and(|p| p.exists()),
         catalog_db_path,
         local_db_present: local_db_path.as_ref().is_some_and(|p| p.exists()),
@@ -426,8 +395,6 @@ fn gather_windows(user_count: usize) -> Inputs {
         extcap_dir,
         extcap_system_installed,
         extcap_system_dir,
-        bundled_count: crate::paths::bundled().len(),
-        user_count,
         target_entry_count,
     }
 }

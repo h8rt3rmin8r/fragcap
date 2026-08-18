@@ -153,7 +153,7 @@ export default function BrandPage() {
               Geist Mono / Code and interface
             </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1rem' }}>
-              fragcap run --profile eso --out capture.fcapng
+              fragcap capture --target eso --out capture.fcapng
             </div>
           </div>
         </div>

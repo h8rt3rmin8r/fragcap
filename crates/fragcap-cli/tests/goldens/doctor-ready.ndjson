@@ -1,6 +1,5 @@
 {"section":"Identity","name":"version","detail":"0.0.0-test","status":"ok"}
 {"section":"Identity","name":"binary","detail":"C:\\Program Files\\fragcap\\fragcap.exe","status":"ok"}
-{"section":"Identity","name":"profile dir","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles","status":"ok"}
 {"section":"Identity","name":"catalog db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db (present)","status":"ok"}
 {"section":"Identity","name":"local db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db (present)","status":"ok"}
 {"section":"Platform","name":"os","detail":"Windows 11","status":"ok"}
@@ -14,4 +13,3 @@
 {"section":"Tracing","name":"process events","detail":"process-event session available","status":"ok"}
 {"section":"Interfaces","name":"adapter","detail":"Ethernet  192.0.2.10","status":"ok"}
 {"section":"Integration","name":"analyzer extcap","detail":"installed for the current user in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok"}
-{"section":"Profiles","name":"profiles","detail":"bundled: 0, user: 2","status":"ok"}

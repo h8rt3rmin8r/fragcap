@@ -1,58 +1,59 @@
 ---
 title: Getting started
-description: Install the capture driver, verify it, run a first capture, and open the result.
+description: Install the capture driver, verify it, register a target, run a first capture, and open the result.
 ---
+
+fragcap captures the network traffic your machine sends and receives and labels
+each connection with the process that produced it. This guide takes you from
+nothing installed to a capture file on disk, opened in Wireshark. Followed top to
+bottom, it ends with a `.fcapng` file you can inspect.
 
 ## Before you begin
 
-fragcap uses a small, layered set of external tools:
+fragcap sits on top of a small, layered set of external tools. The diagram is the
+whole dependency model: what is required, what is recommended, and what is
+optional.
 
-- **Required: npcap**, the capture driver. fragcap detects it and reports where
-  to obtain it when it is absent; it never installs, downloads, or bundles it.
+```mermaid
+flowchart TD
+  fragcap["fragcap: capture and attribution"]
+  npcap["npcap: capture driver (required)"]
+  ws["Wireshark: analyzer (recommended)"]
+  extcap["Wireshark extcap: optional"]
+  fragcap -->|captures through| npcap
+  fragcap -->|writes captures opened in| ws
+  ws -->|installer bundles| npcap
+  extcap -->|ships with| ws
+  fragcap -.->|registered by fragcap extcap install| extcap
+```
+
+- **Required: npcap**, the capture driver. Live capture cannot happen without it.
+  fragcap detects it and reports where to obtain it when it is absent; on its own
+  it never bundles or hosts npcap. (`fragcap doctor --fix` may, only under your
+  explicit confirmation, fetch and launch npcap's own signed installer for you;
+  see [Verify the install](#2-verify-the-install).)
 - **Recommended: Wireshark**, the analyzer you open captures in. Its installer
-  also provides npcap, so installing Wireshark is the simplest way to get both.
+  also provides npcap, so installing Wireshark is the simplest way to get both at
+  once.
 - **Optional: the Wireshark extcap integration**, which lets fragcap feed
-  Wireshark live. Register it with `fragcap extcap install`.
+  Wireshark live. You register it later, once fragcap is installed, in
+  [Verify the install](#2-verify-the-install).
 
 The full definitions live in the
 [dependency model](/docs/glossary/platform-and-distribution#dependency-model);
 this page summarizes and links so the two cannot drift.
 
-Three things to expect from your first capture, so the result matches what you
-intend:
+### If you do not already have npcap and Wireshark
 
-- **Payloads are encrypted.** fragcap records that a conversation happened and
-  which process owned it, not readable game traffic.
-- **The launcher-to-client handoff is not in the capture.** fragcap attributes
-  the client's own flows, not the brief launcher exchange that starts it.
-- **A loopback conversation is usually a process talking to itself.** Local
-  traffic on the loopback interface is normal and often not what you are after.
-
-## 1. Install fragcap
-
-Download a release and install it. The Windows installer (`.msi`) puts `fragcap`
-on your `PATH`; the portable `.zip` needs no installation. The installer is not
-code-signed, so Windows shows a SmartScreen "Windows protected your PC" warning
-with an "Unknown Publisher" note; this is expected for this release. Choose **More
-info** then **Run anyway**, and verify the download's `.sha256` checksum, which is
-the integrity check in the absence of a signature.
-
-The installer also offers an optional step to register fragcap with Wireshark,
-for the current user or (for administrators) for all users on the machine. It is
-off by default; if you skip it, you can register later with `fragcap extcap
-install`. See [the extcap reference](/docs/reference/cli#extcap) for the details.
-
-## 2. Install npcap (through the Wireshark installer)
-
-npcap is the one prerequisite fragcap cannot install for you. The simplest way to
-get it is the Wireshark installer, which bundles npcap; you also get the
-recommended analyzer in the same step. Download Wireshark from
+If you already have them, skip ahead to [Install fragcap](#1-install-fragcap).
+Otherwise, install Wireshark, which bundles npcap, and you get the recommended
+analyzer in the same step. Download Wireshark from
 [wireshark.org](https://www.wireshark.org/), run the installer, and follow the
 screens below.
 
 On the **Choose Components** screen, leave the External capture tools (extcap)
 group selected. These are the interfaces Wireshark can capture through; fragcap
-registers alongside them later with `fragcap extcap install`.
+registers alongside them later.
 
 ![Wireshark Choose Components screen with the External capture tools (extcap) group selected](/screenshots/01_wireshark_choose-components_extcap.png)
 
@@ -79,14 +80,53 @@ to enable here.
 
 ![Npcap Installation Options with WinPcap API-compatible Mode checked](/screenshots/05_wireshark_npcap-setup_options.png)
 
-Finish the npcap installer, then the Wireshark installer. Capture also requires
-running fragcap with administrative privilege.
+Finish the npcap installer, then the Wireshark installer.
 
-## 3. Verify the install
+### What to expect from your first capture
 
-Run `fragcap doctor`. It reports your environment (identity, platform, the
-capture driver, tracing, interfaces, the Wireshark integration, and profiles)
-and captures nothing. A ready environment looks like this:
+Three things, so the result matches what you intend:
+
+- **Payloads are encrypted.** fragcap records that a conversation happened and
+  which process owned it, not readable game traffic.
+- **The launcher-to-client handoff is not in the capture.** fragcap attributes
+  the client's own flows, not the brief launcher exchange that starts it.
+- **A loopback conversation is usually a process talking to itself.** Local
+  traffic on the loopback interface is normal and often not what you are after.
+
+## 1. Install fragcap
+
+Download a release from the
+[fragcap releases page](https://github.com/h8rt3rmin8r/fragcap/releases). Each
+release offers a Windows installer (`fragcap-<version>-x86_64.msi`) and a portable
+archive (`fragcap-<version>-x86_64-pc-windows-msvc.zip`), each with a `.sha256`
+checksum beside it. The `.msi` puts `fragcap` on your `PATH` so it works in any new
+terminal; the `.zip` needs no installation, just unzip and run.
+
+The installer is not code-signed, so Windows shows a SmartScreen "Windows protected
+your PC" warning with an "Unknown Publisher" note; this is expected for this
+release. Choose **More info** then **Run anyway**, and verify the download against
+its `.sha256` checksum, which is the integrity check in the absence of a signature.
+
+On completion the installer offers to open the npcap download page, because npcap
+is a separate install (see [Before you begin](#before-you-begin)). This is the same
+npcap prerequisite, surfaced once more; if you already installed it with Wireshark
+above, you can decline. The installer never downloads, bundles, or installs npcap
+itself.
+
+The installer also offers an optional step to register fragcap with Wireshark, for
+the current user or (for administrators) for all users on the machine. It is off by
+default; if you skip it, you can register later from the next step.
+
+## 2. Verify the install
+
+**Open your terminal as Administrator** (right-click the terminal, then **Run as
+administrator**). Live capture needs an elevated shell, and elevation is what turns
+the `privilege` and capture-driver rows green; a normal terminal will show them as
+not-ready and you will not know why.
+
+Run `fragcap doctor`. It reports your environment (identity, platform, the capture
+driver, tracing, interfaces, and the Wireshark integration) and captures nothing. A
+ready environment looks like this:
 
 ```text
 fragcap doctor
@@ -94,11 +134,12 @@ fragcap doctor
 
 ```text
 Identity
-  version                ok    0.3.0
+  version                ok    0.5.0
   binary                 ok    C:\Program Files\fragcap\fragcap.exe
-  profile dir            ok    C:\Users\you\AppData\Roaming\fragcap\profiles
   catalog db             ok    C:\Users\you\AppData\Roaming\fragcap\catalog.db
+                               (present)
   local db               ok    C:\Users\you\AppData\Roaming\fragcap\local.db
+                               (present)
 
 Platform
   os                     ok    Windows 11
@@ -122,41 +163,92 @@ Integration
   analyzer extcap        ok    installed for the current user in
                                C:\Users\you\AppData\Roaming\Wireshark\extcap
 
-Profiles
-  profiles               ok    bundled: 0, user: 2
-
 Ready to capture.
 ```
 
 Any row that is not `ok` names what is missing and how to resolve it. If npcap is
-absent, `doctor` says so and links the download; the `analyzer extcap` row is
-optional, not a blocker, and turns `ok` once you run `fragcap extcap install`.
+absent, `doctor` says so and links the download. `fragcap doctor --fix` goes one
+step further: it offers, one at a time and only under your confirmation, to perform
+the fixes the report named, including relaunching elevated and (in a
+network-capable build) fetching and launching npcap's own signed installer. It acts
+only on remediations the plain report already printed, and it never installs
+anything without asking.
 
-## 4. Get a profile
-
-A capture is driven by a profile that names the client to wait for and how to
-attribute it. No profiles ship bundled, so you obtain one before the first
-capture.
-
-Scaffold one from an installed Steam title, which writes a validating profile you
-can refine:
-
-```text
-fragcap steam profile <APP_ID>
-```
-
-Or author one by hand, following [Writing a profile](/docs/guides/writing-a-profile).
-
-## 5. Capture
+**Optional: register the Wireshark integration.** To feed Wireshark live from its
+own capture interface list, register the extcap integration now that fragcap is
+installed:
 
 ```text
-fragcap run --profile <game-id> --out capture.fcapng
+fragcap extcap install
 ```
 
-fragcap arms, waits for the profiled client, attributes its flows, and writes the
-result.
+This copies fragcap into your Wireshark extcap directory and needs no elevation.
+The `analyzer extcap` row in `doctor` is optional, not a blocker, and turns `ok`
+once you run this. See [the extcap reference](/docs/reference/cli#environment) for
+machine-wide registration and other options.
 
-## 6. Open the result in Wireshark
+## 3. Find a target
+
+A capture attributes a game's traffic to it, so fragcap needs to know which title
+you mean. It keeps a small local store of **targets**, and it discovers the
+installed titles on your machine for you. Just run:
+
+```text
+fragcap targets
+```
+
+fragcap walks Steam and the common game-install locations, registers what it finds,
+and prints a numbered listing:
+
+```text
+  #  TARGET                     CAPTURE          KNOWN
+  1  the_elder_scrolls_online   ready            no online mode recorded
+  2  the_division_2             ready            Denuvo, EasyAntiCheat
+
+  fragcap capture 1
+```
+
+The **CAPTURE** column says whether a row is ready to capture; the number in the
+first column is the one the capture command honors, so the listing ends by naming
+the exact next command for the first ready row.
+
+If a title you want is not listed (a non-Steam install, or one in an unusual
+location), register it yourself. Point fragcap at the game's install folder:
+
+```text
+fragcap targets scan "C:\Games\MyGame"
+```
+
+or register an installed Steam title by its **App ID**, the number in the title's
+Steam store or library URL (for example `306130` in
+`store.steampowered.com/app/306130/`):
+
+```text
+fragcap targets add --steam 306130
+```
+
+Run `fragcap targets` again afterward to see it in the numbered listing.
+
+## 4. Capture
+
+Capture the row you want by its number from the listing:
+
+```text
+fragcap capture 1 --out capture.fcapng
+```
+
+You can also name a target by its handle (`fragcap capture --target
+the_elder_scrolls_online --out capture.fcapng`). fragcap arms, waits for the
+target's client to appear, attributes its flows to the process that owns them, and
+writes `capture.fcapng` when the capture ends. Start the game after fragcap is
+armed; it will match the client and begin recording.
+
+To bound the run, add `--duration 30m` (or `--max-packets`, or `--max-bytes`); to
+capture only part of the traffic, add `--roles client`. See
+[the CLI reference](/docs/reference/cli#capture) for the full set of options and
+[capture modes](/docs/guides/capture-modes) for streaming and ring capture.
+
+## 5. Open the result in Wireshark
 
 Open `capture.fcapng` in [Wireshark](https://www.wireshark.org/), or any other
 pcapng-aware analyzer. This is where a capture becomes useful: Wireshark shows the
