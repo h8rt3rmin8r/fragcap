@@ -28,7 +28,7 @@ fn assert_help_is_clean(args: &[&str]) {
 
 #[test]
 fn run_help_is_free_of_internals() {
-    assert_help_is_clean(&["run", "--help"]);
+    assert_help_is_clean(&["capture", "--help"]);
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn top_level_help_is_free_of_internals() {
 
 #[test]
 fn launch_help_describes_real_behavior_not_a_deferred_slice() {
-    let (_code, out, _err) = run(&["run", "--help"]);
+    let (_code, out, _err) = run(&["capture", "--help"]);
     assert!(
         out.contains("launcher"),
         "the --launch help describes the real managed launch: {out}"

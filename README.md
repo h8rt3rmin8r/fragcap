@@ -137,33 +137,33 @@ roles that separate launcher, client, and platform-service traffic.
   tool that loses data without saying so produces conclusions the user cannot
   check.
 
-The command-line tool exposes `run`, `tap`, `profile`, `steam`, `doctor`, and
-`extcap`. Anything reachable through the CLI is reachable through the public Rust
-API.
+The command-line tool exposes one capture verb, `capture`, alongside `targets`,
+`technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. Anything
+reachable through the CLI is reachable through the public Rust API.
 
 Example invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
 for the full surface):
 
 ```bash
-# Bounded capture, launched by fragcap, written to a file
-fragcap run --profile eso --launch --duration 30m --out capture.fcapng
+# Bounded capture of a registered title, launched by fragcap
+fragcap capture --target eso --launch --duration 30m --out capture.fcapng
 
 # Client traffic only, streamed to an analyzer through a named pipe
-fragcap run --profile div2 --mode stream --roles client --sink pipe:fragcap,format=pcapng
+fragcap capture --target div2 --mode stream --roles client --sink pipe:fragcap,format=pcapng
 
 # Rolling ten-minute window, dumped on interrupt
-fragcap run --profile eso --mode ring --ring 10m --out captures/eso.fcapng
+fragcap capture --target eso --mode ring --ring 10m --out captures/eso.fcapng
 
-# Ad-hoc capture of a running process, no profile
-fragcap tap --process eso64.exe --duration 5m --out capture.fcapng
+# Ad-hoc capture of a running process, no stored target
+fragcap capture --process eso64.exe --duration 5m --out capture.fcapng
 ```
 
-`eso` and `div2` stand in for profile names; no profiles ship bundled. A profile
-is a file you author or scaffold from an installed title with `fragcap steam
-profile <APP_ID>`, then pass by name or path. See
-[Writing a profile](https://fragcap.com/docs/guides/writing-a-profile). Non-file
-sinks (`pipe:`, `tcp://`) have no extension to infer a format from, so they name
-it explicitly with `,format=pcapng` or `,format=jsonl`.
+`eso` and `div2` stand in for target selectors. A target is registered in your
+local store; register an installed Steam title with `fragcap targets add --steam
+<APP_ID>`, then capture it by handle, name, or row index. A bare `fragcap` lists
+your registered targets. Non-file sinks (`pipe:`, `tcp://`) have no extension to
+infer a format from, so they name it explicitly with `,format=pcapng` or
+`,format=jsonl`.
 
 ## What it will not do
 

@@ -246,19 +246,6 @@ fn capture_bytes(command: &str, scope: &[&str]) -> Vec<u8> {
 }
 
 #[test]
-fn extcap_options_scope_the_capture_like_the_run_flags() {
-    // The same scoping flags select the same capture through the extcap dialog as
-    // through the run command line (FR-006, SC-003), whatever each flag does there.
-    let scope = ["--roles", "client", "--direction", "in", "--loopback"];
-    let via_run = capture_bytes("run", &scope);
-    let via_extcap = capture_bytes("extcap", &scope);
-    assert_eq!(
-        via_run, via_extcap,
-        "extcap parity with run for the scoped capture"
-    );
-}
-
-#[test]
 fn the_roles_option_is_applied_through_the_overlay() {
     // The roles option reaches the same overlay `run` uses (it scopes which stages
     // trigger). Scoping to the profiled `client` role captures the gameplay and

@@ -25,8 +25,42 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use crate::args::{parse_duration, parse_ring, parse_size, Direction, RingWindow, SinkSpec};
 
 /// Passive, process-attributed network capture for Windows.
+///
+/// The command surface groups under four headings, purely presentational and
+/// hiding nothing (section 17.3). clap 4.5.32 (pinned for MSRV) does not group
+/// subcommands natively, so the grouping is rendered through a custom help
+/// template; every command still appears exactly once.
 #[derive(Debug, Parser)]
-#[command(name = "fragcap", version, about, long_about = None)]
+#[command(
+    name = "fragcap",
+    version,
+    about,
+    long_about = None,
+    help_template = "\
+{about-with-newline}
+{usage-heading} {usage}
+
+Commands:
+  Capture:
+    capture       Capture a target's traffic (--target or --process)
+    replay        Run a capture file back (not yet implemented)
+
+  Targets:
+    targets       Manage capture targets in the local store (local.db)
+    technologies  Detect engines, anti-cheat, and DRM in an install directory
+    steam         Enumerate installed Steam titles
+
+  Environment:
+    doctor        Report environment readiness
+    extcap        Wireshark extcap integration
+
+  Data:
+    catalog       Maintain the shipped catalog store (catalog.db)
+    schema        Validate JSON artifacts against the master schema
+
+Options:
+{options}"
+)]
 pub struct Cli {
     /// Suppress progress; keep warnings and errors.
     #[arg(long, global = true)]
@@ -36,47 +70,47 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub silent: bool,
 
-    /// Emit machine-readable structured output instead of human text. `run`,
-    /// `tap`, `steam`, and `extcap` emit the newline-delimited capture event
-    /// stream on standard error; `profile` and `doctor` emit their results as
-    /// newline-delimited records on standard output.
+    /// Emit machine-readable structured output instead of human text. `capture`,
+    /// `steam`, and `extcap` emit the newline-delimited capture event stream on
+    /// standard error; `doctor` emits its results as newline-delimited records on
+    /// standard output.
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// The command to run. With none, `fragcap` lists registered targets and points
+    /// at `--help` (section 17.4).
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// The command surface of the tool. Most commands are implemented; a couple
 /// remain stubs that name the slice that will deliver them.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Capture a game using a profile.
-    Run(Box<RunArgs>),
-    /// Capture a running process ad hoc, without an authored profile.
-    Tap(TapArgs),
-    /// Watch for a target by identity and capture it, however it launches,
-    /// including one already running (launch-agnostic, section 15.7).
-    Watch(WatchArgs),
+    /// Capture a target's traffic. Identify the target by a stored-target
+    /// selector (`--target`) or a raw process image name (`--process`); every
+    /// other option composes freely (section 17.2).
+    Capture(Box<CaptureArgs>),
     /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
-    /// Manage and validate profiles.
-    Profile(ProfileArgs),
-    /// Enumerate titles and scaffold profiles from a Steam installation.
-    Steam(SteamArgs),
-    /// Validate JSON target files against the master schema, or print it.
-    Schema(SchemaArgs),
-    /// Detect the technologies present in a game's install directory (engine,
-    /// anti-cheat, SDK, and more), from file paths only.
-    Technologies(TechnologiesArgs),
-    /// Manage the targets hint database: import a seed and export it to
-    /// schema-conformant JSON (issue #78).
+    /// Register, list, show, and discover capture targets in the user store
+    /// (local.db).
     Targets(TargetsArgs),
+    /// Detect the technologies present in a game's install directory (engine,
+    /// anti-cheat, and DRM), from a signature table.
+    Technologies(TechnologiesArgs),
+    /// Enumerate installed titles from a Steam installation.
+    Steam(SteamArgs),
     /// Report environment readiness.
     Doctor(DoctorArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
     /// source (specification section 14.5).
     Extcap(Box<ExtcapArgs>),
+    /// Maintain the shipped catalog store (catalog.db): import, export, seed,
+    /// and update the published catalog.
+    Catalog(CatalogArgs),
+    /// Validate JSON artifacts against the master schema, or print it.
+    Schema(SchemaArgs),
 }
 
 /// The capture mode, specification section 17.2.
@@ -90,46 +124,62 @@ pub enum ModeArg {
     Ring,
 }
 
-/// Arguments to `run`.
+/// Arguments to `capture`, the single capture verb (section 17.2).
 ///
-/// Exactly one target input is required: a profile reference (`--profile`), an
-/// install directory to resolve through the cascade (`--install-dir`), or a Steam
-/// app id resolved to one (`--steam`). The clap group enforces the
-/// exactly-one rule, so a usage error (exit 2) is reported before any resolution.
+/// Exactly one target input is required and the two are mutually exclusive:
+/// `--target` names a stored target by selector (S051 section 5.4) resolved
+/// against the local store, and `--process` names a raw process image name
+/// directly. The clap group enforces the exactly-one rule, so a usage error
+/// (exit 2) is reported before any resolution. Every other flag is orthogonal to
+/// the target input, so all five section-9.1 captures are expressible.
+///
+/// The optional path anchors (`--path`, `--path-regex`) disambiguate two
+/// processes sharing an image name (the capability the retired `watch` carried).
+/// `--launch` requires the resolved `--target` to carry a launchable platform
+/// anchor; a `--process` capture, or a target with no anchor, cannot be launched
+/// and is refused (exit 2) rather than ignored.
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("target_input").required(true).args(["profile", "install_dir", "steam"])))]
-pub struct RunArgs {
-    /// The profile to capture with: a path, a name, or a game id.
-    #[arg(short = 'p', long)]
-    pub profile: Option<String>,
-
-    /// An install directory to resolve through the cascade and capture, with no
-    /// authored profile (engine rule, platform walker, or runtime observation).
+#[command(group(ArgGroup::new("target_input").required(true).args(["target", "id", "process"])))]
+pub struct CaptureArgs {
+    /// A stored-target selector: an exact handle, a case-insensitive exact name,
+    /// or a 1-based row index over the current listing (S051).
     #[arg(long)]
-    pub install_dir: Option<PathBuf>,
+    pub target: Option<String>,
 
-    /// A Steam app id to resolve to its install directory and capture, with no
-    /// authored profile.
+    /// Select a stored target by its durable stable identifier, the machine-facing
+    /// form automation addresses (a bare integer given to `--target` is a row index,
+    /// not this). Mutually exclusive with `--target` and `--process`.
     #[arg(long)]
-    pub steam: Option<String>,
+    pub id: Option<i64>,
 
-    /// The shipped catalog store to consult during resolution. When set and
-    /// present, a `--steam` capture may resolve its client from the catalog at
-    /// heuristic-unverified fidelity, above the engine rule. Overrides
+    /// The image name of the process to capture, named directly with no stored
+    /// target.
+    #[arg(long)]
+    pub process: Option<String>,
+
+    /// A case-insensitive substring the target's full image path must contain.
+    #[arg(long)]
+    pub path: Option<String>,
+
+    /// A regular expression the target's full image path must match.
+    #[arg(long)]
+    pub path_regex: Option<String>,
+
+    /// The shipped catalog store consulted while resolving a `--target`. Overrides
     /// `FRAGCAP_CATALOG_DB` and the default location; a store named here that does
     /// not exist is not created and is not an error. With neither this flag nor the
-    /// environment variable set, `run` defaults to `%APPDATA%\fragcap\catalog.db`
-    /// and creates it on first use (seeding it from the store shipped beside the
-    /// executable when present).
+    /// environment variable set, `capture` defaults to
+    /// `%APPDATA%\fragcap\catalog.db` and creates it on first use (seeding it from
+    /// the store shipped beside the executable when present).
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
 
-    /// The local store, where learned launch data accumulates and your own data
-    /// lives. It is consulted before the catalog during resolution. Overrides
-    /// `FRAGCAP_LOCAL_DB` and the default location; a store named here that does
-    /// not exist is not created and is not an error. With neither this flag nor the
-    /// environment variable set, `run` defaults to `%APPDATA%\fragcap\local.db` and
-    /// creates it empty on first use. A catalog refresh never touches this store.
+    /// The local store, where registered targets and learned launch data live. It
+    /// is consulted before the catalog during resolution and is where `--target`
+    /// selectors resolve. Overrides `FRAGCAP_LOCAL_DB` and the default location; a
+    /// store named here that does not exist is not created and is not an error.
+    /// With neither this flag nor the environment variable set, `capture` defaults
+    /// to `%APPDATA%\fragcap\local.db` and creates it empty on first use.
     #[arg(long)]
     pub local_db: Option<PathBuf>,
 
@@ -193,83 +243,9 @@ pub struct RunArgs {
     pub ring: Option<RingWindow>,
 
     /// Launch the game through its platform launcher before capturing, then
-    /// capture it (Windows only; requires a Steam app id in the profile).
+    /// capture it (Windows only; requires a `--target` carrying a Steam app id).
     #[arg(long)]
     pub launch: bool,
-
-    #[command(flatten)]
-    pub offline: OfflineArgs,
-}
-
-/// Arguments to `tap`.
-#[derive(Debug, Args)]
-pub struct TapArgs {
-    /// The image name of the process to capture.
-    #[arg(short = 'p', long)]
-    pub process: String,
-
-    /// The capture duration bound.
-    #[arg(short = 'd', long, value_parser = parse_duration)]
-    pub duration: Option<Duration>,
-
-    /// The output capture file (pcapng).
-    #[arg(short = 'o', long)]
-    pub out: Option<PathBuf>,
-
-    /// An output sink, repeatable.
-    #[arg(long, value_parser = crate::args::parse_sink)]
-    pub sink: Vec<SinkSpec>,
-
-    /// Write metadata only, no packet payloads.
-    #[arg(long)]
-    pub no_payload: bool,
-
-    #[command(flatten)]
-    pub offline: OfflineArgs,
-}
-
-/// Arguments to `watch`.
-///
-/// Watch mode captures by a target identity, launch-agnostic: it arms and waits
-/// for a process matching the identity, however it started, and attaches to one
-/// already running. The identity is an executable name plus an optional path
-/// anchor, which is what distinguishes a modded install (an executable outside
-/// `steamapps` launched from a mod manager) from any other process of the same
-/// name. Where `tap` matches an executable name only, `watch` adds the path
-/// anchor and a `--wait` acquisition timeout.
-#[derive(Debug, Args)]
-pub struct WatchArgs {
-    /// The image name of the target process (a glob).
-    #[arg(short = 'e', long)]
-    pub exe: String,
-
-    /// A case-insensitive substring the target's full image path must contain.
-    #[arg(long)]
-    pub path: Option<String>,
-
-    /// A regular expression the target's full image path must match.
-    #[arg(long)]
-    pub path_regex: Option<String>,
-
-    /// How long to wait for the target before giving up (acquisition timeout).
-    #[arg(long, value_parser = parse_duration)]
-    pub wait: Option<Duration>,
-
-    /// The capture duration bound, from arm.
-    #[arg(short = 'd', long, value_parser = parse_duration)]
-    pub duration: Option<Duration>,
-
-    /// The output capture file (pcapng).
-    #[arg(short = 'o', long)]
-    pub out: Option<PathBuf>,
-
-    /// An output sink, repeatable.
-    #[arg(long, value_parser = crate::args::parse_sink)]
-    pub sink: Vec<SinkSpec>,
-
-    /// Write metadata only, no packet payloads.
-    #[arg(long)]
-    pub no_payload: bool,
 
     #[command(flatten)]
     pub offline: OfflineArgs,
@@ -305,34 +281,6 @@ pub struct OfflineArgs {
     pub fire_interrupt: bool,
 }
 
-/// Arguments to `profile`.
-#[derive(Debug, Args)]
-pub struct ProfileArgs {
-    /// A profile directory to search, repeatable.
-    #[arg(long = "profile-dir", global = true)]
-    pub profile_dir: Vec<PathBuf>,
-
-    #[command(subcommand)]
-    pub command: ProfileCommand,
-}
-
-/// The `profile` subcommands.
-#[derive(Debug, Subcommand)]
-pub enum ProfileCommand {
-    /// Validate a profile, reporting every diagnostic in one pass.
-    Validate {
-        /// The profile reference.
-        reference: String,
-    },
-    /// List the bundled and user profiles with counts.
-    List,
-    /// Show how a reference resolves and which source supplied it.
-    Show {
-        /// The profile reference.
-        reference: String,
-    },
-}
-
 /// Arguments to `steam`.
 #[derive(Debug, Args)]
 pub struct SteamArgs {
@@ -340,19 +288,12 @@ pub struct SteamArgs {
     pub command: SteamCommand,
 }
 
-/// The `steam` subcommands.
+/// The `steam` subcommands. Steam-specific inspection only; registering a title
+/// as a capture target is `targets add --steam <app_id>`.
 #[derive(Debug, Subcommand)]
 pub enum SteamCommand {
-    /// Scaffold a profile skeleton for an installed title.
-    Profile {
-        /// The Steam application identifier of an installed title.
-        app_id: String,
-        /// An optional catalog store (`catalog.db`) whose signature table labels the
-        /// engine, anti-cheat, and DRM technologies in the install directory (slice
-        /// S053). Without it the skeleton carries an empty technologies array.
-        #[arg(long)]
-        catalog_db: Option<PathBuf>,
-    },
+    /// List the installed Steam titles this machine can enumerate.
+    List,
 }
 
 /// Arguments to `schema`.
@@ -390,42 +331,17 @@ pub struct TechnologiesArgs {
 /// Arguments to `targets`.
 #[derive(Debug, Args)]
 pub struct TargetsArgs {
+    /// The `targets` subcommand. With none, `fragcap targets` lists registered
+    /// targets from the default local store.
     #[command(subcommand)]
-    pub command: TargetsCommand,
+    pub command: Option<TargetsCommand>,
 }
 
-/// The `targets` subcommands. `import` and `export` operate only on local paths;
-/// `seed` is offline from a fixture unless the `net` feature and `--steam` select
-/// the live catalog.
+/// The `targets` subcommands. Every one operates on the user-owned local store
+/// (`local.db`): registering, listing, showing, and discovering capture targets.
+/// Operations that write the shipped catalog store live under `catalog`.
 #[derive(Debug, Subcommand)]
 pub enum TargetsCommand {
-    /// Load a local JSON seed document into the store, creating it if needed.
-    Import {
-        /// The seed document (a `kind: "export"` JSON file).
-        seed: PathBuf,
-        /// The store file to write.
-        #[arg(long)]
-        db: PathBuf,
-    },
-    /// Export the store to schema-conformant JSON on standard output.
-    Export {
-        /// The store file to read.
-        #[arg(long)]
-        db: PathBuf,
-    },
-    /// Seed the catalog tier (Tier 1: appid, name, metrics) into the store.
-    Seed(TargetsSeedArgs),
-    /// Seed the engine tier (Tier 3: engine name, source, confidence) into the
-    /// store from PCGamingWiki.
-    SeedEngine(TargetsSeedEngineArgs),
-    /// Seed the detection signature table (slice S053) from the bundled Appendix B
-    /// document, so `technologies` and discovery detect engines, anti-cheat, and DRM
-    /// from a store rather than from compiled-in code. Offline; idempotent.
-    SeedSignatures {
-        /// The catalog store (`catalog.db`) to write the signatures into.
-        #[arg(long)]
-        db: PathBuf,
-    },
     /// Register a target from a name, deriving a unique handle (slice S051).
     Add(TargetsAddArgs),
     /// List registered targets with their row index, handle, and identifier.
@@ -471,10 +387,18 @@ pub struct TargetsDiscoverArgs {
 }
 
 /// Arguments to `targets add`.
+///
+/// `--steam <app_id>` registers an installed Steam title as a target: it resolves
+/// the title through the local Steam installation, uses its name, and anchors it to
+/// `steam:<app_id>` (replacing the retired `steam profile <app_id>`). It is
+/// mutually exclusive with an explicit `--anchor`, and it supplies the name when the
+/// positional name is omitted.
 #[derive(Debug, Args)]
+#[command(group(ArgGroup::new("steam_anchor").args(["steam", "anchor"])))]
 pub struct TargetsAddArgs {
-    /// The display name to register; its handle is derived automatically.
-    pub name: String,
+    /// The display name to register; its handle is derived automatically. Optional
+    /// when `--steam` supplies the name from the installed title.
+    pub name: Option<String>,
     /// The store file (local.db) to write, created if absent.
     #[arg(long)]
     pub db: PathBuf,
@@ -482,6 +406,10 @@ pub struct TargetsAddArgs {
     /// deterministic identity. Without one the target gets a random identity.
     #[arg(long)]
     pub anchor: Option<String>,
+    /// Register an installed Steam title by app id: resolve its name and install
+    /// directory, anchor it to `steam:<app_id>`. Mutually exclusive with `--anchor`.
+    #[arg(long)]
+    pub steam: Option<String>,
     /// A launch executable name, so the target names something capturable.
     #[arg(long)]
     pub exe: Option<String>,
@@ -489,6 +417,54 @@ pub struct TargetsAddArgs {
     /// (unique, not purely numeric, normalized shape).
     #[arg(long = "handle")]
     pub handle_override: Option<String>,
+}
+
+/// Arguments to `catalog`.
+#[derive(Debug, Args)]
+pub struct CatalogArgs {
+    #[command(subcommand)]
+    pub command: CatalogCommand,
+}
+
+/// The `catalog` subcommands. Every one operates on the shipped, disposable catalog
+/// store (`catalog.db`): the maintainer seeds it, and any user refreshes it. `seed`
+/// and `seed-engine` are offline from a fixture unless the `net` feature and their
+/// live source flag select the network; `update` fetches the published catalog.
+#[derive(Debug, Subcommand)]
+pub enum CatalogCommand {
+    /// Load a local JSON seed document into the catalog store, creating it if needed.
+    Import {
+        /// The seed document (a `kind: "export"` JSON file).
+        seed: PathBuf,
+        /// The store file to write.
+        #[arg(long)]
+        db: PathBuf,
+    },
+    /// Export the catalog store to schema-conformant JSON on standard output.
+    Export {
+        /// The store file to read.
+        #[arg(long)]
+        db: PathBuf,
+    },
+    /// Seed the catalog tier (Tier 1: appid, name, metrics) into the store.
+    Seed(TargetsSeedArgs),
+    /// Seed the engine tier (Tier 3: engine name, source, confidence) into the
+    /// store from PCGamingWiki.
+    SeedEngine(TargetsSeedEngineArgs),
+    /// Seed the detection signature table (slice S053) from the bundled Appendix B
+    /// document, so `technologies` and discovery detect engines, anti-cheat, and DRM
+    /// from a store rather than from compiled-in code. Offline; idempotent.
+    SeedSignatures {
+        /// The catalog store (`catalog.db`) to write the signatures into.
+        #[arg(long)]
+        db: PathBuf,
+    },
+    /// Fetch the current published catalog into the store (needs the `net` feature).
+    Update {
+        /// The store file to write, created if absent.
+        #[arg(long)]
+        db: PathBuf,
+    },
 }
 
 /// Arguments to `targets show`. Exactly one of a positional selector or `--id`

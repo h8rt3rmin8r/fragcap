@@ -1,5 +1,5 @@
 {"ts":"<ts>","event":"session.armed","interfaces":["capture"]}
-{"ts":"<ts>","event":"stage.matched","role":"client","pid":4242,"proc":"game.exe"}
+{"ts":"<ts>","event":"stage.matched","role":"target","pid":4242,"proc":"game.exe"}
 {"ts":"<ts>","event":"filter.narrowed","endpoints":1}
-{"ts":"<ts>","event":"stage.exited","role":"client","pid":4242}
+{"ts":"<ts>","event":"stage.exited","role":"target","pid":4242}
 {"ts":"<ts>","event":"session.complete","packets":24,"attributed":24,"dropped":0,"watching_discarded":0,"discarded_out_of_window":0}

@@ -262,6 +262,19 @@ fn merge_mediation(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     }
 }
 
+/// The distinct Windows client executables a target entry's `launch_entries` name.
+///
+/// Applies the same Windows-only filter, file-name reduction, and case-insensitive
+/// dedup [`windows_executables`] applies to a catalog games row, so a stored target
+/// reduces to a capturable client exactly as the hint provider reduces a catalog
+/// row (P-10). Zero means no usable client; more than one means the entry is
+/// ambiguous and a caller must decline rather than guess (P-9). A `capture --target`
+/// of a stored target uses this to synthesize a single-client identity, and to
+/// refuse an ambiguous or empty one.
+pub fn entry_windows_clients(entry: &TargetEntry) -> Vec<String> {
+    windows_executables(&entry_launch_entries(entry))
+}
+
 /// The distinct client executables a row names for the capture platform.
 ///
 /// Keeps only launch entries applicable to Windows (an `os` filter that is unset

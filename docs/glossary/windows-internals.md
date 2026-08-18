@@ -76,7 +76,7 @@ an unmodified analyzer reads a process-attributed live capture.
 
 {: .matters }
 > extcap is how fragcap reaches an analyst's existing tool without a plugin. The
-> configurable option names are the `run` command's own flag names, so the
+> configurable option names are the `capture` command's own flag names, so the
 > analyzer's dialog and the command line select capture identically. See
 > specification section 14.5.
 

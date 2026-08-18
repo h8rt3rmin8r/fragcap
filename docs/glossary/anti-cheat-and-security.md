@@ -69,7 +69,7 @@ A row of data that identifies a game technology (an engine, an anti-cheat, or a
 DRM product) from an install directory. It names a category, a match kind (a
 filename, a directory shape, a PE version string, or a binary marker), a pattern,
 the product, and a confidence. Signatures live in a table in the shipped catalog
-database, so `fragcap targets seed-signatures` refreshes detection capability as
+database, so `fragcap catalog seed-signatures` refreshes detection capability as
 data rather than through a code change and a release.
 
 {: .matters }

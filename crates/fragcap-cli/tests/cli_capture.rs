@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `run` and `tap` end to end over the offline substrate: a replay source, a
-//! scripted attributor, and a scripted process timeline. No capture driver, no
-//! elevation, no game.
+//! `capture` end to end over the offline substrate: a replay source, a scripted
+//! attributor, and a scripted process timeline. No capture driver, no elevation, no
+//! game. The identity is a `--process` image name synthesizing a single
+//! `target`-role stage, the path the retired `run`, `tap`, and `watch` all fed.
 
 mod common;
 
@@ -13,9 +14,9 @@ use common::{data, fixture};
 /// Run with the standard offline substrate, appending `extra`.
 fn run_offline(extra: &[String]) -> (u8, String, String) {
     let mut args: Vec<String> = vec![
-        "run".into(),
-        "--profile".into(),
-        data("game.json"),
+        "capture".into(),
+        "--process".into(),
+        "game.exe".into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -46,44 +47,44 @@ fn a_run_produces_the_capture_goldens_with_stamped_role_and_stage() {
 
     let fcapng_bytes = fs::read(&fcapng).expect("the pcapng file was written");
     let jsonl_bytes = fs::read(&jsonl).expect("the jsonl file was written");
-    common::assert_golden("run.fcapng", &fcapng_bytes);
-    common::assert_golden("run.jsonl", &jsonl_bytes);
+    common::assert_golden("capture.fcapng", &fcapng_bytes);
+    common::assert_golden("capture.jsonl", &jsonl_bytes);
 
     let jsonl_text = String::from_utf8(jsonl_bytes).unwrap();
     assert!(
-        jsonl_text.contains("\"role\":\"client\""),
+        jsonl_text.contains("\"role\":\"target\""),
         "every attributed packet carries the role"
     );
     assert!(
-        jsonl_text.contains("\"stage\":\"client\""),
+        jsonl_text.contains("\"stage\":\"target\""),
         "every attributed packet carries the stage"
     );
 }
 
-// Regression: `run --roles client` once panicked at access time because
-// `RunArgs.roles` used a `value_parser` returning `Vec<String>` against a
-// `Vec<String>` field (clap could not downcast the element). The flag now uses
-// `value_delimiter`, so the run parses, succeeds, and scopes to the named role.
+// Regression: `--roles target` once panicked at access time because the roles flag
+// used a `value_parser` returning `Vec<String>` against a `Vec<String>` field (clap
+// could not downcast the element). The flag now uses `value_delimiter`, so the
+// capture parses, succeeds, and scopes to the named role.
 #[test]
 fn run_with_roles_succeeds_and_scopes_to_the_named_role() {
-    let (code, _out, err) = run_offline(&["--roles".into(), "client".into()]);
-    assert_eq!(code, 0, "run --roles client parses and captures: {err}");
+    let (code, _out, err) = run_offline(&["--roles".into(), "target".into()]);
+    assert_eq!(code, 0, "capture --roles target parses and captures: {err}");
     assert!(
-        err.contains("roles client (enforced)"),
+        err.contains("roles target (enforced)"),
         "the capture is scoped to the named role: {err}"
     );
 }
 
-// The comma-separated form splits into the role list, and a trailing comma is
-// harmless: the profile's `client` stage is still in the allowed set, so the run
-// succeeds and stays scoped. This documents the accepted behavior change from
-// dropping the empty-role rejection, matching the `extcap` surface.
+// The comma-separated form splits into the role list: the synthesized `target`
+// stage is still in the allowed set, so the capture succeeds and stays scoped. This
+// documents the accepted behavior of dropping the empty-role rejection, matching the
+// `extcap` surface.
 #[test]
 fn run_with_a_comma_separated_role_list_splits_and_scopes() {
-    let (code, _out, err) = run_offline(&["--roles".into(), "client,launcher".into()]);
+    let (code, _out, err) = run_offline(&["--roles".into(), "target,launcher".into()]);
     assert_eq!(code, 0, "a comma-separated role list parses: {err}");
     assert!(
-        err.contains("roles client,launcher (enforced)"),
+        err.contains("roles target,launcher (enforced)"),
         "both roles are carried into the enforced scope: {err}"
     );
 }
@@ -125,16 +126,16 @@ fn the_json_event_sequence_matches_the_golden() {
     let (code, _out, err) = run_offline(&["--json".into()]);
     assert_eq!(code, 0);
     let normalized = common::normalize_timestamps(&err);
-    common::assert_golden("run-events.ndjson", normalized.as_bytes());
+    common::assert_golden("capture-events.ndjson", normalized.as_bytes());
 }
 
 #[test]
 fn a_fired_interrupt_stops_cleanly_and_exits_zero() {
     // A process script whose target never exits, so the interrupt is the stop.
     let args: Vec<String> = vec![
-        "run".into(),
-        "--profile".into(),
-        data("game.json"),
+        "capture".into(),
+        "--process".into(),
+        "game.exe".into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -296,9 +297,9 @@ fn a_byte_bound_produces_an_exactly_bounded_file() {
 fn an_acquisition_timeout_with_no_target_captures_nothing_and_exits_one() {
     // No process script, so no target is ever acquired.
     let args = [
-        "run",
-        "--profile",
-        &data("game.json"),
+        "capture",
+        "--process",
+        "game.exe",
         "--replay-source",
         &fixture("udp-gameplay.pcap"),
         "--attr-script",
@@ -328,9 +329,9 @@ fn a_ring_capture_dumps_the_recent_tail_on_interrupt() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("ring.fcapng");
     let args: Vec<String> = vec![
-        "run".into(),
-        "--profile".into(),
-        data("game.json"),
+        "capture".into(),
+        "--process".into(),
+        "game.exe".into(),
         "--replay-source".into(),
         fixture("udp-gameplay.pcap"),
         "--attr-script".into(),
@@ -421,11 +422,11 @@ fn a_large_ring_window_dumps_the_whole_capture_on_a_non_interrupt_stop() {
 }
 
 #[test]
-fn tap_captures_a_named_process_through_the_same_engine() {
+fn capture_by_process_name_produces_a_target_role_stage() {
     let dir = tempfile::tempdir().unwrap();
     let jsonl = dir.path().join("tap.jsonl");
     let args = [
-        "tap",
+        "capture",
         "--process",
         "game.exe",
         "--sink",
@@ -440,7 +441,7 @@ fn tap_captures_a_named_process_through_the_same_engine() {
         "192.0.2.10",
     ];
     let (code, _out, err) = common::run(&args);
-    assert_eq!(code, 0, "tap captures like run: {err}");
+    assert_eq!(code, 0, "capture --process succeeds: {err}");
     assert!(err.contains("capture complete"), "{err}");
 
     let text = fs::read_to_string(&jsonl).unwrap();
@@ -451,7 +452,156 @@ fn tap_captures_a_named_process_through_the_same_engine() {
 }
 
 #[test]
-fn tap_without_a_process_is_a_usage_error() {
-    let (code, _out, _err) = common::run(&["tap"]);
+fn capture_without_a_target_input_is_a_usage_error() {
+    // Neither --target nor --process: the clap group requires exactly one.
+    let (code, _out, _err) = common::run(&["capture"]);
     assert_eq!(code, 2);
+}
+
+#[test]
+fn the_three_target_inputs_are_mutually_exclusive() {
+    // --target, --id, and --process form one required, exactly-one group.
+    for argv in [
+        vec!["capture", "--target", "eso", "--process", "eso64.exe"],
+        vec!["capture", "--target", "eso", "--id", "1"],
+        vec!["capture", "--id", "1", "--process", "eso64.exe"],
+    ] {
+        let (code, _out, _err) = common::run(&argv);
+        assert_eq!(code, 2, "mutually exclusive target inputs: {argv:?}");
+    }
+}
+
+#[test]
+fn capture_process_with_launch_is_a_usage_error() {
+    // A raw process image carries no launchable platform anchor, so --launch is a
+    // usage error rather than a silent no-op (FR-005).
+    let (code, _out, err) = common::run(&["capture", "--process", "game.exe", "--launch"]);
+    assert_eq!(code, 2, "a process capture cannot launch: {err}");
+}
+
+/// Register a target with a stored exe and return `(db_path, handle, stable_id)`.
+fn register_exe_target(dir: &tempfile::TempDir, name: &str, exe: &str) -> (String, String, String) {
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, out, err) = common::run(&["targets", "add", name, "--db", &db, "--exe", exe]);
+    assert_eq!(code, 0, "targets add: {err}");
+    // "registered <handle> (id <id>)"
+    let rest = out
+        .lines()
+        .find_map(|l| l.strip_prefix("registered "))
+        .expect("a registered line");
+    let handle = rest.split_whitespace().next().unwrap().to_string();
+    let id = rest
+        .rsplit_once("(id ")
+        .unwrap()
+        .1
+        .trim_end_matches(')')
+        .to_string();
+    (db, handle, id)
+}
+
+/// Capture a stored target through the offline substrate. The catalog store points
+/// at a fresh nonexistent path so no per-user store is bootstrapped as a side effect.
+fn capture_target_offline(db: &str, selector: &[&str]) -> (u8, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let jsonl = dir.path().join("t.jsonl");
+    let catalog = dir.path().join("catalog.db");
+    let mut args: Vec<String> = vec!["capture".into()];
+    args.extend(selector.iter().map(|s| s.to_string()));
+    args.extend([
+        "--local-db".into(),
+        db.into(),
+        "--catalog-db".into(),
+        catalog.to_string_lossy().into_owned(),
+        "--sink".into(),
+        format!("jsonl:{}", jsonl.to_string_lossy()),
+        "--replay-source".into(),
+        fixture("udp-gameplay.pcap"),
+        "--attr-script".into(),
+        fixture("udp-gameplay.script"),
+        "--process-script".into(),
+        data("game.procscript"),
+        "--local-addr".into(),
+        "192.0.2.10".into(),
+    ]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _o, err) = common::run(&refs);
+    let text = fs::read_to_string(&jsonl).unwrap_or_default();
+    (code, err, text)
+}
+
+#[test]
+fn capture_by_stored_target_selector_and_id() {
+    // A target registered with a launch executable captures that client, addressed
+    // by its handle selector and by its durable id.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, handle, id) = register_exe_target(&dir, "Test Game", "game.exe");
+
+    let (code, err, text) = capture_target_offline(&db, &["--target", &handle]);
+    assert_eq!(code, 0, "capture --target <handle>: {err}");
+    assert!(
+        text.contains("\"role\":\"target\""),
+        "captured the stored client: {text}"
+    );
+
+    let (code, err, text) = capture_target_offline(&db, &["--id", &id]);
+    assert_eq!(code, 0, "capture --id <stable_id>: {err}");
+    assert!(
+        text.contains("\"role\":\"target\""),
+        "the durable id selects the same client: {text}"
+    );
+}
+
+#[test]
+fn capture_target_with_no_client_executable_is_refused() {
+    // A name-only target names no launch executable, so it is refused rather than
+    // captured empty (P-4).
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, _o, err) = common::run(&["targets", "add", "Nameless", "--db", &db]);
+    assert_eq!(code, 0, "add: {err}");
+    let (code, err, _t) = capture_target_offline(&db, &["--target", "nameless"]);
+    assert_eq!(code, 2, "a target with no client is refused: {err}");
+    assert!(err.contains("no Windows client"), "{err}");
+}
+
+#[test]
+fn capture_steam_anchored_target_rejects_a_path_anchor() {
+    // A path anchor cannot attach to a Steam-anchored target (the cascade determines
+    // the client), so it is refused rather than silently discarded (P-9). No Steam
+    // install is needed: the anchor check precedes the install lookup.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("local.db").to_string_lossy().into_owned();
+    let (code, _o, err) = common::run(&[
+        "targets",
+        "add",
+        "Anchored",
+        "--db",
+        &db,
+        "--anchor",
+        "steam:620",
+    ]);
+    assert_eq!(code, 0, "add: {err}");
+    let (code, err, _t) = capture_target_offline(&db, &["--target", "anchored", "--path", "Games"]);
+    assert_eq!(code, 2, "a path anchor on a steam target is refused: {err}");
+    assert!(
+        err.contains("do not apply to a Steam-anchored target"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_retired_verbs_and_profile_command_do_not_parse() {
+    // No aliases, no shims: run/tap/watch and the profile command are gone.
+    for argv in [
+        vec!["run", "--profile", "game"],
+        vec!["tap", "--process", "game.exe"],
+        vec!["watch", "--exe", "game.exe"],
+        vec!["profile", "validate", "game"],
+    ] {
+        let (code, _out, _err) = common::run(&argv);
+        assert_eq!(code, 2, "retired command still parses: {argv:?}");
+    }
+    // schema validate remains the general artifact validator.
+    let (code, _out, _err) = common::run(&["schema", "--help"]);
+    assert_eq!(code, 0, "schema stays available");
 }

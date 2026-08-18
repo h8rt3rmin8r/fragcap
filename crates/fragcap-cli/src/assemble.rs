@@ -31,7 +31,7 @@ use fragcap::{
 use fragcap::{SessionConfig, Sink};
 
 use crate::args::{Direction, SinkFormat, SinkSpec, SinkTransport};
-use crate::cli::{ModeArg, OfflineArgs, RunArgs};
+use crate::cli::{CaptureArgs, ModeArg, OfflineArgs};
 use crate::exit::CliError;
 
 /// The default snapshot length declared for a capture interface.
@@ -99,9 +99,12 @@ impl EffectiveConfig {
     }
 }
 
-/// Build the effective configuration from `run` arguments and a resolved
-/// profile, refusing the options this slice does not yet support.
-pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveConfig, CliError> {
+/// Build the effective configuration from `capture` arguments and a resolved or
+/// synthesized profile, refusing the options this slice does not yet support.
+pub fn effective_config(
+    args: &CaptureArgs,
+    profile: &Profile,
+) -> Result<EffectiveConfig, CliError> {
     reject_unsupported(args, profile)?;
 
     let defaults = profile.capture();
@@ -145,7 +148,7 @@ pub fn effective_config(args: &RunArgs, profile: &Profile) -> Result<EffectiveCo
 /// error before capture starts (FR-011); on a non-Windows build it is refused as
 /// unsupported, since there is no Steam protocol handler to invoke.
 fn build_launch(
-    args: &RunArgs,
+    args: &CaptureArgs,
     profile: &Profile,
 ) -> Result<Option<fragcap::steam::LaunchRequest>, CliError> {
     if !args.launch {
@@ -166,78 +169,13 @@ fn build_launch(
     }
 }
 
-/// Build the effective configuration for `tap` from a synthesized profile.
-///
-/// `tap` accepts only the process name, a duration, and the shared output flags,
-/// so there is nothing to reject: the not-yet-supported modes, ring, launch, and
-/// transports have no `tap` flag to carry them.
-pub fn effective_config_for_tap(args: &crate::cli::TapArgs, profile: &Profile) -> EffectiveConfig {
-    let defaults = profile.capture();
-    let payload = if args.no_payload {
-        false
-    } else {
-        defaults.payload().unwrap_or(true)
-    };
-    EffectiveConfig {
-        mode: CaptureMode::File,
-        ring: None,
-        out: args.out.clone(),
-        sinks: args.sink.clone(),
-        duration: args.duration.or_else(|| defaults.duration()),
-        acquisition_timeout: None,
-        max_packets: None,
-        max_bytes: None,
-        roles: defaults.roles().map(|r| r.to_vec()),
-        direction: Direction::Both,
-        interfaces: Vec::new(),
-        loopback: defaults.loopback().unwrap_or(false),
-        payload,
-        launch: None,
-    }
-}
-
-/// Build the effective configuration for `watch`, from the identity-capture
-/// options and the synthesized one-stage profile.
-///
-/// Like [`effective_config_for_tap`], but carries `--wait` as the acquisition
-/// timeout: watch mode's whole purpose is to wait for a target that may not have
-/// started yet (or attach to one already running), so a give-up bound is
-/// first-class here where `tap` has none.
-pub fn effective_config_for_watch(
-    args: &crate::cli::WatchArgs,
-    profile: &Profile,
-) -> EffectiveConfig {
-    let defaults = profile.capture();
-    let payload = if args.no_payload {
-        false
-    } else {
-        defaults.payload().unwrap_or(true)
-    };
-    EffectiveConfig {
-        mode: CaptureMode::File,
-        ring: None,
-        out: args.out.clone(),
-        sinks: args.sink.clone(),
-        duration: args.duration.or_else(|| defaults.duration()),
-        acquisition_timeout: args.wait,
-        max_packets: None,
-        max_bytes: None,
-        roles: defaults.roles().map(|r| r.to_vec()),
-        direction: Direction::Both,
-        interfaces: Vec::new(),
-        loopback: defaults.loopback().unwrap_or(false),
-        payload,
-        launch: None,
-    }
-}
-
 /// Build the effective configuration for an extcap `--capture`, from the
 /// analyzer-supplied options and the resolved profile.
 ///
-/// Mirrors [`effective_config_for_tap`]: it overlays the extcap options (roles,
-/// direction, loopback) onto the profile's `[capture]` defaults exactly as `run`
-/// does (specification FR-007, and section 14.5's "the same options `run`
-/// honors"), and carries the analyzer FIFO as its single sink. There is no ring,
+/// It overlays the extcap options (roles, direction, loopback) onto the profile's
+/// `[capture]` defaults exactly as `capture` does (specification FR-007, and section
+/// 14.5's "the same options `capture` honors"), and carries the analyzer FIFO as its
+/// single sink. There is no ring,
 /// no managed launch, no volume bound, and no `--out` file: an extcap capture is
 /// a live stream to the analyzer, stopped by the analyzer closing the FIFO or by
 /// a session stop condition.
@@ -278,7 +216,7 @@ pub fn effective_config_for_extcap(
 /// The effective capture mode: the command line over the profile's `[capture]`
 /// default (specification FR-007). An explicit `--mode` wins; absent one, the
 /// profile's declared mode; absent both, `file`.
-fn resolve_mode(args: &RunArgs, profile: &Profile) -> CaptureMode {
+fn resolve_mode(args: &CaptureArgs, profile: &Profile) -> CaptureMode {
     match args.mode {
         Some(ModeArg::File) => CaptureMode::File,
         Some(ModeArg::Stream) => CaptureMode::Stream,
@@ -305,7 +243,7 @@ fn map_ring_window(window: crate::args::RingWindow) -> RingWindow {
 /// `--max-packets`) does not apply to a rolling window; and a `--ring` window
 /// given outside ring mode would be silently ignored. Each is a configuration
 /// error naming the cause.
-fn reject_unsupported(args: &RunArgs, profile: &Profile) -> Result<(), CliError> {
+fn reject_unsupported(args: &CaptureArgs, profile: &Profile) -> Result<(), CliError> {
     let mode = resolve_mode(args, profile);
     if mode == CaptureMode::Ring {
         if args.out.is_none() {
@@ -1158,16 +1096,18 @@ mod tests {
 
     use clap::Parser;
 
-    /// Parse a `run` invocation into its `RunArgs`, for the ring refusal tests.
-    fn run_args(extra: &[&str]) -> Box<crate::cli::RunArgs> {
-        let mut argv = vec!["fragcap", "run", "--profile", "game"];
+    /// Parse a `capture` invocation into its `CaptureArgs`, for the ring and launch
+    /// refusal tests. The profile the tests pass to `effective_config` supplies the
+    /// capture semantics; the `--process` target input only needs to parse.
+    fn run_args(extra: &[&str]) -> Box<crate::cli::CaptureArgs> {
+        let mut argv = vec!["fragcap", "capture", "--process", "game.exe"];
         argv.extend_from_slice(extra);
         match crate::cli::Cli::try_parse_from(argv)
             .expect("args parse")
             .command
         {
-            crate::cli::Command::Run(a) => a,
-            _ => unreachable!("run parses to Command::Run"),
+            Some(crate::cli::Command::Capture(a)) => a,
+            _ => unreachable!("capture parses to Command::Capture"),
         }
     }
 

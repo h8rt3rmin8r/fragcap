@@ -7,15 +7,17 @@
 //! without spawning a process. The binary in `main.rs` is a shim that exits with
 //! [`run`]'s code.
 //!
-//! Specification section 17. The surface is `run`, `tap`, `doctor`, and
-//! `profile`, with `replay`, `steam`, and `extcap` registered as stubs so the
-//! help foreshadows the whole tool. Every command returns an exit code it chose
-//! or a [`CliError`] the library maps to the 0/1/2 contract at one site.
+//! Specification section 17. The surface groups under four help headings: Capture
+//! (`capture`, `replay`), Targets (`targets`, `technologies`, `steam`), Environment
+//! (`doctor`, `extcap`), and Data (`catalog`, `schema`). Every command returns an
+//! exit code it chose or a [`CliError`] the library maps to the 0/1/2 contract at
+//! one site. A bare invocation with no subcommand runs the `targets` listing plus a
+//! footer pointing at `--help`.
 //!
-//! Output routing follows specification FR-019: command results (`doctor`,
-//! `profile`) go to standard output, while a capture's progress, completion
-//! summary, and structured events go to standard error, so a sink that writes
-//! capture data to standard output is never contaminated by what the tool says.
+//! Output routing follows specification FR-019: command results (`doctor`) go to
+//! standard output, while a capture's progress, completion summary, and structured
+//! events go to standard error, so a sink that writes capture data to standard
+//! output is never contaminated by what the tool says.
 
 pub mod doctor;
 
@@ -92,7 +94,12 @@ where
     let json = cli.json;
 
     let mut emitter = Emitter::new(err, format, verbosity);
-    let result = dispatch(cli.command, json, out, &mut emitter);
+    let result = match cli.command {
+        Some(command) => dispatch(command, json, out, &mut emitter),
+        // A bare invocation lists registered targets and points at `--help`
+        // (section 17.4). The footer distinguishes it from an explicit `targets`.
+        None => commands::targets::list_default(out, true),
+    };
 
     match result {
         Ok(exit) => exit,
@@ -119,13 +126,15 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
     let is_subcommand = matches!(
         first.as_deref(),
         Some(
-            "run"
-                | "tap"
+            "capture"
                 | "replay"
-                | "profile"
+                | "targets"
+                | "technologies"
                 | "steam"
                 | "doctor"
                 | "extcap"
+                | "catalog"
+                | "schema"
                 | "help"
                 | "-h"
                 | "--help"
@@ -154,16 +163,14 @@ fn dispatch(
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
     match command {
-        Command::Run(args) => commands::run::run(&args, emitter),
-        Command::Tap(args) => commands::tap::run(&args, emitter),
-        Command::Watch(args) => commands::watch::run(&args, emitter),
+        Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::Doctor(_) => commands::doctor::run(json, out),
-        Command::Profile(args) => commands::profile::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
         Command::Technologies(args) => commands::technologies::run(&args, out),
         Command::Targets(args) => commands::targets::run(&args, out),
+        Command::Catalog(args) => commands::catalog::run(&args, out),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
     }
 }

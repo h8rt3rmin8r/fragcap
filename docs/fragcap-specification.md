@@ -236,7 +236,7 @@ functional release.
 
 **A functional release holds SC-1 through SC-7.**
 
-**SC-1.** A single `fragcap run --profile eso` invocation, issued
+**SC-1.** A single `fragcap capture --target eso --launch` invocation, issued
 before the game starts, produces one capture file covering launcher
 authentication through client exit, with every packet attributed to a
 named role.
@@ -642,7 +642,7 @@ order, regardless of which stage starts first.
 opens its capture handle before the target process chain begins,
 ensuring no traffic is missed between detection and capture start.
 
-**FR-3. Managed launch.** `fragcap run` optionally starts the target
+**FR-3. Managed launch.** `fragcap capture --launch` optionally starts the target
 through its platform, guaranteeing that the watcher is attached before
 the chain begins and eliminating the startup race entirely.
 
@@ -1909,8 +1909,11 @@ corrected locally without waiting for a release. fragcap bundles none
 
 ### 15.4 Validation
 
-`fragcap profile validate` checks a profile and reports every problem
-found rather than stopping at the first.
+Every profile is validated before it is captured with, reporting every problem
+found rather than stopping at the first. Since S054 retired the profile-file
+surface, validation is no longer reached through a `profile validate` command; it
+runs implicitly before every `capture`, and `schema validate <file>` remains for
+checking a JSON artifact before sharing it.
 
 Validation is structural and semantic. Structural checks cover schema
 version support, required field presence, and type correctness.
@@ -1944,11 +1947,12 @@ validation produces exit code 2 and no capture attempt.
 
 ### 15.5 Bundled Profiles
 
-fragcap ships no bundled profiles. A profile is obtained per title instead:
-scaffolded from an installed Steam title with `fragcap steam profile
-<app_id>` and refined, or authored by hand. The distribution bundles none,
-which is why `fragcap doctor` reports zero bundled profiles and the release
-archive carries no `profiles/` directory (section 24.5).
+fragcap ships no bundled profiles. A capture identity is obtained per title
+instead: an installed Steam title is registered as a target with `fragcap targets
+add --steam <app_id>` and captured by selector, or a running process is captured
+directly with `fragcap capture --process`. The distribution bundles none, which is
+why `fragcap doctor` reports zero bundled profiles and the release archive carries
+no `profiles/` directory (section 24.5).
 
 The resolution order (section 15.3) still defines where a bundled profile
 would resolve, so a profile contributed to a future release is found there,
@@ -2278,7 +2282,7 @@ filename, a directory shape, a PE version string, or a binary marker. A single
 generic matcher evaluates the table against a directory: detection behavior is a
 function of the table's contents, not of per-product code, so adding a signature of
 an implemented kind is honored on the next scan with no code change and no release.
-`fragcap targets seed-signatures` fills the table from a bundled document,
+`fragcap catalog seed-signatures` fills the table from a bundled document,
 refreshing detection capability through the same catalog-seed path that refreshes
 the title catalog. This replaced an earlier vendored SteamDB ruleset that was
 compiled into the binary, authored for depot manifests rather than on-disk
@@ -2317,36 +2321,35 @@ analyzers (P-5). The `Signature` value type and the matcher live in the
 `fragcap-profile` crate; the table, its seed, and the discovery classifier live in
 `fragcap-targets`; neither adds a dependency.
 
-#### 15.7.4 Non-profile capture
+#### 15.7.4 Cascade capture
 
-The cascade resolves a target; the `run` command captures one. For a
-profile-backed target, `run` captures with the backing profile as it always has.
-For a target the cascade resolved without a profile (an engine rule, the platform
-walker, or runtime observation), `run` synthesizes a one-stage capture identity
-from the resolved target's match predicates (its image name plus any path
-anchors) and captures it through the same launch-agnostic engine, so an
-install-layout provider's answer reaches a capture rather than a dead end.
+The cascade resolves a target; the `capture` command captures one. Since S054
+retired the profile-file surface, `capture` identifies its target by a stored
+selector (`--target`) or a raw process image name (`--process`), and the ad-hoc
+`--install-dir`/`--steam` capture-without-registration inputs are gone: capturing
+an installed title is register-then-capture (`targets add --steam`, `targets scan`,
+or discovery, then `capture --target`).
 
-`run` takes exactly one of three mutually-exclusive target inputs: a profile
-reference (`--profile`), an install directory (`--install-dir`), or a Steam app id
-(`--steam`) resolved to its install directory through the local library lookup.
-The install-location inputs supply the resolver an install root, so the engine
-rule and the walker resolve the socket-holding client from layout, and runtime
-observation resolves it from a matching live process. The synthesized identity is
-built through the same validating profile construction an authored profile takes,
-and is stamped `heuristic-unverified`, never `authored`: it was resolved by a
-heuristic, not vouched for by an author (P-9). The game identity it carries is a
-generic placeholder, plus the Steam app id as a fact when the input was `--steam`.
+A `--target` that carries a Steam anchor is resolved through the install-layout
+cascade keyed on the anchor's app id: its install root is looked up through the
+local library, so the engine rule and the walker resolve the socket-holding client
+from layout and runtime observation resolves it from a matching live process. The
+synthesized identity is built through the same validating profile construction an
+authored profile took, and is stamped `heuristic-unverified`, never `authored`: it
+was resolved by a heuristic, not vouched for by an author (P-9). A `--target` that
+carries a stored launch executable, or a `--process` image name, synthesizes a
+one-stage identity directly.
 
 The capture reaches the target the same passive way every capture does: the
 session arms, folds a query-only startup snapshot to attach to an already-running
 target, and attributes from outside the process. No process handle is opened and
-no process memory is read (P-1). An install location the cascade cannot resolve to
-a single client, an unreadable install tree, or a Steam app id that is not
-installed each produce a surfaced command failure that names the reason and
-captures nothing (P-4), distinguishable from a game that ran but sent no traffic.
-The `--profile` path is unchanged and its output byte-identical. This path was
-filled in by slice S032, activating the providers slices S029 and S030 registered.
+no process memory is read (P-1). A Steam app id that is not installed, an install
+tree the cascade cannot resolve to a single client, or a target that names no
+capturable executable each produce a surfaced command failure that names the
+reason and captures nothing (P-4), distinguishable from a game that ran but sent no
+traffic. The install-layout providers were activated by slices S029, S030, and
+S032; S054 routes them through `capture --target` rather than the retired
+`run --install-dir`/`--steam` inputs.
 
 ### 15.8 Target Entries
 
@@ -2387,9 +2390,10 @@ The transition away from profile files is staged: the fidelity-ordered store rea
 the entry model, the handle and identifier scheme, and the selector ship in S051.
 The engine and platform-walker providers become target sources in S052; the JSON
 export and import of entry documents and their unification with the master schema
-land in S055 and S057; and the profile-file surface (the `profile` command, the
-AppData directory, and the `--profile` capture selector) is retired by S054's
-command rework. Until then those surfaces are unchanged.
+land in S055 and S057. The profile-file surface (the `profile` command, the AppData
+profile directory, the `--profile-dir` global, the file-backed provider, and the
+`run`/`tap`/`watch --profile` capture selectors) is retired by S054's command
+rework, which collapses `run`/`tap`/`watch` into the single `capture` verb.
 
 ## 16. Steam Integration
 
@@ -2431,28 +2435,23 @@ These files use Valve's key-value text format. The crate contains a
 parser for it, because the format is small, stable, and not worth a
 dependency.
 
-### 16.3 Profile Scaffolding
+### 16.3 Registering an Installed Title
 
-`fragcap steam profile <app_id>` generates a profile skeleton from an
-installed title.
+`fragcap targets add --steam <app_id>` registers an installed title as a target in
+the local store, resolving its name through the local Steam installation and
+anchoring it to `steam:<app_id>` (replacing the retired `steam profile <app_id>`
+scaffold). The client executable is recovered at capture time by the install-layout
+cascade keyed on the anchor (section 15.7.4).
 
-Scaffolding scans the installation directory for executable images and
-classifies them heuristically. An image whose name or path contains
-launcher-suggestive tokens is proposed as a launcher stage. The largest
-executable image not classified as a launcher is proposed as the client
-stage.
-
-The output is explicitly a starting point. It carries a header comment
-stating that the classification is heuristic and requires verification
-against an observed session. Section 15.4 validation passes on
-scaffolded output, so the profile is immediately usable and immediately
-correctable.
+`fragcap steam list` enumerates the installed titles this machine can see, so an
+operator can find the app id to register.
 
 ### 16.4 Managed Launch
 
-`fragcap run --profile <ref> --launch` starts the title through Steam's
+`fragcap capture --target <selector> --launch` starts the title through Steam's
 protocol handler after the process watcher is attached and the capture
-handle is open.
+handle is open. The selected target must carry a `steam:<app_id>` anchor; a
+`--process` capture cannot be launched (section 17.2).
 
 This eliminates the acquisition race entirely. Because fragcap is
 already in the `Watching` state when the launch is issued, every
@@ -2484,35 +2483,58 @@ provides reliable ancestry through creation events.
 
 ### 17.1 Command Surface
 
+One capture verb, grouped under four presentational headings that hide
+nothing. The retired `run`, `tap`, and `watch` are gone with no aliases.
+
 ```text
-fragcap run       Capture using a profile
-fragcap tap       Capture a process ad-hoc, without a profile
-fragcap replay    Run a capture file back through the pipeline
-fragcap profile   Manage and validate profiles
-fragcap steam     Enumerate titles and scaffold profiles
-fragcap doctor    Report environment readiness
-fragcap extcap    Analyzer integration interface
+Capture:
+  fragcap capture       Capture a target's traffic (--target or --process)
+  fragcap replay        Run a capture file back through the pipeline
+
+Targets:
+  fragcap targets       Manage capture targets in the local store (local.db)
+  fragcap technologies  Detect engines, anti-cheat, and DRM in an install dir
+  fragcap steam         Enumerate installed Steam titles
+
+Environment:
+  fragcap doctor        Report environment readiness
+  fragcap extcap        Analyzer integration interface
+
+Data:
+  fragcap catalog       Maintain the shipped catalog store (catalog.db)
+  fragcap schema        Validate JSON artifacts against the master schema
 ```
+
+A bare `fragcap` with no subcommand lists the registered targets and prints
+a footer pointing at `--help`; an explicit `fragcap targets` prints the same
+listing without the footer.
+
+The namespaces follow the two stores (section 15): `catalog` writes the
+shipped, disposable `catalog.db`; `targets` writes the user-owned `local.db`.
 
 ### 17.2 Capture Invocation
 
 ```text
-fragcap run --profile <REF> [OPTIONS]
+fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
 
-  -p, --profile <REF>        Profile path, name, or game id
+      --target <SELECTOR>    A stored target: handle, name, or row index
+      --id <ID>              A stored target by durable identifier (for automation)
+      --process <IMAGE>      A raw process image name, no stored target
+      --path <SUBSTR>        Image-path substring anchor
+      --path-regex <RE>      Image-path regex anchor
   -m, --mode <MODE>          file | stream | ring        [default: file]
   -o, --out <PATH>           Output path for file and ring modes
-  -s, --sink <SPEC>          Sink specification, repeatable
+      --sink <SPEC>          Sink specification, repeatable
   -d, --duration <DUR>       Capture duration bound
       --max-bytes <SIZE>     Capture size bound
       --max-packets <N>      Capture packet-count bound
-  -r, --roles <LIST>         Roles to capture       [default: profile]
+      --roles <LIST>         Roles to capture       [default: all]
       --direction <DIR>      in | out | both          [default: both]
   -i, --interface <NAME>     Capture interface, repeatable
       --loopback             Include the loopback adapter
       --no-payload           Capture headers only
       --ring <DUR|SIZE>      Ring window for ring mode
-      --launch               Start the title through its platform
+      --launch               Start the title through its platform (--target only)
       --wait <DUR>           Acquisition timeout        [default: none]
   -q, --quiet                Suppress progress output
       --silent               Suppress all non-error output
@@ -2521,30 +2543,38 @@ fragcap run --profile <REF> [OPTIONS]
   -V, --version              Print version
 ```
 
-Every capture option present in a profile's `[capture]` table is
-overridable on the command line. Command line wins.
+`--target`, `--id`, and `--process` are mutually exclusive and exactly one
+is required. `--target` is the human selector (handle, name, or ephemeral
+row index); `--id` addresses a stored target by its durable identifier, the
+stable form automation uses because a row index shifts as the store changes.
+Every other flag is orthogonal to the target input, so a named process, a
+ring buffer, a wait-for-start, and a launch-under-capture all compose freely.
+`--launch` needs the resolved stored target to carry a platform anchor (a
+Steam app id); a `--process` capture, or an anchorless target, cannot be
+launched and is refused (exit 2). A path anchor (`--path`/`--path-regex`)
+rides onto a `--process` or a stored-executable target; against a
+Steam-anchored target, whose client the install-layout cascade determines, a
+path anchor is refused (exit 2) rather than discarded.
 
 ### 17.3 Worked Invocations
 
 ```bash
-# Bounded capture, launched by fragcap, written to a dated file
-fragcap run --profile eso --launch --duration 30m
+# Bounded capture of a registered title, launched by fragcap
+fragcap capture --target eso --launch --duration 30m --out capture.fcapng
+
+# Ad-hoc capture of a running process, no stored target
+fragcap capture --process eso64.exe --duration 5m --out capture.fcapng
+
+# A named process not yet running, into a rolling ten-minute window
+fragcap capture --process unknown.exe --wait 5m --mode ring --ring 10m \
+                --out captures/ring.fcapng
 
 # Client traffic only, streamed to Wireshark through a named pipe
-fragcap run --profile div2 --mode stream --roles client \
-            --sink pipe:fragcap
+fragcap capture --target div2 --mode stream --roles client --sink pipe:fragcap
 
-# Rolling ten-minute window, dumped on interrupt
-fragcap run --profile eso --mode ring --ring 10m \
-            --out captures/eso-ring.fcapng
-
-# File and metadata stream concurrently
-fragcap run --profile eso \
-            --sink file:captures/session.fcapng \
-            --sink tcp://127.0.0.1:9999,format=jsonl,payload=false
-
-# Ad-hoc capture of a running process, no profile
-fragcap tap --process eso64.exe --duration 5m
+# Register an installed Steam title as a target, then capture it
+fragcap targets add --steam 306130 --db local.db
+fragcap capture --target eso --duration 5m --out capture.fcapng
 ```
 
 ### 17.4 Exit Codes
@@ -2553,20 +2583,20 @@ fragcap tap --process eso64.exe --duration 5m
 | --- | --- | --- |
 | 0 | Success | Capture completed, diagnostics passed |
 | 1 | Expected failure | Target never appeared, driver absent |
-| 2 | Usage or configuration error | Bad arguments, invalid profile |
+| 2 | Usage or configuration error | Bad arguments, no or both target inputs, `--launch` on a `--process` capture |
 
 An operator interrupt during capture is exit code 0, because the
 capture completes normally and the output is valid. Diagnostics that
 find a blocking problem exit 1, because the command succeeded in
 determining that the environment is not ready.
 
-A profile reference that resolves to no profile is an expected failure
-(exit 1) uniformly, whether it is an absent id-slug or a path-shaped
-string that names no readable file, and `profile show` and `profile
-validate` agree on it. A profile file that exists but fails validation is
-a configuration error (exit 2). Refusing live capture because the session
-is not elevated is an expected environment-precondition failure (exit 1),
-consistent with refusing it because no live capture backend is present.
+A `--target` selector that matches no stored target is a usage error
+(exit 2); an ambiguous selector lists its matches and exits 2 rather than
+guessing (P-9). A synthesized identity that fails validation (an empty match
+or a path regex that does not compile) is a configuration error (exit 2).
+Refusing live capture because the session is not elevated is an expected
+environment-precondition failure (exit 1), consistent with refusing it
+because no live capture backend is present.
 
 ### 17.5 Structured Event Stream
 
@@ -2594,13 +2624,13 @@ capture lifecycle without parsing human-readable output, and section 18
 depends on it.
 
 The non-capture commands emit their results as structured records too,
-so automation never scrapes human text. `profile validate --json` emits
+so automation never scrapes human text. `schema validate --json` emits
 one `diagnostic` record per problem, each carrying the diagnostic's code,
 key path, line, column, and message as distinct fields, followed by a
-terminal `summary`; `profile list --json` emits its counts as a record;
-and `doctor --json` emits one record per readiness check. Because these
-are command results rather than capture lifecycle, they are written to
-standard output, where the command's human output would otherwise go.
+terminal `summary`; and `doctor --json` emits one record per readiness
+check. Because these are command results rather than capture lifecycle,
+they are written to standard output, where the command's human output
+would otherwise go.
 
 ### 17.6 Output Conventions
 
