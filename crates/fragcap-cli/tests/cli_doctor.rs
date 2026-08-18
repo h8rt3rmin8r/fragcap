@@ -17,9 +17,6 @@ fn ready() -> Inputs {
         binary_path: Some(std::path::PathBuf::from(
             "C:\\Program Files\\fragcap\\fragcap.exe",
         )),
-        profile_dir: Some(std::path::PathBuf::from(
-            "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\profiles",
-        )),
         catalog_db_path: Some(std::path::PathBuf::from(
             "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db",
         )),
@@ -54,8 +51,6 @@ fn ready() -> Inputs {
         extcap_system_dir: Some(std::path::PathBuf::from(
             "C:\\Program Files\\Wireshark\\extcap",
         )),
-        bundled_count: 0,
-        user_count: 2,
         target_entry_count: Some(3),
     }
 }
@@ -268,12 +263,22 @@ fn the_identity_section_appears_first_in_both_forms() {
     let report = checks::run(&ready());
     let human = report.render_human();
     assert!(human.starts_with("Identity\n"), "identity leads:\n{human}");
-    for want in ["version", "binary", "profile dir", "catalog db", "local db"] {
+    for want in ["version", "binary", "catalog db", "local db"] {
         assert!(
             human.contains(want),
             "identity row {want} missing:\n{human}"
         );
     }
+    // The retired profile directory row and the Profiles section were removed with
+    // the profile-file surface (slice S057).
+    assert!(
+        !human.contains("profile dir"),
+        "no profile dir row:\n{human}"
+    );
+    assert!(
+        !human.contains("\nProfiles\n"),
+        "no Profiles section:\n{human}"
+    );
     let json = report.render_json();
     assert_eq!(json.lines().count(), report.checks.len());
     assert!(json

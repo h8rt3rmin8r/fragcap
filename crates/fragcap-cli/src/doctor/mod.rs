@@ -76,8 +76,6 @@ pub struct Inputs {
     pub fragcap_version: String,
     /// The absolute path of the running binary, when it can be determined.
     pub binary_path: Option<std::path::PathBuf>,
-    /// The user profile directory, reported regardless of whether it exists yet.
-    pub profile_dir: Option<std::path::PathBuf>,
     /// The default catalog store path, reported regardless of existence.
     pub catalog_db_path: Option<std::path::PathBuf>,
     /// Whether the catalog store exists on disk (created on first run).
@@ -127,10 +125,6 @@ pub struct Inputs {
     pub extcap_system_installed: bool,
     /// The machine-wide (system) extcap directory, when it can be determined.
     pub extcap_system_dir: Option<std::path::PathBuf>,
-    /// How many bundled profiles ship.
-    pub bundled_count: usize,
-    /// How many user profiles are available.
-    pub user_count: usize,
     /// How many target entries are registered in the local store, when it could be
     /// read. `None` means the count could not be determined (for example the store
     /// could not be opened); it is never presented as zero, so a probe failure is

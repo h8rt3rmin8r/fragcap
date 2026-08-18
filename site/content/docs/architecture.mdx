@@ -57,12 +57,13 @@ that answer can be wrong.
 
 ## Naming an indirectly launched client
 
-The socket table names a process; a profile names which process is the game. When
-a launcher starts the client, "the game" is not a fixed image name but "the client
-that this launcher started." fragcap builds a process tree from creation-time
-telemetry and resolves a stage's `descends_from` against it, so a profile can name
-the client by its ancestry rather than by assuming it is a direct child. See
-[writing a profile](/docs/guides/writing-a-profile).
+The socket table names a process; a capture target names which process is the
+game. When a launcher starts the client, "the game" is not a fixed image name but
+"the client that this launcher started." fragcap builds a process tree from
+creation-time telemetry and resolves a client's ancestry against it, so a target
+can name the client by its lineage rather than by assuming it is a direct child.
+You register a target with [`fragcap targets`](/docs/getting-started#3-find-a-target),
+and fragcap discovers installed titles for you.
 
 ## The pipeline
 

@@ -1950,9 +1950,11 @@ validation produces exit code 2 and no capture attempt.
 fragcap ships no bundled profiles. A capture identity is obtained per title
 instead: an installed Steam title is registered as a target with `fragcap targets
 add --steam <app_id>` and captured by selector, or a running process is captured
-directly with `fragcap capture --process`. The distribution bundles none, which is
-why `fragcap doctor` reports zero bundled profiles and the release archive carries
-no `profiles/` directory (section 24.5).
+directly with `fragcap capture --process`. The distribution bundles none, and the
+release archive carries no `profiles/` directory (section 24.5). `fragcap doctor`
+no longer reports a profile count: with no user-authored profile files and no
+bundled set, the report names the catalog and local stores rather than a profile
+directory (section 26.3).
 
 The resolution order (section 15.3) still defines where a bundled profile
 would resolve, so a profile contributed to a future release is found there,
@@ -3591,12 +3593,13 @@ fragcap doctor
       Copy fragcap.exe to the analyzer's extcap directory
       to enable live capture from its interface list.
 
-  Profiles
-    Bundled                            0 available             ok
-    User directory                     2 profiles              ok
-
   Ready to capture.
 ```
+
+The report carries no profile section: profiles ceased to be user-authored
+files (section 15), so there is no profile directory to count and no bundled
+profile set to report (section 15.5). The identity section names the catalog
+and local stores instead.
 
 Every failing check names the specific remediation, including the exact
 installation option when a driver option is missing. Exit code is 0

@@ -9,9 +9,8 @@ The mode decides where captured packets go. Whichever you pick, capture needs th
 confirm it before a first capture.
 </Callout>
 
-fragcap captures in one of three modes, set by `--mode` or by the profile's
-`[capture] mode`. They differ only in where packets end up; attribution is the
-same in all three.
+fragcap captures in one of three modes, set by `--mode`. They differ only in where
+packets end up; attribution is the same in all three.
 
 ## `file`
 
@@ -19,7 +18,7 @@ The default. Packets are written to a file until a stop condition is reached, th
 the file is finalized. Reach for it when you want a capture you can open later.
 
 ```text
-fragcap run --profile <game-id> --out capture.fcapng
+fragcap capture --target <selector> --out capture.fcapng
 ```
 
 Bound the capture with any of `--duration`, `--max-packets`, or `--max-bytes`, or
@@ -31,7 +30,7 @@ Packets are streamed to a transport as they are captured, for a consumer reading
 live rather than a file read afterward. Sinks name the transport:
 
 ```text
-fragcap run --profile <game-id> --mode stream --sink tcp://127.0.0.1:9000,format=pcapng
+fragcap capture --target <selector> --mode stream --sink tcp://127.0.0.1:9000,format=pcapng
 ```
 
 A stream sink can be a TCP endpoint (`tcp://HOST:PORT`) or a named pipe
@@ -50,7 +49,7 @@ for it when you want the run-up to an event you cannot predict, without writing
 everything before it.
 
 ```text
-fragcap run --profile <game-id> --mode ring --ring 30s --out capture.fcapng
+fragcap capture --target <selector> --mode ring --ring 30s --out capture.fcapng
 ```
 
 The `--ring` window is either a duration (`30s`) or a size (`64mb`). Ring mode

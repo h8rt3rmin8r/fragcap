@@ -1,7 +1,6 @@
 Identity
   version                ok    0.0.0-test
   binary                 ok    C:\Program Files\fragcap\fragcap.exe
-  profile dir            ok    C:\Users\gamer\AppData\Roaming\fragcap\profiles
   catalog db             ok    C:\Users\gamer\AppData\Roaming\fragcap\catalog.db
                                (present)
   local db               ok    C:\Users\gamer\AppData\Roaming\fragcap\local.db
@@ -28,8 +27,5 @@ Interfaces
 Integration
   analyzer extcap        ok    installed for the current user in
                                C:\Users\gamer\AppData\Roaming\Wireshark\extcap
-
-Profiles
-  profiles               ok    bundled: 0, user: 2
 
 Ready to capture.
