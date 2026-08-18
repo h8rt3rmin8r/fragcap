@@ -52,5 +52,5 @@ entry's launch chain and raises its fidelity, and the launch-chain resolution lo
 is unit-tested end to end. The capture-time trigger is deferred: capturing an
 unresolved target requires a capture-by-observation mode this architecture does not
 have, since `capture --target` refuses a target that names no single Windows client.
-Wiring that trigger is follow-up work in its own slice; no dead or fabricated
-promotion path was added to stand in for it.
+Wiring that trigger is follow-up work in its own slice (issue #152); no dead or
+fabricated promotion path was added to stand in for it.
