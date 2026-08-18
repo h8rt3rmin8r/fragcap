@@ -208,6 +208,19 @@ fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
     }
 }
 
+/// Run discovery into the default local store, for the `doctor --fix` RunDiscovery
+/// action (slice S056). Reuses the same best-effort discovery composition the hero
+/// listing runs, so there is one registration path (P-10). A missing catalog or an
+/// absent platform source registers nothing rather than failing.
+pub(crate) fn run_discovery_default(out: &mut dyn Write) -> Result<Exit, CliError> {
+    let db = paths::local_db_path(None)
+        .or_else(paths::default_local_db_path)
+        .ok_or_else(|| CliError::failure("the local store path could not be determined"))?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
+    register_from_discovery(&mut store, out);
+    Ok(Exit::SUCCESS)
+}
+
 /// Run `targets scan <dir>`: point discovery at one directory (the tier-3
 /// [`DirectorySource`], slice S052). With a catalog, the directory is scanned for
 /// technologies and they ride as evidence (slice S053). The discovered titles are

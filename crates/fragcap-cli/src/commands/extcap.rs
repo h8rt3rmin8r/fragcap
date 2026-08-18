@@ -138,6 +138,19 @@ fn install(args: &ExtcapInstallArgs, out: &mut dyn Write) -> Result<Exit, CliErr
     Ok(Exit::SUCCESS)
 }
 
+/// Register the analyzer extcap integration at the given scope, for the
+/// `doctor --fix` InstallExtcap action (slice S056). Reuses [`install`] with a
+/// synthesized [`ExtcapInstallArgs`]; `machine` selects the machine-wide scope,
+/// otherwise the per-user default.
+pub(crate) fn install_scope(machine: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let args = ExtcapInstallArgs {
+        user: !machine,
+        system: machine,
+        dir: None,
+    };
+    install(&args, out)
+}
+
 /// Whether two paths resolve to the same existing file. `false` when either
 /// cannot be canonicalized, which includes a destination that does not exist yet
 /// (the first-install case), so the caller then proceeds with the copy.

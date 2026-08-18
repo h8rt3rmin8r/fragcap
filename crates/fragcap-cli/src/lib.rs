@@ -164,7 +164,7 @@ fn dispatch(
 ) -> Result<Exit, CliError> {
     match command {
         Command::Capture(args) => commands::capture::run(&args, emitter),
-        Command::Doctor(_) => commands::doctor::run(json, out),
+        Command::Doctor(args) => commands::doctor::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),

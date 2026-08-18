@@ -24,7 +24,11 @@ etw          = ["fragcap/etw"]
 # seeds offline from a fixture; a maintainer builds with `--features net` to seed
 # the hint database from the Steam Web API. End users consume the shipped data file
 # (#58) and never seed, so they never pay for the HTTP client.
-net          = ["fragcap/net"]
+# The `doctor --fix` npcap fetch action downloads the vendor's own signed installer
+# (slice S056), so the CLI reaches the HTTP client behind the same `net` gate the
+# catalog seeder uses. `http_req` is already in the graph via fragcap-targets, so
+# this adds no Cargo.lock package.
+net          = ["fragcap/net", "dep:http_req"]
 
 # The library is the testable product: `fragcap_cli::run` drives the whole
 # command surface without spawning a process. The binary is a shim over it.
@@ -46,6 +50,9 @@ fragcap              = { workspace = true, features = ["targets"] }
 clap.workspace       = true
 ctrlc.workspace      = true
 serde_json.workspace = true
+# The HTTP client for the `doctor --fix` npcap installer fetch, behind `net`. Off
+# by default, so the shipped end-user build never compiles it (slice S056).
+http_req             = { workspace = true, optional = true }
 
 # Windows only, for the `doctor` elevation probe, the npcap version read, and the
 # Wireshark install-directory registry lookup. Pinned to the same 0.36 line
@@ -61,6 +68,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Registry",
+    "Win32_UI_Shell",
 ] }
 
 # Windows only, at build time: stamps the exe's PE VERSIONINFO (FileVersion and

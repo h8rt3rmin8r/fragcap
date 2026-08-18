@@ -9,6 +9,7 @@
 //! D-f), and the tracing check is a blocking fail only when the session is
 //! elevated and the process-event session could not open.
 
+use super::action::{Action, ActionKind, ExtcapScope};
 use super::{Check, Inputs, Privilege, Report, Subsystem};
 use fragcap::core::WIRESHARK_DOWNLOAD_URL;
 
@@ -19,6 +20,7 @@ const TRACING: &str = "Tracing";
 const INTERFACES: &str = "Interfaces";
 const INTEGRATION: &str = "Integration";
 const PROFILES: &str = "Profiles";
+const PREPARATION: &str = "Preparation";
 
 /// Where to obtain npcap. fragcap never installs it (the Licensing section). The
 /// Wireshark URL is single-sourced from [`WIRESHARK_DOWNLOAD_URL`], whose
@@ -47,6 +49,11 @@ pub fn run(inputs: &Inputs) -> Report {
     checks.extend(interfaces(inputs));
     checks.push(integration(inputs));
     checks.push(profiles(inputs));
+    // The two preparation checks surface a row only when there is something to do,
+    // so a ready machine (a catalog present, at least one target entry) is
+    // unchanged. Each carries the action the `--fix` layer performs (slice S056).
+    checks.extend(catalog_store(inputs));
+    checks.extend(target_entries(inputs));
     Report { checks }
 }
 
@@ -108,10 +115,12 @@ fn subsystem(inputs: &Inputs) -> Check {
 fn privilege(inputs: &Inputs) -> Check {
     match inputs.privilege {
         Privilege::Elevated => Check::ok(PLATFORM, "privilege", "elevated"),
-        Privilege::NotElevated => Check::warn(
+        Privilege::NotElevated => Check::warn_action(
             PLATFORM,
             "privilege",
             "not elevated; some interfaces and process tracing need an elevated session",
+            "relaunch fragcap from an elevated session",
+            Action::new(ActionKind::RelaunchElevated),
         ),
     }
 }
@@ -123,7 +132,13 @@ fn npcap(inputs: &Inputs) -> Check {
         // claim a version it does not have (P-9).
         Some(info) if info.version == "installed" => Check::ok(DRIVER, "npcap", "installed"),
         Some(info) => Check::ok(DRIVER, "npcap", format!("version {}", info.version)),
-        None => Check::fail(DRIVER, "npcap", "npcap is not installed", npcap_source()),
+        None => Check::fail_action(
+            DRIVER,
+            "npcap",
+            "npcap is not installed",
+            npcap_source(),
+            Action::new(ActionKind::ObtainNpcap),
+        ),
     }
 }
 
@@ -195,12 +210,13 @@ fn winpcap_api(inputs: &Inputs) -> Check {
         Some(info) if info.winpcap_api_mode => {
             Check::ok(DRIVER, "winpcap api mode", "WinPcap API compatible")
         }
-        Some(_) => Check::fail(
+        Some(_) => Check::fail_action(
             DRIVER,
             "winpcap api mode",
             "WinPcap API compatibility mode is not installed",
             "reinstall npcap with the \"Install Npcap in WinPcap API-compatible Mode\" option \
              enabled",
+            Action::new(ActionKind::RelaunchNpcapInstaller),
         ),
     }
 }
@@ -346,7 +362,13 @@ fn integration(inputs: &Inputs) -> Check {
                      installer also provides npcap"
                 ),
             };
-            Check::warn(INTEGRATION, "analyzer extcap", detail)
+            Check::warn_action(
+                INTEGRATION,
+                "analyzer extcap",
+                detail,
+                "run `fragcap extcap install` to register the analyzer integration",
+                Action::new(ActionKind::InstallExtcap(ExtcapScope::User)),
+            )
         }
     }
 }
@@ -360,6 +382,44 @@ fn profiles(inputs: &Inputs) -> Check {
             inputs.bundled_count, inputs.user_count
         ),
     )
+}
+
+/// The shipped catalog store, surfaced only when it is absent (slice S056). A
+/// present catalog needs no row here (its path already appears in the identity
+/// section), so a ready machine is unchanged. Absence is a warning, not a block:
+/// detection is degraded without the catalog but capture still works, and the
+/// `--fix` layer can fetch it.
+fn catalog_store(inputs: &Inputs) -> Option<Check> {
+    if inputs.catalog_db_present {
+        return None;
+    }
+    Some(Check::warn_action(
+        PREPARATION,
+        "catalog store",
+        "the shipped catalog store is not present; technology detection is degraded until it \
+         is fetched",
+        "run `fragcap catalog update` to fetch the current published catalog",
+        Action::new(ActionKind::FetchCatalog),
+    ))
+}
+
+/// Registered target entries, surfaced only when the store holds none (slice
+/// S056). `Some(0)` is a real empty store and carries the discovery action; a
+/// store with entries needs no row, so a ready machine is unchanged; `None`
+/// (undetermined) surfaces nothing rather than a fabricated empty state (P-9).
+/// Absence of entries is a warning, not a block: a capture can still name a target
+/// by other means, and the `--fix` layer can run discovery.
+fn target_entries(inputs: &Inputs) -> Option<Check> {
+    if inputs.target_entry_count != Some(0) {
+        return None;
+    }
+    Some(Check::warn_action(
+        PREPARATION,
+        "target entries",
+        "no target entries are registered yet; run discovery to find installed titles",
+        "run `fragcap targets` (or `fragcap targets discover`) to register installed titles",
+        Action::new(ActionKind::RunDiscovery),
+    ))
 }
 
 #[cfg(test)]
@@ -413,6 +473,7 @@ mod tests {
             )),
             bundled_count: 0,
             user_count: 2,
+            target_entry_count: Some(3),
         }
     }
 

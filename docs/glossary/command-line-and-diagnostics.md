@@ -18,6 +18,48 @@ otherwise.
 
 **See also:** [npcap](platform-and-distribution.md#npcap), [Attribution fidelity](file-and-wire-formats.md#attribution-fidelity)
 
+## Action layer
+
+The part of `fragcap doctor --fix` that sits above the pure classifier. `doctor`
+answers whether the machine can capture; the action layer offers to carry out the
+remediations that answer named, one at a time, under the operator's confirmation.
+It never changes what `doctor` decides: it consumes the report the classifier
+produced and can act only on remediations that report already printed. It is
+interactive, so it is refused with `--json` and when the session is not a terminal.
+
+{: .matters }
+> The action layer is strictly above the classifier, never inside it. The
+> classifier stays a pure function from injected inputs to a report, which is what
+> keeps its whole matrix testable with no capture driver, no elevation, and no
+> game. The action layer can surprise no operator, valuable in a tool that may run
+> elevated, because it offers only what `doctor` first said aloud.
+
+**See also:** [Structured action](command-line-and-diagnostics.md#structured-action), [Readiness check](command-line-and-diagnostics.md#readiness-check)
+
+## Structured action
+
+The machine-facing counterpart of a readiness check's human-readable remediation:
+the specific step the action layer can perform for that check (obtain npcap,
+register the analyzer integration, fetch the catalog, relaunch elevated, run
+discovery). It is carried on the check itself and constructed together with the
+remediation string, so the step the operator reads and the step `--fix` offers
+cannot drift. A check with no automatable remedy carries no structured action, and
+`--fix` never offers an action whose check is absent from the current report.
+
+**See also:** [Action layer](command-line-and-diagnostics.md#action-layer), [Action outcome](command-line-and-diagnostics.md#action-outcome)
+
+## Action outcome
+
+The honest result the action layer records for one attempted action:
+**performed** (it ran to success), **skipped** (the operator declined it),
+**degraded** (a capability-limited fallback ran, for example opening the download
+page instead of fetching the installer, reported as what happened rather than as
+success of the primary form), or **failed** (it was attempted and could not
+complete). A failed action is never reported as performed, and the run's final
+verdict reflects what actually changed.
+
+**See also:** [Action layer](command-line-and-diagnostics.md#action-layer)
+
 ## Lifecycle event
 
 One record in the machine-readable event stream `fragcap` emits on standard

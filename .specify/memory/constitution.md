@@ -1,4 +1,28 @@
 <!--
+Sync Impact Report (1.3.0, 2026-08-18)
+- Version change: 1.2.0 -> 1.3.0 (MINOR: a scoped expansion of an existing
+  section's guidance; no core principle added, removed, or redefined)
+- Amended section: Licensing And Third-Party Obligations, rule 2
+  ("Detection, not installation" -> "Detection, and user-confirmed fetch of the
+  vendor installer")
+- Reason: slice S056 (the `doctor --fix` action layer, issue #143) adds a
+  user-confirmed action to obtain npcap. The prior rule 2 forbade fragcap from
+  ever downloading, installing, or invoking an installer, which blocked that
+  action outright. The operator authorized the narrow carve-out (2026-08-18):
+  fragcap may, only under an explicit interactive confirmation, fetch the
+  vendor's own signed installer from the official location and launch it,
+  storing nothing in any fragcap artifact and redistributing nothing. The npcap
+  license was read and permits this (it restricts redistribution and transfer of
+  the Software Product, not a user obtaining the vendor's installer); the
+  determination is recorded in changelog.d/S056-doctor-action-layer.decisions.md.
+  Rules 1 (no bundling), 3 (documented prerequisite), and 4 (no SDK vendoring)
+  stay absolute, and P-1 and P-9 are untouched: the carve-out permits obtaining a
+  third-party driver the user consented to, never modifying traffic, opening a
+  target process, or misreporting an outcome.
+- Templates: no changes required. The Constitution Check gate in
+  plan-template.md reads this file and picks up the amended rule automatically.
+- Follow-up TODOs: none
+
 Sync Impact Report (1.2.0, 2026-08-16)
 - Version change: 1.1.0 -> 1.2.0 (MINOR: two principles added)
 - Added principles:
@@ -297,9 +321,16 @@ paperwork one.** Four rules follow, and all four are binding:
 1. **No bundling.** No distribution artifact contains npcap binaries,
    installers, or driver files. This includes release archives, installers, and
    container images.
-2. **Detection, not installation.** fragcap detects npcap's presence and
-   version at runtime and reports absence with the official download location.
-   It never downloads, installs, or invokes an installer.
+2. **Detection, and user-confirmed fetch of the vendor installer.** fragcap
+   detects npcap's presence and version at runtime and reports absence with the
+   official download location. It never bundles, hosts, embeds, caches as its
+   own, or redistributes npcap or its installer (rules 1 and 4 remain absolute).
+   It may, only under an explicit interactive user confirmation (as in `doctor
+   --fix`), download the vendor's own signed installer from the official location
+   and launch it, storing nothing in any fragcap artifact and redistributing
+   nothing. Absent that confirmation, and in every non-interactive or
+   machine-readable context, it reports the download location and neither fetches
+   nor launches.
 3. **Documented prerequisite.** Installation documentation states npcap as a
    required separate installation, with its required non-default options, ahead
    of every usage instruction.
@@ -374,4 +405,4 @@ raises it, rather than proceeding under an interpretation that weakens it. P-1
 in particular is never reinterpreted; a slice that appears to need a denylisted
 technique is a slice that has been scoped wrong.
 
-**Version**: 1.2.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-16
+**Version**: 1.3.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-18

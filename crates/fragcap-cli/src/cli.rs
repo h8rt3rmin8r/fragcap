@@ -589,8 +589,25 @@ pub struct TargetsSeedEngineArgs {
 }
 
 /// Arguments to `doctor`.
+///
+/// `doctor` is read-only by default. `--fix` adds an interactive action layer above
+/// the pure classifier: it runs the same checks, prints the same report, then offers
+/// to perform the remediations the report named, one at a time, under confirmation.
+/// It acts only on remediations `doctor` already printed. `--fix` is refused with
+/// `--json` and when stdout (or, without `--yes`, stdin) is not an interactive
+/// terminal; `--yes` pre-confirms every offered action for unattended interactive
+/// use. `--yes` has no meaning without `--fix`.
 #[derive(Debug, Args)]
-pub struct DoctorArgs {}
+pub struct DoctorArgs {
+    /// Offer to perform the remediations the report names, under confirmation.
+    #[arg(long)]
+    pub fix: bool,
+
+    /// With `--fix`, pre-confirm every offered action (unattended). Still requires an
+    /// interactive stdout.
+    #[arg(long)]
+    pub yes: bool,
+}
 
 /// Arguments to `extcap` (specification section 14.5).
 ///
