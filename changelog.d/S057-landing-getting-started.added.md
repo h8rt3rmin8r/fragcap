@@ -34,6 +34,13 @@ taught authoring profile files (`guides/writing-a-profile`,
 rerouted. No documentation page references the retired verbs, the retired profile
 directory, the `--profile` selector, or a profile slug that no longer exists.
 
+`fragcap capture` now accepts a stored-target selector positionally, so the
+`fragcap capture <n>` form the `targets` listing hints (and the README and site
+docs show) works as advertised: the positional is equivalent to `--target` and
+mutually exclusive with it, resolving a handle, name, or row index the same way.
+Before this, only the `--target` flag form parsed, so the listing's own hint was
+rejected as an unexpected argument.
+
 A small companion change removes the leftover `profile dir` identity row and the
 `Profiles` section from `fragcap doctor` (in both the human report and `--json`),
 so the getting-started sample is faithful to the binary and free of the retired

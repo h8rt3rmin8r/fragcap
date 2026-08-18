@@ -157,9 +157,17 @@ terminal.
 
 Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an
 extcap capture source; you do not normally run the protocol form by hand. It
-presents one `fragcap` interface whose capture options (`--roles`, `--direction`,
-`--loopback`) mirror `capture`, so the analyzer's capture dialog and the command
-line select capture identically.
+presents one `fragcap` interface, and the analyzer supplies the capture
+configuration through its own dialog. The part you use directly is registration,
+below.
+
+<Callout title="Live capture from the analyzer dialog is a legacy path">
+Registration (`install` / `uninstall`) is the supported, current extcap feature.
+Launching a live capture from Wireshark's own capture dialog still selects its
+subject through the older profile field rather than the target store, so it has not
+yet been converged onto the `targets` model that `capture` uses; treat it as
+legacy. Registration is unaffected.
+</Callout>
 
 #### `extcap install` / `extcap uninstall`
 
@@ -199,9 +207,10 @@ it, and any user refreshes it.
   document.
 - `fragcap catalog export --db <catalog.db>` exports the store to
   schema-conformant JSON on standard output.
-- `fragcap catalog seed --db <catalog.db>` and `fragcap catalog seed-engine --db
-  <catalog.db>` seed the catalog and engine tiers (offline from a `--from` document;
-  a network-capable build adds live `--steam` / `--pcgamingwiki` sources).
+- `fragcap catalog seed --from <doc> --db <catalog.db>` and `fragcap catalog
+  seed-engine --from <doc> --db <catalog.db>` seed the catalog and engine tiers.
+  Each requires exactly one source: `--from <doc>` offline (shown here), or, in a
+  network-capable build, the live `--steam` / `--pcgamingwiki` source instead.
 - `fragcap catalog seed-signatures --db <catalog.db>` fills the detection signature
   table from the bundled document, so `technologies` and discovery detect engines,
   anti-cheat, and DRM from the store.

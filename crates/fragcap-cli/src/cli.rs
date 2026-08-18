@@ -126,10 +126,13 @@ pub enum ModeArg {
 
 /// Arguments to `capture`, the single capture verb (section 17.2).
 ///
-/// Exactly one target input is required and the two are mutually exclusive:
-/// `--target` names a stored target by selector (S051 section 5.4) resolved
-/// against the local store, and `--process` names a raw process image name
-/// directly. The clap group enforces the exactly-one rule, so a usage error
+/// Exactly one target input is required and they are mutually exclusive: a
+/// positional selector or its `--target` equivalent names a stored target by
+/// selector (S051 section 5.4) resolved against the local store, `--id` names a
+/// stored target by its durable identifier, and `--process` names a raw process
+/// image name directly. The positional form is the ergonomic one the `fragcap
+/// targets` listing hints (`fragcap capture <n>`); `--target` is its explicit-flag
+/// equivalent. The clap group enforces the exactly-one rule, so a usage error
 /// (exit 2) is reported before any resolution. Every other flag is orthogonal to
 /// the target input, so all five section-9.1 captures are expressible.
 ///
@@ -139,10 +142,19 @@ pub enum ModeArg {
 /// anchor; a `--process` capture, or a target with no anchor, cannot be launched
 /// and is refused (exit 2) rather than ignored.
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("target_input").required(true).args(["target", "id", "process"])))]
+#[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id", "process"])))]
 pub struct CaptureArgs {
+    /// A stored-target selector given positionally: an exact handle, a
+    /// case-insensitive exact name, or a 1-based row index over the current listing
+    /// (S051). This is the ergonomic form the `fragcap targets` listing names in its
+    /// `fragcap capture <n>` hint; it is equivalent to `--target` and mutually
+    /// exclusive with it.
+    #[arg(value_name = "SELECTOR")]
+    pub selector: Option<String>,
+
     /// A stored-target selector: an exact handle, a case-insensitive exact name,
-    /// or a 1-based row index over the current listing (S051).
+    /// or a 1-based row index over the current listing (S051). The explicit-flag
+    /// form of the positional selector above.
     #[arg(long)]
     pub target: Option<String>,
 

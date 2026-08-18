@@ -90,10 +90,41 @@ fn a_bad_subcommand_is_a_usage_error() {
 
 #[test]
 fn a_missing_required_flag_is_a_usage_error() {
-    // `capture` requires exactly one target input (--target / --process); supplying
-    // none is a usage error.
+    // `capture` requires exactly one target input (a positional selector, --target,
+    // --id, or --process); supplying none is a usage error.
     let (code, _out, _err) = run(&["capture"]);
     assert_eq!(code, 2);
+}
+
+#[test]
+fn a_positional_selector_is_accepted_as_a_target() {
+    // `fragcap capture <n>` (the form the `targets` listing hints, and the README
+    // and site docs show) is a valid target input: the positional selector is
+    // equivalent to `--target`. It must reach target resolution rather than be
+    // rejected by the parser as an unexpected argument. Against the isolated empty
+    // store it resolves to no match, a usage error (exit 2) with a resolution
+    // message, not a parse error.
+    let (code, _out, err) = run(&["capture", "1", "--out", "unused.fcapng"]);
+    assert_eq!(
+        code, 2,
+        "an unresolvable positional selector is a usage error"
+    );
+    assert!(
+        !err.contains("unexpected argument"),
+        "the positional selector must be accepted by the parser: {err}"
+    );
+}
+
+#[test]
+fn a_positional_selector_and_target_flag_conflict() {
+    // The positional selector and --target are two members of the same required
+    // group; giving both is a usage error before any resolution.
+    let (code, _out, err) = run(&["capture", "1", "--target", "2"]);
+    assert_eq!(code, 2, "two target inputs conflict");
+    assert!(
+        err.contains("cannot be used with") || err.contains("unexpected"),
+        "the conflict is reported by the parser: {err}"
+    );
 }
 
 #[test]

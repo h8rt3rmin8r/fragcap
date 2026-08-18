@@ -56,7 +56,11 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
     // Exactly one target input is present (the clap group guarantees it). A stored
     // target resolves against the local store (and, when Steam-anchored, through the
     // install-layout cascade); a raw process image synthesizes an identity directly.
-    let profile = match (&args.target, args.id, &args.process) {
+    // The positional selector and `--target` are the same input by two spellings and
+    // are mutually exclusive in the group, so at most one is set; prefer the
+    // positional when present.
+    let selector = args.selector.as_deref().or(args.target.as_deref());
+    let profile = match (selector, args.id, &args.process) {
         (Some(selector), None, None) => {
             resolve_stored(StoredRef::Selector(selector), args, emitter)?
         }
@@ -67,7 +71,7 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         // The clap group guarantees exactly one target input; this documents it.
         _ => {
             return Err(CliError::usage(
-                "exactly one of --target, --id, or --process is required",
+                "exactly one of a target selector, --id, or --process is required",
             ))
         }
     };

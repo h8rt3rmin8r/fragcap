@@ -212,22 +212,14 @@ The **CAPTURE** column says whether a row is ready to capture; the number in the
 first column is the one the capture command honors, so the listing ends by naming
 the exact next command for the first ready row.
 
-If a title you want is not listed (a non-Steam install, or one in an unusual
-location), register it yourself. Point fragcap at the game's install folder:
-
-```text
-fragcap targets scan "C:\Games\MyGame"
-```
-
-or register an installed Steam title by its **App ID**, the number in the title's
-Steam store or library URL (for example `306130` in
-`store.steampowered.com/app/306130/`):
-
-```text
-fragcap targets add --steam 306130
-```
-
-Run `fragcap targets` again afterward to see it in the numbered listing.
+fragcap registers what it discovers for you, so the title you want is usually
+already listed. If it is not (a non-Steam launcher, or an unusual install
+location), you can register it by hand with `fragcap targets add` or `fragcap
+targets scan`; both take a `--db` pointing at your local store (the `local db`
+path `fragcap doctor` shows). See [the targets commands](/docs/reference/cli#targets)
+for the exact form. For a Steam title, its **App ID** is the number in its Steam
+store or library URL, for example `306130` in
+`store.steampowered.com/app/306130/`.
 
 ## 4. Capture
 
