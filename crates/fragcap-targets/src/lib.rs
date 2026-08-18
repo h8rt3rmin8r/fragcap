@@ -53,7 +53,8 @@ pub mod targets_export;
 pub mod volume;
 
 pub use authoring::{
-    launch_entries_for, launch_is_unresolved, resolved_client_launch, SocketHolderAnswer,
+    launch_entries_for, launch_is_unresolved, observed_executable, resolved_client_launch,
+    SocketHolderAnswer,
 };
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
 pub use classifier::{

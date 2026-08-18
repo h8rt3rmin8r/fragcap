@@ -17,6 +17,9 @@
 //! No stored totals. Every aggregate is a method over the named counters, so a
 //! total cannot drift from its parts.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use crate::interface::InterfaceId;
 use crate::parse::ParseReject;
 
@@ -255,6 +258,35 @@ pub struct CaptureStats {
     /// no flow key is retained and marked, per P-4, and reporting it as loss
     /// would be a P-9 problem rather than only an arithmetic one.
     pub parse: ParseStats,
+    /// Per socket-holding process image, the count of admitted packets in this
+    /// run (slice S059).
+    ///
+    /// The dominant image is the observed socket-holder a launch-and-observe
+    /// capture promotes an unresolved target to. The image already exists on
+    /// every [`Attribution`](crate::attribution::Attribution); this is the only
+    /// place it is aggregated.
+    ///
+    /// Populated by the output loop, past the write gate. Counting there rather
+    /// than at the attribution site is deliberate: a packet the gate rejects
+    /// (pre-acquisition or post-stop traffic on the run-from-arm live path, or
+    /// traffic beyond a volume bound) never reaches the output and must not vote
+    /// for a holder (PR #159 review, Codex). On the live path the kernel filter is
+    /// already narrowed to profiled endpoints (section 12.2), so an admitted
+    /// packet is a profiled one; offline the scripted attributor resolves only the
+    /// scripted flows.
+    ///
+    /// An ordered map, not a hash map, on purpose: the dominant-image choice
+    /// must be a total order so a two-way tie resolves the same image on every
+    /// run over identical traffic, the same discipline the socket-table join of
+    /// S10 required. Keyed by the same shared image string the attribution
+    /// holds, so an increment is a refcount bump rather than an allocation.
+    ///
+    /// Additive: this contributes to no drop total, no conservation term, no
+    /// writer output, and no completion summary. The output loop sees every
+    /// admitted packet from every interface, so it is already capture-wide and is
+    /// not folded per capture thread. Nothing downstream that a golden observes
+    /// reads it.
+    pub holder_tally: BTreeMap<Arc<str>, u64>,
 }
 
 impl CaptureStats {
@@ -310,6 +342,27 @@ impl CaptureStats {
         for (id, stats) in other.sources {
             self.set_source(id, stats);
         }
+        // `holder_tally` is deliberately not folded here. It is populated once by
+        // the output loop, which already sees every admitted packet from every
+        // interface, so a per-capture-thread fold would double count it (slice
+        // S059).
+    }
+
+    /// The image the run attributed the most packets to, the observed
+    /// socket-holder a launch-and-observe capture promotes to (slice S059).
+    ///
+    /// `None` when nothing was attributed. A two-way tie resolves to the
+    /// earlier key in the ordered tally, so the choice is total and identical
+    /// across runs over the same traffic (P-9: no coin flip).
+    pub fn dominant_holder(&self) -> Option<Arc<str>> {
+        self.holder_tally
+            .iter()
+            // `max_by_key` returns the last maximal element; iterating reversed
+            // makes that the first key in order, so ties break to the earliest
+            // image name deterministically.
+            .rev()
+            .max_by_key(|(_, count)| **count)
+            .map(|(image, _)| Arc::clone(image))
     }
 
     /// What fragcap itself discarded. Computed, not stored.
@@ -358,6 +411,7 @@ mod tests {
                 direction_ambiguous: 6,
                 ..ParseStats::default()
             },
+            holder_tally: BTreeMap::new(),
         }
     }
 
@@ -649,6 +703,76 @@ mod tests {
             );
             assert_eq!(p.rejected(), 1);
         }
+    }
+
+    // Slice S059, PR #159 review. The tally is owned by the output loop, which
+    // sees every admitted packet from every interface, so `absorb` (the per-
+    // capture-thread fold) must not touch it: folding it per thread would double
+    // count. A capture thread's stats carry an empty tally, and absorbing them
+    // leaves the output-owned tally untouched.
+    #[test]
+    fn absorb_does_not_fold_the_holder_tally() {
+        let mut a = CaptureStats::default();
+        a.holder_tally.insert(Arc::from("game.exe"), 3);
+        let mut b = CaptureStats::default();
+        // A per-thread stats value never carries a tally in practice; even if it
+        // did, absorb must not merge it.
+        b.holder_tally.insert(Arc::from("game.exe"), 4);
+        a.absorb(b);
+        assert_eq!(
+            a.holder_tally.get("game.exe"),
+            Some(&3),
+            "absorb leaves the holder tally untouched"
+        );
+    }
+
+    // Slice S059, FR-005. The tally is additive: it reaches no drop total and
+    // no loss verdict, so adding to it cannot make a clean capture look lossy.
+    #[test]
+    fn the_holder_tally_is_never_counted_as_loss() {
+        let mut s = CaptureStats {
+            packets_captured: 10,
+            packets_attributed: 10,
+            ..CaptureStats::default()
+        };
+        s.holder_tally.insert(Arc::from("game.exe"), 10);
+        assert_eq!(s.fragcap_dropped(), 0, "the tally is not fragcap loss");
+        assert_eq!(s.total_dropped(), 0, "the tally is not overall loss");
+        assert!(!s.lost_anything(), "an attributed run is not lossy");
+    }
+
+    // Slice S059. The dominant image is the greatest count, and a two-way tie
+    // resolves deterministically to the earlier key so promotion is never a
+    // coin flip (P-9).
+    #[test]
+    fn the_dominant_holder_is_the_greatest_count_with_a_total_tiebreak() {
+        assert_eq!(CaptureStats::default().dominant_holder(), None);
+
+        let mut clear = CaptureStats::default();
+        clear.holder_tally.insert(Arc::from("game.exe"), 20);
+        clear.holder_tally.insert(Arc::from("launcher.exe"), 5);
+        assert_eq!(clear.dominant_holder().as_deref(), Some("game.exe"));
+
+        // A tie between "aaa" and "zzz" resolves to the earlier ordered key on
+        // every run, whichever order they were inserted.
+        let mut tie = CaptureStats::default();
+        tie.holder_tally.insert(Arc::from("zzz.exe"), 9);
+        tie.holder_tally.insert(Arc::from("aaa.exe"), 9);
+        assert_eq!(tie.dominant_holder().as_deref(), Some("aaa.exe"));
+    }
+
+    // Slice S059. The tally participates in equality, so two runs with a
+    // different observed holder are not equal (which a golden diff relies on
+    // being false-positive-free elsewhere, but here proves the field is live).
+    #[test]
+    fn the_holder_tally_participates_in_equality() {
+        let mut a = CaptureStats::default();
+        a.holder_tally.insert(Arc::from("game.exe"), 1);
+        let b = CaptureStats::default();
+        assert_ne!(a, b);
+        let mut c = CaptureStats::default();
+        c.holder_tally.insert(Arc::from("game.exe"), 1);
+        assert_eq!(a, c);
     }
 
     #[test]

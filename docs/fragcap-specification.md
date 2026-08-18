@@ -2565,6 +2565,20 @@ rides onto a `--process` or a stored-executable target; against a
 Steam-anchored target, whose client the install-layout cascade determines, a
 path anchor is refused (exit 2) rather than discarded.
 
+A stored target whose launch chain is unresolved (a `no` or `unsure` answer to
+the socket-holder question at registration, section 17.7) is not refused: it is
+captured in launch-and-observe mode. fragcap builds a profile from the executable
+the user did record, captures, and watches which process actually holds the
+sockets. When the run observes a dominant socket-holding process, the target is
+promoted to a resolved client at verified fidelity (capture-time promotion); a run
+that observes nothing leaves the target exactly as it was, because promoting on no
+observation would record a socket holder the tool never saw. This slice does not
+add a direct-executable launcher, so an unresolved target that carries no platform
+anchor is started by the operator (by any means) and observe-mode captures it; only
+a platform-anchored target is started by `--launch`. A path anchor does not apply
+to an observe-mode capture, whose client the observed ancestry determines, and is
+refused (exit 2) rather than discarded.
+
 ### 17.3 Worked Invocations
 
 ```bash
@@ -2699,7 +2713,10 @@ target need no store path unless one is named explicitly.
   unresolved; `yes` records it as the resolved client. When standard input is not
   a terminal the same decision is supplied by `--socket-holder yes|no|unsure`
   (which requires `--exe`). `--steam <app_id>` scaffolds an installed title
-  (formerly `steam profile`).
+  (formerly `steam profile`). A target registered `no` or `unsure` reads `needs a
+  target` until a capture against it observes the real socket holder and promotes
+  it to a resolved client at verified fidelity (launch-and-observe, section 17.2),
+  after which it reads `ready`.
 - `targets scan <DIR> [--db <local.db>]` registers the titles discovered under a
   directory, through the same idempotent registration the listing uses.
 - `targets remove <SELECTOR>` removes exactly the resolved target; an ambiguous

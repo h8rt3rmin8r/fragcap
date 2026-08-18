@@ -1,0 +1,13 @@
+# Observe-mode process tree (slice S059): a launcher spawns the child that holds
+# the gameplay socket. The observe-mode profile matches launcher.exe as a
+# non-terminal launcher stage and the child game.exe as a terminal client stage
+# via descends_from, so a `no`-authored target (which recorded launcher.exe as
+# the observed executable) captures and promotes to the observed child holder.
+#
+# launcher.exe (pid 100) starts before the first packet and acquires the session.
+start 100 1 C:\Games\launcher.exe launcher.exe 0
+# game.exe (pid 4242) is a child of the launcher and holds the gameplay socket
+# (the udp-gameplay.script attributes its flow to pid 4242 / game.exe).
+start 4242 100 C:\Games\game.exe game.exe 0
+# The terminal client exits after the last packet, ending the capture cleanly.
+exit 4242 1800000000000000000

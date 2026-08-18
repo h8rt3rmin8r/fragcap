@@ -79,14 +79,15 @@ pub mod steam {
 pub mod targets {
     pub use fragcap_targets::{
         capture_readiness, entry_windows_clients, export, export_targets, import, import_targets,
-        is_row_index, known_summary, launch_entries_for, launch_is_unresolved, register_candidate,
-        register_candidates, resolve_id, resolve_positional, resolved_client_launch, seed_catalog,
-        seed_engine, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource, Classification,
-        ClassificationSource, CorpusGate, Engine, EngineBatch, EngineConfidence, EngineEntry,
-        EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed, Game, HintDatabaseProvider,
-        ImportSummary, LaunchEntry, RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary,
-        SeedTier, Selection, SocketHolderAnswer, Store, TargetClassification, TargetEntry,
-        TargetsError, TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        is_row_index, known_summary, launch_entries_for, launch_is_unresolved, observed_executable,
+        register_candidate, register_candidates, resolve_id, resolve_positional,
+        resolved_client_launch, seed_catalog, seed_engine, CaptureReadiness, CatalogBatch,
+        CatalogEntry, CatalogSource, Classification, ClassificationSource, CorpusGate, Engine,
+        EngineBatch, EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog,
+        FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary, LaunchEntry,
+        RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
+        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
+        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
 
     /// The discovery seam and its model (slice S052): the `TargetSource` trait,

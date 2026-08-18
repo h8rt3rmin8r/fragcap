@@ -116,6 +116,69 @@ fn one_pipeline_carrying_both_writers_produces_both_outputs_in_one_pass() {
     assert!(run.report.is_clean());
 }
 
+// Slice S059. The dominant-holder tally rides in the pipeline report: over the
+// tcp-session fixture, whose flow is owned by game.exe throughout, the tally names
+// game.exe with a count equal to the attributed packets, and the dominant holder is
+// game.exe. The goldens above are byte-identical whether or not the tally is
+// present, which is what keeps it out of every written surface (P-9).
+#[test]
+fn the_dominant_holder_tally_rides_in_the_pipeline_report() {
+    let run = render_via_pipeline("tcp-session", ROOMY);
+    let stats = &run.report.stats;
+    assert_eq!(
+        stats.holder_tally.get("game.exe").copied(),
+        Some(stats.packets_attributed),
+        "every admitted attributed packet tallies its socket-holding image"
+    );
+    assert_eq!(
+        stats.dominant_holder().as_deref(),
+        Some("game.exe"),
+        "the single owner is the dominant observed holder"
+    );
+    // The tally is additive: a fixture that reproduces its goldens byte for byte
+    // carries the tally without leaking it into either writer.
+    assert_matches_golden("tcp-session", "fcapng", &run.pcapng);
+    assert_matches_golden("tcp-session", "jsonl", &run.jsonl);
+}
+
+// Slice S059 (PR #159 review, Codex). The tally counts only packets the write gate
+// admits. A gate that rejects every packet leaves the tally empty even though every
+// flow resolves to a holder, so pre-acquisition and post-stop traffic the gate
+// withholds from the output never votes for a promotion. The gate withholds from
+// every sink, so the output files carry no packet records either.
+#[test]
+fn the_holder_tally_counts_only_gate_admitted_packets() {
+    use fragcap::core::CapturedPacket;
+    use fragcap::{AttributionScript, ScriptedAttributor, WriteGate};
+    use std::sync::Arc;
+
+    struct RejectAll;
+    impl WriteGate for RejectAll {
+        fn admit(&self, _packet: &CapturedPacket) -> bool {
+            false
+        }
+    }
+
+    let script = AttributionScript::load(common::fixtures_dir().join("tcp-session.script"))
+        .expect("the script loads");
+    let run = common::render_via_pipeline_with(
+        "tcp-session",
+        ROOMY,
+        Box::new(ScriptedAttributor::new(script)),
+        Some(Arc::new(RejectAll) as Arc<dyn WriteGate>),
+    );
+    let stats = &run.report.stats;
+    assert_eq!(
+        stats.gate_dropped, stats.packets_captured,
+        "the gate rejected every captured packet"
+    );
+    assert!(
+        stats.holder_tally.is_empty(),
+        "a gate-rejected packet does not vote for a holder"
+    );
+    assert_eq!(stats.dominant_holder(), None, "no holder is observed");
+}
+
 // T073, SC-009.
 #[test]
 fn two_runs_over_one_fixture_produce_identical_bytes() {

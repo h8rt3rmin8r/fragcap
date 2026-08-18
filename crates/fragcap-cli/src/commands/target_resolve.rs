@@ -19,7 +19,10 @@ use fragcap::profile::{
     ResolutionError, ResolutionRequest, TargetProvider, TargetResolver,
 };
 use fragcap::steam::SteamWalkerProvider;
-use fragcap::targets::{resolve_id, resolve_positional, Selection, Store, TargetEntry};
+use fragcap::targets::{
+    launch_is_unresolved, observed_executable, resolve_id, resolve_positional, Selection, Store,
+    TargetEntry,
+};
 
 use crate::emit::Emitter;
 use crate::exit::CliError;
@@ -50,21 +53,49 @@ pub(crate) enum StoredRef<'a> {
     Id(i64),
 }
 
+/// The result of resolving a stored target: the validated capture profile, and,
+/// for a target that was resolved in observe mode, how to promote it after the
+/// run (slice S059).
+pub(crate) struct ResolvedTarget {
+    /// The validated one- or two-stage capture profile.
+    pub profile: Profile,
+    /// Present only when an unresolved target (a `no`/`unsure` authoring answer)
+    /// was resolved in observe mode. `None` for a resolved client, a
+    /// Steam-anchored target, or a `--process` synthesis.
+    pub promotion: Option<Promotion>,
+}
+
+/// What `capture` needs to promote an unresolved target after a run that
+/// observed its real socket-holding process (slice S059).
+///
+/// Carries the resolved entry's durable row id and the local store it was
+/// resolved from, so `run` can reopen that store and rewrite the launch chain
+/// without re-deriving the store-path resolution.
+pub(crate) struct Promotion {
+    /// The resolved entry's autoincrement row key.
+    pub target_id: i64,
+    /// The local store the target was resolved from.
+    pub local_db: PathBuf,
+}
+
 /// Resolve a stored target against the local store into the profile that captures
 /// it.
 ///
 /// The target is named by a positional selector (handle, exact name, or 1-based row
 /// index) or a durable `--id`. A Steam-anchored target is resolved through the
 /// install-layout cascade keyed on its app id, recovering its client executable and
-/// carrying the app id so `--launch` can reach it. A target carrying stored launch
-/// entries synthesizes from its single Windows client, refusing an empty or
-/// ambiguous set rather than guessing (P-9). A target that names neither is a usage
-/// error rather than a silent empty capture (P-4).
+/// carrying the app id so `--launch` can reach it. A target carrying an unresolved
+/// launch chain (a `no`/`unsure` authoring answer) that still names an observed
+/// executable is resolved in observe mode, so a run can promote it once it observes
+/// the real socket holder (slice S059). A target carrying resolved launch entries
+/// synthesizes from its single Windows client, refusing an empty or ambiguous set
+/// rather than guessing (P-9). A target that names neither is a usage error rather
+/// than a silent empty capture (P-4).
 pub(crate) fn resolve_stored(
     target: StoredRef,
     inputs: &TargetInputs,
     emitter: &mut Emitter,
-) -> Result<Profile, CliError> {
+) -> Result<ResolvedTarget, CliError> {
     let (catalog_db, local_db) = setup_stores(inputs.catalog_db, inputs.local_db, emitter)?;
 
     // Resolve against the local store (S051 section 5.4). A store the operator never
@@ -100,8 +131,9 @@ pub(crate) fn resolve_stored(
         }
     };
 
-    // A Steam anchor recovers the client through the cascade; stored launch entries
-    // synthesize directly; neither is a named usage error.
+    // A Steam anchor recovers the client through the cascade; an unresolved chain
+    // resolves in observe mode; resolved launch entries synthesize directly; none is
+    // a named usage error.
     if let Some(app_id) = steam_app_id(&entry) {
         // The install-layout cascade determines the client identity for a
         // Steam-anchored target, so an operator path anchor has nothing to attach to
@@ -125,31 +157,123 @@ pub(crate) fn resolve_stored(
                 "Steam app {app_id} is not installed in any library"
             ))
         })?;
-        resolve_from_install(&resolver, &install_root, Some(&app_id), &search, &bundled)
-    } else {
-        // Reduce the stored launch entries to their distinct Windows clients by the
-        // same filter, file-name reduction, and case-insensitive dedup the hint
-        // provider applies (P-10). Exactly one is capturable; zero or more than one
-        // is refused rather than an arbitrary pick (P-9). The operator path anchors
-        // ride onto the synthesized identity, so `--target ... --path ...` is honored
-        // rather than discarded.
-        let clients = fragcap::targets::entry_windows_clients(&entry);
-        match clients.as_slice() {
-            [exe] => synthesize_named_profile(exe, inputs.path_contains, inputs.path_regex),
-            [] => Err(CliError::usage(format!(
-                "target {} names no Windows client executable; re-register it with \
-                 `targets add --exe` or `--steam`",
-                entry.handle
-            ))),
-            many => Err(CliError::usage(format!(
-                "target {} names {} distinct Windows client executables ({}); it is ambiguous, so \
-                 register a single-client target or capture the process directly with `--process`",
-                entry.handle,
-                many.len(),
-                many.join(", ")
-            ))),
+        // A Steam-anchored target is a resolved client, never promoted here.
+        let profile =
+            resolve_from_install(&resolver, &install_root, Some(&app_id), &search, &bundled)?;
+        return Ok(ResolvedTarget {
+            profile,
+            promotion: None,
+        });
+    }
+
+    // An unresolved launch chain (a `no`/`unsure` authoring answer) that still names
+    // an observed executable is captured in observe mode: synthesize a profile from
+    // that executable and carry a promotion so the run can rewrite the launch chain
+    // once it observes the real socket holder (slice S059). An unresolved chain that
+    // names nothing to observe from falls through to the refusal below.
+    if launch_is_unresolved(&entry) {
+        if let Some(exe) = observed_executable(&entry) {
+            // The observe-mode profile determines the client by process ancestry, so
+            // an operator path anchor has nothing to attach to; refuse it rather than
+            // silently discard it (P-9), as the Steam-anchored branch does.
+            if inputs.path_contains.is_some() || inputs.path_regex.is_some() {
+                return Err(CliError::usage(
+                    "--path/--path-regex do not apply to an unresolved target captured in observe \
+                     mode; the observed socket holder determines the client identity",
+                ));
+            }
+            let profile = synthesize_observe_profile(exe)?;
+            // Promote after the run only when the resolved row carries an id (it
+            // always does once read back from the store); without one there is
+            // nothing to write back to.
+            let promotion = entry.id.map(|target_id| Promotion {
+                target_id,
+                local_db: local_path.clone(),
+            });
+            return Ok(ResolvedTarget { profile, promotion });
         }
     }
+
+    // Reduce the resolved launch entries to their distinct Windows clients by the
+    // same filter, file-name reduction, and case-insensitive dedup the hint provider
+    // applies (P-10). Exactly one is capturable; zero or more than one is refused
+    // rather than an arbitrary pick (P-9). The operator path anchors ride onto the
+    // synthesized identity, so `--target ... --path ...` is honored rather than
+    // discarded. A resolved client is never promoted.
+    let clients = fragcap::targets::entry_windows_clients(&entry);
+    match clients.as_slice() {
+        [exe] => {
+            synthesize_named_profile(exe, inputs.path_contains, inputs.path_regex).map(|profile| {
+                ResolvedTarget {
+                    profile,
+                    promotion: None,
+                }
+            })
+        }
+        [] => Err(CliError::usage(format!(
+            "target {} names no Windows client executable; re-register it with \
+             `targets add --exe` or `--steam`",
+            entry.handle
+        ))),
+        many => Err(CliError::usage(format!(
+            "target {} names {} distinct Windows client executables ({}); it is ambiguous, so \
+             register a single-client target or capture the process directly with `--process`",
+            entry.handle,
+            many.len(),
+            many.join(", ")
+        ))),
+    }
+}
+
+/// Build a validated two-stage observe-mode profile from an observed executable
+/// (slice S059).
+///
+/// An unresolved target names the process the operator pointed at but not the
+/// socket holder: a `no` answer says a different, child process holds the sockets,
+/// and an `unsure` answer leaves it open. The profile has a terminal `client` stage
+/// matching descendants of a `launcher` stage that matches the observed executable.
+/// Both shapes bind the socket holder: the child case through the terminal
+/// `descends_from` stage, the case where the observed executable itself holds the
+/// sockets through the launcher stage.
+///
+/// The terminal `client` stage is declared before the `launcher` stage on purpose.
+/// Stage matching binds a process to the first declared stage whose predicates hold
+/// ([`fragcap::profile`] `stage_for`), and a game that relaunches a child under the
+/// same image name as the observed executable would otherwise match the `exe`
+/// launcher stage first and bind as a launcher, so the terminal client stage would
+/// never bind and its exit could not stop the capture. Declaring `descends_from`
+/// first makes such a descendant bind as the terminal client; the root observed
+/// executable still binds as the launcher, because when it is evaluated (in creation
+/// order, before any descendant) nothing is yet bound to `launcher`, so its
+/// `descends_from` predicate does not hold.
+///
+/// It is not a wildcard: `descends_from` is a non-empty predicate and carries no
+/// `exe`, so the profile passes validation (an empty-predicate stage is a hard
+/// error, and `ambiguous_image_match` only fires when two stages both carry an
+/// `exe`). Stage order is not otherwise validated: at most one terminal stage and a
+/// `descends_from` naming a declared role are both order-independent. The identity is
+/// placed into JSON (serde_json handles escaping) and validated through
+/// `Profile::parse`, so an unusable executable glob surfaces as a diagnostic
+/// (exit 2). The fidelity is `heuristic-unverified`: the identity was synthesized,
+/// not typed by an operator, so `authored` would be a lie (P-9). Promotion of the
+/// stored target's own fidelity to `verified` is a separate axis the run writes back.
+fn synthesize_observe_profile(exe: &str) -> Result<Profile, CliError> {
+    let profile = serde_json::json!({
+        "schema": 1,
+        "kind": "profile",
+        "fidelity": "heuristic-unverified",
+        "game": { "id": "observe", "name": "launch-and-observe" },
+        "stage": [
+            {
+                "role": "client",
+                "lifecycle": "session",
+                "terminal": true,
+                "match": { "descends_from": "launcher" }
+            },
+            { "role": "launcher", "lifecycle": "session", "match": { "exe": exe } }
+        ]
+    });
+    Profile::parse(&profile.to_string()).map_err(CliError::from)
 }
 
 /// The Steam app id a target's anchor names, if it is a `steam:<app_id>` anchor.
@@ -925,5 +1049,120 @@ mod tests {
     fn a_synthesized_profile_is_a_single_target_stage() {
         let profile = synthesize_profile(&identity(), None).unwrap();
         assert_eq!(profile.stages().len(), 1);
+    }
+
+    // Slice S059. The observe-mode profile validates and has the two-stage shape
+    // that binds a child socket holder without tripping validation.
+    #[test]
+    fn an_observe_profile_is_a_valid_two_stage_launcher_and_client() {
+        let profile =
+            synthesize_observe_profile("launcher.exe").expect("the observe profile validates");
+        let stages = profile.stages();
+        assert_eq!(stages.len(), 2, "launcher stage plus terminal client stage");
+
+        let launcher = stages
+            .iter()
+            .find(|s| s.role() == "launcher")
+            .expect("a launcher stage");
+        assert!(
+            !launcher.is_terminal(),
+            "the launcher stage is not terminal"
+        );
+        assert_eq!(
+            launcher.predicates().exe().map(|e| e.as_str()),
+            Some("launcher.exe"),
+            "the launcher stage matches the observed executable"
+        );
+
+        let client = stages
+            .iter()
+            .find(|s| s.role() == "client")
+            .expect("a client stage");
+        assert!(client.is_terminal(), "the client stage is terminal");
+        assert_eq!(
+            client.predicates().descends_from(),
+            Some("launcher"),
+            "the client stage matches descendants of the launcher"
+        );
+        assert!(
+            client.predicates().exe().is_none(),
+            "the client stage carries no exe, so ambiguous_image_match cannot fire"
+        );
+    }
+
+    // Slice S059, PR #159 review (Codex P1). The terminal client stage is declared
+    // before the launcher stage, so a descendant whose image name equals the observed
+    // executable binds as the terminal client (via descends_from) rather than as the
+    // launcher. Were the launcher (exe) stage declared first, stage matching would
+    // bind such a child to it and the terminal client would never bind, leaving the
+    // capture without a terminal exit to stop it. The root observed executable still
+    // binds as the launcher, because it descends from nothing bound to `launcher`.
+    #[test]
+    fn a_same_named_child_binds_the_terminal_client_not_the_launcher() {
+        use fragcap::core::{ProcessEvent, ProcessTree, Timestamp};
+        use fragcap::profile::{bind_stages, stage_for};
+
+        let profile = synthesize_observe_profile("game.exe").expect("valid observe profile");
+
+        // A tree where game.exe (the observed executable) relaunches a child also
+        // named game.exe. Applied in creation order, as the session folds events.
+        let mut tree = ProcessTree::new();
+        tree.apply(ProcessEvent::started(
+            100,
+            0,
+            "C:\\G\\game.exe",
+            "g",
+            Timestamp::from_nanos(1),
+        ));
+        tree.apply(ProcessEvent::started(
+            200,
+            100,
+            "C:\\G\\game.exe",
+            "g",
+            Timestamp::from_nanos(2),
+        ));
+        bind_stages(&profile, &mut tree);
+
+        let node_id = |pid: u32| {
+            tree.nodes()
+                .find(|n| n.pid().get() == pid)
+                .unwrap_or_else(|| panic!("a node for pid {pid}"))
+                .id()
+        };
+
+        assert_eq!(
+            stage_for(&profile, &tree, node_id(100)).map(|s| s.role()),
+            Some("launcher"),
+            "the root observed executable binds as the launcher"
+        );
+        let child_stage =
+            stage_for(&profile, &tree, node_id(200)).expect("the same-named child binds a stage");
+        assert_eq!(
+            child_stage.role(),
+            "client",
+            "a same-named descendant binds the terminal client, not the launcher"
+        );
+        assert!(
+            child_stage.is_terminal(),
+            "the descendant binds the terminal stage, so its exit can stop the capture"
+        );
+    }
+
+    // Slice S059. The synthesized identity was not typed by an operator, so it is
+    // never stamped authored (P-9). Promotion of the stored target's own fidelity
+    // to verified is a separate axis written back after the run.
+    #[test]
+    fn an_observe_profile_is_not_authored_fidelity() {
+        let profile = synthesize_observe_profile("game.exe").expect("valid");
+        assert_ne!(profile.fidelity(), FidelityTier::Authored);
+        assert_eq!(profile.fidelity(), FidelityTier::HeuristicUnverified);
+    }
+
+    // Slice S059. An unusable executable glob surfaces as a profile diagnostic
+    // (exit 2) rather than a malformed capture.
+    #[test]
+    fn an_observe_profile_rejects_an_unusable_executable_glob() {
+        // An empty executable is not a usable image pattern.
+        assert!(synthesize_observe_profile("").is_err());
     }
 }

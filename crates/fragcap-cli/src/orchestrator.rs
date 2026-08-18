@@ -69,9 +69,35 @@ pub fn install_interrupt_handler() {
     });
 }
 
-/// Run a capture to completion and return its exit code.
+/// What a capture run reports back to its caller (slice S059).
 ///
-/// The single entry both `run` and `tap` reach, once each has resolved or
+/// `exit` is the run's exit result, what `capture` returned before this type
+/// existed. `observed_holder` is the dominant socket-holding image the run
+/// attributed the most packets to, or `None` when nothing was attributed. The
+/// `capture` command uses it to promote an unresolved target after the run; the
+/// `extcap` path ignores it. It is deliberately not on the golden-pinned
+/// completion summary, so a nondeterministic image list never churns a golden.
+pub struct CaptureOutcome {
+    /// The run's exit result.
+    pub exit: Exit,
+    /// The dominant observed socket-holder, or `None` if nothing was attributed.
+    pub observed_holder: Option<Arc<str>>,
+}
+
+impl CaptureOutcome {
+    /// A run that acquired no target and observed nothing, carrying only its
+    /// exit. The no-target-acquired paths return this.
+    fn bare(exit: Exit) -> Self {
+        CaptureOutcome {
+            exit,
+            observed_holder: None,
+        }
+    }
+}
+
+/// Run a capture to completion and report its outcome.
+///
+/// The single entry both `capture` and `extcap` reach, once each has resolved or
 /// synthesized a profile and built the effective configuration. The armed
 /// session and the operator-facing preamble are shared; the event source then
 /// decides which driver runs. An offline timeline drives the deterministic
@@ -86,7 +112,7 @@ pub fn capture(
     fire_interrupt: bool,
     allowed_roles: Option<Vec<String>>,
     sink_failure_is_clean: bool,
-) -> Result<Exit, CliError> {
+) -> Result<CaptureOutcome, CliError> {
     let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
     session.attach(ARMED_AT);
 
@@ -195,7 +221,7 @@ fn capture_prerecorded(
     interrupt: &AtomicBool,
     fire_interrupt: bool,
     sink_failure_is_clean: bool,
-) -> Result<Exit, CliError> {
+) -> Result<CaptureOutcome, CliError> {
     // The pid to role map, so a new binding is detected as a match and an exit
     // of a bound pid is detected as a stage exit.
     let mut bound: HashMap<u32, String> = HashMap::new();
@@ -221,7 +247,7 @@ fn capture_prerecorded(
         }
         let summary = build_summary(false, &session, &CaptureStats::default(), None);
         emitter.summary(&summary);
-        return Ok(Exit::FAILURE);
+        return Ok(CaptureOutcome::bare(Exit::FAILURE));
     }
 
     publisher.publish(session.role_bindings());
@@ -309,10 +335,10 @@ fn capture_prerecorded(
     // (specification FR-005a). Not a usage error. For an extcap capture, the
     // analyzer closing its FIFO is the defined clean stop, so that end is a
     // success (the summary still carries the accounting).
-    Ok(final_exit(
-        !report.sink_failures.is_empty(),
-        sink_failure_is_clean,
-    ))
+    Ok(CaptureOutcome {
+        exit: final_exit(!report.sink_failures.is_empty(), sink_failure_is_clean),
+        observed_holder: report.stats.dominant_holder(),
+    })
 }
 
 /// Build the sinks, attach the write gate, and spawn the pipeline on its own
@@ -479,7 +505,7 @@ fn capture_live(
     interrupt: &AtomicBool,
     fire_interrupt: bool,
     sink_failure_is_clean: bool,
-) -> Result<Exit, CliError> {
+) -> Result<CaptureOutcome, CliError> {
     use std::time::{Duration, Instant};
 
     let mut bound: HashMap<u32, String> = HashMap::new();
@@ -612,12 +638,14 @@ fn capture_live(
         emitter.summary(&summary);
         // A clean operator interrupt exits zero; every other way of capturing
         // nothing (timeout, duration, disconnect) is the target-never-acquired
-        // failure that exits one.
-        return Ok(if session.stop_reason() == Some(StopReason::Interrupt) {
-            Exit::SUCCESS
-        } else {
-            Exit::FAILURE
-        });
+        // failure that exits one. Nothing was captured, so nothing was observed.
+        return Ok(CaptureOutcome::bare(
+            if session.stop_reason() == Some(StopReason::Interrupt) {
+                Exit::SUCCESS
+            } else {
+                Exit::FAILURE
+            },
+        ));
     }
 
     // Acquired: open the window from the acquiring event's capture instant, so a
@@ -723,10 +751,10 @@ fn capture_live(
     let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
     emitter.summary(&summary);
 
-    Ok(final_exit(
-        !report.sink_failures.is_empty(),
-        sink_failure_is_clean,
-    ))
+    Ok(CaptureOutcome {
+        exit: final_exit(!report.sink_failures.is_empty(), sink_failure_is_clean),
+        observed_holder: report.stats.dominant_holder(),
+    })
 }
 
 /// The live driver loop over the merged channel.

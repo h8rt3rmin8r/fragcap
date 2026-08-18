@@ -26,10 +26,13 @@
 //!   `--path`/`--path-regex` anchors to disambiguate two processes sharing the
 //!   name (the capability the retired `watch` carried).
 
+use fragcap::profile::FidelityTier;
+use fragcap::targets::{resolved_client_launch, Store};
+
 use crate::assemble;
 use crate::attach;
 use crate::cli::CaptureArgs;
-use crate::commands::target_resolve::{self, StoredRef, TargetInputs};
+use crate::commands::target_resolve::{self, Promotion, StoredRef, TargetInputs};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 use crate::orchestrator;
@@ -49,18 +52,28 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         path_contains: args.path.as_deref(),
         path_regex: args.path_regex.as_deref(),
     };
-    let profile = match (selector, args.id, &args.process) {
+    // A stored target may carry a promotion: an unresolved target (a `no`/`unsure`
+    // authoring answer) captured in observe mode is promoted after the run once it
+    // observes the real socket holder (slice S059). A `--process` synthesis and a
+    // resolved target carry none.
+    let (profile, promotion) = match (selector, args.id, &args.process) {
         (Some(selector), None, None) => {
-            target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?
+            let resolved =
+                target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?;
+            (resolved.profile, resolved.promotion)
         }
         (None, Some(id), None) => {
-            target_resolve::resolve_stored(StoredRef::Id(id), &inputs, emitter)?
+            let resolved = target_resolve::resolve_stored(StoredRef::Id(id), &inputs, emitter)?;
+            (resolved.profile, resolved.promotion)
         }
-        (None, None, Some(process)) => target_resolve::synthesize_named_profile(
-            process,
-            args.path.as_deref(),
-            args.path_regex.as_deref(),
-        )?,
+        (None, None, Some(process)) => {
+            let profile = target_resolve::synthesize_named_profile(
+                process,
+                args.path.as_deref(),
+                args.path_regex.as_deref(),
+            )?;
+            (profile, None)
+        }
         // The clap group guarantees exactly one target input; this documents it.
         _ => {
             return Err(CliError::usage(
@@ -79,7 +92,7 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();
-    orchestrator::capture(
+    let outcome = orchestrator::capture(
         profile,
         &config,
         components,
@@ -89,5 +102,62 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         allowed_roles,
         // A sink failure is an unrecoverable end for `capture`, not a clean stop.
         false,
-    )
+    )?;
+
+    // Capture-time promotion (slice S059): if this was an unresolved target and the
+    // run observed a dominant socket holder, rewrite the stored launch chain to that
+    // client and raise the target's fidelity. Observing nothing leaves it unchanged,
+    // because promoting on no observation would fabricate a holder (P-9). Promotion
+    // is a post-capture side effect on a run that already succeeded, so a write
+    // failure is surfaced as a warning but never changes the capture's exit.
+    if let Some(promotion) = promotion {
+        promote_if_observed(&promotion, outcome.observed_holder.as_deref(), emitter);
+    }
+
+    Ok(outcome.exit)
+}
+
+/// Promote an unresolved target after a run that observed its socket holder.
+///
+/// Reopens the local store the target was resolved from and rewrites its launch
+/// chain to the observed client at `verified` fidelity. A run that observed nothing
+/// (`observed_holder` is `None`) writes nothing (P-9). A promotion write failure is
+/// surfaced as a warning rather than silently swallowed, but it does not change the
+/// run's exit: the capture itself already succeeded and its file is written, so a
+/// failure to update the stored target is not a capture failure.
+fn promote_if_observed(
+    promotion: &Promotion,
+    observed_holder: Option<&str>,
+    emitter: &mut Emitter,
+) {
+    let Some(image) = observed_holder else {
+        emitter.progress(
+            "observed no socket-holding process; the target is left unresolved for a later run",
+        );
+        return;
+    };
+    let mut store = match Store::open(&promotion.local_db) {
+        Ok(store) => store,
+        Err(e) => {
+            emitter.warn(&format!(
+                "captured, but could not open the local store to promote the target: {e}"
+            ));
+            return;
+        }
+    };
+    match store.promote_target_launch(
+        promotion.target_id,
+        &resolved_client_launch(image),
+        FidelityTier::Verified,
+    ) {
+        Ok(true) => emitter.progress(&format!(
+            "promoted the target to its observed socket holder {image} (verified)"
+        )),
+        // The row was resolved for this run, so a missing row here is unexpected;
+        // say so rather than silently pass.
+        Ok(false) => emitter.warn(
+            "captured, but the target row was not found to promote (it may have been removed)",
+        ),
+        Err(e) => emitter.warn(&format!("captured, but could not promote the target: {e}")),
+    }
 }

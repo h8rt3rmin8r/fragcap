@@ -1494,3 +1494,50 @@ holder it did not observe.
 > answer truthful until a capture supplies it.
 
 **See also:** [Stable identifier](process-and-attribution.md#stable-identifier), [Anchor](process-and-attribution.md#anchor)
+
+## Launch-and-observe
+
+The capture mode that turns a target with an [unresolved launch chain](process-and-attribution.md#unresolved-launch-chain)
+into a capturable one: rather than refuse a target that names no client, fragcap
+builds a profile from the executable the user did point at, captures, and watches
+which process actually holds the sockets. The observed executable becomes a
+[launcher stage](process-and-attribution.md#stage) and the process that descends from it and holds the
+sockets becomes the [terminal](process-and-attribution.md#terminal-stage) client stage.
+
+{: .matters }
+> It closes the loop opened by an `unsure` or `no` authoring answer. Before it,
+> such a target was a dead end: registerable but not capturable. The mode captures
+> the game the operator meant while learning, from the capture itself, which
+> process to name next time.
+
+**See also:** [Unresolved launch chain](process-and-attribution.md#unresolved-launch-chain), [Observed socket-holder](process-and-attribution.md#observed-socket-holder), [Capture-time promotion](process-and-attribution.md#capture-time-promotion)
+
+## Observed socket-holder
+
+The process image a [launch-and-observe](process-and-attribution.md#launch-and-observe) capture attributed the
+most packets to: the dominant socket-holding process the run actually saw, as
+opposed to any the operator guessed. It is the image a [capture-time promotion](process-and-attribution.md#capture-time-promotion)
+records as the resolved client.
+
+{: .matters }
+> It is the fact a promotion is built on. Choosing the dominant image by a total
+> order over the per-image tally makes the choice the same on every run over the
+> same traffic, so a promotion is a reproducible observation rather than a coin
+> flip. A run that observes no holder promotes nothing.
+
+**See also:** [Attribution](process-and-attribution.md#attribution), [Socket table](process-and-attribution.md#socket-table), [Capture-time promotion](process-and-attribution.md#capture-time-promotion)
+
+## Capture-time promotion
+
+Rewriting a stored target's [unresolved launch chain](process-and-attribution.md#unresolved-launch-chain) to a resolved
+client after a capture observed its real socket holder, and raising the target's
+fidelity to verified. It happens only when a run observed an [observed socket-holder](process-and-attribution.md#observed-socket-holder);
+a run that observed nothing leaves the target exactly as it was.
+
+{: .matters }
+> It is how a target improves itself by being captured. The promotion is guarded
+> by observation: fabricating a resolved client the run never saw would be the
+> instrument lying about what it observed, so an unobserved run writes nothing and
+> the target waits for a run that sees the game.
+
+**See also:** [Launch-and-observe](process-and-attribution.md#launch-and-observe), [Observed socket-holder](process-and-attribution.md#observed-socket-holder), [Unresolved launch chain](process-and-attribution.md#unresolved-launch-chain)

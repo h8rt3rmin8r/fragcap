@@ -27,7 +27,7 @@ use fragcap::{
     AttributionScript, AttributionState, CaptureStats, CapturedPacket, FlowAttributor,
     HeaderParser, InterfaceAddrs, InterfaceDeclaration, JsonLinesWriter, LinkType, PacketSource,
     PayloadMode, PcapngWriter, Pipeline, PipelineConfig, PipelineReport, ReplaySource, Sink,
-    SourceError, SourceStats,
+    SourceError, SourceStats, WriteGate,
 };
 
 /// Every fixture in the corpus, with the local addresses its script implies.
@@ -288,12 +288,33 @@ pub struct PipelineRun {
 /// names none of their concrete types. One pass over the source produces both
 /// outputs, which is the fan-out of specification section 8.6.
 pub fn render_via_pipeline(name: &str, capacity: usize) -> PipelineRun {
+    let dir = fixtures_dir();
+    let script = AttributionScript::load(dir.join(format!("{name}.script")))
+        .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
+    render_via_pipeline_with(
+        name,
+        capacity,
+        Box::new(fragcap::ScriptedAttributor::new(script)),
+        None,
+    )
+}
+
+/// Run a fixture through the real pipeline with both writers attached, a
+/// caller-supplied attributor, and an optional write gate.
+///
+/// The variant `render_via_pipeline` delegates to with a bare scripted attributor
+/// and no gate. A caller that needs a write gate (to exercise the gate-admitted
+/// holder tally of slice S059) passes one.
+pub fn render_via_pipeline_with(
+    name: &str,
+    capacity: usize,
+    attributor: Box<dyn FlowAttributor>,
+    gate: Option<Arc<dyn WriteGate>>,
+) -> PipelineRun {
     let local = corpus_addrs(name);
     let dir = fixtures_dir();
     let source = ReplaySource::open(dir.join(format!("{name}.pcap")))
         .unwrap_or_else(|e| panic!("{name}.pcap must open: {e}"));
-    let script = AttributionScript::load(dir.join(format!("{name}.script")))
-        .unwrap_or_else(|e| panic!("{name}.script must load: {e}"));
     let link = source.link_type();
 
     let pcapng_buf = SharedBuf::default();
@@ -312,13 +333,16 @@ pub fn render_via_pipeline(name: &str, capacity: usize) -> PipelineRun {
             Box::new(source),
             InterfaceAddrs::new(local.iter().copied()),
         )],
-        Box::new(fragcap::ScriptedAttributor::new(script)),
+        attributor,
         PipelineConfig {
             capacity,
             ..PipelineConfig::default()
         },
     )
     .expect("a non-zero capacity builds");
+    if let Some(gate) = gate {
+        pipeline.set_write_gate(gate);
+    }
     pipeline.add_sink(Box::new(pcapng));
     pipeline.add_sink(Box::new(jsonl));
 

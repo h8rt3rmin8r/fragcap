@@ -293,13 +293,19 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         path_contains: None,
         path_regex: None,
     };
-    let profile = target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?;
+    // extcap resolves the same stored target `capture` does, observe-mode profiles
+    // included, but never promotes: it is a streaming bridge, not the store owner, so
+    // it drops the promotion (slice S059).
+    let profile =
+        target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?.profile;
 
     let config = assemble::effective_config_for_extcap(args, &profile);
     let components = assemble::components(&args.offline, &config)?;
 
     orchestrator::install_interrupt_handler();
     let allowed_roles = config.roles.clone();
+    // extcap ignores the observed socket holder: it never promotes, so only the
+    // exit result matters here (slice S059).
     orchestrator::capture(
         profile,
         &config,
@@ -314,6 +320,7 @@ fn capture(args: &ExtcapArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
         // a mid-capture failure is a consumer disconnect, not a bad path.
         true,
     )
+    .map(|outcome| outcome.exit)
 }
 
 #[cfg(test)]

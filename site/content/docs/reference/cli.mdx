@@ -99,7 +99,10 @@ titles, and prints the numbered listing (the row numbers are what `fragcap captu
   gives a deterministic identity (mutually exclusive with `--steam`); `--exe <NAME>`
   names a launch executable; `--handle <OVERRIDE>` overrides the derived handle; and
   `--socket-holder yes|no|unsure` is the non-interactive form of the "which process
-  holds the sockets" question (requires `--exe`).
+  holds the sockets" question (requires `--exe`). A `no` or `unsure` answer leaves
+  the target's client unresolved (it reads `needs a target`); capturing it anyway
+  runs in launch-and-observe mode, and when the run sees the real socket holder the
+  target is promoted to that client, after which it reads `ready`.
 - `fragcap targets list --db <local.db>` lists registered targets with their row
   index, handle, and identifier.
 - `fragcap targets show <SELECTOR> --db <local.db>` (or `--id <N>`) shows how one
