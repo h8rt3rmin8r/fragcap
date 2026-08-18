@@ -335,7 +335,7 @@ pub struct TechnologiesArgs {
     #[arg(short = 'p', long)]
     pub path: PathBuf,
     /// The catalog store (`catalog.db`) whose signature table drives detection
-    /// (slice S053). Seed it with `targets seed-signatures`.
+    /// (slice S053). Seed it with `catalog seed-signatures`.
     #[arg(long)]
     pub catalog_db: PathBuf,
 }

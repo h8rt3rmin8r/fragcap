@@ -112,11 +112,11 @@ jobs:
           # and NOTICE are staged here too, because the installer sources all four
           # payload files from the binary directory (CargoTargetBinDir).
           $ErrorActionPreference = 'Stop'
-          & target/release/fragcap.exe targets import assets/hint-seed.json --db target/release/catalog.db
+          & target/release/fragcap.exe catalog import assets/hint-seed.json --db target/release/catalog.db
           # Slice S053: seed the detection signature table from the bundled Appendix B
           # set so the shipped catalog detects engines, anti-cheat, and DRM out of the
           # box rather than shipping an empty signature table (offline; idempotent).
-          & target/release/fragcap.exe targets seed-signatures --db target/release/catalog.db
+          & target/release/fragcap.exe catalog seed-signatures --db target/release/catalog.db
           Copy-Item LICENSE, NOTICE target/release/
 
       - name: Install WiX and cargo-wix
