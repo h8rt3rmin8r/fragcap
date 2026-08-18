@@ -24,6 +24,7 @@
 //! returning it. A malformed [`import`] fails whole rather than writing a partial
 //! store (P-4).
 
+pub mod authoring;
 pub mod catalog;
 pub mod classifier;
 pub mod engine_feed;
@@ -39,6 +40,8 @@ pub mod http_engine;
 pub mod identifier;
 pub mod import;
 pub mod model;
+pub mod readiness;
+pub mod register;
 pub mod schema;
 pub mod seed;
 pub mod selector;
@@ -46,8 +49,12 @@ pub mod signatures;
 pub mod source;
 pub mod sources;
 pub mod store;
+pub mod targets_export;
 pub mod volume;
 
+pub use authoring::{
+    launch_entries_for, launch_is_unresolved, resolved_client_launch, SocketHolderAnswer,
+};
 pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, FixtureCatalog};
 pub use classifier::{
     ClassifierResult, ClassifierVerdict, DirectoryClassifier, FixtureClassifier,
@@ -70,8 +77,10 @@ pub use model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
+pub use readiness::{capture_readiness, known_summary, CaptureReadiness};
+pub use register::{register_candidate, register_candidates, RegistrationOutcome};
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
-pub use selector::{resolve_id, resolve_positional, Selection};
+pub use selector::{is_row_index, resolve_id, resolve_positional, Selection};
 pub use signatures::{parse_seed_document, seed_bundled, BUNDLED_SIGNATURES};
 pub use source::{
     discover_all, CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, FixtureSource,
@@ -82,6 +91,7 @@ pub use sources::interactive::{Confirm, InteractiveSource, ScriptedConfirm};
 pub use sources::known_roots::{KnownRootsSource, KNOWN_ROOTS};
 pub use sources::{DirListing, DirectoryLister, FixtureTree, FsDirectoryLister};
 pub use store::Store;
+pub use targets_export::{export_targets, import_targets};
 pub use volume::{
     DriveType, EligibilityReason, FixtureInventory, Volume, VolumeEligibility, VolumeInventory,
 };

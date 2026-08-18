@@ -22,9 +22,35 @@ pub fn argv(list: &[&str]) -> Vec<OsString> {
         .collect()
 }
 
+/// Isolate the in-process CLI from this machine's real state, once per test
+/// binary. The hero listing runs discovery against the default catalog and the
+/// installed Steam; pointing `FRAGCAP_CATALOG_DB` at a path that does not exist
+/// makes that discovery register nothing, so a test observes only what it registers
+/// itself. Set once (not per call) so parallel tests never race on the environment.
+fn isolate_from_machine_state() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // Discovery reads the default catalog; a path that does not exist makes it
+        // register nothing, so a test observes only what it registers itself.
+        std::env::set_var(
+            "FRAGCAP_CATALOG_DB",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/nonexistent-catalog.db"),
+        );
+        // A no-`--db` invocation (bare `fragcap`, `fragcap targets`) would otherwise
+        // read and write this machine's real local store; point it at a fresh temp
+        // path so those invocations are hermetic.
+        let local =
+            std::env::temp_dir().join(format!("fragcap-cli-test-local-{}.db", std::process::id()));
+        let _ = fs::remove_file(&local);
+        std::env::set_var("FRAGCAP_LOCAL_DB", local);
+    });
+}
+
 /// Run the command surface, returning the exit code, the stdout result stream,
 /// and the stderr diagnostics stream.
 pub fn run(list: &[&str]) -> (u8, String, String) {
+    isolate_from_machine_state();
     let mut out: Vec<u8> = Vec::new();
     let mut err: Vec<u8> = Vec::new();
     let exit = fragcap_cli::run_with(argv(list), &mut out, &mut err);

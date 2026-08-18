@@ -43,7 +43,7 @@
 //! from version 4 is one additive `CREATE TABLE`.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -137,6 +137,25 @@ CREATE TABLE signature (
     pattern     TEXT NOT NULL CHECK (length(pattern) > 0),
     product     TEXT NOT NULL CHECK (length(product) > 0),
     confidence  TEXT NOT NULL CHECK (confidence IN ('definitive', 'heuristic'))
+);
+
+CREATE TABLE listing_snapshot (
+    position   INTEGER PRIMARY KEY CHECK (position > 0),
+    stable_id  INTEGER NOT NULL,
+    handle     TEXT NOT NULL CHECK (length(handle) > 0)
+);
+";
+
+/// The additive migration from schema version 5 to version 6: create the listing
+/// snapshot table (slice S055). It pins the ordered rows the most recent listing
+/// displayed so a 1-based row-index selector resolves to what the user saw.
+/// Backward-safe by construction, an existing v5 store keeps every row and gains
+/// one empty table. Applied in one transaction alongside the version stamp.
+pub const MIGRATE_5_TO_6: &str = "\
+CREATE TABLE listing_snapshot (
+    position   INTEGER PRIMARY KEY CHECK (position > 0),
+    stable_id  INTEGER NOT NULL,
+    handle     TEXT NOT NULL CHECK (length(handle) > 0)
 );
 ";
 

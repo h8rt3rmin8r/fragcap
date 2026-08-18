@@ -14,13 +14,17 @@ use std::io::Write;
 use std::path::Path;
 
 use fragcap::profile::FidelityTier;
+use std::io::IsTerminal;
+
 use fragcap::targets::{
-    handle, identifier, resolve_id, resolve_positional, CandidateIdentity, ClassificationSource,
-    DirectorySource, Discovery, Selection, Store, TargetClassification, TargetEntry, TargetSource,
+    handle, identifier, is_row_index, resolve_id, resolve_positional, CandidateIdentity,
+    ClassificationSource, DirectorySource, Discovery, Selection, SocketHolderAnswer, Store,
+    TargetClassification, TargetEntry, TargetSource,
 };
 
 use crate::cli::{
-    TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsShowArgs,
+    TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
+    TargetsShowArgs,
 };
 use crate::exit::{CliError, Exit};
 use crate::paths;
@@ -33,10 +37,17 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     };
     match command {
         TargetsCommand::Add(args) => add(args, out),
-        TargetsCommand::List { db } => list(db, out),
+        TargetsCommand::List { db } => hero_listing(db, false, out),
         TargetsCommand::Show(args) => show(args, out),
         TargetsCommand::Discover(args) => discover(args, out),
-        TargetsCommand::Scan { dir, catalog_db } => scan(dir, catalog_db.as_deref(), out),
+        TargetsCommand::Scan {
+            dir,
+            catalog_db,
+            db,
+        } => scan(dir, catalog_db.as_deref(), db.as_deref(), out),
+        TargetsCommand::Remove(args) => remove(args, out),
+        TargetsCommand::Export(args) => export(args, out),
+        TargetsCommand::Import { file, db } => import(file, db, out),
     }
 }
 
@@ -47,25 +58,169 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 /// listing, not an error.
 pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError> {
     // Resolve like the rest of the surface: the FRAGCAP_LOCAL_DB override, else the
-    // per-user default. A store that does not exist yet is an empty listing.
+    // per-user default.
     let path = paths::local_db_path(None).or_else(paths::default_local_db_path);
     let exit = match path {
-        Some(path) if path.exists() => list(&path, out)?,
-        _ => {
-            let _ = writeln!(out, "no targets registered");
+        Some(path) => hero_listing(&path, footer, out)?,
+        None => {
+            empty_listing(out, footer);
             Exit::SUCCESS
         }
     };
-    if footer {
-        let _ = writeln!(out, "\nRun `fragcap --help` to see all commands.");
-    }
     Ok(exit)
 }
 
-/// Run `targets scan <dir>`: point discovery at one directory and list it as a
-/// single candidate (the tier-3 [`DirectorySource`], slice S052). With a catalog,
-/// the directory is scanned for technologies and they ride as evidence (slice S053).
-fn scan(dir: &Path, catalog_db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, CliError> {
+/// The hero listing: run discovery and register newly found titles (so each row is
+/// a registered, capturable target), then present the registered targets ordered by
+/// handle with their CAPTURE and KNOWN columns, write the row-index snapshot, and
+/// name the next command. An empty result prints the commands that populate the
+/// store. Registration is additive and idempotent; no existing entry is modified
+/// (FR-001, FR-007).
+fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
+
+    // Discovery is a best-effort bootstrap: a missing catalog, an absent Steam, or a
+    // platform without the known-roots walk registers nothing and lists whatever is
+    // already registered. A discovery failure never sinks the listing.
+    register_from_discovery(&mut store, out);
+
+    let mut targets = store
+        .targets()
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    targets.sort_by(|a, b| a.handle.cmp(&b.handle));
+
+    if targets.is_empty() {
+        // The most recent listing displayed no rows: replace the snapshot with an
+        // empty set so a stale row index from an earlier listing cannot resolve
+        // through it after the row it named is gone (a re-registered stable id must
+        // not silently inherit an old position).
+        store
+            .write_listing_snapshot(&[])
+            .map_err(|e| CliError::failure(e.to_string()))?;
+        empty_listing(out, footer);
+        return Ok(Exit::SUCCESS);
+    }
+
+    render_table(&targets, out);
+
+    // Pin what was shown so `capture <n>` names the row the user saw (FR-004).
+    let rows: Vec<(i64, &str)> = targets
+        .iter()
+        .map(|t| (t.stable_id, t.handle.as_str()))
+        .collect();
+    store
+        .write_listing_snapshot(&rows)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+
+    // End by naming the next command: the first ready row, else the first row.
+    let next = targets
+        .iter()
+        .position(|t| {
+            fragcap::targets::capture_readiness(t) == fragcap::targets::CaptureReadiness::Ready
+        })
+        .map(|i| i + 1)
+        .unwrap_or(1);
+    let _ = writeln!(out, "\n  fragcap capture {next}");
+
+    if footer {
+        let _ = writeln!(out, "\nRun `fragcap --help` to see all commands.");
+    }
+    Ok(Exit::SUCCESS)
+}
+
+/// The empty case: no registered targets and discovery found nothing. Print the
+/// concrete commands that populate the store, still naming a next command so hero
+/// criterion 5 holds in the empty case (FR-006, SC-006).
+fn empty_listing(out: &mut dyn Write, footer: bool) {
+    let _ = writeln!(out, "  No targets yet.");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  Add one:        fragcap targets add");
+    let _ = writeln!(out, "  Scan a folder:  fragcap targets scan <dir>");
+    if footer {
+        let _ = writeln!(out, "\nRun `fragcap --help` to see all commands.");
+    }
+}
+
+/// Render the numbered CAPTURE/KNOWN table. Columns size to their content so the
+/// output stays aligned; the target order is the caller's (handle order).
+fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
+    let num_w = targets.len().to_string().len().max(1);
+    let target_w = targets
+        .iter()
+        .map(|t| t.handle.chars().count())
+        .chain(std::iter::once("TARGET".len()))
+        .max()
+        .unwrap_or(6);
+    let capture_w = "needs a target".len();
+    let _ = writeln!(
+        out,
+        "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  KNOWN",
+        "#", "TARGET", "CAPTURE"
+    );
+    for (i, t) in targets.iter().enumerate() {
+        let capture = fragcap::targets::capture_readiness(t).label();
+        let known = fragcap::targets::known_summary(t);
+        let _ = writeln!(
+            out,
+            "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {}",
+            i + 1,
+            t.handle,
+            capture,
+            known
+        );
+    }
+}
+
+/// Run discovery with the default catalog, local, and Steam locations and register
+/// any newly found titles into `store`, surfacing the account (P-4). Best-effort: a
+/// failure to compose or run discovery is reported and swallowed so a listing still
+/// shows what is already registered.
+fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
+    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path);
+    let Some(catalog_db) = catalog_db else {
+        return;
+    };
+    if !catalog_db.exists() {
+        return;
+    }
+    let discovery = match compose_and_discover(&catalog_db, store, None) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = writeln!(out, "warning: discovery skipped: {}", e.message());
+            return;
+        }
+    };
+    for warning in &discovery.warnings {
+        let _ = writeln!(out, "warning: {warning}");
+    }
+    match fragcap::targets::register_candidates(store, &discovery.candidates) {
+        Ok(outcome) if outcome.registered > 0 => {
+            let _ = writeln!(
+                out,
+                "  registered {} newly discovered target(s).\n",
+                outcome.registered
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            let _ = writeln!(out, "warning: registration failed: {e}");
+        }
+    }
+}
+
+/// Run `targets scan <dir>`: point discovery at one directory (the tier-3
+/// [`DirectorySource`], slice S052). With a catalog, the directory is scanned for
+/// technologies and they ride as evidence (slice S053). The discovered titles are
+/// registered into the local store the same idempotent way the hero listing
+/// registers (FR-016): `--db` names it explicitly, otherwise it resolves to the
+/// default local store so the `targets scan <dir>` the empty listing recommends
+/// actually populates it.
+fn scan(
+    dir: &Path,
+    catalog_db: Option<&Path>,
+    db: Option<&Path>,
+    out: &mut dyn Write,
+) -> Result<Exit, CliError> {
     let path = dir.to_string_lossy().into_owned();
     let source = match catalog_db {
         Some(catalog_db) => {
@@ -82,30 +237,166 @@ fn scan(dir: &Path, catalog_db: Option<&Path>, out: &mut dyn Write) -> Result<Ex
         .discover()
         .map_err(|e| CliError::failure(e.to_string()))?;
     print_discovery(&discovery, out);
+
+    // Register the discovered titles (FR-016). The `--db` flag wins, else the local
+    // store resolves like the rest of the surface (the `FRAGCAP_LOCAL_DB` override,
+    // else the per-user default). Registration is idempotent, so a rescan does not
+    // duplicate (P-10), and the conserved account is surfaced (P-4).
+    let db = db
+        .map(Path::to_path_buf)
+        .or_else(|| paths::local_db_path(None))
+        .or_else(paths::default_local_db_path);
+    if let Some(db) = db {
+        let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
+        let outcome = fragcap::targets::register_candidates(&mut store, &discovery.candidates)
+            .map_err(|e| CliError::failure(e.to_string()))?;
+        let _ = writeln!(
+            out,
+            "registered {} target(s), {} already present",
+            outcome.registered, outcome.already_present
+        );
+    }
+    Ok(Exit::SUCCESS)
+}
+
+/// Run `targets remove <selector>`: remove exactly the resolved target. An ambiguous
+/// name lists its matches and refuses (exit 2, P-9); a clean handle/name miss reports
+/// it and exits 0; an out-of-range row index or unknown `--id` exits 2 (FR-017).
+fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let mut store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let (selection, miss_exit) = match (args.id, &args.selector) {
+        (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
+        (None, Some(token)) if is_row_index(token) => {
+            (resolve_positional(&store, token), Exit::USAGE)
+        }
+        (None, Some(token)) => (resolve_positional(&store, token), Exit::SUCCESS),
+        (None, None) => return Err(CliError::usage("a selector or --id is required")),
+    };
+    match selection.map_err(|e| CliError::failure(e.to_string()))? {
+        Selection::Resolved(t) => {
+            let id =
+                t.id.ok_or_else(|| CliError::failure("resolved target has no row id"))?;
+            store
+                .delete_target(id)
+                .map_err(|e| CliError::failure(e.to_string()))?;
+            let _ = writeln!(out, "removed {} (id {})", t.handle, t.stable_id);
+            Ok(Exit::SUCCESS)
+        }
+        Selection::NoMatch => {
+            let _ = writeln!(out, "no target matches");
+            Ok(miss_exit)
+        }
+        Selection::Ambiguous(matches) => {
+            let _ = writeln!(
+                out,
+                "ambiguous: {} targets match; select by handle or --id:",
+                matches.len()
+            );
+            for t in &matches {
+                let _ = writeln!(out, "  {}\t{}\t{}", t.handle, t.stable_id, t.name);
+            }
+            Ok(Exit::USAGE)
+        }
+    }
+}
+
+/// Run `targets export [selector]`: emit the target-entry JSON array to stdout. No
+/// selector exports every target; a selector exports the one it resolves. The
+/// no-match behavior follows the selector kind (the section 5.4 contract, as `show`
+/// and `remove` do): an unmatched handle or name is a clean miss that emits `[]` and
+/// exits 0, while an out-of-range row index or an unknown `--id` is an invalid
+/// machine reference (exit 2). An ambiguous name refuses (exit 2) (FR-018).
+fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let store = Store::open(&args.db).map_err(|e| CliError::failure(e.to_string()))?;
+    let entries = match (args.id, &args.selector) {
+        (None, None) => store
+            .targets()
+            .map_err(|e| CliError::failure(e.to_string()))?,
+        (id, selector) => {
+            let (selection, miss_exit) = match (id, selector) {
+                (Some(id), _) => (resolve_id(&store, id), Exit::USAGE),
+                (None, Some(token)) if is_row_index(token) => {
+                    (resolve_positional(&store, token), Exit::USAGE)
+                }
+                (None, Some(token)) => (resolve_positional(&store, token), Exit::SUCCESS),
+                (None, None) => unreachable!("covered by the first arm"),
+            };
+            match selection.map_err(|e| CliError::failure(e.to_string()))? {
+                Selection::Resolved(t) => vec![*t],
+                Selection::NoMatch if miss_exit == Exit::SUCCESS => Vec::new(),
+                Selection::NoMatch => {
+                    let _ = writeln!(out, "no target matches");
+                    return Ok(miss_exit);
+                }
+                Selection::Ambiguous(matches) => {
+                    let _ = writeln!(
+                        out,
+                        "ambiguous: {} targets match; select by handle or --id",
+                        matches.len()
+                    );
+                    return Ok(Exit::USAGE);
+                }
+            }
+        }
+    };
+    let _ = write!(out, "{}", fragcap::targets::export_targets(&entries));
+    Ok(Exit::SUCCESS)
+}
+
+/// Run `targets import <file>`: parse the target-entry array and merge each element
+/// on its stable identifier (update in place, or insert). A nonconforming file is
+/// rejected whole, applying nothing (FR-019).
+fn import(file: &Path, db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let json = std::fs::read_to_string(file)
+        .map_err(|e| CliError::failure(format!("cannot read {}: {e}", file.display())))?;
+    let entries =
+        fragcap::targets::import_targets(&json).map_err(|e| CliError::usage(e.to_string()))?;
+    let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
+    // The whole batch merges in one transaction: all-or-nothing, so a constraint
+    // violation partway through leaves the store untouched (FR-019).
+    let (inserted, updated) = store
+        .merge_targets(&entries)
+        .map_err(|e| CliError::usage(e.to_string()))?;
+    let _ = writeln!(out, "imported {inserted} new, {updated} updated");
     Ok(Exit::SUCCESS)
 }
 
 /// Run `targets discover`: walk Steam (tier 1) and the known game-install roots
-/// (tier 2) and list the candidates found (slice S052). Reads only; nothing is
-/// persisted except the first-run volume eligibility seeding the cross-volume walk
-/// needs to be safe.
+/// (tier 2) and list the candidates found (slice S052). An inspection command: it
+/// reads and prints, and (unlike the hero listing) registers nothing beyond the
+/// first-run volume eligibility seeding the cross-volume walk needs to be safe.
 fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let catalog = Store::open(&args.catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
+    let mut local = Store::open(&args.local_db).map_err(|e| CliError::failure(e.to_string()))?;
+    let discovery = compose_and_discover(&args.catalog_db, &mut local, args.steam_root.as_deref())?;
+    print_discovery(&discovery, out);
+    Ok(Exit::SUCCESS)
+}
+
+/// Compose the discovery sources (Steam tier 1, and on Windows the known-roots tier
+/// 2) against a catalog and run them through the shared driver, returning the
+/// conserved [`Discovery`]. The `local` store carries the volume eligibility
+/// allowlist the cross-volume walk reads; it is seeded permissively on first run
+/// (FR-016a) and otherwise only read. This one composition backs both the `discover`
+/// inspection command and the hero listing's registration bootstrap (P-10, SC-006).
+fn compose_and_discover(
+    catalog_db: &Path,
+    local: &mut Store,
+    steam_root_flag: Option<&Path>,
+) -> Result<Discovery, CliError> {
+    let catalog = Store::open(catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
 
     // Locate the Steam root: the explicit flag, else Steam's own installation.
-    let steam_root = match &args.steam_root {
-        Some(root) => Some(root.clone()),
+    let steam_root = match steam_root_flag {
+        Some(root) => Some(root.to_path_buf()),
         None => fragcap::steam::discover().ok().map(|i| i.root),
     };
     let steam = steam_root
         .as_ref()
         .map(|root| fragcap::SteamSource::new(root, &catalog));
 
-    // The known-roots walk enumerates fixed volumes, which is a platform operation;
-    // it runs on Windows, where the tool captures. The eligibility allowlist lives
-    // in local.db and is seeded permissively on first run (FR-016a).
-    #[cfg(windows)]
-    let mut local = Store::open(&args.local_db).map_err(|e| CliError::failure(e.to_string()))?;
+    // The known-roots walk enumerates fixed volumes, a platform operation that runs
+    // on Windows, where the tool captures. The eligibility allowlist lives in
+    // local.db and is seeded permissively on first run, then only read.
     #[cfg(windows)]
     let inventory = fragcap::WindowsVolumeInventory::new();
     #[cfg(windows)]
@@ -123,6 +414,8 @@ fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, Cli
         .into_iter()
         .map(|v| v.volume_id)
         .collect();
+    #[cfg(not(windows))]
+    let _ = local;
     #[cfg(windows)]
     let lister = fragcap::targets::FsDirectoryLister;
     // Detection is signature-driven (slice S053): the classifier scans each known-root
@@ -150,10 +443,7 @@ fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, Cli
     #[cfg(windows)]
     sources.push(&known_roots);
 
-    let discovery =
-        fragcap::targets::discover_all(&sources).map_err(|e| CliError::failure(e.to_string()))?;
-    print_discovery(&discovery, out);
-    Ok(Exit::SUCCESS)
+    fragcap::targets::discover_all(&sources).map_err(|e| CliError::failure(e.to_string()))
 }
 
 /// Print a discovery listing: one line per candidate (source, identity, name,
@@ -295,10 +585,30 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         Some(a) => identifier::anchored_id(a),
         None => identifier::unanchored_id(),
     };
-    let launch_entries = args
+
+    // Run detection on the executable's directory and show the evidence inline
+    // before the socket-holder decision depends on it (FR-009). Best-effort: a bare
+    // exe name or a missing catalog yields no evidence, not an error.
+    let evidence = args
         .exe
-        .as_ref()
-        .map(|exe| serde_json::json!([{ "executable": exe }]));
+        .as_deref()
+        .and_then(|exe| scan_exe_evidence(exe, out));
+
+    // The socket-holder answer decides the stored launch chain. Interactive when
+    // stdin is a terminal and no `--socket-holder` was given; otherwise the flag.
+    // When an `--exe` is given with no answer (non-interactive, no flag), the chain
+    // is recorded unresolved rather than assuming the executable is the client: the
+    // tool never claims a socket holder the user did not (P-9). To register the exe
+    // as the client, answer `--socket-holder yes`.
+    let answer = resolve_socket_holder(args, out)?;
+    let launch_entries = match (&args.exe, answer) {
+        (Some(exe), Some(a)) => Some(fragcap::targets::launch_entries_for(a, exe)),
+        (Some(exe), None) => Some(fragcap::targets::launch_entries_for(
+            SocketHolderAnswer::Unsure,
+            exe,
+        )),
+        (None, _) => None,
+    };
 
     let entry = TargetEntry {
         id: None,
@@ -312,7 +622,7 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         anchor,
         launch_entries,
         install_root: None,
-        evidence: None,
+        evidence,
     };
     store
         .insert_target(&entry)
@@ -322,20 +632,91 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     Ok(Exit::SUCCESS)
 }
 
-/// List registered targets: the 1-based row index, handle, identifier, and name.
-fn list(db: &Path, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
-    let targets = store
-        .targets()
-        .map_err(|e| CliError::failure(e.to_string()))?;
-    if targets.is_empty() {
-        let _ = writeln!(out, "no targets registered");
-        return Ok(Exit::SUCCESS);
+/// Resolve the socket-holder answer for `add`. A `--socket-holder` flag is parsed
+/// (and requires `--exe`); otherwise, when an `--exe` is given and standard input is
+/// a terminal, the question is asked interactively; otherwise there is no answer and
+/// the caller keeps the pre-S055 default. A malformed flag, or a missing `--exe`
+/// under the flag, is a usage error, never a blocking prompt (FR-015).
+fn resolve_socket_holder(
+    args: &TargetsAddArgs,
+    out: &mut dyn Write,
+) -> Result<Option<SocketHolderAnswer>, CliError> {
+    if let Some(token) = &args.socket_holder {
+        if args.exe.is_none() {
+            return Err(CliError::usage("--socket-holder requires --exe"));
+        }
+        return SocketHolderAnswer::parse(token)
+            .map(Some)
+            .ok_or_else(|| CliError::usage("--socket-holder must be yes, no, or unsure"));
     }
-    for (i, t) in targets.iter().enumerate() {
-        let _ = writeln!(out, "{}\t{}\t{}\t{}", i + 1, t.handle, t.stable_id, t.name);
+    if args.exe.is_some() && std::io::stdin().is_terminal() {
+        return Ok(Some(prompt_socket_holder(out)?));
     }
-    Ok(Exit::SUCCESS)
+    Ok(None)
+}
+
+/// Ask the socket-holder question interactively, re-prompting until an answer
+/// parses. An empty line re-prompts rather than assuming a default, since the honest
+/// default is unknown (P-9). Used only when standard input is a terminal.
+fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliError> {
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    loop {
+        let _ = write!(
+            out,
+            "Is the executable above the process that holds the sockets? [Y/n/unsure] "
+        );
+        let mut line = String::new();
+        let read = stdin
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| CliError::failure(e.to_string()))?;
+        if read == 0 {
+            // End of input with no answer: do not guess a holder (P-9).
+            return Ok(SocketHolderAnswer::Unsure);
+        }
+        if let Some(answer) = SocketHolderAnswer::parse(&line) {
+            return Ok(answer);
+        }
+    }
+}
+
+/// Run detection on the directory containing `exe` and print any engine, anti-cheat,
+/// or DRM findings inline, returning them as the `evidence` JSON. Best-effort: a bare
+/// exe name (no directory), a missing default catalog, or a scan error yields no
+/// evidence rather than failing the add.
+fn scan_exe_evidence(exe: &str, out: &mut dyn Write) -> Option<serde_json::Value> {
+    let dir = Path::new(exe)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())?;
+    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)?;
+    if !catalog_db.exists() {
+        return None;
+    }
+    let catalog = Store::open(&catalog_db).ok()?;
+    let signatures = catalog.load_signatures().ok()?;
+    let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
+    let outcome = set.detect(dir).ok()?;
+    if outcome.findings.is_empty() {
+        return None;
+    }
+    let mut findings = Vec::new();
+    for f in &outcome.findings {
+        let _ = writeln!(
+            out,
+            "  {}: {} ({})",
+            f.category.as_str(),
+            f.product,
+            f.fidelity.as_str()
+        );
+        findings.push(serde_json::json!({
+            "category": f.category.as_str(),
+            "product": f.product,
+            "evidence": f.evidence,
+            "fidelity": f.fidelity.as_str(),
+        }));
+    }
+    Some(serde_json::Value::Array(findings))
 }
 
 /// Show one target resolved by a selector.
@@ -378,12 +759,6 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             Ok(Exit::USAGE)
         }
     }
-}
-
-/// Whether a positional selector is a bare integer, i.e. a row index rather than a
-/// handle or name. Handles are never purely numeric, so this never shadows one.
-fn is_row_index(token: &str) -> bool {
-    !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Print one resolved target's fields.

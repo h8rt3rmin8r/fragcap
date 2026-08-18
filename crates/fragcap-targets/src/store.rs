@@ -18,7 +18,8 @@ use crate::model::{
     Technology,
 };
 use crate::schema::{
-    DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, SCHEMA_VERSION,
+    DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6,
+    SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
@@ -106,6 +107,15 @@ impl Store {
             tx.pragma_update(None, "user_version", 5i64)?;
             tx.commit()?;
             version = 5;
+        }
+        if version == 5 {
+            // 5 -> 6: create the listing snapshot table (slice S055). Existing rows
+            // are untouched; the new table starts empty.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_5_TO_6)?;
+            tx.pragma_update(None, "user_version", 6i64)?;
+            tx.commit()?;
+            version = 6;
         }
 
         if version != SCHEMA_VERSION {
@@ -671,6 +681,189 @@ impl Store {
         Ok(new)
     }
 
+    // --- Target mutation and listing snapshot (slice S055) ---------------------
+
+    /// Delete one target by row id. Returns whether a row was removed. The
+    /// `target_id_aliases` rows for this target cascade via the ON DELETE CASCADE
+    /// foreign key, so a former (superseded) id stops resolving with the entry.
+    pub fn delete_target(&mut self, id: i64) -> Result<bool, TargetsError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM targets WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
+    /// Overwrite the mutable fields of the target whose `stable_id` matches
+    /// `entry.stable_id`. Used by import to merge an incoming record onto an
+    /// existing row in place (identity preserved, no duplicate). The handle,
+    /// classification, fidelity, and the JSON-carried fields are replaced; a
+    /// CHECK violation is a named model error (P-9). Returns whether a row matched.
+    pub fn update_target(&mut self, entry: &TargetEntry) -> Result<bool, TargetsError> {
+        let result = self.conn.execute(
+            "UPDATE targets SET
+                handle = ?2, name = ?3, classification = ?4,
+                classification_source = ?5, fidelity = ?6, provenance = ?7,
+                anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11
+             WHERE stable_id = ?1",
+            params![
+                entry.stable_id,
+                entry.handle,
+                entry.name,
+                entry.classification.as_str(),
+                entry.classification_source.as_str(),
+                entry.fidelity.as_str(),
+                entry.provenance.as_ref().map(json_text),
+                entry.anchor,
+                entry.launch_entries.as_ref().map(json_text),
+                entry.install_root,
+                entry.evidence.as_ref().map(json_text),
+            ],
+        );
+        match result {
+            Ok(rows) => Ok(rows > 0),
+            Err(rusqlite::Error::SqliteFailure(e, msg))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                let detail = msg.unwrap_or_else(|| "constraint violation".to_string());
+                Err(TargetsError::Model(format!(
+                    "invalid target update: {detail}"
+                )))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Merge a batch of imported targets in one transaction: each element updates
+    /// the row whose `stable_id` matches in place, or inserts a new row. This is
+    /// all-or-nothing (FR-019): if any element violates a constraint (for example a
+    /// new stable id whose handle collides with an existing row) the whole batch
+    /// rolls back, so a partially applied import cannot happen. Returns the count of
+    /// rows inserted and updated.
+    pub fn merge_targets(&mut self, entries: &[TargetEntry]) -> Result<(u64, u64), TargetsError> {
+        let tx = self.conn.transaction()?;
+        let mut inserted = 0u64;
+        let mut updated = 0u64;
+        for entry in entries {
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM targets WHERE stable_id = ?1",
+                    params![entry.stable_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            // Both statements bind ?1..?11 in the same order, so one parameter list
+            // serves both. The JSON renderings are bound to locals so they outlive
+            // the `params!` borrow.
+            let provenance = entry.provenance.as_ref().map(json_text);
+            let launch_entries = entry.launch_entries.as_ref().map(json_text);
+            let evidence = entry.evidence.as_ref().map(json_text);
+            let bound = params![
+                entry.stable_id,
+                entry.handle,
+                entry.name,
+                entry.classification.as_str(),
+                entry.classification_source.as_str(),
+                entry.fidelity.as_str(),
+                provenance,
+                entry.anchor,
+                launch_entries,
+                entry.install_root,
+                evidence,
+            ];
+            let result = if exists {
+                tx.execute(
+                    "UPDATE targets SET
+                        handle = ?2, name = ?3, classification = ?4,
+                        classification_source = ?5, fidelity = ?6, provenance = ?7,
+                        anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11
+                     WHERE stable_id = ?1",
+                    bound,
+                )
+            } else {
+                tx.execute(
+                    "INSERT INTO targets
+                        (stable_id, handle, name, classification, classification_source,
+                         fidelity, provenance, anchor, launch_entries, install_root, evidence)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    bound,
+                )
+            };
+            match result {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(e, msg))
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    let detail = msg.unwrap_or_else(|| "constraint violation".to_string());
+                    return Err(TargetsError::Model(format!(
+                        "import element (stable_id {}, handle {:?}) violates a constraint, \
+                         nothing was applied: {detail}",
+                        entry.stable_id, entry.handle
+                    )));
+                }
+                Err(e) => return Err(e.into()),
+            }
+            if exists {
+                updated += 1;
+            } else {
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok((inserted, updated))
+    }
+
+    /// Promote a target after a capture observed its real socket-holding process:
+    /// rewrite its `launch_entries` to the resolved chain and raise its `fidelity`.
+    /// The caller passes only an observed result; nothing here fabricates a holder
+    /// (P-9). Returns whether the row was found.
+    pub fn promote_target_launch(
+        &mut self,
+        id: i64,
+        launch_entries: &serde_json::Value,
+        fidelity: FidelityTier,
+    ) -> Result<bool, TargetsError> {
+        let rows = self.conn.execute(
+            "UPDATE targets SET launch_entries = ?2, fidelity = ?3 WHERE id = ?1",
+            params![id, json_text(launch_entries), fidelity.as_str()],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Replace the listing snapshot with the ordered rows a listing just displayed.
+    /// Each row is `(stable_id, handle)`; positions are assigned 1..n in the given
+    /// order. A row-index selector resolves against this so a number names the row
+    /// the user saw (slice S055). Transactional: the old snapshot is cleared and the
+    /// new one written atomically.
+    pub fn write_listing_snapshot(&mut self, rows: &[(i64, &str)]) -> Result<(), TargetsError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM listing_snapshot", [])?;
+        for (index, (stable_id, handle)) in rows.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO listing_snapshot (position, stable_id, handle)
+                 VALUES (?1, ?2, ?3)",
+                params![(index as i64) + 1, stable_id, handle],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The stable id at a 1-based position in the most recent listing snapshot, or
+    /// `None` if the position is out of range (or no listing has been written). The
+    /// row-index branch of selector resolution reads this.
+    pub fn listing_snapshot_nth(&self, position: usize) -> Result<Option<i64>, TargetsError> {
+        let stable_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT stable_id FROM listing_snapshot WHERE position = ?1",
+                params![position as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stable_id)
+    }
+
     // --- Volume eligibility (slice S052) ---------------------------------------
 
     /// Whether the volume eligibility allowlist has ever been seeded. Empty means
@@ -1111,6 +1304,8 @@ mod tests {
             .expect("drop v4 table to simulate v1");
         conn.execute_batch("DROP TABLE signature;")
             .expect("drop v5 table to simulate v1");
+        conn.execute_batch("DROP TABLE listing_snapshot;")
+            .expect("drop v6 table to simulate v1");
         conn.pragma_update(None, "user_version", 1_i64)
             .expect("stamp v1");
         conn
@@ -1168,34 +1363,38 @@ mod tests {
     }
 
     #[test]
-    fn fresh_store_is_v5_with_empty_targets_and_eligibility_tables() {
+    fn fresh_store_is_v6_with_empty_targets_and_eligibility_tables() {
         let store = Store::open_in_memory().expect("store");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert!(store.targets().expect("targets").is_empty());
         assert!(store
             .volume_eligibility_is_empty()
             .expect("eligibility empty"));
         assert!(store.load_signatures().expect("signatures").is_empty());
+        assert!(
+            store.listing_snapshot_nth(1).expect("snapshot").is_none(),
+            "fresh store has no listing snapshot"
+        );
     }
 
     #[test]
-    fn v1_store_migrates_to_v5_with_catalog_rows_intact() {
+    fn v1_store_migrates_to_v6_with_catalog_rows_intact() {
         let conn = v1_connection();
         conn.execute(
             "INSERT INTO games (appid, name, review_count) VALUES (730, 'CS2', 1234)",
             [],
         )
         .expect("insert v1 row");
-        let store = Store::from_connection(conn).expect("migrate to v5");
+        let store = Store::from_connection(conn).expect("migrate to v6");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert!(store.targets().expect("targets").is_empty());
         assert!(store
             .volume_eligibility_is_empty()
@@ -1204,6 +1403,100 @@ mod tests {
         assert!(
             store.game(730).expect("read").is_some(),
             "catalog row survives"
+        );
+    }
+
+    #[test]
+    fn listing_snapshot_round_trips_and_replaces() {
+        let mut store = Store::open_in_memory().expect("store");
+        store
+            .write_listing_snapshot(&[(1001, "alpha"), (1002, "bravo"), (1003, "charlie")])
+            .expect("write snapshot");
+        assert_eq!(store.listing_snapshot_nth(1).expect("nth"), Some(1001));
+        assert_eq!(store.listing_snapshot_nth(3).expect("nth"), Some(1003));
+        assert_eq!(store.listing_snapshot_nth(4).expect("nth"), None);
+        assert_eq!(store.listing_snapshot_nth(0).expect("nth"), None);
+        // A new listing replaces the prior snapshot wholesale.
+        store
+            .write_listing_snapshot(&[(2001, "delta")])
+            .expect("rewrite snapshot");
+        assert_eq!(store.listing_snapshot_nth(1).expect("nth"), Some(2001));
+        assert_eq!(store.listing_snapshot_nth(2).expect("nth"), None);
+    }
+
+    #[test]
+    fn promote_target_launch_resolves_the_chain_and_raises_fidelity() {
+        use crate::authoring::{launch_entries_for, launch_is_unresolved, resolved_client_launch};
+        use crate::readiness::{capture_readiness, CaptureReadiness};
+        use crate::SocketHolderAnswer;
+
+        let mut store = Store::open_in_memory().expect("store");
+        // An unsure-authored target: unresolved chain, needs a target.
+        let mut entry = sample_target("some_game", None, FidelityTier::Authored);
+        entry.launch_entries = Some(launch_entries_for(SocketHolderAnswer::Unsure, "game.exe"));
+        let id = store.insert_target(&entry).expect("insert");
+        let before = store.target(id).expect("read").expect("present");
+        assert!(launch_is_unresolved(&before));
+        assert_eq!(capture_readiness(&before), CaptureReadiness::NeedsTarget);
+
+        // A capture observed the real holder: promote.
+        let resolved = resolved_client_launch("game.exe");
+        assert!(store
+            .promote_target_launch(id, &resolved, FidelityTier::Verified)
+            .expect("promote"));
+
+        let after = store.target(id).expect("read").expect("present");
+        assert_eq!(after.fidelity, FidelityTier::Verified);
+        assert!(!launch_is_unresolved(&after));
+        assert_eq!(capture_readiness(&after), CaptureReadiness::Ready);
+    }
+
+    #[test]
+    fn merge_targets_is_all_or_nothing_on_a_constraint_violation() {
+        let mut store = Store::open_in_memory().expect("store");
+        store
+            .insert_target(&sample_target(
+                "existing",
+                Some("steam:1"),
+                FidelityTier::Authored,
+            ))
+            .expect("insert baseline");
+
+        // A batch whose first element is a clean insert and whose second reuses the
+        // existing handle under a new stable id: the whole batch must roll back.
+        let good = sample_target("fresh", Some("steam:2"), FidelityTier::Authored);
+        let mut collides = sample_target("existing", Some("steam:3"), FidelityTier::Authored);
+        collides.stable_id = crate::identifier::anchored_id("steam:3");
+        let batch = vec![good, collides];
+
+        assert!(
+            store.merge_targets(&batch).is_err(),
+            "handle collision fails the batch"
+        );
+        // Nothing from the batch persisted: only the baseline row remains.
+        let handles: Vec<_> = store
+            .targets()
+            .expect("targets")
+            .into_iter()
+            .map(|t| t.handle)
+            .collect();
+        assert_eq!(
+            handles,
+            vec!["existing".to_string()],
+            "the batch rolled back"
+        );
+    }
+
+    #[test]
+    fn delete_target_removes_the_row_and_reports_it() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("some_game", Some("steam:42"), FidelityTier::Authored);
+        let id = store.insert_target(&entry).expect("insert");
+        assert!(store.delete_target(id).expect("delete"));
+        assert!(store.target(id).expect("read").is_none());
+        assert!(
+            !store.delete_target(id).expect("delete again"),
+            "second delete is a no-op"
         );
     }
 

@@ -62,11 +62,19 @@ fn id_resolves_by_stable_id() {
 }
 
 #[test]
-fn bare_integer_indexes_the_listing_one_based() {
-    let store = store_with(&[
+fn bare_integer_indexes_the_listing_snapshot_one_based() {
+    let mut store = store_with(&[
         target("first", "First", Some("steam:1")),
         target("second", "Second", Some("steam:2")),
     ]);
+    // A row index resolves against the snapshot the listing wrote (slice S055), so
+    // it names the row the user saw. Pin a snapshot: row 1 = first, row 2 = second.
+    store
+        .write_listing_snapshot(&[
+            (anchored_id("steam:1"), "first"),
+            (anchored_id("steam:2"), "second"),
+        ])
+        .expect("snapshot");
     match resolve_positional(&store, "2").expect("resolve") {
         Selection::Resolved(t) => assert_eq!(t.handle, "second"),
         other => panic!("expected Resolved, got {other:?}"),
@@ -76,6 +84,30 @@ fn bare_integer_indexes_the_listing_one_based() {
         resolve_positional(&store, "9").expect("resolve"),
         Selection::NoMatch
     ));
+    assert!(matches!(
+        resolve_positional(&store, "0").expect("resolve"),
+        Selection::NoMatch
+    ));
+}
+
+#[test]
+fn a_bare_integer_with_no_snapshot_is_a_no_match() {
+    // Before any listing writes a snapshot, a row index resolves nothing (rather
+    // than silently indexing the live store order).
+    let store = store_with(&[target("only", "Only", Some("steam:1"))]);
+    assert!(matches!(
+        resolve_positional(&store, "1").expect("resolve"),
+        Selection::NoMatch
+    ));
+}
+
+#[test]
+fn zero_is_an_invalid_row_index_not_a_name() {
+    use fragcap_targets::is_row_index;
+    // `0` is a numeric token, so it is the row-index path (an invalid position), not
+    // a handle/name lookup. Callers map a row-index no-match to a usage error.
+    assert!(is_row_index("0"), "0 is classified as a row index");
+    let store = store_with(&[target("only", "Only", Some("steam:1"))]);
     assert!(matches!(
         resolve_positional(&store, "0").expect("resolve"),
         Selection::NoMatch

@@ -219,16 +219,354 @@ fn show_by_id_resolves_and_missing_selector_is_usage_error() {
         "--anchor",
         "steam:620",
     ]);
-    // List to learn the id.
-    let (_c, listing, _e) = run(&["targets", "list", "--db", &store]);
-    let id = listing.split('\t').nth(2).expect("id column").trim();
+    // Show by handle to learn the id (the listing is now a formatted table).
+    let (_c, shown, _e) = run(&["targets", "show", "portal_2", "--db", &store]);
+    let id = shown
+        .lines()
+        .find_map(|l| l.strip_prefix("id:"))
+        .expect("id line")
+        .trim();
     let (code, out, _err) = run(&["targets", "show", "--id", id, "--db", &store]);
     assert_eq!(code, 0, "resolves by --id");
     assert!(out.contains("portal_2"));
 
-    // A bare row index resolves too.
+    // A bare row index resolves too, against the snapshot the listing writes.
+    run(&["targets", "list", "--db", &store]);
     let (code, _out, _err) = run(&["targets", "show", "1", "--db", &store]);
     assert_eq!(code, 0, "bare integer is a row index");
+}
+
+#[test]
+fn hero_listing_shows_columns_ordered_by_handle_and_names_the_next_command() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    // Register two targets out of handle order; a steam anchor makes them ready.
+    run(&[
+        "targets", "add", "Zeta", "--db", &store, "--anchor", "steam:2",
+    ]);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    // The header and both readiness/evidence columns are present.
+    assert!(
+        out.contains("TARGET") && out.contains("CAPTURE") && out.contains("KNOWN"),
+        "{out}"
+    );
+    // Ordered by handle: alpha before zeta.
+    let alpha = out.find("alpha").expect("alpha row");
+    let zeta = out.find("zeta").expect("zeta row");
+    assert!(alpha < zeta, "rows are handle-ordered:\n{out}");
+    // A steam-anchored target is ready and the listing names the next command.
+    assert!(out.contains("ready"), "{out}");
+    assert!(
+        out.contains("fragcap capture 1"),
+        "ends by naming the next command:\n{out}"
+    );
+}
+
+#[test]
+fn a_row_index_resolves_against_the_snapshot_after_a_mutation() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&[
+        "targets", "add", "Zeta", "--db", &store, "--anchor", "steam:2",
+    ]);
+
+    // List pins the snapshot: row 1 = alpha, row 2 = zeta.
+    run(&["targets", "list", "--db", &store]);
+
+    // Register a target that sorts first in the live order.
+    run(&[
+        "targets", "add", "Beta", "--db", &store, "--anchor", "steam:3",
+    ]);
+
+    // Row 2 still resolves to zeta (the row the user saw), not the shifted live
+    // order where beta would now occupy row 2.
+    let (code, out, _err) = run(&["targets", "show", "2", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("zeta"),
+        "row 2 is the snapshot's row, not the live order:\n{out}"
+    );
+
+    // A row index past the snapshot is an out-of-range usage error.
+    let (code, _out, _err) = run(&["targets", "show", "9", "--db", &store]);
+    assert_eq!(code, 2, "an out-of-range row index is a usage error");
+}
+
+#[test]
+fn socket_holder_answer_decides_the_launch_chain() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+
+    // `yes`: the exe is the client, so the row is ready.
+    run(&[
+        "targets",
+        "add",
+        "Yes Game",
+        "--db",
+        &store,
+        "--exe",
+        "yes.exe",
+        "--socket-holder",
+        "yes",
+    ]);
+    // `unsure`: unresolved chain, so the row needs a target and nothing is fabricated.
+    run(&[
+        "targets",
+        "add",
+        "Unsure Game",
+        "--db",
+        &store,
+        "--exe",
+        "maybe.exe",
+        "--socket-holder",
+        "unsure",
+    ]);
+    // `no`: a different process holds the sockets, so the row needs a target too.
+    run(&[
+        "targets",
+        "add",
+        "No Game",
+        "--db",
+        &store,
+        "--exe",
+        "launcher.exe",
+        "--socket-holder",
+        "no",
+    ]);
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    let ready_line = out
+        .lines()
+        .find(|l| l.contains("yes_game"))
+        .expect("yes row");
+    assert!(ready_line.contains("ready"), "yes is ready: {ready_line}");
+    let unsure_line = out
+        .lines()
+        .find(|l| l.contains("unsure_game"))
+        .expect("unsure row");
+    assert!(
+        unsure_line.contains("needs a target"),
+        "unsure needs a target: {unsure_line}"
+    );
+    let no_line = out.lines().find(|l| l.contains("no_game")).expect("no row");
+    assert!(
+        no_line.contains("needs a target"),
+        "no needs a target: {no_line}"
+    );
+}
+
+#[test]
+fn exe_without_a_socket_holder_answer_is_unresolved_not_a_fabricated_client() {
+    // Non-interactive `add --exe X` with no `--socket-holder` must not assume the
+    // executable is the client (P-9): the row is unresolved, needs a target.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets",
+        "add",
+        "Launcher Game",
+        "--db",
+        &store,
+        "--exe",
+        "launcher.exe",
+    ]);
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    let line = out
+        .lines()
+        .find(|l| l.contains("launcher_game"))
+        .expect("row");
+    assert!(
+        line.contains("needs a target"),
+        "unresolved, not fabricated: {line}"
+    );
+}
+
+#[test]
+fn export_preserves_the_selector_kind_on_a_miss() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&["targets", "list", "--db", &store]);
+
+    // An unmatched handle/name is a clean miss: empty array, exit 0.
+    let (code, out, _err) = run(&["targets", "export", "nonesuch", "--db", &store]);
+    assert_eq!(code, 0, "unmatched name is a clean miss: {out}");
+    assert_eq!(out.trim(), "[]", "emits an empty array: {out}");
+
+    // An out-of-range row index and an unknown --id are invalid machine references.
+    let (code, _o, _e) = run(&["targets", "export", "9", "--db", &store]);
+    assert_eq!(code, 2, "out-of-range row index is a usage error");
+    let (code, _o, _e) = run(&["targets", "export", "--id", "999999", "--db", &store]);
+    assert_eq!(code, 2, "unknown --id is a usage error");
+}
+
+#[test]
+fn zero_and_out_of_range_row_indexes_are_usage_errors() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&["targets", "list", "--db", &store]);
+    let (code, _o, _e) = run(&["targets", "show", "0", "--db", &store]);
+    assert_eq!(
+        code, 2,
+        "row index 0 is a usage error, not a clean name miss"
+    );
+    let (code, _o, _e) = run(&["targets", "remove", "0", "--db", &store]);
+    assert_eq!(code, 2, "remove 0 is a usage error too");
+}
+
+#[test]
+fn import_rejects_a_constraint_violating_batch_whole() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Existing", "--db", &store, "--anchor", "steam:1",
+    ]);
+    // A two-element import: a clean new row, then one whose new stable id reuses the
+    // existing handle. The whole batch must roll back, leaving only "existing".
+    let bad = dir.path().join("bad.json");
+    std::fs::write(
+        &bad,
+        r#"[
+          {"stable_id":2,"handle":"fresh","name":"Fresh","classification":"game","classification_source":"user","fidelity":"authored"},
+          {"stable_id":3,"handle":"existing","name":"Dup","classification":"game","classification_source":"user","fidelity":"authored"}
+        ]"#,
+    )
+    .expect("write");
+    let bad = bad.to_string_lossy().into_owned();
+    let (code, _o, _e) = run(&["targets", "import", &bad, "--db", &store]);
+    assert_eq!(code, 2, "a constraint-violating batch is rejected");
+    // Only the original row survived; "fresh" was rolled back.
+    let (_c, shown, _e) = run(&["targets", "show", "fresh", "--db", &store]);
+    assert!(
+        shown.contains("no target matches"),
+        "fresh was rolled back: {shown}"
+    );
+}
+
+#[test]
+fn socket_holder_requires_exe_and_rejects_a_bad_value() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    // Without --exe the flag is a usage error, not a blocking prompt.
+    let (code, _out, _err) = run(&[
+        "targets",
+        "add",
+        "Game",
+        "--db",
+        &store,
+        "--socket-holder",
+        "yes",
+    ]);
+    assert_eq!(code, 2, "--socket-holder requires --exe");
+    // A bad value is a usage error.
+    let (code, _out, _err) = run(&[
+        "targets",
+        "add",
+        "Game",
+        "--db",
+        &store,
+        "--exe",
+        "g.exe",
+        "--socket-holder",
+        "maybe",
+    ]);
+    assert_eq!(code, 2, "an unknown socket-holder value is a usage error");
+}
+
+#[test]
+fn remove_deletes_exactly_one_and_ambiguous_refuses() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&[
+        "targets", "add", "Beta", "--db", &store, "--anchor", "steam:2",
+    ]);
+
+    let (code, out, _err) = run(&["targets", "remove", "alpha", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("removed alpha"), "{out}");
+    // Alpha is gone; beta remains.
+    let (_c, shown, _e) = run(&["targets", "show", "alpha", "--db", &store]);
+    assert!(shown.contains("no target matches"), "{shown}");
+    let (_c, beta, _e) = run(&["targets", "show", "beta", "--db", &store]);
+    assert!(beta.contains("beta"), "beta remains: {beta}");
+
+    // Two targets sharing a name are ambiguous: remove refuses (exit 2).
+    run(&[
+        "targets", "add", "Same", "--db", &store, "--anchor", "steam:3",
+    ]);
+    run(&[
+        "targets", "add", "Same", "--db", &store, "--anchor", "steam:4",
+    ]);
+    let (code, out, _err) = run(&["targets", "remove", "Same", "--db", &store]);
+    assert_eq!(code, 2, "ambiguous remove refuses: {out}");
+    assert!(out.contains("ambiguous"), "{out}");
+}
+
+#[test]
+fn export_round_trips_through_import_with_identical_ids() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    run(&[
+        "targets", "add", "Beta", "--db", &store, "--anchor", "steam:2",
+    ]);
+
+    // Export to a file.
+    let (code, doc, _err) = run(&["targets", "export", "--db", &store]);
+    assert_eq!(code, 0, "{doc}");
+    let file = dir.path().join("targets.json");
+    std::fs::write(&file, &doc).expect("write export");
+    let file = file.to_string_lossy().into_owned();
+
+    // Import into a fresh store.
+    let fresh = dir.path().join("fresh.db").to_string_lossy().into_owned();
+    let (code, out, _err) = run(&["targets", "import", &file, "--db", &fresh]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("imported 2 new"), "{out}");
+
+    // Re-exporting the fresh store yields the same document (identical ids, no dupes).
+    let (code, doc2, _err) = run(&["targets", "export", "--db", &fresh]);
+    assert_eq!(code, 0, "{doc2}");
+    assert_eq!(doc, doc2, "export round-trips identically");
+
+    // A second import is idempotent on identity (updates in place).
+    let (code, out, _err) = run(&["targets", "import", &file, "--db", &fresh]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("imported 0 new, 2 updated"),
+        "idempotent: {out}"
+    );
+}
+
+#[test]
+fn import_rejects_a_nonconforming_file_whole() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = dir.path().join("local.db").to_string_lossy().into_owned();
+    let file = dir.path().join("bad.json");
+    std::fs::write(&file, "{ not an array }").expect("write");
+    let file = file.to_string_lossy().into_owned();
+    let (code, _out, _err) = run(&["targets", "import", &file, "--db", &store]);
+    assert_eq!(code, 2, "a nonconforming file is a usage error");
 }
 
 #[test]
@@ -237,7 +575,10 @@ fn list_is_empty_on_a_fresh_store() {
     let store = db(&dir);
     let (code, out, _err) = run(&["targets", "list", "--db", &store]);
     assert_eq!(code, 0);
-    assert!(out.contains("no targets registered"), "{out}");
+    // The empty case names the commands that populate the store (FR-006, SC-006).
+    assert!(out.contains("No targets yet."), "{out}");
+    assert!(out.contains("fragcap targets add"), "{out}");
+    assert!(out.contains("fragcap targets scan"), "{out}");
 }
 
 #[test]

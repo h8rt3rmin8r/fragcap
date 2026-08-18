@@ -368,6 +368,25 @@ pub enum TargetsCommand {
         /// detected evidence.
         #[arg(long)]
         catalog_db: Option<PathBuf>,
+        /// The local store (local.db) to register the discovered titles into. Without
+        /// it the scan lists what it finds but registers nothing.
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Remove one registered target resolved by a selector (handle, name, row index,
+    /// or `--id`). An ambiguous name lists its matches and refuses (slice S055).
+    Remove(TargetsShowArgs),
+    /// Export registered targets as a JSON array to standard output: all targets, or
+    /// the one a selector resolves (slice S055).
+    Export(TargetsExportArgs),
+    /// Import a target-entry JSON array, merging each element on its stable identifier
+    /// (slice S055). A nonconforming file is rejected whole.
+    Import {
+        /// The JSON file to import.
+        file: PathBuf,
+        /// The store file (local.db) to merge into, created if absent.
+        #[arg(long)]
+        db: PathBuf,
     },
 }
 
@@ -417,6 +436,13 @@ pub struct TargetsAddArgs {
     /// (unique, not purely numeric, normalized shape).
     #[arg(long = "handle")]
     pub handle_override: Option<String>,
+    /// Whether the `--exe` executable is the process that holds the sockets:
+    /// `yes` records it as the resolved client, `no` records it as a launcher with
+    /// the holder unresolved, `unsure` records it observed with no holder claim. The
+    /// non-interactive form of the socket-holder question; `unsure` and `no` leave
+    /// the chain for a capture to resolve. Requires `--exe`.
+    #[arg(long = "socket-holder", value_name = "yes|no|unsure")]
+    pub socket_holder: Option<String>,
 }
 
 /// Arguments to `catalog`.
@@ -474,6 +500,21 @@ pub enum CatalogCommand {
 pub struct TargetsShowArgs {
     /// A selector: an exact handle, a case-insensitive exact name, or a 1-based
     /// ephemeral row index over the current listing.
+    pub selector: Option<String>,
+    /// Select by stable identifier: the durable, machine-facing form.
+    #[arg(long)]
+    pub id: Option<i64>,
+    /// The store file (local.db) to read.
+    #[arg(long)]
+    pub db: PathBuf,
+}
+
+/// Arguments to `targets export`. The selector is optional: with none, every
+/// registered target is exported; with one, only the target it resolves.
+#[derive(Debug, Args)]
+pub struct TargetsExportArgs {
+    /// A selector: an exact handle, a case-insensitive exact name, or a 1-based row
+    /// index. Omit to export all registered targets.
     pub selector: Option<String>,
     /// Select by stable identifier: the durable, machine-facing form.
     #[arg(long)]

@@ -2517,7 +2517,7 @@ shipped, disposable `catalog.db`; `targets` writes the user-owned `local.db`.
 ```text
 fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
 
-      --target <SELECTOR>    A stored target: handle, name, or row index
+      --target <SELECTOR>    A stored target: handle, name, or listing row index
       --id <ID>              A stored target by durable identifier (for automation)
       --process <IMAGE>      A raw process image name, no stored target
       --path <SUBSTR>        Image-path substring anchor
@@ -2544,9 +2544,13 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
 ```
 
 `--target`, `--id`, and `--process` are mutually exclusive and exactly one
-is required. `--target` is the human selector (handle, name, or ephemeral
-row index); `--id` addresses a stored target by its durable identifier, the
-stable form automation uses because a row index shifts as the store changes.
+is required. `--target` is the human selector (handle, name, or listing row
+index); `--id` addresses a stored target by its durable identifier, the
+stable form automation uses. A bare-integer row index resolves against the
+snapshot the most recent `targets` listing wrote (section 17.7), so `capture
+3` names the row the user saw even after an intervening add or remove; a
+position past the snapshot, or one taken before any listing has run, is an
+out-of-range usage error (exit 2).
 Every other flag is orthogonal to the target input, so a named process, a
 ring buffer, a wait-for-start, and a launch-under-capture all compose freely.
 `--launch` needs the resolved stored target to carry a platform anchor (a
@@ -2642,6 +2646,63 @@ Color is used when standard error is a terminal and `NO_COLOR` is
 unset. `--quiet` suppresses progress and retains warnings and errors.
 `--silent` suppresses everything except errors, and errors are never
 suppressed.
+
+### 17.7 The Targets Command
+
+`fragcap targets` is the hero command: the one command a new user runs
+successfully on their own machine that makes attribution concrete using their
+own data. With no subcommand it runs discovery across its tiers, registers any
+newly found titles into `local.db` idempotently, and lists the registered
+targets as a numbered table:
+
+```text
+  #  TARGET                     CAPTURE          KNOWN
+  1  the_elder_scrolls_online   ready            no online mode recorded
+  2  the_division_2             ready            Denuvo, EasyAntiCheat
+  3  some_indie_thing           needs a target   no launch data known
+
+  fragcap capture 1
+```
+
+Rows are ordered by handle. The CAPTURE column is `ready` when the entry names
+a Windows client or carries a resolvable anchor, and `needs a target` when its
+launch chain is unresolved; every listed row is capturable in principle, so the
+column reports how close, never whether the row is valid. The KNOWN column is
+neutral evidence (detected engine, anti-cheat, and DRM products, else that no
+online mode is recorded). The listing ends by naming the next command, and an
+empty result prints the commands that populate the store rather than an empty
+table. Registration is additive and idempotent: a repeat listing over an
+unchanged environment registers nothing new and never modifies or removes an
+existing entry. A bare `fragcap` prints the same listing with a `--help` footer.
+
+The listing writes a snapshot of the rows it displayed to `local.db`, and a
+bare-integer selector resolves against that snapshot (section 17.2), so a row
+number keeps naming the row the user saw across an intervening mutation.
+
+The subcommands manage the local store:
+
+- `targets add [NAME] [--exe <EXE>] [--steam <APP_ID>] [--anchor <A>]` registers
+  a target. Pointed at an executable interactively, it shows the detected engine,
+  anti-cheat, and DRM evidence inline, then asks whether that executable is the
+  process that holds the sockets (`[Y/n/unsure]`). The `unsure` answer registers
+  the entry with its launch chain unresolved and records no socket holder the
+  tool did not observe; `no` records the executable as a launcher with the holder
+  unresolved; `yes` records it as the resolved client. When standard input is not
+  a terminal the same decision is supplied by `--socket-holder yes|no|unsure`
+  (which requires `--exe`). `--steam <app_id>` scaffolds an installed title
+  (formerly `steam profile`).
+- `targets scan <DIR> [--db <local.db>]` registers the titles discovered under a
+  directory, through the same idempotent registration the listing uses.
+- `targets remove <SELECTOR>` removes exactly the resolved target; an ambiguous
+  name lists its matches and refuses (exit 2).
+- `targets export [SELECTOR]` emits registered targets as a JSON array of
+  target-entry objects (all targets, or the one a selector resolves), and
+  `targets import <FILE>` merges each element on its stable identifier, so an
+  export round-trips through an import with identical identifiers and no
+  duplicate rows. This representation carries the entry identity and is distinct
+  from the master capture schema (section 15).
+- `targets show <SELECTOR>` and `targets discover` are read-only inspections;
+  `discover`, unlike the listing, registers nothing.
 
 ## 18. Shell Wrappers
 
