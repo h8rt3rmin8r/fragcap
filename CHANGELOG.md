@@ -16,6 +16,19 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-19
+
+### Fixed
+
+`fragcap targets` (and a bare `fragcap`) now seed the per-user catalog from the
+catalog store shipped beside the executable on first run, so a fresh install
+discovers and classifies your games immediately instead of listing nothing until
+a capture happened to seed it. The first-run copy of the shipped catalog lived
+only on the `capture` path, so the documented first command every new user runs
+saw no catalog in the per-user location, skipped discovery, and showed an empty
+list until the store was seeded by hand; both discovery entry points now resolve
+and seed the catalog through one shared step so they cannot drift again.
+
 ## [0.5.0] - 2026-08-18
 
 ### Highlights
@@ -5726,6 +5739,7 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.5.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.1
 [0.5.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.4.0
 [0.3.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.3.0
