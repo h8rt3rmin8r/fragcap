@@ -335,10 +335,11 @@ fn setup_stores(
     local_db_flag: Option<&Path>,
     emitter: &mut Emitter,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>), CliError> {
-    let (mut catalog_db, catalog_default) = match paths::catalog_db_path(catalog_db_flag) {
-        Some(path) => (Some(path), false),
-        None => (paths::default_catalog_db_path(), true),
-    };
+    // Resolve both store paths without side effects first, so the same-file refusal
+    // fires before either default is created. The catalog resolves the same way the
+    // shared bootstrap helper does below (flag, env, else per-user default).
+    let catalog_resolved =
+        paths::catalog_db_path(catalog_db_flag).or_else(paths::default_catalog_db_path);
     let (mut local_db, local_default) = match paths::local_db_path(local_db_flag) {
         Some(path) => (Some(path), false),
         None => (paths::default_local_db_path(), true),
@@ -347,7 +348,7 @@ fn setup_stores(
     // The two stores must be different files, or accumulation would write learned
     // user data into the catalog and a future catalog replacement would discard it
     // (FR-007). Refuse before bootstrap or accumulation touches it.
-    if let (Some(catalog), Some(local)) = (catalog_db.as_deref(), local_db.as_deref()) {
+    if let (Some(catalog), Some(local)) = (catalog_resolved.as_deref(), local_db.as_deref()) {
         if same_store_file(catalog, local) {
             return Err(CliError::failure(format!(
                 "the catalog store and the local store must be different files, \
@@ -359,18 +360,16 @@ fn setup_stores(
 
     // Bootstrap only defaulted locations, never a path the operator named. A
     // bootstrap failure is a warning that drops that store, never fatal (FR-005).
-    if catalog_default {
-        if let Some(default) = catalog_db.clone() {
-            let template = bundled_catalog_template();
-            if let Err(e) = ensure_store(&default, template.as_deref()) {
-                emitter.warn(&format!(
-                    "catalog store could not be initialized at {}: {e}",
-                    default.display()
-                ));
-                catalog_db = None;
-            }
+    // The catalog resolves and seeds through the one shared helper the `targets`
+    // hero listing also calls, so the shipped catalog is referenced identically by
+    // both discovery entry points and cannot drift.
+    let catalog_db = match ensure_catalog_store(catalog_db_flag) {
+        Ok(path) => path,
+        Err(message) => {
+            emitter.warn(&message);
+            None
         }
-    }
+    };
     if local_default {
         if let Some(default) = local_db.clone() {
             if let Err(e) = ensure_store(&default, None) {
@@ -423,6 +422,44 @@ fn resolve_store_identity(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+/// Resolve the catalog store path and, when it is the per-user default, seed it from
+/// the template shipped beside the executable (the first-run bootstrap).
+///
+/// This is the single place the two discovery entry points -- the `capture`
+/// resolution ([`setup_stores`]) and the `targets` hero listing -- resolve and seed
+/// the catalog, so the shipped catalog is referenced identically by both and cannot
+/// drift. Before this existed the seeding lived only in the capture path, so a fresh
+/// install running `fragcap targets` (the documented first command) found no catalog
+/// in the per-user location, skipped discovery, and listed nothing until a capture
+/// happened to seed it or the operator copied the file by hand.
+///
+/// An operator-named path (the `--catalog-db` flag or `FRAGCAP_CATALOG_DB`) is
+/// returned as given and never created; only the per-user default is bootstrapped,
+/// from the template when one ships beside the exe, or empty on a bare-exe build.
+/// Returns the resolved path, `Ok(None)` when no location can be determined at all,
+/// or `Err(message)` when a defaulted store could not be initialized (the caller
+/// turns that into a warning and drops the store, never a fatal error, FR-005).
+pub(crate) fn ensure_catalog_store(
+    catalog_db_flag: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    // Operator-named (flag or environment): used as given, never created.
+    if let Some(path) = paths::catalog_db_path(catalog_db_flag) {
+        return Ok(Some(path));
+    }
+    // Per-user default: seed it from the shipped template on first run.
+    let Some(default) = paths::default_catalog_db_path() else {
+        return Ok(None);
+    };
+    let template = bundled_catalog_template();
+    ensure_store(&default, template.as_deref()).map_err(|e| {
+        format!(
+            "catalog store could not be initialized at {}: {e}",
+            default.display()
+        )
+    })?;
+    Ok(Some(default))
 }
 
 /// The read-only catalog store template shipped beside the executable, if present.

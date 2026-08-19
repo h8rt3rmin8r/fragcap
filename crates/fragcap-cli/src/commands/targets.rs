@@ -26,6 +26,7 @@ use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
     TargetsShowArgs,
 };
+use crate::commands::target_resolve;
 use crate::exit::{CliError, Exit};
 use crate::paths;
 
@@ -234,7 +235,20 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
 /// composition failure or a registration failure is a real error and is returned,
 /// so a caller that must report an honest outcome (the `doctor --fix` action) can.
 fn discover_and_register(store: &mut Store, out: &mut dyn Write) -> Result<usize, CliError> {
-    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path);
+    // Resolve and, on first run, seed the per-user catalog from the template shipped
+    // beside the executable, through the same helper the capture path uses. Without
+    // this the shipped catalog was never copied into the per-user location for the
+    // hero listing, so a fresh install discovered and classified nothing until a
+    // capture happened to seed it (the drift this shares one helper to prevent). A
+    // bootstrap failure is a warning, never fatal: the listing continues with an
+    // empty catalog, exactly as an absent one.
+    let catalog_db = match target_resolve::ensure_catalog_store(None) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(out, "warning: {message}");
+            None
+        }
+    };
     let Some(catalog_db) = catalog_db else {
         return Ok(0);
     };
