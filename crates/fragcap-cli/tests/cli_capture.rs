@@ -75,8 +75,26 @@ fn run_with_roles_succeeds_and_scopes_to_the_named_role() {
     let (code, _out, err) = run_offline(&["--roles".into(), "target".into()]);
     assert_eq!(code, 0, "capture --roles target parses and captures: {err}");
     assert!(
-        err.contains("roles target (enforced)"),
+        err.contains("roles target"),
         "the capture is scoped to the named role: {err}"
+    );
+    // Since slice S064 the roles claim is true of what the file contains, not
+    // only of which stages trigger acquisition: the write gate consults the same
+    // set under the default target scope. The fixture's traffic is all
+    // `role=target`, so scoping to that role retains all of it and discards
+    // nothing, which is what distinguishes an enforced scope from a claimed one.
+    assert!(
+        err.contains("scope: writing target traffic"),
+        "the run states what it writes: {err}"
+    );
+    let out_of_scope = err
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("out of scope"))
+        .map(|v| v.trim().to_string());
+    assert_eq!(
+        out_of_scope.as_deref(),
+        Some("0"),
+        "nothing was out of scope, because every packet is the named role: {err}"
     );
 }
 
@@ -89,8 +107,12 @@ fn run_with_a_comma_separated_role_list_splits_and_scopes() {
     let (code, _out, err) = run_offline(&["--roles".into(), "target,launcher".into()]);
     assert_eq!(code, 0, "a comma-separated role list parses: {err}");
     assert!(
-        err.contains("roles target,launcher (enforced)"),
-        "both roles are carried into the enforced scope: {err}"
+        err.contains("roles target,launcher"),
+        "both roles are carried into the scope: {err}"
+    );
+    assert!(
+        err.contains("scope: writing target traffic"),
+        "the run states what it writes: {err}"
     );
 }
 

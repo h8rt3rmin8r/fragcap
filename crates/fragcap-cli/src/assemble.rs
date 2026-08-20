@@ -28,10 +28,10 @@ use fragcap::{
     RoleStampingAttributor, RotatingFileSink, RotationPolicy, ScriptedAttributor, ScriptedWatcher,
     SinkFactory, StreamSink, Timestamp,
 };
-use fragcap::{SessionConfig, Sink};
+use fragcap::{CaptureScope, SessionConfig, Sink};
 
 use crate::args::{Direction, SinkFormat, SinkSpec, SinkTransport};
-use crate::cli::{CaptureArgs, ModeArg, OfflineArgs};
+use crate::cli::{CaptureArgs, ModeArg, OfflineArgs, ScopeArg};
 use crate::exit::CliError;
 
 /// The default snapshot length declared for a capture interface.
@@ -64,6 +64,8 @@ pub struct EffectiveConfig {
     pub max_bytes: Option<u64>,
     /// The roles to capture, when scoped.
     pub roles: Option<Vec<String>>,
+    /// What the capture writes out (slice S064).
+    pub scope: CaptureScope,
     /// The direction to scope to.
     pub direction: Direction,
     /// The declared interface names.
@@ -86,6 +88,11 @@ impl EffectiveConfig {
             duration: self.duration,
             packet_bound: self.max_packets,
             byte_bound: self.max_bytes,
+            scope: self.scope,
+            // The role set reaches the write gate here, which is what makes the
+            // run's `roles ... (enforced)` line true of what the file contains
+            // rather than only of which stages trigger acquisition (issue #184).
+            allowed_roles: self.roles.clone(),
         }
     }
 
@@ -117,6 +124,11 @@ pub fn effective_config(
         .roles
         .clone()
         .or_else(|| defaults.roles().map(|r| r.to_vec()));
+    let scope = match args.scope {
+        ScopeArg::Target => CaptureScope::Target,
+        ScopeArg::Profile => CaptureScope::Profile,
+        ScopeArg::All => CaptureScope::All,
+    };
     let loopback = args.loopback || defaults.loopback().unwrap_or(false);
     let duration = args.duration.or_else(|| defaults.duration());
     let mode = resolve_mode(args, profile);
@@ -133,6 +145,7 @@ pub fn effective_config(
         max_packets: args.max_packets,
         max_bytes: args.max_bytes,
         roles,
+        scope,
         direction: args.direction.unwrap_or(Direction::Both),
         interfaces: args.interface.clone(),
         loopback,
@@ -205,6 +218,11 @@ pub fn effective_config_for_extcap(
         max_packets: None,
         max_bytes: None,
         roles,
+        // The extcap path has no `--scope` flag: the analyzer dialog does not
+        // offer one, and Wireshark's own display filters are the natural place
+        // to widen a view there. It takes the same default as the command line,
+        // so what reaches the analyzer is what reaches a file.
+        scope: CaptureScope::Target,
         direction: args.direction.unwrap_or(Direction::Both),
         interfaces: Vec::new(),
         loopback,
@@ -1052,6 +1070,7 @@ mod tests {
             max_packets: None,
             max_bytes: None,
             roles: None,
+            scope: CaptureScope::All,
             direction: Direction::Both,
             interfaces: vec!["eth0".to_string()],
             loopback: false,

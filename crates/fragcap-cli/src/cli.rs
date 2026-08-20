@@ -114,6 +114,17 @@ pub enum Command {
 }
 
 /// The capture mode, specification section 17.2.
+/// What a capture writes out, as distinct from what it observes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ScopeArg {
+    /// Only the named target's traffic.
+    Target,
+    /// Every process the profile binds.
+    Profile,
+    /// Everything captured.
+    All,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ModeArg {
     /// Bounded capture written to a file (implemented).
@@ -233,6 +244,18 @@ pub struct CaptureArgs {
     // source comment; it is not user-facing help.
     #[arg(long, value_delimiter = ',')]
     pub roles: Option<Vec<String>>,
+
+    /// What the capture writes out.
+    ///
+    /// `target` (the default) writes only the traffic of the target you named,
+    /// which is what process attribution is for. `profile` widens that to every
+    /// process the profile binds, including launcher and helper stages that
+    /// `--roles` scoped out of triggering. `all` writes everything captured,
+    /// which is useful for correlating the target against the rest of the
+    /// machine and for debugging attribution itself. Whatever is excluded is
+    /// counted and reported.
+    #[arg(long, value_enum, default_value_t = ScopeArg::Target)]
+    pub scope: ScopeArg,
 
     /// The flow direction to scope to.
     #[arg(long, value_enum)]

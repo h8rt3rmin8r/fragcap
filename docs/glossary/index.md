@@ -29,6 +29,7 @@ the owning category page.
 - [Candidate target](process-and-attribution.md#candidate-target)
 - [Capability feature](platform-and-distribution.md#capability-feature)
 - [Capture readiness](command-line-and-diagnostics.md#capture-readiness)
+- [Capture scope](capture-and-networking.md#capture-scope)
 - [Capture session](process-and-attribution.md#capture-session)
 - [Capture thread](capture-and-networking.md#capture-thread)
 - [Capture window](capture-and-networking.md#capture-window)
