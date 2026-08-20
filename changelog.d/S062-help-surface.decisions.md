@@ -37,16 +37,17 @@ features (`live`, `net`, `targets`, `etw`) are ordinary English words: matching
 pages. A rule that cries wolf earns an exception list, and an exception list is
 what decayed into the hardcoded token set this slice replaced.
 
-**2026-08-20** Recorded, and deliberately not fixed here: `cargo xtask msrv`
-fails on `main` and continues to fail on this branch, at `constant_time_eq
-0.4.2`, which declares `edition = "2024"` and cannot be parsed by Cargo 1.82. It
-reaches a default build through `blake3 1.8.6` -> `fragcap-targets` (S051) ->
-`fragcap` -> `fragcap-cli`, which carries the `targets` feature unconditionally.
-Verified pre-existing by stashing this branch and running the gate on `main`,
-where it fails identically. This slice's own addition clears the floor
-(`terminal_size` declares `rust-version 1.71`) and the lock delta is exactly
-that one package. The fix is a choice between pinning `constant_time_eq`,
-pinning `blake3`, raising the declared minimum, and dropping the dependency,
-which is a decision about the S051 dependency argument rather than about help
-text; burying it in a help-surface diff would put an architecture call somewhere
-nobody would review for it.
+**2026-08-20** Recorded as an environment observation, not a defect. On the
+Windows developer machine this slice was written on, `cargo xtask msrv` fails
+parsing `constant_time_eq 0.4.2`, which declares `edition = "2024"` and
+`rust-version = "1.85.0"` and is reached through `blake3` from S051. That was
+first read as a pre-existing break in the repository, and that reading was
+wrong: the `minimum supported toolchain` job runs the same
+`cargo build --workspace --locked` under the same 1.82 toolchain and compiles
+that exact package successfully, on `main` and on this branch, confirmed by
+reading the job result rather than the workflow conclusion. This slice's own
+addition clears the floor independently (`terminal_size` declares
+`rust-version 1.71`) and the lock delta is exactly that one package. The local
+divergence is unexplained and no issue was filed for it, because the evidence
+does not support asserting a defect; it is written down here so the next person
+who hits it locally starts from the comparison rather than from the panic.

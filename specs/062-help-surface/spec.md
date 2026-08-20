@@ -467,27 +467,26 @@ guard fails without being edited.
   exact `=4.5.32` pin, and the `Cargo.lock` delta MUST be exactly one package,
   `terminal_size`. The workspace dependency inventory in `AGENTS.md` MUST record
   it with the slice that added it, matching the existing table's form.
-- **FR-024**: This slice MUST NOT regress `cargo xtask msrv`, verified by
-  running it, since clap is non-optional in `fragcap-cli` and the new package is
-  therefore compiled under the 1.82 floor.
+- **FR-024**: This slice MUST NOT regress the minimum-supported-toolchain gate,
+  verified by running it, since clap is non-optional in `fragcap-cli` and the
+  new package is therefore compiled under the 1.82 floor.
 
-  **Measured outcome, and a correction to this requirement as first written.**
-  It first read "MUST stay green". It is not green, and it was not green before
-  this slice either: `main` fails `cargo xtask msrv` identically, verified by
-  stashing this branch and running it there. The blocker is `constant_time_eq
-  0.4.2`, which declares `edition = "2024"` and cannot be parsed by Cargo 1.82.
-  It reaches the build through `blake3 1.8.6` -> `fragcap-targets` (added by
-  S051) -> `fragcap` -> `fragcap-cli`, and `fragcap-cli` carries the `targets`
-  feature unconditionally, so a default build compiles it.
+  **Verified, and a correction to an earlier reading in this same slice.**
+  `terminal_size 0.4.4` declares `rust-version = "1.71"` and clears the floor,
+  and the `Cargo.lock` delta is exactly that one package plus a `regex`
+  dev-dependency edge that adds none. The authoritative gate, the `minimum
+  supported toolchain` job in `.github/workflows/ci.yml`, is **green on this
+  branch and green on `main`**, both confirmed by reading the job result rather
+  than the workflow conclusion.
 
-  This slice's own contribution clears the floor: `terminal_size 0.4.4` declares
-  `rust-version = "1.71"`, and the `Cargo.lock` delta is exactly that package
-  plus a `regex` dev-dependency edge that adds no package. Nothing else moved.
-
-  The pre-existing break is out of scope here (OOS-006) and is reported rather
-  than absorbed. Fixing it means choosing between pinning `constant_time_eq`,
-  pinning `blake3`, raising the declared minimum, or dropping the dependency,
-  which is a decision about S051's dependency argument and not about help text.
+  `cargo xtask msrv` fails on the developer machine this slice was written on,
+  at `constant_time_eq 0.4.2` (`edition = "2024"`, `rust-version = "1.85.0"`,
+  reached through `blake3` from S051). That failure was first read as a
+  pre-existing repository defect. It is not one: the same job runs the same
+  `cargo build --workspace --locked` under the same 1.82 toolchain on the runner
+  and compiles that exact package successfully, on `main` and here. The
+  divergence is local and its cause is not established, so it is recorded as an
+  environment observation (OOS-006) rather than asserted as a defect.
 
 ### Out of scope
 
@@ -505,12 +504,15 @@ guard fails without being edited.
   this slice so its audit runs over text that already wraps and has been
   scrubbed.
 - **OOS-005**: The nine required store-path flags (#179). Belongs to S063.
-- **OOS-006**: The pre-existing `cargo xtask msrv` failure on `constant_time_eq
-  0.4.2` (edition 2024, via `blake3`, added by S051). It is a live defect on
-  `main`, it is unrelated to the help surface, and its fix is a dependency
-  decision with four viable answers. Reported, not absorbed: silently fixing a
-  dependency pin inside a help-text slice would bury an architecture call in a
-  diff nobody would review for it.
+- **OOS-006**: A local `cargo xtask msrv` failure, observed and not reproduced
+  on the runner. On the Windows developer machine this slice was written on,
+  `rustup run 1.82 cargo build --workspace --locked` fails parsing
+  `constant_time_eq 0.4.2`, which declares `edition = "2024"`. The `minimum
+  supported toolchain` job runs the same command under the same toolchain and
+  compiles that package successfully, on `main` and on this branch. Both were
+  checked at the job level, not the workflow level. Not filed as a defect,
+  because the evidence does not support one; recorded here so the next person to
+  hit it locally has the comparison already done.
 
 ## Success Criteria *(mandatory)*
 
@@ -533,9 +535,8 @@ guard fails without being edited.
 - **SC-007**: `fragcap targets list --help` names exactly the columns printed
   and states that the command writes.
 - **SC-008**: The `Cargo.lock` delta is exactly one added package.
-- **SC-009**: `cargo xtask ci` is green, and `cargo xtask msrv` fails in exactly
-  the same way and at exactly the same package as it does on `main`, proving
-  this slice neither fixed nor worsened it. See FR-024 and OOS-006.
+- **SC-009**: `cargo xtask ci` is green, and the `minimum supported toolchain`
+  job is green on this branch, confirmed from the job result.
 
 ## Assumptions
 
