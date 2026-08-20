@@ -30,7 +30,17 @@ use crate::exit::{CliError, Exit};
 
 /// Run the `technologies` command, writing the report to `out`.
 pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let store = Store::open(&args.catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
+    // The catalog store is an override, never a requirement (issue #179).
+    let catalog_db = crate::commands::target_resolve::ensure_catalog_store(
+        args.catalog_db.as_deref(),
+    )
+    .map_err(CliError::failure)?
+    .ok_or_else(|| {
+        CliError::failure(
+            "no catalog store could be resolved: pass --catalog-db, set FRAGCAP_CATALOG_DB,              or run on a machine with a per-user application data directory",
+        )
+    })?;
+    let store = Store::open(&catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
     let signatures = store
         .load_signatures()
         .map_err(|e| CliError::failure(e.to_string()))?;
@@ -142,7 +152,7 @@ mod tests {
         write(&dir, "steam_api64.dll");
         let args = TechnologiesArgs {
             path: dir.clone(),
-            catalog_db: catalog,
+            catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
         let exit = run(&args, &mut out).expect("scan succeeds");
@@ -179,7 +189,7 @@ mod tests {
         write(&dir, "readme.txt");
         let args = TechnologiesArgs {
             path: dir.clone(),
-            catalog_db: catalog,
+            catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
         let exit = run(&args, &mut out).expect("scan succeeds");
@@ -199,7 +209,7 @@ mod tests {
         ));
         let args = TechnologiesArgs {
             path: missing,
-            catalog_db: catalog,
+            catalog_db: Some(catalog),
         };
         let mut out: Vec<u8> = Vec::new();
         assert!(run(&args, &mut out).is_err(), "an absent directory fails");

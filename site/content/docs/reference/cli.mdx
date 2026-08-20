@@ -198,22 +198,27 @@ choices off by default). Both are exposed as installer properties
 
 ### `catalog`
 
-Maintain the shipped, disposable catalog store (`catalog.db`): the maintainer seeds
-it, and any user refreshes it.
+Maintain the disposable catalog store (`catalog.db`).
 
-- `fragcap catalog import <SEED> --db <catalog.db>` loads a local JSON seed
-  document.
-- `fragcap catalog export --db <catalog.db>` exports the store to
-  schema-conformant JSON on standard output.
-- `fragcap catalog seed --from <doc> --db <catalog.db>` and `fragcap catalog
-  seed-engine --from <doc> --db <catalog.db>` seed the catalog and engine tiers.
-  Each requires exactly one source: `--from <doc>` offline (shown here), or, in a
-  network-capable build, the live `--steam` / `--pcgamingwiki` source instead.
-- `fragcap catalog seed-signatures --db <catalog.db>` fills the detection signature
-  table from the bundled document, so `technologies` and discovery detect engines,
-  anti-cheat, and DRM from the store.
-- `fragcap catalog update --db <catalog.db>` fetches the current published catalog
-  (needs the network-capable build).
+`--db` is an override, never a requirement: with none, every command below
+resolves the store fragcap manages, through `FRAGCAP_CATALOG_DB` if set and the
+per-user default otherwise, creating it on first use.
+
+- `fragcap catalog import <SEED>` loads a local JSON seed document.
+- `fragcap catalog export` exports the store to schema-conformant JSON on
+  standard output.
+- `fragcap catalog seed` fills the store. With no `--tier` it fills every tier
+  that has a source available and names every tier it skipped, with the reason.
+  `--tier catalog|launch|engine|signature` selects one, and is repeatable.
+- `fragcap catalog seed --tier signature` fills the detection signature table
+  from a bundled document, so `technologies` and discovery detect engines,
+  anti-cheat, and DRM from the store. Offline and idempotent; the released
+  `catalog.db` already ships with it done.
+- `fragcap catalog seed --tier engine --from <doc>` seeds one tier from a local
+  document. `--from` requires exactly one `--tier`: the offline documents are
+  bare JSON arrays that do not say which tier they are, and guessing would write
+  the wrong columns silently, so an ambiguous invocation is refused. A
+  network-capable build adds the live `--steam` and `--pcgamingwiki` sources.
 
 ### `schema`
 

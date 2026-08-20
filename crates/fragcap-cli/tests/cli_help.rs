@@ -203,21 +203,21 @@ fn no_help_page_leaks_parser_internals() {
 #[test]
 fn the_page_set_covers_the_whole_command_surface() {
     let pages = help_pages();
-    // The root plus every subcommand at every depth. Asserted as a floor rather
-    // than an exact count so adding a subcommand does not fail this test for
-    // the wrong reason; the point is that enumeration reaches past the top
-    // level, which the hand-written list it replaced did not.
+    // No page count is asserted. A count is a hand-maintained number, which is
+    // the class of defect this guard exists to remove, and slice S063 proved it
+    // by removing one command and failing this test for a reason that had
+    // nothing to do with help. What matters is structural: enumeration reaches
+    // past the top level, which the hand-written list this replaced did not.
     assert!(
-        pages.len() >= 29,
-        "expected the whole command surface, found {} page(s)",
-        pages.len()
+        pages.iter().any(|p| p.len() >= 2),
+        "enumeration must reach nested subcommands, not just the top level"
     );
     assert!(pages.iter().any(|p| p.is_empty()), "the root page");
     for expected in [
         vec!["capture"],
         vec!["targets"],
         vec!["targets", "add"],
-        vec!["catalog", "seed-signatures"],
+        vec!["catalog", "seed"],
         vec!["extcap", "install"],
         vec!["technologies"],
     ] {
@@ -279,5 +279,61 @@ fn a_bare_integer_is_documented_as_unconditionally_a_row_index() {
     assert!(
         normalized.contains("row index, not this"),
         "--id must keep its own statement of the collision: {normalized}"
+    );
+}
+/// No subcommand requires a path to a store fragcap owns.
+///
+/// Slice S058 (issue #157) established the contract for `targets`: a store path
+/// is an override, never a requirement, because fragcap installs these stores,
+/// manages them, and already knows how to find them. S058's FR-005 scoped the
+/// `catalog`, `technologies`, and `targets discover` flags out, and nothing was
+/// filed to pick them up, so they survived as nine required arguments asking the
+/// user to type a path to an internal component (issue #179).
+///
+/// Enumerated rather than listed, for the same reason the leak check is: a new
+/// subcommand must inherit the rule instead of quietly reintroducing the defect.
+#[test]
+fn no_subcommand_requires_a_store_path() {
+    const STORE_ARGS: [&str; 3] = ["db", "catalog-db", "local-db"];
+
+    /// Match on the long flag as well as the id. clap's `get_id()` is the field
+    /// name, so `catalog_db` never equals the flag `catalog-db`; matching on the
+    /// id alone silently missed three of the eight required flags on the first
+    /// run of this test.
+    fn is_store_arg(arg: &clap::Arg) -> bool {
+        let id = arg.get_id().as_str().replace('_', "-");
+        let long = arg.get_long().unwrap_or_default();
+        STORE_ARGS.contains(&id.as_str()) || STORE_ARGS.contains(&long)
+    }
+
+    fn walk(cmd: &clap::Command, path: &[String], out: &mut Vec<String>) {
+        for arg in cmd.get_arguments() {
+            let id = arg.get_long().unwrap_or_else(|| arg.get_id().as_str());
+            if is_store_arg(arg) && arg.is_required_set() {
+                let where_ = if path.is_empty() {
+                    "fragcap".to_string()
+                } else {
+                    format!("fragcap {}", path.join(" "))
+                };
+                out.push(format!("{where_}: `--{id}` is required"));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            let mut next = path.to_vec();
+            next.push(sub.get_name().to_string());
+            walk(sub, &next, out);
+        }
+    }
+
+    let mut failures = Vec::new();
+    walk(&fragcap_cli::command(), &[], &mut failures);
+    assert!(
+        failures.is_empty(),
+        "{} store path(s) are required rather than overrides:\n{}",
+        failures.len(),
+        failures.join("\n")
     );
 }

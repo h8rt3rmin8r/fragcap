@@ -2287,7 +2287,7 @@ filename, a directory shape, a PE version string, or a binary marker. A single
 generic matcher evaluates the table against a directory: detection behavior is a
 function of the table's contents, not of per-product code, so adding a signature of
 an implemented kind is honored on the next scan with no code change and no release.
-`fragcap catalog seed-signatures` fills the table from a bundled document,
+`fragcap catalog seed --tier signature` fills the table from a bundled document,
 refreshing detection capability through the same catalog-seed path that refreshes
 the title catalog. This replaced an earlier vendored SteamDB ruleset that was
 compiled into the binary, authored for depot manifests rather than on-disk
@@ -3668,12 +3668,18 @@ network-capable build, fetch and launch the vendor's own signed installer;
 otherwise open or name the official download page), relaunch the npcap
 installer for the WinPcap API mode, relaunch elevated (offered first so
 escalation precedes privilege-gated work, with the elevated child re-checking
-and the parent stopping), register the analyzer extcap integration, fetch the
-published catalog, and run discovery. Two findings the read-only report added
-for this purpose, a missing catalog store and no registered target entries,
-are non-blocking warnings that carry the fetch and discovery actions, so a
-ready machine still passes and exits 0 with unchanged output. The npcap and
-catalog fetch actions are network-gated and degrade in a default build. The
+and the parent stopping), register the analyzer extcap integration, create the
+catalog store and load its detection signatures, and run discovery. Two findings
+the read-only report added for this purpose, a missing catalog store and no
+registered target entries, are non-blocking warnings that carry the initialize
+and discovery actions, so a ready machine still passes and exits 0 with
+unchanged output. The npcap actions are network-gated and degrade in a default
+build, to opening the official download page. The catalog action is not: it
+creates the store and loads the compiled-in signature document, so it needs no
+network and has no degraded form. It was network-gated until slice S063, which
+found that the check it answers fires on the store's absence rather than its
+emptiness, a condition the first-run bootstrap and the bundled signatures
+already satisfy offline. The
 classifier itself is unchanged: it remains a pure function from injected
 inputs to a report, and the action layer lives entirely above it.
 

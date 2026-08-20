@@ -48,10 +48,10 @@ fn targets_seeds_the_per_user_catalog_from_the_template_beside_the_exe() {
     // Build the template through the binary's own catalog path, the way the release
     // job does, so it carries the detection signatures a real shipped catalog does.
     let seed = Command::new(&staged_exe)
-        .args(["catalog", "seed-signatures", "--db"])
+        .args(["catalog", "seed", "--tier", "signature", "--db"])
         .arg(&template)
         .output()
-        .expect("run catalog seed-signatures");
+        .expect("run catalog seed --tier signature");
     assert!(
         seed.status.success(),
         "seeding the template catalog failed: {}",
@@ -114,4 +114,59 @@ fn targets_seeds_the_per_user_catalog_from_the_template_beside_the_exe() {
 
     let _ = fs::remove_dir_all(&install);
     let _ = fs::remove_dir_all(&home);
+}
+/// Every `catalog` subcommand resolves a store with no `--db`, and the
+/// precedence is flag over environment over per-user default.
+///
+/// Slice S058 (issue #157) made a store path an override rather than a
+/// requirement and applied it to `targets`; its FR-005 scoped `catalog` out and
+/// nothing picked it up, so these commands went on demanding a path to a
+/// component fragcap installs and manages, with nothing in the error saying what
+/// path to type (issue #179).
+#[test]
+fn catalog_subcommands_resolve_a_store_without_a_flag() {
+    let bin = env!("CARGO_BIN_EXE_fragcap");
+    let dir = scratch("catalog-default");
+    let from_env = dir.join("from-env.db");
+    let from_flag = dir.join("from-flag.db");
+
+    // With no flag, the environment override is the store that gets written.
+    let run = Command::new(bin)
+        .args(["catalog", "seed", "--tier", "signature"])
+        .env("FRAGCAP_CATALOG_DB", &from_env)
+        .output()
+        .expect("run catalog seed");
+    assert!(
+        run.status.success(),
+        "seed with no --db must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        from_env.is_file(),
+        "the environment override must be the store that was written"
+    );
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        out.contains(from_env.file_name().unwrap().to_string_lossy().as_ref()),
+        "the success line must name the store it wrote (P-9): {out}"
+    );
+
+    // An explicit flag wins over the environment override.
+    let run = Command::new(bin)
+        .args(["catalog", "seed", "--tier", "signature", "--db"])
+        .arg(&from_flag)
+        .env("FRAGCAP_CATALOG_DB", &from_env)
+        .output()
+        .expect("run catalog seed with --db");
+    assert!(
+        run.status.success(),
+        "seed with an explicit --db must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        from_flag.is_file(),
+        "an explicit --db must win over the environment override"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }

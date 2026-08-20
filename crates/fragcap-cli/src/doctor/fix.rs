@@ -233,14 +233,10 @@ impl ActionPerformer for RealPerformer {
                 matches!(scope, ExtcapScope::Machine),
                 out,
             )),
-            ActionKind::FetchCatalog => {
-                if action.degraded {
-                    // Guidance-only in a default build; drive_actions handles this
-                    // before reaching the performer, but stay honest if reached.
-                    ActionOutcome::Degraded
-                } else {
-                    to_outcome(crate::commands::catalog::update_default(out))
-                }
+            // Offline: creates the store and loads the compiled-in detection
+            // signatures, so there is no degraded form to branch on.
+            ActionKind::InitializeCatalog => {
+                to_outcome(crate::commands::catalog::initialize_default(out))
             }
             ActionKind::ObtainNpcap | ActionKind::RelaunchNpcapInstaller => {
                 if action.degraded {
@@ -310,7 +306,7 @@ fn installer_nonce() -> u128 {
 
 /// The primary npcap action (a `net`-capable build): fetch the vendor's own signed
 /// installer to a temporary file and launch it. Tier 2 (not run in continuous
-/// integration). Without the `net` feature this arm is never offered as primary
+/// integration). Without network capability this arm is never offered as primary
 /// (the action degrades), so the fallback keeps the build honest.
 #[cfg(feature = "net")]
 fn fetch_and_launch_installer(out: &mut dyn Write) -> ActionOutcome {
@@ -548,10 +544,13 @@ mod tests {
     }
 
     #[test]
-    fn a_guidance_only_action_is_neither_confirmed_nor_performed() {
-        // A degraded catalog fetch (no net) is surfaced as guidance, recorded
-        // Degraded, and never handed to the confirm or perform seam.
-        let rpt = report(vec![Action::new(ActionKind::FetchCatalog)]);
+    fn an_offline_action_is_performed_even_without_network_capability() {
+        // The catalog action used to be net-gated, so in a default build it was
+        // surfaced as guidance, recorded Degraded, and never performed. It is now
+        // an offline initialize-and-seed, so a build with no network capability
+        // still performs it. That is the whole of issue #175's dead end: the
+        // remediation a shipped binary was offered was one it could not run.
+        let rpt = report(vec![Action::new(ActionKind::InitializeCatalog)]);
         let mut confirm = ScriptedConfirm::new([true]);
         let mut performer = ScriptedPerformer {
             outcome: |_| ActionOutcome::Performed,
@@ -570,11 +569,12 @@ mod tests {
         );
         assert_eq!(
             outcomes,
-            vec![(ActionKind::FetchCatalog, ActionOutcome::Degraded)]
+            vec![(ActionKind::InitializeCatalog, ActionOutcome::Performed)]
         );
-        assert!(
-            performer.performed.is_empty(),
-            "guidance-only never performs"
+        assert_eq!(
+            performer.performed,
+            vec![ActionKind::InitializeCatalog],
+            "an offline action reaches the performer even with net: false"
         );
     }
 }
