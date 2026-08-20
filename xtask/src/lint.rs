@@ -211,6 +211,89 @@ pub fn check_bytes(bytes: &[u8], is_source: bool) -> Vec<Finding> {
     out
 }
 
+/// The command-surface file whose doc comments clap publishes verbatim.
+const HELP_SOURCE: &str = "crates/fragcap-cli/src/cli.rs";
+
+/// Internal development vocabulary that must never reach user-facing `--help`.
+///
+/// clap derives every `about` and every option description from the `///` doc
+/// comments in [`HELP_SOURCE`], so provenance written for a maintainer is
+/// published to anyone holding the binary. Issue #67 closed this once by
+/// scrubbing the text; issue #178 records it coming straight back, because
+/// nothing asserted it. The guard test in `cli_help.rs` asserts it over
+/// rendered output; this asserts it over the source, so the cheap check catches
+/// it too and catches a leak in a doc comment clap does not publish today but
+/// would after a later refactor.
+///
+/// A slice identifier means something to `specs/` and to nobody else. A
+/// specification section number is actionable only with the specification open,
+/// which is not the state of a reader in a terminal. A Cargo feature name is a
+/// build-time switch a user of a released binary cannot act on at all.
+///
+/// Each entry is (pattern kind, what it is). The match is deliberately narrow:
+/// it runs only on `///` lines of one file, so a `//` maintainer comment above
+/// the item is the sanctioned place to keep the provenance.
+fn help_doc_leak(text: &str) -> Option<&'static str> {
+    // `slice S051`, and the bare `(S051)` form the previous guard missed.
+    if let Some(i) = text.find("slice S") {
+        if text[i + 7..].starts_with(|c: char| c.is_ascii_digit()) {
+            return Some("a slice identifier");
+        }
+    }
+    let bytes = text.as_bytes();
+    for (i, w) in bytes.iter().enumerate() {
+        if *w != b'S' {
+            continue;
+        }
+        // Word boundary before, two or three digits, word boundary after.
+        if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+            continue;
+        }
+        let digits = bytes[i + 1..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if (2..=3).contains(&digits) {
+            let after = bytes.get(i + 1 + digits);
+            if after.is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_') {
+                return Some("a bare slice identifier");
+            }
+        }
+    }
+    // `section 17.2`, `Section 14.5`.
+    for lead in ["section ", "Section "] {
+        if let Some(i) = text.find(lead) {
+            let rest = &text[i + lead.len()..];
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            if digits > 0 && rest[digits..].starts_with('.') {
+                let after = &rest[digits + 1..];
+                if after.starts_with(|c: char| c.is_ascii_digit()) {
+                    return Some("a specification section reference");
+                }
+            }
+        }
+    }
+    if let Some(i) = text.find("Appendix ") {
+        if text[i + 9..].starts_with(|c: char| c.is_ascii_uppercase()) {
+            return Some("an appendix letter");
+        }
+    }
+    if let Some(i) = text.find("Tier ") {
+        if text[i + 5..].starts_with(|c: char| c.is_ascii_digit()) {
+            return Some("a bare tier number");
+        }
+    }
+    // A Cargo feature named to a user. Matched by the *phrasing*, never by the
+    // declared feature names: `live`, `net`, `targets`, and `etw` are ordinary
+    // words, and matching `net` bare would fire on "network" and `targets` on
+    // most of the targets help. A rule that cries wolf earns an exception list,
+    // and an exception list is what decayed into issue #178.
+    if text.contains("` feature") || text.contains("feature `") {
+        return Some("a Cargo feature name");
+    }
+    None
+}
+
 fn is_excluded(path: &Path, root: &Path) -> bool {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let s = rel.to_string_lossy().replace('\\', "/");
@@ -366,6 +449,28 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
         for f in check_bytes(&bytes, is_source) {
             println!("{}:{}: {}: {}", shown, f.line, f.rule, f.detail);
             total += 1;
+        }
+
+        // The command surface's doc comments are user-facing help (issues #176,
+        // #178). Scoped to one file and to `///` lines, so a `//` maintainer
+        // comment above the item stays the sanctioned home for provenance.
+        if shown == HELP_SOURCE {
+            if let Ok(text) = std::str::from_utf8(&bytes) {
+                for (line_no, line) in text.lines().enumerate() {
+                    let trimmed = line.trim_start();
+                    let Some(doc) = trimmed.strip_prefix("///") else {
+                        continue;
+                    };
+                    if let Some(what) = help_doc_leak(doc) {
+                        println!(
+                            "{}:{}: help-vocabulary: {what} in a doc comment clap publishes",
+                            shown,
+                            line_no + 1
+                        );
+                        total += 1;
+                    }
+                }
+            }
         }
 
         // P-1, mechanically. Only fragcap's own Rust source is checked: this

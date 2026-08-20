@@ -58,7 +58,7 @@ fragcap capture --process eso64.exe --out capture.fcapng
 | `--loopback` | Include the loopback adapter. |
 | `--no-payload` | Write metadata only, no packet payloads. |
 | `--ring <WINDOW>` | The ring window, for `--mode ring` (a duration or a size). |
-| `--launch` | Launch the game through its platform launcher before capturing (Windows only; requires a `--target` carrying a Steam app id). |
+| `--launch` | Start the target through its platform launcher, then capture it (Windows only). The target must be Steam anchored; register one with `targets add --steam <app_id>`. This is a property of the stored target, not a value passed to `--target`, which never accepts an app id. |
 | `--catalog-db <PATH>` | Override the catalog store consulted while resolving a `--target`. |
 | `--local-db <PATH>` | Override the local store where `--target` selectors resolve. |
 

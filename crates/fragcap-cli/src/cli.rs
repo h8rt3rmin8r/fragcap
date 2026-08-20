@@ -25,17 +25,24 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use crate::args::{parse_duration, parse_ring, parse_size, Direction, RingWindow, SinkSpec};
 
 /// Passive, process-attributed network capture for Windows.
-///
-/// The command surface groups under four headings, purely presentational and
-/// hiding nothing (section 17.3). clap 4.5.32 (pinned for MSRV) does not group
-/// subcommands natively, so the grouping is rendered through a custom help
-/// template; every command still appears exactly once.
+// The four headings are specification section 17.3, purely presentational and
+// hiding nothing. clap 4.5.32 (pinned for MSRV) does not group subcommands
+// natively, so the grouping is rendered through the custom help template below;
+// every command still appears exactly once. Kept as a `//` comment: clap
+// publishes `///` verbatim as user-facing help, and a specification section
+// number is actionable only to a reader who has the specification open.
 #[derive(Debug, Parser)]
 #[command(
     name = "fragcap",
+    max_term_width = 100,
     version,
     about,
     long_about = None,
+    // The `Commands:` block below is a literal, not clap-rendered rows, so
+    // `wrap_help` does not reach it and it does not wrap at any width. Its lines
+    // are hand-budgeted to 76 columns; keep a new entry inside that or the root
+    // page overflows again. `cli_help.rs` asserts the limit, so an over-long
+    // entry fails there rather than shipping.
     help_template = "\
 {about-with-newline}
 {usage-heading} {usage}
@@ -70,26 +77,29 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub silent: bool,
 
-    /// Emit machine-readable structured output instead of human text. `capture`,
-    /// `steam`, and `extcap` emit the newline-delimited capture event stream on
-    /// standard error; `doctor` emits its results as newline-delimited records on
-    /// standard output.
+    /// Emit machine-readable output instead of human text.
+    ///
+    /// `capture`, `steam`, and `extcap` emit the newline-delimited capture event
+    /// stream on standard error; `doctor` emits its results as newline-delimited
+    /// records on standard output.
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// The command to run. With none, `fragcap` lists registered targets and points
-    /// at `--help` (section 17.4).
+    /// The command to run. With none, `fragcap` lists registered targets and
+    /// points at `--help`.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
 /// The command surface of the tool. Most commands are implemented; a couple
-/// remain stubs that name the slice that will deliver them.
+/// remain stubs, and their help says so.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Capture a target's traffic. Identify the target by a stored-target
-    /// selector (`--target`) or a raw process image name (`--process`); every
-    /// other option composes freely (section 17.2).
+    /// Capture a target's traffic.
+    ///
+    /// Identify the target by a stored-target selector (positionally or with
+    /// `--target`), by `--id`, or by a raw process image name (`--process`);
+    /// every other option composes freely.
     Capture(Box<CaptureArgs>),
     /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
@@ -104,7 +114,7 @@ pub enum Command {
     /// Report environment readiness.
     Doctor(DoctorArgs),
     /// Analyzer integration: enumerate, configure, and capture as an extcap
-    /// source (specification section 14.5).
+    /// source.
     Extcap(Box<ExtcapArgs>),
     /// Maintain the shipped catalog store (catalog.db): import, export, seed,
     /// and update the published catalog.
@@ -113,7 +123,7 @@ pub enum Command {
     Schema(SchemaArgs),
 }
 
-/// The capture mode, specification section 17.2.
+/// The capture mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ModeArg {
     /// Bounded capture written to a file (implemented).
@@ -124,11 +134,11 @@ pub enum ModeArg {
     Ring,
 }
 
-/// Arguments to `capture`, the single capture verb (section 17.2).
+/// Arguments to `capture`, the single capture verb.
 ///
 /// Exactly one target input is required and they are mutually exclusive: a
 /// positional selector or its `--target` equivalent names a stored target by
-/// selector (S051 section 5.4) resolved against the local store, `--id` names a
+/// selector resolved against the local store, `--id` names a
 /// stored target by its durable identifier, and `--process` names a raw process
 /// image name directly. The positional form is the ergonomic one the `fragcap
 /// targets` listing hints (`fragcap capture <n>`); `--target` is its explicit-flag
@@ -144,17 +154,22 @@ pub enum ModeArg {
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id", "process"])))]
 pub struct CaptureArgs {
-    /// A stored-target selector given positionally: an exact handle, a
-    /// case-insensitive exact name, or a 1-based row index over the current listing
-    /// (S051). This is the ergonomic form the `fragcap targets` listing names in its
-    /// `fragcap capture <n>` hint; it is equivalent to `--target` and mutually
-    /// exclusive with it.
+    /// A stored target: an exact handle, an exact name, or a listing row number.
+    ///
+    /// A bare integer here is always a row index over the current `fragcap
+    /// targets` listing, never a handle, a name, or a platform app id. This is
+    /// the ergonomic form the listing names in its `fragcap capture <n>` hint;
+    /// it is equivalent to `--target` and mutually exclusive with it.
     #[arg(value_name = "SELECTOR")]
     pub selector: Option<String>,
 
-    /// A stored-target selector: an exact handle, a case-insensitive exact name,
-    /// or a 1-based row index over the current listing (S051). The explicit-flag
-    /// form of the positional selector above.
+    /// A stored target: an exact handle, an exact name, or a listing row number.
+    ///
+    /// A bare integer here is always a row index over the current `fragcap
+    /// targets` listing, never a handle, a name, or a platform app id. To
+    /// capture a Steam title by its app id, register it first with
+    /// `targets add --steam <app_id>`. The explicit-flag form of the positional
+    /// selector.
     #[arg(long)]
     pub target: Option<String>,
 
@@ -254,8 +269,11 @@ pub struct CaptureArgs {
     #[arg(long, value_parser = parse_ring)]
     pub ring: Option<RingWindow>,
 
-    /// Launch the game through its platform launcher before capturing, then
-    /// capture it (Windows only; requires a `--target` carrying a Steam app id).
+    /// Start the target through its platform launcher, then capture it.
+    ///
+    /// Windows only. The target must be Steam anchored; register one with
+    /// `targets add --steam <app_id>`. This describes the stored target, not the
+    /// value given to `--target`, which never accepts a platform app id.
     #[arg(long)]
     pub launch: bool,
 
@@ -334,8 +352,9 @@ pub struct TechnologiesArgs {
     /// The install directory to scan for technologies.
     #[arg(short = 'p', long)]
     pub path: PathBuf,
-    /// The catalog store (`catalog.db`) whose signature table drives detection
-    /// (slice S053). Seed it with `catalog seed-signatures`.
+    /// The catalog store (`catalog.db`) whose signature table drives detection.
+    ///
+    /// Seed it with `catalog seed-signatures`.
     #[arg(long)]
     pub catalog_db: PathBuf,
 }
@@ -354,26 +373,35 @@ pub struct TargetsArgs {
 /// Operations that write the shipped catalog store live under `catalog`.
 #[derive(Debug, Subcommand)]
 pub enum TargetsCommand {
-    /// Register a target from a name, deriving a unique handle (slice S051).
+    /// Register a target from a name, deriving a unique handle.
     Add(TargetsAddArgs),
-    /// List registered targets with their row index, handle, and identifier.
+    /// List capture targets by row number, handle, readiness, and known
+    /// technologies.
+    ///
+    /// Discovers and registers any newly installed titles first, so this writes
+    /// to the store as well as reading it, and it rewrites the row numbering
+    /// that `fragcap capture <n>` resolves against. The durable identifier
+    /// `--id` consumes is not a column here; `targets show` and `targets export`
+    /// carry it.
     List {
-        /// The store file (local.db) to read. Defaults to the local store the bare
-        /// `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override, else the
-        /// per-user default) when omitted.
+        /// The store file (local.db) to read and register into. Defaults to the
+        /// local store the bare `fragcap targets` command uses (the
+        /// `FRAGCAP_LOCAL_DB` override, else the per-user default) when omitted.
         #[arg(long)]
         db: Option<PathBuf>,
     },
     /// Show one target resolved by a selector (handle, name, row index, or `--id`).
     Show(TargetsShowArgs),
-    /// Discover installed games: walk Steam and the known game-install roots and
-    /// list the candidates found (slice S052). Reads only; a candidate becomes a
-    /// stored target when acted on (`targets add`).
+    /// Discover installed games: walk Steam and the known game-install roots.
+    ///
+    /// Reads only; a candidate becomes a stored target when acted on
+    /// (`targets add`).
     Discover(TargetsDiscoverArgs),
-    /// Scan one directory the user points at and list it as a single candidate
-    /// (slice S052). Backs pointing discovery straight at a known game folder. With
-    /// `--catalog-db`, detects the engine, anti-cheat, and DRM technologies in the
-    /// directory and carries them as evidence (slice S053).
+    /// Scan one directory and list it as a single candidate.
+    ///
+    /// Backs pointing discovery straight at a known game folder. With
+    /// `--catalog-db`, detects the engine, anti-cheat, and DRM technologies in
+    /// the directory and carries them as evidence.
     Scan {
         /// The directory to treat as a single game location.
         dir: PathBuf,
@@ -387,14 +415,18 @@ pub enum TargetsCommand {
         #[arg(long)]
         db: Option<PathBuf>,
     },
-    /// Remove one registered target resolved by a selector (handle, name, row index,
-    /// or `--id`). An ambiguous name lists its matches and refuses (slice S055).
+    /// Remove one registered target resolved by a selector.
+    ///
+    /// The selector is a handle, a name, a row number, or `--id`. An ambiguous
+    /// name lists its matches and refuses.
     Remove(TargetsShowArgs),
-    /// Export registered targets as a JSON array to standard output: all targets, or
-    /// the one a selector resolves (slice S055).
+    /// Export registered targets as a JSON array to standard output.
+    ///
+    /// All targets, or the one a selector resolves.
     Export(TargetsExportArgs),
-    /// Import a target-entry JSON array, merging each element on its stable identifier
-    /// (slice S055). A nonconforming file is rejected whole.
+    /// Import a target-entry JSON array, merging on the stable identifier.
+    ///
+    /// A nonconforming file is rejected whole.
     Import {
         /// The JSON file to import.
         file: PathBuf,
@@ -470,10 +502,10 @@ pub struct CatalogArgs {
     pub command: CatalogCommand,
 }
 
-/// The `catalog` subcommands. Every one operates on the shipped, disposable catalog
-/// store (`catalog.db`): the maintainer seeds it, and any user refreshes it. `seed`
-/// and `seed-engine` are offline from a fixture unless the `net` feature and their
-/// live source flag select the network; `update` fetches the published catalog.
+/// The `catalog` subcommands. Every one operates on the shipped, disposable
+/// catalog store (`catalog.db`): the maintainer seeds it, and any user refreshes
+/// it. `seed` and `seed-engine` read a local document unless a live source flag
+/// selects the network, which only a build that can reach the network offers.
 #[derive(Debug, Subcommand)]
 pub enum CatalogCommand {
     /// Load a local JSON seed document into the catalog store, creating it if needed.
@@ -490,20 +522,23 @@ pub enum CatalogCommand {
         #[arg(long)]
         db: PathBuf,
     },
-    /// Seed the catalog tier (Tier 1: appid, name, metrics) into the store.
+    /// Seed the title tier (app id, name, metrics) into the store.
     Seed(TargetsSeedArgs),
-    /// Seed the engine tier (Tier 3: engine name, source, confidence) into the
-    /// store from PCGamingWiki.
+    /// Seed the engine tier (engine name, source, confidence) into the store
+    /// from PCGamingWiki.
     SeedEngine(TargetsSeedEngineArgs),
-    /// Seed the detection signature table (slice S053) from the bundled Appendix B
-    /// document, so `technologies` and discovery detect engines, anti-cheat, and DRM
-    /// from a store rather than from compiled-in code. Offline; idempotent.
+    /// Seed the detection signature table from the bundled signature document.
+    ///
+    /// Lets `technologies` and discovery detect engines, anti-cheat, and DRM
+    /// from the store rather than from compiled-in code. Offline; idempotent.
     SeedSignatures {
         /// The catalog store (`catalog.db`) to write the signatures into.
         #[arg(long)]
         db: PathBuf,
     },
-    /// Fetch the current published catalog into the store (needs the `net` feature).
+    /// Fetch the current published catalog into the store.
+    ///
+    /// Needs a build that can reach the network.
     Update {
         /// The store file to write, created if absent.
         #[arg(long)]
@@ -548,10 +583,10 @@ pub struct TargetsExportArgs {
 
 /// Arguments to `targets seed`.
 ///
-/// Exactly one catalog source is required. In a default build that is `--from`; a
-/// `net` build adds `--steam`, and the two are mutually exclusive, so `--from`
-/// with `--steam`, or neither, is a usage error (exit 2) rather than a silent
-/// choice.
+/// Exactly one catalog source is required. In a default build that is `--from`;
+/// a build that can reach the network adds `--steam`, and the two are mutually
+/// exclusive, so `--from` with `--steam`, or neither, is a usage error (exit 2)
+/// rather than a silent choice.
 #[derive(Debug, Args)]
 #[cfg_attr(
     feature = "net",
@@ -565,8 +600,9 @@ pub struct TargetsSeedArgs {
     /// Seed from a local catalog document (offline).
     #[arg(long)]
     pub from: Option<PathBuf>,
-    /// Seed from the live Steam catalog over the network. Only present in a build
-    /// with the `net` feature; the maintainer's seeding build.
+    /// Seed from the live Steam catalog over the network.
+    ///
+    /// Only present in a build that can reach the network.
     #[cfg(feature = "net")]
     #[arg(long)]
     pub steam: bool,
@@ -580,8 +616,9 @@ pub struct TargetsSeedArgs {
 
 /// Arguments to `targets seed-engine`.
 ///
-/// Exactly one engine source is required. In a default build that is `--from`; a
-/// `net` build adds `--pcgamingwiki`, and the two are mutually exclusive, so
+/// Exactly one engine source is required. In a default build that is `--from`;
+/// a build that can reach the network adds `--pcgamingwiki`, and the two are
+/// mutually exclusive, so
 /// `--from` with `--pcgamingwiki`, or neither, is a usage error (exit 2) rather
 /// than a silent choice. There is no corpus threshold: the engine tier enriches
 /// whatever titles the source names an engine for.
@@ -598,9 +635,10 @@ pub struct TargetsSeedEngineArgs {
     /// Seed from a local engine document (offline).
     #[arg(long)]
     pub from: Option<PathBuf>,
-    /// Seed from the live PCGamingWiki query API over the network. Only present in
-    /// a build with the `net` feature; the maintainer's seeding build. The flag
-    /// names its actual source rather than `--steam`: the tier is keyed by Steam
+    /// Seed from the live PCGamingWiki query API over the network.
+    ///
+    /// Only present in a build that can reach the network. The flag names its
+    /// actual source rather than `--steam`: the tier is keyed by Steam
     /// application id but the data is PCGamingWiki's.
     #[cfg(feature = "net")]
     #[arg(long)]
@@ -631,7 +669,7 @@ pub struct DoctorArgs {
     pub yes: bool,
 }
 
-/// Arguments to `extcap` (specification section 14.5).
+/// Arguments to `extcap`.
 ///
 /// The extcap protocol drives this command four ways: three declaration queries
 /// that print the extcap control grammar to standard output, and a capture that

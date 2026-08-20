@@ -764,3 +764,48 @@ fn a_subcommand_defaults_to_the_local_store_when_db_is_omitted() {
         "the target added with no --db is found by show with no --db: {show_out}"
     );
 }
+/// A numeric selector that matches no row says what it did with the number.
+///
+/// Issue #181. An operator read a table of Steam app ids from `fragcap steam
+/// list`, passed one to `--target`, and was told only "no target matches". The
+/// number was resolved as a listing row index, because `is_row_index` gates
+/// first and never falls through to a handle or name lookup, so the operator's
+/// number was interpreted in a namespace they did not know existed. The
+/// resolver knew all of that and reported none of it, which is the P-9 half of
+/// the defect: an observation was made and withheld.
+#[test]
+fn a_numeric_selector_miss_names_the_interpretation_and_the_listing_size() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    // Write a listing snapshot so the reported size is a real one.
+    run(&["targets", "list", "--db", &store]);
+
+    let (_code, out, _err) = run(&["targets", "show", "999999", "--db", &store]);
+    assert!(
+        out.contains("was read as a listing row number"),
+        "the message names the interpretation it used: {out}"
+    );
+    assert!(
+        out.contains("the listing has "),
+        "the message names the size of the space it searched: {out}"
+    );
+    assert!(
+        out.contains("targets add --steam 999999"),
+        "the message names the route to the app-id namespace: {out}"
+    );
+
+    // A non-numeric miss keeps the short message: there is no second namespace
+    // to disambiguate, so the long form would be noise.
+    let (_c, plain, _e) = run(&["targets", "show", "no-such-handle", "--db", &store]);
+    assert!(
+        plain.contains("no target matches"),
+        "a name miss still reports cleanly: {plain}"
+    );
+    assert!(
+        !plain.contains("was read as a listing row number"),
+        "a name miss does not claim a row-index interpretation: {plain}"
+    );
+}

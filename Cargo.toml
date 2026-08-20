@@ -138,7 +138,7 @@ windows-sys     = { version = "0.36", default-features = false, features = [
 # edition 2021, rust-version 1.74, on `clap_lex` 0.7. An exact pin because the
 # incompatibility is in a transitive patch, which a range cannot exclude. Slice
 # S14; raise the pin only alongside a workspace MSRV bump.
-clap            = { version = "=4.5.32", features = ["derive"] }
+clap            = { version = "=4.5.32", features = ["derive", "wrap_help"] }
 
 # External. Slice S14, research D-b: a portable console-interrupt hook so an
 # operator interrupt during a capture becomes a clean `StopReason::Interrupt`

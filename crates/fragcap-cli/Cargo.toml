@@ -83,6 +83,10 @@ winresource = { version = "0.1.31", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace   = true
+# The help guard matches leak patterns over rendered help pages. Already a
+# runtime dependency of `fragcap-profile`, so this adds no package to
+# `Cargo.lock`; it is a direct edge only.
+regex.workspace      = true
 # The synthetic appinfo generator for the launch-accumulation integration test
 # (slice S038). This test lives here rather than in the facade because the CLI
 # carries the `targets` feature unconditionally, so the test runs under the

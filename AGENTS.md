@@ -260,6 +260,7 @@ load-bearing rather than bookkeeping.
 | `unicode-normalization` | runtime | S051 | The NFKD step of handle normalization |
 | `unicode-properties` | runtime | S051 | The `So`/`Sk`/`Cf`/`Mn` general-category tests of handle normalization |
 | `getrandom` | runtime | S051 | OS entropy for the unanchored 63-bit identifier (already in the graph; a direct edge only) |
+| `terminal_size` | runtime, transitive | S062 | Terminal dimensions for clap's `wrap_help`; not a direct dependency, it arrives with the feature (issue #177) |
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

@@ -370,7 +370,11 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
-            let _ = writeln!(out, "no target matches");
+            let _ = writeln!(
+                out,
+                "{}",
+                target_resolve::no_match_message(&store, args.selector.as_deref())
+            );
             Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {
@@ -413,7 +417,11 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
                 Selection::Resolved(t) => vec![*t],
                 Selection::NoMatch if miss_exit == Exit::SUCCESS => Vec::new(),
                 Selection::NoMatch => {
-                    let _ = writeln!(out, "no target matches");
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        target_resolve::no_match_message(&store, selector.as_deref())
+                    );
                     return Ok(miss_exit);
                 }
                 Selection::Ambiguous(matches) => {
@@ -835,7 +843,11 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
-            let _ = writeln!(out, "no target matches");
+            let _ = writeln!(
+                out,
+                "{}",
+                target_resolve::no_match_message(&store, args.selector.as_deref())
+            );
             Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {
