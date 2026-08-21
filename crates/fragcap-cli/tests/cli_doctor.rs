@@ -365,7 +365,7 @@ fn a_blocked_machine_surfaces_actions_bound_to_its_findings() {
     );
     assert!(kinds.contains(&ActionKind::ObtainNpcap));
     assert!(kinds.contains(&ActionKind::InstallExtcap(ExtcapScope::User)));
-    assert!(kinds.contains(&ActionKind::FetchCatalog));
+    assert!(kinds.contains(&ActionKind::InitializeCatalog));
     assert!(kinds.contains(&ActionKind::RunDiscovery));
     assert!(
         net.iter().all(|a| !a.degraded),
@@ -384,13 +384,19 @@ fn a_blocked_machine_surfaces_actions_bound_to_its_findings() {
         .find(|a| a.kind == ActionKind::ObtainNpcap)
         .unwrap();
     assert!(npcap.degraded, "npcap fetch degrades without net");
+    // The catalog action does not degrade at all since slice S063. It creates
+    // the store and loads the compiled-in detection signatures, which needs no
+    // network, so there is nothing to degrade from. It was net-gated until then,
+    // which meant that in every released build it degraded to guidance telling
+    // the user to rebuild fragcap from source (issue #175).
     let catalog = off
         .iter()
-        .find(|a| a.kind == ActionKind::FetchCatalog)
+        .find(|a| a.kind == ActionKind::InitializeCatalog)
         .unwrap();
+    assert!(!catalog.degraded, "the catalog action is offline");
     assert!(
-        catalog.guidance_only(),
-        "catalog is guidance-only without net"
+        !catalog.guidance_only(),
+        "an offline action is performable, not guidance"
     );
     // A non-network action is unaffected by the capability.
     let discovery = off

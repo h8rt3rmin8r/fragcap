@@ -864,6 +864,24 @@ impl Store {
         Ok(stable_id)
     }
 
+    /// How many rows the most recent listing snapshot holds, or zero if no
+    /// listing has been written yet.
+    ///
+    /// Read only to report a row-index miss. A numeric selector is resolved
+    /// unconditionally as a row index (see `selector::is_row_index`), so when it
+    /// misses, the size of the space it was resolved against is the fact the
+    /// operator needs and the one the resolver already knows: issue #181 records
+    /// an operator being told only "no target matches" after passing a Steam app
+    /// id that was read as row 1333350 of a 33-row listing.
+    pub fn listing_snapshot_len(&self) -> Result<usize, TargetsError> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM listing_snapshot", [], |row| {
+                row.get(0)
+            })?;
+        Ok(n.max(0) as usize)
+    }
+
     // --- Volume eligibility (slice S052) ---------------------------------------
 
     /// Whether the volume eligibility allowlist has ever been seeded. Empty means

@@ -113,10 +113,13 @@ jobs:
           # payload files from the binary directory (CargoTargetBinDir).
           $ErrorActionPreference = 'Stop'
           & target/release/fragcap.exe catalog import assets/hint-seed.json --db target/release/catalog.db
-          # Slice S053: seed the detection signature table from the bundled Appendix B
-          # set so the shipped catalog detects engines, anti-cheat, and DRM out of the
+          # Seed the detection signature table from the bundled signature document
+          # so the shipped catalog detects engines, anti-cheat, and DRM out of the
           # box rather than shipping an empty signature table (offline; idempotent).
-          & target/release/fragcap.exe catalog seed-signatures --db target/release/catalog.db
+          # Slice S063 collapsed `seed-signatures` into `seed --tier signature`;
+          # `--db` stays explicit here because this writes the build's staging copy,
+          # not the per-user default the flagless form would resolve.
+          & target/release/fragcap.exe catalog seed --tier signature --db target/release/catalog.db
           Copy-Item LICENSE, NOTICE target/release/
 
       - name: Install WiX and cargo-wix
