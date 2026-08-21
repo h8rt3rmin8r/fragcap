@@ -78,16 +78,17 @@ pub mod steam {
 #[cfg(feature = "targets")]
 pub mod targets {
     pub use fragcap_targets::{
-        capture_readiness, entry_windows_clients, export, export_targets, import, import_targets,
-        is_row_index, known_summary, launch_entries_for, launch_is_unresolved, observed_executable,
-        register_candidate, register_candidates, resolve_id, resolve_positional,
-        resolved_client_launch, seed_catalog, seed_engine, CaptureReadiness, CatalogBatch,
-        CatalogEntry, CatalogSource, Classification, ClassificationSource, CorpusGate, Engine,
-        EngineBatch, EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog,
-        FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary, LaunchEntry,
-        RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
-        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
-        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        capture_readiness, engine_summary, entry_windows_clients, export, export_targets, import,
+        import_targets, is_row_index, launch_entries_for, launch_is_unresolved,
+        observed_executable, register_candidate, register_candidates, resolve_id,
+        resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
+        sensitivities_summary, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource,
+        Classification, ClassificationSource, CorpusGate, DetectionScan, Engine, EngineBatch,
+        EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed,
+        Game, HintDatabaseProvider, ImportSummary, LaunchEntry, RegistrationOutcome,
+        ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection, SocketHolderAnswer, Store,
+        TargetClassification, TargetEntry, TargetsError, TechCategory, Technology,
+        DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
     };
 
     /// The discovery seam and its model (slice S052): the `TargetSource` trait,
@@ -191,6 +192,14 @@ pub mod profile {
     };
     pub use fragcap_profile::matching::{bind_stages, first_live_match, stage_for};
     pub use fragcap_profile::parse::{load, LoadError, MAX_PROFILE_BYTES};
+    /// The data-driven detection signature matcher (slice S053): the `Signature`
+    /// value type, the generic matcher, and the PE version-resource reader. The
+    /// whole `signature` module is re-exported so callers reach `SignatureSet` and
+    /// its `ScanOutcome`/`DetectError`. It replaced the vendored SteamDB ruleset that
+    /// `fragcap-profile::technologies` carried before S053.
+    /// The PE header readers the `pe-version-string` and `binary-marker` detection
+    /// kinds use, and their fixture builders.
+    pub use fragcap_profile::pe;
     /// The target resolution cascade: providers, precedence, and the resolver
     /// (issue #77, section 15.7).
     pub use fragcap_profile::providers::{
@@ -208,11 +217,6 @@ pub mod profile {
         CaptureDefaults, CaptureMode, FidelityTier, Game, GameId, Kind, Lifecycle, MatchPredicates,
         PathRegex, Profile, Provenance, Stage, SCHEMA_VERSION,
     };
-    /// The data-driven detection signature matcher (slice S053): the `Signature`
-    /// value type, the generic matcher, and the PE version-resource reader. The
-    /// whole `signature` module is re-exported so callers reach `SignatureSet` and
-    /// its `ScanOutcome`/`DetectError`. It replaced the vendored SteamDB ruleset that
-    /// `fragcap-profile::technologies` carried before S053.
     pub use fragcap_profile::signature;
     pub use fragcap_profile::target::{
         EngineRuleTarget, HintTarget, ObservedTarget, Target, TargetOrigin, WalkerTarget,

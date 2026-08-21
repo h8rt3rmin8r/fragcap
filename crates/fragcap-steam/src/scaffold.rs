@@ -724,7 +724,11 @@ mod tests {
             DetectionFinding {
                 category: SignatureCategory::Drm,
                 product: "Steam DRM".to_string(),
-                evidence: "steam_api64.dll".to_string(),
+                // The wrapper's own PE section, which is what the detector actually
+                // reports since slice S065. It used to say `steam_api64.dll`, which
+                // is the Steamworks SDK and no longer produces a DRM finding, so the
+                // fixture modelled something the detector cannot produce (#169).
+                evidence: "Game.exe".to_string(),
                 fidelity: FidelityTier::Verified,
             },
         ];

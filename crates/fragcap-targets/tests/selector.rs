@@ -22,6 +22,7 @@ fn target(handle: &str, name: &str, anchor: Option<&str>) -> TargetEntry {
         launch_entries: None,
         install_root: None,
         evidence: None,
+        detection_scan: None,
     }
 }
 

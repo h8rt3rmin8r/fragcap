@@ -70,7 +70,7 @@ impl TargetSource for DirectorySource {
         // At most one candidate: an empty path yields none.
         if !self.path.trim().is_empty() {
             account.produce();
-            let (fidelity, evidence) = self.detect(&mut warnings);
+            let (fidelity, evidence, detection_scan) = self.detect(&mut warnings);
             candidates.push(CandidateTarget {
                 identity: CandidateIdentity::Path(self.path.clone()),
                 display_name: base_name(&self.path),
@@ -80,6 +80,7 @@ impl TargetSource for DirectorySource {
                 // technologies ride as evidence regardless.
                 classification: crate::entry::TargetClassification::Unknown,
                 evidence,
+                detection_scan,
                 source_name: self.name().to_string(),
             });
         }
@@ -101,31 +102,45 @@ impl DirectorySource {
     /// Detect the technologies in the pointed-at directory, or return the bare
     /// heuristic default when no signature set was supplied. A detected engine raises
     /// the fidelity; an unreadable path or subtree is surfaced into `warnings` rather
-    /// than dropped (P-4).
-    fn detect(&self, warnings: &mut Vec<String>) -> (FidelityTier, Vec<DetectionFinding>) {
+    /// than dropped (P-4). The third value is the coverage state (slice S065):
+    /// `None` when no signature set was supplied and so no scan ran at all.
+    fn detect(
+        &self,
+        warnings: &mut Vec<String>,
+    ) -> (
+        FidelityTier,
+        Vec<DetectionFinding>,
+        Option<crate::entry::DetectionScan>,
+    ) {
         let Some(signatures) = &self.signatures else {
-            return (self.default_fidelity(), Vec::new());
+            return (self.default_fidelity(), Vec::new(), None);
         };
         match signatures.detect(Path::new(&self.path)) {
             Ok(outcome) => {
-                for path in &outcome.unreadable {
-                    warnings.push(format!(
-                        "could not read subtree during detection: {}",
-                        path.display()
-                    ));
-                }
+                // Everything the scan did not cover, named rather than only counted
+                // (P-4). One shared implementation, so this source and the platform
+                // walk cannot drift apart on what they report.
+                warnings.extend(outcome.coverage_warnings());
+                let scan = crate::entry::DetectionScan::from_outcome(&outcome);
                 let fidelity = outcome
                     .detected_engine()
                     .map(|e| e.fidelity)
                     .unwrap_or_else(|| self.default_fidelity());
-                (fidelity, outcome.findings)
+                (fidelity, outcome.findings, Some(scan))
             }
             Err(e) => {
                 warnings.push(format!(
                     "could not read directory during detection: {}",
                     e.path.display()
                 ));
-                (self.default_fidelity(), Vec::new())
+                // A scan was attempted and covered nothing. `Incomplete`, not
+                // `None`: an attempt that failed is a different fact from no
+                // attempt (P-4).
+                (
+                    self.default_fidelity(),
+                    Vec::new(),
+                    Some(crate::entry::DetectionScan::Incomplete),
+                )
             }
         }
     }

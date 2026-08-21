@@ -106,6 +106,7 @@ impl<'a> KnownRootsSource<'a> {
                             classification,
                             fidelity,
                             evidence,
+                            detection_scan,
                         } => {
                             out.account.produced += 1;
                             out.candidates.push(CandidateTarget {
@@ -116,6 +117,7 @@ impl<'a> KnownRootsSource<'a> {
                                 fidelity,
                                 classification,
                                 evidence,
+                                detection_scan,
                                 source_name: self.name().to_string(),
                             });
                             // Stop-on-hit: do not descend into a hit's subtree.

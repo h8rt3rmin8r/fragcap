@@ -36,6 +36,7 @@ fn insert_target(store: &mut Store, app_id: u32, exe: Option<&str>, fidelity: Fi
         launch_entries,
         install_root: None,
         evidence: None,
+        detection_scan: None,
     };
     store.insert_target(&entry).expect("insert target");
 }
@@ -111,6 +112,7 @@ fn a_local_entry_naming_two_executables_declines() {
         ])),
         install_root: None,
         evidence: None,
+        detection_scan: None,
     };
     store.insert_target(&entry).expect("insert");
 

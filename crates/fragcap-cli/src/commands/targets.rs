@@ -18,8 +18,8 @@ use std::io::IsTerminal;
 
 use fragcap::targets::{
     handle, identifier, is_row_index, resolve_id, resolve_positional, CandidateIdentity,
-    ClassificationSource, DirectorySource, Discovery, Selection, SocketHolderAnswer, Store,
-    TargetClassification, TargetEntry, TargetSource,
+    ClassificationSource, DetectionScan, DirectorySource, Discovery, Selection, SocketHolderAnswer,
+    Store, TargetClassification, TargetEntry, TargetSource,
 };
 
 use crate::cli::{
@@ -202,34 +202,66 @@ fn empty_listing(out: &mut dyn Write, footer: bool) {
     }
 }
 
-/// Render the numbered CAPTURE/KNOWN table. Columns size to their content so the
-/// output stays aligned; the target order is the caller's (handle order).
+/// Render the numbered CAPTURE / ENGINE / SENSITIVITIES table. The target order is
+/// the caller's (handle order).
+///
+/// # The width rule
+///
+/// Every column but the last sizes to its own content; the last, SENSITIVITIES, is
+/// free-running and is neither padded nor truncated. Nothing here truncates a value
+/// and nothing wraps a row.
+///
+/// That is a decision, not an accident. Truncating a product name is the silent loss
+/// P-4 forbids: an operator reading `Easy Anti-Che...` cannot tell whether the value
+/// was clipped or whether a second product was dropped. Wrapping a row would break
+/// the column alignment the split exists to provide. A value wider than the terminal
+/// therefore overflows visibly, which is a legible failure rather than a lie.
+///
+/// The budget is met with margin in the realistic case. The widest row measured on
+/// the operator's machine is a 22 character handle, `needs a target`, the widest
+/// coverage marker, and a two-word anti-cheat product: 74 of 80 columns. The
+/// readiness column keeping its two short labels is what buys that margin, which is
+/// why slice S065 retired the two long readiness sentences rather than moving them
+/// here (see the slice decisions fragment). `cli_targets.rs` measures a
+/// representative rendered line against 80 so the budget cannot drift unnoticed.
 fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
     let num_w = targets.len().to_string().len().max(1);
-    let target_w = targets
-        .iter()
-        .map(|t| t.handle.chars().count())
-        .chain(std::iter::once("TARGET".len()))
-        .max()
-        .unwrap_or(6);
+    let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");
     let capture_w = "needs a target".len();
+    let engine_w = width_of(
+        targets.iter().map(fragcap::targets::engine_summary),
+        "ENGINE",
+    );
     let _ = writeln!(
         out,
-        "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  KNOWN",
-        "#", "TARGET", "CAPTURE"
+        "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  SENSITIVITIES",
+        "#", "TARGET", "CAPTURE", "ENGINE"
     );
     for (i, t) in targets.iter().enumerate() {
         let capture = fragcap::targets::capture_readiness(t).label();
-        let known = fragcap::targets::known_summary(t);
+        let engine = fragcap::targets::engine_summary(t);
+        let sensitivities = fragcap::targets::sensitivities_summary(t);
         let _ = writeln!(
             out,
-            "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {}",
+            "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  {}",
             i + 1,
             t.handle,
             capture,
-            known
+            engine,
+            sensitivities
         );
     }
+}
+
+/// The display width of a column: the widest value, never narrower than its heading.
+/// Counts characters rather than bytes so a non-ASCII product name (`Ren'Py` is
+/// ASCII, but a future one need not be) does not over-pad.
+fn width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
+    values
+        .map(|v| v.chars().count())
+        .chain(std::iter::once(heading.chars().count()))
+        .max()
+        .unwrap_or_else(|| heading.chars().count())
 }
 
 /// Discover and register into `store`, returning the number of newly registered
@@ -724,10 +756,14 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     // Run detection on the executable's directory and show the evidence inline
     // before the socket-holder decision depends on it (FR-009). Best-effort: a bare
     // exe name or a missing catalog yields no evidence, not an error.
-    let evidence = args
-        .exe
-        .as_deref()
-        .and_then(|exe| scan_exe_evidence(exe, out));
+    // The coverage state rides with the evidence: a scan that ran records whether it
+    // was complete, and no scan at all records nothing rather than claiming a clean
+    // one. This is the fourth producing source and is plumbed like the other three
+    // (FR-015).
+    let (evidence, detection_scan) = match args.exe.as_deref() {
+        Some(exe) => scan_exe_evidence(exe, out),
+        None => (None, None),
+    };
 
     // The socket-holder answer decides the stored launch chain. Interactive when
     // stdin is a terminal and no `--socket-holder` was given; otherwise the flag.
@@ -758,6 +794,7 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         launch_entries,
         install_root: None,
         evidence,
+        detection_scan,
     };
     store
         .insert_target(&entry)
@@ -817,23 +854,25 @@ fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliEr
 }
 
 /// Run detection on the directory containing `exe` and print any engine, anti-cheat,
-/// or DRM findings inline, returning them as the `evidence` JSON. Best-effort: a bare
-/// exe name (no directory), a missing default catalog, or a scan error yields no
-/// evidence rather than failing the add.
-fn scan_exe_evidence(exe: &str, out: &mut dyn Write) -> Option<serde_json::Value> {
-    let dir = Path::new(exe)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())?;
-    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)?;
-    if !catalog_db.exists() {
-        return None;
-    }
-    let catalog = Store::open(&catalog_db).ok()?;
-    let signatures = catalog.load_signatures().ok()?;
-    let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
-    let outcome = set.detect(dir).ok()?;
+/// or DRM findings inline, returning them as the `evidence` JSON and the coverage
+/// state of the scan.
+///
+/// Best-effort: a bare exe name (no directory), a missing default catalog, or a scan
+/// error yields no evidence rather than failing the add. In those cases the coverage
+/// state is `None` too, because no scan ran: recording `Complete` there would claim a
+/// clean scan that never happened (P-9). A scan that ran and matched nothing returns
+/// no evidence but does record its coverage state, which is what makes "scanned
+/// clean" distinguishable from "never scanned" on this path.
+fn scan_exe_evidence(
+    exe: &str,
+    out: &mut dyn Write,
+) -> (Option<serde_json::Value>, Option<DetectionScan>) {
+    let Some(outcome) = run_exe_scan(exe) else {
+        return (None, None);
+    };
+    let scan = Some(DetectionScan::from_outcome(&outcome));
     if outcome.findings.is_empty() {
-        return None;
+        return (None, scan);
     }
     let mut findings = Vec::new();
     for f in &outcome.findings {
@@ -851,7 +890,24 @@ fn scan_exe_evidence(exe: &str, out: &mut dyn Write) -> Option<serde_json::Value
             "fidelity": f.fidelity.as_str(),
         }));
     }
-    Some(serde_json::Value::Array(findings))
+    (Some(serde_json::Value::Array(findings)), scan)
+}
+
+/// Scan the directory containing `exe`, or `None` when no scan could be run at all:
+/// a bare exe name, no resolvable catalog, an unseeded catalog, or an unreadable
+/// directory. Split out so the caller can tell "no scan ran" from "a scan ran".
+fn run_exe_scan(exe: &str) -> Option<fragcap::profile::signature::ScanOutcome> {
+    let dir = Path::new(exe)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())?;
+    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)?;
+    if !catalog_db.exists() {
+        return None;
+    }
+    let catalog = Store::open(&catalog_db).ok()?;
+    let signatures = catalog.load_signatures().ok()?;
+    let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
+    set.detect(dir).ok()
 }
 
 /// Show one target resolved by a selector.
@@ -902,6 +958,10 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 }
 
 /// Print one resolved target's fields.
+///
+/// The engine and sensitivities lines are the same derivations the listing renders,
+/// so the detail view and the table cannot disagree about what a technology is or
+/// about whether a scan happened.
 fn print_target(t: &TargetEntry, out: &mut dyn Write) {
     let _ = writeln!(out, "handle:         {}", t.handle);
     let _ = writeln!(out, "name:           {}", t.name);
@@ -911,6 +971,16 @@ fn print_target(t: &TargetEntry, out: &mut dyn Write) {
     if let Some(anchor) = &t.anchor {
         let _ = writeln!(out, "anchor:         {anchor}");
     }
+    let _ = writeln!(
+        out,
+        "engine:         {}",
+        fragcap::targets::engine_summary(t)
+    );
+    let _ = writeln!(
+        out,
+        "sensitivities:  {}",
+        fragcap::targets::sensitivities_summary(t)
+    );
 }
 
 /// The file stem of an executable name (drop a trailing extension), for the

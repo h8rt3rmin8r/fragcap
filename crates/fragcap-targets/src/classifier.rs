@@ -26,7 +26,7 @@ use std::path::Path;
 use fragcap_profile::signature::SignatureSet;
 use fragcap_profile::{DetectionFinding, FidelityTier};
 
-use crate::entry::TargetClassification;
+use crate::entry::{DetectionScan, TargetClassification};
 
 /// The classifier's decision for one directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +43,10 @@ pub enum ClassifierVerdict {
         /// (the detected engine plus any anti-cheat or DRM). Empty for a classifier
         /// that carries no signatures.
         evidence: Vec<DetectionFinding>,
+        /// Whether the directory was scanned and whether that scan was complete
+        /// (slice S065). `None` for a classifier that carries no signatures and so
+        /// ran no scan.
+        detection_scan: Option<DetectionScan>,
     },
     /// Not a classified target: count it considered-not-a-game.
     Miss,
@@ -87,10 +91,13 @@ pub struct KnownRootChildIsGame;
 
 impl DirectoryClassifier for KnownRootChildIsGame {
     fn classify(&self, _dir: &str) -> ClassifierResult {
+        // This classifier carries no signatures, so it ran no scan and records no
+        // coverage claim: `None`, never `Complete`.
         ClassifierResult::just(ClassifierVerdict::Hit {
             classification: TargetClassification::Game,
             fidelity: FidelityTier::HeuristicUnverified,
             evidence: Vec::new(),
+            detection_scan: None,
         })
     }
 }
@@ -153,6 +160,11 @@ impl DirectoryClassifier for SignatureClassifier {
                         classification: TargetClassification::Game,
                         fidelity: FidelityTier::HeuristicUnverified,
                         evidence: Vec::new(),
+                        // A scan was attempted and covered nothing. That is
+                        // `Incomplete`, not `None`: an attempt that failed is a
+                        // different fact from no attempt, and reporting it as no
+                        // attempt would lose the failure (P-4).
+                        detection_scan: Some(DetectionScan::Incomplete),
                     }
                 } else {
                     ClassifierVerdict::Miss
@@ -176,6 +188,7 @@ impl DirectoryClassifier for SignatureClassifier {
             Some(engine) => ClassifierVerdict::Hit {
                 classification: TargetClassification::Game,
                 fidelity: engine.fidelity,
+                detection_scan: Some(DetectionScan::from_outcome(&outcome)),
                 evidence: outcome.findings,
             },
             // No engine signature. In known-root mode the child is still a game, at
@@ -184,6 +197,7 @@ impl DirectoryClassifier for SignatureClassifier {
             None if self.assume_game => ClassifierVerdict::Hit {
                 classification: TargetClassification::Game,
                 fidelity: FidelityTier::HeuristicUnverified,
+                detection_scan: Some(DetectionScan::from_outcome(&outcome)),
                 evidence: outcome.findings,
             },
             None => ClassifierVerdict::Miss,
@@ -217,6 +231,8 @@ impl DirectoryClassifier for FixtureClassifier {
                 classification: TargetClassification::Game,
                 fidelity: FidelityTier::HeuristicUnverified,
                 evidence: Vec::new(),
+                // A fixture classifier runs no scan, so it makes no coverage claim.
+                detection_scan: None,
             }
         } else {
             ClassifierVerdict::Miss
@@ -299,6 +315,7 @@ mod tests {
                 classification,
                 fidelity,
                 evidence,
+                ..
             } => {
                 assert_eq!(classification, TargetClassification::Game);
                 assert_eq!(fidelity, FidelityTier::Verified);
@@ -336,6 +353,7 @@ mod tests {
                 classification,
                 fidelity,
                 evidence,
+                ..
             } => {
                 assert_eq!(classification, TargetClassification::Game);
                 assert_eq!(fidelity, FidelityTier::HeuristicUnverified);

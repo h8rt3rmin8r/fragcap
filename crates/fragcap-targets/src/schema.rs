@@ -42,8 +42,15 @@
 //! CHECK sets make an out-of-vocabulary signature unstorable (P-9). The migration
 //! from version 4 is one additive `CREATE TABLE`.
 
+//! Version 7 (slice S065) adds the nullable `detection_scan` column to `targets`:
+//! whether the row's install directory was scanned and whether that scan was
+//! complete. NULL means no scan is recorded, which is what every pre-S065 row and
+//! every row from a source that ran no detection carries. The CHECK set makes an
+//! out-of-vocabulary coverage claim unstorable, so the listing cannot render a state
+//! the store never wrote (P-9).
+
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -111,7 +118,9 @@ CREATE TABLE targets (
     anchor                TEXT,
     launch_entries        TEXT,
     install_root          TEXT,
-    evidence              TEXT
+    evidence              TEXT,
+    detection_scan        TEXT CHECK (detection_scan IS NULL OR detection_scan IN
+                            ('complete', 'incomplete'))
 );
 
 CREATE TABLE target_id_aliases (
@@ -151,6 +160,16 @@ CREATE TABLE listing_snapshot (
 /// displayed so a 1-based row-index selector resolves to what the user saw.
 /// Backward-safe by construction, an existing v5 store keeps every row and gains
 /// one empty table. Applied in one transaction alongside the version stamp.
+/// The additive migration from schema version 6 to version 7: add the nullable
+/// `detection_scan` column to `targets` (slice S065). Backward-safe by construction,
+/// an existing v6 store keeps every row and reads the column as NULL, which is
+/// exactly the "no scan recorded" state, so no backfill is needed and no row changes
+/// meaning. Applied in one transaction alongside the version stamp.
+pub const MIGRATE_6_TO_7: &str = "\
+ALTER TABLE targets ADD COLUMN detection_scan TEXT
+    CHECK (detection_scan IS NULL OR detection_scan IN ('complete', 'incomplete'));
+";
+
 pub const MIGRATE_5_TO_6: &str = "\
 CREATE TABLE listing_snapshot (
     position   INTEGER PRIMARY KEY CHECK (position > 0),

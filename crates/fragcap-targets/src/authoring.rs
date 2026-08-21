@@ -115,6 +115,7 @@ mod tests {
             launch_entries: Some(launch),
             install_root: None,
             evidence: None,
+            detection_scan: None,
         }
     }
 

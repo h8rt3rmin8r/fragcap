@@ -109,6 +109,7 @@ pub fn register_candidate(
         launch_entries: None,
         install_root,
         evidence: evidence_value(candidate),
+        detection_scan: candidate.detection_scan,
     };
     store.insert_target(&entry)?;
     Ok(true)
@@ -159,6 +160,7 @@ mod tests {
             fidelity: FidelityTier::Observed,
             classification: TargetClassification::Game,
             evidence: Vec::new(),
+            detection_scan: None,
             source_name: "steam".to_string(),
         }
     }
@@ -170,6 +172,7 @@ mod tests {
             fidelity: FidelityTier::HeuristicUnverified,
             classification: TargetClassification::Game,
             evidence: Vec::new(),
+            detection_scan: None,
             source_name: "known-roots".to_string(),
         }
     }

@@ -1,14 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Presentational derivations for the hero listing (slice S055).
+//! Presentational derivations for the hero listing (slice S055, split in S065).
 //!
-//! Both values are derived from a [`TargetEntry`] at listing time and stored
+//! Every value here is derived from a [`TargetEntry`] at listing time and stored
 //! nowhere. The CAPTURE column reports how close a row is to a capture, never
 //! whether it is valid: every registered row is capturable in principle
-//! (specification section 3.6). The KNOWN column is neutral evidence, never a
-//! blocker or an endorsement (P-9).
+//! (specification section 3.6). The ENGINE and SENSITIVITIES columns are neutral
+//! evidence, never a blocker or an endorsement (P-9).
+//!
+//! # One column, one kind of fact
+//!
+//! S055 rendered a single KNOWN column that comma-joined every detected product
+//! regardless of category, so an engine and a protection product read as one
+//! quality, and substituted a sentence about capture readiness when it had neither.
+//! S065 splits it on the category the findings already carry: engines in one column,
+//! anti-cheat and DRM in the other. The two fallback sentences are gone rather than
+//! relocated, because each was a relabeling of a readiness state the CAPTURE column
+//! already prints.
+//!
+//! # A blank is three different facts
+//!
+//! A row scanned clean, a row never scanned, and a row whose scan could not complete
+//! rendered identically before S065. They are different claims and one of them is
+//! not a claim at all, so each gets its own marker. Collapsing them is the silent
+//! loss P-4 forbids: an operator reading a blank engine column cannot otherwise tell
+//! "this title has no detectable engine" from "nobody looked".
 
-use crate::entry::TargetEntry;
+use fragcap_profile::SignatureCategory;
+
+use crate::entry::{DetectionScan, TargetEntry};
 use crate::hint_provider::entry_windows_clients;
 
 /// Whether a target is capturable now, or still needs launch information.
@@ -53,26 +73,75 @@ pub fn capture_readiness(entry: &TargetEntry) -> CaptureReadiness {
     }
 }
 
-/// Derive the neutral KNOWN evidence summary. In order: the distinct evidence
-/// products (engine / anti-cheat / DRM, e.g. "Denuvo, EasyAntiCheat"); else, for a
-/// row that is ready but carries no such evidence, "no online mode recorded"; else
-/// "no launch data known". Phrasing is neutral by construction (P-9, FR-021).
-pub fn known_summary(entry: &TargetEntry) -> String {
-    let products = evidence_products(entry);
-    if !products.is_empty() {
-        return products.join(", ");
-    }
-    match capture_readiness(entry) {
-        CaptureReadiness::Ready => "no online mode recorded".to_string(),
-        CaptureReadiness::NeedsTarget => "no launch data known".to_string(),
+/// The marker a technology column carries when it has no products: a complete scan
+/// that matched nothing.
+pub const SCANNED_CLEAN_MARKER: &str = "-";
+
+/// The marker a technology column carries when a scan ran but could not cover
+/// everything: something was unreadable, or a scan bound truncated the candidate
+/// set. Distinct from [`SCANNED_CLEAN_MARKER`] because a partial answer must not
+/// read as a clean one (P-4). The specific path or bound is named in the discovery
+/// warnings, which is where a recoverable detail belongs.
+pub const SCAN_INCOMPLETE_MARKER: &str = "incomplete";
+
+/// The marker a technology column carries when no scan is recorded for the row at
+/// all: a source that ran no detection produced it, or it predates the coverage
+/// record. Distinct from [`SCANNED_CLEAN_MARKER`] because "nobody looked" is not
+/// "nothing is there" (P-9).
+pub const NOT_SCANNED_MARKER: &str = "not scanned";
+
+/// Derive the ENGINE column: the distinct detected engine products, else the
+/// coverage marker for the row.
+///
+/// Neutral by construction: an engine is a fact about the title, never a judgment
+/// about it (P-9, specification section 3.6).
+pub fn engine_summary(entry: &TargetEntry) -> String {
+    summarize(entry, &[SignatureCategory::Engine])
+}
+
+/// Derive the SENSITIVITIES column: the distinct detected anti-cheat and DRM
+/// products, else the coverage marker for the row.
+///
+/// Anti-cheat precedes DRM, following the declared category display order, so the
+/// column reads the same way for every row. A detected product is neutral evidence:
+/// nothing here characterizes a title as off limits (specification section 3.6).
+pub fn sensitivities_summary(entry: &TargetEntry) -> String {
+    summarize(
+        entry,
+        &[SignatureCategory::AntiCheat, SignatureCategory::Drm],
+    )
+}
+
+/// The coverage marker for a row: what a technology column says when it has no
+/// products to name.
+fn coverage_marker(entry: &TargetEntry) -> &'static str {
+    match entry.detection_scan {
+        Some(DetectionScan::Complete) => SCANNED_CLEAN_MARKER,
+        Some(DetectionScan::Incomplete) => SCAN_INCOMPLETE_MARKER,
+        None => NOT_SCANNED_MARKER,
     }
 }
 
-/// The distinct product names an entry's `evidence` JSON carries. Evidence is an
-/// array of finding objects each with a `product` string (the serialized detection
-/// findings, slice S053). A malformed or absent value yields none. Order is
-/// first-seen; duplicates fold out.
-fn evidence_products(entry: &TargetEntry) -> Vec<String> {
+/// The distinct products in `categories`, joined, or the coverage marker when there
+/// are none.
+fn summarize(entry: &TargetEntry, categories: &[SignatureCategory]) -> String {
+    let products = evidence_products(entry, categories);
+    if products.is_empty() {
+        return coverage_marker(entry).to_string();
+    }
+    products.join(", ")
+}
+
+/// The distinct product names an entry carries in its `evidence` JSON, restricted
+/// to the requested categories, in category order then first-seen order.
+///
+/// Evidence is an array of finding objects each with a `category` and a `product`
+/// string (the serialized detection findings, slice S053). A finding whose category
+/// is absent or unrecognized belongs to no requested category and is therefore not
+/// rendered in either column; that is deliberate, because guessing which column an
+/// unknown category belongs in would put a product under a heading it does not
+/// answer to (P-9). A malformed or absent evidence value yields none.
+fn evidence_products(entry: &TargetEntry, categories: &[SignatureCategory]) -> Vec<String> {
     let Some(evidence) = &entry.evidence else {
         return Vec::new();
     };
@@ -80,10 +149,19 @@ fn evidence_products(entry: &TargetEntry) -> Vec<String> {
         return Vec::new();
     };
     let mut out: Vec<String> = Vec::new();
-    for item in items {
-        if let Some(product) = item.get("product").and_then(|v| v.as_str()) {
-            if !product.is_empty() && !out.iter().any(|p| p == product) {
-                out.push(product.to_string());
+    for wanted in categories {
+        for item in items {
+            let category = item
+                .get("category")
+                .and_then(|v| v.as_str())
+                .and_then(SignatureCategory::parse);
+            if category != Some(*wanted) {
+                continue;
+            }
+            if let Some(product) = item.get("product").and_then(|v| v.as_str()) {
+                if !product.is_empty() && !out.iter().any(|p| p == product) {
+                    out.push(product.to_string());
+                }
             }
         }
     }
@@ -115,6 +193,7 @@ mod tests {
             launch_entries,
             install_root: None,
             evidence,
+            detection_scan: None,
         }
     }
 
@@ -147,24 +226,126 @@ mod tests {
     }
 
     #[test]
-    fn known_lists_evidence_products() {
-        let e = entry(
+    fn an_engine_and_a_protection_product_never_share_a_column() {
+        let mut e = entry(
             Some("steam:1"),
             None,
             Some(json!([
+                { "category": "engine", "product": "Unreal" },
                 { "category": "drm", "product": "Denuvo" },
-                { "category": "anti-cheat", "product": "EasyAntiCheat" },
+                { "category": "anti-cheat", "product": "Easy Anti-Cheat" },
                 { "category": "drm", "product": "Denuvo" }
             ])),
         );
-        assert_eq!(known_summary(&e), "Denuvo, EasyAntiCheat");
+        e.detection_scan = Some(DetectionScan::Complete);
+
+        assert_eq!(engine_summary(&e), "Unreal");
+        // Anti-cheat precedes DRM, per the declared category display order, and the
+        // duplicate DRM row folds out.
+        assert_eq!(sensitivities_summary(&e), "Easy Anti-Cheat, Denuvo");
+
+        assert!(
+            !engine_summary(&e).contains("Denuvo") && !engine_summary(&e).contains("Anti-Cheat"),
+            "the engine column carries no protection product"
+        );
+        assert!(
+            !sensitivities_summary(&e).contains("Unreal"),
+            "the sensitivities column carries no engine"
+        );
     }
 
     #[test]
-    fn known_falls_back_by_readiness() {
-        let ready = entry(None, Some(json!([{ "executable": "game.exe" }])), None);
-        assert_eq!(known_summary(&ready), "no online mode recorded");
-        let needs = entry(None, None, None);
-        assert_eq!(known_summary(&needs), "no launch data known");
+    fn a_column_with_no_products_carries_the_rows_coverage_marker() {
+        // Scanned clean: a real answer.
+        let mut clean = entry(Some("steam:1"), None, Some(json!([])));
+        clean.detection_scan = Some(DetectionScan::Complete);
+        assert_eq!(engine_summary(&clean), SCANNED_CLEAN_MARKER);
+        assert_eq!(sensitivities_summary(&clean), SCANNED_CLEAN_MARKER);
+
+        // Scanned, coverage reduced: not an answer.
+        let mut partial = entry(Some("steam:1"), None, Some(json!([])));
+        partial.detection_scan = Some(DetectionScan::Incomplete);
+        assert_eq!(engine_summary(&partial), SCAN_INCOMPLETE_MARKER);
+
+        // Never scanned: not even an attempt.
+        let unscanned = entry(Some("steam:1"), None, None);
+        assert_eq!(unscanned.detection_scan, None);
+        assert_eq!(engine_summary(&unscanned), NOT_SCANNED_MARKER);
+
+        // The three must be mutually distinguishable, which is the whole point.
+        let markers = [
+            engine_summary(&clean),
+            engine_summary(&partial),
+            engine_summary(&unscanned),
+        ];
+        let mut unique = markers.to_vec();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 3, "three states, three markers: {markers:?}");
+    }
+
+    #[test]
+    fn one_populated_column_does_not_suppress_the_other_columns_marker() {
+        // A title with an engine and no protection product: the engine column names
+        // the engine, and the sensitivities column still reports coverage rather
+        // than going blank.
+        let mut e = entry(
+            Some("steam:1"),
+            None,
+            Some(json!([{ "category": "engine", "product": "GameMaker" }])),
+        );
+        e.detection_scan = Some(DetectionScan::Complete);
+        assert_eq!(engine_summary(&e), "GameMaker");
+        assert_eq!(sensitivities_summary(&e), SCANNED_CLEAN_MARKER);
+    }
+
+    #[test]
+    fn a_finding_with_an_unknown_category_is_rendered_in_neither_column() {
+        // Guessing a column for a category this build does not know would file a
+        // product under a heading it does not answer to (P-9).
+        let mut e = entry(
+            Some("steam:1"),
+            None,
+            Some(json!([{ "category": "platform-sdk", "product": "Steamworks SDK" }])),
+        );
+        e.detection_scan = Some(DetectionScan::Complete);
+        assert_eq!(engine_summary(&e), SCANNED_CLEAN_MARKER);
+        assert_eq!(sensitivities_summary(&e), SCANNED_CLEAN_MARKER);
+    }
+
+    #[test]
+    fn the_retired_readiness_sentences_appear_in_no_summary() {
+        // They were relabelings of the two CAPTURE labels and are gone, not moved.
+        // Rendering them beside `ready` or `needs a target` would state one fact
+        // twice in one row.
+        for e in [
+            entry(None, Some(json!([{ "executable": "game.exe" }])), None),
+            entry(None, None, None),
+        ] {
+            for text in [engine_summary(&e), sensitivities_summary(&e)] {
+                assert!(!text.contains("no online mode recorded"), "{text}");
+                assert!(!text.contains("no launch data known"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_readiness_labels_are_unchanged_by_the_split() {
+        // The split cost the readiness column no width: it still says exactly what
+        // it said, in one place, which is what keeps the widened row inside 80
+        // columns.
+        assert_eq!(CaptureReadiness::Ready.label(), "ready");
+        assert_eq!(CaptureReadiness::NeedsTarget.label(), "needs a target");
+    }
+
+    #[test]
+    fn an_apostrophe_bearing_product_renders_whole() {
+        let mut e = entry(
+            Some("steam:1"),
+            None,
+            Some(json!([{ "category": "engine", "product": "Ren'Py" }])),
+        );
+        e.detection_scan = Some(DetectionScan::Complete);
+        assert_eq!(engine_summary(&e), "Ren'Py");
     }
 }

@@ -2294,19 +2294,39 @@ compiled into the binary, authored for depot manifests rather than on-disk
 installs, and never validated against a real game; the seeded set is authored for
 on-disk install layouts instead.
 
-The matcher reads directory entries and, for a PE version string, the version
-resource in a binary's own on-disk bytes. It opens no process handle, reads no
-process memory, launches nothing, and makes no network call (P-1). A locally
-detected engine is stamped `verified`, which outranks the `heuristic-unverified`
-engine attribution a remote catalog carries: local evidence on disk outranks a
-remote claim (P-9). Loading the table partitions its rows into applied, inert (a
-match kind not yet implemented, carried but not evaluated), and skipped (a
-malformed pattern), and the three counts reconcile to the rows loaded, so reduced
-coverage is visible rather than silent (P-4); an unreadable install subtree is
-surfaced distinctly from a clean empty scan. Of the four kinds, filename,
-directory-shape, and PE-version-string are evaluated; the binary-marker kind is
-carried in the schema for the deep-protection DRM products (Denuvo, Arxan,
-VMProtect) and left inert this slice.
+The matcher reads directory entries, for a PE version string the version resource
+in a binary's own on-disk bytes, and for a binary marker the section table in a
+bounded prefix of a candidate executable's own bytes. It opens no process handle,
+reads no process memory, launches nothing, and makes no network call (P-1). A
+locally detected engine is stamped `verified`, which outranks the
+`heuristic-unverified` engine attribution a remote catalog carries: local evidence
+on disk outranks a remote claim (P-9). Loading the table partitions its rows into
+applied, inert (a row this build cannot match, carried but not evaluated), and
+skipped (a malformed pattern), and the three counts reconcile to the rows loaded,
+so reduced coverage is visible rather than silent (P-4); an unreadable install
+subtree is surfaced distinctly from a clean empty scan.
+
+Matchability is a property of the row rather than of its kind. Filename,
+directory-shape, and PE-version-string rows are always evaluated. A binary-marker
+row is evaluated when its pattern has the form `section:<glob>`, which matches a
+name in the candidate binary's PE section table; a binary-marker pattern of any
+other form names a byte sequence no shipped build matches and is carried inert.
+The deep-protection DRM products (Denuvo, Arxan, VMProtect) are carried in that
+inert class.
+
+A section-marker scan does not read every binary in the tree. Its candidates are
+executables at a small bounded depth below the install root, which is where a
+launch target sits and where a wrapper is applied, capped at a bounded count, and
+each is read as a bounded prefix rather than whole. A candidate dropped by the
+count cap is counted on the scan outcome and reported by name, and a candidate
+that could not be opened is recorded unreadable rather than treated as carrying no
+marker: unread is not the same as absent (P-4, P-9).
+
+The presence of a platform SDK redistributable is not a DRM signal and is not
+seeded as one. The Steamworks client library ships with essentially every Steam
+title regardless of whether any DRM wrapper is applied, so a signature keyed on it
+records an observation nobody made; the wrapper's own appended PE section is the
+discriminator, and is what the shipped set matches.
 
 A detected anti-cheat or DRM product is neutral evidence, never a gate. fragcap
 does not restrict, block, warn against, or discourage capture based on what it
@@ -2675,10 +2695,10 @@ newly found titles into `local.db` idempotently, and lists the registered
 targets as a numbered table:
 
 ```text
-  #  TARGET                     CAPTURE          KNOWN
-  1  the_elder_scrolls_online   ready            no online mode recorded
-  2  the_division_2             ready            Denuvo, EasyAntiCheat
-  3  some_indie_thing           needs a target   no launch data known
+  #  TARGET                     CAPTURE          ENGINE     SENSITIVITIES
+  1  the_elder_scrolls_online   ready            Unreal     -
+  2  the_division_2             ready            -          Denuvo, EasyAntiCheat
+  3  some_indie_thing           needs a target   GameMaker  not scanned
 
   fragcap capture 1
 ```
@@ -2686,9 +2706,30 @@ targets as a numbered table:
 Rows are ordered by handle. The CAPTURE column is `ready` when the entry names
 a Windows client or carries a resolvable anchor, and `needs a target` when its
 launch chain is unresolved; every listed row is capturable in principle, so the
-column reports how close, never whether the row is valid. The KNOWN column is
-neutral evidence (detected engine, anti-cheat, and DRM products, else that no
-online mode is recorded). The listing ends by naming the next command, and an
+column reports how close, never whether the row is valid, and it states that
+distinction once rather than restating it elsewhere in the row.
+
+The ENGINE and SENSITIVITIES columns are neutral evidence, partitioned on the
+category each detection finding carries: ENGINE names the detected engine, and
+SENSITIVITIES names the detected anti-cheat and DRM products, anti-cheat before
+DRM. No column mixes an engine with a protection product, and the same partition
+is recoverable from the target-entry export, so the table and the machine-readable
+output cannot disagree about what a technology is.
+
+When a technology column has no products it carries the row's detection coverage
+state instead of a blank: `-` for a complete scan that matched nothing,
+`incomplete` for a scan whose coverage was reduced, and `not scanned` when no scan
+is recorded for the row. A scanned-clean row, an incompletely scanned row, and an
+unscanned row are three different facts and are rendered as three different
+things (P-4).
+
+No column value is truncated and no row is wrapped. Every column but the last
+sizes to its content, the last is free-running, and the columns other than the
+target handle cost a bounded width; a handle wider than the remainder of an 80
+column terminal overflows visibly rather than being clipped, because a silently
+truncated value is the same class of loss as a silently dropped packet.
+
+The listing ends by naming the next command, and an
 empty result prints the commands that populate the store rather than an empty
 table. Registration is additive and idempotent: a repeat listing over an
 unchanged environment registers nothing new and never modifies or removes an
@@ -2726,7 +2767,11 @@ target need no store path unless one is named explicitly.
   `targets import <FILE>` merges each element on its stable identifier, so an
   export round-trips through an import with identical identifiers and no
   duplicate rows. This representation carries the entry identity and is distinct
-  from the master capture schema (section 15).
+  from the master capture schema (section 15). Each record carries the per-finding
+  category of its evidence and, when a scan is recorded, its detection coverage
+  state, so a machine reader can make the same partition and draw the same
+  coverage conclusion the listing does. An out-of-set coverage value is rejected at
+  import and nothing is applied.
 - `targets show <SELECTOR>` and `targets discover` are read-only inspections;
   `discover`, unlike the listing, registers nothing.
 

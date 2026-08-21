@@ -63,6 +63,14 @@ pub enum Engine {
 }
 
 impl Engine {
+    /// Every engine these rules can select a client executable for.
+    ///
+    /// Exists so the directed subset invariant of slice S065 iterates the
+    /// declaration itself rather than a hand-maintained list beside it: adding a
+    /// variant here without adding a detection signature for its
+    /// [`product_name`](Engine::product_name) fails that check.
+    pub const ALL: [Engine; 4] = [Engine::Unreal, Engine::Unity, Engine::Godot, Engine::RenPy];
+
     /// A stable lower-case label for diagnostics. Matches the engine names used
     /// by the `SteamDatabase/FileDetectionRuleSets` ruleset, lower-cased.
     pub fn as_str(&self) -> &'static str {
@@ -71,6 +79,23 @@ impl Engine {
             Engine::Unity => "unity",
             Engine::Godot => "godot",
             Engine::RenPy => "renpy",
+        }
+    }
+
+    /// The product name the detection signature set uses for this engine.
+    ///
+    /// Deliberately distinct from [`as_str`](Engine::as_str), which is a lower-case
+    /// diagnostic label. This is the operator-facing product string that appears in
+    /// a listing's engine column, so it carries the product's own capitalization and
+    /// punctuation, and it is the key the S065 subset check joins on. Collapsing the
+    /// two would either put a lower-case label in front of the operator or make a
+    /// diagnostic label carry an apostrophe.
+    pub fn product_name(&self) -> &'static str {
+        match self {
+            Engine::Unreal => "Unreal",
+            Engine::Unity => "Unity",
+            Engine::Godot => "Godot",
+            Engine::RenPy => "Ren'Py",
         }
     }
 }
@@ -395,6 +420,19 @@ fn ends_with_components(path: &Path, tail: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_product_name_is_not_the_diagnostic_label() {
+        use super::Engine;
+        // Ren'Py is the case that forces the two to be separate: the product name
+        // carries an apostrophe and capitalization the diagnostic label must not.
+        assert_eq!(Engine::RenPy.as_str(), "renpy");
+        assert_eq!(Engine::RenPy.product_name(), "Ren'Py");
+        assert!(
+            Engine::ALL.iter().any(|e| e.as_str() != e.product_name()),
+            "at least one engine distinguishes the two, so they cannot be merged"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 

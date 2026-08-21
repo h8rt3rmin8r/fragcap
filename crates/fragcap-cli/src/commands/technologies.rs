@@ -141,9 +141,13 @@ mod tests {
     }
 
     fn write(dir: &Path, rel: &str) {
+        write_bytes(dir, rel, b"");
+    }
+
+    fn write_bytes(dir: &Path, rel: &str, bytes: &[u8]) {
         let full = dir.join(rel);
         fs::create_dir_all(full.parent().unwrap()).unwrap();
-        fs::write(full, b"").unwrap();
+        fs::write(full, bytes).unwrap();
     }
 
     /// A seeded catalog.db in a scratch directory.
@@ -160,7 +164,16 @@ mod tests {
         let catalog = seeded_catalog(&dir);
         write(&dir, "UnityPlayer.dll");
         write(&dir, "EasyAntiCheat/EasyAntiCheat_x64.dll");
+        // Since slice S065 the DRM signal is the wrapper's own `.bind` PE section,
+        // not the presence of the Steamworks SDK library beside it. Both are written
+        // here so the test still covers a DRM finding rendering in the DRM category,
+        // and still shows that the library alone would not have produced one.
         write(&dir, "steam_api64.dll");
+        write_bytes(
+            &dir,
+            "Game.exe",
+            &fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text", ".bind"]),
+        );
         let args = TechnologiesArgs {
             path: dir.clone(),
             catalog_db: Some(catalog),
