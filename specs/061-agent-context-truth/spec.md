@@ -172,6 +172,16 @@ authority.
 - **FR-001**: The `AGENTS.md` block MUST contain no claim that is false as of
   the date this change lands, and each surviving claim MUST name the evidence
   that keeps it true.
+- **FR-001a**: The block MUST distinguish a claim about something **observed
+  once** (which carries a date, and is untrustworthy without one) from a claim
+  about how a check **behaves** (which is invariant, carries no date, and names
+  how to see the behavior instead). Review of PR #188 found the first draft
+  asserting that every claim needs a date while three entries beneath it
+  correctly had none, which is the internal inconsistency this splits.
+- **FR-001b**: The pointer to the authoritative record MUST name `CHANGELOG.md`
+  for released history and `changelog.d/` only for unreleased. `cargo xtask
+  changelog --release` consumes the fragments and deletes them, so a reader sent
+  to `changelog.d/` alone to find a landed slice usually finds nothing.
 - **FR-002**: The block MUST retain its governing framing: the distinction
   between a check that did not run and a check that passed is a standing rule,
   and MUST NOT be presented as a list that is retired once emptied. Its items
@@ -188,6 +198,13 @@ authority.
   runner is a licensing decision for the operator.
 - **FR-005**: The `platform`, `audit`, and `cargo deny` claims MUST be replaced
   with what discharged them and when.
+- **FR-005a**: The outstanding live-capture item MUST NOT state that installing
+  npcap on a runner would discharge it. `crates/fragcap-capture/tests/live.rs`
+  prints a reason and returns when the environment is absent, because Rust's
+  harness has no skip, so a test that declined to run still passes and a green
+  Tier 2 step can mean either that capture happened or that nothing did.
+  Discharging it needs npcap present, loopback capture support, sufficient
+  privilege, and the test output read. Found in review of PR #188.
 - **FR-006**: The block header MUST NOT state a count that disagrees with the
   number of items beneath it. Either the count is correct or there is no count.
 - **FR-007**: Neither `AGENTS.md` nor `CLAUDE.md` MUST carry a slice-numbered

@@ -8,8 +8,10 @@ SPDX) reads the working tree and nothing else, and it is the cheapest check in
 the set precisely because it is hermetic, deterministic, and runnable offline.
 Making `cargo xtask ci` depend on a network connection in order to police six
 sentences is the worse trade. The mitigation taken instead is to attach a date
-and a named piece of evidence to every claim in the block, so a stale one is
-visible on reading rather than only on running something. Issue #187 anticipated
+to every claim about something observed once, so a stale observation is visible
+on reading rather than only on running something. Claims about how a check
+behaves are invariant, carry no date, and name instead how to see the behavior;
+the block says which kind is which, so a missing date is never ambiguous. Issue #187 anticipated
 this outcome and accepted it.
 
 **2026-08-20** Kept the standing verification block in `AGENTS.md` as a rule

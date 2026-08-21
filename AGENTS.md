@@ -43,13 +43,17 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-**The authority for what has landed is `specs/` and `changelog.d/`, not this
-file.** Every completed slice leaves a directory under `specs/` and at least one
-changelog fragment under `changelog.d/`; read the highest-numbered `specs/`
-directory to see where the work has reached, and `.specify/feature.json` to see
-what is in flight. This file deliberately names no slice number as a completion
-marker, because any number written here is wrong one slice later and a reader
-will quote it anyway.
+**The authority for what has landed is `specs/`, `CHANGELOG.md`, and
+`changelog.d/`, not this file.** Every completed slice leaves a directory under
+`specs/`, so the highest-numbered one shows where the work has reached, and
+`.specify/feature.json` shows what is in flight. For the narrative:
+`CHANGELOG.md` carries every released change, and `changelog.d/` carries only
+what has not shipped yet, because `cargo xtask changelog --release` consumes the
+fragments and deletes them at release time. Looking for a landed slice in
+`changelog.d/` alone will usually find nothing.
+
+This file deliberately names no slice number as a completion marker, because any
+number written here is wrong one slice later and a reader will quote it anyway.
 
 The architectural summary below is written as of S11 and is extended by those
 same records rather than rewritten here every slice. Notably, since S17 the
@@ -501,10 +505,16 @@ reported as green until someone has watched it.** That rule is standing and does
 not expire when the list below empties. What follows is the current state of the
 checks and demonstrations that rule has governed, each with the evidence that
 discharged it or with what would discharge it. Verify before repeating any of
-it; the dates are what make these claims checkable, and a claim without one is a
-claim to distrust.
+it.
 
-Discharged, with the evidence and the date:
+Two kinds of claim appear below and they carry evidence differently. A claim
+about something **observed once** (a workflow run, a manual demonstration) must
+name its date, and one without a date is a claim to distrust. A claim about how
+a check **behaves** is invariant and carries no date; it names instead how to
+see the behavior for yourself. Do not read a missing date on the second kind as
+the defect the first kind's date exists to prevent.
+
+Discharged:
 
 - **`platform` and `audit` have both run, and both are green.** They were red
   for a runner reason rather than a code reason during the GitHub incident of
@@ -550,9 +560,18 @@ Still outstanding, with what would discharge it:
   with STATUS_DLL_NOT_FOUND before `main`, which is how S09 found this. Tier 2
   tests therefore do not run in continuous integration, and the workflow says so
   rather than appearing green over nothing, which is correct and should stay.
-  What would discharge this is a runner with npcap installed; another manual run
-  would not. Installing npcap on a runner is a licensing decision for the
-  operator.
+  **Installing npcap on a runner would not, on its own, discharge this.** The
+  Tier 2 tests degrade gracefully rather than failing when the environment is
+  not there: `crates/fragcap-capture/tests/live.rs` prints a reason and returns,
+  because Rust's harness has no skip and a hard failure would make the `live`
+  feature unusable for local development. A test that returned early still
+  passes, so a green Tier 2 step can mean the driver was found and used, or that
+  every test declined to run. Discharging this therefore needs all of: npcap
+  present, installed **with loopback capture support**, a runner with enough
+  privilege to open the interface, and the test output read to confirm packets
+  were actually captured rather than skipped. Another manual run discharges
+  nothing here, because the claim is about continuous integration. Installing
+  npcap on a runner remains a licensing decision for the operator.
 
 ## Spec-driven development workflow (spec-kit)
 
