@@ -32,7 +32,7 @@ drop-counter-overflow.fixed.md
 | `removed` | Capability removed |
 | `fixed` | A defect corrected |
 | `security` | A change with a security consequence |
-| `decisions` | A dated decision to change a pinned artifact |
+| `decisions` | A dated decision worth surfacing at release: always a change to a pinned artifact, and also an architecture or dependency call a later reader would otherwise have to reconstruct |
 
 One change can produce several fragments. A slice that adds a feature and fixes
 a defect found along the way writes two files.
@@ -79,10 +79,25 @@ Write what changed for the user, not what changed in the diff.
 
 ## Decisions
 
-The `decisions` section is different: it records a dated decision to change a
-pinned artifact (`.github/workflows/**`, `rust-toolchain.toml`, `release.toml`,
-`scripts/**`, release documentation), which the constitution requires. Lead
-with the date.
+The `decisions` section is different: it records a dated decision rather than a
+change to behavior. Lead with the date.
+
+A decision to change a **pinned artifact** (`.github/workflows/**`,
+`rust-toolchain.toml`, `release.toml`, `scripts/**`, release documentation)
+**must** be recorded here; the constitution requires it.
+
+That is the mandatory case, not the only one. An architecture call, a dependency
+addition or refusal, or a filed request deliberately declined also belongs here
+when a later reader would otherwise have to reconstruct the reasoning from a
+diff. The repository already depends on this: the architecture narrative in
+`AGENTS.md` sends readers to the S05, S08, and S10 decisions fragments for the
+ambiguity rule, a reversal, and two dependency arguments, none of which changed
+a pinned artifact.
+
+What does **not** belong here is reasoning that lives fully in the slice's own
+`specs/` directory and is not worth a release note. A fragment that only
+restates `spec.md` is duplication, and duplication is how two records start
+disagreeing.
 
 ```markdown
 **2026-08-06** Pinned the toolchain to 1.82 to match the minimum supported

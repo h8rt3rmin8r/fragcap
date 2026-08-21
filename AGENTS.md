@@ -43,17 +43,25 @@ Read these before acting. They are ordered by authority.
 
 ## Current state
 
-Slices S01 through S17 are complete (S17, Steam integration and managed launch,
-integrates through the pull request that carries this note). The detailed
-per-slice narrative for S12 through S17 lives in the changelog fragments under
-`changelog.d/` and the slice specs under `specs/`; the architectural summary
-below is written as of S11 and is extended by those records rather than
-rewritten here every slice. Notably, since S17 the `fragcap-steam` crate is no
-longer a skeleton: it reads Steam's local installation metadata to enumerate
-installed titles, scaffolds a validating profile from one (`fragcap steam
-profile <app_id>`), and starts a title through Steam's protocol handler under
-capture (`fragcap run --launch`), all with no capture logic, no attribution
-logic, and no process handle.
+**The authority for what has landed is `specs/`, `CHANGELOG.md`, and
+`changelog.d/`, not this file.** Every completed slice leaves a directory under
+`specs/`, so the highest-numbered one shows where the work has reached, and
+`.specify/feature.json` shows what is in flight. For the narrative:
+`CHANGELOG.md` carries every released change, and `changelog.d/` carries only
+what has not shipped yet, because `cargo xtask changelog --release` consumes the
+fragments and deletes them at release time. Looking for a landed slice in
+`changelog.d/` alone will usually find nothing.
+
+This file deliberately names no slice number as a completion marker, because any
+number written here is wrong one slice later and a reader will quote it anyway.
+
+The architectural summary below is written as of S11 and is extended by those
+same records rather than rewritten here every slice. Notably, since S17 the
+`fragcap-steam` crate is no longer a skeleton: it reads Steam's local
+installation metadata to enumerate installed titles, scaffolds a validating
+profile from one (`fragcap steam profile <app_id>`), and starts a title through
+Steam's protocol handler under capture (`fragcap run --launch`), all with no
+capture logic, no attribution logic, and no process handle.
 
 The Cargo workspace exists with the eight
 crates from the architecture of record, a task runner carrying the repository's
@@ -492,50 +500,78 @@ crate would pass the gate; S06 and S07 both keep their corpus tests in the
 The remote is `origin`, at `https://github.com/h8rt3rmin8r/fragcap`. S01
 integrated through pull request #1.
 
-Two things are scaffolded but not exercised, and must not be reported as
-passing checks:
+**A check that has not run is not a check that passed, and neither is to be
+reported as green until someone has watched it.** That rule is standing and does
+not expire when the list below empties. What follows is the current state of the
+checks and demonstrations that rule has governed, each with the evidence that
+discharged it or with what would discharge it. Verify before repeating any of
+it.
 
-- **Two of the four workflows that had never completed now have.** The first
-  runs landed during the GitHub incident of 2026-08-06, and `minimum supported
-  toolchain`, `core builds without a capture backend`, `platform`, and `audit`
-  never acquired a runner, so they were red for that reason rather than a code
-  reason. On pull request 10 the first two ran and passed. `platform` and
-  `audit` still have not: `audit` is weekly and dispatch-only, and `platform`
-  did not trigger on that pull request. Neither should be treated as green
-  until watched. S09 gave `platform` real triggers, which makes the next pull
-  request the first that can turn it green, and the first that can turn it red
-  for a real reason.
-- **The minimum-toolchain check now runs for real.** Until S02 it built with
-  the pinned toolchain and reported success, which said nothing about the
-  declared minimum. It now builds through `rustup run 1.82` and exits 2 when
-  that toolchain is absent, so a check that did not run can no longer look like
-  one that passed.
-- **The npcap SDK acquisition step has now run, and the live source links.**
-  Both were first exercised on pull request 12, watched to completion. What that
-  proves is that the kit is acquired at build time and that
-  `fragcap-capture --features live` compiles and links against `wpcap.lib`.
-- **Live capture has still never executed.** The kit supplies the import
+Two kinds of claim appear below and they carry evidence differently. A claim
+about something **observed once** (a workflow run, a manual demonstration) must
+name its date, and one without a date is a claim to distrust. A claim about how
+a check **behaves** is invariant and carries no date; it names instead how to
+see the behavior for yourself. Do not read a missing date on the second kind as
+the defect the first kind's date exists to prevent.
+
+Discharged:
+
+- **`platform` and `audit` have both run, and both are green.** They were red
+  for a runner reason rather than a code reason during the GitHub incident of
+  2026-08-06, and stayed unwatched for some time after. As of 2026-08-20 `audit`
+  has two scheduled runs, 2026-08-10 and 2026-08-17, both green; `platform` has
+  85 runs, 79 green, most recently 2026-08-19. Read as an accounting of the
+  workflows, not of what runs inside them: `platform` going green does **not**
+  mean its Tier 2 steps executed, for the reason in the outstanding item below.
+- **The minimum-toolchain check runs for real.** Until S02 it built with the
+  pinned toolchain and reported success, which said nothing about the declared
+  minimum. It now builds through `rustup run 1.82` and exits 2 when that
+  toolchain is absent, so a check that did not run can no longer look like one
+  that passed. This is the clearest illustration of the rule above.
+- **The npcap SDK acquisition step has run, and the live source links.** Both
+  were first exercised on pull request 12, watched to completion. What that
+  proves is that the kit is acquired at build time and that `fragcap-capture
+  --features live` compiles and links against `wpcap.lib`.
+- **`cargo deny` has run.** The `audit` workflow owns it, and that workflow ran
+  green on 2026-08-10 and 2026-08-17. Before those runs its licenses had only
+  been verified by hand against the allowlist.
+- **Live capture has been executed, manually, on a developer machine with npcap
+  installed.** On 2026-08-20 a `fragcap capture --launch` run against a Steam
+  title ran 16 minutes wall clock, captured 18,234 packets, and wrote 16,427 of
+  them to a pcapng. Managed launch, stage matching, the ETW process watch,
+  socket-table attribution, kernel filter narrowing (observed engaging at
+  t+22.5s), and a graceful `terminal-stage-exited` shutdown all ran. That run is
+  also what produced issues #184, #185, and #186, so it demonstrated the
+  pipeline and found real defects in the same pass.
+- **The socket table backend has run.** S10's tier 2 tests were executed to
+  completion on a Windows developer machine: a real socket opened, found in the
+  real socket table, attributed to the process that opened it, and then closed
+  and observed as a retained attribution. It was cheap for one reason worth
+  remembering: the backend needs no capture driver and no elevation, so there is
+  no external dependency between the test and the machine. Its workflow step is
+  likewise the first in `platform.yml` that can go green on a bare runner.
+
+Still outstanding, with what would discharge it:
+
+- **Live capture is not exercised in continuous integration, and a green
+  `platform` run does not demonstrate it.** The npcap SDK supplies the import
   library; `wpcap.dll` ships with the npcap driver, and a binary linked against
   `wpcap.lib` will not start without it. A runner with no npcap installed exits
   with STATUS_DLL_NOT_FOUND before `main`, which is how S09 found this. Tier 2
-  tests therefore do not run in continuous integration today, and the workflow
-  says so rather than appearing green over nothing. Installing npcap on a runner
-  is a licensing decision for the operator.
-- **`cargo deny` has never run.** The `audit` workflow owns it and is weekly
-  and dispatch-only. S09 added the first dependency with a platform surface and
-  a transitive graph worth checking, so the check now has a real subject. Its
-  licenses were verified by hand against the allowlist; nobody has watched
-  `cargo deny` confirm it. S10 added two more, verified the same way.
-- **The socket table backend has run, and it is the exception on this list.**
-  S10's tier 2 tests were executed to completion on a Windows developer machine:
-  a real socket opened, found in the real socket table, attributed to the
-  process that opened it, and then closed and observed as a retained
-  attribution. That is a stronger claim than anything else here, and it was
-  cheap for one reason worth remembering: the backend needs no capture driver
-  and no elevation, so there is no external dependency between the test and the
-  machine. Its workflow step is likewise the first in `platform.yml` that can go
-  green on a bare runner. **This says nothing about live capture**, which
-  remains unexecuted for the reasons above.
+  tests therefore do not run in continuous integration, and the workflow says so
+  rather than appearing green over nothing, which is correct and should stay.
+  **Installing npcap on a runner would not, on its own, discharge this.** The
+  Tier 2 tests degrade gracefully rather than failing when the environment is
+  not there: `crates/fragcap-capture/tests/live.rs` prints a reason and returns,
+  because Rust's harness has no skip and a hard failure would make the `live`
+  feature unusable for local development. A test that returned early still
+  passes, so a green Tier 2 step can mean the driver was found and used, or that
+  every test declined to run. Discharging this therefore needs all of: npcap
+  present, installed **with loopback capture support**, a runner with enough
+  privilege to open the interface, and the test output read to confirm packets
+  were actually captured rather than skipped. Another manual run discharges
+  nothing here, because the claim is about continuous integration. Installing
+  npcap on a runner remains a licensing decision for the operator.
 
 ## Spec-driven development workflow (spec-kit)
 
