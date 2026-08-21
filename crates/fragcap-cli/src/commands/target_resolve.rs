@@ -20,8 +20,8 @@ use fragcap::profile::{
 };
 use fragcap::steam::SteamWalkerProvider;
 use fragcap::targets::{
-    launch_is_unresolved, observed_executable, resolve_id, resolve_positional, Selection, Store,
-    TargetEntry,
+    is_row_index, launch_is_unresolved, observed_executable, resolve_id, resolve_positional,
+    Selection, Store, TargetEntry,
 };
 
 use crate::emit::Emitter;
@@ -78,6 +78,46 @@ pub(crate) struct Promotion {
     pub local_db: PathBuf,
 }
 
+/// The message for a selector that matched no target.
+///
+/// One constructor for all four emit sites (`resolve_stored` here, and `show`,
+/// `remove`, and `export` in `targets.rs`), so a fifth cannot drift from the
+/// other four.
+///
+/// The numeric case is the one that matters. `is_row_index` gates resolution
+/// first and never falls through, so a bare integer is resolved as a listing row
+/// number and as nothing else. Issue #181 records an operator reading a table of
+/// Steam app ids, passing one to `--target`, and being told only "no target
+/// matches": the resolver knew the token was numeric, knew it had therefore
+/// taken the row-index path, and knew how many rows the snapshot held, and
+/// reported none of it. Withholding an observation the instrument made is a P-9
+/// defect, so the message names the interpretation it used, the size of the
+/// space it searched, and the route to the other namespace.
+///
+/// A non-numeric selector keeps the short message: there is no second namespace
+/// to disambiguate, and a handle or name miss means what it says.
+pub(crate) fn no_match_message(store: &Store, selector: Option<&str>) -> String {
+    let Some(token) = selector.filter(|t| is_row_index(t)) else {
+        return "no target matches; list targets with `fragcap targets`".to_string();
+    };
+    // A snapshot read that fails reports an unknown size rather than replacing
+    // the whole message with a store error: the caller is already on a failure
+    // path, and the interpretation is the half that unblocks the operator.
+    let rows = match store.listing_snapshot_len() {
+        Ok(n) => format!("the listing has {n} row(s)"),
+        Err(_) => "the listing size could not be read".to_string(),
+    };
+    format!(
+        "no target matches\n  \
+         `{token}` was read as a listing row number; {rows}.\n  \
+         A bare number is always a row number here, never a handle, a name, or a\n  \
+         platform app id. If {token} is a Steam app id, register the title first:\n      \
+         fragcap targets add --steam {token}\n  \
+         Then capture it by handle or row number:\n      \
+         fragcap targets"
+    )
+}
+
 /// Resolve a stored target against the local store into the profile that captures
 /// it.
 ///
@@ -113,9 +153,11 @@ pub(crate) fn resolve_stored(
     let entry = match selection {
         Selection::Resolved(t) => t,
         Selection::NoMatch => {
-            return Err(CliError::usage(
-                "no target matches; list targets with `fragcap targets`".to_string(),
-            ))
+            let selector = match target {
+                StoredRef::Selector(t) => Some(t),
+                StoredRef::Id(_) => None,
+            };
+            return Err(CliError::usage(no_match_message(&store, selector)));
         }
         Selection::Ambiguous(matches) => {
             // List the matches rather than only the count, so the operator can pick

@@ -23,15 +23,15 @@ fn seed_signatures_populates_the_catalog_and_is_idempotent() {
     let dir = TempDir::new().expect("tempdir");
     let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
 
-    let (code, out, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
-    assert_eq!(code, 0, "seed-signatures succeeds: {out}");
+    let (code, out, _err) = run(&["catalog", "seed", "--tier", "signature", "--db", &catalog]);
+    assert_eq!(code, 0, "seed --tier signature succeeds: {out}");
     assert!(
-        out.contains("detection signatures"),
+        out.contains("detection signature"),
         "reports the seeded count: {out}"
     );
 
     // Idempotent: re-running succeeds and reports the same count.
-    let (code2, out2, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
+    let (code2, out2, _err) = run(&["catalog", "seed", "--tier", "signature", "--db", &catalog]);
     assert_eq!(code2, 0);
     assert_eq!(out, out2, "re-seeding is idempotent");
 }
@@ -44,7 +44,7 @@ fn scan_with_a_catalog_detects_and_reports_evidence() {
     // than the shared default store other tests observe.
     let local = db(&dir);
     // Seed the signature table, then point scan at a Unity game directory.
-    let (code, _out, _err) = run(&["catalog", "seed-signatures", "--db", &catalog]);
+    let (code, _out, _err) = run(&["catalog", "seed", "--tier", "signature", "--db", &catalog]);
     assert_eq!(code, 0);
 
     let game = dir.path().join("MyGame");
@@ -763,4 +763,85 @@ fn a_subcommand_defaults_to_the_local_store_when_db_is_omitted() {
         show_out.contains("game.exe") || show_out.to_lowercase().contains("s058"),
         "the target added with no --db is found by show with no --db: {show_out}"
     );
+}
+/// A numeric selector that matches no row says what it did with the number.
+///
+/// Issue #181. An operator read a table of Steam app ids from `fragcap steam
+/// list`, passed one to `--target`, and was told only "no target matches". The
+/// number was resolved as a listing row index, because `is_row_index` gates
+/// first and never falls through to a handle or name lookup, so the operator's
+/// number was interpreted in a namespace they did not know existed. The
+/// resolver knew all of that and reported none of it, which is the P-9 half of
+/// the defect: an observation was made and withheld.
+#[test]
+fn a_numeric_selector_miss_names_the_interpretation_and_the_listing_size() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&[
+        "targets", "add", "Alpha", "--db", &store, "--anchor", "steam:1",
+    ]);
+    // Write a listing snapshot so the reported size is a real one.
+    run(&["targets", "list", "--db", &store]);
+
+    let (_code, out, _err) = run(&["targets", "show", "999999", "--db", &store]);
+    assert!(
+        out.contains("was read as a listing row number"),
+        "the message names the interpretation it used: {out}"
+    );
+    assert!(
+        out.contains("the listing has "),
+        "the message names the size of the space it searched: {out}"
+    );
+    assert!(
+        out.contains("targets add --steam 999999"),
+        "the message names the route to the app-id namespace: {out}"
+    );
+
+    // A non-numeric miss keeps the short message: there is no second namespace
+    // to disambiguate, so the long form would be noise.
+    let (_c, plain, _e) = run(&["targets", "show", "no-such-handle", "--db", &store]);
+    assert!(
+        plain.contains("no target matches"),
+        "a name miss still reports cleanly: {plain}"
+    );
+    assert!(
+        !plain.contains("was read as a listing row number"),
+        "a name miss does not claim a row-index interpretation: {plain}"
+    );
+}
+/// `--from` is refused for a tier that cannot read a document.
+///
+/// Raised in review of PR #190. The merged seed verb validated only the *number*
+/// of `--tier` values, so `--tier signature --from <file>` and `--tier launch
+/// --from <file>` both succeeded: the signature arm seeded from its compiled-in
+/// set and the launch arm reported a skip, and neither ever opened the file. An
+/// operator who named an input and got exit 0 would reasonably read that as "the
+/// document was loaded". Discarding a named input silently is the
+/// configuration-side form of the loss P-4 forbids.
+#[test]
+fn from_is_refused_for_a_tier_that_reads_no_document() {
+    let dir = TempDir::new().expect("tempdir");
+    let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
+    let doc = dir.path().join("doc.json");
+    std::fs::write(&doc, "[]").expect("write");
+    let doc = doc.to_string_lossy().into_owned();
+
+    for tier in ["signature", "launch"] {
+        // A usage error is a diagnostic, so it reaches standard error, not the
+        // command-result stream.
+        let (code, _out, err) = run(&[
+            "catalog", "seed", "--tier", tier, "--from", &doc, "--db", &catalog,
+        ]);
+        assert_eq!(code, 2, "--from with --tier {tier} is a usage error: {err}");
+        assert!(
+            err.contains(&format!("--from cannot fill the {tier} tier")),
+            "the refusal names the tier and why: {err}"
+        );
+    }
+
+    // A tier that does read a document is unaffected.
+    let (code, out, _err) = run(&[
+        "catalog", "seed", "--tier", "catalog", "--from", &doc, "--db", &catalog,
+    ]);
+    assert_eq!(code, 0, "--tier catalog still reads --from: {out}");
 }

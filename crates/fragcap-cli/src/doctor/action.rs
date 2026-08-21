@@ -17,7 +17,7 @@ use super::Report;
 /// selection is tested every way without a build matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
-    /// Whether the network-fetch capability (the `net` feature) is present.
+    /// Whether this build can reach the network.
     pub net: bool,
     /// Whether relaunching elevated is possible on this platform (Windows). When
     /// false, a `RelaunchElevated` action is not offered at all rather than offered
@@ -48,8 +48,8 @@ pub enum ActionKind {
     RelaunchElevated,
     /// The analyzer extcap integration is not registered: install it.
     InstallExtcap(ExtcapScope),
-    /// The catalog store is missing: fetch the published catalog.
-    FetchCatalog,
+    /// The catalog store is missing: create it and load the detection signatures.
+    InitializeCatalog,
     /// No target entries are registered: run discovery.
     RunDiscovery,
 }
@@ -59,7 +59,7 @@ impl ActionKind {
     fn net_required(self) -> bool {
         matches!(
             self,
-            ActionKind::ObtainNpcap | ActionKind::RelaunchNpcapInstaller | ActionKind::FetchCatalog
+            ActionKind::ObtainNpcap | ActionKind::RelaunchNpcapInstaller
         )
     }
 
@@ -82,7 +82,9 @@ impl ActionKind {
             ActionKind::InstallExtcap(ExtcapScope::Machine) => {
                 "Register the analyzer extcap integration machine-wide".to_string()
             }
-            ActionKind::FetchCatalog => "Fetch the current published catalog".to_string(),
+            ActionKind::InitializeCatalog => {
+                "Create the catalog store and load the detection signatures".to_string()
+            }
             ActionKind::RunDiscovery => {
                 "Run discovery (tiers 1 and 2) to register installed titles".to_string()
             }
@@ -97,10 +99,6 @@ impl ActionKind {
             ActionKind::ObtainNpcap | ActionKind::RelaunchNpcapInstaller => {
                 "Open the official download page for npcap (npcap.com, or the Wireshark installer \
                  that provides it); this build cannot fetch the installer"
-                    .to_string()
-            }
-            ActionKind::FetchCatalog => {
-                "This build cannot fetch; run `fragcap catalog update` with a net-enabled build"
                     .to_string()
             }
             _ => self.primary_label(),
@@ -137,11 +135,19 @@ impl Action {
     }
 
     /// Whether this action, in its currently-offered form, is presented as guidance
-    /// only rather than as a performable step. A degraded `FetchCatalog` has no
-    /// performable form in a default build, so it is surfaced as guidance and not
-    /// offered as a confirm prompt (FR-016).
+    /// only rather than as a performable step.
+    ///
+    /// Nothing is guidance-only any more. The one kind that was, the catalog
+    /// action, was net-gated and therefore always degraded in a shipped build,
+    /// where its guidance told the user to rebuild fragcap from source (issue
+    /// #175). It is now an offline initialize-and-seed with no network form to
+    /// degrade from. The npcap kinds still degrade, but their degraded form is a
+    /// real step (open the official download page), so they stay performable.
+    ///
+    /// Kept as a method rather than deleted: it is part of the action contract,
+    /// and a future net-gated action would need it again.
     pub fn guidance_only(&self) -> bool {
-        self.degraded && self.kind == ActionKind::FetchCatalog
+        false
     }
 }
 
@@ -266,7 +272,7 @@ mod tests {
     fn net_required_actions_degrade_when_the_capability_is_absent() {
         let report = report_with(vec![
             Some(Action::new(ActionKind::ObtainNpcap)),
-            Some(Action::new(ActionKind::FetchCatalog)),
+            Some(Action::new(ActionKind::InitializeCatalog)),
         ]);
 
         let capable = offered_actions(
@@ -288,14 +294,26 @@ mod tests {
                 elevation: true,
             },
         );
-        assert!(degraded.iter().all(|a| a.degraded));
-        assert!(degraded[0].label.contains("download page"));
-        // The degraded catalog action is guidance, not a performable prompt.
+        // npcap still degrades, and its degraded form is a real step: open the
+        // official download page. That is why slice S063 left it alone.
+        let npcap = degraded
+            .iter()
+            .find(|a| a.kind == ActionKind::ObtainNpcap)
+            .unwrap();
+        assert!(npcap.degraded);
+        assert!(npcap.label.contains("download page"));
+
+        // The catalog action does not degrade at all any more. It creates the
+        // store and loads the compiled-in signatures, which needs no network, so
+        // there is nothing to degrade from. It used to be net-gated and therefore
+        // always degraded in a shipped build, where its guidance told the user to
+        // rebuild fragcap from source (issue #175).
         let catalog = degraded
             .iter()
-            .find(|a| a.kind == ActionKind::FetchCatalog)
+            .find(|a| a.kind == ActionKind::InitializeCatalog)
             .unwrap();
-        assert!(catalog.guidance_only());
+        assert!(!catalog.degraded, "the catalog action is offline");
+        assert!(!catalog.guidance_only(), "and therefore performable");
     }
 
     #[test]

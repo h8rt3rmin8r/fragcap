@@ -44,6 +44,22 @@ use emit::{Emitter, Format, Verbosity};
 
 pub use exit::{CliError, Exit};
 
+/// The clap command tree.
+///
+/// Public so the help guard can enumerate every `--help` page from clap itself
+/// rather than from a hand-written list. That distinction is the whole defect
+/// recorded in issue #178: the previous guard checked three pages out of
+/// twenty-nine, so six leaking pages were never looked at and a regression the
+/// guard existed to prevent landed anyway. A page set derived from this
+/// function cannot fall behind the command surface, because it is the command
+/// surface.
+///
+/// One function rather than a public `cli` module: the module is 757 lines of
+/// argument structs and none of it is API.
+pub fn command() -> clap::Command {
+    <Cli as clap::CommandFactory>::command()
+}
+
 /// Run the command surface against `args`, returning the process exit.
 ///
 /// The production entry: command results go to standard output and a capture's

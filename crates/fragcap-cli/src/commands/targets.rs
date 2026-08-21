@@ -92,7 +92,10 @@ pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError>
 /// created; an explicit `--db` and the `FRAGCAP_LOCAL_DB` override are operator-named
 /// and used as given, matching `capture`'s rule of bootstrapping only defaulted
 /// locations. A create failure is left for the subsequent open to surface.
-fn default_local_store() -> Option<PathBuf> {
+///
+/// `pub(crate)` since slice S063 so `targets discover` resolves its local store
+/// through the same precedence rather than a second implementation of it.
+pub(crate) fn default_local_store() -> Option<PathBuf> {
     if let Some(env) = paths::local_db_path(None) {
         return Some(env);
     }
@@ -370,7 +373,11 @@ fn remove(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError>
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
-            let _ = writeln!(out, "no target matches");
+            let _ = writeln!(
+                out,
+                "{}",
+                target_resolve::no_match_message(&store, args.selector.as_deref())
+            );
             Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {
@@ -413,7 +420,11 @@ fn export(args: &TargetsExportArgs, out: &mut dyn Write) -> Result<Exit, CliErro
                 Selection::Resolved(t) => vec![*t],
                 Selection::NoMatch if miss_exit == Exit::SUCCESS => Vec::new(),
                 Selection::NoMatch => {
-                    let _ = writeln!(out, "no target matches");
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        target_resolve::no_match_message(&store, selector.as_deref())
+                    );
                     return Ok(miss_exit);
                 }
                 Selection::Ambiguous(matches) => {
@@ -455,8 +466,42 @@ fn import(file: &Path, db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, C
 /// reads and prints, and (unlike the hero listing) registers nothing beyond the
 /// first-run volume eligibility seeding the cross-volume walk needs to be safe.
 fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
-    let mut local = Store::open(&args.local_db).map_err(|e| CliError::failure(e.to_string()))?;
-    let discovery = compose_and_discover(&args.catalog_db, &mut local, args.steam_root.as_deref())?;
+    // Both stores are overrides, never requirements (issue #179). The local one
+    // resolves through the same precedence the hero listing uses; the catalog
+    // one through the shared bootstrap, so a first run creates it rather than
+    // asking the operator for a path to a component fragcap installs.
+    let local_db = match args.local_db.clone().or_else(default_local_store) {
+        Some(p) => p,
+        None => {
+            return Err(CliError::failure(concat!(
+                "no local store could be resolved: pass --local-db, set ",
+                "FRAGCAP_LOCAL_DB, or run on a machine with a per-user ",
+                "application data directory",
+            )))
+        }
+    };
+    let catalog_db = target_resolve::ensure_catalog_store(args.catalog_db.as_deref())
+        .map_err(CliError::failure)?
+        .ok_or_else(|| {
+            CliError::failure(concat!(
+                "no catalog store could be resolved: pass --catalog-db, set ",
+                "FRAGCAP_CATALOG_DB, or run on a machine with a per-user ",
+                "application data directory",
+            ))
+        })?;
+    // Name both stores. Since slice S063 either can come from a flag, an
+    // environment override, or the per-user default, and discovery reads one
+    // while writing volume eligibility to the other, so an operator who cannot
+    // see which is which cannot tell what was consulted or what was touched
+    // (FR-005, raised in review of PR #190).
+    let _ = writeln!(
+        out,
+        "discovering with catalog {} into local store {}",
+        catalog_db.display(),
+        local_db.display()
+    );
+    let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
+    let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
     print_discovery(&discovery, out);
     Ok(Exit::SUCCESS)
 }
@@ -835,7 +880,11 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
-            let _ = writeln!(out, "no target matches");
+            let _ = writeln!(
+                out,
+                "{}",
+                target_resolve::no_match_message(&store, args.selector.as_deref())
+            );
             Ok(miss_exit)
         }
         Selection::Ambiguous(matches) => {

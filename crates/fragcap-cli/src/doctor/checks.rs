@@ -380,11 +380,18 @@ fn integration(inputs: &Inputs) -> Check {
     }
 }
 
-/// The shipped catalog store, surfaced only when it is absent (slice S056). A
-/// present catalog needs no row here (its path already appears in the identity
-/// section), so a ready machine is unchanged. Absence is a warning, not a block:
-/// detection is degraded without the catalog but capture still works, and the
-/// `--fix` layer can fetch it.
+/// The catalog store, surfaced only when it is absent (slice S056). A present
+/// catalog needs no row here (its path already appears in the identity section),
+/// so a ready machine is unchanged. Absence is a warning, not a block: detection
+/// is degraded without the catalog but capture still works, and the `--fix`
+/// layer can create it.
+///
+/// The remediation is offline, and always was available. This check fires on
+/// absence, never on emptiness, and an absent store is exactly what the
+/// first-run bootstrap creates and what the compiled-in signature document
+/// fills. It used to name `catalog update`, a network fetch that no shipped
+/// binary could run and that degraded to telling the user to rebuild fragcap
+/// from source (issue #175).
 fn catalog_store(inputs: &Inputs) -> Option<Check> {
     if inputs.catalog_db_present {
         return None;
@@ -392,10 +399,9 @@ fn catalog_store(inputs: &Inputs) -> Option<Check> {
     Some(Check::warn_action(
         PREPARATION,
         "catalog store",
-        "the shipped catalog store is not present; technology detection is degraded until it \
-         is fetched",
-        "run `fragcap catalog update` to fetch the current published catalog",
-        Action::new(ActionKind::FetchCatalog),
+        "the catalog store is not present; technology detection is degraded until it exists",
+        "run `fragcap catalog seed` to create it and load the detection signatures",
+        Action::new(ActionKind::InitializeCatalog),
     ))
 }
 
