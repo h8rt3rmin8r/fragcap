@@ -116,8 +116,7 @@ pub enum Command {
     /// Analyzer integration: enumerate, configure, and capture as an extcap
     /// source.
     Extcap(Box<ExtcapArgs>),
-    /// Maintain the shipped catalog store (catalog.db): import, export, seed,
-    /// and update the published catalog.
+    /// Maintain the catalog store (catalog.db): import, export, and seed.
     Catalog(CatalogArgs),
     /// Validate JSON artifacts against the master schema, or print it.
     Schema(SchemaArgs),
@@ -354,9 +353,9 @@ pub struct TechnologiesArgs {
     pub path: PathBuf,
     /// The catalog store (`catalog.db`) whose signature table drives detection.
     ///
-    /// Seed it with `catalog seed-signatures`.
+    /// Seed it with `catalog seed --tier signature`.
     #[arg(long)]
-    pub catalog_db: PathBuf,
+    pub catalog_db: Option<PathBuf>,
 }
 
 /// Arguments to `targets`.
@@ -443,10 +442,10 @@ pub enum TargetsCommand {
 pub struct TargetsDiscoverArgs {
     /// The catalog store (`catalog.db`) whose appids classify Steam titles.
     #[arg(long)]
-    pub catalog_db: PathBuf,
+    pub catalog_db: Option<PathBuf>,
     /// The user store (`local.db`) holding the volume eligibility allowlist.
     #[arg(long)]
-    pub local_db: PathBuf,
+    pub local_db: Option<PathBuf>,
     /// The Steam installation root. Without it, discovery locates Steam itself and
     /// skips the Steam tier if none is installed.
     #[arg(long)]
@@ -514,36 +513,19 @@ pub enum CatalogCommand {
         seed: PathBuf,
         /// The store file to write.
         #[arg(long)]
-        db: PathBuf,
+        db: Option<PathBuf>,
     },
     /// Export the catalog store to schema-conformant JSON on standard output.
     Export {
         /// The store file to read.
         #[arg(long)]
-        db: PathBuf,
+        db: Option<PathBuf>,
     },
-    /// Seed the title tier (app id, name, metrics) into the store.
+    /// Fill the catalog store, one tier or all of them.
+    ///
+    /// With no `--tier`, fills every tier that has a source available without
+    /// one being named, and reports every tier it skipped with the reason.
     Seed(TargetsSeedArgs),
-    /// Seed the engine tier (engine name, source, confidence) into the store
-    /// from PCGamingWiki.
-    SeedEngine(TargetsSeedEngineArgs),
-    /// Seed the detection signature table from the bundled signature document.
-    ///
-    /// Lets `technologies` and discovery detect engines, anti-cheat, and DRM
-    /// from the store rather than from compiled-in code. Offline; idempotent.
-    SeedSignatures {
-        /// The catalog store (`catalog.db`) to write the signatures into.
-        #[arg(long)]
-        db: PathBuf,
-    },
-    /// Fetch the current published catalog into the store.
-    ///
-    /// Needs a build that can reach the network.
-    Update {
-        /// The store file to write, created if absent.
-        #[arg(long)]
-        db: PathBuf,
-    },
 }
 
 /// Arguments to `targets show`. Exactly one of a positional selector or `--id`
@@ -581,61 +563,64 @@ pub struct TargetsExportArgs {
     pub db: Option<PathBuf>,
 }
 
-/// Arguments to `targets seed`.
+/// The part of the catalog store a seed run fills.
 ///
-/// Exactly one catalog source is required. In a default build that is `--from`;
-/// a build that can reach the network adds `--steam`, and the two are mutually
-/// exclusive, so `--from` with `--steam`, or neither, is a usage error (exit 2)
-/// rather than a silent choice.
+/// One flag instead of one verb per tier. The three verbs this replaces
+/// (`seed`, `seed-engine`, `seed-signatures`) were accretion: each arrived with
+/// the slice that needed it and none was defended against the others, while the
+/// scheme's own next step was a fourth top-level verb for the launch tier, which
+/// `SeedTier::Launch` already names and no command reaches (issue #180).
+///
+/// `Signature` is not a `SeedTier`: the signature table is a separate table with
+/// no source, no cursor, and no resume. It is a tier here because to a user it
+/// is one more part of the same store, and hiding that distinction behind a
+/// separate verb is what made `seed-signatures` read as a step they were
+/// expected to perform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SeedTierArg {
+    /// Titles: app id, name, and the popularity metrics the corpus gate reads.
+    Catalog,
+    /// Launch metadata: the launch array, launcher mediation, token requirement.
+    Launch,
+    /// Engine attribution: engine name, source, confidence.
+    Engine,
+    /// The detection signature table, from the bundled document. Always offline.
+    Signature,
+}
+
+/// Arguments to `catalog seed`.
+///
+/// At most one source may be named. `--from` reads a local document and requires
+/// exactly one `--tier` that can consume one, because the offline documents are
+/// bare JSON arrays with no discriminator: sniffing one to guess its tier would
+/// silently write the wrong columns, so an ambiguous invocation is a usage error
+/// instead.
+// The principle behind that refusal is P-9: the instrument does not guess and
+// then report the guess as an observation. Kept as a `//` comment because clap
+// publishes `///` verbatim and a principle identifier means nothing to a user.
 #[derive(Debug, Args)]
 #[cfg_attr(
     feature = "net",
-    command(group(ArgGroup::new("catalog_source").required(true).args(["from", "steam"])))
+    command(group(ArgGroup::new("seed_source").args(["from", "steam", "pcgamingwiki"])))
 )]
 #[cfg_attr(
     not(feature = "net"),
-    command(group(ArgGroup::new("catalog_source").required(true).args(["from"])))
+    command(group(ArgGroup::new("seed_source").args(["from"])))
 )]
 pub struct TargetsSeedArgs {
-    /// Seed from a local catalog document (offline).
+    /// The tier to fill, repeatable. Omit to fill every tier with a source.
+    #[arg(long, value_enum)]
+    pub tier: Vec<SeedTierArg>,
+    /// Seed from a local document (offline). Requires exactly one `--tier`.
     #[arg(long)]
     pub from: Option<PathBuf>,
-    /// Seed from the live Steam catalog over the network.
+    /// Seed the title tier from the live Steam catalog over the network.
     ///
     /// Only present in a build that can reach the network.
     #[cfg(feature = "net")]
     #[arg(long)]
     pub steam: bool,
-    /// The store file to seed, created if absent.
-    #[arg(long)]
-    pub db: PathBuf,
-    /// The review-count corpus threshold; a title needs at least this many reviews.
-    #[arg(long, default_value_t = fragcap::targets::DEFAULT_MIN_REVIEWS)]
-    pub min_reviews: u64,
-}
-
-/// Arguments to `targets seed-engine`.
-///
-/// Exactly one engine source is required. In a default build that is `--from`;
-/// a build that can reach the network adds `--pcgamingwiki`, and the two are
-/// mutually exclusive, so
-/// `--from` with `--pcgamingwiki`, or neither, is a usage error (exit 2) rather
-/// than a silent choice. There is no corpus threshold: the engine tier enriches
-/// whatever titles the source names an engine for.
-#[derive(Debug, Args)]
-#[cfg_attr(
-    feature = "net",
-    command(group(ArgGroup::new("engine_source").required(true).args(["from", "pcgamingwiki"])))
-)]
-#[cfg_attr(
-    not(feature = "net"),
-    command(group(ArgGroup::new("engine_source").required(true).args(["from"])))
-)]
-pub struct TargetsSeedEngineArgs {
-    /// Seed from a local engine document (offline).
-    #[arg(long)]
-    pub from: Option<PathBuf>,
-    /// Seed from the live PCGamingWiki query API over the network.
+    /// Seed the engine tier from the live PCGamingWiki query API.
     ///
     /// Only present in a build that can reach the network. The flag names its
     /// actual source rather than `--steam`: the tier is keyed by Steam
@@ -643,9 +628,12 @@ pub struct TargetsSeedEngineArgs {
     #[cfg(feature = "net")]
     #[arg(long)]
     pub pcgamingwiki: bool,
-    /// The store file to seed, created if absent.
+    /// The store file to seed, created if absent. Defaults to the per-user store.
     #[arg(long)]
-    pub db: PathBuf,
+    pub db: Option<PathBuf>,
+    /// The review-count corpus threshold; a title needs at least this many reviews.
+    #[arg(long, default_value_t = fragcap::targets::DEFAULT_MIN_REVIEWS)]
+    pub min_reviews: u64,
 }
 
 /// Arguments to `doctor`.
