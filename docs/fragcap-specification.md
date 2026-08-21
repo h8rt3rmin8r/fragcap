@@ -2697,7 +2697,7 @@ targets as a numbered table:
 ```text
   #  TARGET                     CAPTURE          ENGINE     SENSITIVITIES
   1  the_elder_scrolls_online   ready            Unreal     -
-  2  the_division_2             ready            -          Denuvo, EasyAntiCheat
+  2  the_division_2             ready            -          Denuvo, Easy Anti-Cheat
   3  some_indie_thing           needs a target   GameMaker  not scanned
 
   fragcap capture 1

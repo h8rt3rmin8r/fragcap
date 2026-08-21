@@ -222,10 +222,10 @@ same rows carries the same partition and state.
       the Appendix B signature rows, the store schema version, and the hero
       listing section (around line 2678), whose worked example and prose both
       still describe a single `KNOWN` column
-- [x] T038 [P] Write `changelog.d/065-detection-truthfulness.md` describing the
+- [x] T038 [P] Write `changelog.d/S065-detection-truthfulness.fixed.md` describing the
       user-visible changes: the DRM label correction, the two new engines, and
       the column split as a listing output change
-- [x] T039 [P] Write `changelog.d/065-detection-truthfulness.decisions.md`
+- [x] T039 [P] Write `changelog.d/S065-detection-truthfulness.decisions.md`
       carrying D-2 (the dual-detector invariant, with option (a) and why it was
       rejected) and D-3 (the coverage column and the schema bump), each dated
 - [x] T040 Re-read every FR in [spec.md](./spec.md) against what was actually

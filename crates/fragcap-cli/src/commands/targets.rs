@@ -217,13 +217,20 @@ fn empty_listing(out: &mut dyn Write, footer: bool) {
 /// the column alignment the split exists to provide. A value wider than the terminal
 /// therefore overflows visibly, which is a legible failure rather than a lie.
 ///
-/// The budget is met with margin in the realistic case. The widest row measured on
-/// the operator's machine is a 22 character handle, `needs a target`, the widest
-/// coverage marker, and a two-word anti-cheat product: 74 of 80 columns. The
-/// readiness column keeping its two short labels is what buys that margin, which is
-/// why slice S065 retired the two long readiness sentences rather than moving them
-/// here (see the slice decisions fragment). `cli_targets.rs` measures a
-/// representative rendered line against 80 so the budget cannot drift unnoticed.
+/// The budget is therefore stated over the columns the tool controls. With every
+/// bounded column at its widest, everything but the handle costs 53 of an 80 column
+/// terminal, leaving 27 for a handle. The readiness column keeping its two short
+/// labels is what buys that much, which is why slice S065 retired the two long
+/// readiness sentences rather than moving them here (see the slice decisions
+/// fragment).
+///
+/// The operator's own machine does not fit, and that is the declared behavior rather
+/// than a defect: its longest handle is 47 characters
+/// (`warhammer_40_000_dawn_of_war_definitive_edition`), so its rows run to 100
+/// columns with every value intact. Shortening the handles a target carries is
+/// issues #166 and #173. `cli_targets.rs` measures the non-handle budget, the fit at
+/// the longest fitting handle, and the no-clipping overflow at that real 47
+/// character handle, all from rendered output, so none of this can drift unnoticed.
 fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
     let num_w = targets.len().to_string().len().max(1);
     let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");
@@ -857,12 +864,14 @@ fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliEr
 /// or DRM findings inline, returning them as the `evidence` JSON and the coverage
 /// state of the scan.
 ///
-/// Best-effort: a bare exe name (no directory), a missing default catalog, or a scan
-/// error yields no evidence rather than failing the add. In those cases the coverage
-/// state is `None` too, because no scan ran: recording `Complete` there would claim a
-/// clean scan that never happened (P-9). A scan that ran and matched nothing returns
-/// no evidence but does record its coverage state, which is what makes "scanned
-/// clean" distinguishable from "never scanned" on this path.
+/// Best-effort: nothing here fails the add. A bare exe name (no directory) or a
+/// missing or unreadable catalog means no scan was possible, so the coverage state is
+/// `None`; recording `Complete` there would claim a clean scan that never happened
+/// (P-9). A scan that ran and matched nothing returns no evidence but does record its
+/// coverage state, which is what makes "scanned clean" distinguishable from "never
+/// scanned" on this path. A scan attempted against a directory that could not be read
+/// records `Incomplete`, matching the other three producing sources: an attempt that
+/// failed is not the absence of an attempt (FR-015).
 ///
 /// Anything the scan did not cover is written to `out` as a named warning, so a row
 /// that lists as `incomplete` has its cause stated at the moment it was registered
@@ -871,8 +880,36 @@ fn scan_exe_evidence(
     exe: &str,
     out: &mut dyn Write,
 ) -> (Option<serde_json::Value>, Option<DetectionScan>) {
-    let Some(outcome) = run_exe_scan(exe) else {
-        return (None, None);
+    evidence_from_scan(run_exe_scan(exe), out)
+}
+
+/// Map a scan attempt to the evidence JSON and the coverage state it earns, printing
+/// the findings and anything the scan did not cover.
+///
+/// Split from [`scan_exe_evidence`] so the mapping is reachable by a test: the CLI
+/// test harness points every test at a catalog path that does not exist, so a test
+/// driving the command surface can only ever reach [`ExeScan::NotRun`], and the
+/// `Failed` arm below is exactly the one that was wrong.
+fn evidence_from_scan(
+    scan: ExeScan,
+    out: &mut dyn Write,
+) -> (Option<serde_json::Value>, Option<DetectionScan>) {
+    let outcome = match scan {
+        ExeScan::NotRun => return (None, None),
+        ExeScan::Failed { path } => {
+            // A scan was attempted against a directory that could not be read. That
+            // is `Incomplete`, not `None`: an attempt that failed is a different
+            // fact from no attempt, and recording it as no attempt would claim
+            // nobody looked (P-9, FR-015). The other three producing sources record
+            // it the same way.
+            let _ = writeln!(
+                out,
+                "  warning: could not read {} during detection",
+                path.display()
+            );
+            return (None, Some(DetectionScan::Incomplete));
+        }
+        ExeScan::Ran(outcome) => outcome,
     };
     let scan = Some(DetectionScan::from_outcome(&outcome));
     // Everything the scan did not cover, named here rather than only recorded on
@@ -905,21 +942,53 @@ fn scan_exe_evidence(
     (Some(serde_json::Value::Array(findings)), scan)
 }
 
-/// Scan the directory containing `exe`, or `None` when no scan could be run at all:
-/// a bare exe name, no resolvable catalog, an unseeded catalog, or an unreadable
-/// directory. Split out so the caller can tell "no scan ran" from "a scan ran".
-fn run_exe_scan(exe: &str) -> Option<fragcap::profile::signature::ScanOutcome> {
-    let dir = Path::new(exe)
+/// What came of trying to scan the directory containing an executable.
+///
+/// Three outcomes, not two. Collapsing the last two loses the distinction the whole
+/// coverage state exists to carry: a scan that was never possible and a scan that was
+/// attempted and failed are different facts, and only the first of them means nobody
+/// looked (P-9).
+enum ExeScan {
+    /// No scan was possible: a bare exe name with no directory, no resolvable
+    /// catalog, a catalog that is absent, or one that could not be opened or read.
+    /// Nothing was attempted, so the target records no coverage claim.
+    NotRun,
+    /// A scan was attempted and the directory could not be read.
+    Failed {
+        /// The directory that could not be read, so the failure is nameable.
+        path: PathBuf,
+    },
+    /// A scan ran and produced an outcome, complete or otherwise.
+    Ran(fragcap::profile::signature::ScanOutcome),
+}
+
+/// Scan the directory containing `exe`, distinguishing a scan that could not be run
+/// from one that ran and one that was attempted and failed.
+fn run_exe_scan(exe: &str) -> ExeScan {
+    let Some(dir) = Path::new(exe)
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())?;
-    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)?;
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return ExeScan::NotRun;
+    };
+    let Some(catalog_db) = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)
+    else {
+        return ExeScan::NotRun;
+    };
     if !catalog_db.exists() {
-        return None;
+        return ExeScan::NotRun;
     }
-    let catalog = Store::open(&catalog_db).ok()?;
-    let signatures = catalog.load_signatures().ok()?;
+    let Ok(catalog) = Store::open(&catalog_db) else {
+        return ExeScan::NotRun;
+    };
+    let Ok(signatures) = catalog.load_signatures() else {
+        return ExeScan::NotRun;
+    };
     let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
-    set.detect(dir).ok()
+    match set.detect(dir) {
+        Ok(outcome) => ExeScan::Ran(outcome),
+        Err(e) => ExeScan::Failed { path: e.path },
+    }
 }
 
 /// Show one target resolved by a selector.
@@ -1007,6 +1076,46 @@ fn exe_stem(exe: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{evidence_from_scan, DetectionScan, ExeScan};
+
+    #[test]
+    fn a_scan_that_was_never_possible_records_no_coverage_claim() {
+        // Nothing was attempted: a bare exe name, or no catalog to scan against.
+        // Recording any state here would claim a scan that did not happen (P-9).
+        let mut out: Vec<u8> = Vec::new();
+        let (evidence, scan) = evidence_from_scan(ExeScan::NotRun, &mut out);
+        assert!(evidence.is_none());
+        assert_eq!(scan, None, "no attempt means no claim");
+        assert!(out.is_empty(), "and nothing to report");
+    }
+
+    #[test]
+    fn a_scan_attempted_against_an_unreadable_directory_is_incomplete_not_unscanned() {
+        // The distinction the whole coverage state exists to carry. This arm used
+        // to collapse into `NotRun`, so a target whose directory could not be read
+        // listed as `not scanned`, claiming nobody looked when the tool had looked
+        // and failed. The other three producing sources record `Incomplete` here,
+        // and FR-015 requires this one to agree.
+        let mut out: Vec<u8> = Vec::new();
+        let (evidence, scan) = evidence_from_scan(
+            ExeScan::Failed {
+                path: std::path::PathBuf::from("D:/Games/Unreadable"),
+            },
+            &mut out,
+        );
+        assert!(evidence.is_none(), "a failed scan found nothing");
+        assert_eq!(
+            scan,
+            Some(DetectionScan::Incomplete),
+            "an attempt that failed is not the absence of an attempt"
+        );
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(
+            text.contains("Unreadable") && text.contains("could not read"),
+            "and the failure is named, not only recorded: {text}"
+        );
+    }
+
     use super::ensure_parent_dir;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
