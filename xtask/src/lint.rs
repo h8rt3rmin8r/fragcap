@@ -283,13 +283,41 @@ fn help_doc_leak(text: &str) -> Option<&'static str> {
             return Some("a bare tier number");
         }
     }
+    // A constitution principle identifier: `P-1` through `P-11` today, and the
+    // pattern must not assume one digit. Absent entirely until review of PR
+    // #189 caught that this rule promised parity with the rendered guard and did
+    // not deliver it.
+    if let Some(i) = text.find("P-") {
+        let rest = &text[i + 2..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let before_ok = i == 0 || !text.as_bytes()[i - 1].is_ascii_alphanumeric();
+        let after = rest.as_bytes().get(digits);
+        if digits > 0 && before_ok && after.is_none_or(|b| !b.is_ascii_alphanumeric()) {
+            return Some("a constitution principle identifier");
+        }
+    }
     // A Cargo feature named to a user. Matched by the *phrasing*, never by the
     // declared feature names: `live`, `net`, `targets`, and `etw` are ordinary
     // words, and matching `net` bare would fire on "network" and `targets` on
     // most of the targets help. A rule that cries wolf earns an exception list,
     // and an exception list is what decayed into issue #178.
+    //
+    // Three forms, matching the rendered guard: the two backticked ones, and the
+    // unquoted `the <word> feature`. The last was missing until review of PR
+    // #189, so a doc comment saying "the net feature" passed the cheap gate and
+    // failed only the expensive one.
     if text.contains("` feature") || text.contains("feature `") {
         return Some("a Cargo feature name");
+    }
+    if let Some(i) = text.find("the ") {
+        let rest = &text[i + 4..];
+        let word: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if !word.is_empty() && rest[word.len()..].starts_with(" feature") {
+            return Some("a Cargo feature name");
+        }
     }
     None
 }

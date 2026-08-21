@@ -444,6 +444,16 @@ guard fails without being edited.
   `live` would fire on most of the `targets` and `capture` pages. A rule that
   cries wolf is a rule that gets an exception list, and an exception list is
   what #178 shows decaying into a hardcoded token set.
+- **FR-018c**: The leak pattern MUST match a constitution principle identifier
+  with **more than one digit**. The constitution has eleven principles, so a
+  `P-\d` pattern silently exempts P-10 and P-11. Review of PR #189 caught this
+  in both gates.
+- **FR-018d**: The source-side `cargo xtask lint` rule MUST match the same
+  pattern set as the rendered guard, not a subset. Review of PR #189 found it
+  matching neither principle identifiers nor the unquoted `the <word> feature`
+  phrasing, so the cheap gate advertised parity it did not have and a leak of
+  either form reached only the expensive gate.
+
 - **FR-018b**: The guard MUST match the leak pattern against the whole rendered
   page with whitespace normalized to single spaces, NOT line by line. Measured:
   once FR-001 wrapping is in place, `fragcap extcap --help` renders

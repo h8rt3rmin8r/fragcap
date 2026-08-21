@@ -106,7 +106,11 @@ fn leak_patterns() -> Vec<(Regex, &'static str)> {
             "an appendix letter",
         ),
         (
-            Regex::new(r"\bP-\d\b").unwrap(),
+            // Plus, not one digit. The constitution has eleven principles, so a
+            // single-digit pattern silently exempts P-10 and P-11, which is the
+            // hand-maintained-set failure this guard replaced, wearing a hat
+            // (review of PR #189).
+            Regex::new(r"\bP-\d+\b").unwrap(),
             "a constitution principle identifier",
         ),
         (
