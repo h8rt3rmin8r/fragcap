@@ -154,7 +154,7 @@ pub enum ModeArg {
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id", "process"])))]
 pub struct CaptureArgs {
-    /// A stored target: an exact handle, an exact name, or a listing row number.
+    /// A stored target: an exact handle, a case-insensitive name, or a row number.
     ///
     /// A bare integer here is always a row index over the current `fragcap
     /// targets` listing, never a handle, a name, or a platform app id. This is
@@ -163,7 +163,7 @@ pub struct CaptureArgs {
     #[arg(value_name = "SELECTOR")]
     pub selector: Option<String>,
 
-    /// A stored target: an exact handle, an exact name, or a listing row number.
+    /// A stored target: an exact handle, a case-insensitive name, or a row number.
     ///
     /// A bare integer here is always a row index over the current `fragcap
     /// targets` listing, never a handle, a name, or a platform app id. To

@@ -6,7 +6,10 @@ package: `terminal_size 0.4.4`, MIT OR Apache-2.0, declaring `rust-version
 through clap's default `color` feature, so the `windows-sys 0.36` pin shared by
 `pcap` and the socket-table backend is untouched and no second tree appears.
 clap is non-optional in `fragcap-cli`, so unlike `pcap` behind `live` this is
-compiled by `cargo xtask msrv` under the 1.82 floor; that was run and is green.
+compiled under the 1.82 floor rather than skipped, and `terminal_size` clears it
+(it declares `rust-version 1.71`). That is a claim about this package only, not
+about the gate as a whole; see the last entry in this fragment for the state of
+`cargo xtask msrv` itself.
 The alternative was hand-wrapping the doc comments, which needs no dependency
 and was rejected because the available width depends on the longest item name in
 whichever list is being rendered, computed at render time, so a string wrapped
