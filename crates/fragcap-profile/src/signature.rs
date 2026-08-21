@@ -506,17 +506,36 @@ pub struct ScanOutcome {
     /// The detected technologies, deduplicated per (category, product), grouped by
     /// category then product.
     pub findings: Vec<DetectionFinding>,
-    /// Paths under the root that could not be read. A non-empty list means coverage
-    /// was reduced; an empty list with empty findings means a complete scan found
-    /// nothing.
-    pub unreadable: Vec<PathBuf>,
+    /// Paths under the root that could not be read.
+    ///
+    /// Private on purpose. Every cause of reduced coverage must reach the operator,
+    /// and a caller that can read one cause will report one cause: three scan
+    /// boundaries did exactly that, iterating this list and silently dropping the
+    /// candidate-cap count beside it. Ask [`coverage_warnings`] instead, which
+    /// answers for every cause at once and gains new ones without the caller
+    /// changing. A future caller that genuinely needs the raw paths should add a
+    /// deliberate accessor rather than widen this back to public.
+    ///
+    /// [`coverage_warnings`]: ScanOutcome::coverage_warnings
+    unreadable: Vec<PathBuf>,
     /// Candidate executables not read for section markers because
-    /// [`MARKER_SCAN_MAX_CANDIDATES`] truncated the candidate set. A non-zero count
-    /// means coverage was reduced, so it is reported rather than only tallied (P-4).
-    pub marker_candidates_skipped: usize,
+    /// [`MARKER_SCAN_MAX_CANDIDATES`] truncated the candidate set. Private for the
+    /// same reason; read it through [`ScanOutcome::marker_candidates_skipped`].
+    marker_candidates_skipped: usize,
 }
 
 impl ScanOutcome {
+    /// The number of candidate executables a scan bound dropped without reading.
+    ///
+    /// A non-zero count means coverage was reduced. It is exposed so a caller can
+    /// reason about the magnitude of the loss; to report it, prefer
+    /// [`coverage_warnings`], which names it alongside every other cause.
+    ///
+    /// [`coverage_warnings`]: ScanOutcome::coverage_warnings
+    pub fn marker_candidates_skipped(&self) -> usize {
+        self.marker_candidates_skipped
+    }
+
     /// The named diagnostics for everything this scan did not cover: one line per
     /// unreadable path, and one naming the candidates a scan bound truncated.
     ///
@@ -1214,7 +1233,8 @@ mod tests {
             "an executable below the depth bound is not read"
         );
         assert_eq!(
-            outcome.marker_candidates_skipped, 0,
+            outcome.marker_candidates_skipped(),
+            0,
             "the depth bound defines the candidate set, so it counts no loss"
         );
         assert!(
@@ -1248,7 +1268,8 @@ mod tests {
         }
         let outcome = set.detect(tree.path()).expect("readable");
         assert_eq!(
-            outcome.marker_candidates_skipped, extra,
+            outcome.marker_candidates_skipped(),
+            extra,
             "every candidate the cap dropped is counted (P-4)"
         );
         assert!(
@@ -1338,7 +1359,7 @@ mod tests {
         tree.write("Game.exe", b"not a pe");
         let outcome = set.detect(tree.path()).expect("readable");
         assert!(outcome.unreadable.is_empty());
-        assert_eq!(outcome.marker_candidates_skipped, 0);
+        assert_eq!(outcome.marker_candidates_skipped(), 0);
         assert!(outcome.is_complete());
     }
 

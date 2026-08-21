@@ -83,6 +83,26 @@ pre-1.0 crate. Keeping the old one and adding a second gate beside it was
 rejected: it would leave two places to forget, and the one that would be forgotten
 is the one that decides whether a signature is silently ignored.
 
+**2026-08-20** `ScanOutcome` no longer exposes its individual causes of reduced
+coverage as public fields. `unreadable` and `marker_candidates_skipped` are
+private, reached through `coverage_warnings()`, `is_complete()`, and a
+`marker_candidates_skipped()` accessor, and `ClassifierResult::unreadable`
+becomes `ClassifierResult::coverage_warnings` carrying finished lines rather than
+paths.
+
+This is a response to the review of PR #192, and the reason it changes the types
+rather than only the call sites is that the call sites were the symptom. The
+candidate-cap count was added with a shared helper to report it, and then three
+of the five boundaries that scan kept iterating the narrower `unreadable` field
+and silently dropped the new cause: the inventory command, single-target
+registration, and the classifier seam, whose field could not even hold a count.
+A helper every caller is merely expected to reach for is exactly the arrangement
+that lets the next cause be dropped the same way. With the narrow data
+unreachable, a boundary that wants to report coverage has one thing to call, and
+one that adds a cause later reaches every boundary without touching any of them.
+The cost is a public field removal and a field rename on a pre-1.0 crate, which
+is cheap against a P-4 signal that had already gone missing once.
+
 **2026-08-20** `fragcap_profile::pe::fixtures` is public rather than
 `#[cfg(test)]`. Three crates now test the same matchers against generated PE
 inputs, and a hand-rolled builder in each would be free to drift from the others,

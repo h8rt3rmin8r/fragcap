@@ -95,12 +95,11 @@ impl<'a> KnownRootsSource<'a> {
                 for child in children {
                     out.account.considered += 1;
                     let classification = self.classifier.classify(&child);
-                    // A subtree the classifier could not read reduces detection
-                    // coverage; name it so a partial scan is visible, not silent (P-4).
-                    for path in classification.unreadable {
-                        out.warnings
-                            .push(format!("could not read subtree during detection: {path}"));
-                    }
+                    // Whatever the classifier could not cover reduces detection
+                    // coverage; name it so a partial scan is visible, not silent
+                    // (P-4). The lines arrive finished, so a cause added later is
+                    // forwarded here without this walk knowing about it.
+                    out.warnings.extend(classification.coverage_warnings);
                     match classification.verdict {
                         ClassifierVerdict::Hit {
                             classification,

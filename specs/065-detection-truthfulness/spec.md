@@ -144,6 +144,23 @@ architecture-affecting ones (Q2, Q3) also get a dated decisions fragment.
   would print the same fact twice in one row and cost 16 columns of an 80 column
   budget.
 
+### Review round, PR #192
+
+- Q: The candidate-cap count is recorded on the scan outcome and surfaced by two
+  of the five boundaries that scan. Is surfacing it at the other three in scope?
+  -> A: Yes, and it is a defect rather than an enhancement. Raised by the
+  automated review, verified against the code, and confirmed at all three
+  boundaries it named: the inventory command reported only unreadable paths, so
+  a truncated scan could print "no technologies detected" with no cause stated;
+  single-target registration stored the incomplete state and printed nothing at
+  all, so a row listed as `incomplete` with its cause stated nowhere; and the
+  classifier seam carried a field shaped to hold unreadable paths only, so it had
+  nowhere to put the count. The last of the three is worse than reported:
+  registration was dropping the unreadable warnings too, not only the cap count.
+  Fixed at all three, and the underlying shape is fixed as well, because a
+  helper that every caller is merely expected to reach for is the arrangement
+  that produced the defect. See FR-019 and FR-020.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - The evidence names what is actually there (Priority: P1)
@@ -332,6 +349,19 @@ any detection run.
   widened table costs no width there and the readiness distinction is stated in
   exactly one place.
 
+#### Surfacing the loss at every boundary (raised in review of PR #192)
+
+- **FR-019**: Every command or seam that completes a detection scan MUST surface
+  every cause of reduced coverage, not a subset of them. A boundary that reports
+  only one cause counts the rest without surfacing them, which satisfies half of
+  P-4 and reads to the operator as a complete scan.
+- **FR-020**: The scan outcome MUST NOT expose an individual cause of reduced
+  coverage in a form that a caller can report on its own. The narrow shape is
+  what allowed FR-019 to be violated at three boundaries at once, so the
+  constraint is enforced by the type rather than by review: a caller can ask
+  whether coverage was complete, and can ask for every cause named, and cannot
+  ask for one cause in isolation.
+
 ### Key Entities
 
 - **Detection signature**: a row naming a category (engine, anti-cheat, DRM), a
@@ -375,6 +405,10 @@ any detection run.
   are slice S066.
 - **SC-007**: `cargo xtask ci` is green, including the new engine-coverage
   check.
+- **SC-008**: An install directory carrying more candidate executables than the
+  scan cap produces a named diagnostic naming the count at every boundary that
+  scans one: the inventory command, single-target registration, the pointed
+  directory source, the platform walk, and the known-roots classifier seam.
 
 ## Assumptions
 

@@ -52,24 +52,31 @@ pub enum ClassifierVerdict {
     Miss,
 }
 
-/// A classification result: the verdict plus any subtree paths the signature scan
-/// could not read. Surfacing the latter keeps reduced detection coverage visible
-/// rather than presenting a partial scan as complete (P-4); the walk folds them into
-/// [`crate::source::Discovery::warnings`].
+/// A classification result: the verdict plus a named diagnostic for everything the
+/// signature scan did not cover. Surfacing the latter keeps reduced detection
+/// coverage visible rather than presenting a partial scan as complete (P-4); the walk
+/// folds them into [`crate::source::Discovery::warnings`].
+///
+/// The field carries finished warning lines rather than unreadable paths. It was the
+/// latter, and that shape could only ever express one cause: when a scan bound began
+/// truncating the candidate set, the classifier seam had nowhere to put the count and
+/// dropped it, so a known-root child could be classified with reduced coverage and no
+/// stated reason. A carrier that names one cause silently excludes the rest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassifierResult {
     /// Whether the directory is a target.
     pub verdict: ClassifierVerdict,
-    /// Subtree paths that could not be read during classification.
-    pub unreadable: Vec<String>,
+    /// Named diagnostics for what classification could not cover: an unreadable
+    /// subtree, an unreadable root, or candidates a scan bound truncated.
+    pub coverage_warnings: Vec<String>,
 }
 
 impl ClassifierResult {
-    /// A classification with a verdict and no unreadable paths.
+    /// A classification with a verdict and complete coverage.
     fn just(verdict: ClassifierVerdict) -> Self {
         ClassifierResult {
             verdict,
-            unreadable: Vec::new(),
+            coverage_warnings: Vec::new(),
         }
     }
 }
@@ -171,17 +178,17 @@ impl DirectoryClassifier for SignatureClassifier {
                 };
                 return ClassifierResult {
                     verdict,
-                    unreadable: vec![e.path.to_string_lossy().into_owned()],
+                    coverage_warnings: vec![format!(
+                        "could not read install directory during detection: {}",
+                        e.path.display()
+                    )],
                 };
             }
         };
-        // A subtree the scan could not read reduces coverage; carry it so a partial
-        // scan is never presented as complete (P-4).
-        let unreadable: Vec<String> = outcome
-            .unreadable
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
+        // Everything the scan did not cover, carried so a partial scan is never
+        // presented as complete (P-4). Taken from the outcome's own helper, so a new
+        // cause is forwarded without touching this seam.
+        let coverage_warnings = outcome.coverage_warnings();
         let verdict = match outcome.detected_engine() {
             // A detected engine: a game at the fidelity the signature earns, carrying
             // every finding (engine, anti-cheat, DRM) as neutral evidence.
@@ -204,7 +211,7 @@ impl DirectoryClassifier for SignatureClassifier {
         };
         ClassifierResult {
             verdict,
-            unreadable,
+            coverage_warnings,
         }
     }
 }
@@ -377,6 +384,43 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_candidate_set_reaches_the_walk_as_a_named_warning() {
+        // The seam used to carry unreadable paths only, so when a scan bound began
+        // truncating the candidate set the classifier had nowhere to put the count
+        // and dropped it: a known-root child could be classified with reduced
+        // coverage and no stated reason (P-4).
+        use fragcap_profile::signature::MARKER_SCAN_MAX_CANDIDATES;
+
+        let tree = TempTree::new("truncated");
+        let pe = fragcap_profile::pe::fixtures::minimal_pe_with_sections(&[".text"]);
+        let extra = 2;
+        for i in 0..(MARKER_SCAN_MAX_CANDIDATES + extra) {
+            fs::write(tree.root.join(format!("game-{i:04}.exe")), &pe).expect("write exe");
+        }
+
+        let set = SignatureSet::compile(&[Signature {
+            category: SignatureCategory::Drm,
+            kind: SignatureKind::BinaryMarker,
+            pattern: "section:.bind".to_string(),
+            product: "Steam DRM".to_string(),
+            confidence: SignatureConfidence::Definitive,
+        }]);
+        let c = SignatureClassifier::for_known_root(set).classify(&tree.path_str());
+
+        let named = c
+            .coverage_warnings
+            .iter()
+            .find(|w| w.contains("binary marker"))
+            .unwrap_or_else(|| panic!("the truncation reaches the walk: {c:?}"));
+        assert!(
+            named.contains(&format!("{extra} more were not examined")),
+            "and says how many were dropped: {named}"
+        );
+        // The verdict still stands: reduced coverage is reported, not fatal.
+        assert!(matches!(c.verdict, ClassifierVerdict::Hit { .. }));
+    }
+
+    #[test]
     fn an_unreadable_directory_is_a_miss_and_is_surfaced() {
         let missing =
             std::env::temp_dir().join(format!("fragcap-classifier-absent-{}", std::process::id()));
@@ -384,6 +428,9 @@ mod tests {
         let c = classifier.classify(&missing.to_string_lossy());
         assert_eq!(c.verdict, ClassifierVerdict::Miss);
         // The unreadable root is surfaced rather than silently swallowed (P-4).
-        assert!(!c.unreadable.is_empty(), "an unreadable root is reported");
+        assert!(
+            !c.coverage_warnings.is_empty(),
+            "an unreadable root is reported"
+        );
     }
 }

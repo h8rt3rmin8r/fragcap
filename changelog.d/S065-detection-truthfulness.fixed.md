@@ -13,6 +13,13 @@ Verified on the operator's machine: Detroit Become Human, Palworld, and
 Enshrouded still report Steam DRM; ARC Raiders, Barotrauma, Shale Hill Secrets,
 and Trapped with Ivy and Piper no longer do.
 
+Every command that scans now names what the scan did not cover, rather than
+counting it and leaving the operator to wonder. `fragcap technologies` on a
+directory with more executables than the scan cap used to print "no technologies
+detected" with nothing saying the scan had been truncated; `targets add --exe`
+recorded the row as incompletely scanned and printed nothing at all. Both say so
+now, as do the discovery paths.
+
 The scan is bounded rather than a sweep of the tree. Only executables near the
 install root are candidates, capped at a count, each read as a bounded prefix.
 A candidate dropped by that cap is counted and named, and a candidate that could

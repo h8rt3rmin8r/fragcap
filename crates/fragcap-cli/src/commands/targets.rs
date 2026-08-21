@@ -863,6 +863,10 @@ fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliEr
 /// clean scan that never happened (P-9). A scan that ran and matched nothing returns
 /// no evidence but does record its coverage state, which is what makes "scanned
 /// clean" distinguishable from "never scanned" on this path.
+///
+/// Anything the scan did not cover is written to `out` as a named warning, so a row
+/// that lists as `incomplete` has its cause stated at the moment it was registered
+/// rather than counted and left unexplained (P-4).
 fn scan_exe_evidence(
     exe: &str,
     out: &mut dyn Write,
@@ -871,6 +875,14 @@ fn scan_exe_evidence(
         return (None, None);
     };
     let scan = Some(DetectionScan::from_outcome(&outcome));
+    // Everything the scan did not cover, named here rather than only recorded on
+    // the entry (P-4). Without this the row lists as `incomplete` with the cause
+    // stated nowhere, which counts the loss without surfacing it. Emitted before
+    // the early return, so a truncated scan that also matched nothing still says
+    // why it is incomplete.
+    for warning in outcome.coverage_warnings() {
+        let _ = writeln!(out, "  warning: {warning}");
+    }
     if outcome.findings.is_empty() {
         return (None, scan);
     }
