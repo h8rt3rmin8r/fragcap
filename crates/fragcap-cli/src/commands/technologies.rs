@@ -4,7 +4,7 @@
 //! game's install directory (slice S053).
 //!
 //! Scans the given directory against the catalog's data-driven signature table
-//! (`targets seed-signatures`) and prints the technologies it recognizes, grouped by
+//! (`catalog seed --tier signature`) and prints the technologies it recognizes, grouped by
 //! category. A locally detected engine is `verified`; every finding is a neutral
 //! fact.
 //!
@@ -31,15 +31,16 @@ use crate::exit::{CliError, Exit};
 /// Run the `technologies` command, writing the report to `out`.
 pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     // The catalog store is an override, never a requirement (issue #179).
-    let catalog_db = crate::commands::target_resolve::ensure_catalog_store(
-        args.catalog_db.as_deref(),
-    )
-    .map_err(CliError::failure)?
-    .ok_or_else(|| {
-        CliError::failure(
-            "no catalog store could be resolved: pass --catalog-db, set FRAGCAP_CATALOG_DB,              or run on a machine with a per-user application data directory",
-        )
-    })?;
+    let catalog_db =
+        crate::commands::target_resolve::ensure_catalog_store(args.catalog_db.as_deref())
+            .map_err(CliError::failure)?
+            .ok_or_else(|| {
+                CliError::failure(concat!(
+                    "no catalog store could be resolved: pass --catalog-db, set ",
+                    "FRAGCAP_CATALOG_DB, or run on a machine with a per-user ",
+                    "application data directory",
+                ))
+            })?;
     let store = Store::open(&catalog_db).map_err(|e| CliError::failure(e.to_string()))?;
     let signatures = store
         .load_signatures()
@@ -50,7 +51,17 @@ pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliErro
         .detect(&args.path)
         .map_err(|e| CliError::failure(e.to_string()))?;
 
-    let _ = writeln!(out, "Technologies detected in {}:", args.path.display());
+    // Name the store the findings came from. With `--catalog-db` optional since
+    // slice S063, the signature table can be an explicit path, an environment
+    // override, or the per-user default, and a reader who cannot tell which
+    // cannot tell why a detection differs between machines (FR-005, raised in
+    // review of PR #190).
+    let _ = writeln!(
+        out,
+        "Technologies detected in {} (signatures from {}):",
+        args.path.display(),
+        catalog_db.display()
+    );
 
     if outcome.findings.is_empty() {
         let _ = writeln!(out, "  no technologies detected");

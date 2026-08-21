@@ -473,18 +473,33 @@ fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, Cli
     let local_db = match args.local_db.clone().or_else(default_local_store) {
         Some(p) => p,
         None => {
-            return Err(CliError::failure(
-                "no local store could be resolved: pass --local-db, set FRAGCAP_LOCAL_DB,                  or run on a machine with a per-user application data directory",
-            ))
+            return Err(CliError::failure(concat!(
+                "no local store could be resolved: pass --local-db, set ",
+                "FRAGCAP_LOCAL_DB, or run on a machine with a per-user ",
+                "application data directory",
+            )))
         }
     };
     let catalog_db = target_resolve::ensure_catalog_store(args.catalog_db.as_deref())
         .map_err(CliError::failure)?
         .ok_or_else(|| {
-            CliError::failure(
-                "no catalog store could be resolved: pass --catalog-db, set                  FRAGCAP_CATALOG_DB, or run on a machine with a per-user application                  data directory",
-            )
+            CliError::failure(concat!(
+                "no catalog store could be resolved: pass --catalog-db, set ",
+                "FRAGCAP_CATALOG_DB, or run on a machine with a per-user ",
+                "application data directory",
+            ))
         })?;
+    // Name both stores. Since slice S063 either can come from a flag, an
+    // environment override, or the per-user default, and discovery reads one
+    // while writing volume eligibility to the other, so an operator who cannot
+    // see which is which cannot tell what was consulted or what was touched
+    // (FR-005, raised in review of PR #190).
+    let _ = writeln!(
+        out,
+        "discovering with catalog {} into local store {}",
+        catalog_db.display(),
+        local_db.display()
+    );
     let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
     let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
     print_discovery(&discovery, out);

@@ -353,7 +353,7 @@ pub struct TechnologiesArgs {
     pub path: PathBuf,
     /// The catalog store (`catalog.db`) whose signature table drives detection.
     ///
-    /// Seed it with `catalog seed-signatures`.
+    /// Seed it with `catalog seed --tier signature`.
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
 }
@@ -591,9 +591,13 @@ pub enum SeedTierArg {
 /// Arguments to `catalog seed`.
 ///
 /// At most one source may be named. `--from` reads a local document and requires
-/// exactly one `--tier`, because the offline documents are bare JSON arrays with
-/// no discriminator: sniffing one to guess its tier would silently write the
-/// wrong columns, so an ambiguous invocation is a usage error instead (P-9).
+/// exactly one `--tier` that can consume one, because the offline documents are
+/// bare JSON arrays with no discriminator: sniffing one to guess its tier would
+/// silently write the wrong columns, so an ambiguous invocation is a usage error
+/// instead.
+// The principle behind that refusal is P-9: the instrument does not guess and
+// then report the guess as an observation. Kept as a `//` comment because clap
+// publishes `///` verbatim and a principle identifier means nothing to a user.
 #[derive(Debug, Args)]
 #[cfg_attr(
     feature = "net",

@@ -4,7 +4,7 @@
 //!
 //! Every subcommand operates on the catalog store the maintainer seeds and any
 //! user refreshes: `import` loads a JSON seed document, `export` projects the store
-//! to schema-conformant JSON, `seed`/`seed-engine`/`seed-signatures` fill the
+//! to schema-conformant JSON, `seed --tier` fills the
 //! catalog, engine, and detection-signature tiers, and `update` fetches the current
 //! catalog. The store defaults to the per-user location; user-owned target
 //! management lives under `targets`.
@@ -183,6 +183,30 @@ fn requested_tiers(args: &TargetsSeedArgs) -> Result<Vec<SeedTierArg>, CliError>
             "--from fills one tier and the document does not say which; pass exactly one \
              --tier (catalog, launch, engine, or signature)",
         ));
+    }
+    // A tier that reads no document must refuse one. The signature tier seeds
+    // from a compiled-in set and the launch tier has no seeder at all, so
+    // accepting `--from` alongside either would take the operator's file, ignore
+    // it, and exit 0, which reads as "your document was loaded" (review of
+    // PR #190). Discarding a named input silently is the configuration-side form
+    // of the loss P-4 forbids.
+    if args.from.is_some() {
+        let unreadable = match args.tier.first() {
+            Some(SeedTierArg::Signature) => Some((
+                "signature",
+                "it seeds from the bundled document; drop --from",
+            )),
+            Some(SeedTierArg::Launch) => Some((
+                "launch",
+                "it has no seeder; launch data accumulates from captures",
+            )),
+            _ => None,
+        };
+        if let Some((name, why)) = unreadable {
+            return Err(CliError::usage(format!(
+                "--from cannot fill the {name} tier: {why}"
+            )));
+        }
     }
     if args.tier.is_empty() {
         return Ok(vec![

@@ -346,6 +346,32 @@ resulting store against what the three verbs produced.
   `docs/glossary/anti-cheat-and-security.md:72`, which names `fragcap catalog
   seed-signatures` as the way to refresh detection capability.
 
+**Raised in review of PR #190**
+
+- **FR-019**: `--from` MUST be refused for a tier that reads no document. The
+  signature tier seeds from a compiled-in set and the launch tier has no seeder,
+  so accepting `--from` with either took the operator's file, never opened it,
+  and exited 0. Validating only the *count* of `--tier` values was not enough;
+  the tier must be one that can consume the input. Discarding a named input
+  silently is the configuration-side form of the loss P-4 forbids.
+- **FR-020**: No user-facing string MUST name a command this slice removes. The
+  `technologies --catalog-db` help still said "Seed it with `catalog
+  seed-signatures`", so following the displayed remediation produced an
+  unknown-subcommand error. Note that neither the S062 help guard nor its lint
+  rule catches this class: they check vocabulary and width, not whether a
+  backticked command resolves. That cross-reference check is issue #183's, and
+  this is direct evidence it is worth building.
+- **FR-021**: FR-005's "name the resolved store" MUST hold for `technologies`
+  and `targets discover` as well, which reported findings and candidates without
+  naming the store they came from or the store they wrote to. Both were missed
+  because their output is a listing rather than a success line.
+- **FR-022**: A user-facing message MUST NOT contain runs of literal spaces. Three
+  messages added by this slice did, because a line continuation was written as an
+  escaped `
+` rather than a real one, so the text carried a newline and the
+  source indentation into the terminal. They now use `concat!`, which cannot fail
+  this way.
+
 ### Out of scope
 
 - **OOS-001**: Adding `net` to the release feature set. The operator's recorded

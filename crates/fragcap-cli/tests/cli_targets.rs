@@ -809,3 +809,39 @@ fn a_numeric_selector_miss_names_the_interpretation_and_the_listing_size() {
         "a name miss does not claim a row-index interpretation: {plain}"
     );
 }
+/// `--from` is refused for a tier that cannot read a document.
+///
+/// Raised in review of PR #190. The merged seed verb validated only the *number*
+/// of `--tier` values, so `--tier signature --from <file>` and `--tier launch
+/// --from <file>` both succeeded: the signature arm seeded from its compiled-in
+/// set and the launch arm reported a skip, and neither ever opened the file. An
+/// operator who named an input and got exit 0 would reasonably read that as "the
+/// document was loaded". Discarding a named input silently is the
+/// configuration-side form of the loss P-4 forbids.
+#[test]
+fn from_is_refused_for_a_tier_that_reads_no_document() {
+    let dir = TempDir::new().expect("tempdir");
+    let catalog = dir.path().join("catalog.db").to_string_lossy().into_owned();
+    let doc = dir.path().join("doc.json");
+    std::fs::write(&doc, "[]").expect("write");
+    let doc = doc.to_string_lossy().into_owned();
+
+    for tier in ["signature", "launch"] {
+        // A usage error is a diagnostic, so it reaches standard error, not the
+        // command-result stream.
+        let (code, _out, err) = run(&[
+            "catalog", "seed", "--tier", tier, "--from", &doc, "--db", &catalog,
+        ]);
+        assert_eq!(code, 2, "--from with --tier {tier} is a usage error: {err}");
+        assert!(
+            err.contains(&format!("--from cannot fill the {tier} tier")),
+            "the refusal names the tier and why: {err}"
+        );
+    }
+
+    // A tier that does read a document is unaffected.
+    let (code, out, _err) = run(&[
+        "catalog", "seed", "--tier", "catalog", "--from", &doc, "--db", &catalog,
+    ]);
+    assert_eq!(code, 0, "--tier catalog still reads --from: {out}");
+}
