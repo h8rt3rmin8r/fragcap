@@ -154,7 +154,6 @@ pub fn capture(
         .unwrap_or_else(|| "all".to_string());
     let scope = match config.scope {
         CaptureScope::Target => "target",
-        CaptureScope::Profile => "profile",
         CaptureScope::All => "all",
     };
     emitter.progress(&format!(
@@ -312,6 +311,7 @@ fn capture_prerecorded(
         emitter,
         interrupt,
         &stop,
+        &mut narration,
     );
 
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
@@ -452,6 +452,7 @@ fn drive(
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     stop: &StopHandle,
+    narration: &mut FilterNarration,
 ) {
     let mut folded = 0usize;
     while let Ok((len, ts)) = rx.recv() {
@@ -463,6 +464,9 @@ fn drive(
         }
         session.on_packet(len);
         session.on_tick(ts);
+        // Report the narrowing from the transition, not from a sample taken at
+        // acquisition. Rate-limited inside `poll`.
+        narration.poll(emitter);
         if interrupt.load(Ordering::Relaxed) && is_active(session) {
             session.on_interrupt();
         }
@@ -722,6 +726,7 @@ fn capture_live(
         &stop,
         started,
         tick,
+        &mut narration,
     );
 
     // The pipeline observed the stop and returns; its tee channel closes and the
@@ -777,8 +782,14 @@ fn drive_live(
     stop: &StopHandle,
     started: std::time::Instant,
     tick: std::time::Duration,
+    narration: &mut FilterNarration,
 ) {
     loop {
+        // Every wakeup, including the idle timeout. The idle case is the whole
+        // point: on a `--launch` run the target is silent for tens of seconds
+        // before it opens its first socket, and a narrator driven only by packet
+        // arrivals would miss the transition it exists to report.
+        narration.poll(emitter);
         match rx.recv_timeout(tick) {
             Ok(DriverMsg::Packet(len, ts)) => {
                 session.on_packet(len);
@@ -895,6 +906,10 @@ fn zero_volume_bound(config: &EffectiveConfig) -> bool {
 /// transition that actually matters, capture ceasing to be machine-wide, is
 /// invisible; on the run that prompted the issue the filter narrowed at t+22.5s
 /// and the terminal's last line described a moment sixteen minutes stale.
+/// How often the narrator samples the endpoint set. Slow enough to cost nothing
+/// on the packet path, fast enough that the transition reads as immediate.
+const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 struct FilterNarration {
     stamper: Option<fragcap::RoleStampingAttributor>,
     /// The last count reported, so only transitions are announced.
@@ -903,6 +918,13 @@ struct FilterNarration {
     /// changes go to the structured stream only, so a busy target does not
     /// produce a line per socket.
     announced: bool,
+    /// When the endpoint set was last sampled.
+    ///
+    /// [`FilterNarration::poll`] is called from the driver loops, which run once
+    /// per packet, so the sample is rate-limited here rather than at every call
+    /// site. A human-visible transition does not need finer resolution than this
+    /// and the packet path must not pay for one.
+    last_sampled: Option<std::time::Instant>,
     /// The image the run is capturing, when the caller knows it.
     ///
     /// Left `None` today on both paths. The image is printed on the `stage
@@ -921,6 +943,7 @@ impl FilterNarration {
             last: 0,
             announced: false,
             target: None,
+            last_sampled: None,
         }
     }
 
@@ -937,10 +960,25 @@ impl FilterNarration {
     }
 
     /// Check for a transition and report one if it happened.
+    ///
+    /// Called from the driver loops on every packet and, on the live path, on
+    /// every idle tick. The idle case is the one that matters: on a `--launch`
+    /// run the target is silent for tens of seconds before it opens its first
+    /// socket, so a narrator driven only by packet arrivals would not notice the
+    /// transition until traffic it was waiting for started flowing.
     fn poll(&mut self, emitter: &mut Emitter) {
         let Some(stamper) = self.stamper.as_ref() else {
             return;
         };
+        // Rate-limit the sample, not the transition. Reading the endpoint set is
+        // cheap but not free, and this runs on the packet path.
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_sampled {
+            if now.duration_since(last) < SAMPLE_INTERVAL {
+                return;
+            }
+        }
+        self.last_sampled = Some(now);
         let now = stamper.active_endpoints().len();
         if now == self.last {
             return;

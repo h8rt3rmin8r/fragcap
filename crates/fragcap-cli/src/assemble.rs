@@ -126,7 +126,6 @@ pub fn effective_config(
         .or_else(|| defaults.roles().map(|r| r.to_vec()));
     let scope = match args.scope {
         ScopeArg::Target => CaptureScope::Target,
-        ScopeArg::Profile => CaptureScope::Profile,
         ScopeArg::All => CaptureScope::All,
     };
     let loopback = args.loopback || defaults.loopback().unwrap_or(false);

@@ -89,6 +89,8 @@ impl CompletionSummary {
             dropped: self.buffer_dropped.saturating_add(self.sink_dropped),
             watching_discarded: self.watching_discarded,
             discarded_out_of_window: self.discarded_out_of_window,
+            scope_discarded: self.scope_discarded,
+            scope_unresolved_discarded: self.scope_unresolved_discarded,
         }
     }
 
@@ -173,6 +175,8 @@ mod tests {
                 dropped: 3,
                 watching_discarded: 7,
                 discarded_out_of_window: 4,
+                scope_discarded: 0,
+                scope_unresolved_discarded: 0,
             }
         );
     }

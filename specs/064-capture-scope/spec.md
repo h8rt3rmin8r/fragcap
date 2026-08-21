@@ -133,13 +133,11 @@ The zero itself is not a bug. Zero endpoints at acquisition is correct, and
   tool claims and what a user expects. This is a user-visible default change and
   belongs in the release notes.
 - Q: #184 proposes `--scope target|profile|all`. With `--roles` defaulting to
-  `all`, do `target` and `profile` differ? -> A: **Yes, and only when `--roles`
-  is narrowed.** `target` admits a packet whose bound role is in the `--roles`
-  set; `profile` admits any packet bound to any profile stage regardless of
-  `--roles`; `all` admits everything. With the default `--roles all` the first
-  two coincide, which is correct rather than redundant. Making `target` consult
-  `--roles` is also what finally makes the `(enforced)` claim true, so the two
-  defects close together.
+  `all`, do `target` and `profile` differ? -> A: **This answer was wrong and is
+  corrected in FR-004.** It claimed they differ when `--roles` is narrowed. They
+  never differ, because binding is itself role-gated, so `profile` was removed
+  in review of PR #191. `target` and `all` remain, and making `target` consult
+  `--roles` is still what makes the `(enforced)` claim true of retention.
 - Q: #184 item 4 asks that a target packet dropped for scope be distinguishable
   from a background packet dropped for scope. -> A: **Two counters, not one.**
   `scope_discarded` counts packets attributed to a process no profile stage
@@ -296,8 +294,22 @@ currently misinforms at the one moment they read it.
   today on `CaptureSession` as `allowed_roles` and is not on the structure the
   gate is built from, so this requirement implies plumbing across two types; the
   plan names it.
-- **FR-004**: Under `profile`, a packet MUST be admitted when its attribution
-  carries any bound stage or role, regardless of `--roles`.
+- **FR-004**: **Withdrawn in review of PR #191.** `--scope profile` was
+  specified to admit any bound stage regardless of `--roles`, and the
+  clarification below claimed it differs from `target` when `--roles` is
+  narrowed. That claim is false, and provably so:
+  `CaptureSession::match_and_bind` returns before `bind_stage` for a stage whose
+  role is outside the set, so nothing outside it ever binds or stamps. A stamped
+  packet's role is therefore always inside the set, `profile` can never admit
+  anything `target` does not, and the two are identical in every configuration.
+
+  A flag value that cannot differ from the default is a distinction the
+  interface claims and the system cannot make, which is the defect this slice
+  exists to remove rather than one to add. `profile` is removed from the
+  surface. Reintroducing it meaningfully requires separating "which stages bind
+  and stamp" from "which stages trigger acquisition", which `--roles` currently
+  conflates; that is a real change with stop-condition consequences and belongs
+  in its own slice.
 - **FR-005**: Under `all`, the gate MUST behave exactly as it does today, and a
   capture under `--scope all` MUST be byte-identical to one taken before this
   slice.
@@ -324,6 +336,14 @@ currently misinforms at the one moment they read it.
 - **FR-011**: Both scope counters MUST appear in the human completion summary
   and in the `--json` event stream.
 
+  The second half was **specified and not implemented**, caught in review of PR
+  #191. `--json` suppresses the human summary entirely and emits
+  `session.complete` in its place, and that event carried neither counter, so a
+  machine consumer saw a capture that observed packets, wrote none, and
+  accounted for none of the difference. That is P-4 failing on the surface a
+  machine reads, which is the surface least likely to notice. Both counters are
+  now fields on the event, with a regression test.
+
 **The reporting (#184 item 5)**
 
 - **FR-012**: The summary MUST distinguish packets attributed to the target from
@@ -338,6 +358,16 @@ currently misinforms at the one moment they read it.
 
 - **FR-015**: The filter-narrowed line MUST be emitted from the narrowing
   transition, not from a one-shot read at acquisition.
+
+  **The first implementation did not do this**, caught in review of PR #191. A
+  transition observer was built and then polled exactly once, immediately after
+  acquisition, and never again: it was not passed into either driver loop. So
+  the narration remained a point sample taken at the instant the answer is
+  structurally zero, which is the whole of issue #185 reintroduced behind
+  better wording. Both driver loops now poll it, and the live loop polls on its
+  idle tick as well, which is the case that matters: on a `--launch` run the
+  target is silent for tens of seconds, so a narrator driven only by packet
+  arrivals would not notice the transition until traffic started flowing.
 - **FR-016**: Before the first narrowing, human output MUST say that capture is
   currently machine-wide and name what it is waiting for.
 - **FR-017**: On the first narrowing, human output MUST say that capture has

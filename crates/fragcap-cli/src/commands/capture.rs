@@ -96,9 +96,11 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
     // P-9 defect this slice exists to remove; an operator who asked for a scoped
     // file and got an unscoped one has to be told, and told why.
     if promotion.is_some() && config.scope != CaptureScope::All {
-        emitter.warn(
-            "this target's socket holder is not known yet, so this run captures everything              while it observes one; the scope you asked for applies once the target is              promoted",
-        );
+        emitter.warn(concat!(
+            "this target's socket holder is not known yet, so this run captures ",
+            "everything while it observes one; the scope you asked for applies ",
+            "once the target is promoted",
+        ));
         config.scope = CaptureScope::All;
     }
     let components = assemble::components(&args.offline, &config)?;

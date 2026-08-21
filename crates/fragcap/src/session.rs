@@ -104,12 +104,6 @@ pub enum CaptureScope {
     /// 12.3 places in userspace.
     #[default]
     Target,
-    /// Anything the profile binds, whatever `--roles` says.
-    ///
-    /// Differs from [`CaptureScope::Target`] only when `--roles` is narrowed, in
-    /// which case this keeps the launcher and helper stages the operator scoped
-    /// out of triggering. With the default `--roles all` the two coincide.
-    Profile,
     /// Everything captured, which is the behavior before slice S064.
     ///
     /// Still a real use: correlating the target against the rest of the machine,
@@ -128,7 +122,7 @@ impl CaptureScope {
     fn admits(self, attribution: Option<&Attribution>, allowed_roles: Option<&[String]>) -> bool {
         match self {
             CaptureScope::All => true,
-            CaptureScope::Profile | CaptureScope::Target => {
+            CaptureScope::Target => {
                 let Some(attr) = attribution else {
                     return false;
                 };
@@ -136,9 +130,14 @@ impl CaptureScope {
                 if !bound {
                     return false;
                 }
-                if self == CaptureScope::Profile {
-                    return true;
-                }
+                // Belt and braces, and knowingly so. `CaptureSession::match_and_bind`
+                // already refuses to bind a stage whose role is outside the set,
+                // so a stamped packet's role is always allowed and this test
+                // cannot currently fail. It is kept because the gate should
+                // assert its own contract rather than inherit it from an
+                // invariant three modules away: if binding ever stamps a stage it
+                // does not trigger on, retention stays scoped without anyone
+                // having to remember this coupling.
                 match (allowed_roles, attr.role.as_deref()) {
                     // Unscoped roles: every bound stage is in scope.
                     (None, _) => true,
@@ -879,8 +878,14 @@ struct GateShared {
     scope: CaptureScope,
     /// The `--roles` set, read only under [`CaptureScope::Target`].
     allowed_roles: Option<Vec<String>>,
-    /// Packets discarded on scope grounds whose attribution named a process no
-    /// profile stage binds. Confidently not the capture's.
+    /// Packets discarded on scope grounds whose attribution named a process this
+    /// capture does not cover. Confidently not the capture's.
+    ///
+    /// In practice that means a process no profile stage binds, which is the
+    /// common case. It also covers a packet whose bound role falls outside the
+    /// `--roles` set, which cannot happen while binding is itself role-gated but
+    /// is counted here if it ever does, so the counter's name stays true to what
+    /// it counts rather than to today's binding semantics.
     scope_discarded: AtomicU64,
     /// Packets discarded on scope grounds carrying no attribution at all.
     ///
@@ -1313,39 +1318,34 @@ mod gate_tests {
         assert_eq!(handle.scope_unresolved_discarded(), 0);
     }
 
-    // FR-003, FR-004. `--roles` decides retention under the target scope, which is
-    // what makes the run's `roles ... (enforced)` line true of the file rather
-    // than only of which stages trigger acquisition (issue #184). Under `profile`
-    // the role set is not consulted, so a stage the operator scoped out of
-    // triggering is still written.
+    // FR-003. `--roles` decides retention under the target scope, which is what
+    // makes the run's roles line true of the file rather than only of which
+    // stages trigger acquisition (issue #184).
+    //
+    // This asserts the gate's own contract, not the whole system's behavior, and
+    // the difference matters. `CaptureSession::match_and_bind` already refuses to
+    // bind a stage outside the role set, so in a real run a launcher packet never
+    // carries a stamp and is rejected by the `bound` test rather than by this
+    // one. The packet below is stamped directly to reach the role test at all.
+    //
+    // That coupling is why `--scope profile` was removed in review of PR #191:
+    // it promised to retain "anything the profile binds regardless of --roles",
+    // and since a stamped packet's role is always inside the set, it could never
+    // admit anything `target` did not. A flag value that cannot differ from the
+    // default is a distinction the interface claims and the system cannot make.
     #[test]
-    fn a_narrowed_role_set_scopes_retention_under_target_but_not_under_profile() {
-        let roles = Some(vec!["target".to_string()]);
-
+    fn a_narrowed_role_set_scopes_retention_under_target() {
         let (target_gate, target_handle, _rx) = gate(SessionConfig {
-            allowed_roles: roles.clone(),
+            allowed_roles: Some(vec!["target".to_string()]),
             ..SessionConfig::default()
         });
         target_handle.open_from(Timestamp::from_nanos(0));
         assert!(target_gate.admit(&bound_packet(10, 1, "target")));
         assert!(
             !target_gate.admit(&bound_packet(10, 2, "launcher")),
-            "a bound role outside --roles is out of scope under target"
+            "a bound role outside --roles is out of scope"
         );
         assert_eq!(target_handle.scope_discarded(), 1);
-
-        let (profile_gate, profile_handle, _rx) = gate(SessionConfig {
-            scope: CaptureScope::Profile,
-            allowed_roles: roles,
-            ..SessionConfig::default()
-        });
-        profile_handle.open_from(Timestamp::from_nanos(0));
-        assert!(profile_gate.admit(&bound_packet(10, 1, "target")));
-        assert!(
-            profile_gate.admit(&bound_packet(10, 2, "launcher")),
-            "profile scope keeps every bound stage regardless of --roles"
-        );
-        assert_eq!(profile_handle.scope_discarded(), 0);
     }
 
     // FR-001, placement. An out-of-scope packet must not consume the operator's

@@ -119,8 +119,6 @@ pub enum Command {
 pub enum ScopeArg {
     /// Only the named target's traffic.
     Target,
-    /// Every process the profile binds.
-    Profile,
     /// Everything captured.
     All,
 }
@@ -248,11 +246,9 @@ pub struct CaptureArgs {
     /// What the capture writes out.
     ///
     /// `target` (the default) writes only the traffic of the target you named,
-    /// which is what process attribution is for. `profile` widens that to every
-    /// process the profile binds, including launcher and helper stages that
-    /// `--roles` scoped out of triggering. `all` writes everything captured,
-    /// which is useful for correlating the target against the rest of the
-    /// machine and for debugging attribution itself. Whatever is excluded is
+    /// which is what process attribution is for. `all` writes everything
+    /// captured, which is useful for correlating the target against the rest of
+    /// the machine and for debugging attribution itself. Whatever is excluded is
     /// counted and reported.
     #[arg(long, value_enum, default_value_t = ScopeArg::Target)]
     pub scope: ScopeArg,

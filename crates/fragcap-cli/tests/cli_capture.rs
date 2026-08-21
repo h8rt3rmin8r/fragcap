@@ -791,3 +791,56 @@ fn the_retired_verbs_and_profile_command_do_not_parse() {
     let (code, _out, _err) = common::run(&["schema", "--help"]);
     assert_eq!(code, 0, "schema stays available");
 }
+/// The machine-readable stream accounts for scope exclusions too.
+///
+/// Raised in review of PR #191. `--json` suppresses the human completion
+/// summary entirely and emits `session.complete` in its place, so carrying the
+/// two scope counters only in the human renderer meant a machine consumer saw a
+/// capture that observed packets, wrote none of them, and accounted for none of
+/// the difference. Every discard path has a named counter on every surface, not
+/// only the one a person reads (P-4).
+#[test]
+fn the_json_completion_event_accounts_for_scope_exclusions() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("noise.script");
+    // The same flow, owned by a process no profile stage binds: the issue #184
+    // case, background traffic while the target has opened nothing.
+    std::fs::write(
+        &script,
+        "flow udp 192.0.2.10:30000 * always owner 9999 docker.exe\nendpoint udp 192.0.2.10:30000\n",
+    )
+    .unwrap();
+    let out_file = dir.path().join("out.pcapng");
+
+    let (code, _out, err) = common::run(&[
+        "capture",
+        "--process",
+        "game.exe",
+        "--json",
+        "--replay-source",
+        &fixture("udp-gameplay.pcap"),
+        "--attr-script",
+        &script.to_string_lossy(),
+        "--process-script",
+        &data("game.procscript"),
+        "--local-addr",
+        "192.0.2.10",
+        "--out",
+        &out_file.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "the run succeeds: {err}");
+
+    let complete = err
+        .lines()
+        .find(|l| l.contains("\"event\":\"session.complete\""))
+        .expect("a session.complete event is emitted");
+
+    assert!(
+        complete.contains("\"scope_discarded\":24"),
+        "every excluded packet is accounted for in the machine stream: {complete}"
+    );
+    assert!(
+        complete.contains("\"scope_unresolved_discarded\":0"),
+        "the two exclusion reasons are reported apart: {complete}"
+    );
+}
