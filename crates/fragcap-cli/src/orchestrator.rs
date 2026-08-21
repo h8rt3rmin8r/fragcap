@@ -37,8 +37,8 @@ use fragcap::core::FlowAttributor;
 #[cfg(all(feature = "etw", windows))]
 use fragcap::StopReason;
 use fragcap::{
-    BindingPublisher, CaptureSession, GateHandle, Pipeline, PipelineConfig, PipelineReport,
-    ProcessEvent, Profile, SessionGate, SessionState, StopHandle, Timestamp,
+    BindingPublisher, CaptureScope, CaptureSession, GateHandle, Pipeline, PipelineConfig,
+    PipelineReport, ProcessEvent, Profile, SessionGate, SessionState, StopHandle, Timestamp,
 };
 
 use crate::args::Direction;
@@ -142,16 +142,23 @@ pub fn capture(
              filtering is deferred to a later slice",
         );
     }
-    // Roles are enforced: the session was scoped above, so a role outside the
-    // set never triggers or is captured (specification FR-011b). Direction, by
-    // contrast, is still only recorded, which the warning above says.
+    // Since slice S064 the roles claim is true of what the file contains, not
+    // only of which stages trigger acquisition: under the target scope the write
+    // gate consults the same role set. It said `(enforced)` before that was true
+    // of retention, which is the kind of claim P-9 exists to stop (issue #184).
+    // The word is now attached to the scope, which is what actually enforces.
     let roles = config
         .roles
         .as_ref()
         .map(|r| r.join(","))
         .unwrap_or_else(|| "all".to_string());
+    let scope = match config.scope {
+        CaptureScope::Target => "target",
+        CaptureScope::All => "all",
+    };
     emitter.progress(&format!(
-        "scope: direction {}, roles {} (enforced), loopback {}",
+        "scope: writing {} traffic, direction {}, roles {}, loopback {}",
+        scope,
         config.direction.as_str(),
         roles,
         config.loopback
@@ -268,13 +275,9 @@ fn capture_prerecorded(
     // socket-table set the inner attributor holds. Offline this is the scripted
     // set unchanged (those endpoints carry no owner and are kept); live it is
     // the profiled subset.
-    let endpoints = components
-        .stamper
-        .as_ref()
-        .map(|s| s.active_endpoints().len())
-        .unwrap_or(0);
-    emitter.event(&Event::FilterNarrowed { endpoints });
-    emitter.progress(&format!("filter narrowed to {endpoints} endpoint(s)"));
+    let mut narration = FilterNarration::new(components.stamper.clone());
+    narration.announce_watching(emitter);
+    narration.poll(emitter);
 
     // The events not consumed during acquisition, folded during capture.
     let mut pending: Vec<ProcessEvent> = events[cursor..].to_vec();
@@ -308,6 +311,7 @@ fn capture_prerecorded(
         emitter,
         interrupt,
         &stop,
+        &mut narration,
     );
 
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
@@ -448,6 +452,7 @@ fn drive(
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     stop: &StopHandle,
+    narration: &mut FilterNarration,
 ) {
     let mut folded = 0usize;
     while let Ok((len, ts)) = rx.recv() {
@@ -459,6 +464,9 @@ fn drive(
         }
         session.on_packet(len);
         session.on_tick(ts);
+        // Report the narrowing from the transition, not from a sample taken at
+        // acquisition. Rate-limited inside `poll`.
+        narration.poll(emitter);
         if interrupt.load(Ordering::Relaxed) && is_active(session) {
             session.on_interrupt();
         }
@@ -676,12 +684,9 @@ fn capture_live(
     // endpoints owned by profiled processes (slice 015), not the full
     // socket-table set the inner attributor holds. Read through the retained
     // reader, since the stamper itself is now inside the pipeline.
-    let endpoints = stamper_reader
-        .as_ref()
-        .map(|s| s.active_endpoints().len())
-        .unwrap_or(0);
-    emitter.event(&Event::FilterNarrowed { endpoints });
-    emitter.progress(&format!("filter narrowed to {endpoints} endpoint(s)"));
+    let mut narration = FilterNarration::new(stamper_reader.clone());
+    narration.announce_watching(emitter);
+    narration.poll(emitter);
 
     // The merged channel. Two forwarders fold the two source channels into it so
     // the driver reads one totally ordered stream.
@@ -721,6 +726,7 @@ fn capture_live(
         &stop,
         started,
         tick,
+        &mut narration,
     );
 
     // The pipeline observed the stop and returns; its tee channel closes and the
@@ -776,8 +782,14 @@ fn drive_live(
     stop: &StopHandle,
     started: std::time::Instant,
     tick: std::time::Duration,
+    narration: &mut FilterNarration,
 ) {
     loop {
+        // Every wakeup, including the idle timeout. The idle case is the whole
+        // point: on a `--launch` run the target is silent for tens of seconds
+        // before it opens its first socket, and a narrator driven only by packet
+        // arrivals would miss the transition it exists to report.
+        narration.poll(emitter);
         match rx.recv_timeout(tick) {
             Ok(DriverMsg::Packet(len, ts)) => {
                 session.on_packet(len);
@@ -880,6 +892,111 @@ fn zero_volume_bound(config: &EffectiveConfig) -> bool {
     config.max_packets == Some(0) || config.max_bytes == Some(0)
 }
 
+/// Reports the kernel filter narrowing, from the transition rather than from a
+/// sample.
+///
+/// Both capture paths used to read `active_endpoints().len()` once, at
+/// acquisition, and print `filter narrowed to N endpoint(s)`. Three things were
+/// wrong with that and issue #185 records all three. The wording inverts the
+/// meaning: zero endpoints means *no* narrowing has happened and fragcap is
+/// still capturing everything, which reads as though the run gave up. The sample
+/// is taken at the one instant where zero is close to guaranteed, because on a
+/// `--launch` run acquisition happens when the process starts, many seconds
+/// before the title touches the network. And it is never updated, so the
+/// transition that actually matters, capture ceasing to be machine-wide, is
+/// invisible; on the run that prompted the issue the filter narrowed at t+22.5s
+/// and the terminal's last line described a moment sixteen minutes stale.
+/// How often the narrator samples the endpoint set. Slow enough to cost nothing
+/// on the packet path, fast enough that the transition reads as immediate.
+const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+struct FilterNarration {
+    stamper: Option<fragcap::RoleStampingAttributor>,
+    /// The last count reported, so only transitions are announced.
+    last: usize,
+    /// Whether the first narrowing has been announced in human output. Later
+    /// changes go to the structured stream only, so a busy target does not
+    /// produce a line per socket.
+    announced: bool,
+    /// When the endpoint set was last sampled.
+    ///
+    /// [`FilterNarration::poll`] is called from the driver loops, which run once
+    /// per packet, so the sample is rate-limited here rather than at every call
+    /// site. A human-visible transition does not need finer resolution than this
+    /// and the packet path must not pay for one.
+    last_sampled: Option<std::time::Instant>,
+    /// The image the run is capturing, when the caller knows it.
+    ///
+    /// Left `None` today on both paths. The image is printed on the `stage
+    /// matched: <role> pid <n> <image>` line immediately above these, so the
+    /// operator has it in view; carrying it here as well would mean threading
+    /// the narrator through `apply_event` and its three callers for a second
+    /// copy of a name already on screen. The field exists so a caller that does
+    /// have it can say it.
+    target: Option<String>,
+}
+
+impl FilterNarration {
+    fn new(stamper: Option<fragcap::RoleStampingAttributor>) -> Self {
+        FilterNarration {
+            stamper,
+            last: 0,
+            announced: false,
+            target: None,
+            last_sampled: None,
+        }
+    }
+
+    /// Announce that capture is machine-wide until the target opens a socket.
+    ///
+    /// Said in words that carry their own meaning: an operator should not have
+    /// to know what an endpoint is, or that zero of them means the opposite of
+    /// what it sounds like.
+    fn announce_watching(&self, emitter: &mut Emitter) {
+        let what = self.target.as_deref().unwrap_or("the target");
+        emitter.progress(&format!(
+            "capturing all traffic while {what} opens its first connection"
+        ));
+    }
+
+    /// Check for a transition and report one if it happened.
+    ///
+    /// Called from the driver loops on every packet and, on the live path, on
+    /// every idle tick. The idle case is the one that matters: on a `--launch`
+    /// run the target is silent for tens of seconds before it opens its first
+    /// socket, so a narrator driven only by packet arrivals would not notice the
+    /// transition until traffic it was waiting for started flowing.
+    fn poll(&mut self, emitter: &mut Emitter) {
+        let Some(stamper) = self.stamper.as_ref() else {
+            return;
+        };
+        // Rate-limit the sample, not the transition. Reading the endpoint set is
+        // cheap but not free, and this runs on the packet path.
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_sampled {
+            if now.duration_since(last) < SAMPLE_INTERVAL {
+                return;
+            }
+        }
+        self.last_sampled = Some(now);
+        let now = stamper.active_endpoints().len();
+        if now == self.last {
+            return;
+        }
+        self.last = now;
+        // The structured stream gets every transition: a machine consumer wants
+        // the series, not one sample of zero (issue #185).
+        emitter.event(&Event::FilterNarrowed { endpoints: now });
+        if now > 0 && !self.announced {
+            self.announced = true;
+            let what = self.target.as_deref().unwrap_or("the target");
+            emitter.progress(&format!(
+                "now capturing {what} only ({now} connection(s) matched)"
+            ));
+        }
+    }
+}
+
 fn build_summary(
     acquired: bool,
     session: &CaptureSession,
@@ -893,17 +1010,35 @@ fn build_summary(
     // summary match the produced file. On the target-never-acquired path there is
     // no gate (the pipeline never started), and the session's own counters, which
     // are zero there, are used instead.
-    let (retained, watching, out_of_window) = match gate {
+    let (retained, watching, out_of_window, out_of_scope, scope_unresolved) = match gate {
         Some(g) => (
             g.admitted(),
             g.watch_discarded(),
             g.out_of_window_discarded(),
+            g.scope_discarded(),
+            g.scope_unresolved_discarded(),
         ),
         None => {
             let s = session.stats();
-            (s.retained, s.watching_discarded, s.discarded_out_of_window)
+            (
+                s.retained,
+                s.watching_discarded,
+                s.discarded_out_of_window,
+                0,
+                0,
+            )
         }
     };
+    // What reached the file, per image, largest first, from the tally the output
+    // loop already accumulates over gate-admitted packets (slice S059). Ties break
+    // to the earlier image name so two runs over identical traffic report
+    // identically (P-9: no coin flip).
+    let mut written_by_image: Vec<(String, u64)> = stats
+        .holder_tally
+        .iter()
+        .map(|(image, count)| (image.to_string(), *count))
+        .collect();
+    written_by_image.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     CompletionSummary {
         acquired,
         stop_reason: session.stop_reason(),
@@ -915,6 +1050,9 @@ fn build_summary(
         discarded_out_of_window: out_of_window,
         buffer_dropped: stats.buffer_dropped,
         sink_dropped: stats.sink_dropped,
+        scope_discarded: out_of_scope,
+        scope_unresolved_discarded: scope_unresolved,
+        written_by_image,
     }
 }
 

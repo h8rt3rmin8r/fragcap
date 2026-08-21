@@ -39,6 +39,24 @@ pub struct CompletionSummary {
     pub buffer_dropped: u64,
     /// Packets a sink could not accept.
     pub sink_dropped: u64,
+    /// Packets excluded because they belong to a process this capture does not
+    /// cover (slice S064).
+    pub scope_discarded: u64,
+    /// Packets excluded on scope grounds that carried no attribution at all, so
+    /// it is not known whether they were the capture's.
+    ///
+    /// Reported apart from `scope_discarded` on purpose. These might have been
+    /// the target's, dropped because the socket table had not yet published the
+    /// socket that would have named them, so a non-zero value here is worth
+    /// investigating while a non-zero `scope_discarded` is the feature working.
+    pub scope_unresolved_discarded: u64,
+    /// What was written, per process image.
+    ///
+    /// Counted from gate-admitted packets only, so since slice S064 this is a
+    /// breakdown of the file rather than of the wire. Under the default scope it
+    /// is the target and nothing else; a second image here means something
+    /// bound to the profile also had traffic.
+    pub written_by_image: Vec<(String, u64)>,
 }
 
 impl CompletionSummary {
@@ -71,6 +89,8 @@ impl CompletionSummary {
             dropped: self.buffer_dropped.saturating_add(self.sink_dropped),
             watching_discarded: self.watching_discarded,
             discarded_out_of_window: self.discarded_out_of_window,
+            scope_discarded: self.scope_discarded,
+            scope_unresolved_discarded: self.scope_unresolved_discarded,
         }
     }
 
@@ -87,8 +107,26 @@ impl CompletionSummary {
         push_count(out, "unattributed", self.packets_unattributed);
         push_count(out, "watching discarded", self.watching_discarded);
         push_count(out, "out of window", self.discarded_out_of_window);
+        push_count(out, "out of scope", self.scope_discarded);
+        push_count(out, "scope unresolved", self.scope_unresolved_discarded);
         push_count(out, "buffer dropped", self.buffer_dropped);
         push_count(out, "sink dropped", self.sink_dropped);
+        // What actually reached the file, per image. Issue #184 was invisible in
+        // this summary for want of exactly this: `attributed` counted packets
+        // resolved to any process on the machine, which read as "attributed to
+        // the game" while 91 percent of the file belonged to something else.
+        if !self.written_by_image.is_empty() {
+            out.push_str(
+                "  written by process
+",
+            );
+            for (image, count) in &self.written_by_image {
+                out.push_str(&format!(
+                    "    {image:<19} {count}
+"
+                ));
+            }
+        }
     }
 }
 
@@ -137,6 +175,8 @@ mod tests {
                 dropped: 3,
                 watching_discarded: 7,
                 discarded_out_of_window: 4,
+                scope_discarded: 0,
+                scope_unresolved_discarded: 0,
             }
         );
     }

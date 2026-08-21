@@ -28,6 +28,7 @@
 
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{resolved_client_launch, Store};
+use fragcap::CaptureScope;
 
 use crate::assemble;
 use crate::attach;
@@ -82,7 +83,26 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         }
     };
 
-    let config = assemble::effective_config(args, &profile)?;
+    let mut config = assemble::effective_config(args, &profile)?;
+    // An observe-mode run cannot scope its output to a target it has not yet
+    // identified. That is the whole point of the run: slice S059 promotes an
+    // unresolved target to the socket holder this capture observes, and the
+    // observation is `holder_tally`, which counts only packets the write gate
+    // admitted. Scoping to the target would therefore starve the mechanism that
+    // decides what the target is, and the run would write nothing and promote
+    // nothing (issue #184's gate, meeting S059's promotion).
+    //
+    // So the scope widens, and the run says so. Overriding silently would be the
+    // P-9 defect this slice exists to remove; an operator who asked for a scoped
+    // file and got an unscoped one has to be told, and told why.
+    if promotion.is_some() && config.scope != CaptureScope::All {
+        emitter.warn(concat!(
+            "this target's socket holder is not known yet, so this run captures ",
+            "everything while it observes one; the scope you asked for applies ",
+            "once the target is promoted",
+        ));
+        config.scope = CaptureScope::All;
+    }
     let components = assemble::components(&args.offline, &config)?;
 
     // Capture is launch-agnostic: report an already-running attach, and warn when a

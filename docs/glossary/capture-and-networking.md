@@ -124,6 +124,32 @@ information the key duplicates and the two cannot disagree.
 
 **See also:** [Flow key](capture-and-networking.md#flow-key), [Flow](capture-and-networking.md#flow)
 
+## Capture scope
+
+What a capture writes out, as distinct from what it observes.
+
+Decided in userspace, on every packet, from the [attribution](process-and-attribution.md#attribution)
+the packet already carries, and independent of whatever kernel filter happens to be
+installed. That independence is the point: the narrowed filter cannot engage until the
+target opens its first socket, and on a launcher-mediated title that is tens of seconds
+during which everything on the wire is admitted.
+
+Three scopes. `target` writes only traffic bound to a profile stage whose role is inside
+the run's role set, and is the default because process attribution is what fragcap is for.
+`profile` writes anything the profile binds, whatever the role set says. `all` writes
+everything captured, which is what correlating a target against the rest of a machine, and
+debugging attribution itself, both need.
+
+{: .matters }
+> Everything excluded is counted, and in two terms rather than one. A packet attributed to
+> a process no stage binds is confidently not the capture's; a packet carrying no
+> attribution at all might have been, and was excluded only because the socket table had
+> not yet named it. Folding those together would hide a possible real loss inside an
+> intended exclusion, which is the No Silent Loss principle (P-4) failing in the one place
+> a scope decision can make it fail.
+
+**See also:** [Attribution](process-and-attribution.md#attribution), [Stage binding](process-and-attribution.md#stage-binding)
+
 ## Wildcard bind address
 
 An address of `0.0.0.0` or `::` recorded for a socket bound to every local

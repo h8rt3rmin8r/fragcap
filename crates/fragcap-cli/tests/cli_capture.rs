@@ -75,8 +75,26 @@ fn run_with_roles_succeeds_and_scopes_to_the_named_role() {
     let (code, _out, err) = run_offline(&["--roles".into(), "target".into()]);
     assert_eq!(code, 0, "capture --roles target parses and captures: {err}");
     assert!(
-        err.contains("roles target (enforced)"),
+        err.contains("roles target"),
         "the capture is scoped to the named role: {err}"
+    );
+    // Since slice S064 the roles claim is true of what the file contains, not
+    // only of which stages trigger acquisition: the write gate consults the same
+    // set under the default target scope. The fixture's traffic is all
+    // `role=target`, so scoping to that role retains all of it and discards
+    // nothing, which is what distinguishes an enforced scope from a claimed one.
+    assert!(
+        err.contains("scope: writing target traffic"),
+        "the run states what it writes: {err}"
+    );
+    let out_of_scope = err
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("out of scope"))
+        .map(|v| v.trim().to_string());
+    assert_eq!(
+        out_of_scope.as_deref(),
+        Some("0"),
+        "nothing was out of scope, because every packet is the named role: {err}"
     );
 }
 
@@ -89,8 +107,12 @@ fn run_with_a_comma_separated_role_list_splits_and_scopes() {
     let (code, _out, err) = run_offline(&["--roles".into(), "target,launcher".into()]);
     assert_eq!(code, 0, "a comma-separated role list parses: {err}");
     assert!(
-        err.contains("roles target,launcher (enforced)"),
-        "both roles are carried into the enforced scope: {err}"
+        err.contains("roles target,launcher"),
+        "both roles are carried into the scope: {err}"
+    );
+    assert!(
+        err.contains("scope: writing target traffic"),
+        "the run states what it writes: {err}"
     );
 }
 
@@ -768,4 +790,57 @@ fn the_retired_verbs_and_profile_command_do_not_parse() {
     // schema validate remains the general artifact validator.
     let (code, _out, _err) = common::run(&["schema", "--help"]);
     assert_eq!(code, 0, "schema stays available");
+}
+/// The machine-readable stream accounts for scope exclusions too.
+///
+/// Raised in review of PR #191. `--json` suppresses the human completion
+/// summary entirely and emits `session.complete` in its place, so carrying the
+/// two scope counters only in the human renderer meant a machine consumer saw a
+/// capture that observed packets, wrote none of them, and accounted for none of
+/// the difference. Every discard path has a named counter on every surface, not
+/// only the one a person reads (P-4).
+#[test]
+fn the_json_completion_event_accounts_for_scope_exclusions() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("noise.script");
+    // The same flow, owned by a process no profile stage binds: the issue #184
+    // case, background traffic while the target has opened nothing.
+    std::fs::write(
+        &script,
+        "flow udp 192.0.2.10:30000 * always owner 9999 docker.exe\nendpoint udp 192.0.2.10:30000\n",
+    )
+    .unwrap();
+    let out_file = dir.path().join("out.pcapng");
+
+    let (code, _out, err) = common::run(&[
+        "capture",
+        "--process",
+        "game.exe",
+        "--json",
+        "--replay-source",
+        &fixture("udp-gameplay.pcap"),
+        "--attr-script",
+        &script.to_string_lossy(),
+        "--process-script",
+        &data("game.procscript"),
+        "--local-addr",
+        "192.0.2.10",
+        "--out",
+        &out_file.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "the run succeeds: {err}");
+
+    let complete = err
+        .lines()
+        .find(|l| l.contains("\"event\":\"session.complete\""))
+        .expect("a session.complete event is emitted");
+
+    assert!(
+        complete.contains("\"scope_discarded\":24"),
+        "every excluded packet is accounted for in the machine stream: {complete}"
+    );
+    assert!(
+        complete.contains("\"scope_unresolved_discarded\":0"),
+        "the two exclusion reasons are reported apart: {complete}"
+    );
 }

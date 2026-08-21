@@ -39,6 +39,19 @@ pub enum Event {
         dropped: u64,
         watching_discarded: u64,
         discarded_out_of_window: u64,
+        /// Packets excluded because they belong to a process this capture does
+        /// not cover (slice S064).
+        ///
+        /// Carried here and not only in the human summary because `--json`
+        /// suppresses that summary entirely: without these two fields a machine
+        /// consumer sees a capture that observed thousands of packets, wrote a
+        /// few, and accounted for none of the difference. Every discard path has
+        /// a named counter on every surface, not just the one a person reads
+        /// (P-4).
+        scope_discarded: u64,
+        /// Packets excluded on scope grounds that carried no attribution, so it
+        /// is not known whether they were the capture's.
+        scope_unresolved_discarded: u64,
     },
     /// A streaming consumer left, carrying its per-consumer accounting. Distinct
     /// from the capture-wide `dropped` in `session.complete`.
@@ -112,6 +125,8 @@ impl Event {
                 dropped,
                 watching_discarded,
                 discarded_out_of_window,
+                scope_discarded,
+                scope_unresolved_discarded,
             } => {
                 line.push_str(",\"packets\":");
                 line.push_str(&packets.to_string());
@@ -123,6 +138,10 @@ impl Event {
                 line.push_str(&watching_discarded.to_string());
                 line.push_str(",\"discarded_out_of_window\":");
                 line.push_str(&discarded_out_of_window.to_string());
+                line.push_str(",\"scope_discarded\":");
+                line.push_str(&scope_discarded.to_string());
+                line.push_str(",\"scope_unresolved_discarded\":");
+                line.push_str(&scope_unresolved_discarded.to_string());
             }
             Event::StreamConsumer {
                 transport,
@@ -236,6 +255,8 @@ mod tests {
             dropped: 0,
             watching_discarded: 3,
             discarded_out_of_window: 1,
+            scope_discarded: 0,
+            scope_unresolved_discarded: 0,
         }
         .render(now);
         assert!(complete.contains("\"packets\":10"));

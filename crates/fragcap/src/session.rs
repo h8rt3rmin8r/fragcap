@@ -83,11 +83,82 @@ pub enum PacketDisposition {
     Retained,
 }
 
-/// The bounds an operator sets on a session.
+/// What a capture writes out, as distinct from what it observes.
+///
+/// Specification section 12.3 places this decision in userspace, on every
+/// packet, independent of whatever kernel filter happens to be installed. Slice
+/// S064 is where that was implemented; before it the only gate tested the
+/// capture window and the volume bound, so everything on the wire reached the
+/// file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureScope {
+    /// Only what the operator asked for: a packet whose attribution carries a
+    /// bound stage or role, and whose role is inside the `--roles` set.
+    ///
+    /// The default. fragcap's claim is process attribution, and a user reading
+    /// that expects the file to hold their target's traffic. Before slice S064
+    /// it held everything on the wire: the first real end-to-end run returned a
+    /// file that was 91 percent other processes' traffic, because the narrowed
+    /// kernel filter cannot engage until the target opens its first socket and
+    /// nothing in the write path made the decision that specification section
+    /// 12.3 places in userspace.
+    #[default]
+    Target,
+    /// Everything captured, which is the behavior before slice S064.
+    ///
+    /// Still a real use: correlating the target against the rest of the machine,
+    /// and debugging attribution itself, both of which need the traffic that
+    /// resolves to nothing or to something else.
+    All,
+}
+
+impl CaptureScope {
+    /// Whether this scope admits a packet with the given attribution.
+    ///
+    /// `allowed_roles` is the `--roles` set, or `None` for unscoped. A packet is
+    /// "bound" when the session's binding snapshot stamped it, which is the same
+    /// condition that puts `role=` and `stage=` into the written packet comment,
+    /// so the file's contents and the file's own annotations cannot disagree.
+    fn admits(self, attribution: Option<&Attribution>, allowed_roles: Option<&[String]>) -> bool {
+        match self {
+            CaptureScope::All => true,
+            CaptureScope::Target => {
+                let Some(attr) = attribution else {
+                    return false;
+                };
+                let bound = attr.stage.is_some() || attr.role.is_some();
+                if !bound {
+                    return false;
+                }
+                // Belt and braces, and knowingly so. `CaptureSession::match_and_bind`
+                // already refuses to bind a stage whose role is outside the set,
+                // so a stamped packet's role is always allowed and this test
+                // cannot currently fail. It is kept because the gate should
+                // assert its own contract rather than inherit it from an
+                // invariant three modules away: if binding ever stamps a stage it
+                // does not trigger on, retention stays scoped without anyone
+                // having to remember this coupling.
+                match (allowed_roles, attr.role.as_deref()) {
+                    // Unscoped roles: every bound stage is in scope.
+                    (None, _) => true,
+                    // Scoped roles, and the packet names one: membership decides.
+                    (Some(allowed), Some(role)) => allowed.iter().any(|r| r == role),
+                    // Scoped roles, and the packet carries a stage but no role.
+                    // Admitted: it is bound to the profile, and refusing it would
+                    // drop the target's own traffic over a stage that simply did
+                    // not name a role.
+                    (Some(_), None) => true,
+                }
+            }
+        }
+    }
+}
+
+/// The bounds an operator sets on a session, and what it writes out.
 ///
 /// Every bound is optional. The acquisition timeout and the duration are
 /// measured from the instant the session was armed (decision D-5).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionConfig {
     /// How long Watching waits for a target before giving up. Unset means the
     /// session waits, ending instead by the duration bound or an interrupt.
@@ -98,6 +169,13 @@ pub struct SessionConfig {
     pub packet_bound: Option<u64>,
     /// The retained-byte bound.
     pub byte_bound: Option<u64>,
+    /// What reaches the sinks. Defaults to [`CaptureScope::Target`].
+    pub scope: CaptureScope,
+    /// The `--roles` set, or `None` when unscoped. Read only under
+    /// [`CaptureScope::Target`], where it is what makes the run's `roles ...
+    /// (enforced)` line true of packet retention rather than only of which
+    /// stages trigger acquisition.
+    pub allowed_roles: Option<Vec<String>>,
 }
 
 /// The session's own accounting.
@@ -796,6 +874,29 @@ struct GateShared {
     /// Packets discarded because they were captured at or after the stop instant,
     /// or beyond the bound.
     out_of_window_discarded: AtomicU64,
+    /// What reaches the sinks (slice S064).
+    scope: CaptureScope,
+    /// The `--roles` set, read only under [`CaptureScope::Target`].
+    allowed_roles: Option<Vec<String>>,
+    /// Packets discarded on scope grounds whose attribution named a process this
+    /// capture does not cover. Confidently not the capture's.
+    ///
+    /// In practice that means a process no profile stage binds, which is the
+    /// common case. It also covers a packet whose bound role falls outside the
+    /// `--roles` set, which cannot happen while binding is itself role-gated but
+    /// is counted here if it ever does, so the counter's name stays true to what
+    /// it counts rather than to today's binding semantics.
+    scope_discarded: AtomicU64,
+    /// Packets discarded on scope grounds carrying no attribution at all.
+    ///
+    /// Kept apart from `scope_discarded` deliberately, and this is the split
+    /// most likely to be "simplified" by a later reader. These packets *might*
+    /// have been the target's, dropped because the socket table had not yet
+    /// published the socket that would have named them. Folding the two would
+    /// hide a possible real loss inside an intended exclusion, which is exactly
+    /// the P-4 failure a scope gate risks introducing. A non-zero value here on
+    /// a real capture is a signal to investigate, not an expected outcome.
+    scope_unresolved_discarded: AtomicU64,
     /// Set the moment a bound is reached. Informational: beyond-bound packets are
     /// already rejected by the admitted-count comparison.
     bound_hit: AtomicBool,
@@ -812,6 +913,10 @@ impl GateShared {
             admitted_bytes: AtomicU64::new(0),
             watch_discarded: AtomicU64::new(0),
             out_of_window_discarded: AtomicU64::new(0),
+            scope: config.scope,
+            allowed_roles: config.allowed_roles.clone(),
+            scope_discarded: AtomicU64::new(0),
+            scope_unresolved_discarded: AtomicU64::new(0),
             bound_hit: AtomicBool::new(false),
         }
     }
@@ -921,6 +1026,20 @@ impl GateHandle {
         self.shared.out_of_window_discarded.load(Ordering::Relaxed)
     }
 
+    /// Packets discarded because they belong to a process the capture does not
+    /// cover.
+    pub fn scope_discarded(&self) -> u64 {
+        self.shared.scope_discarded.load(Ordering::Relaxed)
+    }
+
+    /// Packets discarded on scope grounds that carried no attribution at all,
+    /// so it is not known whether they were the capture's.
+    pub fn scope_unresolved_discarded(&self) -> u64 {
+        self.shared
+            .scope_unresolved_discarded
+            .load(Ordering::Relaxed)
+    }
+
     /// Whether a configured bound has been reached.
     pub fn bound_hit(&self) -> bool {
         self.shared.bound_hit.load(Ordering::Relaxed)
@@ -945,6 +1064,32 @@ impl WriteGate for SessionGate {
             shared
                 .out_of_window_discarded
                 .fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        // Out of scope: the packet was observed, resolved, and belongs to
+        // something this capture does not cover. Specification section 12.3
+        // places this decision here, in userspace, on every packet and
+        // independent of whatever kernel filter is installed, precisely because
+        // the filter cannot narrow until the target opens its first socket.
+        //
+        // Before the bound, deliberately: a packet that is not ours must not
+        // consume the operator's `--max-bytes` budget.
+        //
+        // The two counters are not one. A packet with no attribution might have
+        // been the target's, dropped because the socket table had not published
+        // yet; a packet attributed to an unbound process certainly was not. See
+        // `GateShared::scope_unresolved_discarded`.
+        if !shared
+            .scope
+            .admits(packet.attribution.as_ref(), shared.allowed_roles.as_deref())
+        {
+            if packet.attribution.is_some() {
+                shared.scope_discarded.fetch_add(1, Ordering::Relaxed);
+            } else {
+                shared
+                    .scope_unresolved_discarded
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             return false;
         }
         // Beyond the bound: the session's `check_volume_bounds` fires
@@ -983,6 +1128,7 @@ impl WriteGate for SessionGate {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+    use fragcap_core::attribution::{Attribution, Fidelity};
     use fragcap_core::interface::InterfaceId;
     use fragcap_core::packet::{Payload, RawPacket};
     use std::sync::mpsc;
@@ -999,6 +1145,39 @@ mod gate_tests {
         )
     }
 
+    /// A configuration whose scope admits everything.
+    ///
+    /// The default scope is `Target` since slice S064, so a synthetic packet
+    /// with no attribution is out of scope and never reaches the window and
+    /// bound logic. Every test below that is about windows or bounds says so by
+    /// using this, which keeps each test about one thing; the scope tests build
+    /// their own configurations and their own attributed packets.
+    fn unscoped() -> SessionConfig {
+        SessionConfig {
+            scope: CaptureScope::All,
+            ..SessionConfig::default()
+        }
+    }
+
+    /// A packet carrying an attribution bound to a profile stage, as the session
+    /// stamps one. This is what the scope predicate admits.
+    fn bound_packet(len: usize, ts: i64, role: &str) -> CapturedPacket {
+        let mut p = packet(len, ts);
+        let mut attr = Attribution::new(4242, "game.exe", Fidelity::Live);
+        attr = attr.with_role(role);
+        attr = attr.with_stage(StageId::new("target"));
+        p.attribution = Some(attr);
+        p
+    }
+
+    /// A packet attributed to a process no profile stage binds: observed,
+    /// resolved, and certainly not the capture's.
+    fn unbound_packet(len: usize, ts: i64) -> CapturedPacket {
+        let mut p = packet(len, ts);
+        p.attribution = Some(Attribution::new(99, "docker.exe", Fidelity::Live));
+        p
+    }
+
     fn gate(config: SessionConfig) -> (SessionGate, GateHandle, mpsc::Receiver<(u32, Timestamp)>) {
         let (tx, rx) = mpsc::channel();
         let (gate, handle) = SessionGate::new(&config, tx);
@@ -1011,7 +1190,7 @@ mod gate_tests {
     // capture driver.
     #[test]
     fn the_gate_counts_a_watch_time_discard() {
-        let (gate, handle, rx) = gate(SessionConfig::default());
+        let (gate, handle, rx) = gate(unscoped());
         for i in 0..5 {
             assert!(!gate.admit(&packet(64, i)), "watching admits nothing");
         }
@@ -1031,7 +1210,7 @@ mod gate_tests {
     fn a_packet_bound_admits_exactly_the_bound() {
         let (gate, handle, rx) = gate(SessionConfig {
             packet_bound: Some(3),
-            ..SessionConfig::default()
+            ..unscoped()
         });
         handle.open_from(Timestamp::from_nanos(0));
         let admitted: Vec<bool> = (0..6).map(|i| gate.admit(&packet(10, i))).collect();
@@ -1050,7 +1229,7 @@ mod gate_tests {
     fn a_byte_bound_admits_the_crossing_packet_then_closes() {
         let (gate, handle, _rx) = gate(SessionConfig {
             byte_bound: Some(100),
-            ..SessionConfig::default()
+            ..unscoped()
         });
         handle.open_from(Timestamp::from_nanos(0));
         // 40 + 40 = 80 (under), + 40 = 120 (crosses, admitted), then closed.
@@ -1073,7 +1252,7 @@ mod gate_tests {
     fn the_discard_tallies_reconcile() {
         let (gate, handle, _rx) = gate(SessionConfig {
             packet_bound: Some(2),
-            ..SessionConfig::default()
+            ..unscoped()
         });
         // Two watch-time discards before the window opens.
         gate.admit(&packet(10, 0));
@@ -1093,11 +1272,153 @@ mod gate_tests {
         );
     }
 
+    // FR-001, FR-003, FR-007, FR-008. The scope decision, and which counter each
+    // rejection lands in. Issue #184: the first real end-to-end run wrote a file
+    // that was 91 percent other processes' traffic, because no gate consulted the
+    // attribution that was already stamped on every packet.
+    #[test]
+    fn the_default_scope_admits_the_capture_and_counts_everything_else() {
+        let (gate, handle, _rx) = gate(SessionConfig::default());
+        handle.open_from(Timestamp::from_nanos(0));
+
+        assert!(
+            gate.admit(&bound_packet(10, 1, "target")),
+            "a packet bound to a profile stage is the capture's"
+        );
+        assert!(
+            !gate.admit(&unbound_packet(10, 2)),
+            "a packet attributed to an unbound process is not"
+        );
+        assert!(
+            !gate.admit(&packet(10, 3)),
+            "a packet with no attribution cannot be shown to be the capture's"
+        );
+
+        assert_eq!(handle.admitted(), 1);
+        assert_eq!(handle.scope_discarded(), 1, "the unbound one");
+        assert_eq!(
+            handle.scope_unresolved_discarded(),
+            1,
+            "the unattributed one, counted apart because it might have been ours"
+        );
+    }
+
+    // FR-005. `--scope all` reproduces the behavior before slice S064 exactly, so
+    // correlating a target against the rest of the machine, and debugging
+    // attribution itself, both stay possible.
+    #[test]
+    fn the_all_scope_admits_what_the_gate_admitted_before() {
+        let (gate, handle, _rx) = gate(unscoped());
+        handle.open_from(Timestamp::from_nanos(0));
+        assert!(gate.admit(&bound_packet(10, 1, "target")));
+        assert!(gate.admit(&unbound_packet(10, 2)));
+        assert!(gate.admit(&packet(10, 3)));
+        assert_eq!(handle.admitted(), 3);
+        assert_eq!(handle.scope_discarded(), 0);
+        assert_eq!(handle.scope_unresolved_discarded(), 0);
+    }
+
+    // FR-003. `--roles` decides retention under the target scope, which is what
+    // makes the run's roles line true of the file rather than only of which
+    // stages trigger acquisition (issue #184).
+    //
+    // This asserts the gate's own contract, not the whole system's behavior, and
+    // the difference matters. `CaptureSession::match_and_bind` already refuses to
+    // bind a stage outside the role set, so in a real run a launcher packet never
+    // carries a stamp and is rejected by the `bound` test rather than by this
+    // one. The packet below is stamped directly to reach the role test at all.
+    //
+    // That coupling is why `--scope profile` was removed in review of PR #191:
+    // it promised to retain "anything the profile binds regardless of --roles",
+    // and since a stamped packet's role is always inside the set, it could never
+    // admit anything `target` did not. A flag value that cannot differ from the
+    // default is a distinction the interface claims and the system cannot make.
+    #[test]
+    fn a_narrowed_role_set_scopes_retention_under_target() {
+        let (target_gate, target_handle, _rx) = gate(SessionConfig {
+            allowed_roles: Some(vec!["target".to_string()]),
+            ..SessionConfig::default()
+        });
+        target_handle.open_from(Timestamp::from_nanos(0));
+        assert!(target_gate.admit(&bound_packet(10, 1, "target")));
+        assert!(
+            !target_gate.admit(&bound_packet(10, 2, "launcher")),
+            "a bound role outside --roles is out of scope"
+        );
+        assert_eq!(target_handle.scope_discarded(), 1);
+    }
+
+    // FR-001, placement. An out-of-scope packet must not consume the operator's
+    // `--max-bytes` budget: the file is bounded by what it contains, not by what
+    // the machine happened to be doing while it was written.
+    #[test]
+    fn an_out_of_scope_packet_does_not_consume_the_volume_bound() {
+        let (gate, handle, _rx) = gate(SessionConfig {
+            packet_bound: Some(2),
+            ..SessionConfig::default()
+        });
+        handle.open_from(Timestamp::from_nanos(0));
+        for i in 0..50 {
+            gate.admit(&unbound_packet(10, i));
+        }
+        assert!(!handle.bound_hit(), "noise did not spend the bound");
+        assert!(gate.admit(&bound_packet(10, 100, "target")));
+        assert!(gate.admit(&bound_packet(10, 101, "target")));
+        assert_eq!(handle.admitted(), 2, "the bound counts the capture's own");
+    }
+
+    // FR-009. Every refusal lands in exactly one counter, and the four reasons sum
+    // to the refusal count. That refusal count is what the pipeline increments as
+    // `gate_dropped` at its single call site, so this gate-local invariant is the
+    // testable form of the conservation identity's gate term. A discard path added
+    // later with no counter fails here.
+    #[test]
+    fn the_four_discard_reasons_account_for_every_refusal() {
+        let (gate, handle, _rx) = gate(SessionConfig {
+            packet_bound: Some(1),
+            ..SessionConfig::default()
+        });
+        let mut refused = 0u64;
+
+        // Watch-time: the window is not open yet.
+        if !gate.admit(&bound_packet(10, 0, "target")) {
+            refused += 1;
+        }
+        handle.open_from(Timestamp::from_nanos(1));
+        // Out of scope, both kinds.
+        if !gate.admit(&unbound_packet(10, 2)) {
+            refused += 1;
+        }
+        if !gate.admit(&packet(10, 3)) {
+            refused += 1;
+        }
+        // Admitted, meeting the bound.
+        assert!(gate.admit(&bound_packet(10, 4, "target")));
+        // Beyond the bound.
+        if !gate.admit(&bound_packet(10, 5, "target")) {
+            refused += 1;
+        }
+
+        let accounted = handle.watch_discarded()
+            + handle.out_of_window_discarded()
+            + handle.scope_discarded()
+            + handle.scope_unresolved_discarded();
+        assert_eq!(
+            accounted, refused,
+            "every refusal is counted exactly once: watch {}, window {}, scope {},              unresolved {}, refused {refused}",
+            handle.watch_discarded(),
+            handle.out_of_window_discarded(),
+            handle.scope_discarded(),
+            handle.scope_unresolved_discarded()
+        );
+        assert_eq!(refused, 4, "the fixture exercises all four reasons");
+    }
+
     // FR-011 at the unit level. An open, unbounded window admits everything: the
     // pass-through that keeps the offline goldens byte-identical.
     #[test]
     fn an_unbounded_open_window_is_a_pass_through() {
-        let (gate, handle, rx) = gate(SessionConfig::default());
+        let (gate, handle, rx) = gate(unscoped());
         handle.open_from(Timestamp::from_nanos(0));
         for i in 0..10 {
             assert!(
@@ -1120,7 +1441,7 @@ mod gate_tests {
     // watching_discarded.
     #[test]
     fn a_buffered_pre_acquisition_frame_stays_a_watch_discard() {
-        let (gate, handle, rx) = gate(SessionConfig::default());
+        let (gate, handle, rx) = gate(unscoped());
         // Acquisition happened at instant 100.
         handle.open_from(Timestamp::from_nanos(100));
         // A frame captured at 50 (before acquisition) that was buffered and is only
@@ -1154,7 +1475,7 @@ mod gate_tests {
     // written and miscounted as retained. A frame captured before the stop is kept.
     #[test]
     fn a_frame_captured_after_the_stop_is_out_of_window() {
-        let (gate, handle, _rx) = gate(SessionConfig::default());
+        let (gate, handle, _rx) = gate(unscoped());
         handle.open_from(Timestamp::from_nanos(0));
         // A terminal-stage exit closed the window at instant 200.
         handle.close_at(Timestamp::from_nanos(200));

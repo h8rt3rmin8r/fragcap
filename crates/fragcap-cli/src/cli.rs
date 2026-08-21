@@ -122,6 +122,15 @@ pub enum Command {
     Schema(SchemaArgs),
 }
 
+/// What a capture writes out, as distinct from what it observes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ScopeArg {
+    /// Only the named target's traffic.
+    Target,
+    /// Everything captured.
+    All,
+}
+
 /// The capture mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ModeArg {
@@ -247,6 +256,16 @@ pub struct CaptureArgs {
     // source comment; it is not user-facing help.
     #[arg(long, value_delimiter = ',')]
     pub roles: Option<Vec<String>>,
+
+    /// What the capture writes out.
+    ///
+    /// `target` (the default) writes only the traffic of the target you named,
+    /// which is what process attribution is for. `all` writes everything
+    /// captured, which is useful for correlating the target against the rest of
+    /// the machine and for debugging attribution itself. Whatever is excluded is
+    /// counted and reported.
+    #[arg(long, value_enum, default_value_t = ScopeArg::Target)]
+    pub scope: ScopeArg,
 
     /// The flow direction to scope to.
     #[arg(long, value_enum)]
