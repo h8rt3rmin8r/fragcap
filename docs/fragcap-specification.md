@@ -2574,7 +2574,7 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
       --process <IMAGE>      A raw process image name, no stored target
       --path <SUBSTR>        Image-path substring anchor
       --path-regex <RE>      Image-path regex anchor
-  -m, --mode <MODE>          file | stream | ring        [default: file]
+      --mode <MODE>          file | stream | ring        [default: file]
   -o, --out <PATH>           Output path for file and ring modes
       --sink <SPEC>          Sink specification, repeatable
   -d, --duration <DUR>       Capture duration bound
@@ -2588,11 +2588,10 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
       --ring <DUR|SIZE>      Ring window for ring mode
       --launch               Start the title through its platform (--target only)
       --wait <DUR>           Acquisition timeout        [default: none]
-  -q, --quiet                Suppress progress output
+      --quiet                Suppress progress output
       --silent               Suppress all non-error output
       --json                 Emit structured events on stderr
   -h, --help                 Print help
-  -V, --version              Print version
 ```
 
 `--target`, `--id`, and `--process` are mutually exclusive and exactly one

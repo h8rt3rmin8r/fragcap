@@ -341,3 +341,398 @@ fn no_subcommand_requires_a_store_path() {
         failures.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// The audit-and-gate additions of slice S070 (issue #183). The four checks
+// below are the gate the issue itself specifies: length, defaults,
+// cross-reference, and spec agreement. None existed before this slice.
+// ---------------------------------------------------------------------------
+
+/// The flags whose effective default is resolved by clap or `assemble.rs`
+/// rather than left unstated. Mirrors, one entry per site:
+/// - `--mode`: `cli.rs`'s `default_value_t = ModeArg::File` (S070; matches
+///   `assemble.rs`'s `resolve_mode`, which no longer has a `None` arm)
+/// - `--direction`: `cli.rs`'s `default_value_t = Direction::Both` (S070;
+///   matches `assemble.rs:148`, which reads `args.direction` directly)
+/// - `--roles`: stated in prose in `cli.rs`'s doc comment (mirrors
+///   `assemble.rs:126,203`'s `.or_else(|| defaults.roles()...)`)
+/// - `--wait`: stated in prose in `cli.rs`'s doc comment (mirrors
+///   `assemble.rs:143`'s `acquisition_timeout: args.wait`, where `None` means
+///   no timeout)
+///
+/// A future defaulted option is added here by hand, deliberately: the four
+/// sites above are not expressible as a single structural walk of
+/// `fragcap_cli::command()`, because "has a default" is a fact about
+/// `assemble.rs`'s resolution logic, which clap's own `Arg` metadata only
+/// reports for the two that use `default_value_t`. The comment above ties
+/// each entry back to the exact site it mirrors so drift between this list
+/// and `assemble.rs` is a one-file diff to check, not a re-audit.
+const DEFAULTED_OPTIONS: &[&str] = &["--mode", "--direction", "--roles", "--wait"];
+
+/// Extract the option/argument paragraphs of a `--help` (long) rendering.
+///
+/// clap's long help separates each entry with a blank line; a short (`-h`)
+/// rendering does not, which is exactly the distinction
+/// [`short_help_continuations`] depends on.
+fn option_paragraphs(page: &str) -> Vec<&str> {
+    page.split("\n\n").collect()
+}
+
+/// Whether the first paragraph of a doc-comment block (the part before the
+/// first blank `///` line, or the whole block if there is none) itself reads
+/// as more than one sentence: a `.` followed by whitespace and a capital
+/// letter, outside backticked code. A single period with no following
+/// capital (`catalog.db`, `%APPDATA%\fragcap\catalog.db`) does not count.
+fn first_paragraph_has_two_sentences(doc_lines: &[&str]) -> bool {
+    let mut first_paragraph = Vec::new();
+    for line in doc_lines {
+        if line.trim().is_empty() {
+            break;
+        }
+        first_paragraph.push(*line);
+    }
+    let joined = first_paragraph.join(" ");
+    let mut in_backtick = false;
+    let chars: Vec<char> = joined.chars().collect();
+    for i in 0..chars.len() {
+        match chars[i] {
+            '`' => in_backtick = !in_backtick,
+            '.' if !in_backtick => {
+                let rest: String = chars[i + 1..].iter().collect();
+                let trimmed = rest.trim_start();
+                if trimmed
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                    && rest.starts_with(char::is_whitespace)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The paragraph whose first line names `flag`, or `None`.
+fn find_flag_paragraph<'a>(page: &'a str, flag: &str) -> Option<&'a str> {
+    option_paragraphs(page).into_iter().find(|p| {
+        p.lines()
+            .next()
+            .is_some_and(|l| l.trim_start().starts_with(flag))
+    })
+}
+
+#[test]
+fn every_defaulted_option_states_its_default() {
+    let out = render(&["capture".to_string()]);
+    let mut failures = Vec::new();
+    for flag in DEFAULTED_OPTIONS {
+        let Some(block) = find_flag_paragraph(&out, flag) else {
+            failures.push(format!("{flag}: no `capture --help` block found at all"));
+            continue;
+        };
+        let normalized = normalize(block).to_lowercase();
+        if !normalized.contains("[default:") && !normalized.contains("default") {
+            failures.push(format!("{flag}: states no default:\n{block}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} defaulted option(s) do not state their default in `capture --help`:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// One `///`-commented block in `cli.rs`, as consecutive doc-comment lines
+/// (with their `///` prefix and up to one leading space stripped), plus the
+/// 1-based source line the block starts on.
+struct DocBlock {
+    start_line: usize,
+    lines: Vec<String>,
+}
+
+/// Every doc-comment block in `cli.rs` that documents an `#[arg(...)]` field
+/// or a `Subcommand`/`ValueEnum` variant: a run of consecutive `///` lines
+/// immediately followed by a non-`///` line (the attribute or the item
+/// itself). A run immediately followed by another `///` run with only a
+/// blank *non-doc* line between is not something this grammar produces, so
+/// it is not specially handled.
+fn doc_blocks(source: &str) -> Vec<DocBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    let mut current: Option<DocBlock> = None;
+    let mut current_end: usize = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("///") {
+            let content = rest.strip_prefix(' ').unwrap_or(rest).to_string();
+            current
+                .get_or_insert_with(|| DocBlock {
+                    start_line: i + 1,
+                    lines: Vec::new(),
+                })
+                .lines
+                .push(content);
+            current_end = i;
+        } else if let Some(block) = current.take() {
+            if renders_as_user_help(&lines, current_end + 1) {
+                blocks.push(block);
+            }
+        }
+    }
+    if let Some(block) = current {
+        if renders_as_user_help(&lines, current_end + 1) {
+            blocks.push(block);
+        }
+    }
+    blocks
+}
+
+/// Whether the source line immediately after a doc-comment block (0-based
+/// `next_line`) belongs to something clap actually renders as `--help` text.
+///
+/// A struct's or enum's own outer doc comment never renders when that type is
+/// used as an enum variant's payload or via `#[command(subcommand)]`/
+/// `#[command(flatten)]`: clap renders the *variant*'s doc or the flattened
+/// field's own doc instead (verified: `doctor --help`'s about text is the
+/// `Doctor` variant's doc, not `DoctorArgs`' own struct doc, which is never
+/// shown anywhere). A `#[command(subcommand)]` or `#[command(flatten)]` field
+/// likewise renders nothing of its own doc comment; only its target type's
+/// content does. Excluding both keeps this check aimed at strings clap
+/// actually publishes.
+fn renders_as_user_help(lines: &[&str], next_line: usize) -> bool {
+    // A doc comment on a struct or enum is followed by zero or more attribute
+    // lines (`#[derive(...)]`, `#[command(...)]`) before the declaration
+    // itself; skip past them to find what is actually being documented.
+    let mut i = next_line;
+    let mut saw_subcommand_or_flatten = false;
+    while let Some(line) = lines.get(i).map(|l| l.trim_start()) {
+        if line.starts_with("#[command(subcommand)]") || line.starts_with("#[command(flatten)]") {
+            saw_subcommand_or_flatten = true;
+        }
+        if line.starts_with('#') {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    if saw_subcommand_or_flatten {
+        return false;
+    }
+    let Some(declaration) = lines.get(i).map(|l| l.trim_start()) else {
+        return true;
+    };
+    if declaration.starts_with("pub struct")
+        || declaration.starts_with("pub enum")
+        || declaration.starts_with("impl ")
+    {
+        return false;
+    }
+    true
+}
+
+/// This is a source check, not a rendered-output check, and deliberately so:
+/// `capture -h`'s own column width (driven by the longest flag name on the
+/// page) can force clap to wrap even a single, legitimately short sentence
+/// (measured: `--target`'s existing, already-split summary wraps on
+/// `capture -h` purely from column width) and a page with especially long
+/// flag names (measured: `extcap -h`, whose `--extcap-interfaces` is 21
+/// characters) can push clap into its own next-line layout for every entry on
+/// that page, including its auto-generated `-h, --help` text, which is not
+/// authorable at all. Neither is the defect FR-011 exists to catch; both are
+/// widths, already FR-001/FR-002's job on the existing wrap test. What FR-011
+/// actually asks (per plan.md Design section 9, and the short/long split
+/// FR-009 of S062 established) is a source fact: a doc comment conveying more
+/// than one sentence must have a blank `///` line separating the first
+/// sentence (what `-h` shows) from the rest (what only `--help` shows).
+#[test]
+fn every_short_help_summary_is_one_line() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
+    )
+    .expect("cli.rs must be readable");
+    let mut failures = Vec::new();
+    for block in doc_blocks(&source) {
+        let has_blank_split = block.lines.iter().any(|l| l.trim().is_empty());
+        let refs: Vec<&str> = block.lines.iter().map(String::as_str).collect();
+        if !has_blank_split && first_paragraph_has_two_sentences(&refs) {
+            failures.push(format!(
+                "cli.rs:{}: doc comment has more than one sentence with no blank `///` \
+                 line splitting the `-h` summary from the `--help` detail:\n{}",
+                block.start_line,
+                block.lines.join(" ")
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} doc comment(s) need a short/long split:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// Every long-flag and short-flag string reachable from the whole command
+/// tree, and every real subcommand name at any depth (excluding clap's
+/// generated `help`).
+fn command_surface() -> (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    fn walk(
+        cmd: &clap::Command,
+        flags: &mut std::collections::BTreeSet<String>,
+        words: &mut std::collections::BTreeSet<String>,
+    ) {
+        for arg in cmd.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                flags.insert(format!("--{long}"));
+            }
+            if let Some(short) = arg.get_short() {
+                flags.insert(format!("-{short}"));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            words.insert(sub.get_name().to_string());
+            walk(sub, flags, words);
+        }
+    }
+    let mut flags = std::collections::BTreeSet::new();
+    let mut words = std::collections::BTreeSet::new();
+    walk(&fragcap_cli::command(), &mut flags, &mut words);
+    // clap adds these automatically; they exist on every page but are not
+    // declared `Arg`s this walk would otherwise see.
+    for f in ["-h", "--help", "-V", "--version"] {
+        flags.insert(f.to_string());
+    }
+    (flags, words)
+}
+
+/// Whether `token` is shaped like a command word: purely lowercase ASCII
+/// letters and hyphens, non-empty. Excludes anything carrying a path, a
+/// placeholder (`<...>`), a scheme (`file:`), or punctuation, none of which is
+/// a command-word candidate.
+fn looks_like_command_word(token: &str) -> bool {
+    !token.is_empty() && token.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+}
+
+/// Whether `token` is shaped like a flag: `--x` or a two-character `-x`.
+fn looks_like_flag(token: &str) -> bool {
+    token.starts_with("--") || (token.starts_with('-') && token.chars().count() == 2)
+}
+
+#[test]
+fn every_cross_reference_resolves() {
+    let (flags, words) = command_surface();
+    let backtick_re = Regex::new(r"`([^`]+)`").unwrap();
+    let mut failures = Vec::new();
+    for page in help_pages() {
+        let normalized = normalize(&render(&page));
+        for cap in backtick_re.captures_iter(&normalized) {
+            let inner = &cap[1];
+            let tokens: Vec<&str> = inner.split_whitespace().collect();
+            // A bare word is only checked as a command reference if the whole
+            // backtick span reads like an invocation, i.e. its own first word
+            // is itself a real command word. This is the shape rule that
+            // keeps a purely technical or value-string backtick (`` `target`
+            // ``, `` `all` ``, `` `yes` ``) from being misread as a stale
+            // command reference: none of those spans starts with a real
+            // command word, so bare-word checking never engages for them.
+            let span_is_invocation = tokens
+                .first()
+                .is_some_and(|w| looks_like_command_word(w) && words.contains(*w));
+            for (idx, token) in tokens.iter().enumerate() {
+                let token = token.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':'));
+                // A word immediately after a flag is that flag's *value*
+                // (`--tier signature`), never a command word, even inside an
+                // otherwise invocation-shaped span.
+                let preceded_by_flag = idx > 0 && looks_like_flag(tokens[idx - 1]);
+                if looks_like_flag(token) {
+                    if !flags.contains(token) {
+                        failures.push(format!(
+                            "{}: `{token}` (from `{inner}`) names no real flag",
+                            label(&page)
+                        ));
+                    }
+                } else if span_is_invocation
+                    && !preceded_by_flag
+                    && looks_like_command_word(token)
+                    && !words.contains(token)
+                {
+                    failures.push(format!(
+                        "{}: `{token}` (from `{inner}`) names no real command",
+                        label(&page)
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} cross-reference(s) in help text name no real command or flag:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The short-flag set (`-x` tokens) `capture`'s own grammar block in
+/// specification section 17.2 documents, parsed from the fenced `text` block
+/// under the `### 17.2 Capture Invocation` heading.
+fn spec_capture_short_flags() -> std::collections::BTreeSet<String> {
+    let spec = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/fragcap-specification.md"),
+    )
+    .expect("the master specification must be readable");
+    let heading = "### 17.2 Capture Invocation";
+    let start = spec.find(heading).expect("section 17.2 must exist");
+    let after = &spec[start..];
+    let fence_start = after
+        .find("```text")
+        .expect("section 17.2 must open a text fence");
+    let block_start = fence_start + "```text".len();
+    let block_end = after[block_start..]
+        .find("```")
+        .expect("the fence must close");
+    let block = &after[block_start..block_start + block_end];
+
+    let short_flag_re = Regex::new(r"^\s*(-[A-Za-z]),").unwrap();
+    block
+        .lines()
+        .filter_map(|line| short_flag_re.captures(line))
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+#[test]
+fn capture_short_flags_match_the_specification() {
+    let spec_flags = spec_capture_short_flags();
+    let capture = fragcap_cli::command()
+        .find_subcommand("capture")
+        .expect("`capture` must exist")
+        .clone();
+    let mut binary_flags: std::collections::BTreeSet<String> = capture
+        .get_arguments()
+        .filter_map(|a| a.get_short())
+        .map(|c| format!("-{c}"))
+        .collect();
+    // clap injects `-h`/`--help` at parse/build time; it is not present on an
+    // unbuilt `Command`'s own `get_arguments()`, but every subcommand carries
+    // it in practice (confirmed by rendering `capture -h`), and it is not a
+    // fact about this crate's own grammar that could drift.
+    binary_flags.insert("-h".to_string());
+
+    let only_in_spec: Vec<_> = spec_flags.difference(&binary_flags).collect();
+    let only_in_binary: Vec<_> = binary_flags.difference(&spec_flags).collect();
+    assert!(
+        only_in_spec.is_empty() && only_in_binary.is_empty(),
+        "capture's short flags disagree with specification section 17.2: \
+         spec-only {only_in_spec:?}, binary-only {only_in_binary:?}"
+    );
+}
