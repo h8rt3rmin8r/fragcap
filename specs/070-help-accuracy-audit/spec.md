@@ -43,9 +43,9 @@ filed, and the re-check changes the scope materially:
 | 1 | `capture --launch` documents an unresolvable invocation | Fixed, closed as #181 (S062) |
 | 2 | `targets list` claims a column it never prints and claims to read | Fixed, closed as #182 (S062) |
 | 3 | `capture` summary names two of four target inputs | Fixed by S062 (the summary now names three categories matching the four-way usage group) |
-| 4 | `--sink` help lists four schemes; the parser accepts more | **Still live, and wider than filed.** `args.rs` accepts six schemes (`file`, `pcapng`, `jsonl`, `pipe`, `fifo`, `unix`, plus `tcp://`) and six `,key=value` modifiers (`format`, `payload`, `rotate-size`, `rotate-duration`, `queue`, `timeout`). Help still names four schemes and zero modifiers |
+| 4 | `--sink` help lists four schemes; the parser accepts more | **Still live, and wider than filed.** `args.rs` accepts seven schemes (`file`, `pcapng`, `jsonl`, `pipe`, `fifo`, `unix`, `tcp://`) and six `,key=value` modifiers (`format`, `payload`, `rotate-size`, `rotate-duration`, `queue`, `timeout`). Help still names four schemes and zero modifiers |
 | 5 | `--target`'s own help never states the row-index exclusivity | Fixed by S062 (FR-011): both the positional selector and `--target` state it directly |
-| 6 | No option ever prints its default | **Still live for three of four.** `--scope` prints `[default: target]` (added by S062 for an unrelated reason). `--mode`, `--direction`, `--roles`, and `--wait` all resolve a default in `assemble.rs` and none is printed |
+| 6 | No option ever prints its default | **Still live for all four.** `--scope` prints `[default: target]` (added by S062 for an unrelated reason). `--mode`, `--direction`, `--roles`, and `--wait` all resolve a default in `assemble.rs` and none is printed |
 | 7 | Spec section 17.2 documents `-m, --mode` and `-q, --quiet`; the grammar has neither | **Still live.** `docs/fragcap-specification.md:2577` and `:2591` are unchanged |
 | 8 | Unimplemented surface marked only in prose | Fixed by S062: `--mode`'s value list and `replay`/`--ring` carry `(implemented)`/`(not yet implemented)` tags in the possible-values list and short help itself |
 | 9 | `extcap --extcap-version`: "Accepted; not acted on" | **Still live** (unchanged; the audit re-evaluates whether this is a defect or an honest statement) |
@@ -299,13 +299,24 @@ and confirm each carries at least one worked example.
   `global = true` (repeating the flag on every subcommand, a larger and
   riskier grammar change) or a custom help renderer (the root page's existing
   hand-budgeted-template risk, applied everywhere).
-- **`--mode`'s default is conditional on a loaded profile, unlike `--scope`'s
-  unconditional default.** `assemble.rs:241` only reaches `CaptureMode::File`
-  when no profile supplies one; the CLI-only invocation (no `--profile` flag
-  exists on `CaptureArgs` today) always takes that branch, so in every
-  reachable case in this binary's shipped surface, the default is `file`.
-  State it as such rather than describing a mechanism the shipped surface
-  cannot currently trigger otherwise.
+- **`--mode`'s default is conditional on a loaded profile, and that path is
+  genuinely reachable, not merely theoretical.** `assemble.rs`'s `resolve_mode`
+  reaches `profile.capture().mode()` whenever `--mode` is omitted; a stored
+  target's resolved profile can declare a mode (proven by the pre-existing
+  test `a_profile_declared_ring_mode_is_resolved_and_validated`, which
+  constructs a real `CaptureArgs` from actual CLI parsing with no `--mode`
+  and confirms `resolve_mode` returns the profile's declared `Ring`). A
+  `default_value_t = ModeArg::File` attempt during implementation collapsed
+  `Option<ModeArg>` to a plain `ModeArg`, destroying the "nothing passed"
+  state that fallback depends on, and was caught failing that exact test; it
+  was reverted (`--mode` stays `Option<ModeArg>`; see plan.md's Phase 0 for
+  the full account). The correct precedence to document, and the one FR-003
+  and the shipped `--mode` help text both actually state, is: an explicit
+  `--mode` wins, else a profile-declared mode, else `file`. An earlier
+  version of this edge case asserted the profile branch was unreachable on
+  the shipped CLI surface and told the reader to state the default as an
+  unconditional `file`; review of PR #198 correctly identified that claim as
+  false against the code and the test proving otherwise.
 - **A worked example embedded in help text can drift from the specification's
   own worked examples if either is edited alone.** The gate's cross-reference
   check (US4) verifies flags and commands named exist; it does not verify

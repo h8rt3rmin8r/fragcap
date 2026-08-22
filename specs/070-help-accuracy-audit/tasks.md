@@ -173,12 +173,26 @@ individually verified accurate; T005/T006 pass for every flag they cover here.
 `fragcap_cli::command()`) against `docs/fragcap-specification.md` section
 17.2 and confirm they match.
 
-- [x] T018 [US3] In `docs/fragcap-specification.md`, remove `-m, --mode` and
-  `-q, --quiet` from the section 17.2 `capture` grammar block (lines 2577 and
-  2591 as of `5a3862c`; verify line numbers before editing since prior edits
-  in this slice may have shifted them), keeping the long forms and adding
-  `[default: file]` to `--mode`'s row to match T011.
-- [x] T019 [US3] Re-run T008; confirm it now passes. Depends on T018, T011.
+- [x] T018 [US3] In `docs/fragcap-specification.md`, remove `-m, --mode`,
+  `-q, --quiet`, and (found during this task, not in the original finding)
+  `-V, --version` from the section 17.2 `capture` grammar block, keeping the
+  long forms. `--mode`'s row states its true, conditional default
+  (`[default: profile mode, else file]`), not the unconditional
+  `[default: file]` originally planned: T011's `default_value_t` attempt was
+  reverted (see T011's own note and plan.md's Phase 0), so there is no clap
+  default to match. `--roles`' row is corrected the same way
+  (`[default: profile roles, else all]`). Also adds the three flags found
+  missing from the block entirely (`--catalog-db`, `--local-db`, `--scope`),
+  surfaced by T019's own extension below.
+- [x] T019 [US3] Re-run T008; confirm it now passes. Depends on T018 (not
+  T011, which was reverted; see T018's corrected note).
+- [x] T019a [US3] Review of PR #198 found T008 compared only short flags,
+  though FR-014 names "capture's flag and short-flag set." Extended T008 to
+  also collect and compare long flags (`get_long()` alongside `get_short()`
+  on both the binary and specification sides), which is what surfaced the
+  three missing spec rows T018 above now adds; hidden offline-substrate
+  flags (`is_hide_set()`) are excluded from the binary side since they never
+  render and the specification is not expected to document them.
 
 **Checkpoint**: the specification makes no claim about the shipped grammar
 that the grammar does not honor.

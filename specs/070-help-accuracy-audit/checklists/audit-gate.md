@@ -14,7 +14,7 @@ clarified-decision testability
 - [x] CHK002 - Does the spec state what a "disposition" must contain (fixed +
       what changed, or closed + reason), rather than leaving the record's shape
       implicit? [Completeness, Spec §FR-001]
-- [x] CHK003 - Is the set of six sink schemes and six sink modifiers FR-002 asks
+- [x] CHK003 - Is the set of seven sink schemes and six sink modifiers FR-002 asks
       to be documented enumerated explicitly, rather than left as "every scheme
       the parser accepts" with no fixed list to check against? [Completeness, Spec §FR-002]
 - [x] CHK004 - Are all four defaulted options (`--mode`, `--direction`,

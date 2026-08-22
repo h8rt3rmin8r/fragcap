@@ -8,10 +8,14 @@ closed, with the reason.
   names all seven schemes and six modifiers `args.rs` actually accepts; the
   real gap was wider than the issue recorded (it also missed `pcapng:`,
   `fifo:`, and `unix:`, and three of six modifiers).
-- **Finding 6** (no option states its default). Fixed for `--mode`,
-  `--direction` (now `default_value_t`, matching `--scope`'s existing
-  pattern), `--roles` and `--wait` (stated in prose, since one is a
-  `Vec<String>` and the other's default is "no timeout," not a fixed value).
+- **Finding 6** (no option states its default). Fixed for all four.
+  `--direction` takes `default_value_t`, matching `--scope`'s existing
+  pattern (it has no profile-priority behavior to lose). `--mode`, `--roles`,
+  and `--wait` state their default in prose: `--mode` and `--roles` because
+  each has a real, tested profile-priority fallback in `assemble.rs`
+  (`default_value_t` was tried for `--mode` too and reverted after breaking
+  that fallback; see the review-round entry below), `--wait` because its
+  default is "no timeout," not a fixed value.
 - **Finding 7** (spec documents `-m`/`-q` the grammar refuses). Fixed by
   correcting the specification, per the recorded clarification (adding short
   flags to a just-stabilized grammar is the higher-risk direction). Also
@@ -101,3 +105,118 @@ reverted regression:
 **Dependency and process notes.** No dependency added; `regex` was already a
 `fragcap-cli` dev-dependency (S062). No change to `cargo xtask deps`,
 `cargo xtask msrv`, or the workspace dependency inventory in `AGENTS.md`.
+
+**Review round on PR #198 (Codex + Copilot, 18 findings, all verified and
+addressed).** Every finding was checked against the actual code before being
+accepted; none were rejected.
+
+- **`--roles`' profile-priority default was never documented (Codex).**
+  `assemble.rs`'s `.or_else(|| defaults.roles()...)` gives a profile-declared
+  roles list priority over "every role," exactly the same shape as `--mode`'s
+  fallback; the help text said only "every role." Fixed to state the real
+  precedence.
+- **FR-011's gate did not render `-h` (Codex + Copilot, independently).**
+  Correct as filed. Fixing this properly required two further rendered-check
+  attempts, both measured wrong, before landing on the final design: see the
+  dedicated account below.
+- **`DEFAULTED_OPTIONS` was a hand-maintained list FR-012 says must be
+  structural (Codex + Copilot, independently).** Correct. Split into a
+  structural half (any `Arg` with `get_default_values()` non-empty, walked
+  from `fragcap_cli::command()`, covering `--direction` and any future
+  `default_value_t` option with no list edit) and a minimal, explicitly-
+  justified `PROSE_ONLY_DEFAULTS` list for exactly the two cases
+  (`--roles`, `--wait`, and `--mode` after its own revert) that resolve a
+  default inside `assemble.rs` with no clap-visible signal at all, which
+  cannot be derived from the command tree by any structural walk.
+- **The `DEFAULTED_OPTIONS` comment describing `--mode` was stale
+  (Copilot).** It still said `--mode` used `default_value_t`; `--mode` was
+  reverted to `Option<ModeArg>` with a prose default. The whole constant and
+  its comment were removed as part of the structural/prose split above.
+- **T017's sink-scheme regression assertion was never actually written
+  (Copilot).** Correct: the task was marked done in `tasks.md` but no such
+  test existed. Added `sink_help_names_every_scheme_and_modifier_the_parser_accepts`,
+  deriving the scheme and modifier sets from `args.rs`'s own match-arm keys
+  (`parse_destination`'s and `apply_option`'s), not a copied list, so the
+  test and the parser cannot drift independently. Demonstrated failing (a
+  temporarily removed `unix:` scheme) before being confirmed passing.
+- **The specification still claimed `--mode`'s default is unconditionally
+  `file` (Copilot).** Correct; `resolve_mode` preserves the profile-priority
+  fallback. Corrected in `docs/fragcap-specification.md` section 17.2 to
+  `[default: profile mode, else file]`, and `--roles`' row the same way.
+- **"With neither this flag set" on `--wait` is ungrammatical (Copilot).**
+  Correct (only one flag is being discussed, not two). Changed to "Without
+  this flag."
+- **Scheme count miscounted as six instead of seven (Copilot).** Correct
+  arithmetic error in `spec.md`'s Evidence table and the audit-gate
+  checklist; both list seven items. Fixed in both places.
+- **"Still live for three of four" undercounts by one (Copilot).** Correct;
+  all four remaining options (`--mode`, `--direction`, `--roles`, `--wait`)
+  stated no default at time of writing. Fixed to "all four."
+- **The `--profile`-flag edge case in `spec.md` was false (Copilot).**
+  Correct, and the sharpest finding of the round: it asserted the
+  profile-mode fallback was unreachable on the shipped CLI and told the
+  reader to document `--mode` as unconditionally `file`, which is exactly
+  backwards from what the pre-existing `a_profile_declared_ring_mode_is_
+  resolved_and_validated` test proves and what FR-003 itself already said
+  correctly. Rewritten to state the real, tested precedence.
+- **`plan.md` still said `--mode` gains `default_value_t` (Copilot).**
+  Correct; stale from before the revert. Rewritten together with the
+  "one of four" miscount below (Copilot: the true total, `--scope` plus four
+  more, is five) into a single corrected passage covering both.
+- **`tasks.md`'s T018 record still described the reverted plan (Copilot).**
+  Correct. Rewritten to describe the actual specification edit (conditional
+  defaults, plus the three flags found missing entirely, below), and a new
+  T019a records the FR-014 extension that surfaced them.
+- **FR-013's cross-reference check was circular (Copilot).** Correct, and
+  the second-sharpest finding: gating bare-word checking on "the backtick
+  span's first word is itself a real command" meant a genuinely stale,
+  *standalone* reference (a lone `` `watch` `` naming a retired command)
+  could never trigger the check, because `watch` failing to be real is
+  exactly what made the span fail to "read as an invocation." Redesigned:
+  value literals (enum possible-values, `value_name` hint tokens) are now
+  excluded structurally via `command_surface()`, and every bare
+  command-word-shaped token is checked unconditionally, with no span
+  gating at all. Fixing this exposed two more real gaps found only once the
+  gate ran for real: `fragcap` itself (the binary's own name, appearing in
+  every worked example) was not in the known-words set, and a bare word
+  immediately followed by a colon (`` `kind: "export"` ``, a JSON field
+  name in prose) needed to stay excluded from bare-word candidacy even
+  though a flag reference's own trailing colon must still be trimmed
+  (`` `--target`: ``). Both fixed; demonstrated catching a deliberately
+  introduced `targets watch` stale reference before being reverted.
+- **FR-014 only compared short flags, though the requirement names "flag and
+  short-flag set" (Copilot).** Correct. Extended to compare long flags too
+  (`get_long()` alongside `get_short()`), excluding hidden offline-substrate
+  args (`is_hide_set()`) that never render and adding the propagated globals
+  (`--quiet`/`--silent`/`--json`, invisible on an unbuilt `Command`) to the
+  binary side. Turning this on immediately surfaced three real,
+  previously-undiscovered spec gaps: `--catalog-db`, `--local-db`, and
+  `--scope` are real, shipped `capture` flags the specification's section
+  17.2 never documented at all. Added all three rows.
+
+**FR-011's gate, the long way round.** Getting a genuinely rendered check
+right took three attempts, and the failure of the second is worth recording
+in full because it is not obvious in advance. Attempt one (a raw
+continuation-line scan of `-h` output) flagged `--target`'s own
+already-correctly-split, single-sentence summary as a violation, because
+`capture -h`'s description column, pushed right by *other* long flag names on
+the same page, is narrow enough to wrap even one short sentence. Attempt two
+cross-checked each continuation against that same page's `--help` rendering
+for an internal blank-line split, which fixed the `--target` case, but then
+flagged `extcap -h`'s `--extcap-interfaces`, `--capture`, several more of its
+own fields, and even clap's own auto-generated, unauthorable `-h, --help`
+text ("Print help (see more with '--help')") as violations: `extcap`'s
+longest flag name (`--extcap-interfaces`, 21 characters) is long enough to
+push clap into a next-line layout for the *entire* page, so every entry wraps
+regardless of whether it has, or even could have, a second sentence to
+defer. Neither failure is the defect FR-011 exists to catch; both are caused
+by sibling flags on the same page, not by the field's own doc comment. The
+final design renders every page's `-h` (satisfying "render `-h`... iterate
+`help_pages()`" literally, and confirming each exits 0), but the actual
+pass/fail judgment is a source-level scan of `cli.rs`'s doc comments for a
+sentence boundary (`.`, `?`, or `!` followed by whitespace and a capital
+letter, outside backticked code) with no blank `///` split, because that is
+a fact about the field's own content, not about what else happens to share
+its page. The sentence detector was also corrected per the two `-011` review
+comments to recognize `?`/`!`, not only `.`; verified by temporarily joining
+a doc comment with `!` and confirming the gate caught it before reverting.

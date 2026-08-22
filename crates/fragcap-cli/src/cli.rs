@@ -287,8 +287,8 @@ pub struct CaptureArgs {
 
     /// How long to wait for a target before giving up (acquisition timeout).
     ///
-    /// With neither this flag set, waits with no timeout [default: none]: until
-    /// the target starts, or the run is interrupted.
+    /// Without this flag, waits with no timeout [default: none]: until the
+    /// target starts, or the run is interrupted.
     #[arg(long, value_parser = parse_duration)]
     pub wait: Option<Duration>,
 
@@ -302,7 +302,9 @@ pub struct CaptureArgs {
 
     /// The roles to capture, comma-separated.
     ///
-    /// Scopes which stages trigger. Omit to capture every role [default: all].
+    /// Scopes which stages trigger. Omitting this defers to a profile-declared
+    /// roles list if one exists, else every role [default: profile roles, else
+    /// all].
     // `value_delimiter` splits one comma-separated value into the role list,
     // matching the `extcap` surface so the command line and the analyzer dialog
     // select capture identically. A custom `value_parser` returning `Vec<String>`

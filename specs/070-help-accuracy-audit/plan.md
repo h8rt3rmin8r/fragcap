@@ -74,30 +74,38 @@ example (`format=`, `rotate-size=`, `rotate-time=`, the last of which does not
 even match the real key, `rotate-duration`). FR-002 is written against the
 source, not the issue text, for this reason.
 
-**2. Only one of four defaulted options prints its default, and the mechanism
+**2. Only one of five defaulted options prints its default, and the mechanism
 differs between them.** `--scope` uses `default_value_t`, a clap feature that
 renders `[default: ...]` automatically; S062 added it for an unrelated
 reason (S062 plan does not mention it directly, but the field predates this
-slice). `--direction` and `--roles` resolve their default inside `assemble.rs`
-(`args.direction.unwrap_or(Direction::Both)` at two call sites;
-`.or_else(|| defaults.roles().map(...))` reading a `Profile` default object
-that is always absent on the CLI-only path, so the practical default is
-whatever `Profile::default()` supplies, traced to be the specification's
-"all"). `--mode` resolves through `profile.capture().mode().unwrap_or(CaptureMode::File)`,
-reached only when `args.mode` is `None`, which on the shipped CLI (`CaptureArgs`
-carries no `--profile` flag) is every invocation that omits `--mode`. `--wait`
-resolves to no default at all: `acquisition_timeout: args.wait` passes `None`
-straight through, meaning "wait indefinitely," which is itself a fact `--wait`'s
-help should state rather than merely defaulting to printing nothing.
+slice). Of the remaining four (`--mode`, `--direction`, `--roles`, `--wait`),
+none print a default as of this reading. `--direction` resolved its default
+inside `assemble.rs` (`args.direction.unwrap_or(Direction::Both)`, a plain
+literal fallback with no profile involvement); `--roles` resolves through
+`.or_else(|| defaults.roles().map(...))`, reading a `Profile` default object;
+`--mode` resolves through `profile.capture().mode().unwrap_or(CaptureMode::File)`,
+reached whenever `args.mode` is `None`; `--wait` resolves to no default at
+all, `acquisition_timeout: args.wait` passing `None` straight through,
+meaning "wait indefinitely."
 
-This means FR-003's four fixes are not uniform: `--mode` and `--direction`
-gain a literal `[default: ...]` (via `default_value_t`, matching `--scope`'s
-existing pattern, since both resolve to one fixed value on every reachable
-code path in the shipped binary); `--roles` gains a stated default matching
-"all" (in prose, since `ValueEnum` and `default_value_t` do not apply to a
-`Vec<String>` built from a comma-delimited value); `--wait` gains a stated "no
-timeout; wait until the target starts or the process is interrupted" (in
-prose, since `None` here is a real behavior, not an unstated one).
+**Corrected during implementation, not merely planned here:** an initial
+reading treated `--mode`'s and `--roles`' profile fallback as unreachable on
+the shipped CLI surface (no `--profile` flag exists on `CaptureArgs`), and
+planned `default_value_t` for `--mode` on that basis, mirroring `--direction`.
+That was wrong: `resolve_mode`'s profile branch is real and tested
+(`a_profile_declared_ring_mode_is_resolved_and_validated` constructs a real
+`CaptureArgs` from actual CLI parsing with no `--mode` and confirms a stored
+target's resolved profile can supply `Ring`), and collapsing
+`Option<ModeArg>` to a plain `ModeArg` via `default_value_t` silently broke
+that test by erasing the "nothing passed" state the fallback depends on.
+Caught by `cargo xtask ci`, not by design review; reverted. `--direction` has
+no such profile-priority behavior to lose (confirmed: no
+`profile.capture().direction()` accessor exists anywhere), so it alone safely
+takes `default_value_t = Direction::Both`, matching `--scope`'s pattern.
+`--mode`, `--roles`, and `--wait` all state their default in prose instead:
+`--mode` as "a profile-declared mode if one exists, else `file`"; `--roles` as
+"a profile-declared roles list if one exists, else every role"; `--wait` as
+"no timeout; wait until the target starts or the process is interrupted."
 
 **3. The three checklist-flagged edges (CHK007, CHK015, CHK020) each resolve
 to "no special case needed," verified by reading the actual code:**
