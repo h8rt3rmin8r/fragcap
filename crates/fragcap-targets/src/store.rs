@@ -932,6 +932,24 @@ impl Store {
         Ok(stable_id)
     }
 
+    /// The 1-based position a stable id occupies in the most recent listing
+    /// snapshot, or `None` if it is not in the snapshot at all (never listed, or
+    /// listed once and then dropped by a later listing that replaced the
+    /// snapshot). The reverse of [`Store::listing_snapshot_nth`]; read only, since
+    /// the snapshot's sole writer stays [`Store::write_listing_snapshot`] (slice
+    /// S067, issue #171).
+    pub fn listing_snapshot_position(&self, stable_id: i64) -> Result<Option<usize>, TargetsError> {
+        let position: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT position FROM listing_snapshot WHERE stable_id = ?1",
+                params![stable_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(position.map(|p| p as usize))
+    }
+
     /// How many rows the most recent listing snapshot holds, or zero if no
     /// listing has been written yet.
     ///
@@ -1682,6 +1700,17 @@ mod tests {
             .expect("rewrite snapshot");
         assert_eq!(store.listing_snapshot_nth(1).expect("nth"), Some(2001));
         assert_eq!(store.listing_snapshot_nth(2).expect("nth"), None);
+    }
+
+    #[test]
+    fn listing_snapshot_position_reverse_lookup() {
+        let mut store = Store::open_in_memory().expect("store");
+        store
+            .write_listing_snapshot(&[(1001, "alpha"), (1002, "bravo")])
+            .expect("write snapshot");
+        assert_eq!(store.listing_snapshot_position(1001).expect("pos"), Some(1));
+        assert_eq!(store.listing_snapshot_position(1002).expect("pos"), Some(2));
+        assert_eq!(store.listing_snapshot_position(9999).expect("pos"), None);
     }
 
     #[test]

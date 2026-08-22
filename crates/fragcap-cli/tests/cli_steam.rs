@@ -59,3 +59,35 @@ fn steam_profile_is_retired() {
     let (code, _out, _err) = run(&["steam", "profile", "620"]);
     assert_eq!(code, 2, "steam profile is gone");
 }
+
+#[test]
+fn steam_list_json_never_prints_a_human_line_regardless_of_machine_state() {
+    // Whether or not Steam is installed on this machine, `--json` mode's stdout
+    // is either empty or newline-delimited JSON records, never the human table's
+    // header or tab-separated rows (issue #172, FR-013).
+    let (code, out, err) = run(&["steam", "list", "--json"]);
+    assert!(code == 0 || code == 2, "unexpected exit {code}: {err}");
+    for line in out.lines() {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "a non-JSON line reached stdout in --json mode: {line:?}"
+        );
+    }
+    assert!(
+        !out.contains("APP ID\tNAME"),
+        "the human header must never appear in --json mode"
+    );
+}
+
+#[test]
+fn steam_list_json_exit_code_matches_human_mode() {
+    // FR-014: the no-installation configuration refusal (exit 2) is unaffected
+    // by --json, exactly as the human-mode steam_list_is_wired_and_not_a_stub
+    // test already covers.
+    let (human_code, _out, _err) = run(&["steam", "list"]);
+    let (json_code, _out, _err) = run(&["steam", "list", "--json"]);
+    assert_eq!(
+        human_code, json_code,
+        "steam list's exit code must not depend on --json"
+    );
+}
