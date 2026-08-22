@@ -58,3 +58,7 @@ windows-sys = { workspace = true }
 
 [dev-dependencies]
 serde_json.workspace = true
+# Enables fragcap-steam's synthetic appinfo.vdf generator for this crate's own
+# tests (tests/steam_source.rs), the same way fragcap-cli's dev-dependencies
+# already do for its launch-accumulation tests.
+fragcap-steam = { workspace = true, features = ["test-support"] }

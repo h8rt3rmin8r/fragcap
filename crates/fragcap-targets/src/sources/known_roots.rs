@@ -118,6 +118,8 @@ impl<'a> KnownRootsSource<'a> {
                                 evidence,
                                 detection_scan,
                                 source_name: self.name().to_string(),
+                                folder_name: None,
+                                executable_hint: None,
                             });
                             // Stop-on-hit: do not descend into a hit's subtree.
                         }

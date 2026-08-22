@@ -17,15 +17,17 @@ use fragcap::profile::FidelityTier;
 use std::io::IsTerminal;
 
 use fragcap::targets::{
-    handle, identifier, is_row_index, resolve_id, resolve_positional, CandidateIdentity,
-    ClassificationSource, DetectionScan, DirectorySource, Discovery, Selection, SocketHolderAnswer,
-    Store, TargetClassification, TargetEntry, TargetSource,
+    handle, identifier, install_presence, is_row_index, name_divergence, resolve_id,
+    resolve_positional, CandidateIdentity, ClassificationSource, DetectionScan, DirectorySource,
+    Discovery, InstallPresence, NameDivergence, Selection, SocketHolderAnswer, Store,
+    TargetClassification, TargetEntry, TargetSource, INSTALL_MISSING_NOTE,
 };
 
 use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
     TargetsShowArgs,
 };
+use crate::color::{use_color, RESET, WARN};
 use crate::commands::target_resolve;
 use crate::exit::{CliError, Exit};
 use crate::paths;
@@ -173,11 +175,15 @@ fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, Cl
         .write_listing_snapshot(&rows)
         .map_err(|e| CliError::failure(e.to_string()))?;
 
-    // End by naming the next command: the first ready row, else the first row.
+    // End by naming the next command: the first ready row whose install root is not
+    // missing, else the first row. A row whose files are gone is never offered as
+    // the suggested capture, since suggesting one is a bad first command (issue
+    // #167).
     let next = targets
         .iter()
         .position(|t| {
             fragcap::targets::capture_readiness(t) == fragcap::targets::CaptureReadiness::Ready
+                && install_presence(t) != InstallPresence::Missing
         })
         .map(|i| i + 1)
         .unwrap_or(1);
@@ -244,10 +250,11 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
         "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  SENSITIVITIES",
         "#", "TARGET", "CAPTURE", "ENGINE"
     );
+    let color = use_color();
     for (i, t) in targets.iter().enumerate() {
         let capture = fragcap::targets::capture_readiness(t).label();
         let engine = fragcap::targets::engine_summary(t);
-        let sensitivities = fragcap::targets::sensitivities_summary(t);
+        let sensitivities = sensitivities_cell(t, color);
         let _ = writeln!(
             out,
             "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  {}",
@@ -257,6 +264,31 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
             engine,
             sensitivities
         );
+    }
+}
+
+/// The SENSITIVITIES cell for one row: the ordinary
+/// [`fragcap::targets::sensitivities_summary`] value, prefixed with
+/// [`INSTALL_MISSING_NOTE`] when the row's `install_root` is recorded and absent
+/// (issue #167). This is the whole of the missing-install-root rendering: the cell
+/// is free-running and exempt from padding (`render_table`'s own width budget), so
+/// a row not in this state returns exactly what it always has, unchanged in every
+/// color mode (FR-009). The `-` clean marker is replaced outright rather than
+/// joined, since `install folder not found; -` reads worse than the note alone.
+fn sensitivities_cell(t: &TargetEntry, color: bool) -> String {
+    let base = fragcap::targets::sensitivities_summary(t);
+    if install_presence(t) != InstallPresence::Missing {
+        return base;
+    }
+    let note = if base == fragcap::targets::SCANNED_CLEAN_MARKER || base.is_empty() {
+        INSTALL_MISSING_NOTE.to_string()
+    } else {
+        format!("{INSTALL_MISSING_NOTE}; {base}")
+    };
+    if color {
+        format!("{WARN}{note}{RESET}")
+    } else {
+        note
     }
 }
 
@@ -802,6 +834,10 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         install_root: None,
         evidence,
         detection_scan,
+        // A manually authored target has no separate platform installdir or
+        // launch-hint observation distinct from what the user already supplied.
+        folder_name: None,
+        executable_hint: None,
     };
     store
         .insert_target(&entry)
@@ -1062,6 +1098,13 @@ fn print_target(t: &TargetEntry, out: &mut dyn Write) {
         "sensitivities:  {}",
         fragcap::targets::sensitivities_summary(t)
     );
+    // A genuinely divergent folder name is worth surfacing (issue #173); a cosmetic
+    // or truncation-only difference stays quiet so the signal stays worth reading.
+    if name_divergence(t) == NameDivergence::Semantic {
+        if let Some(folder_name) = &t.folder_name {
+            let _ = writeln!(out, "note:           installed as {folder_name:?}");
+        }
+    }
 }
 
 /// The file stem of an executable name (drop a trailing extension), for the

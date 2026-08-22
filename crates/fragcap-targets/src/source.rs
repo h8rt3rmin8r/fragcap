@@ -68,6 +68,15 @@ pub struct CandidateTarget {
     pub detection_scan: Option<DetectionScan>,
     /// The name of the source that produced this candidate.
     pub source_name: String,
+    /// The raw platform installdir or folder-identifying value, verbatim (slice
+    /// S066, issue #173). `Some` for a Steam candidate; `None` for a known-roots or
+    /// directory-scan candidate, which has no separate installdir concept distinct
+    /// from its path-derived `display_name`.
+    pub folder_name: Option<String>,
+    /// The raw observed launch executable name, verbatim, or `None` when the
+    /// producing source observed none. A findability hint only, never a claim
+    /// about a resolved capture chain (P-9).
+    pub executable_hint: Option<String>,
 }
 
 /// The truthful per-run account. Every considered item lands in exactly one named
@@ -215,6 +224,8 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: source.to_string(),
+            folder_name: None,
+            executable_hint: None,
         }
     }
 

@@ -60,10 +60,22 @@ pub fn resolve_positional(store: &Store, token: &str) -> Result<Selection, Targe
         return Ok(Selection::Resolved(Box::new(t)));
     }
     let by_name = store.targets_by_name(token)?;
-    Ok(match by_name.len() {
+    if !by_name.is_empty() {
+        return Ok(match by_name.len() {
+            1 => Selection::Resolved(Box::new(by_name.into_iter().next().expect("len 1"))),
+            _ => Selection::Ambiguous(by_name),
+        });
+    }
+    // Neither tier above matched: fall to a case-insensitive substring match
+    // against name, folder_name, and executable_hint (slice S066, issue #173), so
+    // a target is findable by a folder name or executable that diverges from its
+    // display name. This tier is consulted only on a clean miss from the two
+    // above, so an existing exact match's resolution is unaffected (no drift).
+    let by_substring = store.targets_by_substring(token)?;
+    Ok(match by_substring.len() {
         0 => Selection::NoMatch,
-        1 => Selection::Resolved(Box::new(by_name.into_iter().next().expect("len 1"))),
-        _ => Selection::Ambiguous(by_name),
+        1 => Selection::Resolved(Box::new(by_substring.into_iter().next().expect("len 1"))),
+        _ => Selection::Ambiguous(by_substring),
     })
 }
 

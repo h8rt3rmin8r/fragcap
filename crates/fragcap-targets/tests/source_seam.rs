@@ -24,6 +24,8 @@ fn one_candidate(name: &str, source: &str, fidelity: FidelityTier) -> Discovery 
             evidence: Vec::new(),
             detection_scan: None,
             source_name: source.to_string(),
+            folder_name: None,
+            executable_hint: None,
         }],
         account,
         ..Discovery::default()

@@ -110,6 +110,8 @@ pub fn register_candidate(
         install_root,
         evidence: evidence_value(candidate),
         detection_scan: candidate.detection_scan,
+        folder_name: candidate.folder_name.clone(),
+        executable_hint: candidate.executable_hint.clone(),
     };
     store.insert_target(&entry)?;
     Ok(true)
@@ -162,6 +164,8 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: "steam".to_string(),
+            folder_name: None,
+            executable_hint: None,
         }
     }
 
@@ -174,6 +178,8 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: "known-roots".to_string(),
+            folder_name: None,
+            executable_hint: None,
         }
     }
 
@@ -199,5 +205,32 @@ mod tests {
         assert_eq!(again.registered, 0);
         assert_eq!(again.already_present, 1);
         assert_eq!(store.targets().expect("targets").len(), 1);
+    }
+
+    #[test]
+    fn folder_name_and_executable_hint_are_stored_verbatim_and_never_fabricated() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut candidate = steam_candidate(2413210, "Trapped with Ivy & Piper");
+        candidate.folder_name = Some("Escape from Ivy & Piper".to_string());
+        candidate.executable_hint = Some("TrappedWithIvyAndPiper-EA.exe".to_string());
+        register_candidate(&mut store, &candidate).expect("register");
+
+        let entry = &store.targets().expect("targets")[0];
+        assert_eq!(
+            entry.folder_name.as_deref(),
+            Some("Escape from Ivy & Piper")
+        );
+        assert_eq!(
+            entry.executable_hint.as_deref(),
+            Some("TrappedWithIvyAndPiper-EA.exe")
+        );
+
+        // A candidate with neither observed leaves both None, never invented.
+        let mut store2 = Store::open_in_memory().expect("store");
+        register_candidate(&mut store2, &steam_candidate(730, "Counter-Strike 2"))
+            .expect("register");
+        let entry2 = &store2.targets().expect("targets")[0];
+        assert_eq!(entry2.folder_name, None);
+        assert_eq!(entry2.executable_hint, None);
     }
 }

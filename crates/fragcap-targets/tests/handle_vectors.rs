@@ -24,8 +24,9 @@ fn appendix_a_positive_vectors() {
         ),
         // Pokemon with acute -- NFKD splits the accent to a combining mark, stripped.
         ("Pok\u{00E9}mon", "pokemon"),
-        // Ratchet & Clank -- ampersand run collapses to one underscore.
-        ("Ratchet & Clank", "ratchet_clank"),
+        // Ratchet & Clank -- & expands to "and" (slice S066, issue #173), rather
+        // than disappearing as it did before.
+        ("Ratchet & Clank", "ratchet_and_clank"),
         // Final Fantasy + Roman numeral four (U+2163) -- NFKD -> "IV" -> "iv".
         ("Final Fantasy \u{2163}", "final_fantasy_iv"),
         // Half-Life 2: Episode One.
@@ -84,6 +85,28 @@ fn collision_suffixes_the_new_item() {
     })
     .unwrap();
     assert_eq!(second, "portal_2_2");
+}
+
+/// The & expansion (slice S066, issue #173): the conjunction survives as a word
+/// rather than disappearing, and a name with no other special characters is
+/// unaffected by the new step.
+#[test]
+fn ampersand_expands_to_and() {
+    assert_eq!(
+        normalize("Trapped with Ivy & Piper").as_deref(),
+        Some("trapped_with_ivy_and_piper")
+    );
+    assert_eq!(
+        derive_handle("Trapped with Ivy & Piper", None, 1),
+        "trapped_with_ivy_and_piper"
+    );
+    // No surrounding whitespace still splits into separate words.
+    assert_eq!(normalize("Ivy&Piper").as_deref(), Some("ivy_and_piper"));
+    // A comma-and-colon-bearing name with no ampersand is unaffected by this step.
+    assert_eq!(
+        normalize("Warhammer 40,000: Dawn of War").as_deref(),
+        Some("warhammer_40_000_dawn_of_war")
+    );
 }
 
 /// A nonspacing mark with canonical combining class 0 is still stripped, proving

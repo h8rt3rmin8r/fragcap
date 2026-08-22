@@ -76,6 +76,11 @@ pub struct AppInfoApp {
     pub change_number: u32,
     /// The launch entries in cache order, verbatim.
     pub launch: Vec<SteamLaunchEntry>,
+    /// The appinfo `common/type` value, verbatim (for example `Game`, `Music`,
+    /// `Application`), or `None` when the section carries no `common` block or no
+    /// `type` key within it. Never guessed from another field (P-9): the install-path
+    /// join (slice S066) reads this rather than assuming every title is a `Game`.
+    pub common_type: Option<String>,
 }
 
 /// A section (or the file header) that could not be parsed.
@@ -161,11 +166,12 @@ pub fn parse_appinfo(bytes: &[u8]) -> AppInfoParse {
                 });
                 break;
             }
-            Some(Ok(section)) => match reader.launch_entries(&section) {
-                Ok(launch) => apps.push(AppInfoApp {
+            Some(Ok(section)) => match reader.decode(&section) {
+                Ok(root) => apps.push(AppInfoApp {
                     appid: section.appid,
                     change_number: section.change_number,
-                    launch,
+                    common_type: extract_common_type(&root),
+                    launch: extract_launch(&root),
                 }),
                 // A per-section key-values fault: the framing was intact, so the
                 // walk resyncs to the next section (FR-008).
@@ -313,14 +319,24 @@ impl<'a> AppInfoReader<'a> {
         }))
     }
 
+    /// Decode one section's key-values body into its parsed tree, on demand. A
+    /// malformed body is a per-section error the caller counts as a failed
+    /// application; it does not stop the walk. Shared by every per-section
+    /// extraction ([`launch_entries`](Self::launch_entries), and
+    /// [`extract_common_type`]) so a section is decoded once regardless of how many
+    /// facts are read out of it.
+    pub fn decode(&self, section: &SectionInfo) -> Result<VdfValue, String> {
+        let body = &self.bytes[section.body.0..section.body.1];
+        let mut c = Cursor::new(body);
+        let members = parse_kv_members(&mut c, self.string_table.as_deref(), true)?;
+        Ok(VdfValue::Obj(members))
+    }
+
     /// Decode one section's launch entries, on demand. A malformed key-values body
     /// is a per-section error the caller counts as a failed application; it does not
     /// stop the walk.
     pub fn launch_entries(&self, section: &SectionInfo) -> Result<Vec<SteamLaunchEntry>, String> {
-        let body = &self.bytes[section.body.0..section.body.1];
-        let mut c = Cursor::new(body);
-        let members = parse_kv_members(&mut c, self.string_table.as_deref(), true)?;
-        Ok(extract_launch(&VdfValue::Obj(members)))
+        self.decode(section).map(|root| extract_launch(&root))
     }
 }
 
@@ -476,6 +492,30 @@ fn find_config(root: &VdfValue) -> Option<&VdfValue> {
     None
 }
 
+/// Find the `common` object on the root or on its immediate object child, the same
+/// wrapper-tolerant shape [`find_config`] already accepts.
+fn find_common(root: &VdfValue) -> Option<&VdfValue> {
+    if let Some(common) = root.get("common") {
+        return Some(common);
+    }
+    for (_key, value) in root.entries()? {
+        if let Some(common) = value.get("common") {
+            return Some(common);
+        }
+    }
+    None
+}
+
+/// Extract the appinfo `common/type` value, verbatim, from an app's parsed tree.
+/// `None` when there is no `common` block or it carries no `type` key; the caller
+/// never treats that as a claim about the app's type (P-9), only as "unknown".
+fn extract_common_type(root: &VdfValue) -> Option<String> {
+    find_common(root)?
+        .get("type")
+        .and_then(VdfValue::as_str)
+        .map(str::to_string)
+}
+
 /// A present string value as an owned string; `None` when absent or not a string.
 fn owned(value: Option<&VdfValue>) -> Option<String> {
     value.and_then(VdfValue::as_str).map(str::to_string)
@@ -595,6 +635,9 @@ pub mod fixtures {
         pub appid: u32,
         pub change_number: u32,
         pub launch: Vec<FixtureLaunch>,
+        /// The `common/type` value to encode, or `None` to omit the key entirely
+        /// (distinct from an empty string).
+        pub common_type: Option<String>,
     }
 
     /// Which section, if any, to corrupt, and how.
@@ -741,14 +784,15 @@ pub mod fixtures {
         }
         // A common block before config, so the parser must skip a string and a
         // uint64 sibling before reaching launch.
+        let mut common = vec![
+            ("name".to_string(), Node::Str("Fixture Game".to_string())),
+            ("gameid".to_string(), Node::U64(app.appid as u64)),
+        ];
+        if let Some(t) = &app.common_type {
+            common.push(("type".to_string(), Node::Str(t.clone())));
+        }
         Node::Obj(vec![
-            (
-                "common".to_string(),
-                Node::Obj(vec![
-                    ("name".to_string(), Node::Str("Fixture Game".to_string())),
-                    ("gameid".to_string(), Node::U64(app.appid as u64)),
-                ]),
-            ),
+            ("common".to_string(), Node::Obj(common)),
             (
                 "config".to_string(),
                 Node::Obj(vec![("launch".to_string(), Node::Obj(launch))]),
@@ -821,6 +865,7 @@ mod tests {
             appid,
             change_number: change,
             launch: vec![FixtureLaunch::windows(exe)],
+            common_type: None,
         }
     }
 
@@ -864,6 +909,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            common_type: None,
         };
         let parse = parse_appinfo(&appinfo_bytes(V29, &[app]));
         assert!(parse.failures.is_empty());
@@ -948,11 +994,44 @@ mod tests {
                 os: Some("windows".to_string()),
                 ..Default::default()
             }],
+            common_type: None,
         };
         let parse = parse_appinfo(&appinfo_bytes(V29, &[app]));
         assert!(parse.failures.is_empty());
         assert_eq!(parse.apps.len(), 1);
         assert!(parse.apps[0].launch.is_empty());
+    }
+
+    #[test]
+    fn common_type_is_read_verbatim_when_present_and_none_when_absent() {
+        let music = FixtureApp {
+            appid: 100,
+            change_number: 1,
+            launch: vec![FixtureLaunch::windows("music.exe")],
+            common_type: Some("Music".to_string()),
+        };
+        let game = FixtureApp {
+            appid: 200,
+            change_number: 1,
+            launch: vec![FixtureLaunch::windows("game.exe")],
+            common_type: Some("Game".to_string()),
+        };
+        let untyped = one_windows_app(300, 1, "untyped.exe");
+
+        for version in [V28, V29] {
+            let parse = parse_appinfo(&appinfo_bytes(
+                version,
+                &[music.clone(), game.clone(), untyped.clone()],
+            ));
+            assert!(parse.failures.is_empty(), "version {version:#x}");
+            assert_eq!(parse.apps.len(), 3);
+            assert_eq!(parse.apps[0].common_type.as_deref(), Some("Music"));
+            assert_eq!(parse.apps[1].common_type.as_deref(), Some("Game"));
+            assert_eq!(
+                parse.apps[2].common_type, None,
+                "a section with no common/type key reads as unknown, not a claim"
+            );
+        }
     }
 
     #[test]

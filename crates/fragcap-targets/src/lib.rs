@@ -78,7 +78,10 @@ pub use model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-pub use readiness::{capture_readiness, engine_summary, sensitivities_summary, CaptureReadiness};
+pub use readiness::{
+    capture_readiness, engine_summary, install_presence, name_divergence, sensitivities_summary,
+    CaptureReadiness, InstallPresence, NameDivergence, INSTALL_MISSING_NOTE,
+};
 pub use register::{register_candidate, register_candidates, RegistrationOutcome};
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use selector::{is_row_index, resolve_id, resolve_positional, Selection};

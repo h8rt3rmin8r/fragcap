@@ -16,6 +16,7 @@
 use std::io::{IsTerminal, Write};
 
 use crate::cli::DoctorArgs;
+use crate::color::use_color;
 use crate::doctor::action::Capabilities;
 use crate::doctor::{checks, fix, probe};
 use crate::exit::{CliError, Exit};
@@ -67,12 +68,4 @@ pub fn run(args: &DoctorArgs, json: bool, out: &mut dyn Write) -> Result<Exit, C
         elevation: cfg!(windows),
     };
     Ok(fix::run_fix(caps, args.yes, use_color(), out))
-}
-
-/// Whether to colorize the human report: only when the process's real stdout is
-/// an interactive terminal and `NO_COLOR` is unset. `out` is a type-erased sink
-/// the caller supplies, so the terminal test is against `std::io::stdout()`
-/// rather than the sink, matching how a terminal program decides.
-fn use_color() -> bool {
-    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
 }

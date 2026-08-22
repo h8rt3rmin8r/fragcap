@@ -675,6 +675,9 @@ mod tests {
             app_id: "900883".to_string(),
             name: "The Elder Scrolls Online".to_string(),
             install_dir: install,
+            installdir: String::new(),
+            app_type: None,
+            launch_executable: None,
         };
         let text = scaffold(&title, &[]).unwrap();
         // scaffold() validates internally; assert it again and check the shape.
@@ -704,6 +707,9 @@ mod tests {
             app_id: "555".to_string(),
             name: "Marker Game".to_string(),
             install_dir: install,
+            installdir: String::new(),
+            app_type: None,
+            launch_executable: None,
         };
         // The caller (slice S053) injects detection findings: an engine, an
         // anti-cheat, and a DRM product. All three are carried in the skeleton; the
@@ -759,6 +765,9 @@ mod tests {
             app_id: "42".to_string(),
             name: "Plain Game".to_string(),
             install_dir: install,
+            installdir: String::new(),
+            app_type: None,
+            launch_executable: None,
         };
         let text = scaffold(&title, &[]).unwrap();
         Profile::parse(&text).expect("scaffold must validate");
@@ -783,6 +792,9 @@ mod tests {
             app_id: "2221490".to_string(),
             name: "The Division 2".to_string(),
             install_dir: install,
+            installdir: String::new(),
+            app_type: None,
+            launch_executable: None,
         };
         let text = scaffold(&title, &[]).unwrap();
         Profile::parse(&text).expect("shared-basename scaffold must validate");
@@ -799,6 +811,9 @@ mod tests {
             app_id: "1".to_string(),
             name: "Empty".to_string(),
             install_dir: install,
+            installdir: String::new(),
+            app_type: None,
+            launch_executable: None,
         };
         assert!(matches!(
             scaffold(&title, &[]),
