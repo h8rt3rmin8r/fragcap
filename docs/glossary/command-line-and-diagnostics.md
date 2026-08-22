@@ -295,3 +295,50 @@ requires.
 > merge and would multiply the target on every import.
 
 **See also:** [Stable identifier](process-and-attribution.md#stable-identifier), [Anchor](process-and-attribution.md#anchor)
+
+## Live status block
+
+A status block `fragcap capture` redraws in place on standard error at least
+once a second while a live run is active on a real terminal, showing elapsed
+time, the bound process, packets and bytes written against any configured
+volume bound, the capture filter's narrowing state, every discard counter,
+and the top per-process contributors to the file so far. Rendered only when
+standard error is an interactive terminal and verbosity is normal; a
+redirected or logged run instead gets today's plain progress lines plus an
+occasional heartbeat line (issue #186).
+
+{: .matters }
+> Before this, a live capture went silent from acquisition until the run
+> stopped, sometimes for many minutes, with no way to notice that most of a
+> file's volume was going to an unrelated process until the run ended and the
+> operator opened the result in a separate tool. The counters the block shows
+> were already computed by the pipeline and session; the block only makes
+> them visible while they still matter.
+
+**See also:** [Redraw](command-line-and-diagnostics.md#redraw), [Heartbeat line](command-line-and-diagnostics.md#heartbeat-line), [Completion summary](command-line-and-diagnostics.md#completion-summary)
+
+## Redraw
+
+The mechanism by which a [live status block](command-line-and-diagnostics.md#live-status-block)
+replaces its previous frame in place rather than appending a new one: a
+cursor-up escape sequence for the number of lines the previous frame
+occupied, followed by an erase-to-end-of-screen sequence, followed by the new
+frame's bytes. Hand-rolled from two ANSI escape sequences, matching the
+existing `doctor` command's hand-rolled color handling rather than adding a
+terminal-UI dependency. Never emitted when standard error is not a real
+terminal.
+
+**See also:** [Live status block](command-line-and-diagnostics.md#live-status-block)
+
+## Heartbeat line
+
+A single plain progress line (`still capturing: elapsed HH:MM:SS, N packets
+written`), carrying no escape byte, that `fragcap capture` appends when
+standard error is not a terminal and thirty seconds have passed with no other
+progress line. Exists so a redirected or logged run is never silent for an
+unbounded stretch the way a terminal-attached run's [live status
+block](command-line-and-diagnostics.md#live-status-block) already prevents; the
+interval resets on every ordinary progress line, so a run with regular
+milestones may emit none at all.
+
+**See also:** [Live status block](command-line-and-diagnostics.md#live-status-block)

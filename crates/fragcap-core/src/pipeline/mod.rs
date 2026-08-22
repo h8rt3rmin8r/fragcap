@@ -71,6 +71,9 @@
 //! never discarded for being unparseable.
 
 pub(crate) mod buffer;
+mod live_stats;
+
+pub use live_stats::LiveStats;
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -350,6 +353,12 @@ pub struct Pipeline {
     /// sink. A gate withholds a packet, which the output loop counts in
     /// `gate_dropped`. Set by [`Pipeline::set_write_gate`].
     gate: Option<Arc<dyn WriteGate>>,
+    /// The live-readable mirror of the output loop's `sink_dropped`, holder
+    /// tally, and `buffer_dropped` (slice S069). Constructed here rather than
+    /// lazily, so [`Pipeline::live_stats`] is callable at any point after
+    /// construction, in particular before [`Pipeline::run`] consumes the
+    /// pipeline by value.
+    live: LiveStats,
 }
 
 /// A packet source together with the interface identity its packets carry.
@@ -453,6 +462,7 @@ impl Pipeline {
             filter_config: FilterConfig::default(),
             stop: StopHandle::default(),
             gate: None,
+            live: LiveStats::new(),
         })
     }
 
@@ -483,6 +493,15 @@ impl Pipeline {
     /// zero-debounce config here.
     pub fn set_filter_config(&mut self, config: FilterConfig) {
         self.filter_config = config;
+    }
+
+    /// A live-readable clone of the counters the output loop otherwise keeps
+    /// local until the run ends (slice S069). Valid for the whole run, and
+    /// obtainable before [`Pipeline::run`] consumes the pipeline; a caller
+    /// that wants to observe a run in progress clones this before spawning
+    /// the thread that calls `run`.
+    pub fn live_stats(&self) -> LiveStats {
+        self.live.clone()
     }
 
     /// A handle that ends the run. Valid for the whole run, and obtainable
@@ -519,6 +538,7 @@ impl Pipeline {
             filter_config,
             stop,
             gate,
+            live,
         } = self;
         let source_count = sources.len();
 
@@ -533,7 +553,7 @@ impl Pipeline {
             // ordinary path this is a no-op: the output thread only returns
             // after acquisition has already ended and sent its terminal item.
             let _end_acquisition = StopOnDrop(output_stop.clone());
-            output_loop(rx, sinks, output_stop, gate)
+            output_loop(rx, sinks, output_stop, gate, live)
         });
         // The guard owns the producer as well as the join handle, so that
         // closing the buffer always precedes joining the thread that is
@@ -982,11 +1002,17 @@ impl Drop for OutputThread {
 }
 
 /// The output loop: drain, gate, fan out, then flush and finish.
+///
+/// `live` mirrors `sink_dropped`, the holder tally, and `buffer_dropped`
+/// (slice S069) into a handle a caller on another thread can read while this
+/// loop is still running; see [`LiveStats`]'s module documentation for why
+/// each of the three is updated the way it is.
 fn output_loop(
     rx: buffer::Consumer,
     mut sinks: Vec<Box<dyn Sink>>,
     stop: StopHandle,
     gate: Option<Arc<dyn WriteGate>>,
+    live: LiveStats,
 ) -> OutputOutcome {
     let mut failures: Vec<SinkFailure> = Vec::new();
     let mut retired = vec![false; sinks.len()];
@@ -1008,7 +1034,10 @@ fn output_loop(
     // counted.
     let mut stats = CaptureStats::default();
 
-    while let Some(item) = rx.next() {
+    loop {
+        let (item, evicted) = rx.next_and_evicted();
+        live.set_buffer_dropped(evicted);
+        let Some(item) = item else { break };
         let packet = match item {
             Item::Packet(packet) => packet,
             Item::End(final_stats) => {
@@ -1033,6 +1062,7 @@ fn output_loop(
         if let Some(attr) = packet.attribution.as_ref() {
             let slot = holder_tally.entry(Arc::clone(&attr.process)).or_insert(0);
             *slot = slot.saturating_add(1);
+            live.record_holder(&attr.process);
         }
         for (index, sink) in sinks.iter_mut().enumerate() {
             if retired[index] {
@@ -1040,17 +1070,20 @@ fn output_loop(
                 // 12.4 defines this counter as. Counting it here is what makes
                 // retirement conserve.
                 sink_dropped = sink_dropped.saturating_add(1);
+                live.record_sink_dropped();
                 continue;
             }
             match sink.write(&packet) {
                 Ok(()) => {}
                 Err(e) if e.is_countable() => {
                     sink_dropped = sink_dropped.saturating_add(1);
+                    live.record_sink_dropped();
                 }
                 Err(e) => {
                     failures.push(SinkFailure { index, error: e });
                     retired[index] = true;
                     sink_dropped = sink_dropped.saturating_add(1);
+                    live.record_sink_dropped();
                 }
             }
         }
@@ -1894,6 +1927,75 @@ mod tests {
         assert_eq!(report.stats.sink_dropped, 3);
         assert_eq!(written(&log), vec![0, 2, 3, 5, 6, 8, 9]);
         assert_conserved(&report, &log, 3);
+    }
+
+    // S069 T007. `Pipeline::live_stats()`, cloned before `run()` is called,
+    // must agree with the final `PipelineReport` once the run ends: the same
+    // sink-dropped count and the same holder tally, reached by two different
+    // readers of the same underlying state (research R-2).
+    #[test]
+    fn live_stats_taken_before_run_matches_the_final_report() {
+        let log = log();
+        let mut answers = HashMap::new();
+        for (i, port) in (40000u16..40010).enumerate() {
+            // Even-indexed frames attribute to one image, odd to another, so
+            // the mirrored holder tally has two distinct entries to compare.
+            let image = if i % 2 == 0 {
+                "game.exe"
+            } else {
+                "launcher.exe"
+            };
+            answers.insert(
+                flow_key(port),
+                Attribution::new(4242, image, Fidelity::Live),
+            );
+        }
+        let mut p = Pipeline::new(
+            vec![SourceBinding::new(
+                InterfaceId::default(),
+                Box::new(StubSource::new(frames(10))),
+                local_addrs(),
+            )],
+            Box::new(StubAttributor {
+                answers,
+                endpoints: Vec::new(),
+            }),
+            PipelineConfig {
+                capacity: 64,
+                ..PipelineConfig::default()
+            },
+        )
+        .expect("a non-zero capacity builds");
+        p.add_sink(StubSink::scripted(
+            &log,
+            SinkScript {
+                refuse: vec![2, 5],
+                ..SinkScript::default()
+            },
+        ));
+
+        let live = p.live_stats();
+        let report = p.run();
+
+        assert_eq!(live.sink_dropped(), report.stats.sink_dropped);
+        assert_eq!(live.sink_dropped(), 2, "the two scripted refusals");
+
+        let mut expected: Vec<(Arc<str>, u64)> = report
+            .stats
+            .holder_tally
+            .iter()
+            .map(|(k, v)| (Arc::clone(k), *v))
+            .collect();
+        expected.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert_eq!(live.holder_tally_snapshot(), expected);
+        assert_eq!(
+            live.holder_tally_snapshot().len(),
+            2,
+            "two distinct holder images"
+        );
+
+        assert_eq!(live.buffer_dropped(), report.stats.buffer_dropped);
+        assert_eq!(live.buffer_dropped(), 0, "no eviction at this capacity");
     }
 
     // T042. FR-017. Per refusal, not per packet.

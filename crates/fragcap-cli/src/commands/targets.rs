@@ -27,7 +27,7 @@ use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
     TargetsShowArgs,
 };
-use crate::color::{use_color, RESET, WARN};
+use crate::color::{use_color, Stream, RESET, WARN};
 use crate::commands::target_resolve;
 use crate::exit::{CliError, Exit};
 use crate::paths;
@@ -317,7 +317,7 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
         "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  SENSITIVITIES",
         "#", "TARGET", "CAPTURE", "ENGINE"
     );
-    let color = use_color();
+    let color = use_color(Stream::Stdout);
     for (i, t) in targets.iter().enumerate() {
         let capture = fragcap::targets::capture_readiness(t).label();
         let engine = fragcap::targets::engine_summary(t);
