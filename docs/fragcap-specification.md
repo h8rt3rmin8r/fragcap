@@ -2574,13 +2574,16 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
       --process <IMAGE>      A raw process image name, no stored target
       --path <SUBSTR>        Image-path substring anchor
       --path-regex <RE>      Image-path regex anchor
-  -m, --mode <MODE>          file | stream | ring        [default: file]
+      --catalog-db <PATH>    The shipped catalog store used to resolve a target
+      --local-db <PATH>      The local store where registered targets live
+      --mode <MODE>          file | stream | ring   [default: profile mode, else file]
   -o, --out <PATH>           Output path for file and ring modes
       --sink <SPEC>          Sink specification, repeatable
   -d, --duration <DUR>       Capture duration bound
       --max-bytes <SIZE>     Capture size bound
       --max-packets <N>      Capture packet-count bound
-      --roles <LIST>         Roles to capture       [default: all]
+      --roles <LIST>         Roles to capture   [default: profile roles, else all]
+      --scope <SCOPE>        target | all             [default: target]
       --direction <DIR>      in | out | both          [default: both]
   -i, --interface <NAME>     Capture interface, repeatable
       --loopback             Include the loopback adapter
@@ -2588,11 +2591,10 @@ fragcap capture (--target <SELECTOR> | --id <ID> | --process <IMAGE>) [OPTIONS]
       --ring <DUR|SIZE>      Ring window for ring mode
       --launch               Start the title through its platform (--target only)
       --wait <DUR>           Acquisition timeout        [default: none]
-  -q, --quiet                Suppress progress output
+      --quiet                Suppress progress output
       --silent               Suppress all non-error output
       --json                 Emit structured events on stderr
   -h, --help                 Print help
-  -V, --version              Print version
 ```
 
 `--target`, `--id`, and `--process` are mutually exclusive and exactly one

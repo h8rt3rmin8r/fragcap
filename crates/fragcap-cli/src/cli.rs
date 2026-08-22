@@ -69,12 +69,30 @@ Options:
 {options}"
 )]
 pub struct Cli {
+    // `display_order = 1000` on all three global flags below is load-bearing,
+    // not cosmetic (FR-007, issue #183 finding 11). A propagated `global =
+    // true` arg keeps the `display_order` it had when declared on `Cli`
+    // (clap_builder 4.5.32's `Command::_propagate_global_args` clones it
+    // as-is); left at the default, that value is assigned sequentially by
+    // declaration order (0, 1, 2 for quiet/silent/json here) and ties with
+    // each subcommand's own first few non-positional fields at the same
+    // slot, which clap's help sorter then breaks alphabetically by flag name.
+    // On `capture` that interleaved `quiet` before `target`, and `silent`/
+    // `json` between `id` and `process`, splitting the four target-input
+    // options apart. Reordering `CaptureArgs`' own fields cannot fix this:
+    // `process` already sat immediately after `id` in source order and the
+    // interleaving persisted regardless, because the collision is with the
+    // *global* args' inherited slot, not with local declaration order. Pushing
+    // the globals to display_order 1000 sorts them after every subcommand's
+    // own options instead (verified: capture's own fields top out at 21),
+    // fixing every subcommand's option list uniformly rather than one at a
+    // time.
     /// Suppress progress; keep warnings and errors.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = 1000)]
     pub quiet: bool,
 
     /// Suppress everything except errors.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = 1000)]
     pub silent: bool,
 
     /// Emit machine-readable output instead of human text.
@@ -82,9 +100,15 @@ pub struct Cli {
     /// `capture`, `steam`, and `extcap` emit the newline-delimited capture event
     /// stream on standard error; `doctor` emits its results as newline-delimited
     /// records on standard output.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = 1000)]
     pub json: bool,
 
+    // Note: `--json`'s long-help paragraph above stays cross-command (it
+    // describes every command's behavior, not just the one the reader ran)
+    // because clap's `global = true` shares one `Arg` definition; the flag
+    // cannot carry different help text per subcommand. The blank line above
+    // still gives `-h` a one-line summary and keeps the paragraph behind
+    // `--help`, matching every other option on this surface.
     /// The command to run. With none, `fragcap` lists registered targets and
     /// points at `--help`.
     #[command(subcommand)]
@@ -100,11 +124,23 @@ pub enum Command {
     /// Identify the target by a stored-target selector (positionally or with
     /// `--target`), by `--id`, or by a raw process image name (`--process`);
     /// every other option composes freely.
+    ///
+    /// Examples:
+    ///
+    ///   fragcap capture --target eso --launch --duration 30m --out capture.fcapng
+    ///
+    ///   fragcap capture --process eso64.exe --duration 5m --out capture.fcapng
     Capture(Box<CaptureArgs>),
     /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
     /// Register, list, show, and discover capture targets in the user store
     /// (local.db).
+    ///
+    /// Examples:
+    ///
+    ///   fragcap targets add --steam 306130
+    ///
+    ///   fragcap capture 1
     Targets(TargetsArgs),
     /// Detect the technologies present in a game's install directory (engine,
     /// anti-cheat, and DRM), from a signature table.
@@ -183,7 +219,9 @@ pub struct CaptureArgs {
 
     /// Select a stored target by its durable stable identifier, the machine-facing
     /// form automation addresses (a bare integer given to `--target` is a row index,
-    /// not this). Mutually exclusive with `--target` and `--process`.
+    /// not this).
+    ///
+    /// Mutually exclusive with `--target` and `--process`.
     #[arg(long)]
     pub id: Option<i64>,
 
@@ -200,34 +238,46 @@ pub struct CaptureArgs {
     #[arg(long)]
     pub path_regex: Option<String>,
 
-    /// The shipped catalog store consulted while resolving a `--target`. Overrides
-    /// `FRAGCAP_CATALOG_DB` and the default location; a store named here that does
-    /// not exist is not created and is not an error. With neither this flag nor the
-    /// environment variable set, `capture` defaults to
+    /// The shipped catalog store consulted while resolving a target.
+    ///
+    /// Overrides `FRAGCAP_CATALOG_DB` and the default location; a store named here
+    /// that does not exist is not created and is not an error. With neither this
+    /// flag nor the environment variable set, `capture` defaults to
     /// `%APPDATA%\fragcap\catalog.db` and creates it on first use (seeding it from
     /// the store shipped beside the executable when present).
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
 
-    /// The local store, where registered targets and learned launch data live. It
-    /// is consulted before the catalog during resolution and is where `--target`
-    /// selectors resolve. Overrides `FRAGCAP_LOCAL_DB` and the default location; a
-    /// store named here that does not exist is not created and is not an error.
-    /// With neither this flag nor the environment variable set, `capture` defaults
-    /// to `%APPDATA%\fragcap\local.db` and creates it empty on first use.
+    /// The local store, where registered targets and learned launch data live.
+    ///
+    /// It is consulted before the catalog during resolution and is where
+    /// `--target` selectors resolve. Overrides `FRAGCAP_LOCAL_DB` and the default
+    /// location; a store named here that does not exist is not created and is not
+    /// an error. With neither this flag nor the environment variable set,
+    /// `capture` defaults to `%APPDATA%\fragcap\local.db` and creates it empty on
+    /// first use.
     #[arg(long)]
     pub local_db: Option<PathBuf>,
 
-    /// The output capture file (pcapng). Shorthand for a file sink.
+    /// The output capture file (pcapng).
+    ///
+    /// Shorthand for a file sink.
     #[arg(short = 'o', long)]
     pub out: Option<PathBuf>,
 
     /// The capture mode.
+    ///
+    /// Defaults to a profile-declared mode if one exists, else `file`.
     #[arg(long, value_enum)]
     pub mode: Option<ModeArg>,
 
-    /// An output sink, repeatable. `file:PATH`, `jsonl:PATH`, `pipe:NAME`, or
-    /// `tcp://HOST:PORT`.
+    /// An output sink, repeatable.
+    ///
+    /// A destination scheme and target: `file:PATH`, `pcapng:PATH` (an alias for
+    /// `file:`), `jsonl:PATH`, `pipe:NAME`, `fifo:PATH`, `unix:PATH`, or
+    /// `tcp://HOST:PORT`. Append `,key=value` modifiers: `format=pcapng|jsonl`,
+    /// `payload=true|false`, `rotate-size=SIZE`, `rotate-duration=DURATION`,
+    /// `queue=N`, `timeout=DURATION`.
     #[arg(long, value_parser = crate::args::parse_sink)]
     pub sink: Vec<SinkSpec>,
 
@@ -236,6 +286,9 @@ pub struct CaptureArgs {
     pub duration: Option<Duration>,
 
     /// How long to wait for a target before giving up (acquisition timeout).
+    ///
+    /// Without this flag, waits with no timeout [default: none]: until the
+    /// target starts, or the run is interrupted.
     #[arg(long, value_parser = parse_duration)]
     pub wait: Option<Duration>,
 
@@ -247,7 +300,11 @@ pub struct CaptureArgs {
     #[arg(long, value_parser = parse_size)]
     pub max_bytes: Option<u64>,
 
-    /// The roles to capture, comma-separated. Scopes which stages trigger.
+    /// The roles to capture, comma-separated.
+    ///
+    /// Scopes which stages trigger. Omitting this defers to a profile-declared
+    /// roles list if one exists, else every role [default: profile roles, else
+    /// all].
     // `value_delimiter` splits one comma-separated value into the role list,
     // matching the `extcap` surface so the command line and the analyzer dialog
     // select capture identically. A custom `value_parser` returning `Vec<String>`
@@ -268,8 +325,8 @@ pub struct CaptureArgs {
     pub scope: ScopeArg,
 
     /// The flow direction to scope to.
-    #[arg(long, value_enum)]
-    pub direction: Option<Direction>,
+    #[arg(long, value_enum, default_value_t = Direction::Both)]
+    pub direction: Direction,
 
     /// A capture interface, repeatable.
     #[arg(short = 'i', long)]
@@ -319,7 +376,9 @@ pub struct OfflineArgs {
     pub process_script: Option<PathBuf>,
 
     /// The capturing interface's local addresses, for direction and the local
-    /// endpoint. Repeatable.
+    /// endpoint.
+    ///
+    /// Repeatable.
     #[arg(long, hide = true)]
     pub local_addr: Vec<IpAddr>,
 
@@ -341,6 +400,8 @@ pub struct SteamArgs {
 #[derive(Debug, Subcommand)]
 pub enum SteamCommand {
     /// List the installed Steam titles this machine can enumerate.
+    ///
+    /// Register one as a capture target with `targets add --steam <app_id>`.
     List,
 }
 
@@ -402,8 +463,9 @@ pub enum TargetsCommand {
     /// `--id` consumes is not a column here; `targets show` and `targets export`
     /// carry it.
     List {
-        /// The store file (local.db) to read and register into. Defaults to the
-        /// local store the bare `fragcap targets` command uses (the
+        /// The store file (local.db) to read and register into.
+        ///
+        /// Defaults to the local store the bare `fragcap targets` command uses (the
         /// `FRAGCAP_LOCAL_DB` override, else the per-user default) when omitted.
         #[arg(long)]
         db: Option<PathBuf>,
@@ -424,12 +486,14 @@ pub enum TargetsCommand {
         /// The directory to treat as a single game location.
         dir: PathBuf,
         /// An optional catalog store (`catalog.db`) whose signature table labels the
-        /// technologies in the directory. Without it the candidate carries no
-        /// detected evidence.
+        /// technologies in the directory.
+        ///
+        /// Without it the candidate carries no detected evidence.
         #[arg(long)]
         catalog_db: Option<PathBuf>,
-        /// The local store (local.db) to register the discovered titles into. Without
-        /// it the scan lists what it finds but registers nothing.
+        /// The local store (local.db) to register the discovered titles into.
+        ///
+        /// Without it the scan lists what it finds but registers nothing.
         #[arg(long)]
         db: Option<PathBuf>,
     },
@@ -448,9 +512,10 @@ pub enum TargetsCommand {
     Import {
         /// The JSON file to import.
         file: PathBuf,
-        /// The store file (local.db) to merge into, created if absent. Defaults to the
-        /// local store the bare `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB`
-        /// override, else the per-user default) when omitted.
+        /// The store file (local.db) to merge into, created if absent.
+        ///
+        /// Defaults to the local store the bare `fragcap targets` command uses (the
+        /// `FRAGCAP_LOCAL_DB` override, else the per-user default) when omitted.
         #[arg(long)]
         db: Option<PathBuf>,
     },
@@ -465,8 +530,10 @@ pub struct TargetsDiscoverArgs {
     /// The user store (`local.db`) holding the volume eligibility allowlist.
     #[arg(long)]
     pub local_db: Option<PathBuf>,
-    /// The Steam installation root. Without it, discovery locates Steam itself and
-    /// skips the Steam tier if none is installed.
+    /// The Steam installation root.
+    ///
+    /// Without it, discovery locates Steam itself and skips the Steam tier if
+    /// none is installed.
     #[arg(long)]
     pub steam_root: Option<PathBuf>,
 }
@@ -481,20 +548,26 @@ pub struct TargetsDiscoverArgs {
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("steam_anchor").args(["steam", "anchor"])))]
 pub struct TargetsAddArgs {
-    /// The display name to register; its handle is derived automatically. Optional
-    /// when `--steam` supplies the name from the installed title.
+    /// The display name to register; its handle is derived automatically.
+    ///
+    /// Optional when `--steam` supplies the name from the installed title.
     pub name: Option<String>,
-    /// The store file (local.db) to write, created if absent. Defaults to the local
-    /// store the bare `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override,
-    /// else the per-user default) when omitted.
+    /// The store file (local.db) to write, created if absent.
+    ///
+    /// Defaults to the local store the bare `fragcap targets` command uses (the
+    /// `FRAGCAP_LOCAL_DB` override, else the per-user default) when omitted.
     #[arg(long)]
     pub db: Option<PathBuf>,
     /// A platform anchor (for example `steam:620`) giving the target a stable,
-    /// deterministic identity. Without one the target gets a random identity.
+    /// deterministic identity.
+    ///
+    /// Without one the target gets a random identity.
     #[arg(long)]
     pub anchor: Option<String>,
     /// Register an installed Steam title by app id: resolve its name and install
-    /// directory, anchor it to `steam:<app_id>`. Mutually exclusive with `--anchor`.
+    /// directory, anchor it to `steam:<app_id>`.
+    ///
+    /// Mutually exclusive with `--anchor`.
     #[arg(long)]
     pub steam: Option<String>,
     /// A launch executable name, so the target names something capturable.
@@ -506,9 +579,10 @@ pub struct TargetsAddArgs {
     pub handle_override: Option<String>,
     /// Whether the `--exe` executable is the process that holds the sockets:
     /// `yes` records it as the resolved client, `no` records it as a launcher with
-    /// the holder unresolved, `unsure` records it observed with no holder claim. The
-    /// non-interactive form of the socket-holder question; `unsure` and `no` leave
-    /// the chain for a capture to resolve. Requires `--exe`.
+    /// the holder unresolved, `unsure` records it observed with no holder claim.
+    ///
+    /// The non-interactive form of the socket-holder question; `unsure` and `no`
+    /// leave the chain for a capture to resolve. Requires `--exe`.
     #[arg(long = "socket-holder", value_name = "yes|no|unsure")]
     pub socket_holder: Option<String>,
 }
@@ -558,9 +632,10 @@ pub struct TargetsShowArgs {
     /// Select by stable identifier: the durable, machine-facing form.
     #[arg(long)]
     pub id: Option<i64>,
-    /// The store file (local.db) to read. Defaults to the local store the bare
-    /// `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override, else the
-    /// per-user default) when omitted.
+    /// The store file (local.db) to read.
+    ///
+    /// Defaults to the local store the bare `fragcap targets` command uses (the
+    /// `FRAGCAP_LOCAL_DB` override, else the per-user default) when omitted.
     #[arg(long)]
     pub db: Option<PathBuf>,
 }
@@ -570,14 +645,17 @@ pub struct TargetsShowArgs {
 #[derive(Debug, Args)]
 pub struct TargetsExportArgs {
     /// A selector: an exact handle, a case-insensitive exact name, or a 1-based row
-    /// index. Omit to export all registered targets.
+    /// index.
+    ///
+    /// Omit to export all registered targets.
     pub selector: Option<String>,
     /// Select by stable identifier: the durable, machine-facing form.
     #[arg(long)]
     pub id: Option<i64>,
-    /// The store file (local.db) to read. Defaults to the local store the bare
-    /// `fragcap targets` command uses (the `FRAGCAP_LOCAL_DB` override, else the
-    /// per-user default) when omitted.
+    /// The store file (local.db) to read.
+    ///
+    /// Defaults to the local store the bare `fragcap targets` command uses (the
+    /// `FRAGCAP_LOCAL_DB` override, else the per-user default) when omitted.
     #[arg(long)]
     pub db: Option<PathBuf>,
 }
@@ -603,7 +681,9 @@ pub enum SeedTierArg {
     Launch,
     /// Engine attribution: engine name, source, confidence.
     Engine,
-    /// The detection signature table, from the bundled document. Always offline.
+    /// The detection signature table, from the bundled document.
+    ///
+    /// Always offline.
     Signature,
 }
 
@@ -627,10 +707,14 @@ pub enum SeedTierArg {
     command(group(ArgGroup::new("seed_source").args(["from"])))
 )]
 pub struct TargetsSeedArgs {
-    /// The tier to fill, repeatable. Omit to fill every tier with a source.
+    /// The tier to fill, repeatable.
+    ///
+    /// Omit to fill every tier with a source.
     #[arg(long, value_enum)]
     pub tier: Vec<SeedTierArg>,
-    /// Seed from a local document (offline). Requires exactly one `--tier`.
+    /// Seed from a local document (offline).
+    ///
+    /// Requires exactly one `--tier`.
     #[arg(long)]
     pub from: Option<PathBuf>,
     /// Seed the title tier from the live Steam catalog over the network.
@@ -647,7 +731,9 @@ pub struct TargetsSeedArgs {
     #[cfg(feature = "net")]
     #[arg(long)]
     pub pcgamingwiki: bool,
-    /// The store file to seed, created if absent. Defaults to the per-user store.
+    /// The store file to seed, created if absent.
+    ///
+    /// Defaults to the per-user store.
     #[arg(long)]
     pub db: Option<PathBuf>,
     /// The review-count corpus threshold; a title needs at least this many reviews.
@@ -670,8 +756,9 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub fix: bool,
 
-    /// With `--fix`, pre-confirm every offered action (unattended). Still requires an
-    /// interactive stdout.
+    /// With `--fix`, pre-confirm every offered action (unattended).
+    ///
+    /// Still requires an interactive stdout.
     #[arg(long)]
     pub yes: bool,
 }
@@ -715,7 +802,9 @@ pub struct ExtcapArgs {
     #[arg(long)]
     pub extcap_interface: Option<String>,
 
-    /// The analyzer protocol version query. Accepted; not acted on.
+    /// The analyzer protocol version query.
+    ///
+    /// Accepted; not acted on.
     #[arg(long)]
     pub extcap_version: Option<String>,
 
@@ -726,13 +815,15 @@ pub struct ExtcapArgs {
     #[arg(long)]
     pub target: Option<String>,
 
-    /// The catalog store consulted while resolving a Steam-anchored target. Defaults
-    /// like `capture`'s when omitted.
+    /// The catalog store consulted while resolving a Steam-anchored target.
+    ///
+    /// Defaults like `capture`'s when omitted.
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
 
-    /// The local store the target selector resolves against. Defaults like
-    /// `capture`'s when omitted.
+    /// The local store the target selector resolves against.
+    ///
+    /// Defaults like `capture`'s when omitted.
     #[arg(long)]
     pub local_db: Option<PathBuf>,
 
@@ -787,8 +878,10 @@ pub struct ExtcapInstallArgs {
     #[arg(long, group = "extcap_scope")]
     pub system: bool,
 
-    /// An explicit extcap directory, overriding the scope flags. Point this at the
-    /// system directory to register machine-wide without `--system`.
+    /// An explicit extcap directory, overriding the scope flags.
+    ///
+    /// Point this at the system directory to register machine-wide without
+    /// `--system`.
     #[arg(long, group = "extcap_scope")]
     pub dir: Option<PathBuf>,
 }

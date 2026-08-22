@@ -145,7 +145,7 @@ pub fn effective_config(
         max_bytes: args.max_bytes,
         roles,
         scope,
-        direction: args.direction.unwrap_or(Direction::Both),
+        direction: args.direction,
         interfaces: args.interface.clone(),
         loopback,
         payload,
