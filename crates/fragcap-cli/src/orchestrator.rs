@@ -37,15 +37,17 @@ use fragcap::core::FlowAttributor;
 #[cfg(all(feature = "etw", windows))]
 use fragcap::StopReason;
 use fragcap::{
-    BindingPublisher, CaptureScope, CaptureSession, GateHandle, Pipeline, PipelineConfig,
-    PipelineReport, ProcessEvent, Profile, SessionGate, SessionState, StopHandle, Timestamp,
+    BindingPublisher, CaptureScope, CaptureSession, GateHandle, LiveStats, Pipeline,
+    PipelineConfig, PipelineReport, ProcessEvent, Profile, SessionGate, SessionState, StopHandle,
+    Timestamp,
 };
 
 use crate::args::Direction;
 use crate::assemble::{self, CaptureComponents, EffectiveConfig, EventStream, ARMED_AT};
-use crate::emit::Emitter;
+use crate::emit::{Emitter, Format, Verbosity};
 use crate::events::Event;
 use crate::exit::{CliError, Exit};
+use crate::live_status;
 use crate::output::CompletionSummary;
 
 /// The process-global operator-interrupt flag.
@@ -299,7 +301,9 @@ fn capture_prerecorded(
     if zero_volume_bound(config) {
         session.on_volume_reached();
     }
-    let (handle, stop, stream_reports, ring_evicted) =
+    // The offline driver has no long-silence problem to solve (research R-1)
+    // and does not read the live counters.
+    let (handle, stop, stream_reports, ring_evicted, _live) =
         spawn_pipeline(config, &mut components, gate)?;
 
     drive(
@@ -355,14 +359,16 @@ fn capture_prerecorded(
 /// is what feeds `CaptureSession::on_packet` so `VolumeReached` and the duration
 /// bound still fire in the session.
 /// What [`spawn_pipeline`] hands back: the pipeline thread's join handle, its stop
-/// handle, the streaming sinks' per-consumer report handles, and the ring sink's
-/// eviction counter (present only in ring mode). The last two are the per-sink
-/// accountings the drivers surface after the run.
+/// handle, the streaming sinks' per-consumer report handles, the ring sink's
+/// eviction counter (present only in ring mode), and a live-readable clone of
+/// the pipeline's `sink_dropped`/holder-tally/`buffer_dropped` counters (slice
+/// S069), safe to read while the pipeline thread is still running.
 type SpawnedPipeline = (
     std::thread::JoinHandle<PipelineReport>,
     StopHandle,
     Vec<assemble::StreamReports>,
     Option<Arc<AtomicU64>>,
+    LiveStats,
 );
 
 fn spawn_pipeline(
@@ -386,8 +392,11 @@ fn spawn_pipeline(
         pipeline.add_sink(sink);
     }
     let stop = pipeline.stop_handle();
+    // Taken before the pipeline moves into the spawned thread: `live_stats()`
+    // only needs `&self`, and `run(self)` below consumes it by value.
+    let live = pipeline.live_stats();
     let handle = std::thread::spawn(move || pipeline.run());
-    Ok((handle, stop, built.stream_reports, built.ring_evicted))
+    Ok((handle, stop, built.stream_reports, built.ring_evicted, live))
 }
 
 /// Surface each streaming consumer's per-consumer accounting after the run, so
@@ -517,6 +526,12 @@ fn capture_live(
     use std::time::{Duration, Instant};
 
     let mut bound: HashMap<u32, String> = HashMap::new();
+    // Image names by pid, for the live status display's header line (slice
+    // S069). `apply_event`'s own `bound` map carries only the role, since
+    // that is all its two existing callers (`drive` and `drive_live`) ever
+    // needed; this is a second, `capture_live`-local map so `drive`
+    // (research R-1: not touched by this slice) keeps its existing type.
+    let mut bound_images: HashMap<u32, String> = HashMap::new();
     let publisher = components.publisher.clone();
 
     // Elapsed time is real and monotonic, converted onto the session clock from
@@ -533,7 +548,7 @@ fn capture_live(
     let (tee_tx, tee_rx) = mpsc::channel::<(u32, Timestamp)>();
     let (gate, gate_handle) = SessionGate::new(&config.session_config(), tee_tx);
     let stamper_reader = components.stamper.clone();
-    let (handle, stop, stream_reports, ring_evicted) =
+    let (handle, stop, stream_reports, ring_evicted, live) =
         spawn_pipeline(config, &mut components, gate)?;
 
     // Managed launch (S17, specification 16.4): the session is already Watching
@@ -604,6 +619,7 @@ fn capture_live(
         match rx.recv_timeout(tick) {
             Ok(event) => {
                 let event_at = event.at();
+                record_bound_image(&event, &mut bound_images);
                 apply_event(event, &mut session, &mut bound, emitter);
                 publisher.publish(session.role_bindings());
                 if session.state() == SessionState::Capturing {
@@ -715,18 +731,25 @@ fn capture_live(
     // disconnects once both have ended.
     drop(merged_tx);
 
+    let mut display = LiveStatusDisplay::new(std::time::Instant::now());
     drive_live(
         &merged_rx,
         &mut session,
         &mut bound,
+        &mut bound_images,
         &publisher,
         &gate_handle,
+        &live,
+        stamper_reader.as_ref(),
+        config.max_bytes,
+        config.max_packets,
         emitter,
         interrupt,
         &stop,
         started,
         tick,
         &mut narration,
+        &mut display,
     );
 
     // The pipeline observed the stop and returns; its tee channel closes and the
@@ -775,16 +798,24 @@ fn drive_live(
     rx: &Receiver<DriverMsg>,
     session: &mut CaptureSession,
     bound: &mut HashMap<u32, String>,
+    bound_images: &mut HashMap<u32, String>,
     publisher: &BindingPublisher,
     gate_handle: &GateHandle,
+    live: &LiveStats,
+    stamper: Option<&fragcap::RoleStampingAttributor>,
+    byte_bound: Option<u64>,
+    packet_bound: Option<u64>,
     emitter: &mut Emitter,
     interrupt: &AtomicBool,
     stop: &StopHandle,
     started: std::time::Instant,
     tick: std::time::Duration,
     narration: &mut FilterNarration,
+    display: &mut LiveStatusDisplay,
 ) {
     loop {
+        let now = std::time::Instant::now();
+        let progress_before = emitter.progress_written();
         // Every wakeup, including the idle timeout. The idle case is the whole
         // point: on a `--launch` run the target is silent for tens of seconds
         // before it opens its first socket, and a narrator driven only by packet
@@ -804,6 +835,7 @@ fn drive_live(
                 // does not close the window, keeping what was captured before it.
                 let event_at = event.at();
                 let was_active = is_active(session);
+                record_bound_image(&event, bound_images);
                 apply_event(event, session, bound, emitter);
                 publisher.publish(session.role_bindings());
                 if was_active && !is_active(session) {
@@ -816,6 +848,14 @@ fn drive_live(
             // gone. Nothing more can arrive.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        if emitter.progress_written() != progress_before {
+            // A real progress line (a stage match/exit, a filter-narrowing
+            // announcement) just fired; the non-terminal heartbeat's whole
+            // purpose is to substitute for exactly this, so it resets rather
+            // than firing on top of real output (S069 Clarifications
+            // session, 2026-08-22).
+            display.note_progress(now);
+        }
         if interrupt.load(Ordering::Relaxed) && is_active(session) {
             session.on_interrupt();
         }
@@ -823,6 +863,158 @@ fn drive_live(
             stop.stop();
             break;
         }
+        let snapshot = build_live_snapshot(
+            started.elapsed(),
+            bound,
+            bound_images,
+            gate_handle,
+            live,
+            stamper,
+            byte_bound,
+            packet_bound,
+        );
+        display.tick(emitter, &snapshot, now);
+    }
+    display.resolve(emitter);
+}
+
+/// Everything the live status display needs across a run: which terminal
+/// state was decided once at the start (redraw vs. heartbeat vs. neither),
+/// and the redraw/heartbeat bookkeeping each needs. Bundled into one type so
+/// `drive_live`'s per-tick call is a single line and the three behaviors
+/// (redraw, heartbeat, the optional JSON event) stay mutually exclusive by
+/// construction (FR-005, FR-006).
+#[cfg(all(feature = "etw", windows))]
+struct LiveStatusDisplay {
+    redraw: live_status::redraw::RedrawState,
+    heartbeat: live_status::heartbeat::Heartbeat,
+    is_terminal: bool,
+}
+
+#[cfg(all(feature = "etw", windows))]
+impl LiveStatusDisplay {
+    fn new(now: std::time::Instant) -> Self {
+        LiveStatusDisplay {
+            redraw: live_status::redraw::RedrawState::new(),
+            heartbeat: live_status::heartbeat::Heartbeat::new(now),
+            is_terminal: live_status::is_terminal(),
+        }
+    }
+
+    fn note_progress(&mut self, now: std::time::Instant) {
+        self.heartbeat.note_progress(now);
+    }
+
+    /// The one call per tick: exactly one of a terminal redraw, a
+    /// non-terminal heartbeat, or a JSON `capture.progress` event happens,
+    /// gated on `emitter`'s own format and verbosity (FR-005, FR-006,
+    /// FR-009).
+    fn tick(
+        &mut self,
+        emitter: &mut Emitter,
+        snapshot: &live_status::LiveStatusSnapshot,
+        now: std::time::Instant,
+    ) {
+        match emitter.format() {
+            Format::Json => {
+                emitter.event(&capture_progress_event(snapshot));
+            }
+            Format::Human => {
+                if emitter.verbosity() != Verbosity::Normal {
+                    return;
+                }
+                if self.is_terminal {
+                    let (text, lines) =
+                        live_status::render_status(snapshot, live_status::use_status_color(), None);
+                    let frame = self.redraw.frame(&text, lines);
+                    emitter.live_write(&frame);
+                } else if self.heartbeat.due(now) {
+                    emitter.progress(&live_status::heartbeat::render_heartbeat(
+                        snapshot.elapsed,
+                        snapshot.written_packets,
+                    ));
+                    self.heartbeat.note_progress(now);
+                }
+            }
+        }
+    }
+
+    /// Clear any outstanding redrawn frame before the completion summary
+    /// prints, so the two never interleave (FR-012). A no-op on the
+    /// non-terminal path, where nothing was ever drawn in place.
+    fn resolve(&mut self, emitter: &mut Emitter) {
+        if self.is_terminal {
+            let clear = self.redraw.clear();
+            if !clear.is_empty() {
+                emitter.live_write(&clear);
+            }
+        }
+    }
+}
+
+/// Assemble one tick's [`live_status::LiveStatusSnapshot`] from the handles
+/// `drive_live` already holds. The one call site this crate has that reads a
+/// live pipeline's counters mid-run; everything it reads is already
+/// documented as safe to read without blocking the capture or output
+/// threads (research R-2).
+#[cfg(all(feature = "etw", windows))]
+#[allow(clippy::too_many_arguments)]
+fn build_live_snapshot(
+    elapsed: std::time::Duration,
+    bound: &HashMap<u32, String>,
+    bound_images: &HashMap<u32, String>,
+    gate_handle: &GateHandle,
+    live: &LiveStats,
+    stamper: Option<&fragcap::RoleStampingAttributor>,
+    byte_bound: Option<u64>,
+    packet_bound: Option<u64>,
+) -> live_status::LiveStatusSnapshot {
+    let process = bound
+        .iter()
+        .min_by_key(|(pid, _)| **pid)
+        .map(|(pid, role)| live_status::BoundProcess {
+            name: bound_images.get(pid).cloned().unwrap_or_default(),
+            pid: *pid,
+            role: role.clone(),
+            stage: None,
+        });
+    let active_endpoints = stamper.map(|s| s.active_endpoints().len()).unwrap_or(0);
+
+    live_status::LiveStatusSnapshot {
+        elapsed,
+        process,
+        written_packets: gate_handle.admitted(),
+        written_bytes: gate_handle.admitted_bytes(),
+        byte_bound,
+        packet_bound,
+        active_endpoints,
+        narrowed: active_endpoints > 0,
+        watch_discarded: gate_handle.watch_discarded(),
+        out_of_window_discarded: gate_handle.out_of_window_discarded(),
+        scope_discarded: gate_handle.scope_discarded(),
+        scope_unresolved_discarded: gate_handle.scope_unresolved_discarded(),
+        buffer_dropped: live.buffer_dropped(),
+        sink_dropped: live.sink_dropped(),
+        holder_tally: live.holder_tally_snapshot(),
+    }
+}
+
+/// The optional `capture.progress` JSON event (FR-009), carrying the same
+/// scalar counters as the human status block but no holder-tally breakdown
+/// (`contracts/capture-progress-event.md`).
+#[cfg(all(feature = "etw", windows))]
+fn capture_progress_event(snapshot: &live_status::LiveStatusSnapshot) -> Event {
+    Event::CaptureProgress {
+        elapsed_secs: snapshot.elapsed.as_secs(),
+        packets: snapshot.written_packets,
+        bytes: snapshot.written_bytes,
+        active_endpoints: snapshot.active_endpoints,
+        watching_discarded: snapshot.watch_discarded,
+        discarded_out_of_window: snapshot.out_of_window_discarded,
+        buffer_dropped: snapshot.buffer_dropped,
+        sink_dropped: snapshot.sink_dropped,
+        scope_discarded: snapshot.scope_discarded,
+        scope_unresolved_discarded: snapshot.scope_unresolved_discarded,
     }
 }
 
@@ -830,6 +1022,19 @@ fn drive_live(
 #[cfg(all(feature = "etw", windows))]
 fn elapsed_ts(started: std::time::Instant) -> Timestamp {
     Timestamp::from_nanos(ARMED_AT.as_nanos() + started.elapsed().as_nanos() as i64)
+}
+
+/// Record a started process's image name by pid, for the live status
+/// display's header line (slice S069). A no-op for any other event kind
+/// (`image_name` returns an empty string for one, which is never recorded).
+#[cfg(all(feature = "etw", windows))]
+fn record_bound_image(event: &ProcessEvent, bound_images: &mut HashMap<u32, String>) {
+    if let ProcessEvent::Started { pid, .. } = event {
+        let image = assemble::image_name(event);
+        if !image.is_empty() {
+            bound_images.insert(*pid, image);
+        }
+    }
 }
 
 /// Fold one process event and emit the match or exit it produced.
@@ -1082,6 +1287,151 @@ mod tests {
             final_exit(true, true).code(),
             0,
             "extcap: a FIFO disconnect is a clean stop"
+        );
+    }
+}
+
+// S069 T030, T031, T032. `LiveStatusDisplay::tick` is the one call site that
+// decides among a terminal redraw, a non-terminal heartbeat, and the JSON
+// `capture.progress` event; these tests exercise the decision directly,
+// independent of a real ETW/live capture, per research R-5.
+#[cfg(all(feature = "etw", windows))]
+#[cfg(test)]
+mod live_status_display_tests {
+    use super::*;
+    use crate::emit::{Format, Verbosity};
+    use crate::live_status::LiveStatusSnapshot;
+    use std::time::Duration;
+
+    fn snapshot() -> LiveStatusSnapshot {
+        LiveStatusSnapshot {
+            elapsed: Duration::from_secs(1),
+            process: None,
+            written_packets: 1,
+            written_bytes: 2,
+            byte_bound: None,
+            packet_bound: None,
+            active_endpoints: 0,
+            narrowed: false,
+            watch_discarded: 0,
+            out_of_window_discarded: 0,
+            scope_discarded: 0,
+            scope_unresolved_discarded: 0,
+            buffer_dropped: 0,
+            sink_dropped: 0,
+            holder_tally: Vec::new(),
+        }
+    }
+
+    fn run(format: Format, verbosity: Verbosity, is_terminal: bool) -> (String, bool) {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut emitter = Emitter::new(&mut buf, format, verbosity);
+        let mut display = LiveStatusDisplay {
+            redraw: live_status::redraw::RedrawState::new(),
+            heartbeat: live_status::heartbeat::Heartbeat::new(std::time::Instant::now()),
+            is_terminal,
+        };
+        display.tick(&mut emitter, &snapshot(), std::time::Instant::now());
+        let text = String::from_utf8(buf).unwrap();
+        let has_escape = text.contains('\x1b');
+        (text, has_escape)
+    }
+
+    #[test]
+    fn json_format_emits_capture_progress_and_never_a_redraw_or_heartbeat() {
+        let (text, has_escape) = run(Format::Json, Verbosity::Normal, true);
+        assert!(text.contains("\"event\":\"capture.progress\""));
+        assert!(!has_escape, "no redraw in json mode");
+        assert!(
+            !text.contains("still capturing"),
+            "no heartbeat in json mode"
+        );
+    }
+
+    #[test]
+    fn human_terminal_normal_draws_a_frame_with_no_prior_erase() {
+        let (text, has_escape) = run(Format::Human, Verbosity::Normal, true);
+        assert!(!has_escape, "the first frame has nothing to erase yet");
+        assert!(text.contains("fragcap"));
+    }
+
+    #[test]
+    fn human_non_terminal_never_draws_a_redraw_frame() {
+        // A fresh Heartbeat's interval starts at construction, so it is not
+        // due on this immediate tick; this test asserts the terminal branch
+        // is correctly skipped, not heartbeat timing (already covered in
+        // `live_status::heartbeat`'s own tests).
+        let (text, has_escape) = run(Format::Human, Verbosity::Normal, false);
+        assert!(
+            !has_escape,
+            "the non-terminal path never writes an escape byte"
+        );
+        assert!(
+            !text.contains("fragcap"),
+            "no redraw block on a non-terminal stream"
+        );
+    }
+
+    #[test]
+    fn quiet_and_silent_suppress_the_human_display_entirely() {
+        for verbosity in [Verbosity::Quiet, Verbosity::Silent] {
+            let (terminal_text, _) = run(Format::Human, verbosity, true);
+            assert!(
+                terminal_text.is_empty(),
+                "quiet/silent must suppress the terminal redraw"
+            );
+            let (non_terminal_text, _) = run(Format::Human, verbosity, false);
+            assert!(
+                non_terminal_text.is_empty(),
+                "quiet/silent must suppress the heartbeat too"
+            );
+        }
+    }
+
+    // S069 T038, SC-002. The standing regression test SC-002 names by name:
+    // a non-terminal run, driven across several ticks mixing ordinary
+    // progress lines and at least one due heartbeat, must never write an
+    // escape byte anywhere in the whole captured stream. T024 and T032 each
+    // cover one piece of this (the heartbeat line alone, stdout isolation);
+    // this test is the one that scans the *whole* accumulated non-terminal
+    // stream, which is the specific claim SC-002 makes.
+    #[test]
+    fn a_non_terminal_run_across_several_ticks_never_writes_an_escape_byte() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut emitter = Emitter::new(&mut buf, Format::Human, Verbosity::Normal);
+        let start = std::time::Instant::now();
+        let mut display = LiveStatusDisplay {
+            redraw: live_status::redraw::RedrawState::new(),
+            heartbeat: live_status::heartbeat::Heartbeat::new(start),
+            is_terminal: false,
+        };
+
+        // Ordinary progress lines interleave with ticks, exactly as
+        // `drive_live`'s loop calls `emitter.progress` (via `apply_event` or
+        // `narration.poll`) before each `display.tick` call.
+        emitter.progress("stage matched: target pid 44460 AngelLegion.exe");
+        display.tick(&mut emitter, &snapshot(), start);
+
+        // No further progress line for a long stretch: the heartbeat must
+        // fire without ever emitting a redraw or a color code.
+        let later = start + Duration::from_secs(31);
+        display.tick(&mut emitter, &snapshot(), later);
+
+        let even_later = later + Duration::from_secs(31);
+        display.tick(&mut emitter, &snapshot(), even_later);
+
+        let text = String::from_utf8(buf).unwrap();
+        assert!(
+            !text.contains('\x1b'),
+            "a non-terminal run must never write an escape byte, found in: {text:?}"
+        );
+        assert!(
+            text.contains("stage matched"),
+            "the ordinary progress line must still appear"
+        );
+        assert!(
+            text.matches("still capturing").count() >= 1,
+            "at least one heartbeat line must have fired across two 31-second gaps"
         );
     }
 }

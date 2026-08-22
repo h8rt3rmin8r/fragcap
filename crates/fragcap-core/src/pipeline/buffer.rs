@@ -146,20 +146,15 @@ impl Consumer {
     ///
     /// `None` means the queue is empty and the producer is gone, which is the
     /// only ending.
+    ///
+    /// Test-only since slice S069: the sole production caller (the output
+    /// loop) switched to [`Consumer::next_and_evicted`] so it can mirror the
+    /// eviction count into a live-readable handle without a second lock
+    /// acquisition. Kept, rather than deleted, so the buffer's own tests read
+    /// as they did before, over the plain item-at-a-time shape.
+    #[cfg(test)]
     pub(crate) fn next(&self) -> Option<Item> {
-        let (lock, cvar) = &*self.shared;
-        let mut shared = lock.lock().expect("the buffer mutex is never poisoned");
-        loop {
-            if let Some(item) = shared.queue.pop_front() {
-                return Some(item);
-            }
-            if !shared.open {
-                return None;
-            }
-            shared = cvar
-                .wait(shared)
-                .expect("the buffer mutex is never poisoned");
-        }
+        self.next_and_evicted().0
     }
 
     /// How many packets the buffer evicted to admit newer ones.
@@ -171,6 +166,32 @@ impl Consumer {
         lock.lock()
             .expect("the buffer mutex is never poisoned")
             .evicted
+    }
+
+    /// [`Consumer::next`], additionally returning the eviction count observed
+    /// in the same lock hold.
+    ///
+    /// A caller that wants to mirror `evicted` into a live-readable counter on
+    /// every pop (slice S069, the live capture status display) must not do so
+    /// by calling `next()` then `evicted()` separately: that takes the shared
+    /// mutex a second time per packet, doubling the lock traffic the
+    /// acquisition thread's `Producer::push` also contends for, for the whole
+    /// run's lifetime. This method reads `shared.evicted` inside the same
+    /// critical section `next()` already opens, at no extra lock acquisition.
+    pub(crate) fn next_and_evicted(&self) -> (Option<Item>, u64) {
+        let (lock, cvar) = &*self.shared;
+        let mut shared = lock.lock().expect("the buffer mutex is never poisoned");
+        loop {
+            if let Some(item) = shared.queue.pop_front() {
+                return (Some(item), shared.evicted);
+            }
+            if !shared.open {
+                return (None, shared.evicted);
+            }
+            shared = cvar
+                .wait(shared)
+                .expect("the buffer mutex is never poisoned");
+        }
     }
 }
 
@@ -260,6 +281,39 @@ mod tests {
         drop(tx);
         assert_eq!(drain(&rx), vec![3]);
         assert_eq!(rx.evicted(), 2);
+    }
+
+    // S069 T002. `next_and_evicted` must agree with `next()` plus a separate
+    // `evicted()` call, across a push-evict-pop sequence, so a caller can
+    // trust it as a drop-in replacement.
+    #[test]
+    fn next_and_evicted_agrees_with_next_and_evicted_called_separately() {
+        let (tx, rx) = channel(1);
+        tx.push(packet(1));
+        tx.push(packet(2));
+        tx.push(packet(3));
+        tx.push(Item::End(Box::default()));
+        drop(tx);
+
+        let (item, evicted) = rx.next_and_evicted();
+        assert_eq!(marker(&item.expect("the surviving packet")), 3);
+        assert_eq!(evicted, 2, "two pushes evicted before this one arrived");
+        assert_eq!(
+            evicted,
+            rx.evicted(),
+            "must agree with a separate evicted() read"
+        );
+
+        let (item, evicted) = rx.next_and_evicted();
+        assert!(matches!(item, Some(Item::End(_))));
+        assert_eq!(evicted, 2, "the terminal item evicts nothing");
+
+        let (item, evicted) = rx.next_and_evicted();
+        assert!(
+            item.is_none(),
+            "the buffer is drained and the producer is gone"
+        );
+        assert_eq!(evicted, 2);
     }
 
     // T012. FR-030 and research R-6. The terminal item never costs a packet.

@@ -41,7 +41,7 @@ pub mod core {
     };
     pub use fragcap_core::parse::{HeaderParser, InterfaceAddrs, ParseOutcome, ParseReject};
     pub use fragcap_core::pipeline::{
-        ConfigError, EndReason, Pipeline, PipelineConfig, PipelineError, PipelineReport,
+        ConfigError, EndReason, LiveStats, Pipeline, PipelineConfig, PipelineError, PipelineReport,
         SinkFailure, SourceBinding, StopHandle, DEFAULT_CAPACITY, DEFAULT_READ_TIMEOUT,
     };
     pub use fragcap_core::process::tree::NodeId;

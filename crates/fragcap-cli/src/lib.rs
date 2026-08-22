@@ -30,6 +30,7 @@ mod commands;
 mod emit;
 mod events;
 mod exit;
+mod live_status;
 mod orchestrator;
 mod output;
 mod paths;
