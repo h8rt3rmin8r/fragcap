@@ -9,8 +9,12 @@
 //! and the PowerShell release script `New-Release.ps1`. The PowerShell scripts
 //! are checked by the
 //! vendored `Test-ScriptCompliance.ps1` (its POSIX twin, so only bash is
-//! needed); the Bash wrapper is checked by [`check_bash`], authored here because
-//! no Bash checker is vendored. Both scripts are then checked for syntax
+//! needed); the Bash scripts are checked by [`check_bash`], authored here when
+//! no Bash checker was vendored. Slice S071 vendored one, and wiring it in to
+//! replace [`check_bash`] is deliberately deferred to issue #199: it
+//! changes what the gate enforces rather than what S071 consolidated. It was
+//! measured on 2026-08-22 to pass every script here, so the swap is a small
+//! change whenever it is taken. Both scripts are then checked for syntax
 //! (`bash -n`, a PowerShell parse) and for their help and dry-run seams. The
 //! exit contract is the house 0/1/2: 0 both compliant, 1 a check failed, 2 the
 //! gate could not run (bash or pwsh absent), the last so a skipped gate never

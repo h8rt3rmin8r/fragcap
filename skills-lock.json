@@ -1,222 +1,30 @@
 {
   "version": 1,
-  "note": "Portable skill content vendored into .agents/skills/ and committed so every contributor and every agent gets the same set. Codex reads this path natively; Claude Code and Cursor see it through machine-local symlinks that are gitignored. computedHash is SHA-256 over every file in the skill directory, path-sorted, not SKILL.md alone. Content is normalized to LF before hashing, matching .gitattributes, so the hash is reproducible from a fresh clone on any platform. speckit-* skills are omitted: the spec-kit CLI owns them and records them in .specify/integrations/*.manifest.json.",
+  "note": "Portable skill content vendored into .agents/skills/ and committed so every contributor and every agent gets the same set, taken from one upstream: https://github.com/shruggietech/skills, at the release named in each entry's source field. A skill is admitted only if a named constitution principle binds this repository to it or a repository gate executes it; see skills/README.md. Codex reads this path natively. Claude Code and Cursor read their own directories, which an external skills CLI may populate with machine-local symlinks; those are gitignored, and a checkout may carry none at all. computedHash is SHA-256 over every file in the skill directory, path-sorted, not SKILL.md alone. Content is normalized to LF before hashing, matching .gitattributes, so the hash is reproducible from a fresh clone on any platform. speckit-* skills are omitted: the spec-kit CLI owns them and records them in .specify/integrations/*.manifest.json.",
   "skills": {
-    "architect": {
-      "source": "h8rt3rmin8r/eso-weave",
+    "shruggie-bash": {
+      "source": "shruggietech/skills@v1.11.0",
       "sourceType": "vendored",
-      "skillPath": ".agents/skills/architect/SKILL.md",
-      "computedHash": "6422013720595952739a4d6b766410c899d6ca82e8f58cafc8f9fe9d10872d57"
-    },
-    "baseline-restorer": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/baseline-restorer/SKILL.md",
-      "computedHash": "f71fac278284b9348aea92d331722acb445400cd1ce51cf033f71b42f6b53d49"
-    },
-    "boy-scout-rule": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/boy-scout-rule/SKILL.md",
-      "computedHash": "891c76efea276f020e63df1674cf79aa98a586926c9e17f9826c71229efd67aa"
-    },
-    "code-review": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/code-review/SKILL.md",
-      "computedHash": "52acd59f2f3bfe90cf02190f16062feb80415f891b847164b8d4a8a39a086dfa"
-    },
-    "debug": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/debug/SKILL.md",
-      "computedHash": "88d496483efe579ed3cd9b4a127776e7a46b45e9d6ddbb87f45aa8df1c3515cb"
-    },
-    "develop": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/develop/SKILL.md",
-      "computedHash": "f5149c1874e485ca7538e05b4f7fa27379f876bf08bfccb7b5edba8f94a0feee"
-    },
-    "document": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/document/SKILL.md",
-      "computedHash": "e40e4469743dfa40515f1b3f6917ba40ae72655ebc82f5c2c4f6a13c23d429c9"
-    },
-    "explain": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/explain/SKILL.md",
-      "computedHash": "de82f7c70d2c8b618843b7239fed3fe4ea581c7eccc67d1c160f76f363d1acd5"
-    },
-    "explicit-configuration": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/explicit-configuration/SKILL.md",
-      "computedHash": "c7d498d5fb19b7d698f642b2cb128ef0e9e6b3a0e44145a9133ecd5c9720425a"
-    },
-    "find-skills": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/find-skills/SKILL.md",
-      "computedHash": "913b9d37d0d54047dd65222bb8c67b2bf04e3cb87dcad1729068d7a8b2c8c396"
-    },
-    "fix": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/fix/SKILL.md",
-      "computedHash": "1afe3a26e25b60d2a96b81a9c609d9d6bb2193534692ca998ac449825ef74797"
-    },
-    "gh-fix-ci": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/gh-fix-ci/SKILL.md",
-      "computedHash": "02b4d97e4bd91e342e3ec3efa06b7871097d6a64e8398f4ed5b69c64d8d902fb"
-    },
-    "legacy-code-safety": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/legacy-code-safety/SKILL.md",
-      "computedHash": "6d4d1fda06b04520082100897e5065355eee38bf5fe21667df1c46e2e5f5681f"
-    },
-    "optimize": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/optimize/SKILL.md",
-      "computedHash": "0f23469567ac354588587bd0fac3aa01affe09ed93e2d988026c92b1897c790a"
-    },
-    "orthogonality-principle": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/orthogonality-principle/SKILL.md",
-      "computedHash": "728c3a14c48d25cc467d1edab2830bc9219ae9d4ff4f3d0fec64823e1e519255"
-    },
-    "plan": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/plan/SKILL.md",
-      "computedHash": "0207fb1603267ff2d6def4e5639b1df76c955ac4be4dec280e2d5161ecc7433a"
-    },
-    "professional-honesty": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/professional-honesty/SKILL.md",
-      "computedHash": "a77b1c2850d8b5d0f0c2452feaa0c427ec565ed4a3bc17274de0502144b7fc1b"
-    },
-    "project-memory": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/project-memory/SKILL.md",
-      "computedHash": "ac73590ed099dc1c32743790972b9157837a39176126b39e1f191eeb916393cc"
-    },
-    "proof-of-work": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/proof-of-work/SKILL.md",
-      "computedHash": "8a7fdde3e0ec103dc0e8e7bd4efa60f22923557b9a20755fbab46a1c12b2cbf8"
-    },
-    "refactor": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/refactor/SKILL.md",
-      "computedHash": "efc1832b124ecce32665785ef9fcb5299912bf453c4051632b58b76eba42cb54"
-    },
-    "review": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/review/SKILL.md",
-      "computedHash": "34fa87853a2a2af37305992a0a3a38195d01c01e723ee70cd85ac699be178959"
-    },
-    "rust-best-practices": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/rust-best-practices/SKILL.md",
-      "computedHash": "62f6902bb48e44f2cc6d4ccb85d7162eb3752e7a3970a735435df6a4b5913ad4"
-    },
-    "rust-design-review": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/rust-design-review/SKILL.md",
-      "computedHash": "4f46de12a634b5ca9ae0f0885f4afd8670ecb24a0d3f063ea1f295f15698c6d7"
-    },
-    "rust-skills": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/rust-skills/SKILL.md",
-      "computedHash": "b39043884928e644d2a138b9689262f229824102812073c18a70faf3b0f2f349"
-    },
-    "shruggie-graph-memory": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/shruggie-graph-memory/SKILL.md",
-      "computedHash": "78d71190d4f35f11fefb075c438e00d174635e1a30dc511128d7b40f9b692fbe"
-    },
-    "shruggie-html": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/shruggie-html/SKILL.md",
-      "computedHash": "c7011b00c6fbdc5deb563f5eac518aec1f2c7fbc7719b657bf14f3009c1b3f91"
+      "skillPath": ".agents/skills/shruggie-bash/SKILL.md",
+      "computedHash": "ba113a3270fbb81a3110f36fda81f1ffb2ce46af4ed4e21f8a977ab348a9cbfc"
     },
     "shruggie-markdown": {
-      "source": "h8rt3rmin8r/eso-weave",
+      "source": "shruggietech/skills@v1.11.0",
       "sourceType": "vendored",
       "skillPath": ".agents/skills/shruggie-markdown/SKILL.md",
-      "computedHash": "a7827a9893ef34cc9d87a769477e60198b1cfd6bfdc508e4d8c7fbf7f824a3a0"
+      "computedHash": "54afd3eae2dd5decbb1e10c67ce1023285f787d87f978374a51e4904c4b16d52"
     },
     "shruggie-powershell": {
-      "source": "h8rt3rmin8r/eso-weave",
+      "source": "shruggietech/skills@v1.11.0",
       "sourceType": "vendored",
       "skillPath": ".agents/skills/shruggie-powershell/SKILL.md",
-      "computedHash": "84e0a14718e88f8af4d4ff8da329ba93f7cae7e3081917a7583dd62b5e9a3081"
+      "computedHash": "f9a5224629ab7b1c730025342da80e51feff95ea4c0fa5d238139fbc65bff90e"
     },
     "shruggie-speckit": {
-      "source": "h8rt3rmin8r/eso-weave",
+      "source": "shruggietech/skills@v1.11.0",
       "sourceType": "vendored",
       "skillPath": ".agents/skills/shruggie-speckit/SKILL.md",
       "computedHash": "ec5b5a0c4d1c815080dec3690c996da02e198645aaecab4c67e08092b3640617"
-    },
-    "silent-execution": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/silent-execution/SKILL.md",
-      "computedHash": "4a4caf916436fa7b22bd3e3627260ecb2f80ffbd8e1c60d44f98b0704ed0607c"
-    },
-    "simplicity-principles": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/simplicity-principles/SKILL.md",
-      "computedHash": "36e402eb79600a60bebed5d6e2c1202d3821d23f1ba22806582bf120083bb75f"
-    },
-    "solid-principles": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/solid-principles/SKILL.md",
-      "computedHash": "302fc51ca42b1a002d100f4a344c5ffeeb7a46afb1bd54cf1c18ada7cb932577"
-    },
-    "structural-design-principles": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/structural-design-principles/SKILL.md",
-      "computedHash": "c1ac7837c77514da44d2c8d1f9f899bf3b2223d9d6b9932a2d39d92e37215cd4"
-    },
-    "test": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/test/SKILL.md",
-      "computedHash": "31a984c8fe1e21da6a73f07beebfc1e43e9e027399a276c1d190bc0e5bc2b80f"
-    },
-    "token-efficiency": {
-      "source": "h8rt3rmin8r/eso-weave",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/token-efficiency/SKILL.md",
-      "computedHash": "10474a68a24bc2fbb69fa52dafbe0ee29245fb0da400ef56b5a4323223f05cfb"
-    },
-    "traffic-analysis-pcap": {
-      "source": "h8rt3rmin8r (local skill library)",
-      "sourceType": "vendored",
-      "skillPath": ".agents/skills/traffic-analysis-pcap/SKILL.md",
-      "computedHash": "24feb9403948891521567f9b37e3fcaeb5ba0246e98ec80697ddf6a395eed8ed"
     }
   }
 }

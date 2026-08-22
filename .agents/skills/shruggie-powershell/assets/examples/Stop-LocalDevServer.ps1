@@ -70,7 +70,7 @@ Param(
 #_______________________________________________________________________________
 ## Declare Functions
 
-    function Write-Log {
+    function Write-ShruggieLog {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true,Position=0)]
@@ -137,7 +137,7 @@ Param(
     $pids = @(Get-ListenerProcessId -ListenPort $Port)
 
     if ($pids.Count -eq 0) {
-        Write-Log ("Nothing listening on port {0}. Already stopped." -f $Port) -Level Success -Source 'Stop'
+        Write-ShruggieLog ("Nothing listening on port {0}. Already stopped." -f $Port) -Level Success -Source 'Stop'
         exit 0
     }
 
@@ -149,10 +149,10 @@ Param(
         if ($PSCmdlet.ShouldProcess($target, 'Stop process')) {
             try {
                 Stop-Process -Id $processId -Force -ErrorAction Stop
-                Write-Log ("Stopped {0}" -f $target) -Level Success -Source 'Stop'
+                Write-ShruggieLog ("Stopped {0}" -f $target) -Level Success -Source 'Stop'
             } catch {
                 $failed++
-                Write-Log ("Could not stop {0}: {1}" -f $target, $_.Exception.Message) -Level Error -Source 'Stop'
+                Write-ShruggieLog ("Could not stop {0}: {1}" -f $target, $_.Exception.Message) -Level Error -Source 'Stop'
             }
         }
     }

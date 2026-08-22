@@ -119,11 +119,64 @@ Param(
 All script files and all functions follow a Verb-Noun shape: a verb-like word first, a single hyphen, then a noun phrase. Both halves use PascalCase. The noun phrase may be several words concatenated with no separators, each word capitalized.
 
 - Script files: `Get-SomeYummyPizza.ps1`, `Start-LocalDevServer.ps1`, `Convert-LegacyManifest.ps1`.
-- Functions: `Get-CryptoBytes`, `ConvertTo-Base64Url`, `Assert-PSVersion`.
+- Functions: `Get-CryptoByte`, `ConvertTo-Base64Url`, `Assert-PSVersion`.
 
 This is the single naming standard going forward. Earlier work used mixed schemes (PascalCase for utilities, kebab-case for operator scripts) only because no standard existed yet. That era is over; everything uses the form above.
 
-ShruggieTech does not validate verb choice against PowerShell's approved-verb list (`Get-Verb`). The Verb-Noun shape is the convention; Microsoft's specific verb taxonomy is not enforced and its unapproved-verb warning is ignored. If a script is ever imported as a module, suppress that warning at import with `Import-Module -DisableNameChecking` rather than renaming functions to satisfy the taxonomy.
+### Verb and noun choice are enforced, not stylistic
+
+An earlier version of this document said Microsoft's approved-verb list was not enforced, and that a script could suppress PSScriptAnalyzer's unapproved-verb warning at import with `Import-Module -DisableNameChecking`. That guidance was wrong and is reversed here. `-DisableNameChecking` only silences a PowerShell *session*-level warning shown at `Import-Module` time; it does nothing to PSScriptAnalyzer's static-analysis diagnostic, which is the thing that actually shows up as a live warning in the VS Code PowerShell extension and in virtually every CI lint pipeline. PSScriptAnalyzer's `UseApprovedVerbs` rule is documented as "Default state: Always enabled" and is not configurable project-wide except by excluding it entirely in a custom rule-settings file or suppressing it per function with `[Diagnostics.CodeAnalysis.SuppressMessageAttribute]`. `UseSingularNouns` is likewise "Enabled" by default, with a default `NounAllowList` of only `'Data', 'Windows'`. This is why `Get-CryptoBytes` (plural "Bytes") was renamed to `Get-CryptoByte`: it was a real, currently-shipped violation of `UseSingularNouns`, produced by exactly the policy being reversed here.
+
+The rule going forward:
+
+- The verb must be one of PowerShell's approved verbs. `Get-Verb` is the live, authoritative source; the full list with descriptions is at [Approved Verbs for PowerShell Commands](https://learn.microsoft.com/en-us/powershell/scripting/developer/cmdlet/approved-verbs-for-windows-powershell-commands).
+- The noun phrase is singular (`Get-CryptoByte`, not `Get-CryptoBytes`).
+
+When the natural-language verb that comes to mind is not approved, reach for the closest match instead:
+
+| Natural-language verb | Approved replacement |
+| --- | --- |
+| `Print`, `Put` | `Write` or `Show` |
+| `Delete`, `Eliminate` | `Remove` |
+| `Validate`, `Verify`, `Check` | `Test` or `Confirm` |
+| `Create`, `Build`, `Make` | `New` |
+| `Fetch`, `Read` (when retrieving, not extracting from an already-open resource) | `Get` |
+| `Load` | `Import` |
+| `Change` | `Set` or `Update` |
+
+### Also check for a real command-name collision, not just the verb
+
+An approved verb is necessary but not sufficient. `Write-Log` uses the approved verb `Write` and a
+singular noun, and still tripped PSScriptAnalyzer's `PSAvoidOverwritingBuiltInCmdlets` rule in a
+live editor session, because `PSDesiredStateConfiguration` (a Windows PowerShell 5.1 inbox module)
+already exports a function of that exact name. The fixture is now named `Write-ShruggieLog`.
+
+Getting the verification method right took two attempts. The first version of this document said
+the collision rule only checked cmdlets shipped with the PowerShell engine itself, reasoned from
+memory rather than checked. The next attempt replaced that with a live `Get-Command -Name <Name>
+-All` check, which is more correct in principle but proved unreliable in practice: `Get-Command`
+only sees modules discoverable in the *current* session, and `PSDesiredStateConfiguration` is a
+Windows PowerShell 5.1 module not on PowerShell 7's module path, so on a `pwsh` 7 session, exactly
+the environment this skill targets, that check silently passed a fixture that reproduced the real
+bug. The only verification that actually caught it, on both attempts, was running the real tool:
+
+```powershell
+Invoke-ScriptAnalyzer -ScriptDefinition $scriptText -IncludeRule PSUseApprovedVerbs,PSAvoidOverwritingBuiltInCmdlets
+```
+
+`Invoke-ScriptAnalyzer` consults PSScriptAnalyzer's own bundled, versioned snapshot of inbox and
+common module exports, which is exactly what its live editor diagnostic and CI usage both do too,
+so it is the only check in this document confirmed to match what an operator will actually see.
+Any non-empty result means the candidate name needs to change. `Test-ScriptCompliance.ps1`'s
+advisory compliance scan runs this same call automatically against every declared function in a
+target script when PSScriptAnalyzer is installed, and warns explicitly when it is not rather than
+silently skipping the scan (see "Additional Resources" in `SKILL.md`).
+
+Generic, short nouns (`Log`, `Config`, `Status`, `Data`) are the ones most likely to already be
+claimed. When a fixture or helper's name is generic in this way, prefer a `ShruggieTech`-branded
+or otherwise distinguishing noun (`Write-ShruggieLog`, not `Write-Log`) over the bare generic form,
+even before running the check above; a distinguishing token makes a future collision far less
+likely regardless of what any single snapshot of installed modules currently shows.
 
 ## Help Dispatch
 
@@ -179,7 +232,7 @@ Every helper function declared inside the script carries its own `[CmdletBinding
 Internal helpers use the bare `[CmdletBinding()]` form (no explicit `SupportsShouldProcess` or `ConfirmImpact` settings). The full attribute form is reserved for the top-level script.
 
 ```powershell
-    function Get-CryptoBytes {
+    function Get-CryptoByte {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true)]
@@ -218,7 +271,7 @@ Scripts that report operator-facing progress use a dedicated logging helper rath
 #_______________________________________________________________________________
 ## Declare Functions
 
-    function Write-Log {
+    function Write-ShruggieLog {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true,Position=0)]
@@ -335,6 +388,24 @@ When path handling has to be bulletproof, the .NET `System.IO` types (`[System.I
 ### Windows-Specific Note
 
 On Windows, the file APIs normalize away trailing spaces and trailing dots from path segments, which makes a file literally named `"trailing ".txt"` unreachable by ordinary means. The extended-length path prefix `\\?\` (for example `\\?\C:\dir\trailing .txt`) disables that normalization and is the escape hatch for such files. It requires a fully-qualified path with backslash separators and is most reliable through the .NET `System.IO` methods. This is established Windows behavior and applies only on Windows.
+
+## PII and Operator Context
+
+A coding session routinely surfaces real personal detail: screenshots, directory paths under the operator's actual Windows or Unix username, file names, and family or personal specifics mentioned in passing while describing the task. That detail is easy to cook verbatim into the script being authored, most often through a hardcoded `C:\Users\<name>\...` or `/home/<name>/...` path, a personal email address, or an operator-specific hostname. A script that bakes this in exposes it to anyone the script is later shared, committed, or shown to.
+
+This skill already treats another class of sensitive value, secrets, as something a generated script must never hardcode; `Get-Secret.ps1`'s crypto-secure generation, `-Clipboard` (to avoid leaving a value in terminal scrollback), and `-Quiet` (to avoid decorating stdout) are all expressions of that discipline. Operator PII gets the identical treatment: never a literal in the script body.
+
+### The rule
+
+When a script's logic would otherwise need a value that is specific to the operator's own machine, account, or personal context, resolve it in this order:
+
+1. **Parameterize it.** Add a script parameter with a sensible, non-personal default, so the operator (or a future reader) supplies their own value rather than reading someone else's baked in.
+2. **Derive it from the environment.** `$env:USERPROFILE`, `[Environment]::GetFolderPath(...)`, `$HOME`, and `$env:COMPUTERNAME` all resolve the operator's actual environment at run time without a literal ever appearing in the source.
+3. **Ask the operator.** When neither of the above fits (the value is genuinely one-off and does not belong in a reusable parameter or environment lookup), confirm with the operator that they want it hardcoded rather than embedding it silently.
+
+### The backstop
+
+`Test-ScriptCompliance.ps1` and `test-script-compliance.sh` both scan the finished script for common leak patterns (a Windows or Unix home path with a captured username segment, an email-address-shaped string) and print an advisory `WARN` line per hit. This is a backstop for what the check can catch deterministically, not a substitute for following the rule above while writing the script: the scan cannot catch a family member's name in a comment, a personal detail folded into a log message, or anything else that is not shaped like a path or an email address. It never fails the run (`-SkipPiiCheck` opts out entirely), because a heuristic scan of this kind is inherently prone to false positives and negatives; treat every WARN line as something to review, not as a lint error to silence.
 
 ## No Trailing Whitespace
 
@@ -479,7 +550,7 @@ Param(
 #_______________________________________________________________________________
 ## Declare Functions
 
-    function Get-CryptoBytes {
+    function Get-CryptoByte {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true)]
@@ -525,7 +596,7 @@ Param(
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
         $result = New-Object System.Text.StringBuilder
         while ($result.Length -lt $CharCount) {
-            $batch = Get-CryptoBytes -ByteCount ($CharCount * 2)
+            $batch = Get-CryptoByte -ByteCount ($CharCount * 2)
             foreach ($b in $batch) {
                 if ($b -lt 248) {
                     [void]$result.Append($alphabet[$b % 62])
@@ -547,15 +618,15 @@ Param(
         )
         switch ($Encoding) {
             'Base64' {
-                $bytes = Get-CryptoBytes -ByteCount $ByteLength
+                $bytes = Get-CryptoByte -ByteCount $ByteLength
                 return [Convert]::ToBase64String($bytes)
             }
             'Base64Url' {
-                $bytes = Get-CryptoBytes -ByteCount $ByteLength
+                $bytes = Get-CryptoByte -ByteCount $ByteLength
                 return ConvertTo-Base64Url -InputBytes $bytes
             }
             'Hex' {
-                $bytes = Get-CryptoBytes -ByteCount $ByteLength
+                $bytes = Get-CryptoByte -ByteCount $ByteLength
                 return ConvertTo-HexString -InputBytes $bytes
             }
             'Alphanumeric' {

@@ -108,7 +108,7 @@ Param(
 #_______________________________________________________________________________
 ## Declare Functions
 
-    function Get-CryptoBytes {
+    function Get-CryptoByte {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true)]
@@ -154,7 +154,7 @@ Param(
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
         $result = New-Object System.Text.StringBuilder
         while ($result.Length -lt $CharCount) {
-            $batch = Get-CryptoBytes -ByteCount ($CharCount * 2)
+            $batch = Get-CryptoByte -ByteCount ($CharCount * 2)
             foreach ($b in $batch) {
                 if ($b -lt 248) {
                     [void]$result.Append($alphabet[$b % 62])
@@ -176,15 +176,15 @@ Param(
         )
         switch ($Encoding) {
             'Base64' {
-                $bytes = Get-CryptoBytes -ByteCount $ByteLength
+                $bytes = Get-CryptoByte -ByteCount $ByteLength
                 return [Convert]::ToBase64String($bytes)
             }
             'Base64Url' {
-                $bytes = Get-CryptoBytes -ByteCount $ByteLength
+                $bytes = Get-CryptoByte -ByteCount $ByteLength
                 return ConvertTo-Base64Url -InputBytes $bytes
             }
             'Hex' {
-                $bytes = Get-CryptoBytes -ByteCount $ByteLength
+                $bytes = Get-CryptoByte -ByteCount $ByteLength
                 return ConvertTo-HexString -InputBytes $bytes
             }
             'Alphanumeric' {

@@ -30,7 +30,7 @@ Declare it in `## Declare Functions` and call it as the first operation in
     }
 ```
 
-## Logging Helper (Write-Log)
+## Logging Helper (Write-ShruggieLog)
 
 For scripts that report operator-facing progress. The helper colorizes by level,
 timestamps every line, and tags the emitting sub-process. Adjust levels and
@@ -47,7 +47,7 @@ and Arrays` and the helper in `## Declare Functions`.
 #_______________________________________________________________________________
 ## Declare Functions
 
-    function Write-Log {
+    function Write-ShruggieLog {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true,Position=0)]

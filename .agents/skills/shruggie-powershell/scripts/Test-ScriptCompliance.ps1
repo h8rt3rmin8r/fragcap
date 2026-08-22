@@ -16,11 +16,26 @@
         by exactly 79 underscores
       - A leading comment-based help block before the CmdletBinding attribute
 
-    A POSIX-shell twin (test-script-compliance.sh) performs the same checks so
-    remote agents on non-Windows hosts can verify without pwsh.
+    It also prints advisory WARN lines (never affecting the exit code) for
+    two further concerns:
+
+      - Possible leaked PII: a Windows or Unix/macOS home-directory path with a
+        captured username segment, or an email-address-shaped string
+        (a heuristic, best-effort scan of the script's own text)
+      - A declared function whose verb is unapproved, or whose full name
+        already collides with an inbox or installed module's command (both
+        via PSScriptAnalyzer's PSUseApprovedVerbs and
+        PSAvoidOverwritingBuiltInCmdlets rules, run through
+        Invoke-ScriptAnalyzer; if PSScriptAnalyzer is not installed, prints
+        one WARN saying the scan was skipped rather than silently omitting it)
+
+    A POSIX-shell twin (test-script-compliance.sh) performs the same structural
+    checks and the PII scan so remote agents on non-Windows hosts can verify
+    without pwsh; the PSScriptAnalyzer-backed scan needs a live PowerShell
+    session with that module installed and is PowerShell-twin-only.
 
     Exit codes: 0 every check passed, 1 at least one check failed, 2 the target
-    file could not be read.
+    file could not be read. The advisory WARN lines never change the exit code.
 
 .PARAMETER Path
     Path to the .ps1 file to check. Read literally.
@@ -33,6 +48,18 @@
 
 .PARAMETER Silent
     Suppress all output. The exit code still reports the verdict.
+
+.PARAMETER SkipPiiCheck
+    Skip the advisory scan for possible leaked PII (username-bearing paths,
+    email-address-shaped strings).
+
+.PARAMETER SkipVerbCheck
+    Skip the advisory scan for function names using a verb outside
+    PowerShell's approved-verb list.
+
+.PARAMETER SkipCollisionCheck
+    Skip the advisory scan for function names already claimed by an inbox or
+    installed module.
 
 .PARAMETER Help
     Print this help text to the terminal.
@@ -62,6 +89,15 @@ Param(
 
     [Parameter(Mandatory=$false,ParameterSetName='Default')]
     [Switch]$Silent,
+
+    [Parameter(Mandatory=$false,ParameterSetName='Default')]
+    [Switch]$SkipPiiCheck,
+
+    [Parameter(Mandatory=$false,ParameterSetName='Default')]
+    [Switch]$SkipVerbCheck,
+
+    [Parameter(Mandatory=$false,ParameterSetName='Default')]
+    [Switch]$SkipCollisionCheck,
 
     [Parameter(Mandatory=$true,ParameterSetName='HelpText')]
     [Alias("h")]
@@ -110,6 +146,69 @@ Param(
             if ($cp -eq 0x200D) { return $false }
         }
         return $true
+    }
+
+    function Get-PiiWarning {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [string]$Text
+        )
+        # Advisory, best-effort scan. Never fails the run; the caller decides
+        # what to do with the findings. Deliberately does not attempt a
+        # phone-number pattern (collides too readily with version strings and
+        # port numbers) or free-text personal-name detection (not
+        # deterministically tractable).
+        $findings = New-Object System.Collections.Generic.List[string]
+
+        $winHits = [regex]::Matches($Text, 'C:\\Users\\([^\\]+)\\').Count
+        if ($winHits -gt 0) {
+            $findings.Add(("Windows user-profile path with a captured username segment ({0} hit(s))" -f $winHits))
+        }
+
+        $unixHits = [regex]::Matches($Text, '(?:/home/|/Users/)([^/\s]+)/').Count
+        if ($unixHits -gt 0) {
+            $findings.Add(("Unix/macOS home-directory path with a captured username segment ({0} hit(s))" -f $unixHits))
+        }
+
+        $emailHits = [regex]::Matches($Text, '[\w.+-]+@[\w-]+\.[\w.-]+').Count
+        if ($emailHits -gt 0) {
+            $findings.Add(("email-address-shaped string ({0} hit(s))" -f $emailHits))
+        }
+
+        return $findings
+    }
+
+    function Get-ScriptAnalyzerWarning {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [string]$ScriptText,
+
+            [Parameter(Mandatory=$true)]
+            [string[]]$RuleName
+        )
+        # Shells out to the real PSScriptAnalyzer instead of reimplementing
+        # its rules. An earlier version of this function hand-rolled the verb
+        # check with an AST scan against (Get-Verb).Verb and the collision
+        # check with a live Get-Command lookup; both looked reasonable and
+        # both were wrong in a way that mattered. The live Get-Command check
+        # in particular only sees modules discoverable in THIS session, and
+        # PSDesiredStateConfiguration (the inbox module Write-Log collided
+        # with, the exact bug this check exists to catch) is a Windows
+        # PowerShell 5.1 module not on PowerShell 7's module path, so the
+        # hand-rolled check silently passed a fixture that reproduced the
+        # real bug. PSScriptAnalyzer ships a versioned, bundled snapshot of
+        # inbox and common module exports for exactly this reason, and
+        # Invoke-ScriptAnalyzer is the only reliable way to consult it.
+        #
+        # Returns an array always, never $null: a clean scan produces no
+        # output, which PowerShell collapses to $null on capture, so an
+        # unwrapped return here would be indistinguishable from "no findings"
+        # at the call site. The caller checks tool availability separately
+        # (Get-Command Invoke-ScriptAnalyzer) before deciding whether an
+        # empty result here means "clean" or "could not run."
+        return @(Invoke-ScriptAnalyzer -ScriptDefinition $ScriptText -IncludeRule $RuleName -ErrorAction SilentlyContinue)
     }
 
 #_______________________________________________________________________________
@@ -203,6 +302,34 @@ Param(
     $helpOk = ($openIdx -ge 0 -and $closeIdx -gt $openIdx -and ($bindIdx -lt 0 -or $closeIdx -lt $bindIdx))
     Write-Result -Pass $helpOk -Message 'Comment-based help block precedes [CmdletBinding'
     if (-not $helpOk) { $failures++ }
+
+    # Advisory only: possible leaked PII. Never affects $failures or the exit
+    # code; opt out with -SkipPiiCheck. Suppressed by -Silent, not by -Quiet
+    # (matches how Write-ShruggieLog's Warn level already survives -Quiet).
+    if (-not $SkipPiiCheck -and -not $script:Silent) {
+        foreach ($finding in (Get-PiiWarning -Text $text)) {
+            Write-Host ("WARN: possible leaked PII: {0}" -f $finding) -ForegroundColor Yellow
+        }
+    }
+
+    # Advisory only: PSScriptAnalyzer's approved-verb rule and its
+    # built-in/inbox-cmdlet-collision rule. Never affects $failures or the
+    # exit code. Requires the PSScriptAnalyzer module; if it is not
+    # installed, prints one WARN saying so rather than silently skipping the
+    # scan. Opt out of either half independently with -SkipVerbCheck /
+    # -SkipCollisionCheck.
+    if ((-not $SkipVerbCheck -or -not $SkipCollisionCheck) -and -not $script:Silent) {
+        if (-not (Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue)) {
+            Write-Host 'WARN: PSScriptAnalyzer is not installed; skipped the approved-verb and built-in-cmdlet-collision scans' -ForegroundColor Yellow
+        } else {
+            $rules = New-Object System.Collections.Generic.List[string]
+            if (-not $SkipVerbCheck)      { $rules.Add('PSUseApprovedVerbs') }
+            if (-not $SkipCollisionCheck) { $rules.Add('PSAvoidOverwritingBuiltInCmdlets') }
+            foreach ($r in (Get-ScriptAnalyzerWarning -ScriptText $text -RuleName $rules)) {
+                Write-Host ("WARN: [{0}] {1}" -f $r.RuleName, $r.Message) -ForegroundColor Yellow
+            }
+        }
+    }
 
     if (-not $script:Silent) {
         Write-Host ''

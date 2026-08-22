@@ -15,24 +15,35 @@
 #     by exactly 79 underscores
 #   - A comment-based help block ('<# ... #>') before the first [CmdletBinding
 #
+# It also prints advisory WARN lines (never affecting the exit code) for a
+# best-effort scan of possible leaked PII: a Windows or Unix/macOS
+# home-directory path with a captured username segment, or an
+# email-address-shaped string. The PowerShell twin additionally warns on
+# function names using a verb outside PowerShell's approved-verb list, and on
+# function names that already collide with an existing command from an
+# inbox or installed module; both checks need a live PowerShell session
+# (Get-Verb, Get-Command) and have no twin here.
+#
 # Exit codes: 0 every check passed, 1 at least one check failed, 2 the target
-# file could not be read.
+# file could not be read. The advisory WARN lines never change the exit code.
 #
 # Requires GNU grep (grep -P). Most Linux runners have it.
 #
 # Usage:
 #   ./test-script-compliance.sh <path-to-script.ps1>
-#   ./test-script-compliance.sh -q <path>     # only failures and the summary
-#   ./test-script-compliance.sh -h            # this help
+#   ./test-script-compliance.sh -q <path>              # only failures and the summary
+#   ./test-script-compliance.sh --skip-pii-check <path> # skip the PII scan
+#   ./test-script-compliance.sh -h                     # this help
 
 set -u
 
 QUIET=0
 SILENT=0
+SKIP_PII=0
 TARGET=""
 
 print_help() {
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -40,6 +51,7 @@ while [ $# -gt 0 ]; do
         -h|--help) print_help; exit 0 ;;
         -q|--quiet) QUIET=1; shift ;;
         --silent) SILENT=1; shift ;;
+        --skip-pii-check) SKIP_PII=1; shift ;;
         -*) echo "FAIL: unknown option: $1" >&2; exit 2 ;;
         *) TARGET="$1"; shift ;;
     esac
@@ -195,6 +207,24 @@ if [ "$help_ok" -eq 1 ]; then
 else
     result 0 "Comment-based help block precedes [CmdletBinding"
     FAILURES=$((FAILURES+1))
+fi
+
+# Advisory-only: best-effort scan for common PII/leak patterns. Never fails
+# the run; opt out with --skip-pii-check. Deliberately does not attempt
+# phone-number or free-text personal-name detection (see
+# powershell-conventions.md for the false-positive tradeoff reasoning).
+# ASCII-only patterns, so plain grep -oE suffices; no need for the emoji
+# check's python3/perl fallback chain (that exists only for the Unicode
+# code-point ranges POSIX ERE can't express).
+if [ "$SKIP_PII" -ne 1 ] && [ "$SILENT" -ne 1 ]; then
+    win_hits=$(grep -oE 'C:\\Users\\[^\\]+\\' "$TARGET" | wc -l | tr -d ' ')
+    [ "$win_hits" -gt 0 ] && printf 'WARN: possible leaked PII: Windows user-profile path with a captured username segment (%s hit(s))\n' "$win_hits"
+
+    unix_hits=$(grep -oE '(/home/|/Users/)[^/[:space:]]+/' "$TARGET" | wc -l | tr -d ' ')
+    [ "$unix_hits" -gt 0 ] && printf 'WARN: possible leaked PII: Unix/macOS home-directory path with a captured username segment (%s hit(s))\n' "$unix_hits"
+
+    email_hits=$(grep -oE '[A-Za-z0-9_.+-]+@[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+' "$TARGET" | wc -l | tr -d ' ')
+    [ "$email_hits" -gt 0 ] && printf 'WARN: possible leaked PII: email-address-shaped string (%s hit(s))\n' "$email_hits"
 fi
 
 if [ "$SILENT" -ne 1 ]; then

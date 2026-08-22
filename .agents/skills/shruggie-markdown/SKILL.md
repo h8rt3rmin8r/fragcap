@@ -1,9 +1,9 @@
 ---
 name: shruggie-markdown
-description: Encodes the ShruggieTech house style for authoring Markdown documents (single-H1 structure, the labeled front-matter block, heading spacing, automatic anchors and manual tables of contents, prose-first density, 80-column hard wrapping with wrap-safe line breaks, GFM footnotes, language-tagged code fences, base64 image embedding, and Mermaid or SVG diagrams). Applies whenever Claude is writing or refactoring a Markdown document to house style. Trigger on phrasings like "write this as a Markdown doc to house style", "format this README", "add a TOC", "embed this image in the Markdown", or "make a Mermaid diagram for this". This skill is the Markdown authoring house style, not the shruggie-markdown software product; do not fire it for software, build, packaging, or release requests about that product.
+description: Encodes the ShruggieTech house style for authoring Markdown documents (single-H1 structure, the labeled front-matter block, heading spacing, automatic anchors and manual tables of contents, prose-first density, opt-in hard wrapping with wrap-safe line breaks when the operator requests it, GFM footnotes, language-tagged code fences, base64 image embedding, and Mermaid or SVG diagrams). Applies whenever Claude is writing or refactoring a Markdown document to house style. Trigger on phrasings like "write this as a Markdown doc to house style", "format this README", "add a TOC", "embed this image in the Markdown", or "make a Mermaid diagram for this". This skill is the Markdown authoring house style, not the shruggie-markdown software product; do not fire it for software, build, packaging, or release requests about that product.
 disable-model-invocation: false
 user-invocable: true
-when_to_use: Use when writing or cleaning up any Markdown document (README, report, spec, sprint plan, case study, agent context file) to the ShruggieTech standard, or when the operator says "fix the headings", "add footnotes", "make this self-contained", or "turn this into a Mermaid diagram". Do not use for the shruggie-markdown software product or for non-Markdown output.
+when_to_use: Use when writing or cleaning up any Markdown document (README, report, spec, sprint plan, case study, agent context file) to the ShruggieTech standard, or when the operator says "fix the headings", "add footnotes", "make this self-contained", "wrap this at 80", "fix the line length", or "turn this into a Mermaid diagram". Do not use for the shruggie-markdown software product or for non-Markdown output.
 ---
 
 # Shruggie Markdown
@@ -56,6 +56,23 @@ When in doubt about the audience, ask. When the document targets more than one
 surface, format for the lowest common denominator (see
 `assets/renderer-compatibility.md`).
 
+## Wrapping gate (read second)
+
+Hard wrapping is opt-in only. It is never the default and never assumed from
+habit or prior sessions. The default for every document is soft wrap: one
+logical line per paragraph and one per list item, with no inserted hard
+breaks.
+
+Do not hard-wrap a document, especially one destined for GitHub rendering (a
+README, PR description, issue body, commit message, or any Markdown that
+GitHub's web UI will display), unless the human operator explicitly asks for
+it in the current conversation ("wrap at 80", "hard-wrap this", "wrap this for
+the linter"). GitHub reflows Markdown prose dynamically at whatever width the
+viewport allows; a hard-wrapped source file gains nothing there and instead
+renders as short, jagged, hard-to-read lines. Only apply the hard-wrap
+mechanics in "Line length and wrapping" below once the operator has opted in
+for that specific document.
+
 ## House-style rules
 
 ### Document structure
@@ -95,39 +112,81 @@ Paragraphs are encouraged. Bullets are for genuinely enumerable items (options,
 steps, parameters, rules). Explanatory and narrative content is prose, not a list
 of fragments. This is a stated house preference.
 
-### Line length
+### Line length and wrapping
 
-Hard-wrap prose at 80 characters (the markdownlint MD013 default). This covers
-paragraphs, list items, and blockquotes. A wrapped list item indents its
-continuation lines to the item's content column (two spaces after the `-`
-marker, three after `1.`) so the lines stay attached to the item.
+Soft wrapping is the default for every document: one logical line per
+paragraph and one per list item, with no inserted hard breaks. Hard wrapping
+is opt-in only (see "Wrapping gate" above) and activates when the operator
+explicitly asks for it in the current conversation ("wrap at 80", "hard-wrap
+this", "wrap this for the linter"). Once hard wrap is active, the width is
+80 columns by default, measured in source characters, not rendered width;
+recognized operator overrides are 100 and 120 columns, selected in plain
+language ("wrap at 100", "use a 120-column wrap"). Never hard-wrap Markdown
+that will be read on GitHub (READMEs, PR or issue bodies, GitHub-rendered
+docs) unless the operator has explicitly opted in for that document; GitHub
+reflows prose dynamically and a hard-wrapped file renders as jagged short
+lines there instead of the smooth paragraphs GitHub would otherwise produce.
 
-Long unbreakable tokens (URLs, file paths, long inline-code literals) get the
-MD013 escape hatch: the linter does not flag a line when no whitespace occurs
-past the limit. Break before the token so it starts its own continuation line
-and nothing follows it; never let a long token sit mid-line with words after
-it, because the trailing space past column 80 is what gets flagged.
+Once hard wrap is active, hard-wrap body prose paragraphs and the text of
+list items (bulleted, ordered, and footnote definitions) to the active
+width. Never hard-wrap and never merge these constructs:
 
-Do not wrap table rows, code fence contents, headings, or link reference
-definitions. Reflowing those changes meaning or breaks rendering.
+- ATX headings.
+- Fenced code blocks and everything inside them.
+- GFM pipe tables: never wrap or reflow a table row or a delimiter row.
+- The machine-read YAML front-matter block, if present.
+- The labeled front-matter field block (Source, References, Audience, Author,
+  Date): each field stays on its own line ending with the trailing-backslash
+  hard break.
+- Reference-style link and image definitions, and base64 data-URI definition
+  lines.
+- Unbreakable tokens (URLs, file paths, inline code spans): do not split
+  them. If one pushes a line past the width, let that line overflow rather
+  than break the token.
 
-Halt-gate: when a table row, fence line, or heading necessarily exceeds 80 and
-the operator lints with default MD013, surface that the lint config needs
-exceptions (`tables: false`, `code_blocks: false`, or a raised
+Halt-gate: when a table row, fence line, or heading necessarily exceeds the
+active width and the operator lints with default MD013, surface that the lint
+config needs exceptions (`tables: false`, `code_blocks: false`, or a raised
 `heading_line_length`). Do not mangle those constructs to dodge the linter.
 
-### Wrap-safe continuation lines
+When hard wrap is active, continuation-line safety has the highest priority
+and overrides the width limit. Insert hard breaks only at spaces between
+words; never break inside an inline code span, a `[text](url)` link, an
+image, or a URL. Indent every
+continuation line of a list item to the item's content column (the marker
+width plus its trailing space): two spaces for a `-`, `*`, or `+` bullet, and
+three for a single-digit ordered marker such as `1. ` (match the actual
+marker width for wider ordered markers). Footnote definition continuations
+align under the text after `[^label]: ` by the same rule. Plain paragraph
+continuations start at column 0.
 
-A continuation line produced by hard-wrapping must never begin with a
-character run that Markdown parses as block syntax at that position: `-`,
-`+`, or `*` followed by a space, `>`, `#`, a digit run followed by `.` or `)`,
-a leading `|`, or four or more spaces beyond the required continuation
-indent. Inside a list item the continuation indent makes such a token look
-like a nested list marker or block, and it renders as one. Fix by re-breaking
-the line: pull the previous word down or push the offending token up. As a
-last resort, backslash-escape the marker (`\+`). Never leave a raw marker at
-the start of a wrapped line. Worked example in
-`assets/authoring-reference.md`.
+After its indentation, a continuation line MUST NOT begin with a sequence
+that a CommonMark or GFM parser reads as the start of a block. The forbidden
+leading sequences are:
+
+- an unordered list marker: `-`, `*`, or `+` followed by a space or tab;
+- an ordered list marker: one or more digits followed by `.` or `)` and then
+  a space or tab (a year such as `2016.` is the classic trap);
+- an ATX heading: one to six `#` characters followed by a space or tab;
+- a blockquote marker: `>`;
+- a code fence: three or more backticks or three or more tildes;
+- a thematic break or setext underline: a run made only of the characters
+  `-`, `*`, `_`, or `=`;
+- a table row (`|`), an HTML block (`<`), a link reference definition
+  (`[label]:`), or a footnote definition (`[^label]:`).
+
+Leading indentation does NOT neutralize these. An indented `- ` under a
+bullet is silently parsed as a nested bullet, and an indented `2016.` becomes
+a nested ordered list; both are silent structural corruption, which is the
+exact failure this rule exists to prevent. If the natural break at the active
+width would place a forbidden token at the start of the continuation line,
+move the break earlier so the token stays at the end of the current line,
+even if the current line then ends a few characters short of the width.
+Safety wins over width. If no safe earlier break exists on that line, leave
+the token in place and allow the overflow. The two most common triggers are
+the house style's spaced hyphen used as a dash (` - `) and a number or
+ordinal followed by a period (`2016.`, `3.`); wrapping near either one
+requires this check. Worked examples in `assets/authoring-reference.md`.
 
 ### Anchors, links, and tables of contents
 
@@ -208,8 +267,12 @@ Every Markdown file the skill writes complies with `CONVENTIONS.md`:
   newline.
 - Zero em-dashes and zero en-dashes anywhere, including inside code comments and
   `alt` text. Use parentheses, commas, or standard hyphens.
-- Prose hard-wrapped at 80 columns with wrap-safe continuation lines (no
-  wrapped line starts with a block-syntax marker).
+- Body prose and list text use soft wrap by default (one logical line per
+  paragraph or list item); hard-wrap only when the operator explicitly opts
+  in for that document, and never for GitHub-bound content unless explicitly
+  requested. See "Wrapping gate" and "Line length and wrapping". When hard
+  wrap is active, a wrapped continuation line never begins with a Markdown
+  block marker.
 - No AI rhetorical tropes, especially the "not just X, it's Y" contrast.
 - Every fenced code block declares a language.
 - For plans, sprint documents, and update logs, sequence sessions chronologically.
@@ -218,8 +281,9 @@ Every Markdown file the skill writes complies with `CONVENTIONS.md`:
 
 - `assets/authoring-reference.md`: long-form reference with worked examples
   for the single H1, front-matter block, heading spacing, horizontal-rule
-  gotchas, anchors and TOCs, prose density, line length and wrap-safe
-  continuations, justified text, footnotes, and code fences.
+  gotchas, anchors and TOCs, prose density, line length and wrapping (the
+  opt-in default, the width override set, the spaced-hyphen and year wrap
+  traps, and the exemptions), justified text, footnotes, and code fences.
 - `assets/images-and-diagrams.md`: base64 data-URI image embedding, Mermaid, SVG
   (committed file and inline), the script invocations, and the no-ASCII rule.
 - `assets/renderer-compatibility.md`: the "what renders where" matrix across

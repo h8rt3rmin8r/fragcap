@@ -180,46 +180,91 @@ and narrative content is prose. This is a house preference, stated as such: when
 the content reads as a sentence or two of explanation, write it as a sentence or
 two, not as a fragment with a bullet in front of it.
 
-## Line length and wrap-safe continuations
+## Line length and wrapping
 
-Hard-wrap prose at 80 characters. List-item continuations indent to the
-content column: two spaces after the `-` marker, three after `1.`.
+Soft wrap is the default: one logical line per paragraph and one per list
+item, with no inserted hard breaks. Hard-wrap body prose and list-item text
+only when the operator explicitly opts in for the document (see the
+"Wrapping gate" in `SKILL.md`). Once opted in, the active width is one of
+the override set {80, 100, 120}; 80 is the default hard-wrap width, and the
+operator switches it in plain language ("wrap at 100", "use a 120-column
+wrap"). Never hard-wrap a document that will be read on GitHub (a README, PR
+or issue body, or any GitHub-rendered Markdown) unless the operator has
+explicitly asked for it there; GitHub reflows Markdown prose dynamically at
+the viewport width, and a hard-wrapped source file renders as short, jagged
+lines instead of the smooth paragraphs GitHub would otherwise produce.
 
-The wrap point matters as much as the wrap width. A continuation line that
-begins with `-`, `+`, `*`, `>`, `#`, a digit run followed by `.` or `)`, or a
-leading `|` is parsed as block syntax at that position, not as prose. This
-bites hardest inside list items, where the continuation indent is exactly
-where a nested list marker would sit.
-
-Incorrect. The wrap lands so the continuation begins with a `+` marker, and
-the renderer produces a nested bullet reading "grantable flags ...":
-
-```markdown
-- Grants are keyed by tenant (`tenant_type` is personal or organization;
-  + grantable flags control whether a grant can be delegated onward).
-```
-
-Correct. Re-break the line by pulling the previous word down, so the
-continuation starts with a plain word:
+Once hard wrap is active, a wrapped list item indents its continuation lines
+to the content column: two spaces after a `-`, `*`, or `+` bullet, three
+after a single-digit ordered marker such as `1. `. Correct, wrapped at 80
+with a two-space hanging indent:
 
 ```markdown
-- Grants are keyed by tenant (`tenant_type` is personal or
-  organization; + grantable flags control whether a grant can be delegated
-  onward).
+- Grants are keyed by tenant type, either personal or organization, and a
+  set of flags controls whether a grant can be delegated onward to another
+  tenant in the same hierarchy.
 ```
 
-The alternative repair is pushing the offending token up to end the previous
-line, and the last resort is a backslash escape (`\+ grantable`), which
-renders as a literal `+` but leaves an escape in the source. Prefer the
-re-break.
+The wrap point matters as much as the width. A continuation line whose first
+non-space character starts a Markdown block is parsed as that block, not as
+prose. Two traps dominate: the house style's spaced hyphen used as a dash
+(` - `) and a number or ordinal followed by a period (`2016.`).
 
-Long unbreakable tokens use the MD013 escape hatch: the linter only flags a
-line when whitespace occurs past the limit. Give the token its own
-continuation line with nothing after it.
+Incorrect. The break lands a spaced-hyphen fragment at the start of the
+continuation line, so the renderer reads `- it's ...` as a nested bullet:
+
+```markdown
+- Her review note read, "the danger here is never the wrap width itself
+  - it's that the loose marker silently wins the parse."
+```
+
+Correct. Re-break earlier so the dash stays on the first line and the
+continuation begins with a plain word:
+
+```markdown
+- Her review note read, "the danger here is never the wrap width
+  itself - it's that the loose marker silently wins the parse."
+```
+
+Incorrect. The break lands a year at the start of the continuation line, so
+`2016.` is read as the start of a nested ordered list:
+
+```markdown
+- The migration everyone still cites shipped in the winter of
+  2016. The schema changes it introduced are the reason for the rule.
+```
+
+Correct. Re-break so the year stays on the first line:
+
+```markdown
+- The migration everyone still cites shipped in the winter of 2016. The
+  schema changes it introduced are the reason for the rule.
+```
+
+The same repair works for every forbidden leading sequence (bullets, ordered
+markers, `#` headings, `>`, code fences, thematic breaks, `|`, `<`, and link
+or footnote definitions): move the break so the token ends the current line
+instead of starting the next one. Safety wins over width, even when the
+current line then ends a few characters short. The full enumeration lives in
+`SKILL.md`.
+
+Exemptions, never wrapped and never merged:
+
+- ATX headings, and fenced code blocks with everything inside them.
+- GFM pipe tables: table rows and the delimiter row.
+- Both front-matter forms: the machine-read YAML block, and the labeled field
+  block (each field on its own line with the trailing-backslash break).
+- Reference-style link and image definitions, and base64 data-URI definition
+  lines.
+- Unbreakable tokens (URLs, file paths, inline code spans): they overflow
+  rather than split.
+
+An unbreakable token gets its own line with nothing after it, so no
+whitespace falls past the limit and MD013 stays quiet.
 
 Incorrect. The URL sits mid-line, and the words after it put a space past
-column 80 (the example line below is deliberately over-length, so this file
-fences it behind an inline markdownlint disable):
+column 80 (this example is deliberately over-length, so the file fences it
+behind an inline markdownlint disable):
 
 <!-- markdownlint-disable MD013 -->
 
@@ -237,11 +282,6 @@ The upstream discussion at
 https://github.com/example/repo/issues/4821#issuecomment-99182
 settled the format.
 ```
-
-Never wrap table rows, code fence contents, headings, or link reference
-definitions. When one of those must exceed 80 under a default MD013 config,
-the fix is lint configuration (`tables: false`, `code_blocks: false`,
-`heading_line_length`), not reflowing the construct.
 
 ## Justified text
 

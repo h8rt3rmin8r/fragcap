@@ -20,6 +20,7 @@ mod license;
 mod lint;
 mod notes;
 mod publish;
+mod skills;
 mod spec;
 mod wrappers;
 
@@ -37,6 +38,7 @@ cargo xtask <command>
   deps       Dependency direction check
   license    Per-crate license, notice, and readme files for publication
   wrappers   Shell wrapper compliance against the ShruggieTech standards
+  skills     Vendored skill set: .agents/skills, skills-lock.json, and git agree
   neutral    Build fragcap-core for a target with no capture backend
   msrv       Build at the declared minimum supported toolchain
   ci         Run the full local check set in order
@@ -145,6 +147,21 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("wrappers: could not run: {e}");
+                ExitCode::from(2)
+            }
+        },
+
+        "skills" => match skills::run(&root) {
+            Ok(0) => {
+                println!("skills: the vendored set, the lock, and git agree");
+                ExitCode::SUCCESS
+            }
+            Ok(n) => {
+                eprintln!("skills: {n} disagreement(s)");
+                ExitCode::from(1)
+            }
+            Err(e) => {
+                eprintln!("skills: could not run: {e}");
                 ExitCode::from(2)
             }
         },
@@ -346,6 +363,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: wrappers could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running skills");
+            match skills::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: skills reported {n} disagreement(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: skills could not run: {e}");
                     return ExitCode::from(2);
                 }
             }
