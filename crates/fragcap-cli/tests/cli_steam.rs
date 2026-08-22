@@ -80,6 +80,24 @@ fn steam_list_json_never_prints_a_human_line_regardless_of_machine_state() {
 }
 
 #[test]
+fn steam_list_does_not_create_a_local_store() {
+    // `steam list` is read-only: on a machine (or, here, a test environment) with
+    // no local store yet, it must name every installed title without creating
+    // one, matching FR-008's "absent" state rather than manufacturing a fresh
+    // empty database to read from (Codex review on PR #194).
+    let local_db =
+        std::env::temp_dir().join(format!("fragcap-cli-test-local-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&local_db);
+    let (code, _out, err) = run(&["steam", "list"]);
+    assert!(code == 0 || code == 2, "unexpected exit {code}: {err}");
+    assert!(
+        !local_db.exists(),
+        "steam list must not create the local store at {}",
+        local_db.display()
+    );
+}
+
+#[test]
 fn steam_list_json_exit_code_matches_human_mode() {
     // FR-014: the no-installation configuration refusal (exit 2) is unaffected
     // by --json, exactly as the human-mode steam_list_is_wired_and_not_a_stub

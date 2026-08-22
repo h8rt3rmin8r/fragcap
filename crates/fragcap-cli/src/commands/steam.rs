@@ -135,17 +135,26 @@ fn resolve_rows<'a>(
         .collect()
 }
 
-/// Sort rows by title name (case-insensitive ordinal), tie-broken by app id, so
-/// the order is deterministic across runs (FR-007). Two different app ids can
+/// Sort rows by title name (case-insensitive ordinal), tie-broken by app id
+/// compared numerically (not as a string: `"10"` sorts after `"2"`), so the
+/// order is deterministic across runs (FR-007). Two different app ids can
 /// share a display name (Steam's soundtrack and redistributable entries often
-/// do); the app id tiebreak keeps the order total in that case.
+/// do); the app id tiebreak keeps the order total in that case. An app id that
+/// fails to parse as a number (never observed from Steam, but `app_id` is
+/// carried as a string) falls back to a string comparison rather than
+/// panicking or silently dropping the tiebreak.
 fn sort_rows(rows: &mut [ListingRow<'_>]) {
     rows.sort_by(|a, b| {
         a.title
             .name
             .to_lowercase()
             .cmp(&b.title.name.to_lowercase())
-            .then_with(|| a.title.app_id.cmp(&b.title.app_id))
+            .then_with(
+                || match (a.title.app_id.parse::<u64>(), b.title.app_id.parse::<u64>()) {
+                    (Ok(a_id), Ok(b_id)) => a_id.cmp(&b_id),
+                    _ => a.title.app_id.cmp(&b.title.app_id),
+                },
+            )
     });
 }
 
@@ -158,19 +167,17 @@ fn list(json: bool, out: &mut dyn Write, emitter: &mut Emitter) -> Result<Exit, 
         emitter.warn(warning);
     }
 
-    let opened_store = match default_local_store() {
-        Some(path) => match Store::open(&path) {
-            Ok(store) => Some(store),
-            Err(e) => {
-                emitter.warn(&format!(
-                    "local store at {} unavailable: {e}",
-                    path.display()
-                ));
-                None
-            }
-        },
-        None => None,
-    };
+    // `steam list` is read-only: `default_local_store()` ensures the parent
+    // directory exists so a *writing* caller (the hero listing) can create the
+    // database on first use, but `Store::open` itself creates the file too, so
+    // reusing it unguarded here would make an inspection command write a fresh
+    // empty local.db as a side effect on a machine that has never registered
+    // anything. Checking existence first keeps a genuinely absent store in the
+    // same "nothing to join against" state issue #171 describes, rather than
+    // manufacturing one to read from.
+    let opened_store = default_local_store()
+        .filter(|path| path.exists())
+        .and_then(|path| Store::open(&path).ok());
 
     let mut rows = resolve_rows(&installation.titles, opened_store.as_ref(), emitter);
     sort_rows(&mut rows);
@@ -391,6 +398,23 @@ mod tests {
         sort_rows(&mut rows);
         let order: Vec<&str> = rows.iter().map(|r| r.title.app_id.as_str()).collect();
         assert_eq!(order, vec!["1", "3", "2"], "Alpha(1) < alpha(3) < beta(2)");
+    }
+
+    #[test]
+    fn app_id_tiebreak_is_numeric_not_lexicographic() {
+        // Same case-folded name, app ids "10" and "2": a string compare would put
+        // "10" first ('1' < '2'), but the declared tiebreak is numeric order.
+        let titles = vec![title("10", "Same Name"), title("2", "Same Name")];
+        let mut buf: Vec<u8> = Vec::new();
+        let mut e = emitter(&mut buf);
+        let mut rows = resolve_rows(&titles, None, &mut e);
+        sort_rows(&mut rows);
+        let order: Vec<&str> = rows.iter().map(|r| r.title.app_id.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["2", "10"],
+            "app id 2 sorts before app id 10 numerically"
+        );
     }
 
     #[test]
