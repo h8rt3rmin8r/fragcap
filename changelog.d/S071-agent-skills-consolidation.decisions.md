@@ -109,3 +109,33 @@
   any file was touched; output and exit code were identical. Vendoring was then
   ordered before deletion so the window in which the gate has no checker never
   opened.
+
+**Review round on pull request #200 (Codex, 2 findings, both verified and
+fixed).** Both were in the new gate, and both were cases of it failing at
+precisely the thing it was written to do.
+
+- **The working-tree/index comparison ran one way only.** It asserted that every
+  file on disk is tracked, and never the inverse, so a vendored file deleted
+  from the working tree without `git rm` left the index carrying a file the tree
+  no longer had, and the gate passed. Reproduced before fixing, and it was
+  slightly worse than reported: the gate did not merely stay silent, it printed
+  "all 31 vendored file(s) are tracked by git", reporting a silently smaller
+  count as agreement, which is the P-9 failure this gate exists to prevent. Now
+  checked in both directions. Making it symmetric required making the two views
+  cover the same paths: `speckit-*` is now filtered out of the index view as
+  well as the disk walk (otherwise all ten would report as absent on every run,
+  exactly as the finding anticipated), and a file sitting loose in
+  `.agents/skills/` is now collected by the walk so it appears in both.
+- **The lock reader accepted trailing content after the document.** `value()`
+  stopped at the closing brace and nothing required end of input, so a lock
+  followed by a second value or by garbage parsed to the leading object and the
+  gate passed. Reproduced before fixing (exit 0 where the module's own contract
+  says 2). The reader now requires end of input, and trailing whitespace alone
+  is still accepted. This one contradicted the module's documented reason for
+  being strict, which was the argument for hand-rolling the reader rather than
+  taking `serde_json`; a strict reader that is not strict is a worse answer than
+  the dependency would have been.
+
+Both fixes carry tests, and both original defects were reproduced against the
+real tree before the fix and confirmed corrected after, along with a regression
+check that the original present-but-untracked case is still caught.

@@ -5,7 +5,8 @@
 //! `cargo xtask skills` holds `.agents/skills/`, `skills-lock.json`, and git's
 //! index to agreement with one another. Three assertions: every lock entry has
 //! a directory and the `skillPath` file it names; every vendored directory has
-//! a lock entry; and every file under a vendored skill is tracked by git.
+//! a lock entry; and the working tree and the index carry the same vendored
+//! files, checked in both directions.
 //!
 //! The third is the one with a scar behind it. `.agents/skills/debug/` sat on
 //! disk and in the lock, and uncommitted, from the founding commit until slice
@@ -14,6 +15,13 @@
 //! file. That is why the assertion asks git's index rather than reparsing
 //! ignore rules: the index is what actually determines what a clone receives,
 //! and it catches exclusion by any mechanism rather than only that one.
+//!
+//! It is checked both ways because each direction is a different real defect,
+//! and the first version of this gate checked only one. A file removed from the
+//! working tree without leaving the index is the mirror case: a clone receives
+//! a file the author no longer has. That version passed such a tree while
+//! reporting a silently smaller file count as agreement. Found in review of
+//! pull request #200.
 //!
 //! The exit contract is the house 0/1/2: 0 the set agrees, 1 it does not, 2 the
 //! gate could not run (git absent, the lock unreadable or shaped unexpectedly,
@@ -180,6 +188,24 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Parse one complete document: a value, then end of input.
+    ///
+    /// The EOF requirement is not pedantry. Without it a lock followed by a
+    /// second value, or by trailing garbage, parses to the leading object and
+    /// the gate accepts a file no JSON reader would, which is the opposite of
+    /// the fail-closed contract this module documents.
+    fn document(&mut self) -> io::Result<Json> {
+        let v = self.value()?;
+        self.skip_ws();
+        if self.i != self.b.len() {
+            return Err(cannot_run(format!(
+                "{LOCK_FILE}: trailing content after the document, at byte {}",
+                self.i
+            )));
+        }
+        Ok(v)
+    }
+
     fn value(&mut self) -> io::Result<Json> {
         self.skip_ws();
         match self.b.get(self.i) {
@@ -318,12 +344,28 @@ pub fn check(inv: &Inventory) -> Vec<String> {
         }
     }
 
-    // 3. Every file under a vendored skill is tracked by git. This is the
-    //    assertion that would have caught the debug skill on day one.
+    // 3. The disk and git's index carry the same vendored files. Checked both
+    //    ways, because each direction is a real and different defect.
+    //
+    //    Present-but-untracked is the one that produced this gate: the debug
+    //    skill sat on disk and in the lock, and out of every clone, for the
+    //    life of the project. Tracked-but-absent is its mirror, a file removed
+    //    from the working tree without leaving the index, where a clone gets a
+    //    file the author no longer has. The first version of this gate checked
+    //    only the first direction and passed a tree with the second, reporting
+    //    a silently smaller file count as agreement. Found in review of pull
+    //    request #200.
     for f in &inv.files {
         if !inv.tracked.contains(f) {
             fails.push(format!(
                 "{f} is present but not tracked by git; a clone would not receive it"
+            ));
+        }
+    }
+    for f in &inv.tracked {
+        if !inv.files.contains(f) {
+            fails.push(format!(
+                "{f} is tracked by git but absent from the working tree; a clone would receive a file this tree does not have"
             ));
         }
     }
@@ -336,10 +378,25 @@ fn is_cli_owned(name: &str) -> bool {
     name.starts_with(CLI_OWNED_PREFIX)
 }
 
+/// The first path component under `.agents/skills/`, which is the skill
+/// directory a file belongs to. `None` for a path outside the skills tree.
+///
+/// A file sitting directly in `.agents/skills/` yields its own file name. That
+/// is deliberate: it is not CLI-owned, so it stays in both the disk view and
+/// the index view and the two-way comparison treats it like any other file,
+/// rather than being silently exempt from both.
+fn skill_of(path: &str) -> Option<&str> {
+    path.strip_prefix(SKILLS_DIR)?
+        .strip_prefix('/')?
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+}
+
 /// Read `skills-lock.json` into entries, or fail closed.
 fn read_lock(root: &Path) -> io::Result<Vec<Entry>> {
     let text = fs::read_to_string(root.join(LOCK_FILE))?;
-    let doc = Reader::new(&text).value()?;
+    let doc = Reader::new(&text).document()?;
     let skills = doc
         .as_obj()
         .and_then(|m| m.get("skills"))
@@ -381,7 +438,11 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// What git tracks under `.agents/skills/`.
+/// What git tracks under `.agents/skills/`, excluding CLI-owned directories.
+///
+/// The exclusion is what makes the two-way comparison in [`check`] correct.
+/// The directory walk never descends into `speckit-*`, so leaving those paths
+/// here would report all ten of them as tracked-but-absent on every run.
 ///
 /// `-z` is not decoration: without it git quotes and escapes paths outside a
 /// narrow character set, and the escaped form would not compare equal to the
@@ -401,6 +462,7 @@ fn tracked(root: &Path) -> io::Result<BTreeSet<String>> {
     Ok(String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|s| !s.is_empty())
+        .filter(|s| skill_of(s).is_some_and(|d| !is_cli_owned(d)))
         .map(str::to_string)
         .collect())
 }
@@ -423,19 +485,27 @@ fn inventory(root: &Path) -> io::Result<Inventory> {
 
     for entry in fs::read_dir(&skills)? {
         let path = entry?.path();
-        if !path.is_dir() {
-            continue;
-        }
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| cannot_run("skill directory name is not UTF-8"))?
+            .ok_or_else(|| cannot_run("skill directory entry name is not UTF-8"))?
             .to_string();
         if is_cli_owned(&name) {
             continue;
         }
-        walk(root, &path, &mut inv.files)?;
-        inv.dirs.insert(name);
+        if path.is_dir() {
+            walk(root, &path, &mut inv.files)?;
+            inv.dirs.insert(name);
+        } else {
+            // A loose file directly in .agents/skills/. It belongs to no skill,
+            // so no directory assertion covers it, but the index view carries
+            // it and the two views must describe the same set or the two-way
+            // comparison invents a disagreement.
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| cannot_run("path escaped the repository root"))?;
+            inv.files.insert(rel.to_string_lossy().replace('\\', "/"));
+        }
     }
 
     Ok(inv)
@@ -458,7 +528,7 @@ pub fn run(root: &Path) -> io::Result<usize> {
             if inv.dirs.len() == 1 { "y" } else { "ies" }
         );
         println!(
-            "skills: OK  all {} vendored file(s) are tracked by git",
+            "skills: OK  {} vendored file(s) agree between the working tree and git's index",
             inv.files.len()
         );
     } else {
@@ -541,6 +611,40 @@ mod tests {
         assert!(fails[0].contains("not tracked"), "{fails:?}");
     }
 
+    /// The mirror of the case above, and the one the first version of this
+    /// gate missed: `git rm` was never run, so the index still carries a file
+    /// the working tree no longer has.
+    #[test]
+    fn a_tracked_file_absent_from_the_working_tree_fails() {
+        let mut inv = consistent();
+        inv.tracked
+            .insert(format!("{SKILLS_DIR}/shruggie-bash/assets/fixtures.md"));
+        let fails = check(&inv);
+        assert_eq!(fails.len(), 1, "{fails:?}");
+        assert!(fails[0].contains("fixtures.md"), "{fails:?}");
+        assert!(
+            fails[0].contains("absent from the working tree"),
+            "{fails:?}"
+        );
+    }
+
+    #[test]
+    fn the_skill_directory_of_a_path_is_its_first_component() {
+        assert_eq!(
+            skill_of(".agents/skills/shruggie-bash/assets/fixtures.md"),
+            Some("shruggie-bash")
+        );
+        assert_eq!(
+            skill_of(".agents/skills/speckit-plan/SKILL.md"),
+            Some("speckit-plan")
+        );
+        // A loose file directly in the skills directory yields its own name,
+        // so it is excluded from neither view.
+        assert_eq!(skill_of(".agents/skills/README.md"), Some("README.md"));
+        assert_eq!(skill_of(".agents/skills"), None);
+        assert_eq!(skill_of("crates/fragcap/src/lib.rs"), None);
+    }
+
     #[test]
     fn cli_owned_directories_are_recognized_by_prefix() {
         assert!(is_cli_owned("speckit-plan"));
@@ -580,6 +684,36 @@ mod tests {
         );
         let note = doc.as_obj().unwrap().get("note").unwrap().as_str().unwrap();
         assert_eq!(note, "escapes: \" \\ \u{e9}");
+    }
+
+    /// A document is a value and then the end of the file. Without this the
+    /// gate accepts a lock followed by a second value or by garbage.
+    #[test]
+    fn the_reader_refuses_trailing_content() {
+        let lock = r#"{"skills": {}}"#;
+        assert!(
+            Reader::new(lock).document().is_ok(),
+            "the bare document parses"
+        );
+        for trailing in [
+            "x", "{}", "  null", "
+
+]",
+        ] {
+            let text = format!("{lock}{trailing}");
+            assert!(
+                Reader::new(&text).document().is_err(),
+                "should have refused trailing {trailing:?}"
+            );
+        }
+        // Trailing whitespace alone is not trailing content.
+        assert!(Reader::new(&format!(
+            "{lock}
+
+"
+        ))
+        .document()
+        .is_ok());
     }
 
     /// The reader fails closed. Every one of these is exit 2 at the caller,

@@ -81,13 +81,21 @@ slice S071 exists to have ended.
    `skillPath` names.
 2. Every vendored directory has a lock entry. `speckit-*` is excluded by
    prefix; the spec-kit CLI owns those.
-3. Every file under a vendored skill is tracked by git.
+3. The working tree and git's index carry the same vendored files, checked in
+   both directions.
 
 The third exists because of a real defect rather than a hypothetical one.
 `.agents/skills/debug/` sat on disk and in the lock, and uncommitted, from the
 founding commit until S071, because `.gitignore` carried a bare `debug` pattern
 inherited from a Cargo template. Nothing noticed, because until S071 nothing
 read this file at all.
+
+It is checked both ways because each direction is a different defect and the
+first version of the gate only checked one. Present-but-untracked means a clone
+would not receive a file you have. Tracked-but-absent means a clone receives a
+file you no longer have, which is what happens when a file is deleted without
+`git rm`. Review of pull request #200 demonstrated the one-way version passing
+such a tree while reporting a silently smaller file count as agreement.
 
 The gate does not verify hashes. The tool that writes them is not part of this
 repository and its algorithm is reproduced here empirically rather than from a

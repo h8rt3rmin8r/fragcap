@@ -189,10 +189,16 @@ observe the gate fail for the right reason, then revert and observe it pass.
    **Then** it fails and names the directory.
 3. **Given** a vendored file that git does not track, **When** the gate runs,
    **Then** it fails and names the file. This is the E-04 case.
-4. **Given** a consistent tree, **When** the gate runs, **Then** it passes and
+4. **Given** a vendored file git tracks that is absent from the working tree,
+   **When** the gate runs, **Then** it fails and names the file.
+5. **Given** a consistent tree, **When** the gate runs, **Then** it passes and
    reports what it checked.
-5. **Given** the `speckit-*` directories, **When** the gate runs, **Then** it
-   does not require lock entries for them.
+6. **Given** the `speckit-*` directories, **When** the gate runs, **Then** it
+   does not require lock entries for them, and does not report them as absent
+   from the working tree it never walked.
+7. **Given** a `skills-lock.json` with trailing content after the document,
+   **When** the gate runs, **Then** it exits 2 rather than reading the leading
+   object and passing.
 
 ### User Story 4 - The bound standards are the current ones (Priority: P2)
 
@@ -294,8 +300,22 @@ corrects, with a different brand than last time.
   entries, since all four sets of bytes change or are new.
 - **FR-008**: A new `cargo xtask skills` subcommand MUST assert that every lock
   entry has a directory; that every non-`speckit-*` directory under
-  `.agents/skills/` has a lock entry; and that every file under every vendored
-  skill is tracked by git.
+  `.agents/skills/` has a lock entry; and that the working tree and git's index
+  carry the same vendored files.
+- **FR-008a**: The working-tree/index comparison MUST run in **both**
+  directions. Present-but-untracked means a clone would not receive a file the
+  author has; tracked-but-absent means a clone receives a file the author no
+  longer has. Both are real drift and only the first was specified originally.
+  Added after review of pull request #200, which demonstrated the gate passing
+  a tree carrying the second while reporting a silently smaller file count as
+  agreement.
+- **FR-008b**: The two views MUST cover the same set of paths, so the
+  comparison cannot invent a disagreement. `speckit-*` is excluded from both,
+  and a file sitting directly in `.agents/skills/` is included in both.
+- **FR-008c**: The lock reader MUST require end of input after the document. A
+  lock followed by a second value or by trailing garbage is a file no JSON
+  reader would accept, and accepting it contradicts the fail-closed contract
+  FR-009's rationale rests on. Added after review of pull request #200.
 - **FR-009**: `cargo xtask skills` MUST NOT verify hashes.
 - **FR-010**: `cargo xtask skills` MUST be reachable from `cargo xtask ci` and
   from `.github/workflows/ci.yml`, following the existing per-subcommand step
@@ -365,8 +385,9 @@ corrects, with a different brand than last time.
   completion.
 - **SC-005**: `cargo xtask wrappers` passes with the refreshed checker, as E-12
   predicted.
-- **SC-006**: Each of the three `cargo xtask skills` assertions has been
-  observed failing for its own reason and then passing.
+- **SC-006**: Each `cargo xtask skills` assertion has been observed failing for
+  its own reason and then passing, in both directions of the working-tree/index
+  comparison, plus the fail-closed exit-2 path.
 - **SC-007**: Every claim in the Evidence table is either still true at commit
   time or has been corrected in place, with no claim carried forward on memory.
 - **SC-008**: The tracked file count under `.agents/skills/` falls from 382 to 42: 32 across

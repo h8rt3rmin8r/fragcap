@@ -182,6 +182,23 @@ fresh read.
       `.specify/feature.json`; never edit `CHANGELOG.md` from a branch.
 - [x] T039 Halt before push with the breakdown the autopilot protocol requires.
 
+## Phase 7: Review round (pull request #200)
+
+Added after the fact. Both findings were in the new gate, and both were the gate
+failing at the thing it was written to do; each was reproduced against the real
+tree before being fixed.
+
+- [x] T040 Codex: the working-tree/index comparison ran one way only, so a file
+      deleted without `git rm` passed while the gate reported a silently smaller
+      count as agreement. Now two-way (FR-008a), with both views covering the
+      same paths (FR-008b).
+- [x] T041 Codex: the lock reader accepted trailing content after the document,
+      contradicting the strictness that was the argument for hand-rolling it.
+      Now requires end of input (FR-008c).
+- [x] T042 Tests for both, plus a regression check that the original
+      present-but-untracked case is still caught, and `speckit-*` is still not
+      reported as absent.
+
 ## Dependencies
 
 - Phase 1 gates everything: no prose before the evidence is re-seen.
