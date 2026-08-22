@@ -112,7 +112,7 @@ Param(
         }
     }
 
-    function Write-Log {
+    function Write-ShruggieLog {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true,Position=0)]
@@ -187,11 +187,11 @@ Param(
     Write-Host ""
 
     # Spawn the dev server in its own window so this prompt stays usable
-    Write-Log ("Launching: {0}" -f $Command) -Level Info -Source 'Spawn'
+    Write-ShruggieLog ("Launching: {0}" -f $Command) -Level Info -Source 'Spawn'
     Start-Process -FilePath 'pwsh' -ArgumentList @('-NoExit', '-Command', $Command) | Out-Null
 
     # Poll the health endpoint until ready or timeout
-    Write-Log ("Waiting up to {0}s for {1}" -f $TimeoutSeconds, $healthUrl) -Level Info -Source 'HealthPoll'
+    Write-ShruggieLog ("Waiting up to {0}s for {1}" -f $TimeoutSeconds, $healthUrl) -Level Info -Source 'HealthPoll'
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $healthy = $false
     while ((Get-Date) -lt $deadline) {
@@ -207,7 +207,7 @@ Param(
         exit 2
     }
 
-    Write-Log ("Server healthy on {0}" -f $healthUrl) -Level Success -Source 'HealthPoll'
+    Write-ShruggieLog ("Server healthy on {0}" -f $healthUrl) -Level Success -Source 'HealthPoll'
     Write-Host ""
     Write-Host ("  Ready. Open http://localhost:{0}{1}" -f $Port, $HealthPath) -ForegroundColor Green
     Write-Host ("  Stop it with: .\Stop-LocalDevServer.ps1 -Port {0}" -f $Port) -ForegroundColor DarkGray

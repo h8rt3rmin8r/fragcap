@@ -97,6 +97,26 @@ survives a later bulk skill sync: a skill is checked against P-1 before it is
 vendored, and one teaching a denylisted technique does not land here whatever
 else it is useful for.
 
+**Superseded by slice S071 (2026-08-22).** Two things about the paragraphs
+above did not survive contact with the project, and both are recorded here
+rather than edited away, because this file is the record of a decision made on
+2026-08-06 and not a description of the repository today.
+
+The count was already wrong before S071 read it: a thirty-sixth skill,
+`shruggie-graph-memory`, was vendored later through pull request #4, and this
+sentence was never updated. That is small, and it is the visible half.
+
+The larger half is that P-1 is an *admission* filter and was doing duty as a
+*selection* rule it cannot perform. It establishes that a skill teaches nothing
+denylisted. It says nothing about whether this project has any use for it, and
+"the general process and quality skills the project runs on" turned out to
+describe skills that no document, workflow, script, or gate in this repository
+ever referenced. Thirty-three of the thirty-six had no reference outside their
+own directory. S071 replaced the rule with a positive admission test, reduced
+the set to the four the constitution binds, re-sourced them from one upstream,
+and added `cargo xtask skills` so the set cannot drift unobserved again. See
+`skills/README.md` and `specs/071-agent-skills-consolidation/`.
+
 ### Git is local only
 
 No remote was created. The README, the disclaimer, the constitution, and the
@@ -114,6 +134,13 @@ requires Bash wrappers built to it, and section 22.5 specifies
 not vendored. A different Bash skill was deliberately not substituted, since
 silently swapping the standard would be worse than recording the gap. This
 must be resolved before S18.
+
+**Closed by slice S071 (2026-08-22), long after the deadline it set.** S18
+shipped and the gap was carried unmet for roughly fifty slices, which nothing
+surfaced because a known gap recorded in prose has no gate behind it.
+`shruggie-bash` is now vendored from the `shruggietech/skills` v1.11.0 release,
+so all three languages P-8 names carry their standard. The refusal to
+substitute was right and is left standing as written.
 
 **Brand identity is resolved (2026-08-10 brand session).** The approved identity
 is vendored in `brand/` and recorded in `docs/brand/README.md`; open questions

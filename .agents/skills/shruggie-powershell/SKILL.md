@@ -1,6 +1,6 @@
 ---
 name: shruggie-powershell
-description: Author or refactor PowerShell (.ps1) scripts to the ShruggieTech scripting standard: a fixed four-section 80-column layout, a load-bearing comment-based help block, an explicit top-level CmdletBinding, Default plus HelpText parameter sets with single-letter aliases, the Write-Log and Assert-PSVersion fixtures, ShouldProcess gating for destructive actions, -LiteralPath path handling, a 0/1/2 exit-code contract, no emojis, and UTF-8-no-BOM with LF output. Use whenever the user asks to write a PowerShell or pwsh script, make a .ps1, or bring an existing script up to our standard. Trigger on phrasings like "write a PowerShell script that ...", "make me a .ps1", "a pwsh script to ...", "refactor this PowerShell to our conventions", or "bring this script up to the ShruggieTech standard". Skip Bash, Python, and other-shell scripts, throwaway interactive one-liners, and editing scripts in a repo that declares its own different PowerShell conventions.
+description: Author or refactor PowerShell (.ps1) scripts to the ShruggieTech scripting standard: a fixed four-section 80-column layout, a load-bearing comment-based help block, an explicit top-level CmdletBinding, Default plus HelpText parameter sets with single-letter aliases, the Write-ShruggieLog and Assert-PSVersion fixtures, ShouldProcess gating for destructive actions, -LiteralPath path handling, a 0/1/2 exit-code contract, no emojis, and UTF-8-no-BOM with LF output. Use whenever the user asks to write a PowerShell or pwsh script, make a .ps1, or bring an existing script up to our standard. Trigger on phrasings like "write a PowerShell script that ...", "make me a .ps1", "a pwsh script to ...", "refactor this PowerShell to our conventions", or "bring this script up to the ShruggieTech standard". Skip Bash, Python, and other-shell scripts, throwaway interactive one-liners, and editing scripts in a repo that declares its own different PowerShell conventions.
 disable-model-invocation: false
 ---
 
@@ -51,6 +51,24 @@ read `assets/powershell-conventions.md`; it is the single source of truth and th
 body is the working summary. Copy the fixtures from `assets/fixtures.md` verbatim
 rather than retyping them. Start from `assets/script-template.ps1` and fill it in.
 
+### PII gate (read first)
+
+Never hardcode operator-specific literal context into a script body. A coding
+session routinely surfaces real personal detail (screenshots, directory
+paths under the operator's actual Windows or Unix username, file names,
+family or personal specifics mentioned in passing) and that detail is easy
+to cook verbatim into the script being authored, exposing it to anyone the
+script is later shared or committed with. Treat it the same way this skill
+already treats secrets (see `Get-Secret.ps1`'s crypto-secure generation,
+`-Clipboard`, and `-Quiet`): never bake it in. In order of preference,
+parameterize it as a script parameter with a sensible default, derive it
+from the environment (`$env:USERPROFILE`, `[Environment]::GetFolderPath(...)`,
+`$HOME`, `$env:COMPUTERNAME`), or ask the operator rather than silently
+embedding it. Full rationale and the compliance checker's advisory backstop
+scan are in `assets/powershell-conventions.md` ("PII and Operator Context");
+that scan is a backstop, not a substitute for getting this right while
+writing the script.
+
 ### Canonical shape
 
 The script body is divided into four named sections, each preceded by a divider
@@ -80,10 +98,21 @@ headers with uniformly indented bodies create clean editor fold regions. The two
 shape is uniform.
 
 Names follow Verb-Noun in PascalCase for both files and functions
-(`Get-Secret.ps1`, `Start-LocalDevServer.ps1`, `Get-CryptoBytes`,
-`ConvertTo-Base64Url`). The noun phrase may concatenate several capitalized words.
-Microsoft's approved-verb list is not enforced; the Verb-Noun shape is the
-convention.
+(`Get-Secret.ps1`, `Start-LocalDevServer.ps1`, `Get-CryptoByte`,
+`ConvertTo-Base64Url`). The noun phrase may concatenate several capitalized
+words, and stays singular. The verb must be one of PowerShell's approved
+verbs (`Get-Verb` is the live, authoritative source); PSScriptAnalyzer's
+`UseApprovedVerbs` and `UseSingularNouns` rules are both enabled by default
+and not project-wide configurable, so this is a hard house rule, not a style
+preference. An approved verb is not enough on its own: also confirm the full
+name is not already claimed by an inbox or installed module, verified with
+`Invoke-ScriptAnalyzer` (`PSAvoidOverwritingBuiltInCmdlets`), not
+`Get-Command` (`Get-Command` only sees what is discoverable in the current
+session, which misses cross-version inbox modules; this is why the logging
+fixture is `Write-ShruggieLog`, not the generic `Write-Log` that
+`PSDesiredStateConfiguration`, a Windows PowerShell 5.1 inbox module,
+already exports). See `assets/powershell-conventions.md` ("Naming
+Convention") for the synonym table and the collision-check detail.
 
 ### Comment-based help block
 
@@ -157,7 +186,7 @@ warnings, but genuine errors still reach the error stream. Never use `-s` as a
 suppression alias. For a script whose stdout is a structured payload, `-Quiet` also
 means emit only the payload with no decoration (for example, no trailing newline).
 
-Scripts that report progress use the `Write-Log` fixture (in `assets/fixtures.md`):
+Scripts that report progress use the `Write-ShruggieLog` fixture (in `assets/fixtures.md`):
 it colorizes by level, timestamps every line, and tags the emitting sub-process via
 `-Source`. Declare `$script:LogQuiet` and `$script:LogSilent` in the variables
 section and wire the flags to them before any logging.
@@ -231,7 +260,7 @@ When ready to emit the file:
    one `.PARAMETER` per parameter with its alias, and at least two examples.
 5. Declare the `Param(...)` block with the `Default` set and the `HelpText`
    `-Help` / `-h` switch, aliases, and validation attributes.
-6. Add only the fixtures the script needs: `Write-Log` (and the suppression flags)
+6. Add only the fixtures the script needs: `Write-ShruggieLog` (and the suppression flags)
    if it reports progress; `Assert-PSVersion` if it uses version-specific features.
 7. Fill the four sections under their dividers with four-space body indentation,
    with the help gate first in `## Execute Operations` and every destructive call
@@ -253,9 +282,12 @@ Before declaring the script done, verify:
 - The help gate is the first operation; exit codes follow the 0/1/2 contract.
 - No emojis anywhere; no `-s` suppression alias.
 - UTF-8 no BOM, LF endings, no trailing whitespace, single trailing newline.
+- No operator-specific literal context is hardcoded; it is parameterized,
+  environment-derived, or confirmed with the operator (see "PII gate").
 - Run `scripts/Test-ScriptCompliance.ps1 -Path <file>` (or
-  `scripts/test-script-compliance.sh <file>` on a non-Windows host) and confirm it
-  exits 0.
+  `scripts/test-script-compliance.sh <file>` on a non-Windows host), confirm it
+  exits 0, and address any advisory WARN lines (PII-pattern and, on the
+  PowerShell twin, unapproved-verb and existing-command-collision warnings).
 
 ## Examples
 
@@ -292,7 +324,7 @@ Make me a .ps1 that deletes build artifacts older than two weeks from a folder.
 A `.ps1` shaped like `assets/examples/Remove-StaleArtifact.ps1`:
 `SupportsShouldProcess=$true` with `ConfirmImpact='High'`, every `Remove-Item`
 wrapped in `$PSCmdlet.ShouldProcess(...)` and called with `-LiteralPath`, progress
-through `Write-Log`, an environment-precondition check (`exit 2`) when the target
+through `Write-ShruggieLog`, an environment-precondition check (`exit 2`) when the target
 directory is missing, and `exit 1` if a deletion fails. The operator gets `-WhatIf`
 and `-Confirm` for free.
 
@@ -309,7 +341,7 @@ three exit codes.
   list and exceptions, the `System.IO` and `\\?\` notes, the 5.1-versus-7+ nuances,
   and the rationale behind every rule.
 - [`assets/fixtures.md`](assets/fixtures.md): copy-paste-exact fixtures for the
-  `Assert-PSVersion` version guard, the `Write-Log` logging helper, and the
+  `Assert-PSVersion` version guard, the `Write-ShruggieLog` logging helper, and the
   `$PSCmdlet.ShouldProcess(...)` destructive gate.
 - [`assets/script-template.ps1`](assets/script-template.ps1): blank scaffold with
   the help block skeleton, the explicit CmdletBinding, the `Default` and `HelpText`
@@ -326,4 +358,7 @@ three exit codes.
   [`scripts/test-script-compliance.sh`](scripts/test-script-compliance.sh):
   deterministic compliance checkers (PowerShell and Bash twins) that verify
   encoding, line endings, trailing whitespace, emojis, the section dividers, and the
-  help block. Run one after writing a script.
+  help block, and print advisory (non-blocking) warnings for common PII/leak
+  patterns; the PowerShell twin additionally warns on unapproved-verb function
+  names and on function names that collide with an existing command from an
+  inbox or installed module. Run one after writing a script.

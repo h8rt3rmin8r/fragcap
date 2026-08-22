@@ -97,7 +97,7 @@ Param(
 #_______________________________________________________________________________
 ## Declare Functions
 
-    function Write-Log {
+    function Write-ShruggieLog {
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true,Position=0)]
@@ -154,17 +154,17 @@ Param(
     }
 
     $cutoff = (Get-Date).AddDays(-$OlderThanDays)
-    Write-Log ("Scanning {0} for '{1}' artifacts older than {2} ({3} days)." -f $Path, $Pattern, $cutoff.ToString('yyyy-MM-dd HH:mm:ss'), $OlderThanDays) -Level Info -Source 'Scan'
+    Write-ShruggieLog ("Scanning {0} for '{1}' artifacts older than {2} ({3} days)." -f $Path, $Pattern, $cutoff.ToString('yyyy-MM-dd HH:mm:ss'), $OlderThanDays) -Level Info -Source 'Scan'
 
     $targets = Get-ChildItem -LiteralPath $Path -Filter $Pattern -File -Recurse |
         Where-Object { $_.LastWriteTime -lt $cutoff }
 
     if (-not $targets) {
-        Write-Log "No stale artifacts found. Nothing to remove." -Level Success -Source 'Scan'
+        Write-ShruggieLog "No stale artifacts found. Nothing to remove." -Level Success -Source 'Scan'
         exit 0
     }
 
-    Write-Log ("Found {0} stale artifact(s)." -f $targets.Count) -Level Info -Source 'Scan'
+    Write-ShruggieLog ("Found {0} stale artifact(s)." -f $targets.Count) -Level Info -Source 'Scan'
 
     $removed = 0
     $failed  = 0
@@ -173,15 +173,15 @@ Param(
             try {
                 Remove-Item -LiteralPath $file.FullName -Force
                 $removed++
-                Write-Log ("Removed: {0}" -f $file.FullName) -Level Success -Source 'Remove'
+                Write-ShruggieLog ("Removed: {0}" -f $file.FullName) -Level Success -Source 'Remove'
             } catch {
                 $failed++
-                Write-Log ("Could not remove {0}: {1}" -f $file.FullName, $_.Exception.Message) -Level Error -Source 'Remove'
+                Write-ShruggieLog ("Could not remove {0}: {1}" -f $file.FullName, $_.Exception.Message) -Level Error -Source 'Remove'
             }
         }
     }
 
-    Write-Log ("Done. Removed {0}, failed {1}." -f $removed, $failed) -Level Info -Source 'Remove'
+    Write-ShruggieLog ("Done. Removed {0}, failed {1}." -f $removed, $failed) -Level Info -Source 'Remove'
 
     if ($failed -gt 0) {
         exit 1

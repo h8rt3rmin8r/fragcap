@@ -75,6 +75,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo run --package xtask -- wrappers
 
+      # The vendored skill set gate: .agents/skills/, skills-lock.json, and
+      # git's index must agree. Added by slice S071 after a vendored skill was
+      # found to have sat on disk and in the lock, and uncommitted, since the
+      # founding commit, because nothing read that file. It shells out to git
+      # and is otherwise OS-independent, so one leg covers it.
+      - name: Vendored skill set
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo run --package xtask -- skills
+
       # The documentation linter (scripts/lint-docs.sh) enforces P-6: glossary
       # entry completeness, cross-link resolution, and index reproducibility. It
       # needs bash, so it is scoped to ubuntu like the wrapper gate.
