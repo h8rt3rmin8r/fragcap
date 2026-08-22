@@ -201,6 +201,58 @@ fn a_title_with_a_local_engine_marker_is_verified_with_evidence() {
 }
 
 #[test]
+fn a_directory_marker_and_an_appinfo_signal_for_the_same_product_merge_to_one_finding() {
+    // FR-005 (slice S068, issue #170): a title whose install directory carries an
+    // Easy Anti-Cheat marker AND whose appinfo launch entry also signals Easy
+    // Anti-Cheat must report the product exactly once, not twice.
+    use fragcap_steam::appinfo::fixtures::{appinfo_bytes, FixtureApp, FixtureLaunch, V29};
+
+    let tree = TempTree::new();
+    fixture_steam_root(&tree);
+    let install = tree.path().join("steamapps").join("common").join("cs2");
+    tree.write(
+        &install.join("EasyAntiCheat").join("EasyAntiCheat_x64.dll"),
+        "",
+    );
+    let appinfo = appinfo_bytes(
+        V29,
+        &[FixtureApp {
+            appid: 730,
+            change_number: 1,
+            launch: vec![FixtureLaunch {
+                description: Some("eac-release".to_string()),
+                ..FixtureLaunch::windows("cs2.exe")
+            }],
+            common_type: Some("Game".to_string()),
+        }],
+    );
+    tree.write_bytes(&tree.path().join("appcache").join("appinfo.vdf"), &appinfo);
+
+    let mut catalog = catalog_with_cs2();
+    fragcap::targets::seed_bundled(&mut catalog).expect("seed signatures");
+
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+
+    let cs2 = d
+        .candidates
+        .iter()
+        .find(|c| c.identity == CandidateIdentity::SteamAppId(730))
+        .expect("CS2 candidate present");
+    let eac_findings: Vec<_> = cs2
+        .evidence
+        .iter()
+        .filter(|f| f.product == "Easy Anti-Cheat")
+        .collect();
+    assert_eq!(
+        eac_findings.len(),
+        1,
+        "the directory marker and the appinfo signal must merge to one finding: {:?}",
+        cs2.evidence
+    );
+}
+
+#[test]
 fn the_catalog_join_classifies_a_hit_and_leaves_a_miss_unknown() {
     let tree = TempTree::new();
     fixture_steam_root(&tree);

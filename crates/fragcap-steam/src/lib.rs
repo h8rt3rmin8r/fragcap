@@ -28,6 +28,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+pub mod anti_cheat;
 pub mod appinfo;
 pub mod vdf;
 

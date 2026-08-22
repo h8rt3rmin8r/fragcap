@@ -108,6 +108,7 @@ the owning category page.
 - [Local store](process-and-attribution.md#local-store)
 - [Loopback](capture-and-networking.md#loopback)
 - [Lost event](process-and-attribution.md#lost-event)
+- [Machine scope](anti-cheat-and-security.md#machine-scope)
 - [Maintenance](capture-and-networking.md#maintenance)
 - [Managed launch](platform-and-distribution.md#managed-launch)
 - [Marker path](process-and-attribution.md#marker-path)

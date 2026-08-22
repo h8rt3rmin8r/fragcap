@@ -48,7 +48,7 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             match path {
                 Some(path) => hero_listing(&path, false, out),
                 None => {
-                    empty_listing(out, false);
+                    empty_listing(out);
                     Ok(Exit::SUCCESS)
                 }
             }
@@ -77,7 +77,8 @@ pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError>
     let exit = match default_local_store() {
         Some(path) => hero_listing(&path, footer, out)?,
         None => {
-            empty_listing(out, footer);
+            empty_listing(out);
+            print_footer(out, footer);
             Exit::SUCCESS
         }
     };
@@ -140,6 +141,37 @@ fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
 /// store. Registration is additive and idempotent; no existing entry is modified
 /// (FR-001, FR-007).
 fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
+    hero_listing_with_machine_probe(db, footer, out, real_machine_probe().as_ref())
+}
+
+/// The real machine-wide anti-cheat probe `hero_listing` uses in production: the
+/// real Windows adapter, or, on any other platform, a probe that never finds
+/// anything (there is no adapter to run there). Returned as a trait object behind
+/// one function so the whole path can be exercised in a test with
+/// [`fragcap::targets::FixtureMachineAntiCheatProbe`] instead (FR-009), via
+/// [`hero_listing_with_machine_probe`].
+fn real_machine_probe() -> Box<dyn fragcap::targets::MachineAntiCheatProbe> {
+    #[cfg(windows)]
+    {
+        Box::new(fragcap::WindowsMachineAntiCheatProbe::new())
+    }
+    #[cfg(not(windows))]
+    {
+        Box::new(fragcap::targets::FixtureMachineAntiCheatProbe::new(
+            Vec::new(),
+        ))
+    }
+}
+
+/// `hero_listing`'s body, taking the machine-wide probe as a parameter so a test
+/// can substitute a fixture result for it (FR-009) while the public entry point
+/// above always uses the real one.
+fn hero_listing_with_machine_probe(
+    db: &Path,
+    footer: bool,
+    out: &mut dyn Write,
+    machine_probe: &dyn fragcap::targets::MachineAntiCheatProbe,
+) -> Result<Exit, CliError> {
     let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
 
     // Discovery is a best-effort bootstrap: a missing catalog, an absent Steam, or a
@@ -160,11 +192,30 @@ fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, Cl
         store
             .write_listing_snapshot(&[])
             .map_err(|e| CliError::failure(e.to_string()))?;
-        empty_listing(out, footer);
+        empty_listing(out);
+        // The machine-wide check is unrelated to whether any target is registered
+        // (slice S068, issue #170, review of PR #195): an EAC service installed by
+        // a title fragcap has not registered, or has not discovered at all, is
+        // still worth reporting. Run it here too, not only on the non-empty path
+        // below.
+        render_machine_section(&machine_probe.detect(), out);
+        // The footer is always the very last thing printed, in both this path and
+        // the non-empty one below: a bare `fragcap` and an explicit `fragcap
+        // targets` must differ by exactly the footer line and nothing else,
+        // whatever the machine-scope section adds (Codex review of PR #195 caught
+        // this breaking when the section was printed before a conditional footer).
+        print_footer(out, footer);
         return Ok(Exit::SUCCESS);
     }
 
     render_table(&targets, out);
+
+    // A machine-wide anti-cheat fact (slice S068, issue #170) is never a title's
+    // evidence: it is rendered separately, once, and only when the probe actually
+    // found something, so it can never be mistaken for a claim about any row above
+    // it, and a probe that found nothing never prints a false "confirmed clean"
+    // section (FR-007, FR-008).
+    render_machine_section(&machine_probe.detect(), out);
 
     // Pin what was shown so `capture <n>` names the row the user saw (FR-004).
     let rows: Vec<(i64, &str)> = targets
@@ -197,23 +248,31 @@ fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, Cl
         .unwrap_or(1);
     let _ = writeln!(out, "\n  fragcap capture {next}");
 
+    print_footer(out, footer);
+    Ok(Exit::SUCCESS)
+}
+
+/// Append the `--help` pointer line a bare `fragcap` invocation carries and an
+/// explicit `fragcap targets` omits (section 17.4). Always called last, after
+/// everything else the listing prints (the machine-scope section among it, slice
+/// S068), so a bare and an explicit listing differ by exactly this line and
+/// nothing else, regardless of what else the listing rendered.
+fn print_footer(out: &mut dyn Write, footer: bool) {
     if footer {
         let _ = writeln!(out, "\nRun `fragcap --help` to see all commands.");
     }
-    Ok(Exit::SUCCESS)
 }
 
 /// The empty case: no registered targets and discovery found nothing. Print the
 /// concrete commands that populate the store, still naming a next command so hero
-/// criterion 5 holds in the empty case (FR-006, SC-006).
-fn empty_listing(out: &mut dyn Write, footer: bool) {
+/// criterion 5 holds in the empty case (FR-006, SC-006). The footer, if any, is
+/// the caller's job via [`print_footer`], printed after anything else the caller
+/// adds (the machine-scope section).
+fn empty_listing(out: &mut dyn Write) {
     let _ = writeln!(out, "  No targets yet.");
     let _ = writeln!(out);
     let _ = writeln!(out, "  Add one:        fragcap targets add");
     let _ = writeln!(out, "  Scan a folder:  fragcap targets scan <dir>");
-    if footer {
-        let _ = writeln!(out, "\nRun `fragcap --help` to see all commands.");
-    }
 }
 
 /// Render the numbered CAPTURE / ENGINE / SENSITIVITIES table. The target order is
@@ -272,6 +331,26 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
             engine,
             sensitivities
         );
+    }
+}
+
+/// Render the machine-scope anti-cheat section (slice S068, issue #170): a
+/// heading and one indented `<product> (<evidence>)` line per finding, printed
+/// after the per-target table and never touching any target row. Nothing is
+/// printed for an empty result, which covers both "the probe ran and found
+/// nothing" and "the probe could not run at all" (FR-008): rendering a "no
+/// anti-cheat products found" line would assert a completed check the second
+/// case never made.
+fn render_machine_section(
+    findings: &[fragcap::targets::MachineAntiCheatFinding],
+    out: &mut dyn Write,
+) {
+    if findings.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "\nMachine:");
+    for f in findings {
+        let _ = writeln!(out, "  {} ({})", f.product, f.evidence);
     }
 }
 
@@ -1163,7 +1242,184 @@ fn exe_stem(exe: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{evidence_from_scan, steam_add_metadata, DetectionScan, ExeScan};
+    use super::{
+        evidence_from_scan, hero_listing_with_machine_probe, render_machine_section, render_table,
+        steam_add_metadata, ClassificationSource, DetectionScan, ExeScan, FidelityTier,
+        TargetClassification, TargetEntry,
+    };
+
+    /// Point discovery at a catalog that cannot exist, so `hero_listing_with_machine_probe`
+    /// registers nothing and the empty-listing path is deterministic regardless of
+    /// this machine's own Steam or catalog state (mirrors the integration test
+    /// harness's `isolate_from_machine_state`, which these unit tests do not share).
+    fn isolate_discovery() {
+        std::env::set_var(
+            "FRAGCAP_CATALOG_DB",
+            std::env::temp_dir().join("fragcap-cli-unit-test-nonexistent-catalog.db"),
+        );
+    }
+
+    #[test]
+    fn hero_listing_runs_the_machine_probe_even_with_zero_targets() {
+        // Codex review of PR #195: the machine-wide check is unrelated to whether
+        // any target is registered, and the empty-listing early return previously
+        // skipped it entirely.
+        isolate_discovery();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("local.db");
+        let probe = fragcap::targets::FixtureMachineAntiCheatProbe::new(vec![
+            fragcap::targets::MachineAntiCheatFinding {
+                product: "Easy Anti-Cheat".to_string(),
+                evidence: "service EasyAntiCheat_EOS registered".to_string(),
+            },
+        ]);
+        let mut out: Vec<u8> = Vec::new();
+        hero_listing_with_machine_probe(&db, false, &mut out, &probe).expect("hero listing");
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("No targets yet."),
+            "the empty listing still renders: {text}"
+        );
+        assert!(
+            text.contains("Machine:") && text.contains("Easy Anti-Cheat"),
+            "the machine section renders even with zero targets: {text}"
+        );
+    }
+
+    #[test]
+    fn hero_listing_substitutes_a_fixture_probe_through_the_real_entry_point() {
+        // FR-009 (Codex review of PR #195): the machine-scope path is testable end
+        // to end, through hero_listing_with_machine_probe, not only by calling
+        // render_machine_section directly in isolation.
+        isolate_discovery();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("local.db");
+        let empty_probe = fragcap::targets::FixtureMachineAntiCheatProbe::new(Vec::new());
+        let mut out: Vec<u8> = Vec::new();
+        hero_listing_with_machine_probe(&db, false, &mut out, &empty_probe).expect("hero listing");
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            !text.contains("Machine:"),
+            "an empty fixture probe renders no Machine: section: {text}"
+        );
+    }
+
+    #[test]
+    fn a_footer_and_a_machine_section_together_differ_by_exactly_the_footer_line() {
+        // This exact combination (empty targets, a non-empty machine finding, and
+        // footer:true vs footer:false) previously broke on this machine, whose real
+        // EasyAntiCheat_EOS service made cli_args.rs's
+        // bare_invocation_lists_targets_with_a_footer fail in CI (review of PR
+        // #195): the machine section's own leading blank line, printed before a
+        // conditional footer, made the two invocations differ by more than the
+        // footer. Forcing a non-empty finding here (rather than depending on this
+        // machine's real registry state) makes the regression reproducible on any
+        // runner, including a Linux one where the real probe never runs at all.
+        isolate_discovery();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("local.db");
+        let finding = || {
+            fragcap::targets::FixtureMachineAntiCheatProbe::new(vec![
+                fragcap::targets::MachineAntiCheatFinding {
+                    product: "Easy Anti-Cheat".to_string(),
+                    evidence: "service EasyAntiCheat_EOS registered".to_string(),
+                },
+            ])
+        };
+
+        let mut with_footer: Vec<u8> = Vec::new();
+        hero_listing_with_machine_probe(&db, true, &mut with_footer, &finding())
+            .expect("hero listing");
+        let with_footer = String::from_utf8(with_footer).unwrap();
+
+        let mut without_footer: Vec<u8> = Vec::new();
+        hero_listing_with_machine_probe(&db, false, &mut without_footer, &finding())
+            .expect("hero listing");
+        let without_footer = String::from_utf8(without_footer).unwrap();
+
+        const FOOTER: &str = "Run `fragcap --help` to see all commands.";
+        assert!(with_footer.contains(FOOTER));
+        assert!(!without_footer.contains(FOOTER));
+        assert_eq!(
+            with_footer.replace(FOOTER, "").trim_end(),
+            without_footer.trim_end(),
+            "a footer and a machine section together must still differ by exactly \
+             the footer line:\nwith footer: {with_footer:?}\nwithout footer: {without_footer:?}"
+        );
+    }
+
+    #[test]
+    fn machine_section_renders_a_heading_and_one_line_per_finding() {
+        let findings = vec![
+            fragcap::targets::MachineAntiCheatFinding {
+                product: "Easy Anti-Cheat".to_string(),
+                evidence: "service EasyAntiCheat_EOS registered".to_string(),
+            },
+            fragcap::targets::MachineAntiCheatFinding {
+                product: "BattlEye".to_string(),
+                evidence: "service BEService registered".to_string(),
+            },
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        render_machine_section(&findings, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("Machine:"));
+        assert!(text.contains("  Easy Anti-Cheat (service EasyAntiCheat_EOS registered)"));
+        assert!(text.contains("  BattlEye (service BEService registered)"));
+    }
+
+    #[test]
+    fn machine_section_renders_nothing_for_an_empty_result() {
+        let mut out: Vec<u8> = Vec::new();
+        render_machine_section(&[], &mut out);
+        assert!(
+            out.is_empty(),
+            "an empty probe result must never render a Machine: section (FR-008)"
+        );
+    }
+
+    #[test]
+    fn rendering_the_machine_section_never_changes_the_target_tables_bytes() {
+        let target = TargetEntry {
+            id: None,
+            stable_id: 1,
+            handle: "some_game".to_string(),
+            name: "Some Game".to_string(),
+            classification: TargetClassification::Unknown,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::HeuristicUnverified,
+            provenance: None,
+            anchor: None,
+            launch_entries: None,
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let targets = [target];
+
+        let mut table_only: Vec<u8> = Vec::new();
+        render_table(&targets, &mut table_only);
+
+        let mut with_machine_section: Vec<u8> = Vec::new();
+        render_table(&targets, &mut with_machine_section);
+        render_machine_section(
+            &[fragcap::targets::MachineAntiCheatFinding {
+                product: "Easy Anti-Cheat".to_string(),
+                evidence: "service EasyAntiCheat_EOS registered".to_string(),
+            }],
+            &mut with_machine_section,
+        );
+
+        assert!(
+            with_machine_section.starts_with(&table_only),
+            "the target table's bytes must be unchanged by a following machine \
+             section (FR-007): table alone = {:?}, with section = {:?}",
+            String::from_utf8_lossy(&table_only),
+            String::from_utf8_lossy(&with_machine_section)
+        );
+    }
 
     #[test]
     fn steam_add_metadata_carries_every_observed_field() {
@@ -1176,6 +1432,7 @@ mod tests {
             installdir: "Escape from Ivy & Piper".to_string(),
             app_type: Some("Game".to_string()),
             launch_executable: Some("TrappedWithIvyAndPiper-EA.exe".to_string()),
+            anti_cheat: Vec::new(),
         };
         let (install_root, folder_name, executable_hint) = steam_add_metadata(&title);
         assert_eq!(
@@ -1198,6 +1455,7 @@ mod tests {
             installdir: "No Entry".to_string(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         let (_, _, executable_hint) = steam_add_metadata(&title);
         assert_eq!(executable_hint, None);

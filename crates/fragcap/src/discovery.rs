@@ -154,8 +154,17 @@ impl TargetSource for SteamSource<'_> {
             // rides as evidence and raises the fidelity to `verified`, outranking the
             // remote catalog attribution (P-9); any anti-cheat or DRM rides as neutral
             // evidence. A title with no local engine keeps heuristic-unverified.
-            let (fidelity, evidence, detection_scan) =
+            let (fidelity, mut evidence, detection_scan) =
                 detect_evidence(&signature_set, &title.install_dir, &mut warnings);
+            // Merge in the appinfo-derived anti-cheat findings (slice S068, issue
+            // #170), a second, zero-new-I/O evidence source alongside the
+            // directory scan: a product both sources agree on reports once, at
+            // the stronger fidelity, via the same dedup rule `detect` itself uses
+            // (`merge_finding`), so the two call sites cannot silently diverge.
+            for signal in title.anti_cheat.iter().cloned() {
+                fragcap_profile::signature::merge_finding(&mut evidence, signal);
+            }
+            fragcap_profile::signature::sort_findings(&mut evidence);
             candidates.push(CandidateTarget {
                 identity: CandidateIdentity::SteamAppId(appid),
                 display_name: title.name.clone(),

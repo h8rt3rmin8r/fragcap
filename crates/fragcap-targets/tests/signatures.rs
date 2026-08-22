@@ -80,6 +80,10 @@ fn all_markers_tree() -> TempTree {
     tree.touch("re_chunk_000.pak"); // RE Engine (filename)
                                     // Anti-cheat.
     tree.touch("EasyAntiCheat/EasyAntiCheat_x64.dll"); // Easy Anti-Cheat
+    tree.touch("EACLaunch.exe"); // Easy Anti-Cheat bootstrapper (#170)
+    tree.touch("Installers/AntiCheatInstaller.exe"); // Easy Anti-Cheat bootstrapper (#170)
+    tree.touch("start_protected_game.exe"); // Easy Anti-Cheat launcher shim (#170)
+    tree.mkdir("EasyAntiCheat_EOS"); // Easy Anti-Cheat EOS variant (directory-shape, #170)
     tree.touch("BEService_x64.exe"); // BattlEye
     tree.touch("vgk.sys"); // Vanguard
     tree.touch("mhyprot3.sys"); // mhyprot
@@ -202,6 +206,64 @@ fn the_shipped_seed_reports_no_drm_for_the_steamworks_sdk() {
             .any(|f| f.category == SignatureCategory::Drm),
         "no DRM from the SDK alone: {:?}",
         outcome.findings
+    );
+}
+
+#[test]
+fn the_measured_division_2_layout_reports_easy_anti_cheat() {
+    // #170: measured on a real machine. The old two-row EAC set (`.dll`/`.sys`
+    // filenames only) matched none of this.
+    let signatures = parse_seed_document(BUNDLED_SIGNATURES).expect("parse");
+    let set = SignatureSet::compile(&signatures);
+
+    let tree = TempTree::new("division2-eac");
+    tree.touch("EACLaunch.exe");
+    tree.touch("EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe");
+    tree.touch("EOSSDK-Win64-Shipping.dll");
+    let findings = set.detect(tree.path()).expect("readable").findings;
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.category == SignatureCategory::AntiCheat && f.product == "Easy Anti-Cheat"),
+        "expected Easy Anti-Cheat from the measured Division 2 layout: {findings:?}"
+    );
+}
+
+#[test]
+fn the_measured_arc_raiders_layout_reports_easy_anti_cheat() {
+    // #170: measured on a real machine.
+    let signatures = parse_seed_document(BUNDLED_SIGNATURES).expect("parse");
+    let set = SignatureSet::compile(&signatures);
+
+    let tree = TempTree::new("arc-raiders-eac");
+    tree.touch("Installers/AntiCheatInstaller.exe");
+    tree.touch("Engine/Binaries/Win64/EOSSDK-Win64-Shipping.dll");
+    let findings = set.detect(tree.path()).expect("readable").findings;
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.category == SignatureCategory::AntiCheat && f.product == "Easy Anti-Cheat"),
+        "expected Easy Anti-Cheat from the measured Arc Raiders layout: {findings:?}"
+    );
+}
+
+#[test]
+fn eossdk_alone_is_never_anti_cheat_evidence() {
+    // #170's explicit false-positive warning: EOSSDK-Win64-Shipping.dll ships in
+    // Carnal Instinct, Oblivion Remastered, Palworld, Satisfactory, and ESO, none
+    // of which are EAC titles. Fixtured as a standing regression (SC-002).
+    let signatures = parse_seed_document(BUNDLED_SIGNATURES).expect("parse");
+    let set = SignatureSet::compile(&signatures);
+
+    let tree = TempTree::new("eossdk-only");
+    tree.touch("EOSSDK-Win64-Shipping.dll");
+    tree.touch("Game.exe");
+    let findings = set.detect(tree.path()).expect("readable").findings;
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.category == SignatureCategory::AntiCheat),
+        "EOSSDK alone must never report anti-cheat: {findings:?}"
     );
 }
 

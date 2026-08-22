@@ -255,6 +255,36 @@ pub struct DetectionFinding {
     pub fidelity: FidelityTier,
 }
 
+/// Insert `candidate` into `findings`, deduplicating per `(category, product)` and
+/// keeping the strongest fidelity: a definitive marker must not be shadowed by a
+/// weaker shape whose row happened to come first, and a weaker finding arriving
+/// after a stronger one must never downgrade it.
+///
+/// Shared by [`SignatureSet::detect`]'s own match loop and by any caller merging a
+/// second finding source (for example an appinfo-derived finding) into a directory
+/// scan's results, so the one dedup rule cannot drift between the two (slice S068).
+pub fn merge_finding(findings: &mut Vec<DetectionFinding>, candidate: DetectionFinding) {
+    match findings
+        .iter_mut()
+        .find(|f| f.category == candidate.category && f.product == candidate.product)
+    {
+        Some(existing) if candidate.fidelity > existing.fidelity => *existing = candidate,
+        Some(_) => {}
+        None => findings.push(candidate),
+    }
+}
+
+/// Sort findings into the canonical presentation order: category, then product.
+/// Shared for the same reason [`merge_finding`] is.
+pub fn sort_findings(findings: &mut [DetectionFinding]) {
+    findings.sort_by(|a, b| {
+        a.category
+            .order_index()
+            .cmp(&b.category.order_index())
+            .then_with(|| a.product.cmp(&b.product))
+    });
+}
+
 /// A signature whose pattern could not be compiled, retained so reduced coverage is
 /// visible rather than silent (P-4).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -437,28 +467,11 @@ impl SignatureSet {
                     evidence: entry.display.clone(),
                     fidelity: rule.fidelity,
                 };
-                // Deduplicate per (category, product), but keep the strongest
-                // fidelity: a definitive marker must not be shadowed by a weaker
-                // shape whose row happened to come first.
-                match findings
-                    .iter_mut()
-                    .find(|f| f.category == candidate.category && f.product == candidate.product)
-                {
-                    Some(existing) if candidate.fidelity > existing.fidelity => {
-                        *existing = candidate
-                    }
-                    Some(_) => {}
-                    None => findings.push(candidate),
-                }
+                merge_finding(&mut findings, candidate);
             }
         }
 
-        findings.sort_by(|a, b| {
-            a.category
-                .order_index()
-                .cmp(&b.category.order_index())
-                .then_with(|| a.product.cmp(&b.product))
-        });
+        sort_findings(&mut findings);
 
         Ok(ScanOutcome {
             findings,
@@ -798,6 +811,74 @@ fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finding(
+        category: SignatureCategory,
+        product: &str,
+        fidelity: FidelityTier,
+    ) -> DetectionFinding {
+        DetectionFinding {
+            category,
+            product: product.to_string(),
+            evidence: "test evidence".to_string(),
+            fidelity,
+        }
+    }
+
+    #[test]
+    fn merge_finding_dedupes_by_category_and_product_keeping_strongest_fidelity() {
+        let mut findings = vec![finding(
+            SignatureCategory::AntiCheat,
+            "Easy Anti-Cheat",
+            FidelityTier::HeuristicUnverified,
+        )];
+        merge_finding(
+            &mut findings,
+            finding(
+                SignatureCategory::AntiCheat,
+                "Easy Anti-Cheat",
+                FidelityTier::Verified,
+            ),
+        );
+        assert_eq!(findings.len(), 1, "same category+product collapses to one");
+        assert_eq!(
+            findings[0].fidelity,
+            FidelityTier::Verified,
+            "the stronger fidelity wins"
+        );
+
+        // A weaker fidelity arriving after a stronger one already present does not
+        // downgrade it.
+        merge_finding(
+            &mut findings,
+            finding(
+                SignatureCategory::AntiCheat,
+                "Easy Anti-Cheat",
+                FidelityTier::HeuristicUnverified,
+            ),
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].fidelity,
+            FidelityTier::Verified,
+            "a weaker later finding never downgrades"
+        );
+
+        // A different product is never merged away.
+        merge_finding(
+            &mut findings,
+            finding(
+                SignatureCategory::AntiCheat,
+                "BattlEye",
+                FidelityTier::HeuristicUnverified,
+            ),
+        );
+        assert_eq!(
+            findings.len(),
+            2,
+            "a different product survives independently"
+        );
+    }
     use std::sync::atomic::{AtomicU32, Ordering};
 
     struct TempTree {
