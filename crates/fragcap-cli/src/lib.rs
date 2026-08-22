@@ -183,7 +183,7 @@ fn dispatch(
         Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::Doctor(args) => commands::doctor::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
-        Command::Steam(args) => commands::steam::run(&args, out, emitter),
+        Command::Steam(args) => commands::steam::run(&args, json, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
         Command::Technologies(args) => commands::technologies::run(&args, out),
         Command::Targets(args) => commands::targets::run(&args, out),
