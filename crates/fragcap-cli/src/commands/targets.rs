@@ -17,15 +17,17 @@ use fragcap::profile::FidelityTier;
 use std::io::IsTerminal;
 
 use fragcap::targets::{
-    handle, identifier, is_row_index, resolve_id, resolve_positional, CandidateIdentity,
-    ClassificationSource, DetectionScan, DirectorySource, Discovery, Selection, SocketHolderAnswer,
-    Store, TargetClassification, TargetEntry, TargetSource,
+    handle, identifier, install_presence, is_row_index, name_divergence, resolve_id,
+    resolve_positional, CandidateIdentity, ClassificationSource, DetectionScan, DirectorySource,
+    Discovery, InstallPresence, NameDivergence, Selection, SocketHolderAnswer, Store,
+    TargetClassification, TargetEntry, TargetSource, INSTALL_MISSING_NOTE,
 };
 
 use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
     TargetsShowArgs,
 };
+use crate::color::{use_color, RESET, WARN};
 use crate::commands::target_resolve;
 use crate::exit::{CliError, Exit};
 use crate::paths;
@@ -173,11 +175,23 @@ fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, Cl
         .write_listing_snapshot(&rows)
         .map_err(|e| CliError::failure(e.to_string()))?;
 
-    // End by naming the next command: the first ready row, else the first row.
+    // End by naming the next command: the first ready row whose install root is not
+    // missing; else the first non-missing row of any readiness; else, only when
+    // every registered row's install root is missing, the first row (there is no
+    // better answer). `.unwrap_or(1)` alone was wrong here: it named row 1 even
+    // when row 1's own install root was missing and a healthy row existed further
+    // down (review of PR #193). A row whose files are gone is never offered ahead
+    // of one that is not, since suggesting one is a bad first command (issue #167).
     let next = targets
         .iter()
         .position(|t| {
             fragcap::targets::capture_readiness(t) == fragcap::targets::CaptureReadiness::Ready
+                && install_presence(t) != InstallPresence::Missing
+        })
+        .or_else(|| {
+            targets
+                .iter()
+                .position(|t| install_presence(t) != InstallPresence::Missing)
         })
         .map(|i| i + 1)
         .unwrap_or(1);
@@ -244,10 +258,11 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
         "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  SENSITIVITIES",
         "#", "TARGET", "CAPTURE", "ENGINE"
     );
+    let color = use_color();
     for (i, t) in targets.iter().enumerate() {
         let capture = fragcap::targets::capture_readiness(t).label();
         let engine = fragcap::targets::engine_summary(t);
-        let sensitivities = fragcap::targets::sensitivities_summary(t);
+        let sensitivities = sensitivities_cell(t, color);
         let _ = writeln!(
             out,
             "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  {}",
@@ -257,6 +272,31 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
             engine,
             sensitivities
         );
+    }
+}
+
+/// The SENSITIVITIES cell for one row: the ordinary
+/// [`fragcap::targets::sensitivities_summary`] value, prefixed with
+/// [`INSTALL_MISSING_NOTE`] when the row's `install_root` is recorded and absent
+/// (issue #167). This is the whole of the missing-install-root rendering: the cell
+/// is free-running and exempt from padding (`render_table`'s own width budget), so
+/// a row not in this state returns exactly what it always has, unchanged in every
+/// color mode (FR-009). The `-` clean marker is replaced outright rather than
+/// joined, since `install folder not found; -` reads worse than the note alone.
+fn sensitivities_cell(t: &TargetEntry, color: bool) -> String {
+    let base = fragcap::targets::sensitivities_summary(t);
+    if install_presence(t) != InstallPresence::Missing {
+        return base;
+    }
+    let note = if base == fragcap::targets::SCANNED_CLEAN_MARKER || base.is_empty() {
+        INSTALL_MISSING_NOTE.to_string()
+    } else {
+        format!("{INSTALL_MISSING_NOTE}; {base}")
+    };
+    if color {
+        format!("{WARN}{note}{RESET}")
+    } else {
+        note
     }
 }
 
@@ -679,32 +719,60 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
 /// `--steam <app_id>` resolves the installed title through the local Steam
 /// installation, supplying its name (when the positional name is omitted) and a
 /// `steam:<app_id>` anchor, replacing the retired `steam profile <app_id>`.
+/// The `install_root`, `folder_name`, and `executable_hint` a `--steam`-resolved
+/// `InstalledTitle` supplies to a `targets add --steam` registration, carrying
+/// every observation the lookup already made rather than discarding it (review of
+/// PR #193). Without this, an explicitly `--steam`-registered title had no
+/// `install_root` (so the missing-install-root detection, issue #167, could never
+/// fire for it) and no `folder_name`/`executable_hint` (so it was neither
+/// findable by them nor eligible for the divergence note, issue #173), unlike the
+/// same title reached through automatic discovery. Split out so the mapping is
+/// unit-testable without a real Steam installation (the registry lookup
+/// `targets add --steam` itself performs has no fixture seam).
+fn steam_add_metadata(
+    title: &fragcap::steam::InstalledTitle,
+) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        Some(title.install_dir.display().to_string()),
+        Some(title.installdir.clone()),
+        title.launch_executable.clone(),
+    )
+}
+
 fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     // Resolve `--steam` first: it can supply both the name and the anchor. The
     // enumeration warnings go to `out` as surfaced diagnostics rather than being
     // dropped (P-4). A `--steam` app id that is not installed is a usage error.
-    let (name, steam_anchor) = if let Some(app_id) = &args.steam {
-        // A missing Steam or an unsupported platform is a usage error (exit 2); a
-        // filesystem read failure is an expected runtime failure (exit 1). Reuse the
-        // `steam` command's own mapping so the two entry points agree.
-        let installation =
-            fragcap::steam::discover().map_err(crate::commands::steam::map_steam_error)?;
-        for warning in &installation.warnings {
-            let _ = writeln!(out, "warning: {warning}");
-        }
-        let title = installation.find(app_id).ok_or_else(|| {
-            CliError::usage(format!(
-                "Steam app {app_id} is not installed in any library"
-            ))
-        })?;
-        let name = args.name.clone().unwrap_or_else(|| title.name.clone());
-        (name, Some(format!("steam:{app_id}")))
-    } else {
-        let name = args.name.clone().ok_or_else(|| {
-            CliError::usage("a target name is required (or supply one with --steam <app_id>)")
-        })?;
-        (name, None)
-    };
+    let (name, steam_anchor, steam_install_root, steam_folder_name, steam_executable_hint) =
+        if let Some(app_id) = &args.steam {
+            // A missing Steam or an unsupported platform is a usage error (exit 2); a
+            // filesystem read failure is an expected runtime failure (exit 1). Reuse the
+            // `steam` command's own mapping so the two entry points agree.
+            let installation =
+                fragcap::steam::discover().map_err(crate::commands::steam::map_steam_error)?;
+            for warning in &installation.warnings {
+                let _ = writeln!(out, "warning: {warning}");
+            }
+            let title = installation.find(app_id).ok_or_else(|| {
+                CliError::usage(format!(
+                    "Steam app {app_id} is not installed in any library"
+                ))
+            })?;
+            let name = args.name.clone().unwrap_or_else(|| title.name.clone());
+            let (install_root, folder_name, executable_hint) = steam_add_metadata(title);
+            (
+                name,
+                Some(format!("steam:{app_id}")),
+                install_root,
+                folder_name,
+                executable_hint,
+            )
+        } else {
+            let name = args.name.clone().ok_or_else(|| {
+                CliError::usage("a target name is required (or supply one with --steam <app_id>)")
+            })?;
+            (name, None, None, None, None)
+        };
 
     let db = resolve_store(args.db.as_deref())?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
@@ -799,9 +867,14 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         provenance: Some(serde_json::json!({ "source": "user", "command": "targets add" })),
         anchor,
         launch_entries,
-        install_root: None,
+        // `--steam` already observed these; a bare, non-Steam authoring has
+        // nothing of the kind distinct from what the user supplied via
+        // --name/--exe.
+        install_root: steam_install_root,
         evidence,
         detection_scan,
+        folder_name: steam_folder_name,
+        executable_hint: steam_executable_hint,
     };
     store
         .insert_target(&entry)
@@ -1052,6 +1125,13 @@ fn print_target(t: &TargetEntry, out: &mut dyn Write) {
     if let Some(anchor) = &t.anchor {
         let _ = writeln!(out, "anchor:         {anchor}");
     }
+    // The observed launch executable (issue #173): shown whenever recorded, not
+    // only when it happens to also be the reason a selector found this row, so a
+    // user can see every name the target is findable by, not just the one that
+    // diverges.
+    if let Some(executable_hint) = &t.executable_hint {
+        let _ = writeln!(out, "executable:     {executable_hint}");
+    }
     let _ = writeln!(
         out,
         "engine:         {}",
@@ -1062,6 +1142,13 @@ fn print_target(t: &TargetEntry, out: &mut dyn Write) {
         "sensitivities:  {}",
         fragcap::targets::sensitivities_summary(t)
     );
+    // A genuinely divergent folder name is worth surfacing (issue #173); a cosmetic
+    // or truncation-only difference stays quiet so the signal stays worth reading.
+    if name_divergence(t) == NameDivergence::Semantic {
+        if let Some(folder_name) = &t.folder_name {
+            let _ = writeln!(out, "note:           installed as {folder_name:?}");
+        }
+    }
 }
 
 /// The file stem of an executable name (drop a trailing extension), for the
@@ -1076,7 +1163,45 @@ fn exe_stem(exe: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{evidence_from_scan, DetectionScan, ExeScan};
+    use super::{evidence_from_scan, steam_add_metadata, DetectionScan, ExeScan};
+
+    #[test]
+    fn steam_add_metadata_carries_every_observed_field() {
+        let title = fragcap::steam::InstalledTitle {
+            app_id: "2413210".to_string(),
+            name: "Trapped with Ivy & Piper".to_string(),
+            install_dir: std::path::PathBuf::from(
+                "C:/Games/Steam/steamapps/common/Escape from Ivy & Piper",
+            ),
+            installdir: "Escape from Ivy & Piper".to_string(),
+            app_type: Some("Game".to_string()),
+            launch_executable: Some("TrappedWithIvyAndPiper-EA.exe".to_string()),
+        };
+        let (install_root, folder_name, executable_hint) = steam_add_metadata(&title);
+        assert_eq!(
+            install_root.as_deref(),
+            Some("C:/Games/Steam/steamapps/common/Escape from Ivy & Piper")
+        );
+        assert_eq!(folder_name.as_deref(), Some("Escape from Ivy & Piper"));
+        assert_eq!(
+            executable_hint.as_deref(),
+            Some("TrappedWithIvyAndPiper-EA.exe")
+        );
+    }
+
+    #[test]
+    fn steam_add_metadata_leaves_the_executable_hint_absent_when_unobserved() {
+        let title = fragcap::steam::InstalledTitle {
+            app_id: "42".to_string(),
+            name: "No Launch Entry".to_string(),
+            install_dir: std::path::PathBuf::from("C:/Games/Steam/steamapps/common/No Entry"),
+            installdir: "No Entry".to_string(),
+            app_type: None,
+            launch_executable: None,
+        };
+        let (_, _, executable_hint) = steam_add_metadata(&title);
+        assert_eq!(executable_hint, None);
+    }
 
     #[test]
     fn a_scan_that_was_never_possible_records_no_coverage_claim() {

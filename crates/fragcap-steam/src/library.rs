@@ -28,8 +28,24 @@ pub struct InstalledTitle {
     pub app_id: String,
     /// The human title name.
     pub name: String,
-    /// The resolved absolute installation directory.
+    /// The resolved absolute installation directory: `steamapps/common/<installdir>`
+    /// for every type but `Music`, which resolves under `steamapps/music/` instead
+    /// (slice S066, issue #166).
     pub install_dir: PathBuf,
+    /// The raw manifest `installdir` value, verbatim, independent of which
+    /// subdirectory it was joined into. Kept alongside `install_dir` (never
+    /// reconstructed from it) so a consumer can recover the folder name Explorer
+    /// shows even when it diverges from `name` (issue #173).
+    pub installdir: String,
+    /// The appinfo `common/type` value, verbatim (for example `Game`, `Music`), or
+    /// `None` when no appinfo entry exists for this app, the cache is absent, or the
+    /// value could not be read. Never guessed (P-9): an unknown type falls back to
+    /// the `common/` assumption rather than asserting a type.
+    pub app_type: Option<String>,
+    /// The first appinfo `config/launch` entry's executable, verbatim, or `None`
+    /// when no launch entry was observed. A findability hint only (issue #173); it
+    /// never promotes to a resolved capture chain.
+    pub launch_executable: Option<String>,
 }
 
 /// A resolved Steam installation and the titles installed across its libraries.
@@ -109,6 +125,56 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
         }
     }
 
+    // Read the appinfo cache once per call and build an appid lookup, rather than
+    // once per title: a missing cache (no Steam has ever fetched metadata) is not a
+    // discovery error, matching `read_appinfo`'s own "no cache is not an error"
+    // contract. A present-but-unreadable cache is surfaced as a warning (it degrades
+    // every title's type resolution to the `common/` fallback, which is worth
+    // knowing) but does not fail the whole walk (slice S066).
+    let appinfo_index = match crate::appinfo::read_appinfo(root) {
+        Ok(parse) => {
+            // A section that failed to decode is one app whose type could not be
+            // read; it is absent from the index (so that one app falls back to
+            // `common`, matching an app_id absent from the cache entirely), but the
+            // failure is still named rather than silently swallowed (P-4). Every
+            // other section decoded cleanly is unaffected: a per-section fault is
+            // isolated by `parse_appinfo` and does not degrade the rest of the
+            // cache (review of PR #193).
+            for failure in &parse.failures {
+                warnings.push(match failure.appid {
+                    Some(appid) => format!(
+                        "could not read appinfo section for app {appid}: {}; \
+                         its app type defaults to common",
+                        failure.reason
+                    ),
+                    None => format!(
+                        "could not read appinfo cache: {}; app types default to common",
+                        failure.reason
+                    ),
+                });
+            }
+            parse
+                .apps
+                .into_iter()
+                .map(|a| {
+                    (
+                        a.appid,
+                        (
+                            a.common_type,
+                            a.launch.first().map(|l| l.executable.clone()),
+                        ),
+                    )
+                })
+                .collect::<std::collections::HashMap<u32, (Option<String>, Option<String>)>>()
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "could not read appinfo cache: {e}; app types default to common"
+            ));
+            std::collections::HashMap::new()
+        }
+    };
+
     let mut titles: Vec<InstalledTitle> = Vec::new();
     let mut malformed_manifests: u64 = 0;
     for (i, lib) in libraries.iter().enumerate() {
@@ -123,6 +189,7 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
             &mut warnings,
             &mut malformed_manifests,
             warn_unreadable,
+            &appinfo_index,
         ) {
             if let Some(existing) = titles.iter().find(|t| t.app_id == title.app_id) {
                 warnings.push(format!(
@@ -210,6 +277,7 @@ fn read_library_titles(
     warnings: &mut Vec<String>,
     malformed: &mut u64,
     warn_unreadable: bool,
+    appinfo_index: &std::collections::HashMap<u32, (Option<String>, Option<String>)>,
 ) -> Vec<InstalledTitle> {
     let steamapps = library.join("steamapps");
     let entries = match std::fs::read_dir(&steamapps) {
@@ -235,7 +303,7 @@ fn read_library_titles(
         if !(name.starts_with("appmanifest_") && name.ends_with(".acf")) {
             continue;
         }
-        match read_manifest(&path, &steamapps) {
+        match read_manifest(&path, &steamapps, appinfo_index) {
             Ok(title) => out.push(title),
             Err(reason) => {
                 // A present manifest that will not parse is one title omitted:
@@ -251,8 +319,17 @@ fn read_library_titles(
     out
 }
 
-/// Parse one application manifest into an [`InstalledTitle`].
-fn read_manifest(path: &Path, steamapps: &Path) -> Result<InstalledTitle, String> {
+/// Parse one application manifest into an [`InstalledTitle`], joining its install
+/// directory under `steamapps/music/` when the appinfo cache names this app's type
+/// `Music` (case-insensitively), else under `steamapps/common/` as before (slice
+/// S066, issue #166). An app_id absent from `appinfo_index`, or with no `common/type`
+/// recorded, keeps the `common/` default: an unknown type is never guessed into
+/// either bucket (P-9).
+fn read_manifest(
+    path: &Path,
+    steamapps: &Path,
+    appinfo_index: &std::collections::HashMap<u32, (Option<String>, Option<String>)>,
+) -> Result<InstalledTitle, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
     let doc = vdf::parse(&text).map_err(|e| e.to_string())?;
     let state = doc.get("AppState").ok_or("no AppState block")?;
@@ -267,15 +344,31 @@ fn read_manifest(path: &Path, steamapps: &Path) -> Result<InstalledTitle, String
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let install_dir = state
+    let installdir = state
         .get("installdir")
         .and_then(|v| v.as_str())
-        .ok_or("no installdir")?;
+        .ok_or("no installdir")?
+        .to_string();
+
+    let (app_type, launch_executable) = app_id
+        .parse::<u32>()
+        .ok()
+        .and_then(|id| appinfo_index.get(&id))
+        .cloned()
+        .unwrap_or((None, None));
+
+    let subdir = match app_type.as_deref() {
+        Some(t) if t.eq_ignore_ascii_case("music") => "music",
+        _ => "common",
+    };
 
     Ok(InstalledTitle {
         app_id,
         name,
-        install_dir: steamapps.join("common").join(install_dir),
+        install_dir: steamapps.join(subdir).join(&installdir),
+        installdir,
+        app_type,
+        launch_executable,
     })
 }
 
@@ -356,6 +449,182 @@ mod tests {
                 .any(|w| w.contains("appmanifest_2.acf")),
             "expected a skip warning, got {:?}",
             inst.warnings
+        );
+    }
+
+    #[test]
+    fn app_type_and_launch_executable_cross_reference_the_appinfo_cache() {
+        use crate::appinfo::fixtures::{appinfo_bytes, FixtureApp, FixtureLaunch, V29};
+
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_100.acf"),
+            &manifest("100", "Some Soundtrack", "Some Soundtrack"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_200.acf"),
+            &manifest("200", "A Game", "A Game Folder"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_300.acf"),
+            &manifest("300", "No Appinfo Entry", "No Appinfo Entry"),
+        );
+        let bytes = appinfo_bytes(
+            V29,
+            &[
+                FixtureApp {
+                    appid: 100,
+                    change_number: 1,
+                    launch: vec![],
+                    common_type: Some("Music".to_string()),
+                },
+                FixtureApp {
+                    appid: 200,
+                    change_number: 1,
+                    launch: vec![FixtureLaunch::windows("game.exe")],
+                    common_type: Some("Game".to_string()),
+                },
+            ],
+        );
+        tree.write_bytes(&root.join("appcache").join("appinfo.vdf"), &bytes);
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 3, "warnings: {:?}", inst.warnings);
+
+        let music = inst.find("100").unwrap();
+        assert_eq!(music.installdir, "Some Soundtrack");
+        assert_eq!(music.app_type.as_deref(), Some("Music"));
+        assert_eq!(music.launch_executable, None);
+        assert_eq!(
+            music.install_dir,
+            root.join("steamapps").join("music").join("Some Soundtrack"),
+            "a Music-typed app resolves under steamapps/music/"
+        );
+
+        let game = inst.find("200").unwrap();
+        assert_eq!(game.installdir, "A Game Folder");
+        assert_eq!(game.app_type.as_deref(), Some("Game"));
+        assert_eq!(game.launch_executable.as_deref(), Some("game.exe"));
+        assert_eq!(
+            game.install_dir,
+            root.join("steamapps").join("common").join("A Game Folder"),
+            "an ordinary Game-typed app still resolves under steamapps/common/"
+        );
+
+        let no_entry = inst.find("300").unwrap();
+        assert_eq!(no_entry.installdir, "No Appinfo Entry");
+        assert_eq!(
+            no_entry.app_type, None,
+            "an app_id absent from the appinfo cache is unknown, not guessed"
+        );
+        assert_eq!(no_entry.launch_executable, None);
+        assert_eq!(
+            no_entry.install_dir,
+            root.join("steamapps")
+                .join("common")
+                .join("No Appinfo Entry"),
+            "an unknown type falls back to steamapps/common/"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_appinfo_section_is_warned_about_and_does_not_affect_other_titles() {
+        // Review of PR #193 (Codex): a per-section decode failure was previously
+        // discarded entirely, so a title whose appinfo section is corrupt silently
+        // degraded to app_type: None with no indication anything went wrong. The
+        // fault is isolated to that one app (`parse_appinfo` resyncs to the next
+        // section without breaking), so every other title's app_type is unaffected
+        // regardless of which position the corrupt section occupies.
+        use crate::appinfo::fixtures::{appinfo_bytes_with_bad_section, FixtureApp, V29};
+
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_1.acf"),
+            &manifest("1", "Before", "Before"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_2.acf"),
+            &manifest("2", "Corrupt", "Corrupt"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_3.acf"),
+            &manifest("3", "After", "After"),
+        );
+        let apps = [
+            FixtureApp {
+                appid: 1,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Music".to_string()),
+            },
+            FixtureApp {
+                appid: 2,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Music".to_string()),
+            },
+            FixtureApp {
+                appid: 3,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Music".to_string()),
+            },
+        ];
+        // The middle section (index 1, app 2) is corrupted; the other two decode
+        // cleanly.
+        let bytes = appinfo_bytes_with_bad_section(V29, &apps, 1);
+        tree.write_bytes(&root.join("appcache").join("appinfo.vdf"), &bytes);
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 3, "warnings: {:?}", inst.warnings);
+
+        let before = inst.find("1").unwrap();
+        assert_eq!(
+            before.app_type.as_deref(),
+            Some("Music"),
+            "a title before the corrupt section is unaffected"
+        );
+        let after = inst.find("3").unwrap();
+        assert_eq!(
+            after.app_type.as_deref(),
+            Some("Music"),
+            "a title after the corrupt section is unaffected"
+        );
+        let corrupt = inst.find("2").unwrap();
+        assert_eq!(
+            corrupt.app_type, None,
+            "the corrupt section's app type is unknown, not guessed"
+        );
+        assert_eq!(
+            corrupt.install_dir,
+            root.join("steamapps").join("common").join("Corrupt"),
+            "an unknown type falls back to common/"
+        );
+        assert!(
+            inst.warnings.iter().any(|w| w.contains('2')),
+            "the corrupt section is named in a warning, not silently swallowed: {:?}",
+            inst.warnings
+        );
+    }
+
+    #[test]
+    fn a_missing_appinfo_cache_leaves_every_title_unknown_with_no_error() {
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_1.acf"),
+            &manifest("1", "Good", "Good"),
+        );
+        // No appcache/appinfo.vdf under the root at all.
+        let inst = discover_in(root).unwrap();
+        let title = inst.find("1").unwrap();
+        assert_eq!(title.app_type, None);
+        assert_eq!(title.launch_executable, None);
+        assert_eq!(
+            title.install_dir,
+            root.join("steamapps").join("common").join("Good")
         );
     }
 

@@ -914,6 +914,196 @@ fn the_split_columns_never_mix_an_engine_with_a_protection_product() {
 }
 
 #[test]
+fn a_missing_install_root_renders_a_note_and_the_snapshot_names_the_healthy_row() {
+    // Issue #167. Two targets: one whose install_root points at a path that does
+    // not exist (a fixture-safe stand-in for an uninstalled title or a
+    // disconnected drive), and one healthy row. The test harness's stdout is not a
+    // real terminal, so this exercises the plain-text rendering (FR-007); the
+    // colorized form is covered by the color-module unit test.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    let missing_root = dir.path().join("does-not-exist").display().to_string();
+    import_row(
+        &store,
+        &format!(
+            r#"[
+                {{
+                    "stable_id": 201, "handle": "gone_game", "name": "Gone Game",
+                    "classification": "game", "classification_source": "user",
+                    "fidelity": "authored", "install_root": {missing_root:?}
+                }},
+                {{
+                    "stable_id": 202, "handle": "healthy_game", "name": "Healthy Game",
+                    "classification": "game", "classification_source": "user",
+                    "fidelity": "authored", "anchor": "steam:202"
+                }}
+            ]"#
+        ),
+        &dir,
+    );
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    let gone_row = out
+        .lines()
+        .find(|l| l.contains("gone_game"))
+        .expect("the missing-root row renders")
+        .to_string();
+    assert!(
+        gone_row.contains("install folder not found"),
+        "the missing-root row carries the note: {gone_row}"
+    );
+    assert!(
+        !gone_row.contains("\x1b["),
+        "no ANSI escapes when stdout is not a terminal: {gone_row:?}"
+    );
+
+    let healthy_row = out
+        .lines()
+        .find(|l| l.contains("healthy_game"))
+        .expect("the healthy row renders")
+        .to_string();
+    assert!(
+        !healthy_row.contains("install folder not found"),
+        "an unaffected row carries no note: {healthy_row}"
+    );
+
+    // The missing-root row is never the suggested next command, even though it
+    // sorts first by handle (gone_game < healthy_game).
+    assert!(
+        out.contains("fragcap capture 2"),
+        "the next command skips the missing-root row: {out}"
+    );
+}
+
+#[test]
+fn a_ready_but_missing_row_is_never_the_next_command_even_with_no_ready_alternative() {
+    // Review of PR #193 (Copilot): the previous single-predicate check
+    // (Ready && !Missing) fell through to `.unwrap_or(1)` whenever no row
+    // satisfied both at once, even if row 1 itself was Ready but Missing and a
+    // merely NeedsTarget, present row existed further down. That named exactly
+    // the missing row FR-011 says must never be suggested.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    let missing_root = dir.path().join("does-not-exist").display().to_string();
+    import_row(
+        &store,
+        &format!(
+            r#"[
+                {{
+                    "stable_id": 401, "handle": "a_gone_but_ready", "name": "Gone But Ready",
+                    "classification": "game", "classification_source": "user",
+                    "fidelity": "authored", "anchor": "steam:401",
+                    "install_root": {missing_root:?}
+                }},
+                {{
+                    "stable_id": 402, "handle": "b_present_not_ready", "name": "Present Not Ready",
+                    "classification": "game", "classification_source": "user",
+                    "fidelity": "authored"
+                }}
+            ]"#
+        ),
+        &dir,
+    );
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("fragcap capture 2"),
+        "the present-but-not-ready row is suggested over the ready-but-missing one: {out}"
+    );
+}
+
+#[test]
+fn a_target_with_no_install_root_recorded_is_not_reported_as_missing() {
+    // FR-008: absent and never-recorded are different states.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    run(&["targets", "add", "No Root", "--db", &store]);
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("install folder not found"),
+        "no install_root at all is not reported as missing: {out}"
+    );
+}
+
+#[test]
+fn a_semantic_name_divergence_is_surfaced_in_show_and_a_cosmetic_one_is_not() {
+    // Issue #173.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[
+            {
+                "stable_id": 301, "handle": "trapped_with_ivy_and_piper",
+                "name": "Trapped with Ivy & Piper",
+                "classification": "game", "classification_source": "platform",
+                "fidelity": "verified", "anchor": "steam:301",
+                "folder_name": "Escape from Ivy & Piper",
+                "executable_hint": "TrappedWithIvyAndPiper-EA.exe"
+            },
+            {
+                "stable_id": 302, "handle": "the_division_2",
+                "name": "Tom Clancy's The Division 2",
+                "classification": "game", "classification_source": "platform",
+                "fidelity": "verified", "anchor": "steam:302",
+                "folder_name": "Tom Clancys The Division 2"
+            }
+        ]"#,
+        &dir,
+    );
+
+    let (code, out, _err) = run(&[
+        "targets",
+        "show",
+        "trapped_with_ivy_and_piper",
+        "--db",
+        &store,
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("Escape from Ivy & Piper"),
+        "the semantic divergence names both: {out}"
+    );
+    assert!(
+        out.contains("TrappedWithIvyAndPiper-EA.exe"),
+        "the observed executable is shown, not only the folder name: {out}"
+    );
+
+    let (code, out, _err) = run(&["targets", "show", "the_division_2", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("note:"),
+        "a cosmetic-only divergence stays quiet: {out}"
+    );
+}
+
+#[test]
+fn a_diverging_target_is_findable_by_its_folder_name() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[{
+            "stable_id": 301, "handle": "trapped_with_ivy_and_piper",
+            "name": "Trapped with Ivy & Piper",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:301",
+            "folder_name": "Escape from Ivy & Piper"
+        }]"#,
+        &dir,
+    );
+    let (code, out, _err) = run(&["targets", "show", "escape", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("trapped_with_ivy_and_piper"),
+        "found by a substring of the folder name: {out}"
+    );
+}
+
+#[test]
 fn the_three_coverage_states_render_as_three_different_things() {
     let dir = TempDir::new().expect("tempdir");
     let store = db(&dir);

@@ -2388,8 +2388,10 @@ same row in the same store, read by one resolution path (P-10).
 
 A handle is the unique human selector, derived deterministically from the name by
 the normalization of section 5.2 (strip decorative symbols, NFKD, strip combining
-marks, lowercase, delete apostrophes, collapse runs outside `[a-z0-9]` to a single
-underscore, trim, truncate to 64). A handle is never purely numeric (a bare
+marks, lowercase, expand `&` to `and`, delete apostrophes, collapse runs outside
+`[a-z0-9]` to a single underscore, trim, truncate to 64). The `&` expansion
+(slice S066) is forward-looking only: it changes what a new name normalizes to,
+never an already-derived, already-stored handle. A handle is never purely numeric (a bare
 integer is a row-index selector); a name that would normalize to digits falls back
 to the executable stem, then `target_<n>`, and a collision suffixes the new item
 `_2`, `_3`. An anchored target's identifier is the low 63 bits of BLAKE3 over its
@@ -2410,6 +2412,23 @@ observation may promote a match to verified, with the highest fidelity winning
 section 15.7 (a sparse row, an engine-only row, a launcher-mediated row, and a row
 naming more than one distinct client) are preserved as fidelity-aware conditions
 for entries as well.
+
+A title can carry more than one name: the platform display name a handle derives
+from, and, when a source observed one, the platform's own folder-identifying value
+(`folder_name`) and an observed launch executable (`executable_hint`), both stored
+verbatim and never reconstructed from the display name or from each other (slice
+S066). Selector resolution consults all three, case-insensitively and by substring,
+once an exact handle and an exact name both miss, so a title findable in Explorer
+only by its installed folder name is findable by fragcap the same way. `targets
+show` names both the display name and `folder_name` when they diverge on more than
+a casing, whitespace, or truncation difference; a merely cosmetic divergence stays
+quiet.
+
+A target's `install_root` is never trusted as still valid: the listing derives,
+fresh at every read, whether it is present, absent, or not recorded at all, and a
+recorded-but-absent row is marked rather than rendered as an ordinary, healthy one.
+Nothing about this derivation ever mutates the stored entry; a target whose files
+have gone missing remains registered, selectable, and resolvable exactly as before.
 
 The transition away from profile files is staged: the fidelity-ordered store read,
 the entry model, the handle and identifier scheme, and the selector ship in S051.
@@ -2459,6 +2478,14 @@ identifiers and installation paths.
 These files use Valve's key-value text format. The crate contains a
 parser for it, because the format is small, stable, and not worth a
 dependency.
+
+A title's install directory is resolved by its app type, read from Steam's
+appinfo cache (which the crate also reads for launch entries), rather than
+unconditionally under `common/` (slice S066). A `Music`-typed title (a
+soundtrack) resolves under `music/` instead and is excluded from discovery
+entirely: it has no network behavior and is not a capturable target. An app type
+that cannot be determined (no appinfo entry, an unreadable cache) falls back to
+the `common/` assumption, which is every other type's real location.
 
 ### 16.3 Registering an Installed Title
 

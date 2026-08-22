@@ -73,6 +73,83 @@ pub fn capture_readiness(entry: &TargetEntry) -> CaptureReadiness {
     }
 }
 
+/// Whether a target's recorded install root still exists on disk (slice S066, issue
+/// #167). Derived fresh at listing time, never stored: a reconnected drive or a
+/// restored folder must read as `Present` again on the very next listing, with no
+/// stale verdict surviving from an earlier one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallPresence {
+    /// `install_root` is recorded and exists.
+    Present,
+    /// `install_root` is recorded and does not exist.
+    Missing,
+    /// No `install_root` is recorded at all; distinct from `Missing` (absence and
+    /// "never recorded" are different facts, FR-008).
+    NotRecorded,
+}
+
+/// Derive a target's [`InstallPresence`]. Reads the filesystem once, at call time;
+/// never mutates the entry (FR-010, SC-005).
+pub fn install_presence(entry: &TargetEntry) -> InstallPresence {
+    match &entry.install_root {
+        None => InstallPresence::NotRecorded,
+        Some(root) => {
+            if std::path::Path::new(root).exists() {
+                InstallPresence::Present
+            } else {
+                InstallPresence::Missing
+            }
+        }
+    }
+}
+
+/// The short note the missing-install-root state prints (issue #167).
+pub const INSTALL_MISSING_NOTE: &str = "install folder not found";
+
+/// Whether a target's display name and its recorded folder name name the same
+/// title, differ only cosmetically, or genuinely diverge (slice S066, issue #173).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameDivergence {
+    /// No `folder_name` is recorded, so there is nothing to compare (FR-017).
+    None,
+    /// The two names are identical after normalization, or one is a substring of
+    /// the other (a casing/whitespace difference, or a subtitle-stripped or
+    /// prefix-truncated form).
+    Cosmetic,
+    /// The two names are neither equal after normalization nor a substring of one
+    /// another: a genuinely different title, worth surfacing (FR-014).
+    Semantic,
+}
+
+/// Derive a target's [`NameDivergence`] between `name` and `folder_name`, reusing
+/// `crate::handle::normalize` (the same fold a handle is already derived through)
+/// rather than a second string-comparison rule set.
+///
+/// A name `normalize` declines (purely numeric, or nothing left after stripping
+/// decorative symbols) folds back to its own lowercased, trimmed form rather than
+/// to an empty string. Collapsing every unnormalizable name to `""` would make two
+/// distinct such names (`"123"` and `"456"`, or two different symbol-only titles)
+/// compare equal and read as merely cosmetic, hiding a real divergence the
+/// "unnormalizable" case has no more business asserting away than any other name
+/// does (review of PR #193).
+pub fn name_divergence(entry: &TargetEntry) -> NameDivergence {
+    let Some(folder_name) = &entry.folder_name else {
+        return NameDivergence::None;
+    };
+    let fold = |s: &str| crate::handle::normalize(s).unwrap_or_else(|| s.trim().to_lowercase());
+    let a = fold(&entry.name);
+    let b = fold(folder_name);
+    // `str::contains("")` is vacuously true, so an empty fold (a whitespace-only
+    // name normalize declined) must not let a real name "contain" it by accident;
+    // only a genuine, non-empty substring relationship counts as cosmetic.
+    let substring_match = !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a));
+    if a == b || substring_match {
+        NameDivergence::Cosmetic
+    } else {
+        NameDivergence::Semantic
+    }
+}
+
 /// The marker a technology column carries when it has no products: a complete scan
 /// that matched nothing.
 pub const SCANNED_CLEAN_MARKER: &str = "-";
@@ -194,6 +271,8 @@ mod tests {
             install_root: None,
             evidence,
             detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
         }
     }
 
@@ -347,5 +426,98 @@ mod tests {
         );
         e.detection_scan = Some(DetectionScan::Complete);
         assert_eq!(engine_summary(&e), "Ren'Py");
+    }
+
+    #[test]
+    fn install_presence_distinguishes_present_missing_and_not_recorded() {
+        let tmp = std::env::temp_dir();
+        let mut e = entry(None, None, None);
+
+        e.install_root = None;
+        assert_eq!(install_presence(&e), InstallPresence::NotRecorded);
+
+        e.install_root = Some(
+            tmp.join("fragcap-s066-does-not-exist")
+                .display()
+                .to_string(),
+        );
+        assert_eq!(install_presence(&e), InstallPresence::Missing);
+
+        e.install_root = Some(tmp.display().to_string());
+        assert_eq!(install_presence(&e), InstallPresence::Present);
+    }
+
+    #[test]
+    fn install_presence_never_mutates_the_entry() {
+        // SC-005/FR-010: computing presence is a pure read. Insert, compute, and
+        // re-read from the store to prove nothing was written back.
+        let mut store = crate::store::Store::open_in_memory().expect("store");
+        let mut e = entry(None, None, None);
+        e.install_root = Some("C:/does/not/exist".to_string());
+        e.handle = "presence_check".to_string();
+        store.insert_target(&e).expect("insert");
+        let before = store
+            .target_by_handle("presence_check")
+            .expect("query")
+            .expect("present");
+
+        let _ = install_presence(&before);
+
+        let after = store
+            .target_by_handle("presence_check")
+            .expect("query")
+            .expect("present");
+        assert_eq!(
+            before, after,
+            "a presence check never writes back to the store"
+        );
+    }
+
+    #[test]
+    fn name_divergence_distinguishes_none_cosmetic_and_semantic() {
+        let mut e = entry(None, None, None);
+
+        // No folder_name recorded: nothing to compare.
+        e.folder_name = None;
+        assert_eq!(name_divergence(&e), NameDivergence::None);
+
+        // Identical after normalization (casing/whitespace only).
+        e.name = "The Division 2".to_string();
+        e.folder_name = Some("the division 2".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Cosmetic);
+
+        // Truncation: one is a substring of the other.
+        e.name = "The Elder Scrolls IV: Oblivion Remastered".to_string();
+        e.folder_name = Some("Oblivion Remastered".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Cosmetic);
+
+        // Semantic: neither equal nor a substring of the other.
+        e.name = "Trapped with Ivy & Piper".to_string();
+        e.folder_name = Some("Escape from Ivy & Piper".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Semantic);
+    }
+
+    #[test]
+    fn name_divergence_does_not_collapse_distinct_unnormalizable_names() {
+        // Review of PR #193 (Copilot, suppressed comment on readiness.rs:135):
+        // both "123" and "456" decline to normalize (purely numeric); folding both
+        // to "" via unwrap_or_default would make them compare equal and hide a
+        // real, semantic divergence. Two different such names must still read as
+        // Semantic.
+        let mut e = entry(None, None, None);
+        e.name = "123".to_string();
+        e.folder_name = Some("456".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Semantic);
+
+        // The same unnormalizable value on both sides is genuinely identical.
+        e.name = "123".to_string();
+        e.folder_name = Some("123".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Cosmetic);
+
+        // A whitespace-only name (normalize declines to None, and trims to "")
+        // must not vacuously "contain" a real folder name via `str::contains("")`.
+        e.name = "  ".to_string();
+        e.folder_name = Some("Real Folder Name".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Semantic);
     }
 }

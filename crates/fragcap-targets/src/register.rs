@@ -58,10 +58,11 @@ pub fn register_candidate(
         }
         CandidateIdentity::Path(_) => None,
     };
-    let install_root = match &candidate.identity {
-        CandidateIdentity::Path(path) => Some(path.clone()),
-        CandidateIdentity::SteamAppId(_) => None,
-    };
+    // Carried explicitly by the candidate rather than derived from `identity`: a
+    // Steam candidate's identity is its app id, not a path, so deriving from
+    // identity alone left every Steam-sourced registration with no install_root at
+    // all (review of PR #193, issue #167).
+    let install_root = candidate.install_root.clone();
 
     // Read the table once and reuse it for both the install-root dedup and the
     // handle-derivation index, so registering a discovery set is one table read per
@@ -110,6 +111,8 @@ pub fn register_candidate(
         install_root,
         evidence: evidence_value(candidate),
         detection_scan: candidate.detection_scan,
+        folder_name: candidate.folder_name.clone(),
+        executable_hint: candidate.executable_hint.clone(),
     };
     store.insert_target(&entry)?;
     Ok(true)
@@ -162,6 +165,9 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: "steam".to_string(),
+            install_root: Some(format!("C:/Games/Steam/steamapps/common/{name}")),
+            folder_name: None,
+            executable_hint: None,
         }
     }
 
@@ -174,6 +180,9 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: "known-roots".to_string(),
+            install_root: Some(path.to_string()),
+            folder_name: None,
+            executable_hint: None,
         }
     }
 
@@ -189,6 +198,21 @@ mod tests {
     }
 
     #[test]
+    fn a_steam_candidates_install_root_is_stored_not_dropped() {
+        // Review of PR #193: a Steam candidate's identity is its app id, not a
+        // path, so install_root must be carried explicitly by the candidate
+        // rather than derived from identity, or the missing-install-root
+        // detection (issue #167) could never fire for a Steam-sourced target.
+        let mut store = Store::open_in_memory().expect("store");
+        register_candidate(&mut store, &steam_candidate(620, "Portal 2")).expect("register");
+        let entry = &store.targets().expect("targets")[0];
+        assert_eq!(
+            entry.install_root.as_deref(),
+            Some("C:/Games/Steam/steamapps/common/Portal 2")
+        );
+    }
+
+    #[test]
     fn registering_a_path_candidate_dedups_on_install_root() {
         let mut store = Store::open_in_memory().expect("store");
         let outcome =
@@ -199,5 +223,32 @@ mod tests {
         assert_eq!(again.registered, 0);
         assert_eq!(again.already_present, 1);
         assert_eq!(store.targets().expect("targets").len(), 1);
+    }
+
+    #[test]
+    fn folder_name_and_executable_hint_are_stored_verbatim_and_never_fabricated() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut candidate = steam_candidate(2413210, "Trapped with Ivy & Piper");
+        candidate.folder_name = Some("Escape from Ivy & Piper".to_string());
+        candidate.executable_hint = Some("TrappedWithIvyAndPiper-EA.exe".to_string());
+        register_candidate(&mut store, &candidate).expect("register");
+
+        let entry = &store.targets().expect("targets")[0];
+        assert_eq!(
+            entry.folder_name.as_deref(),
+            Some("Escape from Ivy & Piper")
+        );
+        assert_eq!(
+            entry.executable_hint.as_deref(),
+            Some("TrappedWithIvyAndPiper-EA.exe")
+        );
+
+        // A candidate with neither observed leaves both None, never invented.
+        let mut store2 = Store::open_in_memory().expect("store");
+        register_candidate(&mut store2, &steam_candidate(730, "Counter-Strike 2"))
+            .expect("register");
+        let entry2 = &store2.targets().expect("targets")[0];
+        assert_eq!(entry2.folder_name, None);
+        assert_eq!(entry2.executable_hint, None);
     }
 }

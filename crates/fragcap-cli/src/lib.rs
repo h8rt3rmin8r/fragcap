@@ -25,6 +25,7 @@ mod args;
 mod assemble;
 mod attach;
 mod cli;
+mod color;
 mod commands;
 mod emit;
 mod events;

@@ -9,6 +9,16 @@ use fragcap_targets::selector::{resolve_id, resolve_positional, Selection};
 use fragcap_targets::Store;
 
 fn target(handle: &str, name: &str, anchor: Option<&str>) -> TargetEntry {
+    target_with_names(handle, name, anchor, None, None)
+}
+
+fn target_with_names(
+    handle: &str,
+    name: &str,
+    anchor: Option<&str>,
+    folder_name: Option<&str>,
+    executable_hint: Option<&str>,
+) -> TargetEntry {
     TargetEntry {
         id: None,
         stable_id: anchor.map(anchored_id).unwrap_or_else(unanchored_id),
@@ -23,6 +33,8 @@ fn target(handle: &str, name: &str, anchor: Option<&str>) -> TargetEntry {
         install_root: None,
         evidence: None,
         detection_scan: None,
+        folder_name: folder_name.map(str::to_string),
+        executable_hint: executable_hint.map(str::to_string),
     }
 }
 
@@ -139,6 +151,64 @@ fn zero_matches_is_a_distinct_no_match() {
         resolve_positional(&store, "nonexistent").expect("resolve"),
         Selection::NoMatch
     ));
+}
+
+#[test]
+fn a_substring_of_the_folder_name_or_executable_hint_resolves_one() {
+    // Issue #173: a title whose display name and installdir genuinely diverge is
+    // findable by a substring of any of its three recorded names.
+    let store = store_with(&[target_with_names(
+        "trapped_with_ivy_and_piper",
+        "Trapped with Ivy & Piper",
+        Some("steam:2413210"),
+        Some("Escape from Ivy & Piper"),
+        Some("TrappedWithIvyAndPiper-EA.exe"),
+    )]);
+    for token in ["trapped", "escape", "ivy", "TrappedWithIvyAndPiper"] {
+        match resolve_positional(&store, token).expect("resolve") {
+            Selection::Resolved(t) => assert_eq!(
+                t.handle, "trapped_with_ivy_and_piper",
+                "token {token:?} should resolve"
+            ),
+            other => panic!("token {token:?}: expected Resolved, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_exact_name_collision_still_resolves_at_the_exact_tier_unchanged() {
+    // A naive single-tier substring match would turn this into an ambiguity the
+    // moment a superstring name exists; the exact-name tier must still win first.
+    let store = store_with(&[
+        target("portal_2", "Portal 2", Some("steam:620")),
+        target("portal_2_beta", "Portal 2 Beta", Some("steam:621")),
+    ]);
+    match resolve_positional(&store, "Portal 2").expect("resolve") {
+        Selection::Resolved(t) => assert_eq!(t.handle, "portal_2"),
+        other => panic!("expected an unambiguous exact-name match, got {other:?}"),
+    }
+}
+
+#[test]
+fn two_targets_matching_only_by_substring_are_ambiguous() {
+    let store = store_with(&[
+        target_with_names("a", "Alpha", Some("steam:1"), Some("ivy lane"), None),
+        target_with_names("b", "Beta", Some("steam:2"), None, Some("ivy.exe")),
+    ]);
+    match resolve_positional(&store, "ivy").expect("resolve") {
+        Selection::Ambiguous(matches) => assert_eq!(matches.len(), 2),
+        other => panic!("expected Ambiguous, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_target_with_neither_recorded_resolves_by_handle_and_name_as_before() {
+    // FR-017: a pre-feature row (no folder_name/executable_hint) is unaffected.
+    let store = store_with(&[target("only", "Only Game", Some("steam:1"))]);
+    match resolve_positional(&store, "Only Game").expect("resolve") {
+        Selection::Resolved(t) => assert_eq!(t.handle, "only"),
+        other => panic!("expected Resolved, got {other:?}"),
+    }
 }
 
 #[test]

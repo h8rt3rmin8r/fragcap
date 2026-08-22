@@ -39,6 +39,11 @@ impl TempTree {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
+
+    fn write_bytes(&self, path: &Path, contents: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
 }
 
 impl Drop for TempTree {
@@ -118,6 +123,36 @@ fn steam_source_produces_one_candidate_per_numeric_title() {
         assert_eq!(c.fidelity, FidelityTier::HeuristicUnverified);
         assert_eq!(c.source_name, "steam");
     }
+}
+
+#[test]
+fn every_candidate_carries_its_resolved_install_root() {
+    // Review of PR #193: without this, a Steam-sourced registration stored no
+    // install_root at all, so the missing-install-root detection (issue #167)
+    // never fired for the dominant real-world case (a Steam-discovered target).
+    let tree = TempTree::new();
+    fixture_steam_root(&tree);
+    let catalog = catalog_with_cs2();
+
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+
+    let cs2 = d
+        .candidates
+        .iter()
+        .find(|c| c.identity == CandidateIdentity::SteamAppId(730))
+        .expect("CS2 candidate present");
+    assert_eq!(
+        cs2.install_root.as_deref(),
+        Some(
+            tree.path()
+                .join("steamapps")
+                .join("common")
+                .join("cs2")
+                .to_str()
+                .unwrap()
+        )
+    );
 }
 
 #[test]
@@ -228,6 +263,52 @@ fn candidate_set_matches_the_underlying_steam_walk_no_regression() {
         "SteamSource must not change the candidate set the library walk produced (FR-006)"
     );
     assert_eq!(source_appids, BTreeSet::from([620, 730, 400500]));
+}
+
+#[test]
+fn a_music_type_title_is_never_a_candidate_and_is_counted_not_a_game() {
+    // Issue #166 (slice S066): a Steam soundtrack has no network behavior and must
+    // never be registered as a capture target. It is counted through the existing
+    // considered_not_a_game outcome (P-4) rather than dropped silently.
+    use fragcap_steam::appinfo::fixtures::{appinfo_bytes, FixtureApp, V29};
+
+    let tree = TempTree::new();
+    fixture_steam_root(&tree); // CS2 (730), Portal 2 (620), Some Indie (400500)
+    tree.write(
+        &tree.path().join("steamapps").join("appmanifest_450070.acf"),
+        &manifest("450070", "Oblivion Soundtrack", "Oblivion Soundtrack"),
+    );
+    let bytes = appinfo_bytes(
+        V29,
+        &[FixtureApp {
+            appid: 450070,
+            change_number: 1,
+            launch: vec![],
+            common_type: Some("Music".to_string()),
+        }],
+    );
+    tree.write_bytes(&tree.path().join("appcache").join("appinfo.vdf"), &bytes);
+
+    let catalog = catalog_with_cs2();
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+
+    assert!(
+        !d.candidates
+            .iter()
+            .any(|c| c.identity == CandidateIdentity::SteamAppId(450070)),
+        "a Music-typed app must never be produced as a candidate"
+    );
+    assert_eq!(
+        d.account.considered, 5,
+        "the four numeric titles plus the soundtrack"
+    );
+    assert_eq!(d.account.produced, 3, "unchanged from the non-music case");
+    assert_eq!(
+        d.account.considered_not_a_game, 1,
+        "the soundtrack is counted, not silently dropped"
+    );
+    assert!(d.account.is_conserved());
 }
 
 #[test]

@@ -201,6 +201,15 @@ pub struct TargetEntry {
     /// whether that scan was complete. `None` means no scan is recorded, which is
     /// what a row produced by a source that ran no detection carries.
     pub detection_scan: Option<DetectionScan>,
+    /// The raw platform installdir or folder-identifying value, verbatim, or `None`
+    /// when the producing source has no such concept distinct from `name` (slice
+    /// S066, issue #173). Never reconstructed from `name` or `install_root` (P-9).
+    pub folder_name: Option<String>,
+    /// The raw observed launch executable name, verbatim, or `None` when the
+    /// producing source observed none. A findability hint only: distinct from
+    /// `launch_entries`, which carries the resolved-or-unresolved capture chain
+    /// gated by the socket-holder decision (P-9); this field makes no such claim.
+    pub executable_hint: Option<String>,
 }
 
 #[cfg(test)]

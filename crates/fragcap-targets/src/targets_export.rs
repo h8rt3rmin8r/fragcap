@@ -79,6 +79,14 @@ fn entry_to_value(entry: &TargetEntry) -> Value {
     if let Some(scan) = entry.detection_scan {
         map.insert("detection_scan".to_string(), json!(scan.as_str()));
     }
+    // The raw platform names (slice S066), emitted only when observed, following
+    // the same absent-means-not-recorded convention as `detection_scan` above.
+    if let Some(folder_name) = &entry.folder_name {
+        map.insert("folder_name".to_string(), json!(folder_name));
+    }
+    if let Some(executable_hint) = &entry.executable_hint {
+        map.insert("executable_hint".to_string(), json!(executable_hint));
+    }
     Value::Object(map)
 }
 
@@ -121,6 +129,8 @@ fn value_to_entry(value: &Value) -> Result<TargetEntry, TargetsError> {
             .as_deref()
             .map(DetectionScan::parse)
             .transpose()?,
+        folder_name: optional_str(obj, "folder_name")?,
+        executable_hint: optional_str(obj, "executable_hint")?,
     })
 }
 
@@ -166,6 +176,8 @@ mod tests {
             install_root: None,
             evidence: None,
             detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
         }
     }
 

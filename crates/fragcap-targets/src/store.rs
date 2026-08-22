@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::schema::{
     DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6,
-    MIGRATE_6_TO_7, SCHEMA_VERSION,
+    MIGRATE_6_TO_7, MIGRATE_7_TO_8, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
@@ -127,6 +127,17 @@ impl Store {
             tx.pragma_update(None, "user_version", 7i64)?;
             tx.commit()?;
             version = 7;
+        }
+
+        if version == 7 {
+            // 7 -> 8: add the nullable folder_name and executable_hint columns to
+            // targets (slice S066). Existing rows read both as NULL, which is the
+            // "not recorded" state, so nothing is backfilled.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_7_TO_8)?;
+            tx.pragma_update(None, "user_version", 8i64)?;
+            tx.commit()?;
+            version = 8;
         }
 
         if version != SCHEMA_VERSION {
@@ -511,8 +522,8 @@ impl Store {
             "INSERT INTO targets
                 (stable_id, handle, name, classification, classification_source,
                  fidelity, provenance, anchor, launch_entries, install_root, evidence,
-                 detection_scan)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 detection_scan, folder_name, executable_hint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 entry.stable_id,
                 entry.handle,
@@ -526,6 +537,8 @@ impl Store {
                 entry.install_root,
                 entry.evidence.as_ref().map(json_text),
                 entry.detection_scan.map(|d| d.as_str()),
+                entry.folder_name,
+                entry.executable_hint,
             ],
         );
         match result {
@@ -554,7 +567,8 @@ impl Store {
             .query_row(
                 "SELECT id, stable_id, handle, name, classification,
                         classification_source, fidelity, provenance, anchor,
-                        launch_entries, install_root, evidence, detection_scan
+                        launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
                  FROM targets WHERE id = ?1",
                 params![id],
                 read_target_row,
@@ -569,7 +583,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, stable_id, handle, name, classification,
                     classification_source, fidelity, provenance, anchor,
-                    launch_entries, install_root, evidence, detection_scan
+                    launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
              FROM targets ORDER BY id",
         )?;
         let rows = stmt.query_map([], read_target_row)?;
@@ -586,7 +601,8 @@ impl Store {
             .query_row(
                 "SELECT id, stable_id, handle, name, classification,
                         classification_source, fidelity, provenance, anchor,
-                        launch_entries, install_root, evidence, detection_scan
+                        launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
                  FROM targets WHERE handle = ?1",
                 params![handle],
                 read_target_row,
@@ -612,6 +628,35 @@ impl Store {
             .collect())
     }
 
+    /// Resolve targets whose `name`, `folder_name`, or `executable_hint` contains
+    /// `needle`, case-insensitively (slice S066, issue #173). Each matching target
+    /// is returned once even when it matches on more than one field. This is the
+    /// selector's third, lowest-priority tier: it is consulted only when the exact
+    /// handle and exact name tiers both miss, so an existing exact match's
+    /// resolution is unaffected by this method's existence.
+    ///
+    /// The same Unicode-aware fold as [`Store::targets_by_name`], for the same
+    /// reason: a stored `Ivy` must match a selector `ivy` regardless of script.
+    pub fn targets_by_substring(&self, needle: &str) -> Result<Vec<TargetEntry>, TargetsError> {
+        let needle = needle.to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .targets()?
+            .into_iter()
+            .filter(|t| {
+                t.name.to_lowercase().contains(&needle)
+                    || t.folder_name
+                        .as_deref()
+                        .is_some_and(|f| f.to_lowercase().contains(&needle))
+                    || t.executable_hint
+                        .as_deref()
+                        .is_some_and(|e| e.to_lowercase().contains(&needle))
+            })
+            .collect())
+    }
+
     /// Resolve a target by its stable identifier, consulting superseded aliases so
     /// a reference to a former (unanchored) id still lands on the merged entry.
     pub fn target_by_stable_id(&self, stable_id: i64) -> Result<Option<TargetEntry>, TargetsError> {
@@ -620,7 +665,8 @@ impl Store {
             .query_row(
                 "SELECT id, stable_id, handle, name, classification,
                         classification_source, fidelity, provenance, anchor,
-                        launch_entries, install_root, evidence, detection_scan
+                        launch_entries, install_root, evidence, detection_scan,
+                        folder_name, executable_hint
                  FROM targets WHERE stable_id = ?1",
                 params![stable_id],
                 read_target_row,
@@ -717,7 +763,7 @@ impl Store {
                 handle = ?2, name = ?3, classification = ?4,
                 classification_source = ?5, fidelity = ?6, provenance = ?7,
                 anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11,
-                detection_scan = ?12
+                detection_scan = ?12, folder_name = ?13, executable_hint = ?14
              WHERE stable_id = ?1",
             params![
                 entry.stable_id,
@@ -732,6 +778,8 @@ impl Store {
                 entry.install_root,
                 entry.evidence.as_ref().map(json_text),
                 entry.detection_scan.map(|d| d.as_str()),
+                entry.folder_name,
+                entry.executable_hint,
             ],
         );
         match result {
@@ -786,6 +834,8 @@ impl Store {
                 entry.install_root,
                 evidence,
                 entry.detection_scan.map(|d| d.as_str()),
+                entry.folder_name,
+                entry.executable_hint,
             ];
             let result = if exists {
                 tx.execute(
@@ -793,7 +843,7 @@ impl Store {
                         handle = ?2, name = ?3, classification = ?4,
                         classification_source = ?5, fidelity = ?6, provenance = ?7,
                         anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11,
-                        detection_scan = ?12
+                        detection_scan = ?12, folder_name = ?13, executable_hint = ?14
                      WHERE stable_id = ?1",
                     bound,
                 )
@@ -802,8 +852,8 @@ impl Store {
                     "INSERT INTO targets
                         (stable_id, handle, name, classification, classification_source,
                          fidelity, provenance, anchor, launch_entries, install_root, evidence,
-                         detection_scan)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         detection_scan, folder_name, executable_hint)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     bound,
                 )
             };
@@ -1140,6 +1190,8 @@ fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEnt
     let install_root: Option<String> = row.get(10)?;
     let evidence: Option<String> = row.get(11)?;
     let detection_scan: Option<String> = row.get(12)?;
+    let folder_name: Option<String> = row.get(13)?;
+    let executable_hint: Option<String> = row.get(14)?;
 
     Ok((|| {
         Ok(TargetEntry {
@@ -1164,6 +1216,8 @@ fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEnt
                 .as_deref()
                 .map(DetectionScan::parse)
                 .transpose()?,
+            folder_name,
+            executable_hint,
         })
     })())
 }
@@ -1405,6 +1459,8 @@ mod tests {
             install_root: None,
             evidence: None,
             detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
         }
     }
 
@@ -1437,10 +1493,14 @@ mod tests {
         // backfilled, because backfilling would invent a scan that never ran (P-9).
         let store = Store::open_in_memory().expect("store");
         let conn = store.conn;
-        // Roll the file back to v6 by dropping the column and the version stamp, the
-        // shape a store written by the previous build actually has.
-        conn.execute_batch("ALTER TABLE targets DROP COLUMN detection_scan;")
-            .expect("drop column");
+        // Roll the file back to v6 by dropping every column added after it (and the
+        // version stamp), the shape a store written by the v6 build actually has.
+        conn.execute_batch(
+            "ALTER TABLE targets DROP COLUMN detection_scan;
+             ALTER TABLE targets DROP COLUMN folder_name;
+             ALTER TABLE targets DROP COLUMN executable_hint;",
+        )
+        .expect("drop columns");
         conn.pragma_update(None, "user_version", 6i64)
             .expect("stamp v6");
         conn.execute(
@@ -1464,6 +1524,90 @@ mod tests {
         assert_eq!(
             targets[0].detection_scan, None,
             "a row written before the column reads as no scan recorded, never as clean"
+        );
+    }
+
+    #[test]
+    fn a_v7_store_gains_the_two_new_columns_and_reads_them_as_not_recorded() {
+        // The migration is additive: an existing row keeps every value and reads
+        // both new columns as NULL, exactly "not recorded". Nothing is backfilled.
+        let store = Store::open_in_memory().expect("store");
+        let conn = store.conn;
+        conn.execute_batch(
+            "ALTER TABLE targets DROP COLUMN folder_name;
+             ALTER TABLE targets DROP COLUMN executable_hint;",
+        )
+        .expect("drop columns");
+        conn.pragma_update(None, "user_version", 7i64)
+            .expect("stamp v7");
+        conn.execute(
+            "INSERT INTO targets
+                (stable_id, handle, name, classification, classification_source, fidelity)
+             VALUES (12, 'older_row', 'Older Row', 'game', 'user', 'authored')",
+            [],
+        )
+        .expect("insert a pre-migration row");
+
+        let store = Store::from_connection(conn).expect("migrate forward");
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let targets = store.targets().expect("targets");
+        assert_eq!(targets.len(), 1, "the existing row survives");
+        assert_eq!(targets[0].folder_name, None);
+        assert_eq!(targets[0].executable_hint, None);
+    }
+
+    #[test]
+    fn folder_name_and_executable_hint_round_trip() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target("t1", None, FidelityTier::Observed);
+        entry.folder_name = Some("Escape from Ivy & Piper".to_string());
+        entry.executable_hint = Some("TrappedWithIvyAndPiper-EA.exe".to_string());
+        store.insert_target(&entry).expect("insert");
+
+        let read_back = store
+            .target_by_handle("t1")
+            .expect("query")
+            .expect("present");
+        assert_eq!(
+            read_back.folder_name.as_deref(),
+            Some("Escape from Ivy & Piper")
+        );
+        assert_eq!(
+            read_back.executable_hint.as_deref(),
+            Some("TrappedWithIvyAndPiper-EA.exe")
+        );
+    }
+
+    #[test]
+    fn update_target_writes_folder_name_and_executable_hint_too() {
+        // Review of PR #193 (Copilot): update_target's UPDATE previously stopped
+        // at detection_scan, so any caller reaching a row through it (including an
+        // import-style merge onto an existing stable_id) silently lost both new
+        // fields even though insert_target and merge_targets already carried them.
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target("t2", None, FidelityTier::Observed);
+        store.insert_target(&entry).expect("insert");
+
+        entry.folder_name = Some("Escape from Ivy & Piper".to_string());
+        entry.executable_hint = Some("TrappedWithIvyAndPiper-EA.exe".to_string());
+        assert!(store.update_target(&entry).expect("update"));
+
+        let read_back = store
+            .target_by_handle("t2")
+            .expect("query")
+            .expect("present");
+        assert_eq!(
+            read_back.folder_name.as_deref(),
+            Some("Escape from Ivy & Piper")
+        );
+        assert_eq!(
+            read_back.executable_hint.as_deref(),
+            Some("TrappedWithIvyAndPiper-EA.exe")
         );
     }
 

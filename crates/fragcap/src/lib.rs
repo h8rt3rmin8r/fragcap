@@ -77,18 +77,19 @@ pub mod steam {
 /// shipped tool carries the `targets` subcommand.
 #[cfg(feature = "targets")]
 pub mod targets {
+    pub use fragcap_targets::readiness::SCANNED_CLEAN_MARKER;
     pub use fragcap_targets::{
         capture_readiness, engine_summary, entry_windows_clients, export, export_targets, import,
-        import_targets, is_row_index, launch_entries_for, launch_is_unresolved,
-        observed_executable, register_candidate, register_candidates, resolve_id,
+        import_targets, install_presence, is_row_index, launch_entries_for, launch_is_unresolved,
+        name_divergence, observed_executable, register_candidate, register_candidates, resolve_id,
         resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
         sensitivities_summary, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource,
         Classification, ClassificationSource, CorpusGate, DetectionScan, Engine, EngineBatch,
         EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed,
-        Game, HintDatabaseProvider, ImportSummary, LaunchEntry, RegistrationOutcome,
-        ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection, SocketHolderAnswer, Store,
-        TargetClassification, TargetEntry, TargetsError, TechCategory, Technology,
-        DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        Game, HintDatabaseProvider, ImportSummary, InstallPresence, LaunchEntry, NameDivergence,
+        RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
+        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
+        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
     };
 
     /// The discovery seam and its model (slice S052): the `TargetSource` trait,

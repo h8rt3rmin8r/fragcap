@@ -22,6 +22,7 @@ fn app(appid: u32, change_number: u32, exe: &str) -> FixtureApp {
         appid,
         change_number,
         launch: vec![FixtureLaunch::windows(exe)],
+        common_type: None,
     }
 }
 

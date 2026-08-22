@@ -5,11 +5,18 @@
 //! A handle is the unique, human-readable selector for a target, derived
 //! deterministically from a name. [`normalize`] applies the specified steps in
 //! exactly this order: strip Unicode `So`/`Sk`/`Cf`; NFKD; strip `Mn`; lowercase;
-//! delete apostrophes and quotes outright; replace each run outside `[a-z0-9]`
-//! with a single `_`; trim leading and trailing `_`; truncate to 64 then trim any
-//! trailing `_`. [`derive_handle`] wraps it with the fallback chain (exe stem,
-//! then `target_<n>`) so a name that normalizes to nothing still yields a usable
-//! handle, and [`disambiguate`] appends `_2`, `_3`, ... on a collision.
+//! expand `&` to ` and ` (slice S066, issue #173); delete apostrophes and quotes
+//! outright; replace each run outside `[a-z0-9]` with a single `_`; trim leading
+//! and trailing `_`; truncate to 64 then trim any trailing `_`. [`derive_handle`]
+//! wraps it with the fallback chain (exe stem, then `target_<n>`) so a name that
+//! normalizes to nothing still yields a usable handle, and [`disambiguate`]
+//! appends `_2`, `_3`, ... on a collision.
+//!
+//! The `&` expansion is forward-looking only: it changes what a *new* name
+//! normalizes to, never an already-derived, already-stored handle. `Trapped with
+//! Ivy & Piper` now derives `trapped_with_ivy_and_piper` rather than silently
+//! dropping the conjunction (`trapped_with_ivy_piper`), which read as if a word
+//! were missing.
 //!
 //! Two rules make the handle namespace safe for the selector (section 15.8): a
 //! handle is never purely numeric (a bare integer is a row-index selector), and a
@@ -60,14 +67,21 @@ pub fn normalize(name: &str) -> Option<String> {
     // 4. Lowercase.
     let lowered = no_marks.to_lowercase();
 
-    // 5. Delete apostrophes and quotation marks outright, so a possessive joins
+    // 5. Expand & to " and " (slice S066, issue #173), so the conjunction survives
+    //    as a word rather than either disappearing (the pre-S066 behavior, since
+    //    step 7 would otherwise collapse it to a single separator) or gluing two
+    //    words together. Padded with spaces on both sides so "Ivy&Piper" (no
+    //    surrounding whitespace) still splits into separate words.
+    let expanded = lowered.replace('&', " and ");
+
+    // 6. Delete apostrophes and quotation marks outright, so a possessive joins
     //    rather than splitting ("clancys", not "clancy_s").
-    let deapostrophed: String = lowered
+    let deapostrophed: String = expanded
         .chars()
         .filter(|c| !is_apostrophe_or_quote(*c))
         .collect();
 
-    // 6. Replace each maximal run of characters outside [a-z0-9] with a single _.
+    // 7. Replace each maximal run of characters outside [a-z0-9] with a single _.
     let mut collapsed = String::with_capacity(deapostrophed.len());
     let mut in_gap = false;
     for c in deapostrophed.chars() {
@@ -80,10 +94,10 @@ pub fn normalize(name: &str) -> Option<String> {
         }
     }
 
-    // 7. Trim leading and trailing underscores.
+    // 8. Trim leading and trailing underscores.
     let trimmed = collapsed.trim_matches('_');
 
-    // 8. Truncate to MAX_LEN characters, then trim any trailing underscore the cut
+    // 9. Truncate to MAX_LEN characters, then trim any trailing underscore the cut
     //    left behind, so no handle ends in '_'.
     let truncated: String = trimmed.chars().take(MAX_LEN).collect();
     let handle = truncated.trim_end_matches('_').to_string();

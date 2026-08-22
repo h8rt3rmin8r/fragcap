@@ -48,9 +48,18 @@
 //! every row from a source that ran no detection carries. The CHECK set makes an
 //! out-of-vocabulary coverage claim unstorable, so the listing cannot render a state
 //! the store never wrote (P-9).
+//!
+//! Version 8 (slice S066) adds two nullable `TEXT` columns to `targets`,
+//! `folder_name` and `executable_hint`: a target's raw platform installdir (or
+//! directory-scan folder name) and its raw observed launch executable, both stored
+//! verbatim and neither reconstructed from `name` or from the other (issue #173).
+//! Neither carries a CHECK constraint: both are free-form observed strings with no
+//! closed vocabulary to enforce, unlike `detection_scan`'s enum. Backward-safe by
+//! construction: an existing row reads both as NULL, which is exactly "not
+//! recorded".
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -120,7 +129,9 @@ CREATE TABLE targets (
     install_root          TEXT,
     evidence              TEXT,
     detection_scan        TEXT CHECK (detection_scan IS NULL OR detection_scan IN
-                            ('complete', 'incomplete'))
+                            ('complete', 'incomplete')),
+    folder_name           TEXT,
+    executable_hint       TEXT
 );
 
 CREATE TABLE target_id_aliases (
@@ -153,6 +164,17 @@ CREATE TABLE listing_snapshot (
     stable_id  INTEGER NOT NULL,
     handle     TEXT NOT NULL CHECK (length(handle) > 0)
 );
+";
+
+/// The additive migration from schema version 7 to version 8: add the nullable
+/// `folder_name` and `executable_hint` columns to `targets` (slice S066). Two
+/// `ALTER TABLE` statements in one transaction, following the S051 precedent of a
+/// multi-statement additive migration. Backward-safe by construction: an existing
+/// v7 store keeps every row and reads both new columns as NULL, exactly "not
+/// recorded".
+pub const MIGRATE_7_TO_8: &str = "\
+ALTER TABLE targets ADD COLUMN folder_name TEXT;
+ALTER TABLE targets ADD COLUMN executable_hint TEXT;
 ";
 
 /// The additive migration from schema version 5 to version 6: create the listing

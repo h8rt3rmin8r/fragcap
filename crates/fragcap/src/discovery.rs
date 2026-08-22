@@ -121,6 +121,19 @@ impl TargetSource for SteamSource<'_> {
         let mut candidates = Vec::new();
         for title in &installation.titles {
             account.considered += 1;
+            // A Music-type app (a soundtrack or similar) has no network behavior and
+            // is not a capture target: counted through the existing
+            // `considered_not_a_game` outcome (the same bucket the known-roots walk
+            // uses for a directory matching no signature) rather than a new one, so
+            // `DiscoveryAccount::is_conserved` needs no change (slice S066, #166).
+            if title
+                .app_type
+                .as_deref()
+                .is_some_and(|t| t.eq_ignore_ascii_case("music"))
+            {
+                account.considered_not_a_game += 1;
+                continue;
+            }
             let appid = match title.app_id.parse::<u32>() {
                 Ok(appid) => appid,
                 // A title whose appid is not a number cannot be used as a platform
@@ -151,6 +164,14 @@ impl TargetSource for SteamSource<'_> {
                 evidence,
                 detection_scan: Some(detection_scan),
                 source_name: self.name().to_string(),
+                // The resolved absolute path, distinct from the app-id identity, so
+                // registration can store it as install_root: without this a
+                // Steam-sourced target carried no install_root at all, and the
+                // missing-install-root detection (issue #167) could never fire for
+                // the dominant real-world case (review of PR #193).
+                install_root: Some(title.install_dir.display().to_string()),
+                folder_name: Some(title.installdir.clone()),
+                executable_hint: title.launch_executable.clone(),
             });
         }
         Ok(Discovery {

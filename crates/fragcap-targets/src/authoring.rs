@@ -116,6 +116,8 @@ mod tests {
             install_root: None,
             evidence: None,
             detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
         }
     }
 

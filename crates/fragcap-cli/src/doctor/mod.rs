@@ -388,7 +388,7 @@ const REMEDIATION_INDENT: usize = 17;
 const LINE_WIDTH: usize = 80;
 
 /// Reset all ANSI styling.
-const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_RESET: &str = crate::color::RESET;
 /// Bold, for section headings when color is on.
 const ANSI_BOLD: &str = "\x1b[1m";
 
@@ -402,7 +402,7 @@ fn status_field(status: Status, color: bool) -> String {
     }
     let code = match status {
         Status::Ok => "\x1b[32m",
-        Status::Warn => "\x1b[33m",
+        Status::Warn => crate::color::WARN,
         Status::Skip => "\x1b[2m",
         Status::Fail => "\x1b[1;31m",
     };
