@@ -118,6 +118,7 @@ impl<'a> KnownRootsSource<'a> {
                                 evidence,
                                 detection_scan,
                                 source_name: self.name().to_string(),
+                                install_root: Some(child.clone()),
                                 folder_name: None,
                                 executable_hint: None,
                             });

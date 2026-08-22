@@ -977,6 +977,44 @@ fn a_missing_install_root_renders_a_note_and_the_snapshot_names_the_healthy_row(
 }
 
 #[test]
+fn a_ready_but_missing_row_is_never_the_next_command_even_with_no_ready_alternative() {
+    // Review of PR #193 (Copilot): the previous single-predicate check
+    // (Ready && !Missing) fell through to `.unwrap_or(1)` whenever no row
+    // satisfied both at once, even if row 1 itself was Ready but Missing and a
+    // merely NeedsTarget, present row existed further down. That named exactly
+    // the missing row FR-011 says must never be suggested.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    let missing_root = dir.path().join("does-not-exist").display().to_string();
+    import_row(
+        &store,
+        &format!(
+            r#"[
+                {{
+                    "stable_id": 401, "handle": "a_gone_but_ready", "name": "Gone But Ready",
+                    "classification": "game", "classification_source": "user",
+                    "fidelity": "authored", "anchor": "steam:401",
+                    "install_root": {missing_root:?}
+                }},
+                {{
+                    "stable_id": 402, "handle": "b_present_not_ready", "name": "Present Not Ready",
+                    "classification": "game", "classification_source": "user",
+                    "fidelity": "authored"
+                }}
+            ]"#
+        ),
+        &dir,
+    );
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("fragcap capture 2"),
+        "the present-but-not-ready row is suggested over the ready-but-missing one: {out}"
+    );
+}
+
+#[test]
 fn a_target_with_no_install_root_recorded_is_not_reported_as_missing() {
     // FR-008: absent and never-recorded are different states.
     let dir = TempDir::new().expect("tempdir");
@@ -1003,7 +1041,8 @@ fn a_semantic_name_divergence_is_surfaced_in_show_and_a_cosmetic_one_is_not() {
                 "name": "Trapped with Ivy & Piper",
                 "classification": "game", "classification_source": "platform",
                 "fidelity": "verified", "anchor": "steam:301",
-                "folder_name": "Escape from Ivy & Piper"
+                "folder_name": "Escape from Ivy & Piper",
+                "executable_hint": "TrappedWithIvyAndPiper-EA.exe"
             },
             {
                 "stable_id": 302, "handle": "the_division_2",
@@ -1027,6 +1066,10 @@ fn a_semantic_name_divergence_is_surfaced_in_show_and_a_cosmetic_one_is_not() {
     assert!(
         out.contains("Escape from Ivy & Piper"),
         "the semantic divergence names both: {out}"
+    );
+    assert!(
+        out.contains("TrappedWithIvyAndPiper-EA.exe"),
+        "the observed executable is shown, not only the folder name: {out}"
     );
 
     let (code, out, _err) = run(&["targets", "show", "the_division_2", "--db", &store]);

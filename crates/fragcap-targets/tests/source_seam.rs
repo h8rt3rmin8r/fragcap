@@ -15,15 +15,17 @@ use fragcap_targets::{
 fn one_candidate(name: &str, source: &str, fidelity: FidelityTier) -> Discovery {
     let mut account = DiscoveryAccount::default();
     account.produce();
+    let path = format!("D:/games/{name}");
     Discovery {
         candidates: vec![CandidateTarget {
-            identity: CandidateIdentity::Path(format!("D:/games/{name}")),
+            identity: CandidateIdentity::Path(path.clone()),
             display_name: name.to_string(),
             fidelity,
             classification: TargetClassification::Unknown,
             evidence: Vec::new(),
             detection_scan: None,
             source_name: source.to_string(),
+            install_root: Some(path),
             folder_name: None,
             executable_hint: None,
         }],

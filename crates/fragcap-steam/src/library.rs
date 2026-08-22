@@ -132,19 +132,41 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
     // every title's type resolution to the `common/` fallback, which is worth
     // knowing) but does not fail the whole walk (slice S066).
     let appinfo_index = match crate::appinfo::read_appinfo(root) {
-        Ok(parse) => parse
-            .apps
-            .into_iter()
-            .map(|a| {
-                (
-                    a.appid,
-                    (
-                        a.common_type,
-                        a.launch.first().map(|l| l.executable.clone()),
+        Ok(parse) => {
+            // A section that failed to decode is one app whose type could not be
+            // read; it is absent from the index (so that one app falls back to
+            // `common`, matching an app_id absent from the cache entirely), but the
+            // failure is still named rather than silently swallowed (P-4). Every
+            // other section decoded cleanly is unaffected: a per-section fault is
+            // isolated by `parse_appinfo` and does not degrade the rest of the
+            // cache (review of PR #193).
+            for failure in &parse.failures {
+                warnings.push(match failure.appid {
+                    Some(appid) => format!(
+                        "could not read appinfo section for app {appid}: {}; \
+                         its app type defaults to common",
+                        failure.reason
                     ),
-                )
-            })
-            .collect::<std::collections::HashMap<u32, (Option<String>, Option<String>)>>(),
+                    None => format!(
+                        "could not read appinfo cache: {}; app types default to common",
+                        failure.reason
+                    ),
+                });
+            }
+            parse
+                .apps
+                .into_iter()
+                .map(|a| {
+                    (
+                        a.appid,
+                        (
+                            a.common_type,
+                            a.launch.first().map(|l| l.executable.clone()),
+                        ),
+                    )
+                })
+                .collect::<std::collections::HashMap<u32, (Option<String>, Option<String>)>>()
+        }
         Err(e) => {
             warnings.push(format!(
                 "could not read appinfo cache: {e}; app types default to common"
@@ -503,6 +525,87 @@ mod tests {
                 .join("common")
                 .join("No Appinfo Entry"),
             "an unknown type falls back to steamapps/common/"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_appinfo_section_is_warned_about_and_does_not_affect_other_titles() {
+        // Review of PR #193 (Codex): a per-section decode failure was previously
+        // discarded entirely, so a title whose appinfo section is corrupt silently
+        // degraded to app_type: None with no indication anything went wrong. The
+        // fault is isolated to that one app (`parse_appinfo` resyncs to the next
+        // section without breaking), so every other title's app_type is unaffected
+        // regardless of which position the corrupt section occupies.
+        use crate::appinfo::fixtures::{appinfo_bytes_with_bad_section, FixtureApp, V29};
+
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_1.acf"),
+            &manifest("1", "Before", "Before"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_2.acf"),
+            &manifest("2", "Corrupt", "Corrupt"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_3.acf"),
+            &manifest("3", "After", "After"),
+        );
+        let apps = [
+            FixtureApp {
+                appid: 1,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Music".to_string()),
+            },
+            FixtureApp {
+                appid: 2,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Music".to_string()),
+            },
+            FixtureApp {
+                appid: 3,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Music".to_string()),
+            },
+        ];
+        // The middle section (index 1, app 2) is corrupted; the other two decode
+        // cleanly.
+        let bytes = appinfo_bytes_with_bad_section(V29, &apps, 1);
+        tree.write_bytes(&root.join("appcache").join("appinfo.vdf"), &bytes);
+
+        let inst = discover_in(root).unwrap();
+        assert_eq!(inst.titles.len(), 3, "warnings: {:?}", inst.warnings);
+
+        let before = inst.find("1").unwrap();
+        assert_eq!(
+            before.app_type.as_deref(),
+            Some("Music"),
+            "a title before the corrupt section is unaffected"
+        );
+        let after = inst.find("3").unwrap();
+        assert_eq!(
+            after.app_type.as_deref(),
+            Some("Music"),
+            "a title after the corrupt section is unaffected"
+        );
+        let corrupt = inst.find("2").unwrap();
+        assert_eq!(
+            corrupt.app_type, None,
+            "the corrupt section's app type is unknown, not guessed"
+        );
+        assert_eq!(
+            corrupt.install_dir,
+            root.join("steamapps").join("common").join("Corrupt"),
+            "an unknown type falls back to common/"
+        );
+        assert!(
+            inst.warnings.iter().any(|w| w.contains('2')),
+            "the corrupt section is named in a warning, not silently swallowed: {:?}",
+            inst.warnings
         );
     }
 

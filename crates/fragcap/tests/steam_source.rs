@@ -126,6 +126,36 @@ fn steam_source_produces_one_candidate_per_numeric_title() {
 }
 
 #[test]
+fn every_candidate_carries_its_resolved_install_root() {
+    // Review of PR #193: without this, a Steam-sourced registration stored no
+    // install_root at all, so the missing-install-root detection (issue #167)
+    // never fired for the dominant real-world case (a Steam-discovered target).
+    let tree = TempTree::new();
+    fixture_steam_root(&tree);
+    let catalog = catalog_with_cs2();
+
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+
+    let cs2 = d
+        .candidates
+        .iter()
+        .find(|c| c.identity == CandidateIdentity::SteamAppId(730))
+        .expect("CS2 candidate present");
+    assert_eq!(
+        cs2.install_root.as_deref(),
+        Some(
+            tree.path()
+                .join("steamapps")
+                .join("common")
+                .join("cs2")
+                .to_str()
+                .unwrap()
+        )
+    );
+}
+
+#[test]
 fn a_title_with_a_local_engine_marker_is_verified_with_evidence() {
     // Detection runs in the Steam scan phase (FR-006): a title whose install
     // directory carries a definitive engine marker is stamped verified, outranking

@@ -68,6 +68,14 @@ pub struct CandidateTarget {
     pub detection_scan: Option<DetectionScan>,
     /// The name of the source that produced this candidate.
     pub source_name: String,
+    /// The resolved, absolute install directory, when the source found one.
+    /// Carried explicitly rather than derived from `identity`, because a Steam
+    /// candidate's identity is its app id, not a path: without this field a
+    /// Steam-sourced registration stored no `install_root` at all, so the
+    /// missing-install-root detection (issue #167) could never fire for it (the
+    /// dominant real-world case). A path-based source's value here is the same
+    /// path its `identity` already carries.
+    pub install_root: Option<String>,
     /// The raw platform installdir or folder-identifying value, verbatim (slice
     /// S066, issue #173). `Some` for a Steam candidate; `None` for a known-roots or
     /// directory-scan candidate, which has no separate installdir concept distinct
@@ -91,7 +99,10 @@ pub struct DiscoveryAccount {
     pub parse_failed: u64,
     /// Candidates a human rejected at the interactive step.
     pub declined_by_user: u64,
-    /// Directories that matched no signature and no known-root rule.
+    /// Considered and determined not to be a capturable game: a known-root
+    /// directory matching no signature and no known-root rule, or a Steam title
+    /// whose appinfo type is `Music` (a soundtrack, which has no network
+    /// behavior; slice S066, issue #166).
     pub considered_not_a_game: u64,
     /// Items not examined because their volume was ineligible.
     pub volume_skipped: u64,
@@ -216,14 +227,16 @@ mod tests {
     use super::*;
 
     fn candidate(name: &str, source: &str) -> CandidateTarget {
+        let path = format!("C:/games/{name}");
         CandidateTarget {
-            identity: CandidateIdentity::Path(format!("C:/games/{name}")),
+            identity: CandidateIdentity::Path(path.clone()),
             display_name: name.to_string(),
             fidelity: FidelityTier::HeuristicUnverified,
             classification: TargetClassification::Unknown,
             evidence: Vec::new(),
             detection_scan: None,
             source_name: source.to_string(),
+            install_root: Some(path),
             folder_name: None,
             executable_hint: None,
         }

@@ -124,13 +124,26 @@ pub enum NameDivergence {
 /// Derive a target's [`NameDivergence`] between `name` and `folder_name`, reusing
 /// `crate::handle::normalize` (the same fold a handle is already derived through)
 /// rather than a second string-comparison rule set.
+///
+/// A name `normalize` declines (purely numeric, or nothing left after stripping
+/// decorative symbols) folds back to its own lowercased, trimmed form rather than
+/// to an empty string. Collapsing every unnormalizable name to `""` would make two
+/// distinct such names (`"123"` and `"456"`, or two different symbol-only titles)
+/// compare equal and read as merely cosmetic, hiding a real divergence the
+/// "unnormalizable" case has no more business asserting away than any other name
+/// does (review of PR #193).
 pub fn name_divergence(entry: &TargetEntry) -> NameDivergence {
     let Some(folder_name) = &entry.folder_name else {
         return NameDivergence::None;
     };
-    let a = crate::handle::normalize(&entry.name).unwrap_or_default();
-    let b = crate::handle::normalize(folder_name).unwrap_or_default();
-    if a == b || a.contains(&b) || b.contains(&a) {
+    let fold = |s: &str| crate::handle::normalize(s).unwrap_or_else(|| s.trim().to_lowercase());
+    let a = fold(&entry.name);
+    let b = fold(folder_name);
+    // `str::contains("")` is vacuously true, so an empty fold (a whitespace-only
+    // name normalize declined) must not let a real name "contain" it by accident;
+    // only a genuine, non-empty substring relationship counts as cosmetic.
+    let substring_match = !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a));
+    if a == b || substring_match {
         NameDivergence::Cosmetic
     } else {
         NameDivergence::Semantic
@@ -481,6 +494,30 @@ mod tests {
         // Semantic: neither equal nor a substring of the other.
         e.name = "Trapped with Ivy & Piper".to_string();
         e.folder_name = Some("Escape from Ivy & Piper".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Semantic);
+    }
+
+    #[test]
+    fn name_divergence_does_not_collapse_distinct_unnormalizable_names() {
+        // Review of PR #193 (Copilot, suppressed comment on readiness.rs:135):
+        // both "123" and "456" decline to normalize (purely numeric); folding both
+        // to "" via unwrap_or_default would make them compare equal and hide a
+        // real, semantic divergence. Two different such names must still read as
+        // Semantic.
+        let mut e = entry(None, None, None);
+        e.name = "123".to_string();
+        e.folder_name = Some("456".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Semantic);
+
+        // The same unnormalizable value on both sides is genuinely identical.
+        e.name = "123".to_string();
+        e.folder_name = Some("123".to_string());
+        assert_eq!(name_divergence(&e), NameDivergence::Cosmetic);
+
+        // A whitespace-only name (normalize declines to None, and trims to "")
+        // must not vacuously "contain" a real folder name via `str::contains("")`.
+        e.name = "  ".to_string();
+        e.folder_name = Some("Real Folder Name".to_string());
         assert_eq!(name_divergence(&e), NameDivergence::Semantic);
     }
 }

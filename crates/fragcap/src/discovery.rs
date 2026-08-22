@@ -164,6 +164,12 @@ impl TargetSource for SteamSource<'_> {
                 evidence,
                 detection_scan: Some(detection_scan),
                 source_name: self.name().to_string(),
+                // The resolved absolute path, distinct from the app-id identity, so
+                // registration can store it as install_root: without this a
+                // Steam-sourced target carried no install_root at all, and the
+                // missing-install-root detection (issue #167) could never fire for
+                // the dominant real-world case (review of PR #193).
+                install_root: Some(title.install_dir.display().to_string()),
                 folder_name: Some(title.installdir.clone()),
                 executable_hint: title.launch_executable.clone(),
             });

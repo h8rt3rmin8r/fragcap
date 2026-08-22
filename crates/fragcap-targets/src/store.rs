@@ -763,7 +763,7 @@ impl Store {
                 handle = ?2, name = ?3, classification = ?4,
                 classification_source = ?5, fidelity = ?6, provenance = ?7,
                 anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11,
-                detection_scan = ?12
+                detection_scan = ?12, folder_name = ?13, executable_hint = ?14
              WHERE stable_id = ?1",
             params![
                 entry.stable_id,
@@ -778,6 +778,8 @@ impl Store {
                 entry.install_root,
                 entry.evidence.as_ref().map(json_text),
                 entry.detection_scan.map(|d| d.as_str()),
+                entry.folder_name,
+                entry.executable_hint,
             ],
         );
         match result {
@@ -1569,6 +1571,34 @@ mod tests {
 
         let read_back = store
             .target_by_handle("t1")
+            .expect("query")
+            .expect("present");
+        assert_eq!(
+            read_back.folder_name.as_deref(),
+            Some("Escape from Ivy & Piper")
+        );
+        assert_eq!(
+            read_back.executable_hint.as_deref(),
+            Some("TrappedWithIvyAndPiper-EA.exe")
+        );
+    }
+
+    #[test]
+    fn update_target_writes_folder_name_and_executable_hint_too() {
+        // Review of PR #193 (Copilot): update_target's UPDATE previously stopped
+        // at detection_scan, so any caller reaching a row through it (including an
+        // import-style merge onto an existing stable_id) silently lost both new
+        // fields even though insert_target and merge_targets already carried them.
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target("t2", None, FidelityTier::Observed);
+        store.insert_target(&entry).expect("insert");
+
+        entry.folder_name = Some("Escape from Ivy & Piper".to_string());
+        entry.executable_hint = Some("TrappedWithIvyAndPiper-EA.exe".to_string());
+        assert!(store.update_target(&entry).expect("update"));
+
+        let read_back = store
+            .target_by_handle("t2")
             .expect("query")
             .expect("present");
         assert_eq!(

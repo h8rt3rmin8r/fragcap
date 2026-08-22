@@ -82,6 +82,7 @@ impl TargetSource for DirectorySource {
                 evidence,
                 detection_scan,
                 source_name: self.name().to_string(),
+                install_root: Some(self.path.clone()),
                 // A directory-scan candidate has no installdir concept distinct
                 // from `display_name`, and no observed launch executable.
                 folder_name: None,

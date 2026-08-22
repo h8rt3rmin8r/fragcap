@@ -58,10 +58,11 @@ pub fn register_candidate(
         }
         CandidateIdentity::Path(_) => None,
     };
-    let install_root = match &candidate.identity {
-        CandidateIdentity::Path(path) => Some(path.clone()),
-        CandidateIdentity::SteamAppId(_) => None,
-    };
+    // Carried explicitly by the candidate rather than derived from `identity`: a
+    // Steam candidate's identity is its app id, not a path, so deriving from
+    // identity alone left every Steam-sourced registration with no install_root at
+    // all (review of PR #193, issue #167).
+    let install_root = candidate.install_root.clone();
 
     // Read the table once and reuse it for both the install-root dedup and the
     // handle-derivation index, so registering a discovery set is one table read per
@@ -164,6 +165,7 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: "steam".to_string(),
+            install_root: Some(format!("C:/Games/Steam/steamapps/common/{name}")),
             folder_name: None,
             executable_hint: None,
         }
@@ -178,6 +180,7 @@ mod tests {
             evidence: Vec::new(),
             detection_scan: None,
             source_name: "known-roots".to_string(),
+            install_root: Some(path.to_string()),
             folder_name: None,
             executable_hint: None,
         }
@@ -192,6 +195,21 @@ mod tests {
             "the same app id does not register twice"
         );
         assert_eq!(store.targets().expect("targets").len(), 1);
+    }
+
+    #[test]
+    fn a_steam_candidates_install_root_is_stored_not_dropped() {
+        // Review of PR #193: a Steam candidate's identity is its app id, not a
+        // path, so install_root must be carried explicitly by the candidate
+        // rather than derived from identity, or the missing-install-root
+        // detection (issue #167) could never fire for a Steam-sourced target.
+        let mut store = Store::open_in_memory().expect("store");
+        register_candidate(&mut store, &steam_candidate(620, "Portal 2")).expect("register");
+        let entry = &store.targets().expect("targets")[0];
+        assert_eq!(
+            entry.install_root.as_deref(),
+            Some("C:/Games/Steam/steamapps/common/Portal 2")
+        );
     }
 
     #[test]
