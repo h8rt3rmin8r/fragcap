@@ -80,7 +80,32 @@ data rather than through a code change and a release.
 > traffic is one of the most interesting results the tool can surface, so a title
 > with no recorded online mode is still fully capturable.
 
-**See also:** [Signature matcher](anti-cheat-and-security.md#signature-matcher)
+**See also:** [Signature matcher](anti-cheat-and-security.md#signature-matcher), [Binary marker](anti-cheat-and-security.md#binary-marker)
+
+## Binary marker
+
+A detection signature kind whose pattern names something inside an executable
+rather than in the directory around it. One form is matched: `section:<glob>`,
+which matches a name in the binary's own PE section table, and which is how
+fragcap recognizes the Steam DRM wrapper by the `.bind` section it appends. Every
+other pattern of this kind names a byte sequence that no shipped build matches;
+such a row is carried and counted **inert**, so the signature load still
+reconciles applied plus inert plus skipped to the number of rows loaded.
+
+A section-marker scan reads only executables near the install root, bounded in
+both depth and count, and reads only a bounded prefix of each one. A candidate
+dropped by that count bound is counted and makes the scan incomplete, and a
+candidate that could not be opened is recorded unreadable rather than treated as
+carrying no marker.
+
+{: .matters }
+> Before this kind was matchable, fragcap reported "Steam DRM" for any title
+> shipping `steam_api64.dll`, which is the Steamworks SDK redistributable and
+> present in nearly every Steam title regardless of DRM. That recorded an
+> observation nobody made, which principle P-9 forbids, on 28 of 32 rows.
+> Matching the wrapper's own section is what made the label true.
+
+**See also:** [Detection signature](anti-cheat-and-security.md#detection-signature), [Coverage state](command-line-and-diagnostics.md#coverage-state)
 
 ## Signature matcher
 

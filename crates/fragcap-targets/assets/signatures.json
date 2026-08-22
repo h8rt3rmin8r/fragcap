@@ -8,6 +8,11 @@
   { "category": "engine", "kind": "filename", "pattern": "*.pck", "product": "Godot", "confidence": "heuristic" },
   { "category": "engine", "kind": "filename", "pattern": "CrySystem.dll", "product": "CryEngine", "confidence": "definitive" },
   { "category": "engine", "kind": "filename", "pattern": "re_chunk_*.pak", "product": "RE Engine", "confidence": "definitive" },
+  { "category": "engine", "kind": "directory-shape", "pattern": "renpy/", "product": "Ren'Py", "confidence": "definitive" },
+  { "category": "engine", "kind": "filename", "pattern": "librenpython.dll", "product": "Ren'Py", "confidence": "definitive" },
+  { "category": "engine", "kind": "filename", "pattern": "*.rpa", "product": "Ren'Py", "confidence": "heuristic" },
+  { "category": "engine", "kind": "filename", "pattern": "data.win", "product": "GameMaker", "confidence": "definitive" },
+  { "category": "engine", "kind": "filename", "pattern": "Steamworks_x64.dll", "product": "GameMaker", "confidence": "heuristic" },
 
   { "category": "anti-cheat", "kind": "filename", "pattern": "EasyAntiCheat*.dll", "product": "Easy Anti-Cheat", "confidence": "definitive" },
   { "category": "anti-cheat", "kind": "filename", "pattern": "EasyAntiCheat*.sys", "product": "Easy Anti-Cheat", "confidence": "definitive" },
@@ -19,8 +24,7 @@
   { "category": "anti-cheat", "kind": "filename", "pattern": "xhunter*.sys", "product": "Xigncode3", "confidence": "definitive" },
   { "category": "anti-cheat", "kind": "filename", "pattern": "x3.xem", "product": "Xigncode3", "confidence": "definitive" },
 
-  { "category": "drm", "kind": "filename", "pattern": "steam_api.dll", "product": "Steam DRM", "confidence": "definitive" },
-  { "category": "drm", "kind": "filename", "pattern": "steam_api64.dll", "product": "Steam DRM", "confidence": "definitive" },
+  { "category": "drm", "kind": "binary-marker", "pattern": "section:.bind", "product": "Steam DRM", "confidence": "definitive" },
   { "category": "drm", "kind": "binary-marker", "pattern": "denuvo-anti-tamper-marker", "product": "Denuvo", "confidence": "definitive" },
   { "category": "drm", "kind": "binary-marker", "pattern": "arxan-guard-marker", "product": "Arxan", "confidence": "definitive" },
   { "category": "drm", "kind": "binary-marker", "pattern": "vmprotect-section-marker", "product": "VMProtect", "confidence": "definitive" }

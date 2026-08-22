@@ -14,7 +14,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::entry::{ClassificationSource, TargetClassification, TargetEntry};
+use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
 use crate::TargetsError;
 use fragcap_profile::FidelityTier;
 
@@ -72,6 +72,13 @@ fn entry_to_value(entry: &TargetEntry) -> Value {
     if let Some(provenance) = &entry.provenance {
         map.insert("provenance".to_string(), provenance.clone());
     }
+    // The coverage state (slice S065). Emitted only when a scan is recorded, so an
+    // absent key means "no scan recorded" on this surface exactly as a NULL column
+    // means it in the store, and the machine reader and the listing cannot disagree
+    // about whether a scan happened.
+    if let Some(scan) = entry.detection_scan {
+        map.insert("detection_scan".to_string(), json!(scan.as_str()));
+    }
     Value::Object(map)
 }
 
@@ -107,6 +114,13 @@ fn value_to_entry(value: &Value) -> Result<TargetEntry, TargetsError> {
         launch_entries: obj.get("launch_entries").cloned(),
         install_root: optional_str(obj, "install_root")?,
         evidence: obj.get("evidence").cloned(),
+        // An out-of-set coverage value is rejected, which fails the whole batch
+        // before anything is applied (FR-019). Reading it permissively would let an
+        // import assert a scan the tool cannot vouch for (P-9).
+        detection_scan: optional_str(obj, "detection_scan")?
+            .as_deref()
+            .map(DetectionScan::parse)
+            .transpose()?,
     })
 }
 
@@ -151,7 +165,80 @@ mod tests {
             launch_entries: Some(json!([{ "executable": "eso64.exe", "role": "client" }])),
             install_root: None,
             evidence: None,
+            detection_scan: None,
         }
+    }
+
+    #[test]
+    fn the_machine_surface_carries_the_category_partition_and_the_coverage_state() {
+        // FR-016 names two halves and both are asserted here, because the category
+        // half is already true and would otherwise be the unguarded one.
+        let mut e = sample();
+        e.detection_scan = Some(DetectionScan::Complete);
+        e.evidence = Some(json!([
+            { "category": "engine", "product": "Unreal", "evidence": "Engine/Binaries",
+              "fidelity": "verified" },
+            { "category": "drm", "product": "Steam DRM", "evidence": "Game.exe",
+              "fidelity": "verified" }
+        ]));
+
+        let doc = export_targets(&[e.clone()]);
+        let value: Value = serde_json::from_str(&doc).expect("valid JSON");
+        let row = &value.as_array().expect("array")[0];
+
+        assert_eq!(
+            row.get("detection_scan").and_then(Value::as_str),
+            Some("complete"),
+            "the coverage state is on the machine surface: {doc}"
+        );
+        let findings = row
+            .get("evidence")
+            .and_then(Value::as_array)
+            .expect("evidence array");
+        let categories: Vec<&str> = findings
+            .iter()
+            .filter_map(|f| f.get("category").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            categories,
+            vec!["engine", "drm"],
+            "every finding names its category, so the machine reader can make the \
+             same split the table makes"
+        );
+
+        // And it survives the round trip, so the surface is not write-only.
+        let back = import_targets(&doc).expect("import");
+        assert_eq!(back[0].detection_scan, Some(DetectionScan::Complete));
+        assert_eq!(back[0].evidence, e.evidence);
+    }
+
+    #[test]
+    fn an_absent_coverage_key_means_no_scan_recorded_and_is_not_emitted() {
+        let e = sample();
+        assert_eq!(e.detection_scan, None);
+        let doc = export_targets(&[e]);
+        assert!(
+            !doc.contains("detection_scan"),
+            "no scan recorded emits no key rather than a null: {doc}"
+        );
+        assert_eq!(
+            import_targets(&doc).expect("import")[0].detection_scan,
+            None
+        );
+    }
+
+    #[test]
+    fn an_out_of_set_coverage_value_is_rejected_and_applies_nothing() {
+        let doc = r#"[{
+            "stable_id": 1, "handle": "g", "name": "G",
+            "classification": "game", "classification_source": "user",
+            "fidelity": "authored", "detection_scan": "probably"
+        }]"#;
+        let err = import_targets(doc).expect_err("an unknown coverage state is refused");
+        assert!(
+            format!("{err}").contains("detection scan"),
+            "the error names what it refused: {err}"
+        );
     }
 
     #[test]

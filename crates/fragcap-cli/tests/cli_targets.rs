@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `targets add`/`list`/`show` integration tests (slice S051).
+//! `targets add`/`list`/`show` integration tests (slice S051, extended in S065).
 //!
 //! These drive the CLI surface end to end over a scratch `local.db`, proving the
 //! registration, listing, and selector-resolution path including the ambiguous
 //! selector's exit-2 refusal to guess (P-9).
+//!
+//! Slice S065 adds the split listing: the ENGINE and SENSITIVITIES columns, the
+//! three coverage markers, and the 80 column budget, all asserted against the
+//! rendered output rather than against the code that produces it.
 
 mod common;
 
@@ -261,10 +265,17 @@ fn hero_listing_shows_columns_ordered_by_handle_and_names_the_next_command() {
 
     let (code, out, _err) = run(&["targets", "list", "--db", &store]);
     assert_eq!(code, 0, "{out}");
-    // The header and both readiness/evidence columns are present.
+    // The header carries the readiness column and the two split technology columns.
+    // KNOWN is gone rather than kept alongside: leaving both would let the flattened
+    // form survive (S065, #174).
+    assert!(out.contains("TARGET") && out.contains("CAPTURE"), "{out}");
     assert!(
-        out.contains("TARGET") && out.contains("CAPTURE") && out.contains("KNOWN"),
-        "{out}"
+        out.contains("ENGINE") && out.contains("SENSITIVITIES"),
+        "the split columns are present: {out}"
+    );
+    assert!(
+        !out.contains("KNOWN"),
+        "the flattened column is gone, not kept beside the split: {out}"
     );
     // Ordered by handle: alpha before zeta.
     let alpha = out.find("alpha").expect("alpha row");
@@ -844,4 +855,359 @@ fn from_is_refused_for_a_tier_that_reads_no_document() {
         "catalog", "seed", "--tier", "catalog", "--from", &doc, "--db", &catalog,
     ]);
     assert_eq!(code, 0, "--tier catalog still reads --from: {out}");
+}
+
+/// Register a target carrying the given evidence and coverage state by writing it
+/// through `targets import`, which is the only surface that can set both without a
+/// real scan. Returns the store path.
+fn import_row(store: &str, doc: &str, dir: &TempDir) {
+    let file = dir.path().join(format!("import-{}.json", doc.len()));
+    std::fs::write(&file, doc).expect("write import doc");
+    let (code, out, _err) = run(&["targets", "import", &file.to_string_lossy(), "--db", store]);
+    assert_eq!(code, 0, "import succeeds: {out}");
+}
+
+#[test]
+fn the_split_columns_never_mix_an_engine_with_a_protection_product() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[{
+            "stable_id": 101, "handle": "arc_raiders", "name": "ARC Raiders",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:101",
+            "detection_scan": "complete",
+            "evidence": [
+                { "category": "engine", "product": "Unreal" },
+                { "category": "anti-cheat", "product": "Easy Anti-Cheat" }
+            ]
+        }]"#,
+        &dir,
+    );
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    let row = out
+        .lines()
+        .find(|l| l.contains("arc_raiders"))
+        .expect("the row renders")
+        .to_string();
+
+    // Split the row at the column boundary: the engine column ends where the
+    // sensitivities column begins, and the two must not carry each other's category.
+    let engine_at = row.find("Unreal").expect("engine rendered");
+    let sensitivity_at = row.find("Easy Anti-Cheat").expect("sensitivity rendered");
+    assert!(
+        engine_at < sensitivity_at,
+        "ENGINE precedes SENSITIVITIES: {row}"
+    );
+    let (engine_col, sensitivities_col) = row.split_at(sensitivity_at);
+    assert!(
+        !engine_col.contains("Easy Anti-Cheat"),
+        "the engine column carries no protection product: {row}"
+    );
+    assert!(
+        !sensitivities_col.contains("Unreal"),
+        "the sensitivities column carries no engine: {row}"
+    );
+}
+
+#[test]
+fn the_three_coverage_states_render_as_three_different_things() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[
+          { "stable_id": 201, "handle": "aaa_scanned_clean", "name": "Scanned Clean",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:201",
+            "detection_scan": "complete", "evidence": [] },
+          { "stable_id": 202, "handle": "bbb_scan_incomplete", "name": "Scan Incomplete",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:202",
+            "detection_scan": "incomplete", "evidence": [] },
+          { "stable_id": 203, "handle": "ccc_never_scanned", "name": "Never Scanned",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:203" }
+        ]"#,
+        &dir,
+    );
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+
+    let marker_of = |handle: &str| -> String {
+        let row = out
+            .lines()
+            .find(|l| l.contains(handle))
+            .unwrap_or_else(|| panic!("row {handle} renders:\n{out}"));
+        // Everything after the readiness label is the two technology columns.
+        let tail = row
+            .split_once("ready")
+            .unwrap_or_else(|| panic!("readiness label on {handle}: {row}"))
+            .1;
+        tail.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
+    let clean = marker_of("aaa_scanned_clean");
+    let incomplete = marker_of("bbb_scan_incomplete");
+    let never = marker_of("ccc_never_scanned");
+
+    assert_ne!(clean, incomplete, "scanned clean is not scan incomplete");
+    assert_ne!(clean, never, "scanned clean is not never scanned");
+    assert_ne!(incomplete, never, "scan incomplete is not never scanned");
+
+    assert!(
+        never.contains("not scanned"),
+        "a row nobody scanned says so: {never}"
+    );
+    assert!(
+        incomplete.contains("incomplete"),
+        "a partial scan says so: {incomplete}"
+    );
+}
+
+#[test]
+fn the_retired_readiness_sentences_appear_nowhere_in_the_listing() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    // One ready row and one that needs a target: between them they cover both
+    // branches the two retired sentences used to serve.
+    run(&[
+        "targets",
+        "add",
+        "Ready One",
+        "--db",
+        &store,
+        "--anchor",
+        "steam:301",
+    ]);
+    run(&["targets", "add", "Needs One", "--db", &store]);
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("no online mode recorded"),
+        "retired, not relocated: {out}"
+    );
+    assert!(
+        !out.contains("no launch data known"),
+        "retired, not relocated: {out}"
+    );
+    // The readiness distinction is still stated, once, where it belongs.
+    assert!(out.contains("ready"), "{out}");
+    assert!(out.contains("needs a target"), "{out}");
+}
+
+/// The greatest number of columns the row consumes outside the TARGET column: the
+/// row number, the readiness label, the engine column, the sensitivities column, and
+/// the five separators. Measured, not computed from the layout, so adding a column or
+/// widening a marker moves it and the test says so.
+const NON_HANDLE_COLUMNS: usize = 53;
+
+/// The terminal width the listing is budgeted against.
+const TERMINAL_COLUMNS: usize = 80;
+
+/// Two rows whose values force every bounded column to its widest: `Unity, Unreal`
+/// widens ENGINE past the `not scanned` marker, `Easy Anti-Cheat` is the widest
+/// realistic sensitivity, and the second row puts the widest coverage marker in play.
+fn widest_value_rows(handle: &str) -> String {
+    // The second handle is the same length as the first on purpose: a longer one
+    // would widen the shared TARGET column and the budget would no longer describe
+    // the row being measured.
+    let mut second = handle.to_string();
+    second.pop();
+    second.push('z');
+    format!(
+        r#"[
+          {{ "stable_id": 9001, "handle": "{handle}", "name": "Widest",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "detection_scan": "complete",
+            "evidence": [
+                {{ "category": "engine", "product": "Unity, Unreal" }},
+                {{ "category": "anti-cheat", "product": "Easy Anti-Cheat" }}
+            ] }},
+          {{ "stable_id": 9002, "handle": "{second}", "name": "Never Scanned",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified" }}
+        ]"#
+    )
+}
+
+/// The widest rendered line and the widest handle in a listing.
+fn measure(out: &str) -> (usize, usize) {
+    let widest_line = out.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    let widest_handle = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .filter(|w| w.starts_with('w'))
+        .map(|w| w.chars().count())
+        .max()
+        .unwrap_or(0);
+    (widest_line, widest_handle)
+}
+
+#[test]
+fn the_columns_outside_the_handle_stay_within_their_measured_budget() {
+    // FR-017 and SC-006. The handle is operator data whose width the tool does not
+    // control and must not truncate, so the checkable budget is what the *other*
+    // columns cost. Measured from the rendered line rather than recomputed from the
+    // layout, so a new column or a wider marker is caught here.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    let handle = "w".repeat(20);
+    import_row(&store, &widest_value_rows(&handle), &dir);
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("not scanned"), "widest marker in play: {out}");
+    assert!(
+        out.contains("Easy Anti-Cheat"),
+        "widest value in play: {out}"
+    );
+
+    let (widest_line, widest_handle) = measure(&out);
+    assert!(widest_handle > 0, "handles were measured: {out}");
+    assert_eq!(
+        widest_line - widest_handle,
+        NON_HANDLE_COLUMNS,
+        "the non-handle columns cost exactly the budgeted width:\n{out}"
+    );
+}
+
+#[test]
+fn a_table_of_ordinary_handles_fits_an_eighty_column_terminal() {
+    // The consequence of the budget above: a handle of
+    // `TERMINAL_COLUMNS - NON_HANDLE_COLUMNS` characters is the widest that fits, and
+    // it does fit, with every bounded column at its worst case.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    let longest_fitting = TERMINAL_COLUMNS - NON_HANDLE_COLUMNS;
+    let handle = "w".repeat(longest_fitting);
+    import_row(&store, &widest_value_rows(&handle), &dir);
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= TERMINAL_COLUMNS,
+            "line is {} of {TERMINAL_COLUMNS} columns:\n{line}",
+            line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn a_handle_wider_than_the_budget_overflows_rather_than_being_truncated() {
+    // The declared behavior when the budget is exceeded (FR-017, decision D-5). The
+    // operator machine has a 47 character handle, so this is the real case, not a
+    // hypothetical: `warhammer_40_000_dawn_of_war_definitive_edition` renders a 100
+    // column row. Truncating it would be the silent loss P-4 forbids, and wrapping
+    // would break the alignment the split exists to provide, so it overflows and
+    // every value stays whole.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    let handle = "warhammer_40_000_dawn_of_war_definitive_edition";
+    assert_eq!(
+        handle.len(),
+        47,
+        "the measured handle from the real machine"
+    );
+    import_row(&store, &widest_value_rows(handle), &dir);
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(handle),
+        "the handle renders whole, never clipped: {out}"
+    );
+    assert!(
+        out.contains("Easy Anti-Cheat"),
+        "and so does the last column: {out}"
+    );
+    assert!(
+        !out.contains("..."),
+        "nothing is elided with an ellipsis: {out}"
+    );
+    let widest_line = out.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    assert!(
+        widest_line > TERMINAL_COLUMNS,
+        "this case really does overflow, so the test is not vacuous: {widest_line}"
+    );
+}
+
+#[test]
+fn the_detail_view_reports_the_same_technologies_as_the_listing() {
+    // Two surfaces, one answer: `targets show` and the table must not disagree.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[{
+            "stable_id": 501, "handle": "trapped_with_ivy_piper", "name": "Trapped",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:501",
+            "detection_scan": "complete",
+            "evidence": [{ "category": "engine", "product": "Ren'Py" }]
+        }]"#,
+        &dir,
+    );
+
+    let (code, show, _err) = run(&["targets", "show", "trapped_with_ivy_piper", "--db", &store]);
+    assert_eq!(code, 0, "{show}");
+    assert!(show.contains("engine:"), "{show}");
+    assert!(show.contains("Ren'Py"), "the engine is named: {show}");
+    assert!(
+        show.contains("sensitivities:"),
+        "the sensitivities line is present even when empty: {show}"
+    );
+
+    let (code, list, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{list}");
+    assert!(list.contains("Ren'Py"), "and the listing agrees: {list}");
+}
+
+#[test]
+fn the_machine_surface_carries_the_partition_and_the_coverage_state() {
+    // FR-016: the JSON and the table must not disagree about what a technology is
+    // or about whether a scan happened.
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[{
+            "stable_id": 601, "handle": "detroit_become_human", "name": "Detroit",
+            "classification": "game", "classification_source": "platform",
+            "fidelity": "verified", "anchor": "steam:601",
+            "detection_scan": "complete",
+            "evidence": [{ "category": "drm", "product": "Steam DRM",
+                           "evidence": "DetroitBecomeHuman.exe",
+                           "fidelity": "verified" }]
+        }]"#,
+        &dir,
+    );
+
+    let (code, json, _err) = run(&["targets", "export", "--db", &store]);
+    assert_eq!(code, 0, "{json}");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let row = &value.as_array().expect("array")[0];
+    assert_eq!(
+        row["detection_scan"], "complete",
+        "the coverage state is machine-readable: {json}"
+    );
+    assert_eq!(
+        row["evidence"][0]["category"], "drm",
+        "every finding names its category: {json}"
+    );
+
+    // And the table renders the same finding in the sensitivities column.
+    let (code, list, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{list}");
+    let row = list
+        .lines()
+        .find(|l| l.contains("detroit_become_human"))
+        .expect("row renders");
+    assert!(row.contains("Steam DRM"), "{row}");
 }

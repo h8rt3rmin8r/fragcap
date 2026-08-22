@@ -88,10 +88,13 @@ pub fn run(args: &TechnologiesArgs, out: &mut dyn Write) -> Result<Exit, CliErro
         }
     }
 
-    // An unreadable subtree reduced coverage: say so rather than let the result read
-    // as complete (P-4).
-    for path in &outcome.unreadable {
-        let _ = writeln!(out, "  warning: could not read {}", path.display());
+    // Everything the scan did not cover: an unreadable subtree, and candidates a
+    // scan bound truncated. Say so rather than let the result read as complete
+    // (P-4). Taken from the outcome's own helper rather than re-derived here, so
+    // this command cannot report a narrower set of causes than the discovery paths
+    // do; reading only `unreadable` is exactly how the cap count went unreported.
+    for warning in outcome.coverage_warnings() {
+        let _ = writeln!(out, "  warning: {warning}");
     }
 
     // Reduced coverage from an inert (not-yet-matchable) signature kind is surfaced,
@@ -141,9 +144,13 @@ mod tests {
     }
 
     fn write(dir: &Path, rel: &str) {
+        write_bytes(dir, rel, b"");
+    }
+
+    fn write_bytes(dir: &Path, rel: &str, bytes: &[u8]) {
         let full = dir.join(rel);
         fs::create_dir_all(full.parent().unwrap()).unwrap();
-        fs::write(full, b"").unwrap();
+        fs::write(full, bytes).unwrap();
     }
 
     /// A seeded catalog.db in a scratch directory.
@@ -155,12 +162,61 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_candidate_set_is_named_rather_than_read_as_a_clean_scan() {
+        // The inventory command is where a researcher goes to audit a directory, so
+        // it is the worst place to under-report coverage. Before this it printed
+        // only unreadable paths, so a directory with more executables than the scan
+        // cap could print "no technologies detected" with nothing saying the scan
+        // had been truncated (P-4).
+        use fragcap::profile::signature::MARKER_SCAN_MAX_CANDIDATES;
+
+        let dir = temp_dir("truncated");
+        let catalog = seeded_catalog(&dir);
+        let pe = fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text"]);
+        let extra = 4;
+        for i in 0..(MARKER_SCAN_MAX_CANDIDATES + extra) {
+            write_bytes(&dir, &format!("game-{i:04}.exe"), &pe);
+        }
+
+        let args = TechnologiesArgs {
+            path: dir.clone(),
+            catalog_db: Some(catalog),
+        };
+        let mut out: Vec<u8> = Vec::new();
+        let exit = run(&args, &mut out).expect("scan succeeds");
+        assert_eq!(exit, Exit::SUCCESS);
+        let text = String::from_utf8(out).unwrap();
+
+        assert!(
+            text.contains("no technologies detected"),
+            "none of these carry a marker: {text}"
+        );
+        assert!(
+            text.contains("binary marker"),
+            "the truncation is named, not left implied-absent: {text}"
+        );
+        assert!(
+            text.contains(&format!("{extra} more were not examined")),
+            "and it says how many were dropped: {text}"
+        );
+    }
+
+    #[test]
     fn it_reports_detected_technologies_as_neutral_evidence() {
         let dir = temp_dir("report");
         let catalog = seeded_catalog(&dir);
         write(&dir, "UnityPlayer.dll");
         write(&dir, "EasyAntiCheat/EasyAntiCheat_x64.dll");
+        // Since slice S065 the DRM signal is the wrapper's own `.bind` PE section,
+        // not the presence of the Steamworks SDK library beside it. Both are written
+        // here so the test still covers a DRM finding rendering in the DRM category,
+        // and still shows that the library alone would not have produced one.
         write(&dir, "steam_api64.dll");
+        write_bytes(
+            &dir,
+            "Game.exe",
+            &fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text", ".bind"]),
+        );
         let args = TechnologiesArgs {
             path: dir.clone(),
             catalog_db: Some(catalog),

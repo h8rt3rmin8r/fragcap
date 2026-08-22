@@ -1,15 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! A bounded reader for a Windows PE binary's version-information strings (slice
-//! S053), for the `pe-version-string` detection signature kind.
+//! Bounded readers for a Windows PE binary's headers: its version-information
+//! strings (slice S053), for the `pe-version-string` detection signature kind, and
+//! its section-table names (slice S065), for the `binary-marker` kind.
 //!
-//! It confirms the file is a PE image (the DOS `MZ` stub and the `PE\0\0`
-//! signature the `e_lfanew` offset points at), locates the `VS_VERSION_INFO`
-//! version-information block by its root key, reads the block's own declared length
-//! (`wLength`, the first field of the `VS_VERSIONINFO` structure, six bytes before
-//! the key), and extracts the UTF-16LE string fields within those bounds
-//! (`CompanyName`, `ProductName`, `FileDescription`, and the structural keys). A
-//! `pe-version-string` signature matches its needle against those strings.
+//! The two read different structures and cost very different amounts.
+//! [`section_names`] walks only the DOS stub, the COFF file header, and the section
+//! table, all of which sit in the first few kilobytes of any real image, so its
+//! caller hands it a bounded prefix. [`version_strings`] locates a block by scanning
+//! for its key and is given the whole file. That is why a section-name signature can
+//! be evaluated against a launch executable of any size and a version-string
+//! signature is reserved for files whose names look like images.
+//!
+//! Both confirm the file is a PE image first: the DOS `MZ` stub and the `PE\0\0`
+//! signature the `e_lfanew` offset points at.
+//!
+//! # The version-information reader
+//!
+//! [`version_strings`] locates the `VS_VERSION_INFO` block by its root key, reads
+//! the block's own declared length (`wLength`, the first field of the
+//! `VS_VERSIONINFO` structure, six bytes before the key), and extracts the UTF-16LE
+//! string fields within those bounds (`CompanyName`, `ProductName`,
+//! `FileDescription`, and the structural keys). A `pe-version-string` signature
+//! matches its needle against those strings.
 //!
 //! It is deliberately not a full resource-directory walk: locating the block by its
 //! key and honoring its declared length is enough to read the version strings
@@ -19,6 +32,15 @@
 //! an unrelated section or overlay is not read as a version string. If the length
 //! field is implausible the read falls back to a small capped window, never the
 //! whole file.
+//!
+//! # The section-table reader
+//!
+//! [`section_names`] steps from the PE signature through the COFF file header to
+//! the section table, whose position the header's own `SizeOfOptionalHeader` gives,
+//! and returns the names in table order. The optional header is stepped over rather
+//! than read, so the PE32 and PE32+ variants need no separate handling. A
+//! `binary-marker` signature of the `section:` form matches its glob against those
+//! names.
 //!
 //! # Passive
 //!
@@ -142,12 +164,110 @@ fn flush(current: &mut Vec<u16>, out: &mut Vec<String>) {
     current.clear();
 }
 
-#[cfg(test)]
-/// Test-support fixture builders. Fixtures are generated, not hand-made
-/// (`fixtures/README.md`): this builds a minimal PE image carrying one
-/// version-information string so the `pe-version-string` matcher is exercised
-/// without a real binary.
-pub mod tests_support {
+/// The size of one `IMAGE_SECTION_HEADER` in the section table.
+const SECTION_HEADER_BYTES: usize = 40;
+
+/// The number of leading bytes of a section header that hold its name, NUL-padded
+/// ASCII.
+const SECTION_NAME_BYTES: usize = 8;
+
+/// The greatest number of section headers read from one image. The Windows loader
+/// itself refuses an image with more than 96 sections, so a larger declared count is
+/// a corrupt or hostile header rather than a real image, and bounding the read here
+/// means a bad `NumberOfSections` cannot drive a large scan.
+const MAX_SECTIONS: usize = 96;
+
+/// The section-table names of a PE image, in table order, for the `binary-marker`
+/// detection signature kind (slice S065).
+///
+/// Returns an empty vector when the bytes are not a PE image, when the headers are
+/// malformed, or when the section table lies outside the bytes supplied. It never
+/// errors: what it does not find, it reports as absent rather than guessed (P-9).
+///
+/// The walk is: the `MZ` stub, the `e_lfanew` offset it carries at `0x3C`, the
+/// `PE\0\0` signature there, then the COFF file header, whose `NumberOfSections`
+/// (offset 2) and `SizeOfOptionalHeader` (offset 16) locate the section table at
+/// `e_lfanew + 4 + 20 + SizeOfOptionalHeader`. The optional header is stepped over
+/// rather than read, so the PE32 and PE32+ variants need no separate handling, and
+/// no `.rsrc` directory walk is involved. That is why a section-name read is
+/// affordable against a launch executable where the version-resource read is not.
+///
+/// # Passive
+///
+/// It reads bytes of a file the operator already has on disk, and the caller hands
+/// it a bounded prefix rather than the whole file. It opens no process handle, reads
+/// no process memory, and calls no operating-system API (constitution P-1).
+pub fn section_names(bytes: &[u8]) -> Vec<String> {
+    if !is_pe(bytes) {
+        return Vec::new();
+    }
+    let e_lfanew =
+        u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]]) as usize;
+    // The COFF file header begins immediately after the four-byte PE signature.
+    let Some(coff) = e_lfanew.checked_add(4) else {
+        return Vec::new();
+    };
+    let Some(section_count) = read_u16(bytes, coff + 2) else {
+        return Vec::new();
+    };
+    let Some(optional_header_size) = read_u16(bytes, coff + 16) else {
+        return Vec::new();
+    };
+    // The COFF file header is 20 bytes; the optional header follows it and is
+    // stepped over by its own declared size.
+    let Some(table) = coff
+        .checked_add(20)
+        .and_then(|o| o.checked_add(optional_header_size as usize))
+    else {
+        return Vec::new();
+    };
+
+    let count = (section_count as usize).min(MAX_SECTIONS);
+    let mut names = Vec::with_capacity(count);
+    for i in 0..count {
+        let Some(start) = table.checked_add(i * SECTION_HEADER_BYTES) else {
+            break;
+        };
+        let Some(field) = bytes.get(start..start + SECTION_NAME_BYTES) else {
+            // The declared count runs past the bytes supplied. Return the names
+            // actually present rather than nothing: a truncated read is reported as
+            // what it saw, never padded out with guesses.
+            break;
+        };
+        // A section name is NUL-padded when shorter than eight bytes, and is not
+        // NUL-terminated when it fills the field exactly.
+        let end = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+        if end == 0 {
+            continue;
+        }
+        if let Ok(name) = std::str::from_utf8(&field[..end]) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// A little-endian `u16` at `offset`, or `None` if it does not fit in `bytes`.
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let pair = bytes.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes([pair[0], pair[1]]))
+}
+
+/// Fixture builders for PE inputs, public so every crate that tests detection
+/// generates its bytes from this one place.
+///
+/// Fixtures are generated, not hand-made (`fixtures/README.md`). It builds a
+/// minimal PE image carrying one version-information string, so the
+/// `pe-version-string` matcher is exercised without a real binary, and a minimal PE
+/// image carrying a chosen section table, so the `binary-marker` matcher is
+/// exercised the same way.
+///
+/// It is not behind `#[cfg(test)]` because `fragcap-targets` and the facade test the
+/// same matchers against the same inputs, and a second hand-rolled builder in each
+/// would be free to drift from this one. That follows the precedent already set by
+/// this workspace's other public fixture types (`FixtureCatalog`,
+/// `FixtureClassifier`, `FixtureSource`, `FixtureEngineFeed`).
+pub mod fixtures {
     use super::utf16le;
 
     /// Build a minimal PE image whose version block carries `key` = `value`.
@@ -168,6 +288,44 @@ pub mod tests_support {
         // signature, then the version block appended whole.
         buf.extend_from_slice(&[0, 0]);
         buf.extend_from_slice(&version_block(key, value));
+        buf
+    }
+
+    /// Build a minimal PE image whose section table carries `names`.
+    ///
+    /// It is not a loadable executable and carries no real code or data; it is the
+    /// smallest byte sequence [`super::section_names`] accepts: the `MZ` stub, an
+    /// `e_lfanew` pointing at a `PE\0\0` signature, a COFF file header declaring the
+    /// section count and the optional-header size, a zeroed optional header of that
+    /// size, and one 40-byte section header per name with the name NUL-padded into
+    /// its first eight bytes.
+    pub fn minimal_pe_with_sections(names: &[&str]) -> Vec<u8> {
+        // A plausible PE32+ optional header size, so the table offset arithmetic is
+        // exercised against a non-zero step rather than a degenerate zero.
+        const OPTIONAL_HEADER_BYTES: u16 = 240;
+
+        let mut buf = vec![0u8; 0x40];
+        buf[0] = b'M';
+        buf[1] = b'Z';
+        buf[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        buf.extend_from_slice(b"PE\0\0");
+
+        // The COFF file header, 20 bytes: Machine, NumberOfSections,
+        // TimeDateStamp, PointerToSymbolTable, NumberOfSymbols,
+        // SizeOfOptionalHeader, Characteristics.
+        let mut coff = vec![0u8; 20];
+        coff[2..4].copy_from_slice(&(names.len() as u16).to_le_bytes());
+        coff[16..18].copy_from_slice(&OPTIONAL_HEADER_BYTES.to_le_bytes());
+        buf.extend_from_slice(&coff);
+        buf.extend_from_slice(&vec![0u8; OPTIONAL_HEADER_BYTES as usize]);
+
+        for name in names {
+            let mut header = vec![0u8; 40];
+            let bytes = name.as_bytes();
+            let take = bytes.len().min(8);
+            header[..take].copy_from_slice(&bytes[..take]);
+            buf.extend_from_slice(&header);
+        }
         buf
     }
 
@@ -215,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_version_block_string_is_read_back() {
-        let bytes = tests_support::minimal_pe_with_version_string("ProductName", "Frostbite");
+        let bytes = fixtures::minimal_pe_with_version_string("ProductName", "Frostbite");
         let strings = version_strings(&bytes);
         assert!(
             strings.iter().any(|s| s == "Frostbite"),
@@ -224,10 +382,61 @@ mod tests {
     }
 
     #[test]
+    fn a_non_pe_file_yields_no_section_names() {
+        assert!(section_names(b"not a pe file at all").is_empty());
+        assert!(section_names(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_section_table_is_read_back_in_table_order() {
+        let bytes = fixtures::minimal_pe_with_sections(&[".text", ".rdata", ".data", ".bind"]);
+        assert_eq!(
+            section_names(&bytes),
+            vec![".text", ".rdata", ".data", ".bind"],
+            "names come back in table order"
+        );
+    }
+
+    #[test]
+    fn a_name_filling_the_field_is_not_truncated_and_a_short_one_is_trimmed() {
+        // Eight characters exactly fill the name field and carry no NUL terminator;
+        // a shorter name is NUL-padded and must not carry the padding.
+        let bytes = fixtures::minimal_pe_with_sections(&["12345678", ".tls"]);
+        assert_eq!(section_names(&bytes), vec!["12345678", ".tls"]);
+    }
+
+    #[test]
+    fn a_declared_count_past_the_supplied_bytes_yields_only_what_is_present() {
+        // Build a two-section image, then truncate the second header away while
+        // leaving the count claiming two. The reader must report the one name it can
+        // actually see rather than inventing a second or returning nothing.
+        let mut bytes = fixtures::minimal_pe_with_sections(&[".text", ".bind"]);
+        let cut = bytes.len() - 40;
+        bytes.truncate(cut);
+        assert_eq!(section_names(&bytes), vec![".text"]);
+    }
+
+    #[test]
+    fn a_truncated_header_yields_nothing_rather_than_a_panic() {
+        // Every prefix of a valid image must be safe to hand to the reader: this is
+        // the bounded-prefix read the caller performs, exercised at every boundary.
+        let full = fixtures::minimal_pe_with_sections(&[".text", ".bind"]);
+        for cut in 0..full.len() {
+            let _ = section_names(&full[..cut]);
+        }
+    }
+
+    #[test]
+    fn a_pe_with_no_sections_yields_no_names() {
+        let bytes = fixtures::minimal_pe_with_sections(&[]);
+        assert!(section_names(&bytes).is_empty());
+    }
+
+    #[test]
     fn text_after_the_bounded_block_is_not_read() {
         // A valid version block whose wLength bounds the read, followed by unrelated
         // UTF-16 text in an "overlay". The out-of-bounds text must not be returned.
-        let mut bytes = tests_support::minimal_pe_with_version_string("ProductName", "RealEngine");
+        let mut bytes = fixtures::minimal_pe_with_version_string("ProductName", "RealEngine");
         bytes.extend_from_slice(&utf16le("OverlayNeedle"));
         bytes.extend_from_slice(&[0, 0]);
         let strings = version_strings(&bytes);

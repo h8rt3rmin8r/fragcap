@@ -65,7 +65,7 @@ pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,
     DEFAULT_ENGINE_CONFIDENCE,
 };
-pub use entry::{ClassificationSource, TargetClassification, TargetEntry};
+pub use entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
 pub use export::export;
 pub use gate::{CorpusGate, DEFAULT_MIN_REVIEWS};
 pub use hint_provider::{entry_windows_clients, HintDatabaseProvider};
@@ -78,7 +78,7 @@ pub use model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
-pub use readiness::{capture_readiness, known_summary, CaptureReadiness};
+pub use readiness::{capture_readiness, engine_summary, sensitivities_summary, CaptureReadiness};
 pub use register::{register_candidate, register_candidates, RegistrationOutcome};
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use selector::{is_row_index, resolve_id, resolve_positional, Selection};

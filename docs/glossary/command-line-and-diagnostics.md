@@ -186,8 +186,9 @@ output.
 
 The output of `fragcap targets` (and a bare `fragcap`): a numbered table of the
 user's registered, capturable targets, each row showing a 1-based index, the
-target handle, a capture-readiness status, and neutral known evidence, ending by
-naming the next command to run. Producing it runs discovery across its tiers and
+target handle, a capture-readiness status, and two neutral evidence columns (the
+detected engine, and the detected anti-cheat and DRM products), ending by naming
+the next command to run. Producing it runs discovery across its tiers and
 registers any newly found titles first, so a fresh install lists the user's own
 software; an empty result prints the commands that populate the store instead of
 an empty table.
@@ -198,7 +199,7 @@ an empty table.
 > is capturable in principle; the readiness column reports how close, never
 > whether the row is valid.
 
-**See also:** [Listing snapshot](command-line-and-diagnostics.md#listing-snapshot), [Capture readiness](command-line-and-diagnostics.md#capture-readiness)
+**See also:** [Listing snapshot](command-line-and-diagnostics.md#listing-snapshot), [Capture readiness](command-line-and-diagnostics.md#capture-readiness), [Sensitivities](command-line-and-diagnostics.md#sensitivities)
 
 ## Listing snapshot
 
@@ -231,6 +232,50 @@ and stored nowhere.
 > target` row becomes ready once a capture observes its socket holder.
 
 **See also:** [Unresolved launch chain](process-and-attribution.md#unresolved-launch-chain), [Hero listing](command-line-and-diagnostics.md#hero-listing)
+
+## Sensitivities
+
+The hero listing column that names the anti-cheat and DRM products detected in a
+target's install directory, anti-cheat before DRM. Its sibling column, ENGINE,
+names the detected engine. The two are partitioned on the category each detection
+finding already carries, so no column mixes an engine with a protection product.
+The same partition is recoverable from the target-entry export, so the table and
+the machine-readable output cannot disagree about what a technology is.
+
+No value in either column is truncated and no row is wrapped: the columns other
+than the target handle cost a bounded width, and a handle wider than the
+remaining budget overflows an 80 column terminal visibly rather than being
+clipped.
+
+{: .matters }
+> The two columns replaced one, KNOWN, which comma-joined every product
+> regardless of category and substituted a sentence about capture readiness when
+> it had none. A reader could not tell an engine from a protection product, and
+> silently clipping a value to fit would be the same class of loss principle P-4
+> forbids for a dropped packet.
+
+**See also:** [Coverage state](command-line-and-diagnostics.md#coverage-state), [Hero listing](command-line-and-diagnostics.md#hero-listing)
+
+## Coverage state
+
+What a target row records about whether its install directory was scanned for
+technologies, and whether that scan covered everything it set out to: `complete`,
+`incomplete`, or absent. Absent means no scan is recorded, which is what a row
+produced by a source that ran no detection carries. It is stored on the target
+entry and carried by the target-entry export, so it survives a round trip.
+
+When a technology column has no products to name it renders the row's coverage
+state instead: `-` for a complete scan that matched nothing, `incomplete` for a
+scan whose coverage was reduced, and `not scanned` when none is recorded.
+
+{: .matters }
+> "Nothing is here", "the scan could not finish", and "nobody looked" are three
+> different facts, and a single blank cell asserts the first of them for all
+> three. Distinguishing them is a principle P-4 concern rather than a cosmetic
+> one: an operator acting on an empty engine column needs to know whether that is
+> an answer.
+
+**See also:** [Sensitivities](command-line-and-diagnostics.md#sensitivities), [Binary marker](anti-cheat-and-security.md#binary-marker)
 
 ## Target-entry export
 

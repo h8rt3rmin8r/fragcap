@@ -109,6 +109,61 @@ impl ClassificationSource {
     }
 }
 
+/// Whether a target's install directory was scanned for technologies, and whether
+/// that scan covered everything it set out to (slice S065).
+///
+/// This is deliberately a distinct fact from the finding set. A complete scan that
+/// matched nothing is a real answer; an incomplete scan that matched nothing is not,
+/// and a directory nobody ever scanned is a third thing again. Collapsing the three
+/// into one blank column is the silent loss P-4 forbids.
+///
+/// There is no `NotScanned` variant. Absence is modeled by `Option::None`, stored as
+/// SQL `NULL`, because a variant would let a row assert that no scan happened, which
+/// is a claim, where absence is simply the lack of one. Every row written before
+/// this slice reads as `None`, which is correct rather than a migration gap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DetectionScan {
+    /// The directory was scanned and the scan read everything it set out to read.
+    Complete,
+    /// The directory was scanned and coverage was reduced: something could not be
+    /// read, or a scan bound truncated the candidate set.
+    Incomplete,
+}
+
+impl DetectionScan {
+    /// The stored string, matching the schema CHECK set.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DetectionScan::Complete => "complete",
+            DetectionScan::Incomplete => "incomplete",
+        }
+    }
+
+    /// Parse a stored string, rejecting an out-of-set value before it can be trusted
+    /// as a coverage claim. An unrecognized value is an error rather than a
+    /// permissive fallback: reading it as "no scan recorded" would silently discard a
+    /// claim the store made, and reading it as "complete" would invent one (P-9).
+    pub fn parse(s: &str) -> Result<DetectionScan, TargetsError> {
+        match s {
+            "complete" => Ok(DetectionScan::Complete),
+            "incomplete" => Ok(DetectionScan::Incomplete),
+            other => Err(TargetsError::Model(format!(
+                "unknown detection scan state {other:?}"
+            ))),
+        }
+    }
+
+    /// The coverage state a scan outcome earns: `Complete` only when nothing was
+    /// unreadable and no bound truncated the candidate set.
+    pub fn from_outcome(outcome: &fragcap_profile::signature::ScanOutcome) -> DetectionScan {
+        if outcome.is_complete() {
+            DetectionScan::Complete
+        } else {
+            DetectionScan::Incomplete
+        }
+    }
+}
+
 /// One capture target, a row in the `targets` table of `local.db`.
 ///
 /// `id` is `None` before insertion (the store assigns the autoincrement primary
@@ -142,6 +197,10 @@ pub struct TargetEntry {
     pub install_root: Option<String>,
     /// Supporting evidence, carried whole as JSON.
     pub evidence: Option<serde_json::Value>,
+    /// Whether this target's install directory was scanned for technologies and
+    /// whether that scan was complete. `None` means no scan is recorded, which is
+    /// what a row produced by a source that ran no detection carries.
+    pub detection_scan: Option<DetectionScan>,
 }
 
 #[cfg(test)]
@@ -161,6 +220,18 @@ mod tests {
             assert_eq!(TargetClassification::parse(c.as_str()).unwrap(), c);
         }
         assert!(TargetClassification::parse("nonsense").is_err());
+    }
+
+    #[test]
+    fn detection_scan_round_trips_every_variant_and_rejects_the_rest() {
+        for d in [DetectionScan::Complete, DetectionScan::Incomplete] {
+            assert_eq!(DetectionScan::parse(d.as_str()).unwrap(), d);
+        }
+        assert!(DetectionScan::parse("nonsense").is_err());
+        // "not-scanned" is deliberately not a value: absence is None, never a
+        // stored claim that no scan happened.
+        assert!(DetectionScan::parse("not-scanned").is_err());
+        assert!(DetectionScan::parse("").is_err());
     }
 
     #[test]

@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The detection signature seed, end to end (slice S053 US2).
+//! The detection signature seed, end to end (slice S053 US2, extended in S065).
 //!
 //! Seeds the bundled Appendix B set into a store, loads it back, and detects each
-//! implemented-kind product from a fixture directory (SC-001, SC-003). Proves a new
+//! matchable product from a fixture directory (SC-001, SC-003). Proves a new
 //! signature row is honored with no code change (SC-002) and that the inert
-//! binary-marker rows are counted rather than dropped (P-4).
+//! byte-marker rows are counted rather than dropped (P-4).
+//!
+//! S065 adds the directed subset invariant between the two engine detectors: every
+//! engine the launch-resolution rules can select a client executable for must have
+//! an engine-category signature naming the same product. See the slice decisions
+//! fragment for why the invariant is directed rather than an equality.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use fragcap_profile::pe;
 use fragcap_profile::{
-    Signature, SignatureCategory, SignatureConfidence, SignatureKind, SignatureSet,
+    Engine, Signature, SignatureCategory, SignatureConfidence, SignatureKind, SignatureSet,
 };
-use fragcap_targets::{seed_bundled, Store};
+use fragcap_targets::{parse_seed_document, seed_bundled, Store, BUNDLED_SIGNATURES};
 
 struct TempTree {
     root: PathBuf,
@@ -35,11 +41,15 @@ impl TempTree {
     }
 
     fn touch(&self, rel: &str) {
+        self.write(rel, b"");
+    }
+
+    fn write(&self, rel: &str, bytes: &[u8]) {
         let full = self.root.join(rel);
         if let Some(parent) = full.parent() {
             fs::create_dir_all(parent).expect("parents");
         }
-        fs::write(&full, b"").expect("write");
+        fs::write(&full, bytes).expect("write");
     }
 
     fn mkdir(&self, rel: &str) {
@@ -75,18 +85,29 @@ fn all_markers_tree() -> TempTree {
     tree.touch("mhyprot3.sys"); // mhyprot
     tree.mkdir("GameGuard"); // nProtect GameGuard (directory-shape)
     tree.touch("xhunter1.sys"); // Xigncode3
-                                // DRM (implemented).
-    tree.touch("steam_api64.dll"); // Steam DRM
+    tree.touch("renpy/bootstrap.py"); // Ren'Py (directory-shape)
+    tree.touch("data.win"); // GameMaker (filename)
+                            // DRM (matchable): the wrapper appends a `.bind` PE
+                            // section to the launch executable. Shipping
+                            // `steam_api64.dll` is the Steamworks SDK and is
+                            // deliberately not a DRM signal any more (S065, #169).
+    tree.touch("steam_api64.dll");
+    tree.write(
+        "Game.exe",
+        &pe::fixtures::minimal_pe_with_sections(&[".text", ".rdata", ".bind"]),
+    );
     tree
 }
 
-const IMPLEMENTED_PRODUCTS: &[&str] = &[
+const MATCHABLE_PRODUCTS: &[&str] = &[
     "Unity",
     "Unreal",
     "Source",
     "Godot",
     "CryEngine",
     "RE Engine",
+    "Ren'Py",
+    "GameMaker",
     "Easy Anti-Cheat",
     "BattlEye",
     "Vanguard",
@@ -95,6 +116,17 @@ const IMPLEMENTED_PRODUCTS: &[&str] = &[
     "Xigncode3",
     "Steam DRM",
 ];
+
+/// The byte-sequence marker products this build carries but cannot match. Derived
+/// from the seed rather than listed twice: a row moving out of this class changes
+/// the seed and the assertion together.
+fn inert_products(signatures: &[Signature]) -> Vec<String> {
+    signatures
+        .iter()
+        .filter(|s| !s.is_matchable())
+        .map(|s| s.product.clone())
+        .collect()
+}
 
 #[test]
 fn seeding_the_bundled_set_populates_the_table_and_counts_inert_rows() {
@@ -105,21 +137,156 @@ fn seeding_the_bundled_set_populates_the_table_and_counts_inert_rows() {
     let signatures = store.load_signatures().expect("load");
     // SC-001: every Appendix B product is represented.
     let products: Vec<&str> = signatures.iter().map(|s| s.product.as_str()).collect();
-    for p in IMPLEMENTED_PRODUCTS
+    let inert = inert_products(&signatures);
+    for p in MATCHABLE_PRODUCTS
         .iter()
-        .chain(&["Denuvo", "Arxan", "VMProtect"])
+        .copied()
+        .chain(inert.iter().map(String::as_str))
     {
-        assert!(products.contains(p), "product {p} is seeded");
+        assert!(products.contains(&p), "product {p} is seeded");
     }
 
-    // The three content-only DRM products are inert (binary-marker), counted not
-    // dropped (P-4).
+    // The byte-marker rows are inert, counted rather than dropped (P-4). The count
+    // is derived from the seed itself rather than asserted as a literal, so adding
+    // or implementing one of them does not need this assertion edited, and cannot
+    // silently stop being covered.
     let set = SignatureSet::compile(&signatures);
-    assert_eq!(set.inert_count(), 3, "Denuvo/Arxan/VMProtect are inert");
+    assert_eq!(
+        set.inert_count(),
+        inert.len(),
+        "every unmatchable row is inert, none dropped: {inert:?}"
+    );
+    assert!(
+        !inert.is_empty(),
+        "the byte-marker rows are still carried and still inert"
+    );
     assert_eq!(
         set.applied_count() + set.inert_count() + set.skipped_count(),
         set.total_count(),
         "the load accounting is conserved"
+    );
+    assert_eq!(
+        set.skipped_count(),
+        0,
+        "the shipped seed has no malformed row"
+    );
+}
+
+#[test]
+fn the_shipped_seed_reports_no_drm_for_the_steamworks_sdk() {
+    // #169: the two `steam_api*.dll` rows reported "Steam DRM" on 28 of 32 real
+    // rows, on the basis of a library that ships with essentially every Steam
+    // title. They are gone, and no row may reintroduce that pattern.
+    let signatures = parse_seed_document(BUNDLED_SIGNATURES).expect("parse");
+    for s in &signatures {
+        assert!(
+            !s.pattern.to_lowercase().contains("steam_api"),
+            "the Steamworks SDK library is not a DRM signal: {s:?}"
+        );
+    }
+
+    // And a tree that ships the library with an unwrapped executable reports none.
+    let set = SignatureSet::compile(&signatures);
+    let tree = TempTree::new("sdk-only");
+    tree.touch("steam_api64.dll");
+    tree.touch("steam_api.dll");
+    tree.write(
+        "Game.exe",
+        &pe::fixtures::minimal_pe_with_sections(&[".text", ".rdata", ".reloc"]),
+    );
+    let outcome = set.detect(tree.path()).expect("readable");
+    assert!(
+        !outcome
+            .findings
+            .iter()
+            .any(|f| f.category == SignatureCategory::Drm),
+        "no DRM from the SDK alone: {:?}",
+        outcome.findings
+    );
+}
+
+#[test]
+fn every_launch_resolution_engine_is_nameable_by_the_signature_set() {
+    // The directed subset invariant (S065, #168 option b). An engine the
+    // launch-resolution rules can select a client executable for, that the
+    // signature set cannot name, produces a run where the resolver silently used an
+    // engine rule while the listing reports no engine at all.
+    //
+    // It is directed on purpose: the signature set legitimately names engines
+    // nobody has written a client-selection rule for (Source, CryEngine, RE Engine,
+    // GameMaker), and requiring equality would force either a fabricated selection
+    // rule or the removal of a true detection.
+    //
+    // It iterates `Engine::ALL` rather than a list maintained beside it, so adding
+    // a variant without adding a signature fails here, and it asserts no count.
+    let signatures = parse_seed_document(BUNDLED_SIGNATURES).expect("parse");
+    for engine in Engine::ALL {
+        let product = engine.product_name();
+        assert!(
+            signatures
+                .iter()
+                .any(|s| s.category == SignatureCategory::Engine && s.product == product),
+            "engine {product:?} can be resolved to a client but has no detection \
+             signature: add an engine-category row for it to \
+             crates/fragcap-targets/assets/signatures.json"
+        );
+    }
+}
+
+#[test]
+fn the_measured_renpy_and_gamemaker_trees_each_name_one_engine() {
+    // The two trees measured on the operator machine (#168), fixtured so this is
+    // covered with no Steam install.
+    let signatures = parse_seed_document(BUNDLED_SIGNATURES).expect("parse");
+    let set = SignatureSet::compile(&signatures);
+
+    let renpy = TempTree::new("renpy-tree");
+    renpy.touch("TrappedWithIvyAndPiper-EA.exe");
+    renpy.touch("TrappedWithIvyAndPiper-EA.py");
+    renpy.touch("game/archive.rpa");
+    renpy.touch("renpy/bootstrap.py");
+    renpy.touch("lib/py3-windows-x86_64/librenpython.dll");
+    renpy.touch("lib/py3-windows-x86_64/steam_api64.dll");
+    let findings = set.detect(renpy.path()).expect("readable").findings;
+    let engines: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.category == SignatureCategory::Engine)
+        .map(|f| f.product.as_str())
+        .collect();
+    assert_eq!(
+        engines,
+        vec!["Ren'Py"],
+        "one engine after dedup: {findings:?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.category == SignatureCategory::Drm),
+        "no wrapper, so no DRM: {findings:?}"
+    );
+
+    let gamemaker = TempTree::new("gamemaker-tree");
+    gamemaker.touch("Shale Hill Secrets.exe");
+    gamemaker.touch("data.win");
+    gamemaker.touch("options.ini");
+    gamemaker.touch("Steamworks_x64.dll");
+    gamemaker.touch("steam_api64.dll");
+    let findings = set.detect(gamemaker.path()).expect("readable").findings;
+    let engines: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.category == SignatureCategory::Engine)
+        .map(|f| f.product.as_str())
+        .collect();
+    assert_eq!(
+        engines,
+        vec!["GameMaker"],
+        "one engine after dedup: {findings:?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.category == SignatureCategory::Drm),
+        "no wrapper, so no DRM: {findings:?}"
     );
 }
 
@@ -138,16 +305,16 @@ fn every_implemented_product_is_detected_from_a_fixture() {
         .iter()
         .map(|f| f.product.as_str())
         .collect();
-    for product in IMPLEMENTED_PRODUCTS {
+    for product in MATCHABLE_PRODUCTS {
         assert!(
             found.contains(product),
             "implemented product {product} detected; found {found:?}"
         );
     }
-    // No inert DRM product matches (they never do this slice).
-    for inert in ["Denuvo", "Arxan", "VMProtect"] {
+    // No inert product matches, by construction.
+    for inert in inert_products(&store.load_signatures().expect("reload")) {
         assert!(
-            !found.contains(&inert),
+            !found.contains(&inert.as_str()),
             "{inert} is inert and does not match"
         );
     }

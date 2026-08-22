@@ -25,7 +25,7 @@
 
 use fragcap_profile::{DetectionFinding, FidelityTier};
 
-use crate::entry::TargetClassification;
+use crate::entry::{DetectionScan, TargetClassification};
 use crate::TargetsError;
 
 /// What a source found, enough to identify it and later author it into an entry.
@@ -60,6 +60,12 @@ pub struct CandidateTarget {
     /// when the producing source ran no signature detection. A fact set only; no
     /// field here characterizes a title as off limits (specification section 3.6).
     pub evidence: Vec<DetectionFinding>,
+    /// Whether the directory of the candidate was scanned for technologies and whether
+    /// that scan was complete (slice S065). `None` when the producing source ran no
+    /// detection at all, which is a different fact from a scan that found nothing:
+    /// an empty `evidence` with `Some(Complete)` is an answer, an empty `evidence`
+    /// with `None` is the absence of one (P-4, P-9).
+    pub detection_scan: Option<DetectionScan>,
     /// The name of the source that produced this candidate.
     pub source_name: String,
 }
@@ -207,6 +213,7 @@ mod tests {
             fidelity: FidelityTier::HeuristicUnverified,
             classification: TargetClassification::Unknown,
             evidence: Vec::new(),
+            detection_scan: None,
             source_name: source.to_string(),
         }
     }

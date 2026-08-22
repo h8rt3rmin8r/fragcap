@@ -28,41 +28,52 @@ use std::path::{Path, PathBuf};
 use fragcap_profile::signature::SignatureSet;
 use fragcap_profile::{DetectionFinding, FidelityTier};
 use fragcap_targets::{
-    CandidateIdentity, CandidateTarget, Discovery, DiscoveryAccount, Store, TargetClassification,
-    TargetSource, TargetsError,
+    CandidateIdentity, CandidateTarget, DetectionScan, Discovery, DiscoveryAccount, Store,
+    TargetClassification, TargetSource, TargetsError,
 };
 
 /// Detect the technologies in an install directory (slice S053), returning the
-/// fidelity the local evidence earns and the findings as neutral evidence. A
-/// detected engine raises the fidelity to what its signature earns (a definitive
-/// marker is verified, which outranks a remote catalog attribution, P-9); a subtree
-/// or root that could not be read is surfaced into `warnings` rather than dropped
-/// (P-4).
+/// fidelity the local evidence earns, the findings as neutral evidence, and the
+/// coverage state of the scan (slice S065). A detected engine raises the fidelity to
+/// what its signature earns (a definitive marker is verified, which outranks a
+/// remote catalog attribution, P-9); a subtree or root that could not be read, and a
+/// candidate set a scan bound truncated, are surfaced into `warnings` rather than
+/// dropped (P-4).
+///
+/// The coverage state is never `None` here: this function always runs a scan, so
+/// either it completed or it did not. `None` is reserved for a source that ran no
+/// detection at all, which is a different fact.
 fn detect_evidence(
     signatures: &SignatureSet,
     install_dir: &Path,
     warnings: &mut Vec<String>,
-) -> (FidelityTier, Vec<DetectionFinding>) {
+) -> (FidelityTier, Vec<DetectionFinding>, DetectionScan) {
     match signatures.detect(install_dir) {
         Ok(outcome) => {
-            for path in &outcome.unreadable {
-                warnings.push(format!(
-                    "could not read subtree during detection: {}",
-                    path.display()
-                ));
-            }
+            // Everything the scan did not cover, named rather than only counted
+            // (P-4). One shared implementation, so this source and the pointed
+            // directory source cannot drift apart on what they report.
+            warnings.extend(outcome.coverage_warnings());
+            let scan = DetectionScan::from_outcome(&outcome);
             let fidelity = outcome
                 .detected_engine()
                 .map(|e| e.fidelity)
                 .unwrap_or(FidelityTier::HeuristicUnverified);
-            (fidelity, outcome.findings)
+            (fidelity, outcome.findings, scan)
         }
         Err(e) => {
             warnings.push(format!(
                 "could not read install directory during detection: {}",
                 e.path.display()
             ));
-            (FidelityTier::HeuristicUnverified, Vec::new())
+            // A scan was attempted and covered nothing. `Incomplete`, not `None`: an
+            // attempt that failed is a different fact from no attempt, and recording
+            // it as no attempt would lose the failure (P-4).
+            (
+                FidelityTier::HeuristicUnverified,
+                Vec::new(),
+                DetectionScan::Incomplete,
+            )
         }
     }
 }
@@ -130,7 +141,7 @@ impl TargetSource for SteamSource<'_> {
             // rides as evidence and raises the fidelity to `verified`, outranking the
             // remote catalog attribution (P-9); any anti-cheat or DRM rides as neutral
             // evidence. A title with no local engine keeps heuristic-unverified.
-            let (fidelity, evidence) =
+            let (fidelity, evidence, detection_scan) =
                 detect_evidence(&signature_set, &title.install_dir, &mut warnings);
             candidates.push(CandidateTarget {
                 identity: CandidateIdentity::SteamAppId(appid),
@@ -138,6 +149,7 @@ impl TargetSource for SteamSource<'_> {
                 fidelity,
                 classification,
                 evidence,
+                detection_scan: Some(detection_scan),
                 source_name: self.name().to_string(),
             });
         }

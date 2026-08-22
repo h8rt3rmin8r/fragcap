@@ -18,8 +18,8 @@ use std::io::IsTerminal;
 
 use fragcap::targets::{
     handle, identifier, is_row_index, resolve_id, resolve_positional, CandidateIdentity,
-    ClassificationSource, DirectorySource, Discovery, Selection, SocketHolderAnswer, Store,
-    TargetClassification, TargetEntry, TargetSource,
+    ClassificationSource, DetectionScan, DirectorySource, Discovery, Selection, SocketHolderAnswer,
+    Store, TargetClassification, TargetEntry, TargetSource,
 };
 
 use crate::cli::{
@@ -202,34 +202,73 @@ fn empty_listing(out: &mut dyn Write, footer: bool) {
     }
 }
 
-/// Render the numbered CAPTURE/KNOWN table. Columns size to their content so the
-/// output stays aligned; the target order is the caller's (handle order).
+/// Render the numbered CAPTURE / ENGINE / SENSITIVITIES table. The target order is
+/// the caller's (handle order).
+///
+/// # The width rule
+///
+/// Every column but the last sizes to its own content; the last, SENSITIVITIES, is
+/// free-running and is neither padded nor truncated. Nothing here truncates a value
+/// and nothing wraps a row.
+///
+/// That is a decision, not an accident. Truncating a product name is the silent loss
+/// P-4 forbids: an operator reading `Easy Anti-Che...` cannot tell whether the value
+/// was clipped or whether a second product was dropped. Wrapping a row would break
+/// the column alignment the split exists to provide. A value wider than the terminal
+/// therefore overflows visibly, which is a legible failure rather than a lie.
+///
+/// The budget is therefore stated over the columns the tool controls. With every
+/// bounded column at its widest, everything but the handle costs 53 of an 80 column
+/// terminal, leaving 27 for a handle. The readiness column keeping its two short
+/// labels is what buys that much, which is why slice S065 retired the two long
+/// readiness sentences rather than moving them here (see the slice decisions
+/// fragment).
+///
+/// The operator's own machine does not fit, and that is the declared behavior rather
+/// than a defect: its longest handle is 47 characters
+/// (`warhammer_40_000_dawn_of_war_definitive_edition`), so its rows run to 100
+/// columns with every value intact. Shortening the handles a target carries is
+/// issues #166 and #173. `cli_targets.rs` measures the non-handle budget, the fit at
+/// the longest fitting handle, and the no-clipping overflow at that real 47
+/// character handle, all from rendered output, so none of this can drift unnoticed.
 fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
     let num_w = targets.len().to_string().len().max(1);
-    let target_w = targets
-        .iter()
-        .map(|t| t.handle.chars().count())
-        .chain(std::iter::once("TARGET".len()))
-        .max()
-        .unwrap_or(6);
+    let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");
     let capture_w = "needs a target".len();
+    let engine_w = width_of(
+        targets.iter().map(fragcap::targets::engine_summary),
+        "ENGINE",
+    );
     let _ = writeln!(
         out,
-        "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  KNOWN",
-        "#", "TARGET", "CAPTURE"
+        "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  SENSITIVITIES",
+        "#", "TARGET", "CAPTURE", "ENGINE"
     );
     for (i, t) in targets.iter().enumerate() {
         let capture = fragcap::targets::capture_readiness(t).label();
-        let known = fragcap::targets::known_summary(t);
+        let engine = fragcap::targets::engine_summary(t);
+        let sensitivities = fragcap::targets::sensitivities_summary(t);
         let _ = writeln!(
             out,
-            "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {}",
+            "  {:>num_w$}  {:<target_w$}  {:<capture_w$}  {:<engine_w$}  {}",
             i + 1,
             t.handle,
             capture,
-            known
+            engine,
+            sensitivities
         );
     }
+}
+
+/// The display width of a column: the widest value, never narrower than its heading.
+/// Counts characters rather than bytes so a non-ASCII product name (`Ren'Py` is
+/// ASCII, but a future one need not be) does not over-pad.
+fn width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
+    values
+        .map(|v| v.chars().count())
+        .chain(std::iter::once(heading.chars().count()))
+        .max()
+        .unwrap_or_else(|| heading.chars().count())
 }
 
 /// Discover and register into `store`, returning the number of newly registered
@@ -724,10 +763,14 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     // Run detection on the executable's directory and show the evidence inline
     // before the socket-holder decision depends on it (FR-009). Best-effort: a bare
     // exe name or a missing catalog yields no evidence, not an error.
-    let evidence = args
-        .exe
-        .as_deref()
-        .and_then(|exe| scan_exe_evidence(exe, out));
+    // The coverage state rides with the evidence: a scan that ran records whether it
+    // was complete, and no scan at all records nothing rather than claiming a clean
+    // one. This is the fourth producing source and is plumbed like the other three
+    // (FR-015).
+    let (evidence, detection_scan) = match args.exe.as_deref() {
+        Some(exe) => scan_exe_evidence(exe, out),
+        None => (None, None),
+    };
 
     // The socket-holder answer decides the stored launch chain. Interactive when
     // stdin is a terminal and no `--socket-holder` was given; otherwise the flag.
@@ -758,6 +801,7 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
         launch_entries,
         install_root: None,
         evidence,
+        detection_scan,
     };
     store
         .insert_target(&entry)
@@ -817,23 +861,67 @@ fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliEr
 }
 
 /// Run detection on the directory containing `exe` and print any engine, anti-cheat,
-/// or DRM findings inline, returning them as the `evidence` JSON. Best-effort: a bare
-/// exe name (no directory), a missing default catalog, or a scan error yields no
-/// evidence rather than failing the add.
-fn scan_exe_evidence(exe: &str, out: &mut dyn Write) -> Option<serde_json::Value> {
-    let dir = Path::new(exe)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())?;
-    let catalog_db = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)?;
-    if !catalog_db.exists() {
-        return None;
+/// or DRM findings inline, returning them as the `evidence` JSON and the coverage
+/// state of the scan.
+///
+/// Best-effort: nothing here fails the add. A bare exe name (no directory) or a
+/// missing or unreadable catalog means no scan was possible, so the coverage state is
+/// `None`; recording `Complete` there would claim a clean scan that never happened
+/// (P-9). A scan that ran and matched nothing returns no evidence but does record its
+/// coverage state, which is what makes "scanned clean" distinguishable from "never
+/// scanned" on this path. A scan attempted against a directory that could not be read
+/// records `Incomplete`, matching the other three producing sources: an attempt that
+/// failed is not the absence of an attempt (FR-015).
+///
+/// Anything the scan did not cover is written to `out` as a named warning, so a row
+/// that lists as `incomplete` has its cause stated at the moment it was registered
+/// rather than counted and left unexplained (P-4).
+fn scan_exe_evidence(
+    exe: &str,
+    out: &mut dyn Write,
+) -> (Option<serde_json::Value>, Option<DetectionScan>) {
+    evidence_from_scan(run_exe_scan(exe), out)
+}
+
+/// Map a scan attempt to the evidence JSON and the coverage state it earns, printing
+/// the findings and anything the scan did not cover.
+///
+/// Split from [`scan_exe_evidence`] so the mapping is reachable by a test: the CLI
+/// test harness points every test at a catalog path that does not exist, so a test
+/// driving the command surface can only ever reach [`ExeScan::NotRun`], and the
+/// `Failed` arm below is exactly the one that was wrong.
+fn evidence_from_scan(
+    scan: ExeScan,
+    out: &mut dyn Write,
+) -> (Option<serde_json::Value>, Option<DetectionScan>) {
+    let outcome = match scan {
+        ExeScan::NotRun => return (None, None),
+        ExeScan::Failed { path } => {
+            // A scan was attempted against a directory that could not be read. That
+            // is `Incomplete`, not `None`: an attempt that failed is a different
+            // fact from no attempt, and recording it as no attempt would claim
+            // nobody looked (P-9, FR-015). The other three producing sources record
+            // it the same way.
+            let _ = writeln!(
+                out,
+                "  warning: could not read {} during detection",
+                path.display()
+            );
+            return (None, Some(DetectionScan::Incomplete));
+        }
+        ExeScan::Ran(outcome) => outcome,
+    };
+    let scan = Some(DetectionScan::from_outcome(&outcome));
+    // Everything the scan did not cover, named here rather than only recorded on
+    // the entry (P-4). Without this the row lists as `incomplete` with the cause
+    // stated nowhere, which counts the loss without surfacing it. Emitted before
+    // the early return, so a truncated scan that also matched nothing still says
+    // why it is incomplete.
+    for warning in outcome.coverage_warnings() {
+        let _ = writeln!(out, "  warning: {warning}");
     }
-    let catalog = Store::open(&catalog_db).ok()?;
-    let signatures = catalog.load_signatures().ok()?;
-    let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
-    let outcome = set.detect(dir).ok()?;
     if outcome.findings.is_empty() {
-        return None;
+        return (None, scan);
     }
     let mut findings = Vec::new();
     for f in &outcome.findings {
@@ -851,7 +939,56 @@ fn scan_exe_evidence(exe: &str, out: &mut dyn Write) -> Option<serde_json::Value
             "fidelity": f.fidelity.as_str(),
         }));
     }
-    Some(serde_json::Value::Array(findings))
+    (Some(serde_json::Value::Array(findings)), scan)
+}
+
+/// What came of trying to scan the directory containing an executable.
+///
+/// Three outcomes, not two. Collapsing the last two loses the distinction the whole
+/// coverage state exists to carry: a scan that was never possible and a scan that was
+/// attempted and failed are different facts, and only the first of them means nobody
+/// looked (P-9).
+enum ExeScan {
+    /// No scan was possible: a bare exe name with no directory, no resolvable
+    /// catalog, a catalog that is absent, or one that could not be opened or read.
+    /// Nothing was attempted, so the target records no coverage claim.
+    NotRun,
+    /// A scan was attempted and the directory could not be read.
+    Failed {
+        /// The directory that could not be read, so the failure is nameable.
+        path: PathBuf,
+    },
+    /// A scan ran and produced an outcome, complete or otherwise.
+    Ran(fragcap::profile::signature::ScanOutcome),
+}
+
+/// Scan the directory containing `exe`, distinguishing a scan that could not be run
+/// from one that ran and one that was attempted and failed.
+fn run_exe_scan(exe: &str) -> ExeScan {
+    let Some(dir) = Path::new(exe)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return ExeScan::NotRun;
+    };
+    let Some(catalog_db) = paths::catalog_db_path(None).or_else(paths::default_catalog_db_path)
+    else {
+        return ExeScan::NotRun;
+    };
+    if !catalog_db.exists() {
+        return ExeScan::NotRun;
+    }
+    let Ok(catalog) = Store::open(&catalog_db) else {
+        return ExeScan::NotRun;
+    };
+    let Ok(signatures) = catalog.load_signatures() else {
+        return ExeScan::NotRun;
+    };
+    let set = fragcap::profile::signature::SignatureSet::compile(&signatures);
+    match set.detect(dir) {
+        Ok(outcome) => ExeScan::Ran(outcome),
+        Err(e) => ExeScan::Failed { path: e.path },
+    }
 }
 
 /// Show one target resolved by a selector.
@@ -902,6 +1039,10 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 }
 
 /// Print one resolved target's fields.
+///
+/// The engine and sensitivities lines are the same derivations the listing renders,
+/// so the detail view and the table cannot disagree about what a technology is or
+/// about whether a scan happened.
 fn print_target(t: &TargetEntry, out: &mut dyn Write) {
     let _ = writeln!(out, "handle:         {}", t.handle);
     let _ = writeln!(out, "name:           {}", t.name);
@@ -911,6 +1052,16 @@ fn print_target(t: &TargetEntry, out: &mut dyn Write) {
     if let Some(anchor) = &t.anchor {
         let _ = writeln!(out, "anchor:         {anchor}");
     }
+    let _ = writeln!(
+        out,
+        "engine:         {}",
+        fragcap::targets::engine_summary(t)
+    );
+    let _ = writeln!(
+        out,
+        "sensitivities:  {}",
+        fragcap::targets::sensitivities_summary(t)
+    );
 }
 
 /// The file stem of an executable name (drop a trailing extension), for the
@@ -925,6 +1076,46 @@ fn exe_stem(exe: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{evidence_from_scan, DetectionScan, ExeScan};
+
+    #[test]
+    fn a_scan_that_was_never_possible_records_no_coverage_claim() {
+        // Nothing was attempted: a bare exe name, or no catalog to scan against.
+        // Recording any state here would claim a scan that did not happen (P-9).
+        let mut out: Vec<u8> = Vec::new();
+        let (evidence, scan) = evidence_from_scan(ExeScan::NotRun, &mut out);
+        assert!(evidence.is_none());
+        assert_eq!(scan, None, "no attempt means no claim");
+        assert!(out.is_empty(), "and nothing to report");
+    }
+
+    #[test]
+    fn a_scan_attempted_against_an_unreadable_directory_is_incomplete_not_unscanned() {
+        // The distinction the whole coverage state exists to carry. This arm used
+        // to collapse into `NotRun`, so a target whose directory could not be read
+        // listed as `not scanned`, claiming nobody looked when the tool had looked
+        // and failed. The other three producing sources record `Incomplete` here,
+        // and FR-015 requires this one to agree.
+        let mut out: Vec<u8> = Vec::new();
+        let (evidence, scan) = evidence_from_scan(
+            ExeScan::Failed {
+                path: std::path::PathBuf::from("D:/Games/Unreadable"),
+            },
+            &mut out,
+        );
+        assert!(evidence.is_none(), "a failed scan found nothing");
+        assert_eq!(
+            scan,
+            Some(DetectionScan::Incomplete),
+            "an attempt that failed is not the absence of an attempt"
+        );
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(
+            text.contains("Unreadable") && text.contains("could not read"),
+            "and the failure is named, not only recorded: {text}"
+        );
+    }
+
     use super::ensure_parent_dir;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};

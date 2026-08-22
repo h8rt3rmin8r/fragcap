@@ -12,14 +12,14 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::entry::{ClassificationSource, TargetClassification, TargetEntry};
+use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
 use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,
 };
 use crate::schema::{
     DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6,
-    SCHEMA_VERSION,
+    MIGRATE_6_TO_7, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
@@ -116,6 +116,17 @@ impl Store {
             tx.pragma_update(None, "user_version", 6i64)?;
             tx.commit()?;
             version = 6;
+        }
+
+        if version == 6 {
+            // 6 -> 7: add the nullable detection_scan column to targets (slice
+            // S065). Existing rows read it as NULL, which is the "no scan recorded"
+            // state, so nothing is backfilled and no row changes meaning.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_6_TO_7)?;
+            tx.pragma_update(None, "user_version", 7i64)?;
+            tx.commit()?;
+            version = 7;
         }
 
         if version != SCHEMA_VERSION {
@@ -499,8 +510,9 @@ impl Store {
         let result = self.conn.execute(
             "INSERT INTO targets
                 (stable_id, handle, name, classification, classification_source,
-                 fidelity, provenance, anchor, launch_entries, install_root, evidence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 fidelity, provenance, anchor, launch_entries, install_root, evidence,
+                 detection_scan)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 entry.stable_id,
                 entry.handle,
@@ -513,6 +525,7 @@ impl Store {
                 entry.launch_entries.as_ref().map(json_text),
                 entry.install_root,
                 entry.evidence.as_ref().map(json_text),
+                entry.detection_scan.map(|d| d.as_str()),
             ],
         );
         match result {
@@ -541,7 +554,7 @@ impl Store {
             .query_row(
                 "SELECT id, stable_id, handle, name, classification,
                         classification_source, fidelity, provenance, anchor,
-                        launch_entries, install_root, evidence
+                        launch_entries, install_root, evidence, detection_scan
                  FROM targets WHERE id = ?1",
                 params![id],
                 read_target_row,
@@ -556,7 +569,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, stable_id, handle, name, classification,
                     classification_source, fidelity, provenance, anchor,
-                    launch_entries, install_root, evidence
+                    launch_entries, install_root, evidence, detection_scan
              FROM targets ORDER BY id",
         )?;
         let rows = stmt.query_map([], read_target_row)?;
@@ -573,7 +586,7 @@ impl Store {
             .query_row(
                 "SELECT id, stable_id, handle, name, classification,
                         classification_source, fidelity, provenance, anchor,
-                        launch_entries, install_root, evidence
+                        launch_entries, install_root, evidence, detection_scan
                  FROM targets WHERE handle = ?1",
                 params![handle],
                 read_target_row,
@@ -607,7 +620,7 @@ impl Store {
             .query_row(
                 "SELECT id, stable_id, handle, name, classification,
                         classification_source, fidelity, provenance, anchor,
-                        launch_entries, install_root, evidence
+                        launch_entries, install_root, evidence, detection_scan
                  FROM targets WHERE stable_id = ?1",
                 params![stable_id],
                 read_target_row,
@@ -703,7 +716,8 @@ impl Store {
             "UPDATE targets SET
                 handle = ?2, name = ?3, classification = ?4,
                 classification_source = ?5, fidelity = ?6, provenance = ?7,
-                anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11
+                anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11,
+                detection_scan = ?12
              WHERE stable_id = ?1",
             params![
                 entry.stable_id,
@@ -717,6 +731,7 @@ impl Store {
                 entry.launch_entries.as_ref().map(json_text),
                 entry.install_root,
                 entry.evidence.as_ref().map(json_text),
+                entry.detection_scan.map(|d| d.as_str()),
             ],
         );
         match result {
@@ -752,7 +767,7 @@ impl Store {
                 )
                 .optional()?
                 .is_some();
-            // Both statements bind ?1..?11 in the same order, so one parameter list
+            // Both statements bind ?1..?12 in the same order, so one parameter list
             // serves both. The JSON renderings are bound to locals so they outlive
             // the `params!` borrow.
             let provenance = entry.provenance.as_ref().map(json_text);
@@ -770,13 +785,15 @@ impl Store {
                 launch_entries,
                 entry.install_root,
                 evidence,
+                entry.detection_scan.map(|d| d.as_str()),
             ];
             let result = if exists {
                 tx.execute(
                     "UPDATE targets SET
                         handle = ?2, name = ?3, classification = ?4,
                         classification_source = ?5, fidelity = ?6, provenance = ?7,
-                        anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11
+                        anchor = ?8, launch_entries = ?9, install_root = ?10, evidence = ?11,
+                        detection_scan = ?12
                      WHERE stable_id = ?1",
                     bound,
                 )
@@ -784,8 +801,9 @@ impl Store {
                 tx.execute(
                     "INSERT INTO targets
                         (stable_id, handle, name, classification, classification_source,
-                         fidelity, provenance, anchor, launch_entries, install_root, evidence)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         fidelity, provenance, anchor, launch_entries, install_root, evidence,
+                         detection_scan)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     bound,
                 )
             };
@@ -1121,6 +1139,7 @@ fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEnt
     let launch_entries: Option<String> = row.get(9)?;
     let install_root: Option<String> = row.get(10)?;
     let evidence: Option<String> = row.get(11)?;
+    let detection_scan: Option<String> = row.get(12)?;
 
     Ok((|| {
         Ok(TargetEntry {
@@ -1137,6 +1156,14 @@ fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEnt
             launch_entries: parse_json_opt(launch_entries)?,
             install_root,
             evidence: parse_json_opt(evidence)?,
+            // An out-of-set stored value is an error, never read permissively: the
+            // CHECK constraint makes it unwritable by this build, so encountering
+            // one means the file was written by something else and its coverage
+            // claim cannot be trusted (P-9).
+            detection_scan: detection_scan
+                .as_deref()
+                .map(DetectionScan::parse)
+                .transpose()?,
         })
     })())
 }
@@ -1377,17 +1404,21 @@ mod tests {
             launch_entries: Some(serde_json::json!([{ "executable": "game.exe" }])),
             install_root: None,
             evidence: None,
+            detection_scan: None,
         }
     }
 
     #[test]
-    fn fresh_store_is_v6_with_empty_targets_and_eligibility_tables() {
+    fn a_fresh_store_is_at_the_current_version_with_empty_tables() {
         let store = Store::open_in_memory().expect("store");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 6);
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "a store this build wrote is stamped at the version this build declares"
+        );
         assert!(store.targets().expect("targets").is_empty());
         assert!(store
             .volume_eligibility_is_empty()
@@ -1400,19 +1431,86 @@ mod tests {
     }
 
     #[test]
-    fn v1_store_migrates_to_v6_with_catalog_rows_intact() {
+    fn a_v6_store_gains_the_coverage_column_and_reads_it_as_no_scan_recorded() {
+        // The migration is additive: an existing row keeps every value and reads the
+        // new column as NULL, which is exactly "no scan is recorded". Nothing is
+        // backfilled, because backfilling would invent a scan that never ran (P-9).
+        let store = Store::open_in_memory().expect("store");
+        let conn = store.conn;
+        // Roll the file back to v6 by dropping the column and the version stamp, the
+        // shape a store written by the previous build actually has.
+        conn.execute_batch("ALTER TABLE targets DROP COLUMN detection_scan;")
+            .expect("drop column");
+        conn.pragma_update(None, "user_version", 6i64)
+            .expect("stamp v6");
+        conn.execute(
+            "INSERT INTO targets
+                (stable_id, handle, name, classification, classification_source, fidelity)
+             VALUES (11, 'older_row', 'Older Row', 'game', 'user', 'authored')",
+            [],
+        )
+        .expect("insert a pre-migration row");
+
+        let store = Store::from_connection(conn).expect("migrate forward");
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let targets = store.targets().expect("targets");
+        assert_eq!(targets.len(), 1, "the existing row survives");
+        assert_eq!(targets[0].handle, "older_row");
+        assert_eq!(
+            targets[0].detection_scan, None,
+            "a row written before the column reads as no scan recorded, never as clean"
+        );
+    }
+
+    #[test]
+    fn the_coverage_column_round_trips_and_refuses_an_out_of_set_value() {
+        let mut store = Store::open_in_memory().expect("store");
+        let mut entry = sample_target("scanned", Some("steam:1"), FidelityTier::Authored);
+        entry.detection_scan = Some(DetectionScan::Incomplete);
+        store.insert_target(&entry).expect("insert");
+        let read = store
+            .target_by_handle("scanned")
+            .expect("read")
+            .expect("present");
+        assert_eq!(read.detection_scan, Some(DetectionScan::Incomplete));
+
+        // The CHECK set makes an out-of-vocabulary coverage claim unstorable, so the
+        // listing cannot render a state the store never wrote (P-9).
+        let err = store
+            .conn
+            .execute(
+                "UPDATE targets SET detection_scan = 'probably' WHERE handle = 'scanned'",
+                [],
+            )
+            .expect_err("an out-of-set coverage value is refused");
+        assert!(
+            format!("{err}").to_lowercase().contains("constraint"),
+            "refused by the CHECK constraint: {err}"
+        );
+    }
+
+    #[test]
+    fn a_v1_store_migrates_to_the_current_version_with_catalog_rows_intact() {
         let conn = v1_connection();
         conn.execute(
             "INSERT INTO games (appid, name, review_count) VALUES (730, 'CS2', 1234)",
             [],
         )
         .expect("insert v1 row");
-        let store = Store::from_connection(conn).expect("migrate to v6");
+        let store = Store::from_connection(conn).expect("migrate forward");
         let version: i64 = store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 6);
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "a store this build wrote is stamped at the version this build declares"
+        );
         assert!(store.targets().expect("targets").is_empty());
         assert!(store
             .volume_eligibility_is_empty()
