@@ -43,7 +43,7 @@ site.
 | `active_endpoints` | `usize` | `stamper.active_endpoints().len()` (existing, same call `FilterNarration` makes) |
 | `narrowed` | `bool` | `active_endpoints > 0`, mirroring `FilterNarration`'s own definition |
 | `watch_discarded`, `out_of_window_discarded`, `scope_discarded`, `scope_unresolved_discarded` | `u64` each | `gate_handle`'s existing atomics |
-| `buffer_dropped` | `u64` | the new `LiveStats::buffer_reader.evicted()` |
+| `buffer_dropped` | `u64` | the new `LiveStats::buffer_dropped()` accessor (Copilot review of PR #196: corrected from an earlier-planned `buffer_reader` type that the implementation replaced with a plain atomic, per research R-2's `Consumer::next_and_evicted`) |
 | `sink_dropped` | `u64` | the new `LiveStats::sink_dropped` atomic |
 | `holder_tally` | `Vec<(Arc<str>, u64)>`, sorted by count descending then name ascending (a total order, matching `CaptureStats::dominant_holder`'s own tiebreak discipline) | a snapshot copy of the new `LiveStats::holder_tally` |
 

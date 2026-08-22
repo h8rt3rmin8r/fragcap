@@ -69,6 +69,12 @@ pub struct Emitter<'w> {
     /// may not have produced real output, to decide whether the heartbeat's
     /// own interval should reset, without `Emitter` knowing anything about
     /// heartbeats itself.
+    ///
+    /// `etw`+`windows`-gated along with its one reader,
+    /// [`Emitter::progress_written`]; see `lib.rs`'s note on `mod
+    /// live_status` for why an unread field is otherwise dead code on a
+    /// platform where that reader's caller does not exist.
+    #[cfg(all(feature = "etw", windows))]
     progress_written: u64,
 }
 
@@ -80,6 +86,7 @@ impl<'w> Emitter<'w> {
             format,
             verbosity,
             clock: SystemTime::now,
+            #[cfg(all(feature = "etw", windows))]
             progress_written: 0,
         }
     }
@@ -97,12 +104,19 @@ impl<'w> Emitter<'w> {
     pub fn progress(&mut self, line: &str) {
         if self.format == Format::Human && self.verbosity == Verbosity::Normal {
             let _ = writeln!(self.err, "{line}");
-            self.progress_written += 1;
+            #[cfg(all(feature = "etw", windows))]
+            {
+                self.progress_written += 1;
+            }
         }
     }
 
     /// How many progress lines have actually been written so far. See the
     /// field's own documentation for why this exists.
+    ///
+    /// `etw`+`windows`-gated with its one caller; see `lib.rs`'s note on
+    /// `mod live_status`.
+    #[cfg(all(feature = "etw", windows))]
     pub fn progress_written(&self) -> u64 {
         self.progress_written
     }
@@ -110,11 +124,16 @@ impl<'w> Emitter<'w> {
     /// The current output format, for a caller (the live capture status
     /// display, slice S069) that must pick among three mutually exclusive
     /// behaviors per tick rather than calling a single gated method.
+    ///
+    /// `etw`+`windows`-gated with its one caller; see `lib.rs`'s note on
+    /// `mod live_status`.
+    #[cfg(all(feature = "etw", windows))]
     pub fn format(&self) -> Format {
         self.format
     }
 
     /// The current verbosity, for the same reason as [`Emitter::format`].
+    #[cfg(all(feature = "etw", windows))]
     pub fn verbosity(&self) -> Verbosity {
         self.verbosity
     }
@@ -126,6 +145,10 @@ impl<'w> Emitter<'w> {
     /// matching every other non-error output; a caller that also wants the
     /// `--quiet` gate checks `verbosity() == Verbosity::Normal` itself before
     /// calling, the same check `progress` already makes.
+    ///
+    /// `etw`+`windows`-gated with its one caller; see `lib.rs`'s note on
+    /// `mod live_status`.
+    #[cfg(all(feature = "etw", windows))]
     pub fn live_write(&mut self, text: &str) {
         if self.verbosity != Verbosity::Silent {
             let _ = write!(self.err, "{text}");
@@ -197,6 +220,7 @@ mod tests {
                 format,
                 verbosity,
                 clock: || std::time::UNIX_EPOCH,
+                #[cfg(all(feature = "etw", windows))]
                 progress_written: 0,
             };
             f(&mut e);
@@ -211,6 +235,9 @@ mod tests {
         assert!(emit(Format::Human, Verbosity::Silent, |e| e.progress("armed")).is_empty());
     }
 
+    // `progress_written` and its reader are `etw`+`windows`-gated (see the
+    // field's own doc comment), so this test is too.
+    #[cfg(all(feature = "etw", windows))]
     #[test]
     fn progress_written_only_counts_lines_that_actually_wrote() {
         let mut buf: Vec<u8> = Vec::new();

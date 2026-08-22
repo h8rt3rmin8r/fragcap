@@ -44,9 +44,12 @@ use fragcap::{
 
 use crate::args::Direction;
 use crate::assemble::{self, CaptureComponents, EffectiveConfig, EventStream, ARMED_AT};
-use crate::emit::{Emitter, Format, Verbosity};
+use crate::emit::Emitter;
+#[cfg(all(feature = "etw", windows))]
+use crate::emit::{Format, Verbosity};
 use crate::events::Event;
 use crate::exit::{CliError, Exit};
+#[cfg(all(feature = "etw", windows))]
 use crate::live_status;
 use crate::output::CompletionSummary;
 
@@ -532,6 +535,33 @@ fn capture_live(
     // needed; this is a second, `capture_live`-local map so `drive`
     // (research R-1: not touched by this slice) keeps its existing type.
     let mut bound_images: HashMap<u32, String> = HashMap::new();
+
+    // Attach-to-running (Codex review of PR #196): `capture()` applied the
+    // watcher's startup snapshot to `session` before this function was
+    // called, so a target already running when the session armed may
+    // already be `SessionState::Capturing` here, before the acquisition
+    // loop below ever runs (that loop's first check breaks immediately when
+    // the session is already capturing). That loop is the only other place
+    // `bound`/`bound_images` are populated, so without this seeding step the
+    // live status display would show "waiting for a target" for the whole
+    // of an attach-to-running run despite a target actively being captured.
+    for (pid, role, _stage) in session.role_bindings() {
+        if let Some(role) = role {
+            bound.insert(pid, role.to_string());
+        }
+    }
+    for record in &components.startup_snapshot {
+        let image = record
+            .image
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(&record.image)
+            .to_string();
+        if !image.is_empty() {
+            bound_images.insert(record.pid, image);
+        }
+    }
+
     let publisher = components.publisher.clone();
 
     // Elapsed time is real and monotonic, converted onto the session clock from
@@ -731,7 +761,17 @@ fn capture_live(
     // disconnects once both have ended.
     drop(merged_tx);
 
-    let mut display = LiveStatusDisplay::new(std::time::Instant::now());
+    // extcap drives a real live capture through this same function (Codex
+    // review of PR #196: `assemble::components` selects `EventStream::Live`
+    // whenever the run is not an offline `--offline` replay, which includes
+    // a genuine Wireshark-driven extcap session). `sink_failure_is_clean` is
+    // `true` only for `extcap` (`crates/fragcap-cli/src/commands/extcap.rs`
+    // passes the literal `true`; the ordinary `capture` command passes
+    // `false`), so it doubles as the one marker available here for "this
+    // capture must stay byte-identical to before this slice" (FR-008): the
+    // live status display, including the non-terminal heartbeat, is
+    // suppressed entirely for it.
+    let mut display = LiveStatusDisplay::new(std::time::Instant::now(), sink_failure_is_clean);
     drive_live(
         &merged_rx,
         &mut session,
@@ -848,12 +888,17 @@ fn drive_live(
             // gone. Nothing more can arrive.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if emitter.progress_written() != progress_before {
+        let progress_happened = emitter.progress_written() != progress_before;
+        if progress_happened {
             // A real progress line (a stage match/exit, a filter-narrowing
             // announcement) just fired; the non-terminal heartbeat's whole
             // purpose is to substitute for exactly this, so it resets rather
             // than firing on top of real output (S069 Clarifications
-            // session, 2026-08-22).
+            // session, 2026-08-22). The terminal redraw's tracked frame is
+            // also forgotten, not erased, here: the progress line just
+            // written sits below it now, and erasing against the old line
+            // count would land the cursor in the wrong place and corrupt
+            // both (Codex review of PR #196).
             display.note_progress(now);
         }
         if interrupt.load(Ordering::Relaxed) && is_active(session) {
@@ -863,17 +908,28 @@ fn drive_live(
             stop.stop();
             break;
         }
-        let snapshot = build_live_snapshot(
-            started.elapsed(),
-            bound,
-            bound_images,
-            gate_handle,
-            live,
-            stamper,
-            byte_bound,
-            packet_bound,
-        );
-        display.tick(emitter, &snapshot, now);
+        // Rate-limited independent of how often a message arrives (Codex
+        // review of PR #196): `rx.recv_timeout(tick)` returns immediately,
+        // not on the `tick` cadence, whenever a packet is already queued, so
+        // a busy capture would otherwise redraw or emit a JSON event once
+        // per packet rather than at the intended cadence, flooding stderr
+        // and contending with the merged channel. A progress line having
+        // just fired forces an out-of-cycle redraw too, so the frame
+        // reappears right below it immediately rather than leaving a gap
+        // until the next due tick.
+        if progress_happened || display.tick_due(now) {
+            let snapshot = build_live_snapshot(
+                started.elapsed(),
+                bound,
+                bound_images,
+                gate_handle,
+                live,
+                stamper,
+                byte_bound,
+                packet_bound,
+            );
+            display.tick(emitter, &snapshot, now);
+        }
     }
     display.resolve(emitter);
 }
@@ -889,32 +945,64 @@ struct LiveStatusDisplay {
     redraw: live_status::redraw::RedrawState,
     heartbeat: live_status::heartbeat::Heartbeat,
     is_terminal: bool,
+    /// `true` for an `extcap` capture (FR-008), which suppresses the whole
+    /// display, redraw and heartbeat alike, regardless of format or
+    /// verbosity (Codex review of PR #196).
+    suppressed: bool,
+    /// The next instant a redraw or JSON tick is due. Independent of
+    /// `drive_live`'s own `tick` (the 200ms session-clock wakeup): that one
+    /// fires on every message, including every packet on a busy capture,
+    /// while this one paces the display itself (Codex review of PR #196).
+    next_tick_at: std::time::Instant,
 }
+
+/// How often the redraw or JSON tick fires on its own cadence, independent
+/// of message arrival. Within the 4-10 Hz range the issue itself suggests
+/// and comfortably inside FR-001's "at least once per second."
+#[cfg(all(feature = "etw", windows))]
+const DISPLAY_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[cfg(all(feature = "etw", windows))]
 impl LiveStatusDisplay {
-    fn new(now: std::time::Instant) -> Self {
+    fn new(now: std::time::Instant, suppressed: bool) -> Self {
         LiveStatusDisplay {
             redraw: live_status::redraw::RedrawState::new(),
             heartbeat: live_status::heartbeat::Heartbeat::new(now),
             is_terminal: live_status::is_terminal(),
+            suppressed,
+            next_tick_at: now + DISPLAY_TICK_INTERVAL,
         }
     }
 
     fn note_progress(&mut self, now: std::time::Instant) {
         self.heartbeat.note_progress(now);
+        // The frame just drawn (if any) now sits above an ordinary progress
+        // line rather than at the cursor; see `RedrawState::forget`'s own
+        // documentation for why erasing it from here would corrupt both.
+        self.redraw.forget();
+    }
+
+    /// Whether the display's own cadence, independent of message arrival,
+    /// is due to fire.
+    fn tick_due(&self, now: std::time::Instant) -> bool {
+        now >= self.next_tick_at
     }
 
     /// The one call per tick: exactly one of a terminal redraw, a
     /// non-terminal heartbeat, or a JSON `capture.progress` event happens,
     /// gated on `emitter`'s own format and verbosity (FR-005, FR-006,
-    /// FR-009).
+    /// FR-009), unless this is an extcap capture, which suppresses all
+    /// three (FR-008).
     fn tick(
         &mut self,
         emitter: &mut Emitter,
         snapshot: &live_status::LiveStatusSnapshot,
         now: std::time::Instant,
     ) {
+        self.next_tick_at = now + DISPLAY_TICK_INTERVAL;
+        if self.suppressed {
+            return;
+        }
         match emitter.format() {
             Format::Json => {
                 emitter.event(&capture_progress_event(snapshot));
@@ -924,8 +1012,12 @@ impl LiveStatusDisplay {
                     return;
                 }
                 if self.is_terminal {
-                    let (text, lines) =
-                        live_status::render_status(snapshot, live_status::use_status_color(), None);
+                    let width = live_status::terminal_width();
+                    let (text, lines) = live_status::render_status(
+                        snapshot,
+                        live_status::use_status_color(),
+                        width,
+                    );
                     let frame = self.redraw.frame(&text, lines);
                     emitter.live_write(&frame);
                 } else if self.heartbeat.due(now) {
@@ -969,11 +1061,19 @@ fn build_live_snapshot(
     byte_bound: Option<u64>,
     packet_bound: Option<u64>,
 ) -> live_status::LiveStatusSnapshot {
+    // Prefer the `target` role's binding when one exists, so a run with more
+    // than one bound stage (a launcher alongside the target, for example)
+    // shows the process an operator actually cares about rather than
+    // whichever pid happens to sort lowest (Copilot review of PR #196). The
+    // smallest-pid fallback still applies, and stays deterministic, for the
+    // rarer case of no `target`-role binding at all.
     let process = bound
         .iter()
+        .filter(|(_, role)| role.as_str() == "target")
         .min_by_key(|(pid, _)| **pid)
+        .or_else(|| bound.iter().min_by_key(|(pid, _)| **pid))
         .map(|(pid, role)| live_status::BoundProcess {
-            name: bound_images.get(pid).cloned().unwrap_or_default(),
+            name: bound_images.get(pid).cloned(),
             pid: *pid,
             role: role.clone(),
             stage: None,
@@ -1326,12 +1426,15 @@ mod live_status_display_tests {
     fn run(format: Format, verbosity: Verbosity, is_terminal: bool) -> (String, bool) {
         let mut buf: Vec<u8> = Vec::new();
         let mut emitter = Emitter::new(&mut buf, format, verbosity);
+        let now = std::time::Instant::now();
         let mut display = LiveStatusDisplay {
             redraw: live_status::redraw::RedrawState::new(),
-            heartbeat: live_status::heartbeat::Heartbeat::new(std::time::Instant::now()),
+            heartbeat: live_status::heartbeat::Heartbeat::new(now),
             is_terminal,
+            suppressed: false,
+            next_tick_at: now,
         };
-        display.tick(&mut emitter, &snapshot(), std::time::Instant::now());
+        display.tick(&mut emitter, &snapshot(), now);
         let text = String::from_utf8(buf).unwrap();
         let has_escape = text.contains('\x1b');
         (text, has_escape)
@@ -1404,6 +1507,8 @@ mod live_status_display_tests {
             redraw: live_status::redraw::RedrawState::new(),
             heartbeat: live_status::heartbeat::Heartbeat::new(start),
             is_terminal: false,
+            suppressed: false,
+            next_tick_at: start,
         };
 
         // Ordinary progress lines interleave with ticks, exactly as
@@ -1432,6 +1537,71 @@ mod live_status_display_tests {
         assert!(
             text.matches("still capturing").count() >= 1,
             "at least one heartbeat line must have fired across two 31-second gaps"
+        );
+    }
+
+    // S069, Codex P1 review of PR #196. `tick_due` is `drive_live`'s own
+    // gate against redrawing or emitting a JSON event once per packet on a
+    // busy capture; this exercises the gate directly, independent of
+    // `tick()`'s own content (which the tests above already cover).
+    #[test]
+    fn tick_due_paces_independently_of_how_often_it_is_polled() {
+        let start = std::time::Instant::now();
+        let mut display = LiveStatusDisplay {
+            redraw: live_status::redraw::RedrawState::new(),
+            heartbeat: live_status::heartbeat::Heartbeat::new(start),
+            is_terminal: true,
+            suppressed: false,
+            next_tick_at: start + DISPLAY_TICK_INTERVAL,
+        };
+        // Polling many times within the interval, as a busy capture's
+        // per-packet loop iterations would, must not be due even once.
+        for millis in 0..DISPLAY_TICK_INTERVAL.as_millis() as u64 {
+            assert!(
+                !display.tick_due(start + std::time::Duration::from_millis(millis)),
+                "must not be due before the interval elapses"
+            );
+        }
+        assert!(display.tick_due(start + DISPLAY_TICK_INTERVAL));
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut emitter = Emitter::new(&mut buf, Format::Human, Verbosity::Normal);
+        display.tick(&mut emitter, &snapshot(), start + DISPLAY_TICK_INTERVAL);
+        // A call to `tick` reschedules the next deadline forward, so a
+        // caller checking `tick_due` again immediately after is not due
+        // again until the next full interval.
+        assert!(!display.tick_due(start + DISPLAY_TICK_INTERVAL));
+    }
+
+    // S069, Codex P1 review of PR #196. `sink_failure_is_clean` is `true`
+    // only for `extcap` (`commands/extcap.rs` passes the literal `true`);
+    // `LiveStatusDisplay::new` takes it directly as `suppressed`, so this
+    // asserts the whole display, redraw and heartbeat alike, goes silent
+    // for that case regardless of format or verbosity (FR-008).
+    #[test]
+    fn an_extcap_capture_suppresses_the_whole_display() {
+        let now = std::time::Instant::now();
+        for is_terminal in [true, false] {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut emitter = Emitter::new(&mut buf, Format::Human, Verbosity::Normal);
+            let mut display = LiveStatusDisplay::new(now, true);
+            display.is_terminal = is_terminal;
+            display.tick(&mut emitter, &snapshot(), now + Duration::from_secs(60));
+            let text = String::from_utf8(buf).unwrap();
+            assert!(
+                text.is_empty(),
+                "an extcap capture (is_terminal={is_terminal}) must emit nothing from the \
+                 live display, found: {text:?}"
+            );
+        }
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut emitter = Emitter::new(&mut buf, Format::Json, Verbosity::Normal);
+        let mut display = LiveStatusDisplay::new(now, true);
+        display.tick(&mut emitter, &snapshot(), now);
+        assert!(
+            String::from_utf8(buf).unwrap().is_empty(),
+            "an extcap capture must not emit capture.progress either"
         );
     }
 }

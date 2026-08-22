@@ -72,6 +72,14 @@ pub enum Event {
     /// capture. Carries no holder-tally breakdown: that is a human-display aid
     /// (see the S069 `contracts/capture-progress-event.md`), and a `--json`
     /// consumer already has per-packet attribution in the captured file itself.
+    ///
+    /// `etw`+`windows`-gated because its one real constructor,
+    /// `crate::orchestrator::capture_progress_event`, lives inside
+    /// `drive_live`, which is gated the same way (an ETW event stream has no
+    /// non-Windows meaning); see `lib.rs`'s note on `mod live_status` for why
+    /// that keeps `cargo clippy --all-targets --all-features` clean on every
+    /// platform rather than leaving this reachable-but-uncalled elsewhere.
+    #[cfg(all(feature = "etw", windows))]
     CaptureProgress {
         elapsed_secs: u64,
         packets: u64,
@@ -97,6 +105,7 @@ impl Event {
             Event::SessionComplete { .. } => "session.complete",
             Event::StreamConsumer { .. } => "stream.consumer",
             Event::RingEvicted { .. } => "ring.evicted",
+            #[cfg(all(feature = "etw", windows))]
             Event::CaptureProgress { .. } => "capture.progress",
         }
     }
@@ -183,6 +192,7 @@ impl Event {
                 line.push_str(",\"evicted\":");
                 line.push_str(&evicted.to_string());
             }
+            #[cfg(all(feature = "etw", windows))]
             Event::CaptureProgress {
                 elapsed_secs,
                 packets,
@@ -319,7 +329,15 @@ mod tests {
         let ring = Event::RingEvicted { evicted: 17 }.render(now);
         assert!(ring.contains("\"event\":\"ring.evicted\""));
         assert!(ring.contains("\"evicted\":17"));
+    }
 
+    // `Event::CaptureProgress` is `etw`+`windows`-gated (see its own doc
+    // comment), so this test is too; the other event variants' tests above
+    // run on every platform.
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    fn capture_progress_renders_its_kind_and_fields() {
+        let now = UNIX_EPOCH;
         let progress = Event::CaptureProgress {
             elapsed_secs: 135,
             packets: 4102,

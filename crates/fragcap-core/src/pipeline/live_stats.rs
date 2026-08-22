@@ -85,12 +85,18 @@ impl LiveStats {
     /// discipline [`crate::stats::CaptureStats::dominant_holder`] already
     /// uses.
     pub fn holder_tally_snapshot(&self) -> Vec<(Arc<str>, u64)> {
-        let tally = self
-            .holder_tally
-            .lock()
-            .expect("the holder tally mutex is never poisoned");
-        let mut entries: Vec<(Arc<str>, u64)> =
-            tally.iter().map(|(k, v)| (Arc::clone(k), *v)).collect();
+        // Copy under the lock, then sort outside it (Copilot review of PR
+        // #196): `record_holder` takes the same mutex on every admitted
+        // packet, so holding it through an O(n log n) sort here would
+        // contend with the output loop's hot path for longer than a plain
+        // copy needs to.
+        let mut entries: Vec<(Arc<str>, u64)> = {
+            let tally = self
+                .holder_tally
+                .lock()
+                .expect("the holder tally mutex is never poisoned");
+            tally.iter().map(|(k, v)| (Arc::clone(k), *v)).collect()
+        };
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         entries
     }

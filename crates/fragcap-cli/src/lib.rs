@@ -30,6 +30,20 @@ mod commands;
 mod emit;
 mod events;
 mod exit;
+// The live capture status display (slice S069) is reachable only from
+// `capture_live`/`drive_live`, which are themselves `etw`+`windows`-gated
+// (an ETW event stream has no non-Windows meaning). Gating this module the
+// same way, rather than leaving it reachable-but-uncalled on other targets,
+// matches this crate's existing pattern for Windows-only capture code
+// (`capture_live`, `elapsed_ts`) and is what keeps `cargo clippy
+// --all-targets --all-features` clean on `ubuntu-latest`: a `pub` item with
+// zero non-test callers is dead code once `fragcap-core`/`fragcap-cli`
+// compile as a plain (non-test) library target, regardless of how much test
+// coverage exists (`#[cfg(test)]` code does not count as a caller there).
+// The `windows-latest` leg of the same CI job uses the identical
+// `--all-features` flag and, with `windows` true there, exercises this
+// module and its tests in full.
+#[cfg(all(feature = "etw", windows))]
 mod live_status;
 mod orchestrator;
 mod output;

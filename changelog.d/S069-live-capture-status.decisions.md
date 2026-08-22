@@ -41,13 +41,59 @@ pass `Stdout` and are unaffected.
 Every new rendering rule (the status block's content and layout, the
 redraw's erase-then-write sequence, the heartbeat's due/reset timer) is a
 pure function over a plain snapshot struct, with no ETW, socket, or platform
-dependency. Only the call site that constructs a snapshot from a live run
-and writes real bytes is gated to `#[cfg(all(feature = "etw", windows))]`,
-which `AGENTS.md` records as never asserted as green in continuous
-integration. This mirrors the codebase's standing pattern for exactly this
+dependency, mirroring the codebase's standing pattern for exactly this
 problem (`doctor`'s classifier over a plain `Inputs` value,
-`CompletionSummary::render`), so every acceptance scenario this slice's spec
-names has a test that runs on every CI platform, and the untestable-by-CI
-surface is reduced to "does `drive_live` call the pure functions with the
-right inputs," verified by direct tests against the wiring struct
-(`LiveStatusDisplay::tick`) rather than only by a full live capture.
+`CompletionSummary::render`).
+
+**Correction, 2026-08-22 (the first `ci` run on `windows-latest`/`ubuntu-latest`):**
+the initial commit gated only the wiring call site (`drive_live` and its
+immediate glue) to `#[cfg(all(feature = "etw", windows))]`, on the claim
+that the pure `live_status` module's own tests would then run on every CI
+platform. That claim was false the moment it was checked against a real
+`ubuntu-latest` run: `cargo clippy --all-targets --all-features` also
+compiles the crate's plain (non-test) library target, which excludes
+`#[cfg(test)]` code entirely, and on that target `live_status`'s items had
+*no* caller at all once their one production caller stayed behind the
+Windows/ETW gate, `windows` being false regardless of any feature flag on
+that runner. The whole `live_status` module, the `Event::CaptureProgress`
+variant, `Stream::Stderr`, and the handful of `Emitter` methods this slice
+added (`format`, `verbosity`, `live_write`, `progress_written`) are now
+gated the same way as `capture_live` itself, each with a comment pointing
+back to this entry. The consequence is real and worth stating plainly: this
+slice's pure-function test suite runs in CI only on the `windows-latest` leg
+of the `check` job (which resolves `windows` true and, under
+`--all-features`, `etw` true too), not on `ubuntu-latest`. That is the
+existing, established posture for every other Windows/ETW-only code path in
+this codebase (`capture_live`, `elapsed_ts`); this slice does not change it,
+it only discovered that its own design had, incorrectly, claimed to be an
+exception. Local verification of the `windows` cfg evaluating false (no
+Linux cross-compiler was available in the environment that found this) used
+the equivalent, cfg-identical substitute of building on Windows with the
+`etw` feature simply omitted, which `#[cfg(all(feature = "etw", windows))]`
+cannot distinguish from `windows` being false.
+
+Review of PR #196 (Codex and Copilot, both independently) also found six
+real defects the merge-readiness pass had not caught: the redraw and the
+optional JSON tick fired once per message rather than on their own cadence,
+because `rx.recv_timeout(tick)` returns immediately whenever a message is
+already queued rather than only on the timeout; an ordinary progress line
+written while a frame was on screen left the next redraw erasing from a
+stale line count, corrupting both; `extcap` reaches the live driver too
+(`assemble::components` selects it whenever the run is not an offline
+`--offline` replay), so the heartbeat was reaching its stderr despite
+FR-008; an attach-to-running capture never populated the bound-process
+maps, since the acquisition loop that would otherwise have populated them
+exits immediately when the session is already capturing; the status block always passed no terminal
+width into the renderer, so the narrow-terminal truncation path (and a
+resize) was never actually reached; and the live holder tally's snapshot
+method held its mutex across an O(n log n) sort rather than only across the
+copy. A seventh finding (ranking the live holder tally by bytes rather than
+packets) was verified against the code and declined: the tally mirrors
+`CaptureStats::holder_tally`'s existing per-packet count (`dominant_holder`,
+used by the completion summary and the launch-and-observe promotion, ranks
+the same way), and diverging the live view's ranking from it would let the
+two disagree about which process dominates the same run. The spec's
+Clarifications session is corrected to describe what is actually counted;
+a byte-weighted tally is left as a real, separately-scoped follow-up. All
+seven findings, including the declined one, are answered individually on
+their PR review threads.

@@ -25,6 +25,12 @@ pub(crate) enum Stream {
     Stdout,
     /// The live capture status display (slice S069) renders here, and must
     /// never be gated on stdout's terminal-ness.
+    ///
+    /// `etw`+`windows`-gated because its one real caller lives inside
+    /// `drive_live` (see `lib.rs`'s note on `mod live_status` for the full
+    /// reasoning): a variant nothing ever constructs is dead code on a
+    /// platform where that caller does not exist.
+    #[cfg(all(feature = "etw", windows))]
     Stderr,
 }
 
@@ -36,6 +42,7 @@ pub(crate) fn use_color(stream: Stream) -> bool {
     }
     match stream {
         Stream::Stdout => std::io::stdout().is_terminal(),
+        #[cfg(all(feature = "etw", windows))]
         Stream::Stderr => std::io::stderr().is_terminal(),
     }
 }
@@ -73,6 +80,7 @@ mod tests {
         unsafe { std::env::set_var("NO_COLOR", "1") };
 
         assert!(!use_color(Stream::Stdout));
+        #[cfg(all(feature = "etw", windows))]
         assert!(!use_color(Stream::Stderr));
 
         match previous {

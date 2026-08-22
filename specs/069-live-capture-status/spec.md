@@ -34,11 +34,24 @@ shape: https://github.com/h8rt3rmin8r/fragcap/issues/186"
   process died.
 - Q: When the per-process holder tally has more image names than the status
   block has room for, how many rows should the live display show before
-  truncating (Edge Cases)? → A: The top 5 by bytes written, plus a trailing
-  "N more" count if any remain. Matches the dominant-contributor framing the
-  issue itself uses (one background process was 91 percent of the file); five
-  rows is enough to show a dominant outlier plus a couple of runners-up
-  without the block's height varying wildly run to run.
+  truncating (Edge Cases)? → A: The top 5 by admitted packet count, plus a
+  trailing "N more" count if any remain. Matches the dominant-contributor
+  framing the issue itself uses (one background process was 91 percent of
+  the file); five rows is enough to show a dominant outlier plus a couple of
+  runners-up without the block's height varying wildly run to run.
+  **Correction (Copilot review of PR #196, 2026-08-22):** this session
+  originally answered "by bytes written," but the live tally is built by
+  mirroring `CaptureStats::holder_tally` (specification section 12.4,
+  slice S059), which is a per-image *packet* count, not a byte count; that
+  is also what `CaptureStats::dominant_holder` (the completion summary and
+  the launch-and-observe promotion decision) already ranks by. The wording
+  here now matches what is actually counted rather than describing a
+  byte-weighted tally the implementation never built. A byte-weighted
+  ranking (Codex review of the same PR) is a real, separately-scoped
+  enhancement: it would need a second counter and would make the live
+  view's ranking able to disagree with the completion summary's for the
+  same run, which is a design question this correction defers rather than
+  answers in passing.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -182,9 +195,9 @@ same inputs.
   or wrapping rather than panicking or writing out-of-bounds escape
   sequences.
 - The process holder tally contains more image names than fit in the status
-  block's available lines: the display shows the top 5 images by bytes
-  written, plus a trailing count of how many more are not shown, rather than
-  silently dropping data with no indication that something was omitted.
+  block's available lines: the display shows the top 5 images by admitted
+  packet count, plus a trailing count of how many more are not shown, rather
+  than silently dropping data with no indication that something was omitted.
 
 ## Requirements *(mandatory)*
 

@@ -47,6 +47,19 @@ impl RedrawState {
         self.previous_lines = 0;
         out
     }
+
+    /// Forget the previous frame without erasing it: the caller has already
+    /// written something else (an ordinary progress line) below it, so the
+    /// old frame is now inert scrollback rather than a block this state can
+    /// safely erase (Codex review of PR #196). Erasing anyway would use the
+    /// stale line count against a cursor position that has moved since the
+    /// frame was drawn, wiping the just-written progress line along with
+    /// part of the old frame rather than either cleanly. The next call to
+    /// [`RedrawState::frame`] then draws fresh, with no erase prefix,
+    /// landing correctly below whatever was just printed.
+    pub fn forget(&mut self) {
+        self.previous_lines = 0;
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +104,18 @@ mod tests {
         // A frame drawn after a clear starts fresh, with no further erase.
         let out = state.frame("z\n", 1);
         assert_eq!(out, "z\n");
+    }
+
+    #[test]
+    fn forgetting_writes_nothing_and_the_next_frame_has_no_erase_prefix() {
+        let mut state = RedrawState::new();
+        state.frame("a\nb\nc\n", 3);
+        state.forget();
+        // Unlike `clear`, `forget` returns nothing: the caller already wrote
+        // something else (an ordinary progress line) and must not have this
+        // state emit an erase sequence against a cursor position that has
+        // since moved.
+        let out = state.frame("fresh\n", 1);
+        assert_eq!(out, "fresh\n");
     }
 }

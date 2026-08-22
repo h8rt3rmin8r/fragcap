@@ -229,6 +229,26 @@ CI run alone).
   item 6 already names and the codebase already has a working alternative
   pattern for.
 
+**Correction (found by the first real `ci` run, 2026-08-22, not anticipated
+here):** gating only the wiring call site was not sufficient to keep
+`live_status`'s tests running on every CI platform, contrary to what this
+decision originally claimed. `cargo clippy --all-targets --all-features`
+also checks the crate's plain (non-test) library target, which excludes
+`#[cfg(test)]` code entirely; on `ubuntu-latest`, where `windows` is false
+regardless of any feature, `live_status`'s items had no caller at all in
+that target once their one production caller (inside `drive_live`) stayed
+gated, and clippy correctly reported the whole module dead. The fix was to
+gate the whole `live_status` module the same way `capture_live` already is,
+not only its call site; the module's own pure-function tests then run only
+on the `windows-latest` leg of `check` (which resolves `windows` true and,
+under `--all-features`, `etw` true), the same posture every other
+Windows/ETW-only code path in this codebase already has. The "doctor
+classifier" analogy in the rationale above is still the right shape for the
+*logic* (a pure function over a plain struct, hand-built inputs, no live
+handle), and the tests themselves are exactly as valuable as designed; what
+was wrong was the claim that this shape alone gets them onto every CI
+runner. It does not, on a target where `windows` is unconditionally false.
+
 ## Decision R-6: The `--json` `capture.progress` event reuses the same snapshot
 
 **Decision**: FR-009's optional `capture.progress` event is populated from

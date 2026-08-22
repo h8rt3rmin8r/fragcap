@@ -22,7 +22,12 @@ use crate::color::{use_color, Stream, RESET, WARN};
 /// The bound process a status block's header line names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundProcess {
-    pub name: String,
+    /// `None` when the pid is bound but no `Started` event has yet recorded
+    /// its image name (the attach-to-running seeding path, or a narrow
+    /// timing window right at a fresh match): distinct from an empty
+    /// string, so the renderer can say so rather than leaving a blank gap
+    /// (Copilot review of PR #196).
+    pub name: Option<String>,
     pub pid: u32,
     pub role: String,
     /// The stage a role binds as, when the session tracked one distinct from
@@ -96,11 +101,25 @@ pub fn render_status(
 fn header_line(snapshot: &LiveStatusSnapshot) -> String {
     match &snapshot.process {
         Some(p) => {
-            let stage = p.stage.as_deref().unwrap_or(&p.role);
-            format!(
-                "  fragcap  capturing  {}  pid {}  role {}/{}",
-                p.name, p.pid, p.role, stage
-            )
+            // A pid can be bound before its image name is known (the
+            // attach-to-running seeding path); say so explicitly rather than
+            // leaving a blank gap where the name would be (Copilot review of
+            // PR #196).
+            let name = p.name.as_deref().unwrap_or("(name unknown)");
+            // Printing "role X/X" when no distinct stage is known is noisy
+            // and reads as if two different facts were being reported
+            // (Copilot review of PR #196); show the stage only when it is
+            // actually distinct from the role.
+            match p.stage.as_deref() {
+                Some(stage) if stage != p.role => format!(
+                    "  fragcap  capturing  {}  pid {}  role {}/{}",
+                    name, p.pid, p.role, stage
+                ),
+                _ => format!(
+                    "  fragcap  capturing  {}  pid {}  role {}",
+                    name, p.pid, p.role
+                ),
+            }
         }
         None => "  fragcap  waiting for a target".to_string(),
     }
@@ -204,6 +223,22 @@ pub fn is_terminal() -> bool {
 /// `NO_COLOR` is unset (FR-010).
 pub fn use_status_color() -> bool {
     use_color(Stream::Stderr)
+}
+
+/// Standard error's current column width, when it can be determined.
+///
+/// Queried fresh on every redraw (Codex and Copilot review of PR #196: the
+/// production call site had been passing `None` unconditionally, so
+/// `render_status`'s truncation path, and the narrow-terminal edge case it
+/// exists for, was never actually reached, and a resize was never observed
+/// either). `None` (render at natural width, no truncation) when standard
+/// error is not attached to a terminal that reports one, matching
+/// `terminal_size`'s own "can't determine" case; this function is only ever
+/// called from the already-terminal-gated redraw path, so a `None` here
+/// reflects a terminal that declines to report its size, not a redirected
+/// stream.
+pub fn terminal_width() -> Option<usize> {
+    terminal_size::terminal_size_of(std::io::stderr()).map(|(width, _)| width.0 as usize)
 }
 
 #[cfg(test)]
@@ -337,7 +372,7 @@ mod tests {
         let mut s = base_snapshot();
         s.sink_dropped = 9;
         s.process = Some(BoundProcess {
-            name: "AngelLegion.exe".to_string(),
+            name: Some("AngelLegion.exe".to_string()),
             pid: 44460,
             role: "target".to_string(),
             stage: Some("client".to_string()),
@@ -368,7 +403,7 @@ mod tests {
     fn a_dominant_non_target_contributor_appears_in_the_first_rendered_frame() {
         let mut s = base_snapshot();
         s.process = Some(BoundProcess {
-            name: "AngelLegion.exe".to_string(),
+            name: Some("AngelLegion.exe".to_string()),
             pid: 44460,
             role: "target".to_string(),
             stage: None,

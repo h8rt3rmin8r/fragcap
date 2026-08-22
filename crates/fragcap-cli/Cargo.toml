@@ -70,6 +70,12 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }
+# The live capture status display's terminal-width query (slice S069, Codex
+# review of PR #196: the redraw must query real width so narrow-terminal
+# truncation actually engages). Already resolved in Cargo.lock as a
+# transitive dependency of `clap`'s `wrap_help` feature (S062); pinned to the
+# same 0.4 line here so taking it directly adds no new Cargo.lock package.
+terminal_size = "0.4"
 
 # Windows only, at build time: stamps the exe's PE VERSIONINFO (FileVersion and
 # ProductVersion) from CARGO_PKG_VERSION so `Get-Command fragcap` no longer reports
