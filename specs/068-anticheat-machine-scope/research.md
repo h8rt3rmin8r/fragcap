@@ -2,7 +2,7 @@
 
 ## Decision: fix the in-tree signature set first, as pure data
 
-**Decision**: Add five new rows to `crates/fragcap-targets/assets/signatures.json`
+**Decision**: Add six new rows to `crates/fragcap-targets/assets/signatures.json`
 under the existing `anti-cheat` category, using only the two `kind`s already
 in the schema's CHECK set: `filename` (`EasyAntiCheat*.exe`, `EACLaunch.exe`,
 `AntiCheatInstaller.exe`, `start_protected_game.exe`) and `directory-shape`

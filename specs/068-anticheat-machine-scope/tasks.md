@@ -304,7 +304,7 @@ non-interaction are all covered by standing tests.
 
 **MVP scope**: User Story 1 alone (Phases 1-3) already satisfies the issue's
 headline acceptance line ("`arc_raiders` and `tom_clancys_the_division_2`
-report Easy Anti-Cheat") with a five-row data change and zero new runtime
+report Easy Anti-Cheat") with a six-row data change and zero new runtime
 code. User Story 2 adds a second, corroborating evidence source; User Story
 3 adds the structural fix for titles with no on-disk trace at all. Given the
 issue frames all three as one coherent fix for one root cause (anti-cheat
