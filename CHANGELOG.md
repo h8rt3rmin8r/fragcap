@@ -16,6 +16,1156 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-22
+
+### Highlights
+
+v0.6.0 is what the first real capture found. On 2026-08-20 fragcap ran against a
+Steam title for sixteen minutes and captured 18,234 packets, and that single run
+produced most of this release: the capture went silent for its whole duration,
+91 percent of the file turned out to belong to an unrelated background process,
+and the summary reported none of it. Nearly every change below exists because
+something was observed to be wrong, not because it was imagined.
+
+- **Capture tells you what it is doing.** A status block redraws in place at
+  least once a second, showing elapsed time, the bound process, packets and
+  bytes against any configured bound, the filter's narrowing state, every
+  discard counter, and the top per-process contributors to the file so far. A
+  redirected run gets a plain heartbeat instead of silence, and `--json` gains an
+  optional `capture.progress` event. The sixteen-minute run whose last visible
+  line was `filter narrowed to 0 endpoint(s)` is no longer possible.
+- **A capture contains the target's traffic.** It did not reliably before. Output
+  is now scoped to the target, what is excluded is counted rather than dropped
+  quietly, and the completion summary reports what was written per process, so a
+  capture dominated by something you did not ask for is visible in the file's own
+  accounting rather than only under later analysis.
+- **Detection reports what it found, not what it guessed.** Titles carrying no
+  DRM stop being labelled "Steam DRM"; titles that genuinely ship Easy Anti-Cheat
+  are now reported, which they were not, because the signatures only matched
+  runtime files those titles never ship. Anti-cheat installed machine-wide as a
+  Windows service is reported separately from any title's own evidence, never
+  merged into it, since presence on the machine does not say which title put it
+  there. A blank column now says which kind of blank it is, and a scan names what
+  it did not cover. Nothing asserts a completed scan the tool cannot vouch for.
+- **A Steam title keeps all three of its names.** The storefront name, the
+  installed folder name, and the observed launch executable, none reconstructed
+  from another, and any of the three resolves the title. On a sampled library 11
+  of 34 titles had a folder name that diverged from their storefront title.
+  `fragcap steam list` also honors `--json` and prints column headers.
+- **`--help` stopped lying.** Every flag that has a default states it, `--sink`
+  names every scheme it actually accepts, the documented grammar matches the
+  shipped one, and four new checks in the test suite keep it that way.
+
+**Breaking:** `fragcap catalog update` is removed. It could not run in any
+released binary, and what it fetched was a third-party title list rather than any
+fragcap artifact. The three `catalog seed` verbs collapse into one `catalog seed`
+taking a repeatable `--tier`. Store paths are now overrides everywhere rather
+than requirements: seven subcommands that refused to run without an explicit path
+to a store fragcap already knows how to find now resolve it themselves, and every
+success line names the store it touched.
+
+### Added
+
+A registered Steam title now keeps all three of its names: the storefront
+display name, the raw installed folder name, and the observed launch
+executable, none reconstructed from another. A title whose folder name diverges
+from its current storefront title, which happens more often than expected (11
+of 34 titles on a sampled library), is now findable by any of the three: typing
+a substring of the folder name or the executable resolves it exactly as a
+handle or an exact name already did. `targets show` names both the display name
+and the folder name when they genuinely diverge, and stays quiet when the
+difference is only casing, whitespace, or a truncated subtitle. Handle
+derivation also stops silently dropping `&`; a name like `Trapped with Ivy &
+Piper` now derives `trapped_with_ivy_and_piper` rather than reading as if a word
+were missing.
+
+`fragcap steam list` now honors the global `--json` flag, which it previously
+ignored for its own result even though it reached the diagnostic emitter.
+`fragcap steam list --json` writes one newline-delimited record per installed
+title to standard output: the app id, name, and install directory (which the
+human table has never shown), plus the same handle, stable id, and row index
+the human table carries when a title is registered, absent entirely rather
+than null when it is not. Zero installed titles produces zero records rather
+than a sentence describing the empty state, and enumeration warnings keep
+reaching standard error through the emitter in either mode, matching the
+`doctor --json` precedent.
+
+`fragcap targets` now checks for anti-cheat products installed machine-wide,
+outside any title's own install tree. Modern Easy Anti-Cheat installs once per
+machine as a Windows service, which a directory scan can never see no matter
+how many signature rows exist. When the `EasyAntiCheat_EOS` service is
+registered, a `Machine:` section appears once, after the per-target table,
+naming it. This is always kept distinct from a title's own reported evidence:
+a machine-wide fact is never merged into, or used to infer, any specific
+target's row, since presence on the machine does not say which installed
+title, if any, is the one that put it there. When the check finds nothing, or
+cannot run at all, nothing is printed; no output ever asserts a completed
+"no anti-cheat found" scan the tool cannot actually vouch for.
+
+Only Easy Anti-Cheat is checked. BattlEye and Vanguard's machine-wide service
+names have not been measured on a real installation, and the probe checks
+only what has been verified rather than guessed.
+
+`fragcap capture` no longer goes silent from acquisition until the run stops.
+On a real terminal, a status block redraws in place at least once a second,
+showing elapsed time, the bound process, packets and bytes written against
+any configured `--max-bytes`/`--max-packets` bound, the capture filter's
+narrowing state, every discard counter, and the top per-process contributors
+to the file so far. This is the fix for the run that prompted issue #186: a
+sixteen-minute capture whose last visible line was `filter narrowed to 0
+endpoint(s)`, during which 91 percent of the eventual file went to an
+unrelated background process with no way for the operator to notice until the
+run ended.
+
+When standard error is not a terminal (a redirected or logged run), the
+redraw never appears, and output is otherwise unchanged, except that a
+run left silent for thirty seconds now gets a single plain heartbeat line
+reporting elapsed time and packets written, so a long redirected run is not
+silent either. `--json` gains an optional periodic `capture.progress` event
+carrying the same counters (never appearing outside `--json`); `--quiet`,
+`--silent`, `--mode stream --out -`, and the `extcap` integration are
+unaffected.
+
+`NO_COLOR` disables the block's color and leaves its layout unchanged,
+matching the existing `doctor` command's contract. No new runtime dependency
+was added; the redraw is two hand-rolled ANSI escape sequences, extending the
+pattern `doctor` already established.
+
+### Changed
+
+Store paths are overrides everywhere, never requirements. Seven subcommands used
+to refuse to run without an explicit filesystem path to a store fragcap
+installs, manages, and already knows how to find, with nothing in the error
+saying what path to type; the whole `catalog` namespace, `technologies`, and
+`targets discover` now resolve the same store the rest of the tool does, through
+an explicit flag if given, then the environment override, then the per-user
+default, and every success line names the store it touched. The three seed verbs
+are one: `fragcap catalog seed` takes a repeatable `--tier`, so the launch tier
+needs no fourth verb, and a bare `catalog seed` fills every tier that has a
+source and names every tier it skipped with the reason. `--from` requires
+exactly one `--tier`, because the offline documents are bare JSON arrays that do
+not say which tier they are and guessing would write the wrong columns silently.
+
+The shared terminal color predicate `use_color()` (`doctor` and `targets`)
+now takes an explicit stream (`Stdout` or `Stderr`) rather than always testing
+standard output, so a stderr-only surface cannot be silently gated on the
+wrong stream's terminal-ness. `doctor` and `targets` are unaffected; both pass
+`Stdout` and behave exactly as before.
+
+The vendored agent skills now come from a single upstream,
+<https://github.com/shruggietech/skills> at release v1.11.0, verified against
+that release's published checksums and copied in unmodified. The house Markdown
+and PowerShell standards were both stale and are refreshed, and the house Bash
+standard is vendored for the first time, closing a gap `skills/README.md` had
+carried unmet since before slice S18. A new `cargo xtask skills` check, part of
+the ordinary gate set, holds `.agents/skills/`, `skills-lock.json`, and git's
+index to agreement with one another.
+
+### Removed
+
+`fragcap catalog update` is gone. It could not run in any released binary, since
+the release build has never enabled the feature that compiles it, and what it
+actually fetched was a third-party title list rather than any fragcap artifact,
+so its description of "the current published catalog" named something that does
+not exist. `fragcap doctor` no longer points at it either: the remediation it
+offers for a missing catalog store is now to create the store and load the
+bundled detection signatures, which any build can do with no network, replacing
+guidance that told users to rebuild fragcap from source with a build flag.
+
+Thirty-three vendored agent skills are removed from `.agents/skills/`, leaving
+the four the constitution actually binds: `shruggie-bash`, `shruggie-markdown`,
+`shruggie-powershell`, and `shruggie-speckit`. The set is now governed by a
+stated admission test, recorded in `skills/README.md`: a skill is admitted only
+if a named constitution principle binds this repository to it or a repository
+gate executes it. Removed were `architect`, `baseline-restorer`,
+`boy-scout-rule`, `code-review`, `debug`, `develop`, `document`, `explain`,
+`explicit-configuration`, `find-skills`, `fix`, `gh-fix-ci`,
+`legacy-code-safety`, `optimize`, `orthogonality-principle`, `plan`,
+`professional-honesty`, `project-memory`, `proof-of-work`, `refactor`,
+`review`, `rust-best-practices`, `rust-design-review`, `rust-skills`,
+`shruggie-graph-memory`, `shruggie-html`, `silent-execution`,
+`simplicity-principles`, `solid-principles`, `structural-design-principles`,
+`test`, `token-efficiency`, and `traffic-analysis-pcap`. None was referenced by
+any document, workflow, script, or gate in this repository, and none was
+specific to fragcap; each remains available from its own upstream.
+
+### Fixed
+
+The agent instruction files no longer assert things that stopped being true. The
+standing verification block in `AGENTS.md` had six items, four of which were
+stale, and it was phrased as a prohibition, so every agent session was directed
+to repeat them; most consequentially it still said live capture had never
+executed, which it did on 2026-08-20. The block now states its rule once and
+sorts its items into what has been discharged, with the evidence and the date,
+and what is still outstanding, with what would discharge it. `AGENTS.md` and
+`CLAUDE.md` also no longer claim a slice-numbered completion state that went
+stale roughly forty slices ago; both now name `specs/` and `changelog.d/` as the
+authority instead.
+
+`--help` now wraps. Every one of the twenty-nine help pages previously emitted
+at least one line wider than 100 columns, the worst at 449, because clap was
+taken without its `wrap_help` feature and the wrapping function was compiled out
+entirely; 82 over-long lines across the surface become none, continuation text
+aligns under the description column, and a narrow terminal still shrinks. Help
+also no longer prints internal development vocabulary: slice identifiers,
+specification section numbers, appendix letters, build-feature names, and bare
+tier numbers are gone from all fifteen pages that carried them, and where the
+provenance is useful to a maintainer it moved to a comment clap does not
+publish. Two help lines that described behavior the tool does not have are
+corrected: `capture --launch` no longer reads as an instruction to pass a Steam
+app id to `--target`, where a bare integer is always a listing row number, and
+`targets list` now names the four columns it actually prints and says that it
+registers newly discovered titles rather than only reading. A selector that
+matches no row and looks like a number now says so: it names the interpretation
+it used, how many rows the listing holds, and how to register a Steam app id
+instead of guessing at it.
+
+A capture now contains the target's traffic. It did not before: the first real
+end-to-end run produced a file that was 91 percent other processes' traffic,
+because nothing in the write path made the scope decision that specification
+section 12.3 places in userspace, and the narrowed kernel filter cannot engage
+until the target opens its first socket, which on a launcher-mediated title is
+tens of seconds after capture begins. Output is scoped to the target by default, and
+`--scope all` restores the previous behavior for correlating a target against
+the rest of a machine. Everything excluded is counted and reported, in two terms rather than
+one, so a packet dropped because it belonged to something else is
+distinguishable from a packet dropped because attribution had not yet named it.
+The completion summary also now reports what was written per process, which is
+the breakdown that would have made this defect visible on the first run rather
+than on a manual inspection of the file afterwards.
+
+The run also narrates itself truthfully. It used to print `filter narrowed to 0
+endpoint(s)` and then go silent, a line that means the opposite of how it reads
+(zero means no narrowing has happened and everything is still being captured),
+sampled at the one instant where zero is close to guaranteed, and never updated
+afterwards. It now says that capture is machine-wide while the target opens its
+first connection, and says again when capture becomes target-only, from the
+transition rather than from a sample. Machine-readable output receives an event
+per narrowing instead of a single reading of zero.
+
+`fragcap targets` no longer reports "Steam DRM" for titles that carry no DRM. It
+did so on 28 of 32 rows, on the basis of `steam_api64.dll`, which is the
+Steamworks SDK redistributable and ships with essentially every Steam title
+whether or not any wrapper is applied. The label recorded an observation nobody
+made, and a signal that fires on nearly every row carries no information anyway.
+The two signature rows that produced it are gone, and the real discriminator is
+matched instead: the Steam DRM wrapper appends a PE section named `.bind` to the
+executable it wraps, so the `binary-marker` signature kind, which has been
+carried in the vocabulary and inert since it was introduced, is now matchable in
+a `section:` form that reads a bounded prefix of a candidate binary's own bytes.
+Verified on the operator's machine: Detroit Become Human, Palworld, and
+Enshrouded still report Steam DRM; ARC Raiders, Barotrauma, Shale Hill Secrets,
+and Trapped with Ivy and Piper no longer do.
+
+Every command that scans now names what the scan did not cover, rather than
+counting it and leaving the operator to wonder. `fragcap technologies` on a
+directory with more executables than the scan cap used to print "no technologies
+detected" with nothing saying the scan had been truncated; `targets add --exe`
+recorded the row as incompletely scanned and printed nothing at all. Both say so
+now, as do the discovery paths.
+
+The scan is bounded rather than a sweep of the tree. Only executables near the
+install root are candidates, capped at a count, each read as a bounded prefix.
+A candidate dropped by that cap is counted and named, and a candidate that could
+not be opened is recorded unreadable rather than treated as carrying no marker,
+so an incomplete scan is never presented as a clean one. The byte-sequence marker
+rows for Denuvo, Arxan, and VMProtect stay explicitly inert and counted, so the
+signature load still reconciles applied plus inert plus skipped to the rows
+loaded.
+
+Two engines that were installed and invisible are now detected. Ren'Py is
+recognized from its package directory, its interpreter library, and its archive
+extension, and GameMaker from its runtime data file and its platform extension
+library. Ren'Py had been recognized by the launch-resolution rules for some time
+while remaining unnameable in the listing, which is the drift a new check now
+prevents: every engine those rules can select a client executable for must have
+a detection signature naming the same product, and adding one without the other
+fails the ordinary gate. On the operator's machine, `trapped_with_ivy_piper` now
+reports Ren'Py, `shale_hill_secrets` reports GameMaker, and ARC Raiders reports
+Unreal, which it did not before.
+
+The one KNOWN column becomes two. It had been doing four jobs: it comma-joined
+engines with protection products so a reader could not tell which was which, and
+substituted a sentence about capture readiness when it had neither. `ENGINE` now
+names the detected engine and `SENSITIVITIES` names the anti-cheat and DRM
+products, partitioned on the category the findings already carried. The two
+readiness sentences are gone rather than moved, because each was a relabeling of
+a state the CAPTURE column already prints. The same partition and the same
+coverage state are carried by `targets export`, so the table and the
+machine-readable output cannot disagree, and `targets show` reports both lines
+too.
+
+A blank technology column now says which kind of blank it is. A row that was
+scanned and matched nothing, a row whose scan could not finish, and a row nobody
+has scanned were previously indistinguishable, which asserted the first of the
+three for all of them. They render as `-`, `incomplete`, and `not scanned`. A
+target registered by an earlier build carries no coverage record and therefore
+reports `not scanned` until it is re-registered, which is correct: the tool does
+not claim a scan it did not run.
+
+The Steam library walk no longer hands a soundtrack's install path to the rest of
+the pipeline as if it lived under `steamapps/common/`. A `Music`-typed title
+(the walk now reads Steam's own appinfo cache to tell) resolves under
+`steamapps/music/` instead, which is where it actually is, and is excluded from
+discovery entirely: it has no network behavior and was previously appearing as a
+spurious, `ready`-labeled capture target with a warning about a directory that
+never existed.
+
+`fragcap targets` now says when a registered target's install folder is gone,
+instead of rendering it identically to a healthy row. A title that was
+uninstalled but whose manifest lingered, a second library on a disconnected
+drive, or a scanned folder that moved, all render with a short note in the
+existing warning color (plain text when color is off), and the row is never
+offered as the listing's suggested next capture. Nothing is ever removed from
+the store because of this: the registration stays exactly as it was.
+
+`fragcap steam list` now prints a header naming its columns, instead of two
+tab-separated fields a reader had to guess the meaning of. Each row is joined
+against the local store by its exact `steam:<app_id>` anchor (never by name,
+which two different installed titles can share) and shows one of three
+distinct states: registered and positioned in the most recent `fragcap
+targets` listing (its handle and row index), registered but not positioned
+(its handle only), or not registered at all. `steam list` only ever reads that
+listing snapshot; it never writes it, so running it does not change what
+`fragcap capture <n>` resolves to. Rows sort by title name, case-insensitive,
+tie-broken by app id, so the order is the same on repeated runs instead of the
+prior incidental app-id-as-string ordering. With no local store, or an
+unopenable one, the listing still succeeds and still names every installed
+title, with a warning that identity could not be joined.
+
+`fragcap targets` now reports Easy Anti-Cheat for titles that ship it, which it
+did not before, even for titles measured shipping a visible EAC bootstrapper
+(`EACLaunch.exe`, `AntiCheatInstaller.exe`, an `EasyAntiCheat/` or
+`EasyAntiCheat_EOS/` directory). The in-tree signature set previously matched
+only the runtime's `.dll`/`.sys` files, none of which the two measured titles
+actually ship. `EOSSDK-Win64-Shipping.dll` alone continues to never report
+anti-cheat: it is the Epic Online Services SDK, shipped by many titles with no
+anti-cheat at all, and remains excluded by every new signature row and by a
+standing regression test.
+
+A second evidence source now runs alongside the directory scan: Steam's own
+`appinfo.vdf` launch-entry metadata, which fragcap already parses, is
+classified for anti-cheat signals in its `arguments` and `description` fields
+(the enabling flags and launcher name a genuinely protected launch entry
+carries). The classifier matches only specific, unambiguous tokens, never a
+broad substring on words like "anti-cheat," so a launch variant that
+explicitly disables anti-cheat (measured on a Halo: MCC entry) correctly
+reports nothing. When both sources agree on a title, it is reported once, at
+the stronger evidence's fidelity.
+
+`capture --sink`'s help now names every scheme the parser actually accepts
+(`file:`, `pcapng:`, `jsonl:`, `pipe:`, `fifo:`, `unix:`, `tcp://`) and every
+`,key=value` modifier (`format`, `payload`, `rotate-size`, `rotate-duration`,
+`queue`, `timeout`), where it previously named four schemes and none of the
+modifiers. `--mode`, `--direction`, `--roles`, and `--wait` now each state
+their effective default in `--help`, where none of the four did before.
+`docs/fragcap-specification.md` section 17.2 no longer documents `-m`, `-q`,
+or `-V` on `capture`, none of which the shipped grammar has ever had; the
+specification is corrected to match the shipped grammar rather than the
+reverse. `steam list`'s help now names the route from a listed app id to a
+capturable target (`targets add --steam <app_id>`), which previously existed
+only in a source comment clap never rendered. `capture`'s global
+`--quiet`/`--silent`/`--json` flags no longer sit inside the four target-input
+options (`--target`, `--id`, `--process`, and the positional selector); the
+four are now contiguous on every page, and the globals sort after every
+command's own options uniformly. `capture --help` and `targets --help` each
+now carry a worked example, drawn from the specification's own section 9.1 and
+`README.md`. Roughly two dozen further fields across the whole surface, never
+given a one-line `-h` summary at all, now have one, with their fuller
+explanation moved behind `--help`.
+
+`.gitignore` no longer excludes files from anywhere in the repository whose path
+contains a segment named `debug`. The pattern arrived unanchored from a Cargo
+build-artifact template, and it had silently kept `.agents/skills/debug/` out of
+every clone since the founding commit while that skill sat recorded in
+`skills-lock.json` the whole time; Cargo writes to `target/debug`, which the
+adjacent `target` pattern already covers. `AGENTS.md` and `CLAUDE.md` no longer
+state that the per-agent skill directories are populated with symlinks to the
+vendored set, which is generated by a tool this repository does not contain and
+was true of no checkout tested; both now say a checkout may carry none, and that
+nothing here depends on them. `docs/plans/000-repository-foundation.md` records
+that its skill count was wrong and that the selection rule it describes was an
+admission filter doing duty as a relevance test it cannot perform.
+
+### Decisions
+
+**2026-08-20** Declined a `cargo xtask lint` rule policing claims of the form "X
+has never run", proposed as point 4 of issue #187. Such claims assert something
+about external continuous-integration history rather than about repository
+bytes, so the rule would have to query the forge over the network. Every other
+rule in that gate (`OpenProcess`, the pcap transmit calls, BOM, CRLF, dashes,
+SPDX) reads the working tree and nothing else, and it is the cheapest check in
+the set precisely because it is hermetic, deterministic, and runnable offline.
+Making `cargo xtask ci` depend on a network connection in order to police six
+sentences is the worse trade. The mitigation taken instead is to attach a date
+to every claim about something observed once, so a stale observation is visible
+on reading rather than only on running something. Claims about how a check
+behaves are invariant, carry no date, and name instead how to see the behavior;
+the block says which kind is which, so a missing date is never ambiguous. Issue #187 anticipated
+this outcome and accepted it.
+
+**2026-08-20** Kept the standing verification block in `AGENTS.md` as a rule
+with items under it, rather than renaming it to a status report or splitting the
+rule away from the evidence. Four of its six items had been discharged, which
+made its heading wrong as a label and not only as a count, and the obvious moves
+were to rename it or to split it in two. Both lose the thing worth keeping: the
+instruction to distinguish a check that did not run from a check that passed is
+durable and must survive even when no item under it is outstanding, and it is
+only concrete while the evidence sits beneath it. Reorganizing the items into
+discharged and outstanding under one rule-stating heading also removed the count
+that had been wrong since the list grew past two, rather than incrementing it.
+
+**2026-08-20** Added clap's `wrap_help` feature, keeping the exact `=4.5.32`
+pin. The `Cargo.lock` delta was measured, not estimated, and is exactly one
+package: `terminal_size 0.4.4`, MIT OR Apache-2.0, declaring `rust-version
+1.71`. It resolves against the `windows-sys 0.61.2` that anstream already brings
+through clap's default `color` feature, so the `windows-sys 0.36` pin shared by
+`pcap` and the socket-table backend is untouched and no second tree appears.
+clap is non-optional in `fragcap-cli`, so unlike `pcap` behind `live` this is
+compiled under the 1.82 floor rather than skipped, and `terminal_size` clears it
+(it declares `rust-version 1.71`). That is a claim about this package only, not
+about the gate as a whole; see the last entry in this fragment for the state of
+`cargo xtask msrv` itself.
+The alternative was hand-wrapping the doc comments, which needs no dependency
+and was rejected because the available width depends on the longest item name in
+whichever list is being rendered, computed at render time, so a string wrapped
+for one indent is wrong at another and adding one long flag silently invalidates
+every hand-wrap in that list.
+
+**2026-08-20** The help guard enumerates pages from clap's command tree, not
+from a hand-written list, and matches leaks by pattern over the whole normalized
+page, not by token list over single lines. Both halves are corrections to the
+guard that issue #67 shipped and issue #178 caught failing. That guard checked
+three pages out of twenty-nine, so nine leaking pages were never looked at, and
+it matched the literals `S15`, `S16`, `S17`, and `slice S`, so `S051` through
+`S055` slipped past all but one and the bare `(S051)` form slipped past all of
+them on a page that was covered. `fragcap-cli` gained one public function,
+`command()`, returning the clap tree, so a new subcommand inherits every
+assertion the day it is declared. The whole-page normalization is equally
+load-bearing and was found by this slice's own analyze gate: with wrapping
+turned on, `fragcap extcap --help` renders `specification section` at the end of
+one line and `14.5` at the start of the next, so a line-based scan reports that
+page clean while it still leaks. A guard defeated by the wrapping shipped in the
+same slice would have repeated issue #178 one slice after fixing it.
+
+**2026-08-20** The Cargo-feature clause of the leak rule matches the phrasing
+that names a build feature to a user (`` `X` feature ``, ``feature `X` ``), never
+the set of feature names declared in the workspace. Four of the five declared
+features (`live`, `net`, `targets`, `etw`) are ordinary English words: matching
+`net` bare fires on "network" and `targets` fires on most of the `targets`
+pages. A rule that cries wolf earns an exception list, and an exception list is
+what decayed into the hardcoded token set this slice replaced.
+
+**2026-08-20** Recorded as an environment observation, not a defect. On the
+Windows developer machine this slice was written on, `cargo xtask msrv` fails
+parsing `constant_time_eq 0.4.2`, which declares `edition = "2024"` and
+`rust-version = "1.85.0"` and is reached through `blake3` from S051. That was
+first read as a pre-existing break in the repository, and that reading was
+wrong: the `minimum supported toolchain` job runs the same
+`cargo build --workspace --locked` under the same 1.82 toolchain and compiles
+that exact package successfully, on `main` and on this branch, confirmed by
+reading the job result rather than the workflow conclusion. This slice's own
+addition clears the floor independently (`terminal_size` declares
+`rust-version 1.71`) and the lock delta is exactly that one package. The local
+divergence is unexplained and no issue was filed for it, because the evidence
+does not support asserting a defect; it is written down here so the next person
+who hits it locally starts from the comparison rather than from the panic.
+
+**2026-08-20** Changed `.github/workflows/release.yml`, a pinned artifact. Its
+catalog build step invoked `catalog seed-signatures`, a verb this slice removed;
+it now invokes `catalog seed --tier signature`. `--db` stays explicit there
+because the step writes the build's staging copy, not the per-user default the
+flagless form resolves. Verified by executing the new invocation rather than by
+reading the diff, on the standing rule that release infrastructure names CLI
+subcommands and `cargo xtask ci` does not cover it: 23 detection signatures
+seeded, matching the previous grammar.
+
+**2026-08-20** Corrected the recorded offline path for refreshing the catalog.
+The operator's decision was to drop `catalog update` and document the offline
+route, following issue #175's option 2, whose route was "download `catalog.db`
+from the releases page and run `catalog import`". Measurement shows that route
+is hollow: `assets/hint-seed.json` carries zero records and is what the release
+imports, so the published `catalog.db` is the same title-less store the user
+already has and downloading it changes nothing. The decision's substance is kept
+(no network code in the shipped binary, no dead end) and its mechanism is
+corrected to creating the store locally, which the first-run bootstrap and the
+bundled signature document already do offline. `doctor` therefore offers an
+action it can perform rather than one that always degrades.
+
+**2026-08-20** Declined issue #175's request that the release build enable the
+network feature or that slice S056's npcap installer fetch be deleted. The
+operator's decision forbids network code in the shipped binary, which settles
+the first. The second rests on reading what #175 objects to: a binary that
+*promises* a remediation it cannot perform. The npcap action makes no such
+promise. Its degraded form offers the official download page and states plainly
+that this build cannot fetch, which is a real step a user can take, and it was
+the catalog action alone that told users to rebuild fragcap from source. The
+fetch code stays exercised in maintainer builds and under `--all-features`.
+
+**2026-08-20** Recorded, not closed: the released `catalog.db` has no titles.
+The shipped store carries detection signatures and zero catalog records, and
+with no network in the shipped build there is no compiled-in way to gain any.
+This is not fatal, since discovery resolves titles from Steam and the signature
+table (33 on the developer machine against a zero-record catalog), but it means
+the title tier is a maintainer-populated enrichment that is empty in every
+release. Filling it is a data-publishing decision rather than a command-surface
+change, so this slice reports it instead of absorbing it.
+
+**2026-08-20** Scoped output is the default, which is a user-visible change to
+what a capture file contains. A capture taken with this release holds the
+target's traffic where the same command before it held everything on the wire.
+`--scope all` restores the previous behavior exactly, verified by byte-comparing
+its output against a binary built from the previous commit over the same
+fixture. The alternative, defaulting to `all` and making scoping opt-in, was
+rejected because the tool's stated purpose is process attribution and a user
+reading that claim expects the file to hold what they named; shipping the
+opposite by default and requiring a flag to get it would keep the claim false.
+
+**2026-08-20** The scope exclusion is counted in two terms, not one. A packet
+attributed to a process no profile stage binds is confidently not the capture's.
+A packet carrying no attribution at all might have been the target's, excluded
+only because the socket table had not yet published the socket that would have
+named it. They are reported separately because folding them would hide a
+possible real loss inside an intended exclusion, and a scope gate is precisely
+where P-4 can fail quietly. A non-zero unresolved count on a real capture is a
+signal to investigate; a non-zero out-of-scope count is the feature working.
+
+**2026-08-20** An observe-mode run is not scoped, and says so. Slice S059
+promotes a target with an unresolved launch chain to the process it observes
+holding the sockets, and that observation counts only packets the write gate
+admitted. Scoping such a run to its target would starve the mechanism that
+decides what the target is: the gate would reject everything unbound, the file
+would be empty, and nothing would be promoted. Measured before the fix: a run
+that captured 24 packets and attributed all of them retained none. A run that
+does not yet know its target cannot scope to it, so the scope widens for that
+run and the run warns that it did, because an operator who asked for a scoped
+file and received an unscoped one has to be told and told why. This interaction
+was found by running the S059 promotion test, not by the cross-artifact analysis
+gate, which is worth recording as a limit of that gate.
+
+**2026-08-20** Removed `--scope profile`, which slice S064 first shipped as one
+of three values. It was specified to retain anything the profile binds
+regardless of `--roles`, differing from `target` only when the role set is
+narrowed. Review of PR #191 established that it can never differ at all:
+`CaptureSession::match_and_bind` returns before binding a stage whose role is
+outside the set, so nothing outside it ever stamps, and a stamped packet's role
+is therefore always inside it. `profile` could admit nothing `target` did not,
+in any configuration. A flag value that cannot differ from the default is a
+distinction the interface claims and the system cannot make, which is the defect
+this slice exists to remove rather than one to add. Reintroducing it needs
+"which stages bind and stamp" separated from "which stages trigger
+acquisition", which `--roles` currently conflates; that is its own slice, with
+stop-condition consequences, because the live-process count that decides when a
+capture ends is keyed on bindings.
+
+**2026-08-20** The two engine detectors stay separate, bound by a directed subset
+invariant rather than folded into one list. fragcap has two mechanisms that read
+an install directory about engines: the launch-resolution rules in
+`crates/fragcap-profile/src/engine_rule.rs`, and the detection signature table.
+Issue #168 preferred folding the first into the second, and that option is
+rejected here with reasons, because the two answer different questions. The
+launch rules do not merely recognize an engine, they apply a per-engine rule to
+pick the socket-holding executable: an Unreal `*-Win64-Shipping.exe` beneath
+`Binaries/Win64`, a Unity player named after the `*_Data` stem, a Godot binary
+named after the `.pck` stem, a Ren'Py launcher in the root. The signature schema
+carries category, kind, pattern, product, and confidence, and nothing that could
+express any of those. Folding them would therefore require either extending the
+signature schema with a per-engine client-selection rule, a larger change than
+the slice that would carry it, or giving up the client selection the resolver
+cascade depends on. There is a crate-direction obstacle too: `engine_rule` lives
+in `fragcap-profile`, the seed lives in `fragcap-targets`, and `fragcap-targets`
+depends on `fragcap-profile`, so making the rules a consumer of the table would
+invert that edge or thread a loaded signature set through a cascade that takes no
+such parameter.
+
+What ships instead is stronger than the "check they agree" fallback the issue
+offered, because the two sets should not agree. The signature table legitimately
+names engines nobody has written a client-selection rule for, and requiring
+equality would force either a fabricated rule or the removal of a true detection.
+The invariant is directed: every engine the launch rules can select a client for
+must have an engine-category signature naming the same product, and the reverse
+is not required. It is enforced by a test that iterates the `Engine` enum itself
+rather than a list maintained beside it, so adding a variant without adding a
+signature fails, and it asserts no count and no width. The failure message names
+the file to edit.
+
+**2026-08-20** The Steamworks SDK signature rows are dropped rather than
+recategorized. Issue #169 offered both: move them to a `platform-sdk` category
+with product `Steamworks SDK`, or remove them. A fourth category would need a
+fourth rendering bucket, in the same change whose subject is that the existing
+columns conflate categories, and it would put a column of noise in front of the
+operator on nearly every row, because the library ships with essentially every
+Steam title. That a title links the Steamworks SDK is already implied by its
+`steam:` anchor. Nothing is lost that was being used.
+
+**2026-08-20** The detection coverage state is a typed column on the target
+entry, and the local store schema advances from version 6 to version 7 for it.
+The migration is a single additive nullable column with a CHECK set, applied
+through the same ladder the five migrations before it use; an existing row keeps
+every value and reads the column as NULL, which is exactly "no scan is recorded",
+so nothing is backfilled. Backfilling would invent a scan that never ran.
+
+The cheaper alternative, recording it inside the free-form `provenance` blob, was
+rejected. It needs no migration and round-trips for free, but nothing validates
+it: an out-of-set value there would read as "no scan recorded", which is a
+coverage claim the tool cannot check, and #174 calls this distinction a P-4
+concern rather than a cosmetic one. The target-entry export states in its own
+documentation that its key set is a reviewed contract rather than a serde
+accident, and this belongs in that contract. There is deliberately no
+`not-scanned` variant in the value set: absence is `NULL`, because a variant
+would let a row assert that no scan happened, where absence is simply the lack of
+a claim.
+
+**2026-08-20** The widened listing states its width budget over the columns the
+tool controls, and overflows rather than truncating. With every bounded column at
+its widest, the columns other than the target handle cost 53 of an 80 column
+terminal, leaving 27 for a handle. The handle is operator data of unbounded
+width, so a longer one overflows, with every value intact and nothing clipped.
+Truncating to fit would be the same class of silent loss P-4 forbids for a
+dropped packet, and wrapping would break the alignment the split exists to
+provide.
+
+This is not hypothetical on the operator's machine, and the first draft of the
+slice said it was. The plan claimed a representative row fit in 74 columns, on
+the strength of a 22 character handle taken from the sketch in #174. Rendering
+the real listing showed the longest handle is 47 characters
+(`warhammer_40_000_dawn_of_war_definitive_edition`), and rows running to 100.
+The claim is corrected rather than quietly adjusted, because it came from reading
+an issue instead of running the command, which is the failure mode the slice
+exists to fix. Shortening the handles a target carries is issues #166 and #173.
+
+**2026-08-20** `SignatureKind::is_implemented` is replaced by
+`Signature::is_matchable`. Matchability now depends on the pattern as well as the
+kind, since a `binary-marker` is matchable in its `section:` form and inert in
+every other, so it is a property of the row. This removes a public function from a
+pre-1.0 crate. Keeping the old one and adding a second gate beside it was
+rejected: it would leave two places to forget, and the one that would be forgotten
+is the one that decides whether a signature is silently ignored.
+
+**2026-08-20** `ScanOutcome` no longer exposes its individual causes of reduced
+coverage as public fields. `unreadable` and `marker_candidates_skipped` are
+private, reached through `coverage_warnings()`, `is_complete()`, and a
+`marker_candidates_skipped()` accessor, and `ClassifierResult::unreadable`
+becomes `ClassifierResult::coverage_warnings` carrying finished lines rather than
+paths.
+
+This is a response to the review of PR #192, and the reason it changes the types
+rather than only the call sites is that the call sites were the symptom. The
+candidate-cap count was added with a shared helper to report it, and then three
+of the five boundaries that scan kept iterating the narrower `unreadable` field
+and silently dropped the new cause: the inventory command, single-target
+registration, and the classifier seam, whose field could not even hold a count.
+A helper every caller is merely expected to reach for is exactly the arrangement
+that lets the next cause be dropped the same way. With the narrow data
+unreachable, a boundary that wants to report coverage has one thing to call, and
+one that adds a cause later reaches every boundary without touching any of them.
+The cost is a public field removal and a field rename on a pre-1.0 crate, which
+is cheap against a P-4 signal that had already gone missing once.
+
+**2026-08-20** `fragcap_profile::pe::fixtures` is public rather than
+`#[cfg(test)]`. Three crates now test the same matchers against generated PE
+inputs, and a hand-rolled builder in each would be free to drift from the others,
+which is precisely how a fixture stops testing what it claims to. It follows the
+precedent already set by this workspace's other public fixture types
+(`FixtureCatalog`, `FixtureClassifier`, `FixtureSource`, `FixtureEngineFeed`).
+
+**2026-08-21** The observed launch executable a Steam title's appinfo cache
+names is stored as a new, dedicated `executable_hint` column, not folded into
+the existing `launch_entries` field. `launch_entries` carries the
+socket-holder decision's guarantee that fragcap never claims a process holds
+the gameplay sockets without having been told so by the user or by observing a
+capture; writing an executable there for a title nobody has authored or
+captured yet would either fabricate that claim or require touching
+`capture_readiness` and the real capture path, neither of which this change's
+scope (findability, not capture behavior) called for. The local store schema
+advances from version 7 to version 8 for this and for a second new column,
+`folder_name` (the raw installdir), both nullable `TEXT` with no CHECK
+constraint: unlike `detection_scan`'s enum, both are free-form observed strings
+with no closed vocabulary to enforce.
+
+**2026-08-21** Selector resolution gained a third tier, a case-insensitive
+substring match against the name, folder name, and executable hint, but only
+once an exact handle and an exact name both miss. A single-tier substring match
+was rejected: it would turn an existing unambiguous exact-name selection (for
+example `Portal 2`) into a reported ambiguity the moment a superstring name
+exists (`Portal 2 Beta`), which is a regression the existing exact-match
+behavior never had.
+
+**2026-08-21** `doctor`'s `use_color()` predicate and its warning-color ANSI
+codes move to a new, shared `crate::color` module in `fragcap-cli`, and
+`doctor` itself is repointed at it. `targets` needed the identical palette for
+its missing-install-root note, and keeping two independently maintained copies
+of the same two escape codes is exactly the drift the issue's own instruction
+to "follow the doctor convention" was written to prevent.
+
+**2026-08-21** The `&` handle-derivation change is forward-looking only.
+Already-registered targets keep the handle they were given at registration
+time; nothing re-derives or migrates a stored handle. `Ratchet & Clank` now
+derives `ratchet_and_clank` for a title registered after this change, where it
+would previously have derived `ratchet_clank`.
+
+**2026-08-22** The redraw is wired only into `capture_live`/`drive_live`
+(`crates/fragcap-cli/src/orchestrator.rs`), the live `--launch`/attach path.
+`capture_prerecorded`/`drive`, the offline two-phase driver every tier-1
+test, every committed golden, and the `extcap` integration run through,
+is untouched: it blocks on `rx.recv()` with no timeout and has no
+multi-minute-silence problem to solve, and its own doc comment already
+states its behavior is unchanged since before the live path existed.
+Restricting the change to one function kept the well-tested golden-producing
+path's timing semantics exactly as they were and satisfied the extcap
+non-interference requirement by construction rather than by a new gate.
+
+A new `fragcap-core::pipeline::LiveStats` handle mirrors two counters
+(`sink_dropped`, the per-image holder tally) that were, before this slice,
+plain local variables inside the output loop's single-threaded function,
+visible to a caller only after the whole pipeline thread joined at the end
+of a run. It is obtained via `Pipeline::live_stats()`, callable any time
+after `Pipeline::new`, before `run(self)` consumes the pipeline by value,
+directly mirroring the `SessionGate`/`GateHandle` split S10 already
+established for the same class of problem. The third counter,
+`buffer_dropped`, already had a live-readable path (`Consumer::evicted()`),
+but mirroring it into `LiveStats` from the output loop's hot per-packet path
+by calling `evicted()` there would double the lock acquisitions on the
+buffer's shared mutex for the run's entire lifetime, contention the buffer
+module's own documentation says its design exists to avoid. The fix is a new
+`Consumer::next_and_evicted()` beside the existing, untouched `next()`,
+reading the eviction count inside the same lock `next()` already holds, at
+no additional lock acquisition; `next()` itself became `#[cfg(test)]` once
+`output_loop` was its only production caller, since a `pub(crate)` method
+with zero non-test callers is dead code under `cargo clippy --all-targets`
+when `fragcap-core` builds as a plain dependency of `fragcap`/`fragcap-cli`
+(found by compiling, not anticipated in planning).
+
+`crate::color::use_color()` (`doctor`, `targets`) took no parameter and
+always tested `std::io::stdout()`. Reusing it unmodified for the live
+display, which renders to stderr and must never be influenced by what
+stdout happens to be, would have silently gated the wrong stream. It now
+takes an explicit `Stream` (`Stdout` or `Stderr`); `doctor` and `targets`
+pass `Stdout` and are unaffected.
+
+Every new rendering rule (the status block's content and layout, the
+redraw's erase-then-write sequence, the heartbeat's due/reset timer) is a
+pure function over a plain snapshot struct, with no ETW, socket, or platform
+dependency, mirroring the codebase's standing pattern for exactly this
+problem (`doctor`'s classifier over a plain `Inputs` value,
+`CompletionSummary::render`).
+
+**Correction, 2026-08-22 (the first `ci` run on `windows-latest`/`ubuntu-latest`):**
+the initial commit gated only the wiring call site (`drive_live` and its
+immediate glue) to `#[cfg(all(feature = "etw", windows))]`, on the claim
+that the pure `live_status` module's own tests would then run on every CI
+platform. That claim was false the moment it was checked against a real
+`ubuntu-latest` run: `cargo clippy --all-targets --all-features` also
+compiles the crate's plain (non-test) library target, which excludes
+`#[cfg(test)]` code entirely, and on that target `live_status`'s items had
+*no* caller at all once their one production caller stayed behind the
+Windows/ETW gate, `windows` being false regardless of any feature flag on
+that runner. The whole `live_status` module, the `Event::CaptureProgress`
+variant, `Stream::Stderr`, and the handful of `Emitter` methods this slice
+added (`format`, `verbosity`, `live_write`, `progress_written`) are now
+gated the same way as `capture_live` itself, each with a comment pointing
+back to this entry. The consequence is real and worth stating plainly: this
+slice's pure-function test suite runs in CI only on the `windows-latest` leg
+of the `check` job (which resolves `windows` true and, under
+`--all-features`, `etw` true too), not on `ubuntu-latest`. That is the
+existing, established posture for every other Windows/ETW-only code path in
+this codebase (`capture_live`, `elapsed_ts`); this slice does not change it,
+it only discovered that its own design had, incorrectly, claimed to be an
+exception. Local verification of the `windows` cfg evaluating false (no
+Linux cross-compiler was available in the environment that found this) used
+the equivalent, cfg-identical substitute of building on Windows with the
+`etw` feature simply omitted, which `#[cfg(all(feature = "etw", windows))]`
+cannot distinguish from `windows` being false.
+
+Review of PR #196 (Codex and Copilot, both independently) also found six
+real defects the merge-readiness pass had not caught: the redraw and the
+optional JSON tick fired once per message rather than on their own cadence,
+because `rx.recv_timeout(tick)` returns immediately whenever a message is
+already queued rather than only on the timeout; an ordinary progress line
+written while a frame was on screen left the next redraw erasing from a
+stale line count, corrupting both; `extcap` reaches the live driver too
+(`assemble::components` selects it whenever the run is not an offline
+`--offline` replay), so the heartbeat was reaching its stderr despite
+FR-008; an attach-to-running capture never populated the bound-process
+maps, since the acquisition loop that would otherwise have populated them
+exits immediately when the session is already capturing; the status block always passed no terminal
+width into the renderer, so the narrow-terminal truncation path (and a
+resize) was never actually reached; and the live holder tally's snapshot
+method held its mutex across an O(n log n) sort rather than only across the
+copy. A seventh finding (ranking the live holder tally by bytes rather than
+packets) was verified against the code and declined: the tally mirrors
+`CaptureStats::holder_tally`'s existing per-packet count (`dominant_holder`,
+used by the completion summary and the launch-and-observe promotion, ranks
+the same way), and diverging the live view's ranking from it would let the
+two disagree about which process dominates the same run. The spec's
+Clarifications session is corrected to describe what is actually counted;
+a byte-weighted tally is left as a real, separately-scoped follow-up. All
+seven findings, including the declined one, are answered individually on
+their PR review threads.
+
+**2026-08-22** Audit disposition for issue #183's findings 4 through 15 (1, 2,
+3, 5, and 8 were already fixed and closed by S062; re-verified here against
+`5a3862c`, not re-fixed). Each finding below is fixed, with what changed, or
+closed, with the reason.
+
+- **Finding 4** (`--sink` undocumented schemes/modifiers). Fixed. Help now
+  names all seven schemes and six modifiers `args.rs` actually accepts; the
+  real gap was wider than the issue recorded (it also missed `pcapng:`,
+  `fifo:`, and `unix:`, and three of six modifiers).
+- **Finding 6** (no option states its default). Fixed for all four.
+  `--direction` takes `default_value_t`, matching `--scope`'s existing
+  pattern (it has no profile-priority behavior to lose). `--mode`, `--roles`,
+  and `--wait` state their default in prose: `--mode` and `--roles` because
+  each has a real, tested profile-priority fallback in `assemble.rs`
+  (`default_value_t` was tried for `--mode` too and reverted after breaking
+  that fallback; see the review-round entry below), `--wait` because its
+  default is "no timeout," not a fixed value.
+- **Finding 7** (spec documents `-m`/`-q` the grammar refuses). Fixed by
+  correcting the specification, per the recorded clarification (adding short
+  flags to a just-stabilized grammar is the higher-risk direction). Also
+  found and fixed in the same edit: the specification also documented
+  `-V, --version` on `capture`, which the subcommand has never had (`-V` is
+  root-only; clap does not propagate it without `propagate_version(true)`,
+  which this grammar does not set). Caught by the new spec-agreement gate
+  itself once it existed, not by the original audit inventory.
+- **Finding 9** (`--extcap-version`: "Accepted; not acted on"). Closed, not a
+  defect. The extcap protocol requires the flag to be accepted for
+  Wireshark's version negotiation; the text already says exactly what
+  happens.
+- **Finding 10** (repeated `--json` paragraph). Partially closed as a
+  documented clap limitation. The one-line `-h` split was already in place
+  (S062's FR-009); verified, not re-fixed. The long-form paragraph still
+  repeats on every page's `--help`, because a `global = true` clap arg cannot
+  carry different help text per subcommand without either dropping
+  `global = true` (a larger grammar change) or duplicating the paragraph as a
+  second, driftable copy in the root page's hand-written template. A source
+  comment records the reason.
+- **Finding 11** (`--quiet`/`--silent`/`--json` interleaved with target
+  inputs). Fixed, and not the way first planned. Reordering `CaptureArgs`'
+  fields has no effect (verified: `--process` already sat beside `--id` before
+  any edit, and the interleaving persisted). Reading `clap_builder-4.5.32`
+  directly showed the real mechanism: a propagated global arg keeps the
+  `display_order` it had on `Cli`, which ties with each subcommand's own early
+  fields and is broken alphabetically. `display_order = 1000` on the three
+  globals sorts them after every subcommand's own options uniformly.
+- **Finding 12** (`--catalog-db`/`--local-db` long in `-h`). Fixed with the
+  same short/long split as every other multi-sentence field this slice
+  touched.
+- **Finding 13** (no option grouping). Fixed as a side effect of finding 11's
+  real fix: the four target inputs are now contiguous on every page.
+- **Finding 14** (no worked examples). Fixed for `capture --help` and
+  `targets --help`, drawn verbatim from specification section 9.1 and
+  `README.md` rather than composed fresh.
+- **Finding 15** (`steam list` names no route to registering a title). Fixed:
+  the correct sentence already existed on the `SteamCommand` enum's own doc
+  comment, which clap never renders; moved onto the `List` variant's doc,
+  which does.
+
+**Scope discovered during implementation, beyond the twelve findings above.**
+Writing FR-011's gate (every `-h` summary is one line) against rendered output
+first produced 75 apparent violations, the great majority false positives:
+`capture -h`'s own column width (driven by its longest flag name) can wrap
+even an already-correctly-split, inherently short sentence, and a page with
+especially long flag names (`extcap`, `--extcap-interfaces` at 21 characters)
+pushes clap into a next-line layout for every entry on that page, including
+its own auto-generated, unauthorable `-h, --help` text. Neither is a doc
+comment defect; both are `--width` concerns FR-001/FR-002's existing wrap gate
+already owns. The check was redesigned as a source-level scan of `cli.rs`'s
+doc-comment blocks (excluding the never-rendered outer doc on a struct or enum
+used as a variant's payload, or a `#[command(subcommand)]`/`#[command(flatten)]`
+field, verified against `doctor --help`'s and `extcap --help`'s actual
+rendering): a real, source-only fact, independent of any page's column width.
+That redesign surfaced 25 genuine, previously undiscovered violations spread
+across `targets`, `catalog seed`, `doctor`, and `extcap` (fields whose entire
+multi-sentence doc comment rendered in `-h`, never split); all 25 are fixed in
+this slice (mechanical: one blank `///` line inserted after the first
+sentence in each), since the fix was low-risk and leaving roughly two dozen
+known violations unaddressed at the close of this campaign's last slice was
+judged worse than the modest scope growth.
+
+**The gate, before and after (FR-015).** Each of the four new checks in
+`crates/fragcap-cli/tests/cli_help.rs` was demonstrated failing for the real
+reason before the corresponding fix landed, or (where the fix predated the
+test's first run) demonstrated failing again afterward via a deliberate,
+reverted regression:
+
+- `every_defaulted_option_states_its_default`: deliberately stripped `--wait`'s
+  prose default statement; failed naming exactly that flag and block; restored
+  and re-confirmed green.
+- `capture_short_flags_match_the_specification`: deliberately reintroduced
+  `-m, --mode` into the specification's section 17.2 block; failed with
+  `spec-only ["-m"]`; restored and re-confirmed green.
+- `every_cross_reference_resolves`: deliberately introduced a backticked
+  reference to the retired `targets watch` command; failed on both pages that
+  render `SteamCommand::List`'s doc, naming exactly `watch`; restored and
+  re-confirmed green. (During development this same check also caught a real
+  false positive of its own, `` `catalog seed --tier signature` `` reading
+  `signature` as a stale command word when it is a `--tier` *value*, fixed
+  in the checker itself, not in `cli.rs`, before the check was trusted.)
+- `every_short_help_summary_is_one_line`: its first real run (against the
+  as-yet-unfixed surface, before this slice's own doc-comment fixes landed)
+  failed on all 25 genuine violations named above; every one now passes.
+
+**Dependency and process notes.** No dependency added; `regex` was already a
+`fragcap-cli` dev-dependency (S062). No change to `cargo xtask deps`,
+`cargo xtask msrv`, or the workspace dependency inventory in `AGENTS.md`.
+
+**Review round on PR #198 (Codex + Copilot, 18 findings, all verified and
+addressed).** Every finding was checked against the actual code before being
+accepted; none were rejected.
+
+- **`--roles`' profile-priority default was never documented (Codex).**
+  `assemble.rs`'s `.or_else(|| defaults.roles()...)` gives a profile-declared
+  roles list priority over "every role," exactly the same shape as `--mode`'s
+  fallback; the help text said only "every role." Fixed to state the real
+  precedence.
+- **FR-011's gate did not render `-h` (Codex + Copilot, independently).**
+  Correct as filed. Fixing this properly required two further rendered-check
+  attempts, both measured wrong, before landing on the final design: see the
+  dedicated account below.
+- **`DEFAULTED_OPTIONS` was a hand-maintained list FR-012 says must be
+  structural (Codex + Copilot, independently).** Correct. Split into a
+  structural half (any `Arg` with `get_default_values()` non-empty, walked
+  from `fragcap_cli::command()`, covering `--direction` and any future
+  `default_value_t` option with no list edit) and a minimal, explicitly-
+  justified `PROSE_ONLY_DEFAULTS` list for exactly the two cases
+  (`--roles`, `--wait`, and `--mode` after its own revert) that resolve a
+  default inside `assemble.rs` with no clap-visible signal at all, which
+  cannot be derived from the command tree by any structural walk.
+- **The `DEFAULTED_OPTIONS` comment describing `--mode` was stale
+  (Copilot).** It still said `--mode` used `default_value_t`; `--mode` was
+  reverted to `Option<ModeArg>` with a prose default. The whole constant and
+  its comment were removed as part of the structural/prose split above.
+- **T017's sink-scheme regression assertion was never actually written
+  (Copilot).** Correct: the task was marked done in `tasks.md` but no such
+  test existed. Added `sink_help_names_every_scheme_and_modifier_the_parser_accepts`,
+  deriving the scheme and modifier sets from `args.rs`'s own match-arm keys
+  (`parse_destination`'s and `apply_option`'s), not a copied list, so the
+  test and the parser cannot drift independently. Demonstrated failing (a
+  temporarily removed `unix:` scheme) before being confirmed passing.
+- **The specification still claimed `--mode`'s default is unconditionally
+  `file` (Copilot).** Correct; `resolve_mode` preserves the profile-priority
+  fallback. Corrected in `docs/fragcap-specification.md` section 17.2 to
+  `[default: profile mode, else file]`, and `--roles`' row the same way.
+- **"With neither this flag set" on `--wait` is ungrammatical (Copilot).**
+  Correct (only one flag is being discussed, not two). Changed to "Without
+  this flag."
+- **Scheme count miscounted as six instead of seven (Copilot).** Correct
+  arithmetic error in `spec.md`'s Evidence table and the audit-gate
+  checklist; both list seven items. Fixed in both places.
+- **"Still live for three of four" undercounts by one (Copilot).** Correct;
+  all four remaining options (`--mode`, `--direction`, `--roles`, `--wait`)
+  stated no default at time of writing. Fixed to "all four."
+- **The `--profile`-flag edge case in `spec.md` was false (Copilot).**
+  Correct, and the sharpest finding of the round: it asserted the
+  profile-mode fallback was unreachable on the shipped CLI and told the
+  reader to document `--mode` as unconditionally `file`, which is exactly
+  backwards from what the pre-existing `a_profile_declared_ring_mode_is_
+  resolved_and_validated` test proves and what FR-003 itself already said
+  correctly. Rewritten to state the real, tested precedence.
+- **`plan.md` still said `--mode` gains `default_value_t` (Copilot).**
+  Correct; stale from before the revert. Rewritten together with the
+  "one of four" miscount below (Copilot: the true total, `--scope` plus four
+  more, is five) into a single corrected passage covering both.
+- **`tasks.md`'s T018 record still described the reverted plan (Copilot).**
+  Correct. Rewritten to describe the actual specification edit (conditional
+  defaults, plus the three flags found missing entirely, below), and a new
+  T019a records the FR-014 extension that surfaced them.
+- **FR-013's cross-reference check was circular (Copilot).** Correct, and
+  the second-sharpest finding: gating bare-word checking on "the backtick
+  span's first word is itself a real command" meant a genuinely stale,
+  *standalone* reference (a lone `` `watch` `` naming a retired command)
+  could never trigger the check, because `watch` failing to be real is
+  exactly what made the span fail to "read as an invocation." Redesigned:
+  value literals (enum possible-values, `value_name` hint tokens) are now
+  excluded structurally via `command_surface()`, and every bare
+  command-word-shaped token is checked unconditionally, with no span
+  gating at all. Fixing this exposed two more real gaps found only once the
+  gate ran for real: `fragcap` itself (the binary's own name, appearing in
+  every worked example) was not in the known-words set, and a bare word
+  immediately followed by a colon (`` `kind: "export"` ``, a JSON field
+  name in prose) needed to stay excluded from bare-word candidacy even
+  though a flag reference's own trailing colon must still be trimmed
+  (`` `--target`: ``). Both fixed; demonstrated catching a deliberately
+  introduced `targets watch` stale reference before being reverted.
+- **FR-014 only compared short flags, though the requirement names "flag and
+  short-flag set" (Copilot).** Correct. Extended to compare long flags too
+  (`get_long()` alongside `get_short()`), excluding hidden offline-substrate
+  args (`is_hide_set()`) that never render and adding the propagated globals
+  (`--quiet`/`--silent`/`--json`, invisible on an unbuilt `Command`) to the
+  binary side. Turning this on immediately surfaced three real,
+  previously-undiscovered spec gaps: `--catalog-db`, `--local-db`, and
+  `--scope` are real, shipped `capture` flags the specification's section
+  17.2 never documented at all. Added all three rows.
+
+**FR-011's gate, the long way round.** Getting a genuinely rendered check
+right took three attempts, and the failure of the second is worth recording
+in full because it is not obvious in advance. Attempt one (a raw
+continuation-line scan of `-h` output) flagged `--target`'s own
+already-correctly-split, single-sentence summary as a violation, because
+`capture -h`'s description column, pushed right by *other* long flag names on
+the same page, is narrow enough to wrap even one short sentence. Attempt two
+cross-checked each continuation against that same page's `--help` rendering
+for an internal blank-line split, which fixed the `--target` case, but then
+flagged `extcap -h`'s `--extcap-interfaces`, `--capture`, several more of its
+own fields, and even clap's own auto-generated, unauthorable `-h, --help`
+text ("Print help (see more with '--help')") as violations: `extcap`'s
+longest flag name (`--extcap-interfaces`, 21 characters) is long enough to
+push clap into a next-line layout for the *entire* page, so every entry wraps
+regardless of whether it has, or even could have, a second sentence to
+defer. Neither failure is the defect FR-011 exists to catch; both are caused
+by sibling flags on the same page, not by the field's own doc comment. The
+final design renders every page's `-h` (satisfying "render `-h`... iterate
+`help_pages()`" literally, and confirming each exits 0), but the actual
+pass/fail judgment is a source-level scan of `cli.rs`'s doc comments for a
+sentence boundary (`.`, `?`, or `!` followed by whitespace and a capital
+letter, outside backticked code) with no blank `///` split, because that is
+a fact about the field's own content, not about what else happens to share
+its page. The sentence detector was also corrected per the two `-011` review
+comments to recognize `?`/`!`, not only `.`; verified by temporarily joining
+a doc comment with `!` and confirming the gate caught it before reverting.
+
+**2026-08-22** Slice S071 consolidated the vendored agent skills, closing issue
+#197. The decisions worth keeping:
+
+- **`.github/workflows/ci.yml` gained a step**, `cargo run --package xtask --
+  skills`, scoped to the ubuntu leg beside the existing wrapper gate. That file
+  is a pinned artifact, which is why this entry is mandatory rather than
+  optional. The step is what makes the new check binding rather than advisory;
+  a gate that only runs when someone remembers is the state that produced this
+  slice.
+
+- **One upstream, and an admission test.** `.agents/skills/` now carries the
+  ShruggieTech house standards this constitution binds, from
+  <https://github.com/shruggietech/skills> (Apache-2.0), and nothing else. A
+  skill is admitted only if a named principle binds this repository to it or a
+  repository gate executes it. Before this, 35 of 36 entries carried
+  `source: "h8rt3rmin8r/eso-weave"`, an unrelated personal repository, and 33 of
+  the 36 had no reference anywhere outside their own directory. The prior
+  selection rule was constitution P-1, which is an admission filter: it
+  establishes that a skill teaches nothing denylisted and says nothing about
+  whether this project has any use for it. That is how a capture-the-flag
+  forensics playbook, twelve skills whose names collide with an agent's own
+  built-ins, and a 283-file third-party Rust rulebook came to be presented as
+  vetted house standards.
+
+- **`traffic-analysis-pcap` was dropped despite looking on-topic**, and the
+  initial keep set was wrong to admit it. It is a security-forensics playbook
+  (credential harvesting, TLS decryption, covert-channel detection,
+  DNS-tunneling heuristics) that routes to four skills never vendored here, so
+  four of its own cross-references were broken. fragcap writes pcapng and
+  attributes flows; it has no capture-analysis surface this serves. Name
+  adjacency is not domain relevance.
+
+- **`shruggie-docs`, `shruggie-graph-memory`, and `shruggie-html` were declined**
+  though they are in the same upstream and the same brand as the four kept. No
+  principle binds them and no gate runs them. Admitting on brand alone would
+  have restated the failure this slice corrects, with a different brand than
+  last time.
+
+- **Vendored content is copied in unmodified, and that is not fussiness.** The
+  2026-08-06 vendoring hand-edited its copies to satisfy the text hygiene rules
+  in `CONVENTIONS.md`, and three lock hashes (`rust-skills`, `shruggie-html`,
+  `shruggie-powershell`) never reproduced afterwards. Because nothing verified
+  the file, that sat unnoticed for the life of the project. An edited vendored
+  copy is no longer the standard it claims to be. Current upstream ships clean
+  under `CONVENTIONS.md` already, so the edit bought nothing even at the time.
+  All three divergences are now resolved: two of those skills were dropped, and
+  the third was re-vendored from canonical bytes. Recording this because a
+  reader comparing lock files across the slice will see three anomalies vanish
+  at once and should know it was a consequence rather than a tidy-up.
+
+- **The lock's entry schema was left alone.** The release tag is carried inside
+  the existing `source` string (`shruggietech/skills@v1.11.0`) rather than in a
+  new field, because the four-field schema is written by an external tool this
+  repository does not contain and cannot test against.
+
+- **The hash algorithm is reproduced empirically, and the gate does not use it.**
+  `computedHash` is SHA-256 over every file in the skill directory sorted by
+  relative path, hashing the path bytes then the content bytes, with CRLF
+  normalized to LF for text and binary content hashed raw. That was derived by
+  probing against known-good entries, not from a specification, because the tool
+  that writes the file is absent here. This slice found the first independent
+  confirmation it was right: `shruggie-speckit`'s content was already identical
+  to upstream, and recomputing its hash reproduced the committed value exactly.
+  Three things still bound the risk. The gate asserts structure and never reads
+  hashes, so a wrong value cannot produce a false pass. The integrity anchor for
+  what was vendored is the publisher's own `SHA256SUMS.txt`, verified before
+  extraction: `shruggie-bash` `0351b062c0453f7f514ce41afc066accdea3e84e08738fa2ade934dc860d8071`,
+  `shruggie-markdown` `a68a25bf1f6287726d47cdcef5195bf2eef960172f7c48295e9e30f63426fa17`,
+  `shruggie-powershell` `1e043b5ebbfe0573aedfae0eb1bdaad96ca75d47ad6dc7a0a83623a7c577e246`,
+  `shruggie-speckit` `9c00c1db77930721ae37cc00ad0389beea968c062ded8caa151407b9e7ecb22c`.
+  And the falsifier is cheap: if the external skills CLI ever regenerates the
+  file and disagrees, the CLI is right and these values are replaced.
+
+- **The gate asks git's index, not `.gitignore`.** Assertion three compares a
+  directory walk against `git ls-files -z`. Reparsing ignore rules would
+  reimplement precedence this repository has already been caught getting wrong,
+  and the index is the thing that actually determines what a clone receives.
+  When git is absent or the lock cannot be read, the gate exits 2 (could not
+  run) and never degrades to a pass, matching `neutral` and `msrv`. This gate
+  exists because an unverified file drifted for the life of the project, so a
+  gate that cannot read the file must say so.
+
+- **The gate does not verify hashes, deliberately.** Given the algorithm's
+  empirical provenance above, a hash check could fail against correct content,
+  and a gate that cries wolf is a gate somebody disables. Structure was the
+  cheap, deterministic half that catches every drift class actually observed
+  here, including the one nothing caught for the life of the project.
+
+- **`xtask` gained no dependency.** The check reads `skills-lock.json` with a
+  strict reader for the subset it needs rather than taking `serde_json`, which
+  would have added no package to `Cargo.lock` but would have ended xtask's
+  zero-dependency state for two string fields. The reader refuses anything it
+  does not recognize, and a refusal is exit 2 rather than a guess.
+
+- **Wiring the newly vendored Bash checker into `cargo xtask wrappers`, to
+  replace the hand-rolled `check_bash`, was deliberately declined here** and
+  filed instead as issue #199. It was measured on 2026-08-22 to pass every Bash
+  script in `scripts/` cleanly, ShellCheck included, so the swap is small. It
+  changes what
+  the gate enforces rather than what this slice consolidates, and a slice whose
+  subject is removal should not quietly widen a gate on its way past.
+
+- **The refreshed PowerShell checker was measured before it was adopted.** The
+  copy that gates continuous integration had drifted 48 lines (POSIX twin) and
+  141 lines (PowerShell original) from upstream, and replacing a live gate's
+  checker is the one step in this slice that could have turned CI red. Both the
+  old and the new checker were run against `scripts/Invoke-FragCap.ps1` before
+  any file was touched; output and exit code were identical. Vendoring was then
+  ordered before deletion so the window in which the gate has no checker never
+  opened.
+
+**Review round on pull request #200 (Codex, 2 findings, both verified and
+fixed).** Both were in the new gate, and both were cases of it failing at
+precisely the thing it was written to do.
+
+- **The working-tree/index comparison ran one way only.** It asserted that every
+  file on disk is tracked, and never the inverse, so a vendored file deleted
+  from the working tree without `git rm` left the index carrying a file the tree
+  no longer had, and the gate passed. Reproduced before fixing, and it was
+  slightly worse than reported: the gate did not merely stay silent, it printed
+  "all 31 vendored file(s) are tracked by git", reporting a silently smaller
+  count as agreement, which is the P-9 failure this gate exists to prevent. Now
+  checked in both directions. Making it symmetric required making the two views
+  cover the same paths: `speckit-*` is now filtered out of the index view as
+  well as the disk walk (otherwise all ten would report as absent on every run,
+  exactly as the finding anticipated), and a file sitting loose in
+  `.agents/skills/` is now collected by the walk so it appears in both.
+- **The lock reader accepted trailing content after the document.** `value()`
+  stopped at the closing brace and nothing required end of input, so a lock
+  followed by a second value or by garbage parsed to the leading object and the
+  gate passed. Reproduced before fixing (exit 0 where the module's own contract
+  says 2). The reader now requires end of input, and trailing whitespace alone
+  is still accepted. This one contradicted the module's documented reason for
+  being strict, which was the argument for hand-rolling the reader rather than
+  taking `serde_json`; a strict reader that is not strict is a worse answer than
+  the dependency would have been.
+
+Both fixes carry tests, and both original defects were reproduced against the
+real tree before the fix and confirmed corrected after, along with a regression
+check that the original present-but-untracked case is still caught.
+
 ## [0.5.1] - 2026-08-19
 
 ### Fixed
@@ -5739,6 +6889,7 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.6.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.6.0
 [0.5.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.1
 [0.5.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.0
 [0.4.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.4.0
