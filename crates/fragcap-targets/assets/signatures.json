@@ -16,6 +16,12 @@
 
   { "category": "anti-cheat", "kind": "filename", "pattern": "EasyAntiCheat*.dll", "product": "Easy Anti-Cheat", "confidence": "definitive" },
   { "category": "anti-cheat", "kind": "filename", "pattern": "EasyAntiCheat*.sys", "product": "Easy Anti-Cheat", "confidence": "definitive" },
+  { "category": "anti-cheat", "kind": "filename", "pattern": "EasyAntiCheat*.exe", "product": "Easy Anti-Cheat", "confidence": "definitive" },
+  { "category": "anti-cheat", "kind": "filename", "pattern": "EACLaunch.exe", "product": "Easy Anti-Cheat", "confidence": "definitive" },
+  { "category": "anti-cheat", "kind": "filename", "pattern": "AntiCheatInstaller.exe", "product": "Easy Anti-Cheat", "confidence": "definitive" },
+  { "category": "anti-cheat", "kind": "filename", "pattern": "start_protected_game.exe", "product": "Easy Anti-Cheat", "confidence": "heuristic" },
+  { "category": "anti-cheat", "kind": "directory-shape", "pattern": "EasyAntiCheat/", "product": "Easy Anti-Cheat", "confidence": "definitive" },
+  { "category": "anti-cheat", "kind": "directory-shape", "pattern": "EasyAntiCheat_EOS/", "product": "Easy Anti-Cheat", "confidence": "definitive" },
   { "category": "anti-cheat", "kind": "filename", "pattern": "BEService*.exe", "product": "BattlEye", "confidence": "definitive" },
   { "category": "anti-cheat", "kind": "filename", "pattern": "BEClient*.dll", "product": "BattlEye", "confidence": "definitive" },
   { "category": "anti-cheat", "kind": "filename", "pattern": "vgk.sys", "product": "Vanguard", "confidence": "definitive" },

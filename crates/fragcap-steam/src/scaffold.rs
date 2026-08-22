@@ -678,6 +678,7 @@ mod tests {
             installdir: String::new(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         let text = scaffold(&title, &[]).unwrap();
         // scaffold() validates internally; assert it again and check the shape.
@@ -710,6 +711,7 @@ mod tests {
             installdir: String::new(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         // The caller (slice S053) injects detection findings: an engine, an
         // anti-cheat, and a DRM product. All three are carried in the skeleton; the
@@ -768,6 +770,7 @@ mod tests {
             installdir: String::new(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         let text = scaffold(&title, &[]).unwrap();
         Profile::parse(&text).expect("scaffold must validate");
@@ -795,6 +798,7 @@ mod tests {
             installdir: String::new(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         let text = scaffold(&title, &[]).unwrap();
         Profile::parse(&text).expect("shared-basename scaffold must validate");
@@ -814,6 +818,7 @@ mod tests {
             installdir: String::new(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         assert!(matches!(
             scaffold(&title, &[]),

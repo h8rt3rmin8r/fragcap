@@ -92,6 +92,12 @@ pub mod targets {
         Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
     };
 
+    /// The machine-wide anti-cheat presence seam (slice S068). The one real
+    /// (Windows) implementation is [`crate::WindowsMachineAntiCheatProbe`].
+    pub use fragcap_targets::{
+        FixtureMachineAntiCheatProbe, MachineAntiCheatFinding, MachineAntiCheatProbe,
+    };
+
     /// The discovery seam and its model (slice S052): the `TargetSource` trait,
     /// the candidate and account types, the discovery tiers, the classifier seam,
     /// and the volume eligibility vocabulary.
@@ -142,6 +148,13 @@ pub mod discovery;
 pub use discovery::SteamSource;
 #[cfg(all(feature = "targets", windows))]
 pub use discovery::WindowsVolumeInventory;
+
+/// The real Windows machine-wide anti-cheat probe (slice S068). The seam it
+/// implements lives in `fragcap-targets`; see [`targets::MachineAntiCheatProbe`].
+#[cfg(all(feature = "targets", windows))]
+pub mod machine_probe;
+#[cfg(all(feature = "targets", windows))]
+pub use machine_probe::WindowsMachineAntiCheatProbe;
 
 /// Packet acquisition.
 pub mod capture {

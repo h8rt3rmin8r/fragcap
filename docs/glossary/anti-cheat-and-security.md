@@ -120,3 +120,25 @@ in a binary's own on-disk bytes; it opens no process handle and reads no process
 memory (principle P-1).
 
 **See also:** [Detection signature](anti-cheat-and-security.md#detection-signature)
+
+## Machine scope
+
+The distinction between a fact about one title (a detection signature match in its
+install directory, or a signal in its Steam launch metadata) and a fact about the
+whole machine (a service registered in the Windows registry, present regardless of
+which title, or none, put it there). A machine-scope finding is rendered
+separately from every target row and is never merged into, or used to infer, any
+specific title's evidence: modern anti-cheat products such as Easy Anti-Cheat
+install once per machine as a service and driver outside any game's install tree,
+so a machine-scope check is the only way to confirm the product's presence at all,
+but that presence alone does not say which installed title, if any, uses it.
+
+{: .matters }
+> Conflating machine scope with title scope would repeat, in a different form, the
+> exact false-positive class principle P-9 forbids: attributing a fact to a title
+> with no evidence that title caused it. `EOSSDK-Win64-Shipping.dll` ships in
+> several titles with no anti-cheat at all; a machine-wide anti-cheat service is
+> the same trap at a coarser grain, present on a machine regardless of which
+> title, or none, installed it.
+
+**See also:** [Detection signature](anti-cheat-and-security.md#detection-signature), [Coverage state](command-line-and-diagnostics.md#coverage-state)

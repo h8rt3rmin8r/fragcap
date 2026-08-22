@@ -39,6 +39,7 @@ pub mod http_catalog;
 pub mod http_engine;
 pub mod identifier;
 pub mod import;
+pub mod machine_probe;
 pub mod model;
 pub mod readiness;
 pub mod register;
@@ -74,6 +75,9 @@ pub use http_catalog::HttpCatalog;
 #[cfg(feature = "net")]
 pub use http_engine::HttpEngineFeed;
 pub use import::{import, ImportSummary};
+pub use machine_probe::{
+    FixtureMachineAntiCheatProbe, MachineAntiCheatFinding, MachineAntiCheatProbe,
+};
 pub use model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
     Technology,

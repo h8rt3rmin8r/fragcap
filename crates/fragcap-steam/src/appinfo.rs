@@ -615,6 +615,7 @@ pub mod fixtures {
         pub os: Option<String>,
         pub osarch: Option<String>,
         pub beta_branch: Option<String>,
+        pub description: Option<String>,
     }
 
     impl FixtureLaunch {
@@ -766,6 +767,9 @@ pub mod fixtures {
             }
             if let Some(a) = &l.arguments {
                 entry.push(("arguments".to_string(), Node::Str(a.clone())));
+            }
+            if let Some(d) = &l.description {
+                entry.push(("description".to_string(), Node::Str(d.clone())));
             }
             let mut cfg = Vec::new();
             if let Some(v) = &l.os {

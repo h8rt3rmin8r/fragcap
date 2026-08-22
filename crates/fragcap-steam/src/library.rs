@@ -10,8 +10,16 @@
 
 use std::path::{Path, PathBuf};
 
+use fragcap_profile::signature::DetectionFinding;
+
 use crate::vdf;
 use crate::SteamError;
+
+/// One appinfo-derived app's indexed facts: the `common/type` value, the first
+/// launch entry's executable (both as before slice S068), and the anti-cheat
+/// findings classified from every launch entry
+/// ([`crate::anti_cheat::classify_launch_entries`]).
+type AppinfoIndexEntry = (Option<String>, Option<String>, Vec<DetectionFinding>);
 
 /// A Steam library: a directory Steam installs titles into.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +54,15 @@ pub struct InstalledTitle {
     /// when no launch entry was observed. A findability hint only (issue #173); it
     /// never promotes to a resolved capture chain.
     pub launch_executable: Option<String>,
+    /// Anti-cheat findings from classifying every appinfo launch entry's
+    /// `arguments`, `description`, and `executable` fields
+    /// ([`crate::anti_cheat::classify_launch_entries`], slice S068, issue #170).
+    /// Empty when the appinfo cache carries no matching signal, including when the
+    /// cache is entirely absent. This is title-scope evidence, corroborating (and
+    /// merged with, at the discovery layer) a directory scan's findings; it is a
+    /// distinct fact from machine-scope anti-cheat presence
+    /// (`fragcap_targets::machine_probe`), which this field never carries.
+    pub anti_cheat: Vec<DetectionFinding>,
 }
 
 /// A resolved Steam installation and the titles installed across its libraries.
@@ -157,15 +174,20 @@ pub fn discover_in(root: &Path) -> Result<SteamInstallation, SteamError> {
                 .apps
                 .into_iter()
                 .map(|a| {
+                    // Classified from the full launch-entry list before `.first()`
+                    // below narrows to just the hint executable: a borrow, not a
+                    // move, so both reads coexist over the same `Vec` (slice S068).
+                    let anti_cheat = crate::anti_cheat::classify_launch_entries(&a.launch);
                     (
                         a.appid,
                         (
                             a.common_type,
                             a.launch.first().map(|l| l.executable.clone()),
+                            anti_cheat,
                         ),
                     )
                 })
-                .collect::<std::collections::HashMap<u32, (Option<String>, Option<String>)>>()
+                .collect::<std::collections::HashMap<u32, AppinfoIndexEntry>>()
         }
         Err(e) => {
             warnings.push(format!(
@@ -277,7 +299,7 @@ fn read_library_titles(
     warnings: &mut Vec<String>,
     malformed: &mut u64,
     warn_unreadable: bool,
-    appinfo_index: &std::collections::HashMap<u32, (Option<String>, Option<String>)>,
+    appinfo_index: &std::collections::HashMap<u32, AppinfoIndexEntry>,
 ) -> Vec<InstalledTitle> {
     let steamapps = library.join("steamapps");
     let entries = match std::fs::read_dir(&steamapps) {
@@ -328,7 +350,7 @@ fn read_library_titles(
 fn read_manifest(
     path: &Path,
     steamapps: &Path,
-    appinfo_index: &std::collections::HashMap<u32, (Option<String>, Option<String>)>,
+    appinfo_index: &std::collections::HashMap<u32, AppinfoIndexEntry>,
 ) -> Result<InstalledTitle, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
     let doc = vdf::parse(&text).map_err(|e| e.to_string())?;
@@ -350,12 +372,12 @@ fn read_manifest(
         .ok_or("no installdir")?
         .to_string();
 
-    let (app_type, launch_executable) = app_id
+    let (app_type, launch_executable, anti_cheat) = app_id
         .parse::<u32>()
         .ok()
         .and_then(|id| appinfo_index.get(&id))
         .cloned()
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, Vec::new()));
 
     let subdir = match app_type.as_deref() {
         Some(t) if t.eq_ignore_ascii_case("music") => "music",
@@ -369,6 +391,7 @@ fn read_manifest(
         installdir,
         app_type,
         launch_executable,
+        anti_cheat,
     })
 }
 
@@ -525,6 +548,58 @@ mod tests {
                 .join("common")
                 .join("No Appinfo Entry"),
             "an unknown type falls back to steamapps/common/"
+        );
+    }
+
+    #[test]
+    fn an_installed_title_carries_anti_cheat_findings_classified_from_its_appinfo_launch_entries() {
+        // Slice S068, issue #170: the appinfo-derived classifier runs during
+        // discovery, not as a separate step a caller must remember to invoke.
+        use crate::appinfo::fixtures::{appinfo_bytes, FixtureApp, FixtureLaunch, V29};
+
+        let tree = TempTree::new();
+        let root = tree.path();
+        tree.write(
+            &root.join("steamapps").join("appmanifest_400.acf"),
+            &manifest("400", "Protected Game", "Protected Game"),
+        );
+        tree.write(
+            &root.join("steamapps").join("appmanifest_500.acf"),
+            &manifest("500", "Unprotected Game", "Unprotected Game"),
+        );
+        let bytes = appinfo_bytes(
+            V29,
+            &[
+                FixtureApp {
+                    appid: 400,
+                    change_number: 1,
+                    launch: vec![FixtureLaunch {
+                        description: Some("eac-release".to_string()),
+                        ..FixtureLaunch::windows("game.exe")
+                    }],
+                    common_type: Some("Game".to_string()),
+                },
+                FixtureApp {
+                    appid: 500,
+                    change_number: 1,
+                    launch: vec![FixtureLaunch::windows("other.exe")],
+                    common_type: Some("Game".to_string()),
+                },
+            ],
+        );
+        tree.write_bytes(&root.join("appcache").join("appinfo.vdf"), &bytes);
+
+        let inst = discover_in(root).unwrap();
+
+        let protected = inst.find("400").unwrap();
+        assert_eq!(protected.anti_cheat.len(), 1, "{:?}", protected.anti_cheat);
+        assert_eq!(protected.anti_cheat[0].product, "Easy Anti-Cheat");
+
+        let unprotected = inst.find("500").unwrap();
+        assert!(
+            unprotected.anti_cheat.is_empty(),
+            "no anti-cheat signal in this title's launch entry: {:?}",
+            unprotected.anti_cheat
         );
     }
 

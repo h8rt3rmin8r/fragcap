@@ -287,6 +287,7 @@ mod tests {
             installdir: name.to_string(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         }
     }
 

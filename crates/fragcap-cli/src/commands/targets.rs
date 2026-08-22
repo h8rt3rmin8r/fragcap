@@ -166,6 +166,18 @@ fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, Cl
 
     render_table(&targets, out);
 
+    // A machine-wide anti-cheat fact (slice S068, issue #170) is never a title's
+    // evidence: it is rendered separately, once, and only when the probe actually
+    // found something, so it can never be mistaken for a claim about any row above
+    // it, and a probe that found nothing never prints a false "confirmed clean"
+    // section (FR-007, FR-008).
+    #[cfg(windows)]
+    {
+        use fragcap::targets::MachineAntiCheatProbe;
+        let probe = fragcap::WindowsMachineAntiCheatProbe::new();
+        render_machine_section(&probe.detect(), out);
+    }
+
     // Pin what was shown so `capture <n>` names the row the user saw (FR-004).
     let rows: Vec<(i64, &str)> = targets
         .iter()
@@ -272,6 +284,26 @@ fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
             engine,
             sensitivities
         );
+    }
+}
+
+/// Render the machine-scope anti-cheat section (slice S068, issue #170): a
+/// heading and one indented `<product> (<evidence>)` line per finding, printed
+/// after the per-target table and never touching any target row. Nothing is
+/// printed for an empty result, which covers both "the probe ran and found
+/// nothing" and "the probe could not run at all" (FR-008): rendering a "no
+/// anti-cheat products found" line would assert a completed check the second
+/// case never made.
+fn render_machine_section(
+    findings: &[fragcap::targets::MachineAntiCheatFinding],
+    out: &mut dyn Write,
+) {
+    if findings.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "\nMachine:");
+    for f in findings {
+        let _ = writeln!(out, "  {} ({})", f.product, f.evidence);
     }
 }
 
@@ -1163,7 +1195,84 @@ fn exe_stem(exe: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{evidence_from_scan, steam_add_metadata, DetectionScan, ExeScan};
+    use super::{
+        evidence_from_scan, render_machine_section, render_table, steam_add_metadata,
+        ClassificationSource, DetectionScan, ExeScan, FidelityTier, TargetClassification,
+        TargetEntry,
+    };
+
+    #[test]
+    fn machine_section_renders_a_heading_and_one_line_per_finding() {
+        let findings = vec![
+            fragcap::targets::MachineAntiCheatFinding {
+                product: "Easy Anti-Cheat".to_string(),
+                evidence: "service EasyAntiCheat_EOS registered".to_string(),
+            },
+            fragcap::targets::MachineAntiCheatFinding {
+                product: "BattlEye".to_string(),
+                evidence: "service BEService registered".to_string(),
+            },
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        render_machine_section(&findings, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("Machine:"));
+        assert!(text.contains("  Easy Anti-Cheat (service EasyAntiCheat_EOS registered)"));
+        assert!(text.contains("  BattlEye (service BEService registered)"));
+    }
+
+    #[test]
+    fn machine_section_renders_nothing_for_an_empty_result() {
+        let mut out: Vec<u8> = Vec::new();
+        render_machine_section(&[], &mut out);
+        assert!(
+            out.is_empty(),
+            "an empty probe result must never render a Machine: section (FR-008)"
+        );
+    }
+
+    #[test]
+    fn rendering_the_machine_section_never_changes_the_target_tables_bytes() {
+        let target = TargetEntry {
+            id: None,
+            stable_id: 1,
+            handle: "some_game".to_string(),
+            name: "Some Game".to_string(),
+            classification: TargetClassification::Unknown,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::HeuristicUnverified,
+            provenance: None,
+            anchor: None,
+            launch_entries: None,
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let targets = [target];
+
+        let mut table_only: Vec<u8> = Vec::new();
+        render_table(&targets, &mut table_only);
+
+        let mut with_machine_section: Vec<u8> = Vec::new();
+        render_table(&targets, &mut with_machine_section);
+        render_machine_section(
+            &[fragcap::targets::MachineAntiCheatFinding {
+                product: "Easy Anti-Cheat".to_string(),
+                evidence: "service EasyAntiCheat_EOS registered".to_string(),
+            }],
+            &mut with_machine_section,
+        );
+
+        assert!(
+            with_machine_section.starts_with(&table_only),
+            "the target table's bytes must be unchanged by a following machine \
+             section (FR-007): table alone = {:?}, with section = {:?}",
+            String::from_utf8_lossy(&table_only),
+            String::from_utf8_lossy(&with_machine_section)
+        );
+    }
 
     #[test]
     fn steam_add_metadata_carries_every_observed_field() {
@@ -1176,6 +1285,7 @@ mod tests {
             installdir: "Escape from Ivy & Piper".to_string(),
             app_type: Some("Game".to_string()),
             launch_executable: Some("TrappedWithIvyAndPiper-EA.exe".to_string()),
+            anti_cheat: Vec::new(),
         };
         let (install_root, folder_name, executable_hint) = steam_add_metadata(&title);
         assert_eq!(
@@ -1198,6 +1308,7 @@ mod tests {
             installdir: "No Entry".to_string(),
             app_type: None,
             launch_executable: None,
+            anti_cheat: Vec::new(),
         };
         let (_, _, executable_hint) = steam_add_metadata(&title);
         assert_eq!(executable_hint, None);
