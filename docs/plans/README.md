@@ -13,6 +13,7 @@ spec and plan are still mandatory; see `AGENTS.md`.
 | Document | Purpose |
 | --- | --- |
 | [`000-repository-foundation.md`](000-repository-foundation.md) | What the repository foundation established, and why. Complete. |
+| [`deep-capture.md`](deep-capture.md) | Product and architecture positioning for the planned Deep Capture mode. |
 | [`reconnaissance.md`](reconnaissance.md) | Protocol for Q-1 to Q-6. Complete. |
 | [`recon/findings-2026-08-06.md`](recon/findings-2026-08-06.md) | Findings from both focal titles. |
 | [`../../specs/001-workspace-scaffold/`](../../specs/001-workspace-scaffold/) | S01 slice artifacts. Complete. |
