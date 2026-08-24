@@ -1,0 +1,32 @@
+{
+  "date": "2026-08-24",
+  "scope": "Template only. Replace this text with an alias-only summary of measured launch paths before generating a committable findings report.",
+  "runs": [
+    {
+      "session_alias": "run-001",
+      "title_alias": "title-a",
+      "platform_alias": "steam-app-a",
+      "launch_case": "steam-protocol-warm",
+      "steam_pre_state": "running",
+      "invoked_alias": "platform-protocol",
+      "final_socket_owner_alias": "unknown",
+      "observed_ancestry": "unknown",
+      "proxy_listener": "loopback:port-a",
+      "proxy_traffic_observed": "no",
+      "relevant_sockets_observed": "unknown",
+      "routing_verdict": "inconclusive",
+      "propagation_finding": "not-tested",
+      "confidence": "inconclusive",
+      "product_consequence": "needs more data",
+      "evidence": [
+        "Template row only. Replace with alias-only evidence derived from a private run."
+      ]
+    }
+  ],
+  "compatibility_facts": [
+    "Template only. Replace with proposed local-store facts after measurement."
+  ],
+  "open_questions": [
+    "Template only. Replace with unresolved alias-only questions after measurement."
+  ]
+}

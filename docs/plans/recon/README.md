@@ -15,6 +15,15 @@ next version.
 | --- | --- |
 | `Start-ReconSession.ps1` | Runs all four recorders for one session |
 | `Invoke-ReconAnalysis.ps1` | Derives the Q-1 to Q-6 answers from a session |
+| `New-ProxyInheritanceReport.ps1` | Promotes alias-only proxy-inheritance evidence into a scrubbed public report |
+
+The proxy-inheritance report generator supports
+[`../steam-launcher-proxy-inheritance.md`](../steam-launcher-proxy-inheritance.md),
+which is separate from Q-1 through Q-6. It reads a hand-scrubbed JSON summary
+modeled on `proxy-inheritance-evidence.template.json`, validates the public
+verdict vocabulary, scans the generated Markdown for common private-data
+patterns, and writes the committable report shape under `docs/plans/recon/`.
+The private alias map and raw evidence stay under `captures/recon/`.
 
 ## Running a session
 
@@ -162,6 +171,23 @@ distinguishes them. It is the number that decides A-2.
 
 Pass `-Scrub` to mask addresses in the report. The CSV tables are never
 scrubbed, since they are the local evidence.
+
+## Publishing proxy-inheritance findings
+
+After a proxy-inheritance run has been reduced to aliases locally, generate the
+public report from the alias-only JSON summary:
+
+```powershell
+pwsh -File docs/plans/recon/New-ProxyInheritanceReport.ps1 `
+  -EvidencePath captures/recon/proxy-summary.json `
+  -PrivateTermsPath captures/recon/private-terms.txt
+```
+
+The script refuses reports that contain common leak patterns such as IP
+addresses, URLs, Windows absolute paths, numeric app ids, secret-bearing
+argument markers, and optional operator-supplied private terms. Treat that scan
+as a backstop, not as the scrubber. The input JSON should already contain only
+values that are safe to commit.
 
 ## Development notes
 
