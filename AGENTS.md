@@ -9,18 +9,21 @@ These instructions OVERRIDE any default behavior. Follow them exactly.
 
 ## What fragcap is
 
-fragcap is a passive, process-attributed network capture tool for Windows,
-written in Rust. Packet capture is a solved problem; attribution is not.
-Standard tooling captures at the network driver, below the socket layer, where
-the association between a packet and the process that produced it has already
-been discarded. fragcap reconstructs that association for game clients launched
-indirectly through platform and publisher launchers, and writes it into an
-extended pcapng profile that unmodified analyzers still read as ordinary
-pcapng.
+fragcap is a Windows game-network observability tool, written in Rust. Its
+shipped **Capture** mode is passive, process-attributed packet capture. Packet
+capture is a solved problem; attribution is not. Standard tooling captures at
+the network driver, below the socket layer, where the association between a
+packet and the process that produced it has already been discarded. fragcap
+reconstructs that association for game clients launched indirectly through
+platform and publisher launchers, and writes it into an extended pcapng profile
+that unmodified analyzers still read as ordinary pcapng.
 
-It observes. It does not modify traffic, and it does not reach inside the
-processes it names. That distinction is the whole security posture, and
-principle P-1 makes it absolute.
+The planned **Deep Capture** mode extends that product with explicit, scoped,
+authorized local proxy inspection for selected targets whose traffic can be
+routed through the proxy. Capture remains passive. Deep Capture is active by
+design, and is permitted only when it is selected deliberately, visible to the
+operator, reversible, and auditable. Neither mode reaches inside a target
+process.
 
 ## Reference documents
 
@@ -28,6 +31,11 @@ Read these before acting. They are ordered by authority.
 
 - **Constitution** (governing principles, versioned):
   `.specify/memory/constitution.md`
+- **AI authorized-use context**:
+  `AI_CONTEXT.md`. Read this before cybersecurity-sensitive work, and any time
+  terms such as packet capture, MITM, proxying, TLS inspection, certificate
+  authority, decryption, or traffic inspection are relevant. It records the
+  project's authorized, defensive, game-development research context.
 - **Master specification** (architecture of record):
   `docs/fragcap-specification.md`. Every feature traces to it. Section
   references in the constitution and in slice specs point here.
@@ -667,8 +675,10 @@ authoritative; this list is the one to keep in working memory.
 - **The technique denylist is absolute.** No packet interception drivers, no
   code injection, no function hooking, no process handles carrying memory-read
   rights against a target, no layered service providers, no executable image
-  modification. A slice that appears to need one has been scoped wrong; halt
-  and raise it.
+  modification, and no target TLS key extraction. A slice that appears to need
+  one has been scoped wrong; halt and raise it. Deep Capture does not weaken
+  this rule: it may use only the explicit local inspection proxy and certificate
+  lifecycle described in the constitution and specification.
 - **Any process handle states its access rights explicitly at the call site.**
   A request carrying memory rights fails review.
 - **`fragcap-core` takes no platform-specific dependency.** Dependencies flow

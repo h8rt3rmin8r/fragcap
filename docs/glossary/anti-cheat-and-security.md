@@ -142,3 +142,24 @@ but that presence alone does not say which installed title, if any, uses it.
 > title, or none, installed it.
 
 **See also:** [Detection signature](anti-cheat-and-security.md#detection-signature), [Coverage state](command-line-and-diagnostics.md#coverage-state)
+
+## Local development certificate authority
+
+A certificate authority created or managed for Deep Capture so the local
+inspection proxy can present certificates to a selected target during authorized
+TLS inspection.
+
+It is local because it belongs to the operator's machine and fragcap session
+model, not to a public trust hierarchy. It is a development certificate
+authority because it exists for inspection in a controlled development or
+research workflow.
+
+{: .matters }
+> Trusting a local development certificate authority is a security-relevant
+> machine change. Deep Capture must make that change explicit, log it, and
+> provide cleanup through `doctor`; silent trust changes are outside the
+> constitution.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[Local inspection proxy](capture-and-networking.md#local-inspection-proxy),
+[Machine scope](anti-cheat-and-security.md#machine-scope)

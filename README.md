@@ -9,7 +9,7 @@
 </h1>
 
 <p align="center">
-  <em>Passive, process-attributed network capture for game clients on Windows.</em>
+  <em>Process-attributed Capture, and planned Deep Capture, for PC game traffic on Windows.</em>
 </p>
 
 <p align="center">
@@ -28,10 +28,16 @@ every connection with the program that made it. Ordinary capture tools can tell
 you a conversation happened; fragcap tells you which process on your machine had
 it, even when that process is a game client started indirectly by a launcher.
 
-It only observes. It never modifies, injects, or replays traffic, and it never
-reads or attaches to the memory of another process. It writes an extended
-[pcapng](https://pcapng.com) file that unmodified analyzers such as Wireshark
-read as an ordinary packet trace.
+The shipped **Capture** mode observes passively. It never modifies, injects, or
+replays traffic, and it never reads or attaches to the memory of another
+process. It writes an extended [pcapng](https://pcapng.com) file that
+unmodified analyzers such as Wireshark read as an ordinary packet trace.
+
+The planned **Deep Capture** mode adds explicit, scoped local proxy inspection
+for selected targets. It is being designed for authorized game-development and
+research workflows where application-layer traffic needs to be inspectable, and
+it remains bounded by the same no-injection, no-hooking, no-target-memory-read
+posture.
 
 Two prerequisites sit outside fragcap. Live capture needs the
 [npcap](https://npcap.com) driver installed separately (fragcap detects it and
@@ -78,6 +84,10 @@ first public release** and packages the whole roadmap; see the
 Live capture requires the npcap driver (below) and administrative privilege; the
 socket-table attribution path and the offline replay substrate run without
 either.
+
+Deep Capture is planned and not present in released binaries yet. The positioning
+record is [`docs/plans/deep-capture.md`](docs/plans/deep-capture.md), and the
+initial implementation track is issue #213 through issue #220.
 
 ## The problem
 
@@ -137,6 +147,10 @@ roles that separate launcher, client, and platform-service traffic.
   tool that loses data without saying so produces conclusions the user cannot
   check.
 
+Planned next, Deep Capture will augment Capture sessions with local proxy
+inspection, proxy logs, proxy-owned TLS key-log export for analyzer correlation,
+and a documented compatibility matrix for supported traffic types.
+
 The command-line tool exposes one capture verb, `capture`, alongside `targets`,
 `technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. Anything
 reachable through the CLI is reachable through the public Rust API.
@@ -193,13 +207,16 @@ documented:
 
 - **No process injection, memory reading, or hooking** of any target.
 - **No packet modification, injection, or replay** against a live server.
+- **No target TLS key extraction** and no certificate-pinning bypass.
+- **No ambient system proxying by default.** Deep Capture is planned as an
+  explicit, scoped, reversible local proxy mode for selected target sessions.
 - **No game-specific protocol logic in core.** Dissectors are a plugin seam.
-- **Not a cheat, not a proxy, not a latency optimizer.**
+- **Not a cheat, accelerator, or latency optimizer.**
 
-Where a game uses transport encryption, payloads are captured as ciphertext.
-fragcap does not decrypt them and does not attempt key recovery. What you get
-is timing, sizing, endpoints, and attribution. That is stated plainly here so
-expectations are correct before you install anything.
+In Capture mode, where a game uses transport encryption, payloads are captured
+as ciphertext. What you get is timing, sizing, endpoints, and attribution. Deep
+Capture is the planned explicit-inspection path for supported traffic, not a
+covert decryption or key-recovery path.
 
 ## Windows installer (MSI)
 
@@ -364,12 +381,14 @@ fragcap has been tested against or designed to observe. Their mention implies
 no relationship between those owners and this project.
 
 fragcap is built and published for demonstration, research, and educational
-purposes. It is a passive observation tool: it does not modify, inject, or
+purposes. Capture mode is passive observation: it does not modify, inject, or
 replay network traffic, and it does not read, write, or attach to the memory of
-any other process. The authors cannot control what third parties choose to do
-with an open source utility. Use of fragcap may nonetheless violate the terms
-of service of a given game or platform, and determining that is the user's
-responsibility rather than the project's.
+any other process. Planned Deep Capture is explicit local proxy inspection for
+authorized workflows, not covert process instrumentation. The authors cannot
+control what third parties choose to do with an open source utility. Use of
+fragcap may nonetheless violate the terms of service of a given game or
+platform, and determining that is the user's responsibility rather than the
+project's.
 
 fragcap is provided "as is", without warranty of any kind, as set out in
 sections 7 and 8 of the Apache License, Version 2.0.

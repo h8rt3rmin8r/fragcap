@@ -190,6 +190,71 @@ records.
 
 - fragcap specification section 13.5.
 
+## HAR
+
+**Also known as:** HTTP Archive
+
+A JSON-based archive format for HTTP request and response records, commonly
+used by browser developer tools and HTTP inspection software.
+
+In fragcap, HAR is a candidate Deep Capture artifact for supported HTTP traffic
+and a candidate utility-wide export from ordinary Capture metadata where enough
+information exists. It is not a packet format and does not replace pcapng.
+
+{: .matters }
+> HAR is useful because application developers already know how to inspect it.
+> It also has a narrower scope than pcapng: traffic that is not HTTP, or that
+> was not observed with enough application-layer detail, cannot be represented
+> honestly as HAR.
+
+**See also:** [Session bundle](file-and-wire-formats.md#session-bundle),
+[pcapng](file-and-wire-formats.md#pcapng),
+[Deep Capture](capture-and-networking.md#deep-capture)
+
+**References:**
+
+- Web Hypertext Application Technology Working Group, HAR 1.2 specification.
+
+## Session bundle
+
+A Deep Capture output set that groups the ordinary capture artifacts with the
+inspection artifacts produced during the same run.
+
+A session bundle may include pcapng, JSON Lines, HAR when supported, proxy logs,
+proxy-owned TLS key-log export, process traces, compatibility facts, and a
+manifest tying each artifact to the same run identity and time base.
+
+{: .matters }
+> Deep Capture should feel like an elevated Capture session, not a second
+> product. The bundle is what keeps decrypted application-layer observations,
+> encrypted packet evidence, process attribution, and cleanup facts correlated
+> after the run.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[pcapng](file-and-wire-formats.md#pcapng),
+[JSON Lines](file-and-wire-formats.md#json-lines),
+[Proxy-owned TLS key-log export](file-and-wire-formats.md#proxy-owned-tls-key-log-export)
+
+## Proxy-owned TLS key-log export
+
+A key-log artifact written from the local inspection proxy side of a Deep
+Capture session so an analyzer can correlate decrypted proxy traffic with the
+captured packet stream where the protocol and analyzer support it.
+
+The keys are proxy-owned because they are produced by fragcap's proxy endpoint,
+not taken from the game client. The distinction is load-bearing: exporting
+proxy-owned material is permitted for Deep Capture, while extracting target TLS
+keys is denylisted.
+
+{: .matters }
+> This export exists for analyzer interoperability. It does not imply that
+> Capture mode decrypts traffic, and it does not bypass certificate pinning or
+> recover secrets from a target process.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[Local inspection proxy](capture-and-networking.md#local-inspection-proxy),
+[Technique denylist](anti-cheat-and-security.md#technique-denylist)
+
 ## Trailer record
 
 The final object of a [JSON Lines](file-and-wire-formats.md#json-lines) stream, carrying the capture's

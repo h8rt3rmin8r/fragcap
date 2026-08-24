@@ -16,6 +16,10 @@ full.
   shared `.specify/` engine described in `AGENTS.md`. Three other surfaces
   exist for other agents (Codex, Cursor, opencode) and are kept in sync by the
   spec-kit CLI, not by hand.
+- `AGENTS.md` imports `AI_CONTEXT.md` into the required reading set for
+  cybersecurity-sensitive work. Claude Code therefore inherits that requirement
+  through the import above, including Deep Capture, MITM, proxying, TLS
+  inspection, certificate authority, decryption, and traffic inspection work.
 - Vendored skill content lives in `.agents/skills/` (committed, and read
   directly by Codex). Claude Code reads `.claude/skills/` instead, which an
   external skills CLI may populate with machine-local symlinks; those are

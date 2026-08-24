@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.6-draft \
+**Version:** 0.1.7-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-16 \
+**Date:** 2026-08-24 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -98,16 +98,24 @@ enforcement.
 | 0.1.4-draft | 2026-08-10 | W. Thompson | Codifies the release-versioning scheme. v0.1.0 is the crates.io namespace-reservation stub; the first functional release is v0.2.0 (slices through S14); v0.3.0 completes S15 through S18. Partitions the 3.3 success criteria across the two functional releases, retitles section 28, and updates 9.1, 27.3, and scope prose throughout. |
 | 0.1.5-draft | 2026-08-10 | W. Thompson | **Reverses the two-release split.** There is now one first public release, v0.2.0, comprising the whole roadmap (S01 through S18); it and the crates.io publication of the functional crates happen only after every slice is complete. Un-partitions the 3.3 success criteria (v0.2.0 is complete when SC-1 through SC-7 hold), collapses the 27.3 release table to a single functional release, retitles section 28 "Beyond v0.2.0", and updates the scope prose. v0.1.0 remains the already-published name-reservation stub. |
 | 0.1.6-draft | 2026-08-16 | W. Thompson | **Reconciles the specification with shipped reality (slice S049).** v0.2.0 shipped 2026-08-12 as the first functional release (the S01 through S18 roadmap); v0.3.0 and v0.4.0 followed on 2026-08-14; the document had continued to describe v0.2.0 as unshipped. Adds the **Applies-To** header field (0.4.0), bound to the workspace version by `cargo xtask spec`; makes the title version-neutral; reframes 3.3, updates the 27.3 release table, retitles section 28 version-neutrally, and corrects the scope prose throughout; replaces the 23.1 landing-page paragraph. Adds constitution principles **P-10** (One Path To A Target) and **P-11** (The Specification Describes What Shipped, constitution 1.2.0). Per-release scope beyond v0.2.0 is recorded in CHANGELOG.md rather than restated here. |
+| 0.1.7-draft | 2026-08-24 | W. Thompson | **Positions Capture and Deep Capture as first-class product modes (issue #213).** Updates sections 2.1, 3.1, 3.2, 19, 27.2, 28, and 29 so shipped Capture remains passive while planned Deep Capture is explicit, scoped local proxy inspection. Expands constitution principle **P-1** to No Covert Target Instrumentation (constitution 1.4.0), adds target TLS key extraction to the denylist, and records `AI_CONTEXT.md` as required context for cybersecurity-sensitive agent work. |
 
 ## 2. Purpose and Problem Statement
 
 ### 2.1 What fragcap Is
 
-fragcap is a Rust library and command line tool that captures network
-traffic belonging to a specific game client and attributes every
-captured packet to the process that produced it. It writes attributed
-captures to disk in a pcapng-compatible format, and streams them live
-to downstream consumers over named pipes, Unix domain sockets, or TCP.
+fragcap is a Rust library and command line tool for game-network
+observability on Windows. Its shipped **Capture** mode captures network
+traffic belonging to a specific game client and attributes every captured
+packet to the process that produced it. It writes attributed captures to disk
+in a pcapng-compatible format, and streams them live to downstream consumers
+over named pipes, Unix domain sockets, or TCP.
+
+The planned **Deep Capture** mode adds explicit, scoped local proxy inspection
+for targets whose traffic can be routed through a proxy. Deep Capture exists to
+make supported application-layer traffic inspectable for game developers and
+researchers without process injection, function hooking, target memory reads,
+packet interception drivers, or target TLS key extraction.
 
 The library is the product. The command line tool is one consumer of
 it, and the shell wrappers are consumers of the command line tool.
@@ -193,8 +201,15 @@ profile, not modifying Rust.
 capture gaps are counted and reported. The tool never silently loses
 data.
 
-**G-6. Passive operation.** fragcap observes. It does not inject,
-modify, hook, or read the memory of any target process.
+**G-6. Mode-specific safety.** Capture mode observes passively. Deep Capture is
+active local proxy inspection only when the operator selected it explicitly.
+Neither mode injects code, modifies executables, installs hooks, reads target
+memory, or extracts TLS keys from a target process.
+
+**G-7. Unified capture experience.** Deep Capture augments the Capture session
+rather than replacing it. Packet capture, process attribution, logs, statistics,
+and session outputs remain correlated so a user can move from encrypted Capture
+evidence to decrypted Deep Capture evidence without learning a separate product.
 
 ### 3.2 Non-Goals
 
@@ -218,13 +233,18 @@ allowlist.
 is a declared plugin seam, deferred to the roadmap (section 28). No
 dissector ships in the core crates at any version.
 
-**NG-5. Not a proxy, accelerator, or optimizer.** fragcap is not
-positioned on the path between client and server, and does not affect
-latency, routing, or connection behavior.
+**NG-5. Not an ambient proxy, accelerator, or optimizer.** fragcap is not a
+general system proxy, network accelerator, latency optimizer, or routing tool.
+Deep Capture may place a selected target session on the path through a local
+inspection proxy, but that proxy is target-scoped, explicit, reversible, and
+auditable.
 
-**NG-6. No decryption.** fragcap does not attempt to break, downgrade,
-or work around transport encryption. Encrypted payloads are captured
-and stored as ciphertext.
+**NG-6. No covert decryption or target key extraction.** Capture mode stores
+encrypted payloads as ciphertext. Deep Capture inspects only traffic routed
+through its local proxy under explicit operator control and for currently
+supported traffic types. fragcap does not break encryption, downgrade
+negotiation, bypass certificate pinning, or extract TLS keys from a target
+process.
 
 ### 3.3 Success Criteria
 
@@ -2871,15 +2891,17 @@ integration.
 ### 19.1 Framing
 
 This section defines an engineering constraint, not a policy position.
-fragcap observes network traffic passively and confers no gameplay
-advantage. The constraint exists because several techniques that would
-be convenient for an observation tool are also the primitives that
-memory-reading and traffic-manipulating cheats require, and using them
-generates detection signals for no capability gain.
+fragcap's shipped Capture mode observes network traffic passively and confers
+no gameplay advantage. Its planned Deep Capture mode is explicit local proxy
+inspection for authorized analysis of selected targets. The constraint exists
+because several techniques that would be convenient for an observation tool are
+also the primitives that memory-reading and traffic-manipulating cheats
+require, and using them generates detection signals for no capability gain.
 
 The rule is straightforward. Where two techniques achieve the same
 result and one of them overlaps with cheat tooling, fragcap uses the
-other.
+other. Deep Capture changes the supported inspection depth, not the rule against
+covert target instrumentation.
 
 ### 19.2 Technique Allowlist
 
@@ -2892,6 +2914,10 @@ The following techniques are permitted and used.
 | IP Helper socket tables | Attribution | Read-only system query, no target handle |
 | Process enumeration | Startup snapshot | Query-only access rights, no memory rights |
 | Platform protocol handler | Managed launch | Ordinary application launch |
+| Local inspection proxy | Deep Capture | Operator-selected local process, scoped to the target session |
+| Target-scoped proxy configuration | Deep Capture routing | Launch-time environment or equivalent explicit configuration, not silent system-wide interception |
+| Local development certificate authority lifecycle | Deep Capture TLS inspection | User-confirmed trust changes with cleanup and audit trail |
+| Proxy-owned TLS key-log export | Analyzer correlation | Keys are produced by fragcap's proxy side of the inspected session, not extracted from the target process |
 
 ### 19.3 Technique Denylist
 
@@ -2899,10 +2925,11 @@ The following techniques are prohibited. Each entry states the
 capability it would provide and the permitted alternative that provides
 it instead.
 
-**Packet interception and filtering drivers.** Would provide inline
-access to traffic. Prohibited because inline drivers can modify traffic
-and are a recognized cheat component. A capture driver supplies every
-observation capability fragcap requires.
+**Packet interception and filtering drivers.** Would provide inline access to
+traffic. Prohibited because inline drivers can modify traffic and are a
+recognized cheat component. A capture driver supplies every observation
+capability Capture mode requires, and Deep Capture uses an ordinary local
+application proxy rather than a filtering driver.
 
 **Code injection into a target.** Would provide direct access to
 application-layer data before encryption. Prohibited outright by NG-1,
@@ -2927,6 +2954,12 @@ process and is historically associated with malware.
 **Executable image modification.** Would provide arbitrary
 instrumentation. Prohibited outright by NG-1.
 
+**Target TLS key extraction.** Would provide decrypted traffic without routing
+through a proxy. Prohibited because it reaches into target process state or
+depends on target-owned secret material. Deep Capture may export proxy-owned
+key-log material for analyzer correlation, but never extracts keys from the
+game client.
+
 ### 19.4 Enforcement
 
 The denylist is enforced at three points.
@@ -2941,6 +2974,12 @@ continuous integration.
 It is a code review gate. Any use of process handles specifies the
 requested access rights explicitly, and requests carrying memory rights
 fail review.
+
+Deep Capture adds a fourth gate: inspection actions are session-scoped,
+operator-visible, reversible through `doctor` cleanup, and logged as structured
+process traces. A Deep Capture implementation that silently changes system-wide
+proxy settings, silently trusts a certificate authority, or leaves residue
+without a cleanup path fails this section even if the packet output is correct.
 
 ### 19.5 Privilege Handling
 
@@ -2959,9 +2998,17 @@ the trait boundaries accommodate that difference already.
 
 Stated plainly so that users form correct expectations.
 
-Where a game uses transport encryption, payloads are captured as
-ciphertext. fragcap does not decrypt them, does not attempt key
+In Capture mode, where a game uses transport encryption, payloads are captured
+as ciphertext. Capture mode does not decrypt them, does not attempt key
 extraction, and does not downgrade or interfere with negotiation.
+
+In Deep Capture mode, fragcap can inspect supported traffic that the selected
+target actually routes through the local inspection proxy and that accepts the
+configured local certificate authority. This is a capability boundary, not a
+promise that every encrypted game flow becomes readable. Certificate-pinned
+traffic, QUIC or UDP traffic until supported, non-HTTP TLS traffic until
+supported, and traffic that bypasses the proxy remain visible only as captured
+packets and metadata.
 
 What remains observable under encryption is substantial: endpoint
 identity, connection topology, packet timing, packet sizing, flow
@@ -3791,9 +3838,11 @@ feature slices.
 The following are constitution content, because each must survive every
 agent session without restatement.
 
-**P-1. Passive observation only.** The section 19.3 denylist is
-absolute. No technique on it is used regardless of convenience,
-including under time pressure or when a slice appears blocked.
+**P-1. No covert target instrumentation.** The section 19.3 denylist is
+absolute. No technique on it is used regardless of convenience, including under
+time pressure or when a slice appears blocked. Capture mode remains passive.
+Deep Capture is permitted only as explicit, scoped, reversible, auditable local
+proxy inspection.
 
 **P-2. Core stays platform-neutral.** `fragcap-core` acquires no
 platform-specific dependency. The dependency direction in section 8.3
@@ -3905,6 +3954,14 @@ during implementation is recorded in the slice and promoted to section
 Recorded so that scope pressure has a destination. None of the following has
 shipped as of the release this document applies to.
 
+**Deep Capture.** Explicit, scoped local proxy inspection for selected game
+targets, integrated with ordinary Capture sessions so packet capture, process
+attribution, proxy logs, proxy-owned TLS key-log export, and analyzer outputs
+correlate in one session. Planning is recorded in
+`docs/plans/deep-capture.md`; initial work is tracked by issues #213 through
+#220. The MVP supports only documented traffic types and records unsupported
+flows plainly.
+
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
 strategy from section 9.4, which provides exact attribution without a
@@ -3957,6 +4014,10 @@ to section 6.2.
 | Q-7 | Monospace face selection for brand | Brand session | S18 | **Resolved 2026-08-10.** Geist Mono (see `brand/`). |
 | Q-8 | Parent brand visual relationship | Brand session | S18 | **Resolved 2026-08-10.** ShruggieTech sub-brand; "A ShruggieTech project" endorsement, no combined logo (see `brand/`). |
 | Q-9 | Crate name reservation on the registry | Reserve before first release | S01 | Open |
+| Q-10 | Which native Rust proxy backend should Deep Capture use? | Build candidate spikes and compare protocol coverage, Windows behavior, licenses, dependency graph, MSRV impact, maintenance posture, and integration cost | #214 | Open |
+| Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | Open |
+| Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | Open |
+| Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | Open |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.

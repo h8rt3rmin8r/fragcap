@@ -150,6 +150,87 @@ debugging attribution itself, both need.
 
 **See also:** [Attribution](process-and-attribution.md#attribution), [Stage binding](process-and-attribution.md#stage-binding)
 
+## Capture mode
+
+The shipped fragcap mode that passively records packets and attributes them to
+processes without modifying traffic or routing it through a proxy.
+
+Capture mode is the baseline experience behind `fragcap capture`: packet
+capture, process attribution, scope accounting, output writing, streaming, and
+ring behavior all operate without reaching inside the target process.
+
+{: .matters }
+> The word "passive" describes Capture mode specifically. The planned Deep
+> Capture mode is active local proxy inspection, so future documents must name
+> the mode they mean instead of applying the passive claim to the whole product.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[Capture scope](capture-and-networking.md#capture-scope),
+[Capture session](process-and-attribution.md#capture-session)
+
+## Deep Capture
+
+The planned fragcap mode that augments a Capture session with explicit, scoped
+local proxy inspection for a selected target.
+
+Deep Capture is intended for authorized game-development and research workflows
+where application-layer traffic needs to be inspectable. It may route the target
+through a [local inspection proxy](capture-and-networking.md#local-inspection-proxy) and may produce proxy-owned analyzer artifacts,
+but it does not inject code, install hooks, read target memory, modify
+executables, install packet interception drivers, or extract TLS keys from the
+target process.
+
+{: .matters }
+> Deep Capture is a product mode, not a permission slip. Its implementation is
+> valid only when the operator selected it explicitly, the scope is visible, the
+> residue has a cleanup path, and the output can be correlated with the ordinary
+> Capture session.
+
+**See also:** [Capture mode](capture-and-networking.md#capture-mode),
+[Local inspection proxy](capture-and-networking.md#local-inspection-proxy),
+[Session bundle](file-and-wire-formats.md#session-bundle),
+[Technique denylist](anti-cheat-and-security.md#technique-denylist)
+
+## Local inspection proxy
+
+A proxy process started by fragcap on the local machine to receive selected
+target traffic during a Deep Capture session, establish the corresponding
+upstream connection, and expose supported application-layer observations.
+
+It is local because it runs on the operator's machine. It is an inspection proxy
+because the proxy endpoint, not the game process, owns the decrypted side of
+traffic that accepts the configured trust relationship.
+
+{: .matters }
+> The local inspection proxy is distinct from a packet interception driver or a
+> Winsock catalog modification. It is an ordinary process that a selected target
+> session is configured to use, and its configuration must be explicit,
+> reversible, and logged.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration),
+[Local development certificate authority](anti-cheat-and-security.md#local-development-certificate-authority)
+
+## Target-scoped proxy configuration
+
+The Deep Capture routing choice that applies proxy settings to the selected
+target session rather than silently changing proxy behavior for the whole
+machine.
+
+The exact mechanism is implementation-specific and remains under research. The
+intent is stable: if a game is launched under Deep Capture, proxy routing should
+follow that launched target where the platform permits it, and any wider
+configuration must be explicit to the operator.
+
+{: .matters }
+> Steam and publisher launchers can re-launch child processes in ways that may
+> escape the original environment. Deep Capture therefore treats proxy
+> inheritance as a measured compatibility fact, not an assumption.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[Managed launch](platform-and-distribution.md#managed-launch),
+[Launcher-mediated](process-and-attribution.md#launcher-mediated)
+
 ## Wildcard bind address
 
 An address of `0.0.0.0` or `::` recorded for a socket bound to every local

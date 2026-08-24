@@ -1,4 +1,28 @@
 <!--
+Sync Impact Report (1.4.0, 2026-08-24)
+- Version change: 1.3.0 -> 1.4.0 (MINOR: P-1 materially expanded to define
+  Capture and Deep Capture as first-class modes while preserving the technique
+  denylist)
+- Amended principle:
+  P-1. Passive Observation Only -> P-1. No Covert Target Instrumentation
+- Reason: the Deep Capture positioning plan (`docs/plans/deep-capture.md`) and
+  issue #213 establish that fragcap needs an explicit local inspection proxy
+  mode to produce actionable application-layer results for developers and
+  researchers. The old passive-only wording described the shipped Capture mode
+  accurately but blocked the planned Deep Capture mode by implication. This
+  amendment makes the product boundary mode-specific: Capture remains passive;
+  Deep Capture is explicit, scoped, reversible, auditable proxy inspection; and
+  both modes continue to forbid process injection, hooks, target memory reads,
+  packet interception drivers, Winsock catalog modification, executable image
+  modification, and target TLS key extraction.
+- Templates: no changes required. The Constitution Check gate reads this file
+  and picks up the amended principle automatically.
+- Follow-up TODOs:
+  #214 (proxy backend research), #215 (launcher proxy inheritance research),
+  #216 (session bundle and output correlation), #217 (compatibility facts),
+  #218 (doctor readiness and cleanup), #219 (MVP path), #220 (supported traffic
+  types and compatibility matrix)
+
 Sync Impact Report (1.3.0, 2026-08-18)
 - Version change: 1.2.0 -> 1.3.0 (MINOR: a scoped expansion of an existing
   section's guidance; no core principle added, removed, or redefined)
@@ -94,20 +118,22 @@ Prior report, 1.0.0
 
 # fragcap Constitution
 
-fragcap is a passive, process-attributed network capture tool. It observes
-traffic and records which process produced it. It does not modify what it
-observes, and it does not reach inside the processes it names.
+fragcap is a process-attributed game-network observability tool. **Capture**
+mode passively records traffic and names the process that produced it. **Deep
+Capture** mode, when explicitly selected, routes a selected target through a
+local inspection proxy so supported application-layer traffic can be inspected.
+Neither mode reaches inside the processes it names.
 
-That single sentence is the source of most of what follows. The principles
-below are the rules that must hold across every agent session, every feature
-slice, and every contributor, without being restated each time. The full
-reasoning for each lives in the master specification
+That boundary is the source of most of what follows. The principles below are
+the rules that must hold across every agent session, every feature slice, and
+every contributor, without being restated each time. The full reasoning for
+each lives in the master specification
 (`docs/fragcap-specification.md`); the section references are load-bearing and
 are the place to go when a principle needs interpretation.
 
 ## Core Principles
 
-### P-1. Passive Observation Only (NON-NEGOTIABLE)
+### P-1. No Covert Target Instrumentation (NON-NEGOTIABLE)
 
 The technique denylist in specification section 19.3 is absolute. No technique
 on it is used, regardless of convenience, under time pressure, or when a slice
@@ -121,21 +147,36 @@ appears blocked. The denylist:
 - Layered service providers and Winsock catalog modification. Use socket table
   attribution.
 - Executable image modification. No alternative; out of scope.
+- Target TLS key extraction. Use proxy-owned inspection artifacts from Deep
+  Capture sessions only.
 
 The permitted set is exactly section 19.2: the NDIS capture driver, ETW kernel
 providers, IP Helper socket tables, query-only process enumeration, and
-ordinary platform protocol handler launches.
+ordinary platform protocol handler launches. Deep Capture adds the following
+permitted techniques, and only for sessions where the operator selected Deep
+Capture explicitly: a local inspection proxy, launch-time proxy environment or
+equivalent target-scoped proxy configuration, a local development certificate
+authority lifecycle, explicit user-confirmed trust changes, and proxy-owned TLS
+key-log export for analyzer correlation.
+
+Capture mode remains passive. Deep Capture is active by design, but it is not a
+license to interpose invisibly. It MUST be selected explicitly, scoped to the
+selected target and session, visible in logs and session output, reversible
+through `doctor` cleanup, and auditable after the fact. System-wide proxy
+changes are prohibited by default. Silent certificate trust changes are
+prohibited.
 
 Any use of a process handle MUST state its requested access rights explicitly
 at the call site. A request carrying memory rights fails review. A dependency
 providing a prohibited capability fails the dependency audit.
 
 Rationale: every technique on the denylist is a cheat primitive that detection
-systems watch for directly, and not one of them is needed for any capability
-fragcap claims. Reaching for one would trade the project's entire security
-posture for convenience it does not need. This is also why the project can be
-published at all: a passive observer is defensible to a publisher, a security
-vendor, and a user in a way that an injector never is.
+systems watch for directly, and not one of them is needed for Capture or Deep
+Capture. Reaching for one would trade the project's entire security posture for
+convenience it does not need. Capture is defensible because it observes from
+outside the target. Deep Capture is defensible because it is explicit local
+proxy inspection with consent, scope, cleanup, and provenance rather than covert
+instrumentation of a game client.
 
 ### P-2. Core Stays Platform-Neutral
 
@@ -403,6 +444,7 @@ the operator rather than accepted by the author.
 **Escalation.** An agent that believes a principle blocks correct work halts and
 raises it, rather than proceeding under an interpretation that weakens it. P-1
 in particular is never reinterpreted; a slice that appears to need a denylisted
-technique is a slice that has been scoped wrong.
+technique, or an invisible Deep Capture action, is a slice that has been scoped
+wrong.
 
-**Version**: 1.3.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-18
+**Version**: 1.4.0 | **Ratified**: 2026-08-06 | **Last Amended**: 2026-08-24
