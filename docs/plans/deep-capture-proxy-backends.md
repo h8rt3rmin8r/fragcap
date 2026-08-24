@@ -77,7 +77,7 @@ First, the latest `hudsucker` 0.25.0 declares `rust-version = "1.86.0"`. The old
 
 Second, the dependency graph is large. A temp project with `hudsucker = "=0.23.0"` and `rcgen-ca`, `native-tls-client`, `decoder`, and `http2` resolved 216 unique packages. The equivalent rustls-client measurement resolved 198 unique packages. The graph is not disqualifying, but it is a feature-scale dependency addition and must live behind a Deep Capture feature gate.
 
-Third, license posture needs a precise audit. The rustls-client path pulls `webpki-roots` 1.0.9, which is CDLA-Permissive-2.0 and outside the current allowlist. That should be avoided. The native-tls path is preferable on Windows because it uses the platform trust store, but metadata for the measured graph still included `webpki-roots`; the spike must prove whether this is an inactive target-conditional package, an avoidable feature edge, or an actual lockfile/audit blocker.
+Third, license posture needs a precise audit. The rustls-client path pulls `webpki-roots` 1.0.9, which is CDLA-Permissive-2.0 and outside the current allowlist. That should be avoided. The native-tls path is preferable on Windows because it uses the platform trust store. The native-tls measurement already used `default-features = false`; `webpki-roots` still appeared in `cargo metadata` package metadata, but `cargo tree --edges normal --invert webpki-roots` printed no normal dependency path, including with `--target all`. Treat this as a measurement caveat rather than proof that native-tls links a bundled root store. The spike must rerun the final feature set through the repository license gate before adoption.
 
 Fourth, HAR export is not a built-in `hudsucker` output. That is acceptable. fragcap already wants HAR to be a utility-wide output shape, so HAR should be generated from fragcap-owned event records rather than delegated to a proxy library.
 
@@ -151,7 +151,7 @@ Measurements were taken on 2026-08-24 with `rustc 1.96.0` and `cargo 1.96.0`, us
 | Candidate and feature set | Unique packages | Direct license | Declared Rust version | Notes |
 | --- | ---: | --- | --- | --- |
 | `hudsucker = "=0.25.0"` metadata | Not measured as graph | MIT OR Apache-2.0 | 1.86.0 | Latest line misses fragcap's current MSRV. |
-| `hudsucker = "=0.23.0"`, `rcgen-ca`, `native-tls-client`, `decoder`, `http2` | 216 | MIT OR Apache-2.0 | 1.75.0 | Best spike shape, but license audit must resolve `webpki-roots` metadata. |
+| `hudsucker = "=0.23.0"`, `rcgen-ca`, `native-tls-client`, `decoder`, `http2` | 216 | MIT OR Apache-2.0 | 1.75.0 | Best spike shape. Measured with `default-features = false`; `webpki-roots` appeared in metadata only, with no normal tree path found. |
 | `hudsucker = "=0.23.0"`, `rcgen-ca`, `rustls-client`, `decoder`, `http2` | 198 | MIT OR Apache-2.0 | 1.75.0 | Pulls `webpki-roots` CDLA root store, likely unacceptable. |
 | `http-mitm-proxy = "=0.18.0"`, `native-tls-client` | 155 | MIT | Unknown | Smaller graph, less complete public API for Deep Capture. |
 | `http-mitm-proxy = "=0.18.0"`, `rustls-client` | 137 | MIT | Unknown | Pulls `webpki-roots` CDLA root store, likely unacceptable. |
@@ -171,7 +171,7 @@ These should become acceptance criteria for the follow-up spike PR:
 - Prove local CA generation and import can be separated from certificate trust installation.
 - Prove certificate cache state can be bounded, logged, and cleaned.
 - Prove whether proxy-owned TLS key-log export is available through public APIs, requires a patch, or should be deferred.
-- Prove the native-tls feature set avoids bundled root stores in the lockfile and under the repository license gate.
+- Prove the native-tls feature set avoids bundled root stores under the repository license gate.
 - Prove the graph compiles under Rust 1.82 if the feature is intended to participate in MSRV, or record a feature-gate exception if Deep Capture is intentionally excluded from the MSRV gate.
 - Compare the same traffic through `mitmdump` and the native spike so HAR/event differences are concrete.
 
