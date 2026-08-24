@@ -97,17 +97,17 @@ function Write-ShruggieLog {
         [string]$Message
     )
 
+    $line = "[$Level] $Message"
+    if ($Level -eq 'Error') {
+        Write-Error $line
+        return
+    }
+
     if ($Silent) {
         return
     }
 
     if ($Quiet -and $Level -eq 'Info') {
-        return
-    }
-
-    $line = "[$Level] $Message"
-    if ($Level -eq 'Error') {
-        Write-Error $line
         return
     }
 
@@ -276,6 +276,33 @@ function ConvertTo-BulletList {
     return $lines.ToArray()
 }
 
+function Assert-NonBlankList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Items,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $count = 0
+    foreach ($item in @($Items)) {
+        if ($null -eq $item) {
+            continue
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
+            $count += 1
+        }
+    }
+
+    if ($count -eq 0) {
+        throw "$Name must contain at least one nonblank entry."
+    }
+}
+
 function Assert-Run {
     [CmdletBinding()]
     param(
@@ -295,6 +322,22 @@ function Assert-Run {
         -Value (Get-RequiredString -Object $Run -Name 'platform_alias') `
         -Pattern '^steam-app-[a-z]+$' `
         -Name 'platform_alias'
+    Assert-Alias `
+        -Value (Get-RequiredString -Object $Run -Name 'invoked_alias') `
+        -Pattern $Script:ProcessAliasPattern `
+        -Name 'invoked_alias'
+    Assert-Alias `
+        -Value (Get-RequiredString -Object $Run -Name 'final_socket_owner_alias') `
+        -Pattern $Script:ProcessAliasPattern `
+        -Name 'final_socket_owner_alias'
+    Assert-Alias `
+        -Value (Get-RequiredString -Object $Run -Name 'observed_ancestry') `
+        -Pattern $Script:AncestryPattern `
+        -Name 'observed_ancestry'
+    Assert-Alias `
+        -Value (Get-RequiredString -Object $Run -Name 'proxy_listener') `
+        -Pattern '^loopback:port-[a-z]+$' `
+        -Name 'proxy_listener'
 
     Assert-ValueInSet `
         -Value (Get-RequiredString -Object $Run -Name 'launch_case') `
@@ -328,6 +371,12 @@ function Assert-Run {
         -Value (Get-RequiredString -Object $Run -Name 'product_consequence') `
         -Allowed $Script:Consequences `
         -Name 'product_consequence'
+
+    if (-not ($Run.PSObject.Properties.Name -contains 'evidence')) {
+        throw 'Missing required property: evidence'
+    }
+
+    Assert-NonBlankList -Items $Run.evidence -Name 'evidence'
 }
 
 function Assert-Evidence {
@@ -506,11 +555,18 @@ $Script:Consequences = @(
     'needs fallback',
     'needs more data'
 )
+$Script:ProcessAliasPattern = '^(unknown|shell|platform-protocol|(?:client|launcher|platform|platform-service|helper|proxy|wrapper)-[a-z]+)$'
+$Script:AncestryNodePattern = '(?:unknown|shell|platform-protocol|(?:client|launcher|platform|platform-service|helper|proxy|wrapper)-[a-z]+)'
+$Script:AncestryPattern = "^$Script:AncestryNodePattern(?: -> $Script:AncestryNodePattern)*$"
 
 $Script:UnsafePatterns = @(
     @{
         Name = 'IPv4 address'
         Pattern = '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    },
+    @{
+        Name = 'IPv6 address'
+        Pattern = '(?i)\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]{0,}(?:%[0-9a-z_.-]+)?\b'
     },
     @{
         Name = 'URL'
