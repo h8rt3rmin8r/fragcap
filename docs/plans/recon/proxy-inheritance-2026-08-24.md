@@ -14,11 +14,11 @@ Seven alias-only launch-path measurements were reduced from private local Steam 
 | --- | --- | --- | --- | --- | --- |
 | title-a | steam-protocol-warm | no-proxy-traffic | not-confirmed | observed | unsupported |
 | title-a | direct-exe-warm | no-proxy-traffic | not-confirmed | observed | unsupported |
-| title-a | steam-protocol-cold | reached-client | confirmed | observed | supported |
-| title-a | direct-exe-cold | reached-client | confirmed | observed | supported |
+| title-a | steam-protocol-cold | reached-client | not-confirmed | observed | supported |
+| title-a | direct-exe-cold | reached-client | not-confirmed | observed | supported |
 | title-y | publisher-launcher-warm | no-proxy-traffic | not-confirmed | observed | needs fallback |
 | title-y | publisher-launcher-game-start-clean-warm | no-proxy-traffic | not-confirmed | observed | needs fallback |
-| title-y | publisher-launcher-cold | reached-client | confirmed | observed | supported |
+| title-y | publisher-launcher-cold | launcher-only-routing | not-confirmed | observed | needs fallback |
 
 ## Findings
 
@@ -84,6 +84,7 @@ Evidence:
 - Mitmproxy flow output: nonzero.
 - Target socket events touching the proxy listener: 4.
 - Operator observed the platform client come up and login complete successfully from a cold platform state.
+- No independent non-invasive propagation evidence was captured, so propagation remains not-confirmed.
 
 ### title-a, direct-exe-cold
 
@@ -106,6 +107,7 @@ Evidence:
 - Target socket events touching the proxy listener: 8.
 - The first target process touched the proxy listener, exited through the platform handoff, and the relaunched target process also touched the proxy listener.
 - Operator observed pressing login close the first target process, start the platform client, and reopen the target to login again.
+- No independent non-invasive propagation evidence was captured, so propagation remains not-confirmed.
 
 ### title-y, publisher-launcher-warm
 
@@ -170,14 +172,15 @@ Evidence:
 - Mitmproxy flow output: nonzero.
 - Target socket events touching the proxy listener: 25.
 - Operator observed the platform client launch from cold state, the publisher launcher load slowly, and the manual play control become available before post-click capture completed.
+- The final socket-owner alias for this run is launcher-a, so this run proves launcher-side proxy routing but does not prove client-owned proxy routing.
 
 ## Compatibility facts proposed
 
-- deep_capture.proxy_routing: title-a steam-protocol-cold reached-client; title-a direct-exe-cold reached-client; title-y publisher-launcher-cold reached-client; title-a steam-protocol-warm no-proxy-traffic; title-a direct-exe-warm no-proxy-traffic; title-y publisher-launcher-warm no-proxy-traffic.
-- deep_capture.proxy_propagation: confirmed for run-008, run-009, and run-013 because target-owned sockets touched the loopback proxy listener and mitmproxy produced flow data; not-confirmed for warm cases with target sockets but no proxy-port sockets.
+- deep_capture.proxy_routing: title-a steam-protocol-cold reached-client; title-a direct-exe-cold reached-client; title-y publisher-launcher-cold launcher-only-routing; title-a steam-protocol-warm no-proxy-traffic; title-a direct-exe-warm no-proxy-traffic; title-y publisher-launcher-warm no-proxy-traffic.
+- deep_capture.proxy_propagation: not-confirmed for all runs because no independent non-invasive propagation evidence was captured; target-owned proxy-port sockets are routing evidence, not propagation proof.
 - deep_capture.final_owner_differs: observed for title-a direct-exe-cold, where the first client process closed through a platform handoff and a later client process owned the final socket activity.
-- deep_capture.publisher_launcher_present: yes for title-y; warm publisher launch paths showed proxy sensitivity and no target-owned proxy-port sockets, while cold publisher launch did route target-owned sockets to the proxy listener.
-- deep_capture.requires_platform_cold_start_for_proxy: yes for the successful baseline and publisher measurements in this set; warm starts did not route target-owned sockets through mitmproxy.
+- deep_capture.publisher_launcher_present: yes for title-y; warm publisher launch paths showed proxy sensitivity and no target-owned proxy-port sockets, while cold publisher launch routed launcher-owned sockets to the proxy listener.
+- deep_capture.requires_platform_cold_start_for_proxy: yes for the successful baseline client-routing measurements in this set; warm starts did not route target-owned sockets through mitmproxy.
 - deep_capture.proxy_variables_tested: HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, http_proxy, https_proxy, and all_proxy, all pointing at the local loopback mitmproxy listener for the run.
 - deep_capture.proxy_backend_tested: mitmproxy 12.2.3 in regular mode with ignored TLS hosts, lazy upstream connection strategy, and loopback-only listener.
 - deep_capture.evidence_fragcap_version: workspace version 0.6.0, measurement base commit cf21a1b.
