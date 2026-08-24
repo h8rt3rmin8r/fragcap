@@ -4,7 +4,7 @@
 **Date:** 2026-08-24.\
 **Audience:** maintainers, reviewers, future Deep Capture slice authors.
 
-This document defines how fragcap will measure whether target-scoped proxy configuration survives Steam and publisher-launcher handoffs. It does not implement Deep Capture, add a proxy backend, or require any trust-store change. Its job is to turn the launch-path uncertainty into committable, privacy-preserving evidence.
+This document defines how fragcap will measure whether target-scoped proxy routing works across Steam and publisher-launcher handoffs, and how to avoid confusing observed routing with proven environment inheritance. It does not implement Deep Capture, add a proxy backend, or require any trust-store change. Its job is to turn the launch-path uncertainty into committable, privacy-preserving evidence.
 
 ## Decision
 
@@ -39,20 +39,28 @@ Those facts explain why inheritance can work, but they do not prove what a speci
 
 For each launch path, answer this question:
 
-Did the proxy configuration supplied by fragcap reach the process that owned the relevant outbound sockets?
+Did traffic from the relevant socket-owning process route through the proxy supplied by fragcap, and is there separate evidence that launch-scoped proxy configuration propagated to that process?
 
 The answer must be one of:
 
-| Verdict | Meaning |
+| Routing verdict | Meaning |
 | --- | --- |
 | `reached-client` | The final socket-owning client connected through the local proxy. |
-| `stopped-at-launcher` | A launcher or platform process saw or used the proxy, but the socket-owning client did not. |
+| `launcher-only-routing` | A launcher or platform process used the proxy, but the socket-owning client did not. |
 | `escaped-tree` | The socket-owning client was observed, but its launch path was not connected to the scoped process tree strongly enough to claim inheritance. |
 | `no-proxy-traffic` | No measured process used the local proxy. |
 | `not-applicable` | The launch path did not start the target or produced no relevant network traffic. |
 | `inconclusive` | The run lacks enough evidence to choose one of the above. |
 
-An inconclusive verdict is acceptable. A guessed positive is not.
+Each run also records a separate propagation finding:
+
+| Propagation finding | Meaning |
+| --- | --- |
+| `confirmed` | Independent non-invasive evidence shows the proxy configuration reached the socket-owning process. |
+| `not-confirmed` | Routing evidence exists, but propagation itself was not independently proved. |
+| `not-tested` | The run did not attempt to measure propagation separately from routing. |
+
+An inconclusive verdict is acceptable. A guessed positive is not. A routing verdict is not an inheritance verdict unless propagation is independently confirmed.
 
 ## Measurement matrix
 
@@ -61,11 +69,11 @@ Measure these launch paths with aliases rather than real title names:
 | Case | Steam state | Invoked path | Expected value |
 | --- | --- | --- | --- |
 | `steam-protocol-warm` | Steam already running | `steam://rungameid/<app>` | Baseline for managed launch when the platform client is already alive. |
-| `steam-protocol-cold` | Steam not running | `steam://rungameid/<app>` | Determines whether a cold Steam start inherits the scoped environment. |
+| `steam-protocol-cold` | Steam not running | `steam://rungameid/<app>` | Determines whether proxy routing works after a cold Steam start, and whether separate propagation evidence exists. |
 | `direct-exe-warm` | Steam already running | Installed executable | Measures direct executable behavior when platform services already exist. |
 | `direct-exe-cold` | Steam not running | Installed executable | Measures the suspected crash, Steam start, and relaunch path. |
 | `publisher-launcher` | Steam already running | Steam-managed title with launcher chain | Measures an extra handoff layer. |
-| `final-owner-differs` | Any | Invoked executable differs from socket owner | Measures whether proxy configuration reaches the process that matters, not merely the first process. |
+| `final-owner-differs` | Any | Invoked executable differs from socket owner | Measures whether proxy routing works for the process that matters, not merely the first process. |
 
 The same title may cover more than one case. The report should prefer a small number of carefully measured aliases over a large matrix of weak observations.
 
@@ -98,7 +106,8 @@ Each measured run should be reduced to this committable shape:
 | Proxy listener | `loopback:<port-alias>` |
 | Proxy traffic observed | `yes`, `no`, or `partial` |
 | Relevant sockets observed | `yes`, `no`, or `unknown` |
-| Inheritance verdict | One value from the verdict taxonomy |
+| Routing verdict | One value from the routing verdict taxonomy |
+| Propagation finding | `confirmed`, `not-confirmed`, or `not-tested` |
 | Confidence | `observed`, `inferred`, or `inconclusive` |
 | Product consequence | `supported`, `unsupported`, `needs fallback`, or `needs more data` |
 
@@ -118,13 +127,19 @@ Do not include command-line arguments in public findings. If an argument shape m
 
 ## Proxy proof
 
-This research should prove proxy inheritance by behavior, not by reading another process's environment.
+This research should prove Deep Capture compatibility by behavior. It should not claim environment inheritance unless there is independent non-invasive propagation evidence.
 
-Acceptable proof:
+Acceptable routing proof:
 
 - A local proxy listener records a CONNECT or HTTP request from a process later identified as the socket-owning client.
 - Socket ownership shows the client connecting to the local proxy address and port.
-- A process timeline shows a launcher used the proxy, then a later client opened non-proxy external sockets, supporting `stopped-at-launcher`.
+- A process timeline shows a launcher used the proxy, then a later client opened non-proxy external sockets, supporting `launcher-only-routing`.
+
+Acceptable propagation proof:
+
+- A test wrapper or controlled helper launched through the same path reports receipt of the proxy variables without reading another process.
+- A target-controlled diagnostic mode reports its own proxy configuration in a user-visible or log-visible way.
+- A launcher records, in its own public log or documented diagnostics, that it passed proxy configuration to the child process.
 
 Insufficient proof:
 
@@ -132,8 +147,9 @@ Insufficient proof:
 - Steam was launched from a shell with proxy variables.
 - The final client is a descendant of a process that should have inherited the environment.
 - A packet capture contains encrypted traffic, but no proxy connection.
+- The client opens direct external sockets after a launcher used the proxy. That proves only that client routing did not use the proxy; it does not prove whether the client failed to inherit proxy variables, inherited them but ignored them, or used a non-proxyable protocol such as UDP or QUIC.
 
-The outcome that matters is whether the socket-owning process routed traffic through the proxy.
+The product outcome that matters is whether the socket-owning process routed traffic through the proxy. The implementation reason may still be inheritance, proxy-awareness, protocol choice, or target behavior. Public findings must keep those apart.
 
 ## Sensitive-data handling
 
@@ -167,8 +183,8 @@ Describe how many aliased titles and launch paths were measured. Do not name tit
 
 ## Verdicts
 
-| Title alias | Launch case | Verdict | Confidence | Product consequence |
-| --- | --- | --- | --- | --- |
+| Title alias | Launch case | Routing verdict | Propagation finding | Confidence | Product consequence |
+| --- | --- | --- | --- | --- | --- |
 
 ## Findings
 
@@ -189,7 +205,8 @@ This issue should produce local-store requirements, even before the store is imp
 
 | Fact | Values |
 | --- | --- |
-| `deep_capture.proxy_inheritance` | `reached-client`, `stopped-at-launcher`, `escaped-tree`, `no-proxy-traffic`, `inconclusive` |
+| `deep_capture.proxy_routing` | `reached-client`, `launcher-only-routing`, `escaped-tree`, `no-proxy-traffic`, `inconclusive` |
+| `deep_capture.proxy_propagation` | `confirmed`, `not-confirmed`, `not-tested` |
 | `deep_capture.launch_case` | One value from the measurement matrix |
 | `deep_capture.final_socket_owner` | Executable alias in public docs, real executable in local store |
 | `deep_capture.publisher_launcher_present` | `yes`, `no`, `unknown` |
