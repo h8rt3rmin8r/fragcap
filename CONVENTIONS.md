@@ -31,12 +31,14 @@ fact. Both failures are cheap to prevent and expensive to diagnose.
 comments, doc comments, commit messages, string literals, log messages, and
 generated output. Use commas, parentheses, or standard hyphens.
 
-Wrap Markdown prose at 80 columns. Hard line breaks use a trailing backslash,
-never two trailing spaces, because trailing whitespace is stripped.
+Markdown prose uses soft wrap by default: one logical line per paragraph and
+one per list item. Hard wrap only when a specific checked surface or the
+operator explicitly asks for it.
 
-Do not wrap inside a table row, a URL, or a fenced code block; let those run
-long. Tables and code are read as units, and wrapping them hurts more than the
-long line does.
+When hard line breaks are intentional, use a trailing backslash, never two
+trailing spaces, because trailing whitespace is stripped. Do not wrap inside a
+table row, a URL, or a fenced code block; let those run long. Tables and code
+are read as units, and wrapping them hurts more than the long line does.
 
 Avoid the contrasting rhetorical device ("it's not just X, it's Y"). Avoid
 hedging and unsolicited restructuring. State the thing.
@@ -104,7 +106,7 @@ continuous integration.
 
 | Content | Limit |
 | --- | --- |
-| Markdown prose | 80 columns |
+| Markdown prose | Soft wrap by default |
 | Rust | 100 columns (`rustfmt`) |
 | Shell | 80 columns |
 | Tables, URLs, code fences | no limit |
