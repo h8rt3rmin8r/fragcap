@@ -12,8 +12,8 @@ Five alias-only launch-path measurements were reduced from private local Steam r
 
 | Title alias | Launch case | Routing verdict | Propagation finding | Confidence | Product consequence |
 | --- | --- | --- | --- | --- | --- |
-| title-a | steam-protocol-warm | inconclusive | not-confirmed | inconclusive | needs more data |
-| title-y | publisher-launcher | no-proxy-traffic | not-confirmed | observed | unsupported |
+| title-a | steam-protocol-warm | inconclusive | not-tested | inconclusive | needs more data |
+| title-y | publisher-launcher | not-applicable | not-tested | observed | needs more data |
 | title-a | steam-protocol-warm | no-proxy-traffic | not-confirmed | observed | unsupported |
 | title-a | direct-exe-warm | reached-client | not-confirmed | observed | supported |
 | title-a | steam-protocol-cold | reached-client | not-confirmed | observed | supported |
@@ -61,6 +61,7 @@ Evidence:
 - Local proxy accepted connection count: 0.
 - Target socket events touching the proxy listener: 0.
 - Operator observed launcher network content failing to load and hanging without reaching a playable client state.
+- Because a playable client state was not reached, this run is recorded as not applicable rather than as a title-level incompatibility verdict.
 
 ### title-a, steam-protocol-warm
 
@@ -127,12 +128,14 @@ Evidence:
 
 ## Compatibility facts proposed
 
-- deep_capture.proxy_routing: title-a direct-exe-warm reached-client; title-a steam-protocol-cold reached-client; title-a steam-protocol-warm no-proxy-traffic; title-y publisher-launcher no-proxy-traffic.
-- deep_capture.proxy_propagation: not-confirmed for all runs because routing was observed behaviorally but environment propagation was not independently proved.
+- deep_capture.proxy_routing: title-a direct-exe-warm reached-client; title-a steam-protocol-cold reached-client; title-a steam-protocol-warm no-proxy-traffic; title-y publisher-launcher not-applicable.
+- deep_capture.proxy_propagation: not-confirmed for runs with routing evidence because routing was observed behaviorally but environment propagation was not independently proved; not-tested for run-001 and run-002.
 - deep_capture.direct_exe_supported: yes for title-a when the platform client is already running.
 - deep_capture.steam_protocol_supported: yes for title-a from a cold platform state; no clean warm-protocol success was confirmed in this set.
-- deep_capture.publisher_launcher_present: yes for title-y; publisher-launcher path was observed as unsupported in this set.
+- deep_capture.publisher_launcher_present: yes for title-y; publisher-launcher path requires a client-reaching rerun before caching compatibility.
 - deep_capture.requires_steam_running: no for title-a cold Steam protocol path in this set.
+- deep_capture.proxy_variables_tested: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `http_proxy`, `https_proxy`, and `all_proxy`, all pointing at the local loopback proxy listener for the run.
+- deep_capture.evidence_fragcap_version: workspace version 0.6.0, measurement base commit `2b3c976`.
 
 ## Open questions
 
