@@ -543,6 +543,9 @@ $Script:LaunchCases = @(
     'direct-exe-warm',
     'direct-exe-cold',
     'publisher-launcher',
+    'publisher-launcher-warm',
+    'publisher-launcher-game-start-clean-warm',
+    'publisher-launcher-cold',
     'final-owner-differs'
 )
 $Script:SteamStates = @('running', 'not-running', 'unknown')
