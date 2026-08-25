@@ -998,8 +998,11 @@ impl Store {
         let result = self.conn.execute(
             "INSERT INTO deep_capture_facts
                 (target_id, fact_key, fact_value, launch_case, evidence_source,
-                 observed_at, fragcap_version, target_version, stale, note)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 observed_at, fragcap_version, target_version, proxy_backend,
+                 proxy_backend_version, proxy_mode, final_owner_executable,
+                 final_owner_handoff, stale, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                     ?14, ?15)",
             params![
                 fact.target_id,
                 fact.key.as_str(),
@@ -1009,6 +1012,11 @@ impl Store {
                 fact.observed_at,
                 fact.fragcap_version,
                 fact.target_version,
+                fact.proxy_backend,
+                fact.proxy_backend_version,
+                fact.proxy_mode,
+                fact.final_owner_executable,
+                if fact.final_owner_handoff { 1i64 } else { 0i64 },
                 if fact.stale { 1i64 } else { 0i64 },
                 fact.note,
             ],
@@ -1036,7 +1044,9 @@ impl Store {
     ) -> Result<Vec<CompatibilityFact>, TargetsError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, target_id, fact_key, fact_value, launch_case, evidence_source,
-                    observed_at, fragcap_version, target_version, stale, note
+                    observed_at, fragcap_version, target_version, proxy_backend,
+                    proxy_backend_version, proxy_mode, final_owner_executable,
+                    final_owner_handoff, stale, note
              FROM deep_capture_facts
              WHERE target_id = ?1
              ORDER BY id",
@@ -1337,8 +1347,13 @@ fn read_compatibility_fact_row(
     let observed_at: Option<String> = row.get(6)?;
     let fragcap_version: Option<String> = row.get(7)?;
     let target_version: Option<String> = row.get(8)?;
-    let stale: i64 = row.get(9)?;
-    let note: Option<String> = row.get(10)?;
+    let proxy_backend: Option<String> = row.get(9)?;
+    let proxy_backend_version: Option<String> = row.get(10)?;
+    let proxy_mode: Option<String> = row.get(11)?;
+    let final_owner_executable: Option<String> = row.get(12)?;
+    let final_owner_handoff: i64 = row.get(13)?;
+    let stale: i64 = row.get(14)?;
+    let note: Option<String> = row.get(15)?;
 
     Ok((|| {
         let key = CompatibilityFactKey::parse(&key)?;
@@ -1356,6 +1371,11 @@ fn read_compatibility_fact_row(
             observed_at,
             fragcap_version,
             target_version,
+            proxy_backend,
+            proxy_backend_version,
+            proxy_mode,
+            final_owner_executable,
+            final_owner_handoff: final_owner_handoff != 0,
             stale: stale != 0,
             note,
         })
@@ -1842,6 +1862,11 @@ mod tests {
         fact.observed_at = Some("2026-08-24T23:00:00Z".to_string());
         fact.fragcap_version = Some("0.6.0".to_string());
         fact.target_version = Some("build-a".to_string());
+        fact.proxy_backend = Some("mitmproxy".to_string());
+        fact.proxy_backend_version = Some("12.1.0".to_string());
+        fact.proxy_mode = Some("explicit-env-proxy".to_string());
+        fact.final_owner_executable = Some("client.exe".to_string());
+        fact.final_owner_handoff = true;
         fact.note = Some("scrubbed local observation".to_string());
 
         let fact_id = store.insert_compatibility_fact(&fact).expect("insert fact");
@@ -1867,6 +1892,14 @@ mod tests {
         );
         assert_eq!(facts[0].fragcap_version.as_deref(), Some("0.6.0"));
         assert_eq!(facts[0].target_version.as_deref(), Some("build-a"));
+        assert_eq!(facts[0].proxy_backend.as_deref(), Some("mitmproxy"));
+        assert_eq!(facts[0].proxy_backend_version.as_deref(), Some("12.1.0"));
+        assert_eq!(facts[0].proxy_mode.as_deref(), Some("explicit-env-proxy"));
+        assert_eq!(
+            facts[0].final_owner_executable.as_deref(),
+            Some("client.exe")
+        );
+        assert!(facts[0].final_owner_handoff);
         assert!(!facts[0].stale);
         assert_eq!(facts[0].note.as_deref(), Some("scrubbed local observation"));
     }

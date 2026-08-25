@@ -86,7 +86,6 @@ pub enum CompatibilityLaunchCase {
     PublisherLauncherWarm,
     PublisherLauncherGameStartCleanWarm,
     PublisherLauncherCold,
-    FinalOwnerDiffers,
 }
 
 impl CompatibilityLaunchCase {
@@ -103,7 +102,6 @@ impl CompatibilityLaunchCase {
                 "publisher-launcher-game-start-clean-warm"
             }
             CompatibilityLaunchCase::PublisherLauncherCold => "publisher-launcher-cold",
-            CompatibilityLaunchCase::FinalOwnerDiffers => "final-owner-differs",
         }
     }
 
@@ -120,7 +118,6 @@ impl CompatibilityLaunchCase {
                 Ok(CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm)
             }
             "publisher-launcher-cold" => Ok(CompatibilityLaunchCase::PublisherLauncherCold),
-            "final-owner-differs" => Ok(CompatibilityLaunchCase::FinalOwnerDiffers),
             other => Err(TargetsError::Model(format!(
                 "unknown compatibility launch case {other:?}"
             ))),
@@ -183,6 +180,17 @@ pub struct CompatibilityFact {
     pub fragcap_version: Option<String>,
     /// Target version, build id, or equivalent local version clue.
     pub target_version: Option<String>,
+    /// Proxy backend used to collect the observation.
+    pub proxy_backend: Option<String>,
+    /// Version of the proxy backend, if known.
+    pub proxy_backend_version: Option<String>,
+    /// Proxy mode or configuration family used for the observation.
+    pub proxy_mode: Option<String>,
+    /// Executable image observed holding the final sockets, if known.
+    pub final_owner_executable: Option<String>,
+    /// Whether the final socket owner differed from the initially launched
+    /// executable for this observed launch.
+    pub final_owner_handoff: bool,
     /// Whether the fact is retained as stale context rather than current advice.
     pub stale: bool,
     /// Optional operator-facing note. It must already be scrubbed before export.
@@ -209,6 +217,11 @@ impl CompatibilityFact {
             observed_at: None,
             fragcap_version: None,
             target_version: None,
+            proxy_backend: None,
+            proxy_backend_version: None,
+            proxy_mode: None,
+            final_owner_executable: None,
+            final_owner_handoff: false,
             stale: false,
             note: None,
         })

@@ -2453,13 +2453,17 @@ have gone missing remains registered, selectable, and resolvable exactly as befo
 Deep Capture compatibility facts are stored beside the target entry, not in a
 parallel resolver. Each fact row belongs to one `targets(id)` row and carries a
 closed fact key, a key-specific value, an optional launch case, a provenance
-source, freshness fields (`observed_at`, fragcap version, target version), a
-stale marker, and an optional note. Unknown is an allowed value where the product
-needs to preserve uncertainty; out-of-vocabulary values are rejected by both the
-Rust model and SQLite CHECK constraints. Observed routing, propagation, final
-socket-owner role, proxy variables, TLS trust behavior, protocol behavior, and
-inspectability are recorded as facts with provenance rather than inferred from
-platform metadata. A row can be retained as stale, but no refresh that would
+source, freshness fields (`observed_at`, fragcap version, target version), proxy
+backend identity/version/mode, the observed final-owner executable, a
+final-owner handoff marker, a stale marker, and an optional note. Unknown is an
+allowed value where the product needs to preserve uncertainty; out-of-vocabulary
+values are rejected by both the Rust model and SQLite CHECK constraints where
+the value domain is closed. Observed routing, propagation, final socket-owner
+role, proxy variables, TLS trust behavior, protocol behavior, and inspectability
+are recorded as facts with provenance rather than inferred from platform
+metadata. Launch case and final-owner handoff are separate fields, so a run can
+retain the actual launch case while still recording that the socket owner moved
+to a later executable. A row can be retained as stale, but no refresh that would
 require launching a target, changing trust state, or altering proxy routing is
 performed silently.
 

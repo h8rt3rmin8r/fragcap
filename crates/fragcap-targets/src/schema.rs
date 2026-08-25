@@ -61,10 +61,10 @@
 //! Version 9 (issue #217) adds `deep_capture_facts`, the local compatibility fact
 //! table. It is keyed to `targets(id)` so Deep Capture facts do not create a
 //! second target-resolution path. CHECK constraints keep the fact keys,
-//! launch-case tokens, provenance source, stale flag, and key-specific value
-//! vocabularies closed: the store can record `unknown`, but it cannot record an
-//! out-of-vocabulary guess. The migration from version 8 is one additive
-//! `CREATE TABLE`.
+//! launch-case tokens, proxy provenance, final-owner details, stale flag, and
+//! key-specific value vocabularies closed where the value domain is known: the
+//! store can record `unknown`, but it cannot record an out-of-vocabulary guess.
+//! The migration from version 8 is one additive `CREATE TABLE`.
 
 /// The schema version this build writes and understands.
 pub const SCHEMA_VERSION: i64 = 9;
@@ -190,13 +190,19 @@ CREATE TABLE deep_capture_facts (
                         'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
                         'publisher-launcher-warm',
                         'publisher-launcher-game-start-clean-warm',
-                        'publisher-launcher-cold', 'final-owner-differs')),
+                        'publisher-launcher-cold')),
     evidence_source  TEXT NOT NULL CHECK (evidence_source IN
                        ('observed-run', 'user-confirmed', 'imported-catalog',
                         'stale-observation')),
     observed_at      TEXT,
     fragcap_version  TEXT,
     target_version   TEXT,
+    proxy_backend    TEXT CHECK (proxy_backend IS NULL OR length(proxy_backend) > 0),
+    proxy_backend_version TEXT,
+    proxy_mode       TEXT CHECK (proxy_mode IS NULL OR length(proxy_mode) > 0),
+    final_owner_executable TEXT
+                       CHECK (final_owner_executable IS NULL OR length(final_owner_executable) > 0),
+    final_owner_handoff INTEGER NOT NULL DEFAULT 0 CHECK (final_owner_handoff IN (0, 1)),
     stale            INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
     note             TEXT,
     CHECK (
@@ -215,7 +221,7 @@ CREATE TABLE deep_capture_facts (
                                'direct-exe-warm', 'direct-exe-cold',
                                'publisher-launcher', 'publisher-launcher-warm',
                                'publisher-launcher-game-start-clean-warm',
-                               'publisher-launcher-cold', 'final-owner-differs'))
+                               'publisher-launcher-cold'))
         OR (fact_key = 'final-socket-owner-role'
             AND fact_value IN ('client', 'launcher', 'platform', 'platform-service',
                                'helper', 'proxy', 'wrapper', 'unknown'))
@@ -255,13 +261,19 @@ CREATE TABLE deep_capture_facts (
                         'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
                         'publisher-launcher-warm',
                         'publisher-launcher-game-start-clean-warm',
-                        'publisher-launcher-cold', 'final-owner-differs')),
+                        'publisher-launcher-cold')),
     evidence_source  TEXT NOT NULL CHECK (evidence_source IN
                        ('observed-run', 'user-confirmed', 'imported-catalog',
                         'stale-observation')),
     observed_at      TEXT,
     fragcap_version  TEXT,
     target_version   TEXT,
+    proxy_backend    TEXT CHECK (proxy_backend IS NULL OR length(proxy_backend) > 0),
+    proxy_backend_version TEXT,
+    proxy_mode       TEXT CHECK (proxy_mode IS NULL OR length(proxy_mode) > 0),
+    final_owner_executable TEXT
+                       CHECK (final_owner_executable IS NULL OR length(final_owner_executable) > 0),
+    final_owner_handoff INTEGER NOT NULL DEFAULT 0 CHECK (final_owner_handoff IN (0, 1)),
     stale            INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
     note             TEXT,
     CHECK (
@@ -280,7 +292,7 @@ CREATE TABLE deep_capture_facts (
                                'direct-exe-warm', 'direct-exe-cold',
                                'publisher-launcher', 'publisher-launcher-warm',
                                'publisher-launcher-game-start-clean-warm',
-                               'publisher-launcher-cold', 'final-owner-differs'))
+                               'publisher-launcher-cold'))
         OR (fact_key = 'final-socket-owner-role'
             AND fact_value IN ('client', 'launcher', 'platform', 'platform-service',
                                'helper', 'proxy', 'wrapper', 'unknown'))
