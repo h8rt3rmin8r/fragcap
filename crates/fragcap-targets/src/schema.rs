@@ -57,9 +57,17 @@
 //! closed vocabulary to enforce, unlike `detection_scan`'s enum. Backward-safe by
 //! construction: an existing row reads both as NULL, which is exactly "not
 //! recorded".
+//!
+//! Version 9 (issue #217) adds `deep_capture_facts`, the local compatibility fact
+//! table. It is keyed to `targets(id)` so Deep Capture facts do not create a
+//! second target-resolution path. CHECK constraints keep the fact keys,
+//! launch-case tokens, provenance source, stale flag, and key-specific value
+//! vocabularies closed: the store can record `unknown`, but it cannot record an
+//! out-of-vocabulary guess. The migration from version 8 is one additive
+//! `CREATE TABLE`.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -163,6 +171,130 @@ CREATE TABLE listing_snapshot (
     position   INTEGER PRIMARY KEY CHECK (position > 0),
     stable_id  INTEGER NOT NULL,
     handle     TEXT NOT NULL CHECK (length(handle) > 0)
+);
+
+CREATE TABLE deep_capture_facts (
+    id               INTEGER PRIMARY KEY,
+    target_id        INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    fact_key         TEXT NOT NULL CHECK (fact_key IN
+                       ('proxy-environment-honored', 'proxy-routing',
+                        'proxy-propagation', 'launch-case', 'final-socket-owner-role',
+                        'publisher-launcher-present',
+                        'requires-platform-cold-start-for-proxy',
+                        'direct-exe-supported', 'steam-protocol-supported',
+                        'tls-trust-behavior', 'protocol-behavior', 'inspectability',
+                        'proxy-variable-tested')),
+    fact_value       TEXT NOT NULL CHECK (length(fact_value) > 0),
+    launch_case      TEXT CHECK (launch_case IS NULL OR launch_case IN
+                       ('steam-protocol-warm', 'steam-protocol-cold',
+                        'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
+                        'publisher-launcher-warm',
+                        'publisher-launcher-game-start-clean-warm',
+                        'publisher-launcher-cold', 'final-owner-differs')),
+    evidence_source  TEXT NOT NULL CHECK (evidence_source IN
+                       ('observed-run', 'user-confirmed', 'imported-catalog',
+                        'stale-observation')),
+    observed_at      TEXT,
+    fragcap_version  TEXT,
+    target_version   TEXT,
+    stale            INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
+    note             TEXT,
+    CHECK (
+        (fact_key IN ('proxy-environment-honored', 'publisher-launcher-present',
+                      'requires-platform-cold-start-for-proxy',
+                      'direct-exe-supported', 'steam-protocol-supported')
+            AND fact_value IN ('yes', 'no', 'unknown'))
+        OR (fact_key = 'proxy-routing'
+            AND fact_value IN ('reached-client', 'launcher-only-routing',
+                               'escaped-tree', 'no-proxy-traffic',
+                               'not-applicable', 'inconclusive'))
+        OR (fact_key = 'proxy-propagation'
+            AND fact_value IN ('confirmed', 'not-confirmed', 'not-tested'))
+        OR (fact_key = 'launch-case'
+            AND fact_value IN ('steam-protocol-warm', 'steam-protocol-cold',
+                               'direct-exe-warm', 'direct-exe-cold',
+                               'publisher-launcher', 'publisher-launcher-warm',
+                               'publisher-launcher-game-start-clean-warm',
+                               'publisher-launcher-cold', 'final-owner-differs'))
+        OR (fact_key = 'final-socket-owner-role'
+            AND fact_value IN ('client', 'launcher', 'platform', 'platform-service',
+                               'helper', 'proxy', 'wrapper', 'unknown'))
+        OR (fact_key = 'tls-trust-behavior'
+            AND fact_value IN ('accepts-local-ca', 'certificate-pinned', 'unknown'))
+        OR (fact_key = 'protocol-behavior'
+            AND fact_value IN ('http', 'https', 'websocket', 'non-http-tls', 'quic',
+                               'udp', 'plaintext', 'unknown'))
+        OR (fact_key = 'inspectability'
+            AND fact_value IN ('full', 'metadata-only', 'unsupported', 'unknown'))
+        OR (fact_key = 'proxy-variable-tested'
+            AND fact_value IN ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                               'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'))
+    )
+);
+";
+
+/// The additive migration from schema version 8 to version 9: create the Deep
+/// Capture compatibility fact table (issue #217). Backward-safe by construction,
+/// an existing v8 store keeps every target row and gains one empty table. Applied
+/// in one transaction alongside the version stamp.
+pub const MIGRATE_8_TO_9: &str = "\
+CREATE TABLE deep_capture_facts (
+    id               INTEGER PRIMARY KEY,
+    target_id        INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    fact_key         TEXT NOT NULL CHECK (fact_key IN
+                       ('proxy-environment-honored', 'proxy-routing',
+                        'proxy-propagation', 'launch-case', 'final-socket-owner-role',
+                        'publisher-launcher-present',
+                        'requires-platform-cold-start-for-proxy',
+                        'direct-exe-supported', 'steam-protocol-supported',
+                        'tls-trust-behavior', 'protocol-behavior', 'inspectability',
+                        'proxy-variable-tested')),
+    fact_value       TEXT NOT NULL CHECK (length(fact_value) > 0),
+    launch_case      TEXT CHECK (launch_case IS NULL OR launch_case IN
+                       ('steam-protocol-warm', 'steam-protocol-cold',
+                        'direct-exe-warm', 'direct-exe-cold', 'publisher-launcher',
+                        'publisher-launcher-warm',
+                        'publisher-launcher-game-start-clean-warm',
+                        'publisher-launcher-cold', 'final-owner-differs')),
+    evidence_source  TEXT NOT NULL CHECK (evidence_source IN
+                       ('observed-run', 'user-confirmed', 'imported-catalog',
+                        'stale-observation')),
+    observed_at      TEXT,
+    fragcap_version  TEXT,
+    target_version   TEXT,
+    stale            INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
+    note             TEXT,
+    CHECK (
+        (fact_key IN ('proxy-environment-honored', 'publisher-launcher-present',
+                      'requires-platform-cold-start-for-proxy',
+                      'direct-exe-supported', 'steam-protocol-supported')
+            AND fact_value IN ('yes', 'no', 'unknown'))
+        OR (fact_key = 'proxy-routing'
+            AND fact_value IN ('reached-client', 'launcher-only-routing',
+                               'escaped-tree', 'no-proxy-traffic',
+                               'not-applicable', 'inconclusive'))
+        OR (fact_key = 'proxy-propagation'
+            AND fact_value IN ('confirmed', 'not-confirmed', 'not-tested'))
+        OR (fact_key = 'launch-case'
+            AND fact_value IN ('steam-protocol-warm', 'steam-protocol-cold',
+                               'direct-exe-warm', 'direct-exe-cold',
+                               'publisher-launcher', 'publisher-launcher-warm',
+                               'publisher-launcher-game-start-clean-warm',
+                               'publisher-launcher-cold', 'final-owner-differs'))
+        OR (fact_key = 'final-socket-owner-role'
+            AND fact_value IN ('client', 'launcher', 'platform', 'platform-service',
+                               'helper', 'proxy', 'wrapper', 'unknown'))
+        OR (fact_key = 'tls-trust-behavior'
+            AND fact_value IN ('accepts-local-ca', 'certificate-pinned', 'unknown'))
+        OR (fact_key = 'protocol-behavior'
+            AND fact_value IN ('http', 'https', 'websocket', 'non-http-tls', 'quic',
+                               'udp', 'plaintext', 'unknown'))
+        OR (fact_key = 'inspectability'
+            AND fact_value IN ('full', 'metadata-only', 'unsupported', 'unknown'))
+        OR (fact_key = 'proxy-variable-tested'
+            AND fact_value IN ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                               'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'))
+    )
 );
 ";
 

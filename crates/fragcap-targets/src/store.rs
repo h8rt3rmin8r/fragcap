@@ -12,6 +12,9 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::compatibility::{
+    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
+};
 use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
 use crate::model::{
     Engine, EngineConfidence, EngineSource, Game, LaunchEntry, SeedState, SeedTier, TechCategory,
@@ -19,7 +22,7 @@ use crate::model::{
 };
 use crate::schema::{
     DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6,
-    MIGRATE_6_TO_7, MIGRATE_7_TO_8, SCHEMA_VERSION,
+    MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
@@ -138,6 +141,17 @@ impl Store {
             tx.pragma_update(None, "user_version", 8i64)?;
             tx.commit()?;
             version = 8;
+        }
+
+        if version == 8 {
+            // 8 -> 9: create the Deep Capture compatibility fact table (issue
+            // #217). Existing target rows are untouched; the fact table starts
+            // empty, so no compatibility behavior is invented.
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_8_TO_9)?;
+            tx.pragma_update(None, "user_version", 9i64)?;
+            tx.commit()?;
+            version = 9;
         }
 
         if version != SCHEMA_VERSION {
@@ -968,6 +982,73 @@ impl Store {
         Ok(n.max(0) as usize)
     }
 
+    // --- Deep Capture compatibility facts (issue #217) ------------------------
+
+    /// Append one Deep Capture compatibility fact for a registered target.
+    ///
+    /// This does not refresh, delete, or supersede other facts. Compatibility can
+    /// change with a game update or a launch path, so retaining multiple facts with
+    /// provenance and staleness is intentional. A fact is always keyed to
+    /// `targets(id)`, so there is no second target-resolution path.
+    pub fn insert_compatibility_fact(
+        &mut self,
+        fact: &CompatibilityFact,
+    ) -> Result<i64, TargetsError> {
+        crate::compatibility::validate_fact_value(fact.key, &fact.value)?;
+        let result = self.conn.execute(
+            "INSERT INTO deep_capture_facts
+                (target_id, fact_key, fact_value, launch_case, evidence_source,
+                 observed_at, fragcap_version, target_version, stale, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                fact.target_id,
+                fact.key.as_str(),
+                fact.value,
+                fact.launch_case.map(|c| c.as_str()),
+                fact.evidence_source.as_str(),
+                fact.observed_at,
+                fact.fragcap_version,
+                fact.target_version,
+                if fact.stale { 1i64 } else { 0i64 },
+                fact.note,
+            ],
+        );
+        match result {
+            Ok(_) => Ok(self.conn.last_insert_rowid()),
+            Err(rusqlite::Error::SqliteFailure(e, msg))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                let detail = msg.unwrap_or_else(|| "constraint violation".to_string());
+                Err(TargetsError::Model(format!(
+                    "invalid compatibility fact for target {}: {detail}",
+                    fact.target_id
+                )))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Read every Deep Capture compatibility fact for one target, ordered by row
+    /// id so observations remain chronological.
+    pub fn compatibility_facts_for_target(
+        &self,
+        target_id: i64,
+    ) -> Result<Vec<CompatibilityFact>, TargetsError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, target_id, fact_key, fact_value, launch_case, evidence_source,
+                    observed_at, fragcap_version, target_version, stale, note
+             FROM deep_capture_facts
+             WHERE target_id = ?1
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![target_id], read_compatibility_fact_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row??);
+        }
+        Ok(out)
+    }
+
     // --- Volume eligibility (slice S052) ---------------------------------------
 
     /// Whether the volume eligibility allowlist has ever been seeded. Empty means
@@ -1240,6 +1321,47 @@ fn read_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<TargetEnt
     })())
 }
 
+/// Read one `deep_capture_facts` row into a [`CompatibilityFact`]. Enum parsing
+/// that can fail is deferred so the rusqlite closure stays infallible in column
+/// reads; CHECK constraints make those failures unreachable unless schema and
+/// model drift.
+fn read_compatibility_fact_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<Result<CompatibilityFact, TargetsError>> {
+    let id: i64 = row.get(0)?;
+    let target_id: i64 = row.get(1)?;
+    let key: String = row.get(2)?;
+    let value: String = row.get(3)?;
+    let launch_case: Option<String> = row.get(4)?;
+    let evidence_source: String = row.get(5)?;
+    let observed_at: Option<String> = row.get(6)?;
+    let fragcap_version: Option<String> = row.get(7)?;
+    let target_version: Option<String> = row.get(8)?;
+    let stale: i64 = row.get(9)?;
+    let note: Option<String> = row.get(10)?;
+
+    Ok((|| {
+        let key = CompatibilityFactKey::parse(&key)?;
+        crate::compatibility::validate_fact_value(key, &value)?;
+        Ok(CompatibilityFact {
+            id: Some(id),
+            target_id,
+            key,
+            value,
+            launch_case: launch_case
+                .as_deref()
+                .map(CompatibilityLaunchCase::parse)
+                .transpose()?,
+            evidence_source: CompatibilityEvidenceSource::parse(&evidence_source)?,
+            observed_at,
+            fragcap_version,
+            target_version,
+            stale: stale != 0,
+            note,
+        })
+    })())
+}
+
 /// Parse an optional stored JSON text back to a value, mapping a parse failure to
 /// a model error rather than panicking.
 fn parse_json_opt(text: Option<String>) -> Result<Option<serde_json::Value>, TargetsError> {
@@ -1423,6 +1545,8 @@ mod tests {
             .expect("drop v5 table to simulate v1");
         conn.execute_batch("DROP TABLE listing_snapshot;")
             .expect("drop v6 table to simulate v1");
+        conn.execute_batch("DROP TABLE deep_capture_facts;")
+            .expect("drop v9 table to simulate v1");
         conn.pragma_update(None, "user_version", 1_i64)
             .expect("stamp v1");
         conn
@@ -1502,6 +1626,13 @@ mod tests {
             store.listing_snapshot_nth(1).expect("snapshot").is_none(),
             "fresh store has no listing snapshot"
         );
+        assert!(
+            store
+                .compatibility_facts_for_target(1)
+                .expect("compat facts")
+                .is_empty(),
+            "fresh store has no Deep Capture compatibility facts"
+        );
     }
 
     #[test]
@@ -1516,7 +1647,8 @@ mod tests {
         conn.execute_batch(
             "ALTER TABLE targets DROP COLUMN detection_scan;
              ALTER TABLE targets DROP COLUMN folder_name;
-             ALTER TABLE targets DROP COLUMN executable_hint;",
+             ALTER TABLE targets DROP COLUMN executable_hint;
+             DROP TABLE deep_capture_facts;",
         )
         .expect("drop columns");
         conn.pragma_update(None, "user_version", 6i64)
@@ -1553,7 +1685,8 @@ mod tests {
         let conn = store.conn;
         conn.execute_batch(
             "ALTER TABLE targets DROP COLUMN folder_name;
-             ALTER TABLE targets DROP COLUMN executable_hint;",
+             ALTER TABLE targets DROP COLUMN executable_hint;
+             DROP TABLE deep_capture_facts;",
         )
         .expect("drop columns");
         conn.pragma_update(None, "user_version", 7i64)
@@ -1577,6 +1710,43 @@ mod tests {
         assert_eq!(targets.len(), 1, "the existing row survives");
         assert_eq!(targets[0].folder_name, None);
         assert_eq!(targets[0].executable_hint, None);
+    }
+
+    #[test]
+    fn a_v8_store_gains_the_compatibility_table_without_inventing_facts() {
+        // The migration is additive: an existing target row survives and has no
+        // Deep Capture facts until an observed run, user confirmation, or import
+        // writes one. Backfilling would fabricate compatibility (P-9).
+        let store = Store::open_in_memory().expect("store");
+        let conn = store.conn;
+        conn.execute_batch("DROP TABLE deep_capture_facts;")
+            .expect("drop v9 table");
+        conn.pragma_update(None, "user_version", 8i64)
+            .expect("stamp v8");
+        conn.execute(
+            "INSERT INTO targets
+                (stable_id, handle, name, classification, classification_source, fidelity)
+             VALUES (13, 'older_row', 'Older Row', 'game', 'user', 'authored')",
+            [],
+        )
+        .expect("insert a pre-migration row");
+
+        let store = Store::from_connection(conn).expect("migrate forward");
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let target = store
+            .target_by_handle("older_row")
+            .expect("target")
+            .expect("present");
+        let target_id = target.id.expect("row id");
+        assert!(store
+            .compatibility_facts_for_target(target_id)
+            .expect("facts")
+            .is_empty());
     }
 
     #[test]
@@ -1654,6 +1824,108 @@ mod tests {
             format!("{err}").to_lowercase().contains("constraint"),
             "refused by the CHECK constraint: {err}"
         );
+    }
+
+    #[test]
+    fn compatibility_facts_round_trip_with_provenance_and_freshness() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("compat", Some("steam:217"), FidelityTier::Observed);
+        let target_id = store.insert_target(&entry).expect("insert");
+        let mut fact = CompatibilityFact::new(
+            target_id,
+            CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            CompatibilityEvidenceSource::ObservedRun,
+        )
+        .expect("fact");
+        fact.launch_case = Some(CompatibilityLaunchCase::SteamProtocolCold);
+        fact.observed_at = Some("2026-08-24T23:00:00Z".to_string());
+        fact.fragcap_version = Some("0.6.0".to_string());
+        fact.target_version = Some("build-a".to_string());
+        fact.note = Some("scrubbed local observation".to_string());
+
+        let fact_id = store.insert_compatibility_fact(&fact).expect("insert fact");
+        let facts = store
+            .compatibility_facts_for_target(target_id)
+            .expect("facts");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].id, Some(fact_id));
+        assert_eq!(facts[0].target_id, target_id);
+        assert_eq!(facts[0].key, CompatibilityFactKey::ProxyRouting);
+        assert_eq!(facts[0].value, "reached-client");
+        assert_eq!(
+            facts[0].launch_case,
+            Some(CompatibilityLaunchCase::SteamProtocolCold)
+        );
+        assert_eq!(
+            facts[0].evidence_source,
+            CompatibilityEvidenceSource::ObservedRun
+        );
+        assert_eq!(
+            facts[0].observed_at.as_deref(),
+            Some("2026-08-24T23:00:00Z")
+        );
+        assert_eq!(facts[0].fragcap_version.as_deref(), Some("0.6.0"));
+        assert_eq!(facts[0].target_version.as_deref(), Some("build-a"));
+        assert!(!facts[0].stale);
+        assert_eq!(facts[0].note.as_deref(), Some("scrubbed local observation"));
+    }
+
+    #[test]
+    fn compatibility_facts_refuse_out_of_set_values() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("compat_bad", Some("steam:218"), FidelityTier::Observed);
+        let target_id = store.insert_target(&entry).expect("insert");
+
+        let err = store
+            .conn
+            .execute(
+                "INSERT INTO deep_capture_facts
+                    (target_id, fact_key, fact_value, evidence_source)
+                 VALUES (?1, 'proxy-routing', 'confirmed', 'observed-run')",
+                params![target_id],
+            )
+            .expect_err("invalid key/value combination is refused");
+        assert!(
+            format!("{err}").to_lowercase().contains("constraint"),
+            "refused by CHECK constraint: {err}"
+        );
+
+        assert!(CompatibilityFact::new(
+            target_id,
+            CompatibilityFactKey::ProxyRouting,
+            "confirmed",
+            CompatibilityEvidenceSource::ObservedRun,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn deleting_a_target_cascades_compatibility_facts() {
+        let mut store = Store::open_in_memory().expect("store");
+        let entry = sample_target("compat_delete", Some("steam:219"), FidelityTier::Observed);
+        let target_id = store.insert_target(&entry).expect("insert");
+        let fact = CompatibilityFact::new(
+            target_id,
+            CompatibilityFactKey::ProxyPropagation,
+            "not-confirmed",
+            CompatibilityEvidenceSource::ObservedRun,
+        )
+        .expect("fact");
+        store.insert_compatibility_fact(&fact).expect("insert fact");
+        assert_eq!(
+            store
+                .compatibility_facts_for_target(target_id)
+                .expect("facts")
+                .len(),
+            1
+        );
+
+        assert!(store.delete_target(target_id).expect("delete"));
+        assert!(store
+            .compatibility_facts_for_target(target_id)
+            .expect("facts")
+            .is_empty());
     }
 
     #[test]
