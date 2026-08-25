@@ -99,6 +99,7 @@ enforcement.
 | 0.1.5-draft | 2026-08-10 | W. Thompson | **Reverses the two-release split.** There is now one first public release, v0.2.0, comprising the whole roadmap (S01 through S18); it and the crates.io publication of the functional crates happen only after every slice is complete. Un-partitions the 3.3 success criteria (v0.2.0 is complete when SC-1 through SC-7 hold), collapses the 27.3 release table to a single functional release, retitles section 28 "Beyond v0.2.0", and updates the scope prose. v0.1.0 remains the already-published name-reservation stub. |
 | 0.1.6-draft | 2026-08-16 | W. Thompson | **Reconciles the specification with shipped reality (slice S049).** v0.2.0 shipped 2026-08-12 as the first functional release (the S01 through S18 roadmap); v0.3.0 and v0.4.0 followed on 2026-08-14; the document had continued to describe v0.2.0 as unshipped. Adds the **Applies-To** header field (0.4.0), bound to the workspace version by `cargo xtask spec`; makes the title version-neutral; reframes 3.3, updates the 27.3 release table, retitles section 28 version-neutrally, and corrects the scope prose throughout; replaces the 23.1 landing-page paragraph. Adds constitution principles **P-10** (One Path To A Target) and **P-11** (The Specification Describes What Shipped, constitution 1.2.0). Per-release scope beyond v0.2.0 is recorded in CHANGELOG.md rather than restated here. |
 | 0.1.7-draft | 2026-08-24 | W. Thompson | **Positions Capture and Deep Capture as first-class product modes (issue #213).** Updates sections 2.1, 3.1, 3.2, 19, 27.2, 28, and 29 so shipped Capture remains passive while planned Deep Capture is explicit, scoped local proxy inspection. Expands constitution principle **P-1** to No Covert Target Instrumentation (constitution 1.4.0), adds target TLS key extraction to the denylist, and records `AI_CONTEXT.md` as required context for cybersecurity-sensitive agent work. |
+| 0.1.8-draft | 2026-08-25 | W. Thompson | **Defines the Deep Capture session bundle and output correlation model (issue #216).** Adds section 13.7, updates sections 28 and 29, and records the manifest, artifact authority rules, application JSONL, HAR conditions, sensitive TLS key-log handling, proxy/process sidecars, compatibility update sidecar, cleanup report, and correlation anchors. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1623,7 +1624,7 @@ Attribution is carried in the Enhanced Packet Block `opt_comment`
 option as a structured string.
 
 ```text
-fragcap:pid=7412;proc=eso64.exe;role=client;dir=out;attr=live
+fragcap:pid=7412;proc=client.exe;role=client;dir=out;attr=live;flow_id=flow-00000001
 ```
 
 The grammar is a leading `fragcap:` sentinel followed by
@@ -1640,12 +1641,20 @@ a percent sign.
 | `dir` | Always | `in`, `out`, or `local` |
 | `attr` | Always | `live`, `retained`, or `none` |
 | `iface` | When multi-interface | Capture interface name |
+| `flow_id` | When packet has a flow key | Stable session-local flow identifier |
 
 `opt_comment` is chosen over pcapng custom options for three reasons.
 Every pcapng reader displays comments, so attribution is visible in
 Wireshark with no configuration. Comments are defined as text, so no
 reader can misinterpret the payload. Custom options require a Private
 Enterprise Number that this project does not hold.
+
+`flow_id` is assigned by the capture session from the parsed flow key.
+The same canonical flow key receives one id for the whole session,
+regardless of packet direction, and packets with no flow key omit the
+field. Application sidecars use the identical id when proxy observations
+can be joined to the packet flow, which makes `flow_id` the packet-side
+mapping for Deep Capture correlation rather than a sidecar-only token.
 
 The cost is parsing overhead in consumers and a modest size increase.
 Both are accepted. Section 28 records binary custom options as a
@@ -1722,6 +1731,22 @@ Reporting attributed and unattributed counts alongside drop counters is
 required by G-5. A capture that silently lost data is worse than a
 capture that reports having lost data, because the first invalidates
 analysis without warning.
+
+### 13.7 Deep Capture Session Bundles
+
+Deep Capture writes a session bundle rather than one overloaded output file. A bundle is a directory or logical artifact set rooted at a required `manifest.json`. The manifest is the durable index for the session: it names the target, mode, session id, start and stop times, proxy backend identity, proxy backend version, proxy mode, local CA thumbprint state, artifact paths, artifact authority, sensitivity labels, omissions, correlation anchors, compatibility fact updates, and cleanup report reference.
+
+The `.fcapng` file remains packet truth. It owns packet bytes, packet timestamps, interfaces, attribution comments, and loss accounting. It does not carry full decrypted application objects. Application-layer records live in sidecars so unmodified packet analyzers can continue to read the pcapng artifact as ordinary packet capture.
+
+Application JSON Lines is the canonical machine-readable application event stream for proxy observations. Each application record carries structured correlation anchors: `session_id`, target id or stable target handle, `flow_id`, proxy connection id where applicable, process id when known, role when known, attribution state, and event time bounds. Those anchors let consumers join application records to packet flows and process context without parsing human text. The packet side of the join is the `flow_id` annotation in section 13.3.
+
+HAR is an HTTP-oriented projection, not the only application truth and not exclusive to Deep Capture. Capture may produce HAR when HTTP semantics are actually observable, such as plaintext HTTP or an already-decrypted stream. Deep Capture is the expected mode for useful HTTPS HAR output because the proxy can observe HTTP semantics only when the selected target routes through it and accepts the configured local certificate authority.
+
+TLS key logs are optional analyzer aids for proxy-owned TLS tunnels. They are sensitive session material, not decrypted output. A key log is emitted only when an operator requests analyzer integration or selects an output profile that includes it, and the manifest marks it as session-scoped, proxy-owned, and secret-adjacent.
+
+Proxy logs, process traces, compatibility update records, and cleanup reports are sidecars. The proxy log owns proxy startup, shutdown, backend errors, and proxy connection ids. The process trace owns process launch and exit chronology. Compatibility update records name Deep Capture facts written or proposed for the local target store. Cleanup reports own per-resource cleanup results for proxy processes, proxy ports, local CA trust, local CA material, TLS key logs, and sensitive output artifacts; the manifest records only the latest cleanup report path and aggregate cleanup status.
+
+Expected artifacts that are not produced are recorded as manifest omissions with reasons, such as `not-requested`, `not-observable`, `unsupported-protocol`, `proxy-not-reached`, `certificate-pinned`, `backend-unavailable`, or `writer-failed`. A Deep Capture session that could only provide metadata remains useful, but it must say which application artifacts were unavailable and why.
 
 ## 14. Sinks and Streaming
 
@@ -3973,8 +3998,9 @@ shipped as of the release this document applies to.
 
 **Deep Capture.** Explicit, scoped local proxy inspection for selected game
 targets, integrated with ordinary Capture sessions so packet capture, process
-attribution, proxy logs, proxy-owned TLS key-log export, and analyzer outputs
-correlate in one session. Planning is recorded in
+attribution, application records, HAR projections, proxy logs, proxy-owned TLS
+key-log export, process traces, compatibility facts, cleanup reports, and
+analyzer outputs correlate through one session manifest. Planning is recorded in
 `docs/plans/deep-capture.md`; initial work is tracked by issues #213 through
 #220. The MVP supports only documented traffic types and records unsupported
 flows plainly.
@@ -4031,10 +4057,10 @@ to section 6.2.
 | Q-7 | Monospace face selection for brand | Brand session | S18 | **Resolved 2026-08-10.** Geist Mono (see `brand/`). |
 | Q-8 | Parent brand visual relationship | Brand session | S18 | **Resolved 2026-08-10.** ShruggieTech sub-brand; "A ShruggieTech project" endorsement, no combined logo (see `brand/`). |
 | Q-9 | Crate name reservation on the registry | Reserve before first release | S01 | Open |
-| Q-10 | Which native Rust proxy backend should Deep Capture use? | Build candidate spikes and compare protocol coverage, Windows behavior, licenses, dependency graph, MSRV impact, maintenance posture, and integration cost | #214 | Open |
-| Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | Open |
-| Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | Open |
-| Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-24.** `deep_capture_facts` stores typed facts per target with provenance and freshness. |
+| Q-10 | Which native Rust proxy backend should Deep Capture use? | Build candidate spikes and compare protocol coverage, Windows behavior, licenses, dependency graph, MSRV impact, maintenance posture, and integration cost | #214 | **Resolved 2026-08-24.** Use a staged native spike with `hudsucker` as first candidate and external `mitmdump` as baseline/fallback. |
+| Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | **Resolved 2026-08-24.** Findings are recorded in the proxy-inheritance reports and feed `deep_capture_facts`. |
+| Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | **Resolved 2026-08-25.** A required manifest indexes `.fcapng`, application JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, omissions, sensitivity, and correlation anchors. |
+| Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.
