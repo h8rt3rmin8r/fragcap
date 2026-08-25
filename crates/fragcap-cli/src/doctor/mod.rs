@@ -66,6 +66,61 @@ pub struct IfaceInfo {
     pub is_virtual: bool,
 }
 
+/// Deep Capture proxy backend availability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProxyBackendInfo {
+    /// Backend name, for example `mitmdump`.
+    pub name: String,
+    /// Version string, when the backend reported one.
+    pub version: Option<String>,
+}
+
+/// What doctor knows about fragcap-owned Deep Capture CA trust.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeepCaptureCa {
+    /// No fragcap-owned Deep Capture CA trust was found.
+    Absent,
+    /// Trust exists in the expected current-user store.
+    CurrentUser { thumbprint: String },
+    /// Trust exists in a broader or unexpected store.
+    WrongStore { store: String, thumbprint: String },
+    /// The manifest and trust store disagree.
+    Mismatched {
+        expected: String,
+        actual: String,
+        store: String,
+    },
+    /// The probe could not determine trust state.
+    Unknown(String),
+}
+
+/// Raw Deep Capture environment and residue facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeepCaptureInputs {
+    /// The session-bundle root doctor scanned.
+    pub session_dir: Option<std::path::PathBuf>,
+    /// Whether the session-bundle root exists.
+    pub session_dir_present: bool,
+    /// External proxy backend availability, when one is found.
+    pub proxy_backend: Option<ProxyBackendInfo>,
+    /// Probe error for the proxy backend, when detection failed after finding it.
+    pub proxy_backend_error: Option<String>,
+    /// Whether analyzer key-log configuration is visible to this process.
+    pub analyzer_keylog_configured: bool,
+    /// The fragcap-owned CA trust state.
+    pub ca: DeepCaptureCa,
+    /// Proxy ports that appear occupied by stale Deep Capture state.
+    pub occupied_proxy_ports: Vec<u16>,
+    /// Proxy process descriptions that appear orphaned.
+    pub orphaned_proxy_processes: Vec<String>,
+    /// Manifest paths whose cleanup status is unfinished or failed.
+    pub stale_manifests: Vec<std::path::PathBuf>,
+    /// TLS key-log paths found under the session-bundle root.
+    pub stale_tls_key_logs: Vec<std::path::PathBuf>,
+    /// Sensitive sidecar paths found under the session-bundle root.
+    pub sensitive_artifacts: Vec<std::path::PathBuf>,
+}
+
 /// The raw environment facts `doctor` classifies. Entirely constructible in a
 /// test.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +186,8 @@ pub struct Inputs {
     /// not reported as an observed-empty store (P-9). `Some(0)` is a real empty
     /// store and carries the "run discovery" action.
     pub target_entry_count: Option<usize>,
+    /// Deep Capture readiness and cleanup facts.
+    pub deep_capture: DeepCaptureInputs,
 }
 
 /// The classification of one check.

@@ -52,6 +52,9 @@ pub enum ActionKind {
     InitializeCatalog,
     /// No target entries are registered: run discovery.
     RunDiscovery,
+    /// Deep Capture residue is present under fragcap-owned session storage:
+    /// remove known stale/sensitive artifacts.
+    CleanupDeepCapture,
 }
 
 impl ActionKind {
@@ -87,6 +90,9 @@ impl ActionKind {
             }
             ActionKind::RunDiscovery => {
                 "Run discovery (tiers 1 and 2) to register installed titles".to_string()
+            }
+            ActionKind::CleanupDeepCapture => {
+                "Clean stale Deep Capture residue under fragcap-owned session storage".to_string()
             }
         }
     }

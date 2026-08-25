@@ -238,6 +238,7 @@ impl ActionPerformer for RealPerformer {
             ActionKind::InitializeCatalog => {
                 to_outcome(crate::commands::catalog::initialize_default(out))
             }
+            ActionKind::CleanupDeepCapture => cleanup_deep_capture(out),
             ActionKind::ObtainNpcap | ActionKind::RelaunchNpcapInstaller => {
                 if action.degraded {
                     open_download_page(out)
@@ -260,6 +261,122 @@ fn to_outcome(result: Result<Exit, CliError>) -> ActionOutcome {
         Ok(exit) => ActionOutcome::Failed(format!("the action exited with code {}", exit.code())),
         Err(e) => ActionOutcome::Failed(e.message().to_string()),
     }
+}
+
+fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
+    let Some(root) = crate::paths::deep_capture_session_dir() else {
+        return ActionOutcome::Failed(
+            "Deep Capture session storage path could not be determined".to_string(),
+        );
+    };
+    if !root.is_dir() {
+        let _ = writeln!(out, "  no Deep Capture session storage found");
+        return ActionOutcome::Performed;
+    }
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(err) => {
+            return ActionOutcome::Failed(format!(
+                "could not resolve Deep Capture session storage: {err}"
+            ))
+        }
+    };
+    let mut removed = 0usize;
+    let mut failed = Vec::new();
+    for path in deep_capture_cleanup_candidates(&root) {
+        if !path.starts_with(&root) {
+            failed.push(format!(
+                "refused path outside session storage: {}",
+                path.display()
+            ));
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                removed += 1;
+                let _ = writeln!(out, "  removed {}", path.display());
+            }
+            Err(err) => failed.push(format!("{}: {err}", path.display())),
+        }
+    }
+    remove_empty_session_dirs(&root);
+    if failed.is_empty() {
+        let _ = writeln!(out, "  removed {removed} Deep Capture residue file(s)");
+        ActionOutcome::Performed
+    } else {
+        ActionOutcome::Failed(format!(
+            "removed {removed} file(s), failed to remove {} file(s): {}",
+            failed.len(),
+            failed.join("; ")
+        ))
+    }
+}
+
+fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+        if depth > 3 || out.len() > 200 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if out.len() > 200 {
+                break;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                walk(&path, depth + 1, out);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let cleanup_manifest =
+                name == "manifest.json" && super::probe::manifest_cleanup_unfinished(&path);
+            let sensitive_sidecar = matches!(
+                name,
+                "application.jsonl"
+                    | "http.har"
+                    | "tls-keylog.log"
+                    | "sslkeylog.log"
+                    | "proxy.jsonl"
+                    | "process-trace.jsonl"
+            );
+            if cleanup_manifest || sensitive_sidecar {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(root, 0, &mut out);
+    out
+}
+
+fn remove_empty_session_dirs(root: &std::path::Path) {
+    fn walk(dir: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                let path = entry.path();
+                walk(&path);
+                let _ = std::fs::remove_dir(&path);
+            }
+        }
+    }
+    walk(root);
 }
 
 /// The stable vendor URL for the Windows installer that provides npcap. Wireshark
@@ -433,6 +550,7 @@ mod tests {
     use super::*;
     use crate::doctor::action::{Action, ActionKind, ExtcapScope};
     use crate::doctor::{Check, Report};
+    use std::sync::{Mutex, OnceLock};
 
     const S: &str = "Section";
 
@@ -576,5 +694,44 @@ mod tests {
             vec![ActionKind::InitializeCatalog],
             "an offline action reaches the performer even with net: false"
         );
+    }
+
+    #[test]
+    fn deep_capture_cleanup_removes_only_known_session_files() {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = dir.path().join("session-one");
+        std::fs::create_dir_all(&session).expect("session dir");
+        let keylog = session.join("tls-keylog.log");
+        let app = session.join("application.jsonl");
+        let clean_manifest = session.join("manifest.json");
+        let stale = session.join("stale");
+        std::fs::create_dir_all(&stale).expect("stale dir");
+        let stale_manifest = stale.join("manifest.json");
+        let keep = session.join("notes.txt");
+        std::fs::write(&keylog, "secret-adjacent").expect("keylog");
+        std::fs::write(&app, "{}").expect("application");
+        std::fs::write(&clean_manifest, r#"{"cleanup":{"status":"succeeded"}}"#)
+            .expect("clean manifest");
+        std::fs::write(&stale_manifest, r#"{"cleanup":{"status":"failed"}}"#)
+            .expect("stale manifest");
+        std::fs::write(&keep, "keep").expect("unrelated");
+
+        std::env::set_var(crate::paths::SESSION_DIR_ENV, dir.path());
+        let mut out = Vec::new();
+        let outcome = cleanup_deep_capture(&mut out);
+        std::env::remove_var(crate::paths::SESSION_DIR_ENV);
+
+        assert_eq!(outcome, ActionOutcome::Performed);
+        assert!(!keylog.exists(), "known key-log residue removed");
+        assert!(!app.exists(), "known application sidecar removed");
+        assert!(
+            clean_manifest.exists(),
+            "successful manifests are historical records, not residue"
+        );
+        assert!(!stale_manifest.exists(), "unfinished manifest removed");
+        assert!(keep.exists(), "unrelated file remains");
     }
 }

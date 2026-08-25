@@ -35,6 +35,9 @@ pub const CATALOG_DB_ENV: &str = "FRAGCAP_CATALOG_DB";
 /// `--local-db` flag takes precedence over it.
 pub const LOCAL_DB_ENV: &str = "FRAGCAP_LOCAL_DB";
 
+/// The environment variable that overrides the Deep Capture session directory.
+pub const SESSION_DIR_ENV: &str = "FRAGCAP_SESSION_DIR";
+
 /// The environment variable that overrides the analyzer extcap directory.
 pub const EXTCAP_DIR_ENV: &str = "FRAGCAP_EXTCAP_DIR";
 
@@ -227,6 +230,19 @@ pub fn default_catalog_db_path() -> Option<PathBuf> {
 /// never seeded and never replaced by a catalog refresh.
 pub fn default_local_db_path() -> Option<PathBuf> {
     default_db_from(env::var_os("APPDATA").map(PathBuf::from), "local.db")
+}
+
+/// The default Deep Capture session-bundle root, or `None` when the platform
+/// application-data base cannot be determined.
+///
+/// `%APPDATA%\fragcap\sessions` on Windows. An override,
+/// `FRAGCAP_SESSION_DIR`, lets tests and operators point doctor at a scratch
+/// location. Resolving the path is read-only; the directory is not created here.
+pub fn deep_capture_session_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os(SESSION_DIR_ENV) {
+        return Some(PathBuf::from(dir));
+    }
+    env::var_os("APPDATA").map(|base| PathBuf::from(base).join("fragcap").join("sessions"))
 }
 
 /// A default store location given an application-data base and a file name.
