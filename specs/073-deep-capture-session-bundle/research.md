@@ -57,7 +57,7 @@
 
 ### R-6: Correlation anchors are explicit fields
 
-**Decision**: Sidecars carry `session_id`, `flow_id`, proxy connection id, process id when known, role when known, and time bounds.
+**Decision**: Sidecars carry `session_id`, `flow_id`, proxy connection id, process id when known, role when known, and time bounds. Packet annotations carry the same `flow_id` whenever the packet has a parsed flow key.
 
 **Rationale**: Parsing pcapng comments or human log lines to correlate decrypted records would make downstream analysis brittle.
 
@@ -65,3 +65,21 @@
 
 - Time-only correlation: rejected because concurrent connections can overlap.
 - Process-only correlation: rejected because a process can own many flows.
+
+### R-7: Cleanup report owns per-resource cleanup facts
+
+**Decision**: The cleanup report sidecar is authoritative for per-resource
+cleanup results. The manifest carries the cleanup report path and aggregate
+status only.
+
+**Rationale**: Cleanup can be updated after the session ends by doctor. Keeping
+the resource facts in one artifact avoids split-brain status after partial
+writes or later cleanup attempts.
+
+**Alternatives considered**:
+
+- Duplicate per-resource cleanup in the manifest and sidecar: rejected because
+  consumers would need conflict resolution.
+- Manifest-only cleanup facts: rejected because doctor needs an appendable,
+  focused cleanup artifact without rewriting the whole bundle index for every
+  resource update.

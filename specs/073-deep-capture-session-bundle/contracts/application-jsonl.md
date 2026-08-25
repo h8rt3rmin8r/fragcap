@@ -36,7 +36,10 @@ Every application event record carries the correlation anchors.
 }
 ```
 
-If `process_id` or `role` is unavailable, the field may be null only when `attribution` explains why, such as `none`, `retained`, `proxy-only`, or `not-yet-correlated`.
+If `process_id` or `role` is unavailable, the field may be null only when
+`attribution` explains why, such as `none`, `proxy-only`, or
+`not-yet-correlated`. A `retained` attribution still identifies the owning
+process and MUST carry the retained process id.
 
 ## Trailer record
 

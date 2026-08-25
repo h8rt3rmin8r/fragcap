@@ -17,5 +17,7 @@
 - [X] `.fcapng`, JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, and manifest are covered.
 - [X] HAR behavior is defined for both Capture and Deep Capture.
 - [X] Correlation anchors are named.
+- [X] Packet-side `flow_id` is defined for sidecar joins.
+- [X] Status output facts are defined for both machine-readable and human-readable surfaces.
 - [X] Doctor cleanup consumers have stable resource names.
 - [X] The MVP dependency chain is recorded.

@@ -2,7 +2,7 @@
 
 **Input**: Design documents from `/specs/073-deep-capture-session-bundle/`
 
-**Prerequisites**: plan.md, research.md, data-model.md, analysis.md, quickstart.md, `contracts/manifest.md`, `contracts/application-jsonl.md`, `contracts/example-bundle.md`
+**Prerequisites**: plan.md, research.md, data-model.md, analysis.md, quickstart.md, `contracts/manifest.md`, `contracts/application-jsonl.md`, `contracts/status-output.md`, `contracts/example-bundle.md`
 
 ## Phase 1: Setup
 
@@ -17,7 +17,7 @@
 ## Phase 3: Correlation Model
 
 - [X] T005 Define required anchors for application records.
-- [X] T006 Define how sidecars join to packet flows and process/role context.
+- [X] T006 Define how sidecars join to packet flows and process/role context, including packet-side `flow_id`.
 - [X] T007 Define unavailable-attribution behavior without silent omission.
 
 ## Phase 4: Output Semantics
@@ -30,13 +30,14 @@
 ## Phase 5: Documentation and Verification
 
 - [X] T012 Add contracts and one complete example bundle layout.
-- [X] T013 Update the master specification.
-- [X] T014 Add a changelog decision fragment.
-- [X] T015 Run `cargo fmt --check`.
-- [X] T016 Run `git diff --check`.
-- [X] T017 Run `cargo xtask lint`.
-- [X] T018 Run `cargo xtask deps`.
-- [X] T019 Run `cargo xtask spec`.
-- [X] T020 Run `cargo xtask changelog --check`.
-- [X] T021 Scan new/touched public artifacts for local paths, endpoints, account material, and real local title names from fact-finding.
-- [X] T022 Run `cargo test --workspace --quiet`.
+- [X] T013 Define machine-readable and human-readable status output facts.
+- [X] T014 Update the master specification.
+- [X] T015 Add a changelog decision fragment.
+- [X] T016 Run `cargo fmt --check`.
+- [X] T017 Run `git diff --check`.
+- [X] T018 Run `cargo xtask lint`.
+- [X] T019 Run `cargo xtask deps`.
+- [X] T020 Run `cargo xtask spec`.
+- [X] T021 Run `cargo xtask changelog --check`.
+- [X] T022 Scan new/touched public artifacts for local paths, endpoints, account material, and real local title names from fact-finding.
+- [X] T023 Run `cargo test --workspace --quiet`.

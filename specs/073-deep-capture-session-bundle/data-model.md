@@ -30,7 +30,7 @@ The manifest is the authoritative bundle index.
 | `artifacts` | Every produced artifact with role, path, authority, sensitivity, and content type. |
 | `omissions` | Expected but absent artifact declarations with reason and severity. |
 | `correlation` | Anchor names and versioned rules used by sidecars. |
-| `cleanup` | Per-resource cleanup result. |
+| `cleanup` | Latest cleanup report path and aggregate status. |
 
 ## ArtifactDeclaration
 
@@ -60,11 +60,19 @@ Required anchors:
 - `role` when known
 - attribution state when process/role are unavailable
 
+The `flow_id` is the same session-local identifier written into packet
+annotations for packets with a parsed flow key. It is not derived by parsing
+human text from comments.
+
 HTTP records additionally carry method, scheme, authority, path, request headers if retained, response status if known, response headers if retained, body retention metadata, and HAR join id when a HAR entry exists.
 
 ## CleanupResult
 
-Per-resource cleanup facts. Cleanup status is one of `not-needed`, `succeeded`, `partial`, `failed`, `deferred`, or `not-attempted`.
+The cleanup report is authoritative for per-resource cleanup facts. The
+manifest stores only the latest cleanup report path, aggregate cleanup status,
+and timestamp of the cleanup summary it indexes.
+
+Cleanup status is one of `not-needed`, `succeeded`, `partial`, `failed`, `deferred`, or `not-attempted`.
 
 Resources include proxy process, proxy port, local CA trust, local CA material, TLS key log, proxy log, application records, packet capture, process trace, and manifest.
 
@@ -73,11 +81,12 @@ Resources include proxy process, proxy port, local CA trust, local CA material, 
 | Fact | Authority |
 | --- | --- |
 | Packet bytes, packet timestamps, interfaces, loss accounting | `.fcapng` |
-| Packet attribution comments | `.fcapng` |
+| Packet attribution comments and packet-side `flow_id` | `.fcapng` |
 | Application transaction stream | application JSONL |
 | HTTP archive view | HAR |
 | Analyzer TLS secrets for proxy-owned tunnels | TLS key log |
 | Proxy startup, shutdown, backend errors, connection ids | proxy log |
 | Process launch and exit chronology | process trace |
-| Bundle membership, omissions, sensitivity, cleanup status | manifest |
+| Bundle membership, omissions, sensitivity, cleanup report reference, aggregate cleanup status | manifest |
+| Per-resource cleanup results | cleanup report |
 | Target compatibility changes | compatibility update sidecar and local target store |

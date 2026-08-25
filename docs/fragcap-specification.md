@@ -1624,7 +1624,7 @@ Attribution is carried in the Enhanced Packet Block `opt_comment`
 option as a structured string.
 
 ```text
-fragcap:pid=7412;proc=eso64.exe;role=client;dir=out;attr=live
+fragcap:pid=7412;proc=client.exe;role=client;dir=out;attr=live;flow_id=flow-00000001
 ```
 
 The grammar is a leading `fragcap:` sentinel followed by
@@ -1641,12 +1641,20 @@ a percent sign.
 | `dir` | Always | `in`, `out`, or `local` |
 | `attr` | Always | `live`, `retained`, or `none` |
 | `iface` | When multi-interface | Capture interface name |
+| `flow_id` | When packet has a flow key | Stable session-local flow identifier |
 
 `opt_comment` is chosen over pcapng custom options for three reasons.
 Every pcapng reader displays comments, so attribution is visible in
 Wireshark with no configuration. Comments are defined as text, so no
 reader can misinterpret the payload. Custom options require a Private
 Enterprise Number that this project does not hold.
+
+`flow_id` is assigned by the capture session from the parsed flow key.
+The same canonical flow key receives one id for the whole session,
+regardless of packet direction, and packets with no flow key omit the
+field. Application sidecars use the identical id when proxy observations
+can be joined to the packet flow, which makes `flow_id` the packet-side
+mapping for Deep Capture correlation rather than a sidecar-only token.
 
 The cost is parsing overhead in consumers and a modest size increase.
 Both are accepted. Section 28 records binary custom options as a
@@ -1726,17 +1734,17 @@ analysis without warning.
 
 ### 13.7 Deep Capture Session Bundles
 
-Deep Capture writes a session bundle rather than one overloaded output file. A bundle is a directory or logical artifact set rooted at a required `manifest.json`. The manifest is the durable index for the session: it names the target, mode, session id, start and stop times, proxy backend identity, proxy backend version, proxy mode, local CA thumbprint state, artifact paths, artifact authority, sensitivity labels, omissions, correlation anchors, compatibility fact updates, and cleanup result.
+Deep Capture writes a session bundle rather than one overloaded output file. A bundle is a directory or logical artifact set rooted at a required `manifest.json`. The manifest is the durable index for the session: it names the target, mode, session id, start and stop times, proxy backend identity, proxy backend version, proxy mode, local CA thumbprint state, artifact paths, artifact authority, sensitivity labels, omissions, correlation anchors, compatibility fact updates, and cleanup report reference.
 
 The `.fcapng` file remains packet truth. It owns packet bytes, packet timestamps, interfaces, attribution comments, and loss accounting. It does not carry full decrypted application objects. Application-layer records live in sidecars so unmodified packet analyzers can continue to read the pcapng artifact as ordinary packet capture.
 
-Application JSON Lines is the canonical machine-readable application event stream for proxy observations. Each application record carries structured correlation anchors: `session_id`, target id or stable target handle, `flow_id`, proxy connection id where applicable, process id when known, role when known, attribution state, and event time bounds. Those anchors let consumers join application records to packet flows and process context without parsing human text or pcapng comments.
+Application JSON Lines is the canonical machine-readable application event stream for proxy observations. Each application record carries structured correlation anchors: `session_id`, target id or stable target handle, `flow_id`, proxy connection id where applicable, process id when known, role when known, attribution state, and event time bounds. Those anchors let consumers join application records to packet flows and process context without parsing human text. The packet side of the join is the `flow_id` annotation in section 13.3.
 
 HAR is an HTTP-oriented projection, not the only application truth and not exclusive to Deep Capture. Capture may produce HAR when HTTP semantics are actually observable, such as plaintext HTTP or an already-decrypted stream. Deep Capture is the expected mode for useful HTTPS HAR output because the proxy can observe HTTP semantics only when the selected target routes through it and accepts the configured local certificate authority.
 
 TLS key logs are optional analyzer aids for proxy-owned TLS tunnels. They are sensitive session material, not decrypted output. A key log is emitted only when an operator requests analyzer integration or selects an output profile that includes it, and the manifest marks it as session-scoped, proxy-owned, and secret-adjacent.
 
-Proxy logs, process traces, compatibility update records, and cleanup reports are sidecars. The proxy log owns proxy startup, shutdown, backend errors, and proxy connection ids. The process trace owns process launch and exit chronology. Compatibility update records name Deep Capture facts written or proposed for the local target store. Cleanup reports own per-resource cleanup results for proxy processes, proxy ports, local CA trust, local CA material, TLS key logs, and sensitive output artifacts.
+Proxy logs, process traces, compatibility update records, and cleanup reports are sidecars. The proxy log owns proxy startup, shutdown, backend errors, and proxy connection ids. The process trace owns process launch and exit chronology. Compatibility update records name Deep Capture facts written or proposed for the local target store. Cleanup reports own per-resource cleanup results for proxy processes, proxy ports, local CA trust, local CA material, TLS key logs, and sensitive output artifacts; the manifest records only the latest cleanup report path and aggregate cleanup status.
 
 Expected artifacts that are not produced are recorded as manifest omissions with reasons, such as `not-requested`, `not-observable`, `unsupported-protocol`, `proxy-not-reached`, `certificate-pinned`, `backend-unavailable`, or `writer-failed`. A Deep Capture session that could only provide metadata remains useful, but it must say which application artifacts were unavailable and why.
 

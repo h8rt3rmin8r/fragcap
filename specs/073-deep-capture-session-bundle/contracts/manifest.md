@@ -17,7 +17,11 @@ The manifest is a JSON object written as `manifest.json` at the bundle root.
   "artifacts": [],
   "omissions": [],
   "correlation": {},
-  "cleanup": {}
+  "cleanup": {
+    "status": "succeeded",
+    "report": "cleanup.json",
+    "updated_at": "2026-08-25T00:05:05Z"
+  }
 }
 ```
 
@@ -50,10 +54,15 @@ Example reasons include `not-requested`, `not-observable`, `unsupported-protocol
 
 ## Cleanup declaration
 
-Each cleanup resource has:
+The manifest cleanup object has:
 
-- `resource`
 - `status`
-- `detail`
+- `report`
+- `updated_at`
+
+The manifest cleanup status is an aggregate summary. The cleanup report sidecar
+is authoritative for per-resource cleanup facts. If the manifest and cleanup
+report differ, consumers MUST treat the cleanup report as the source of truth
+and the manifest as stale until rewritten.
 
 Allowed cleanup statuses are `not-needed`, `succeeded`, `partial`, `failed`, `deferred`, and `not-attempted`.

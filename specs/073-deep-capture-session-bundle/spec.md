@@ -31,7 +31,7 @@ An authorized operator runs a future Deep Capture command for a known-compatible
 **Acceptance Scenarios**:
 
 1. **Given** a Deep Capture session writes multiple artifacts, **When** the session completes, **Then** the manifest names every artifact, its role, path, sensitivity, and authority.
-2. **Given** a user opens the bundle later, **When** they inspect the manifest, **Then** they can identify the target, mode, proxy backend, CA thumbprint state, cleanup result, and compatibility fact updates without reading every sidecar.
+2. **Given** a user opens the bundle later, **When** they inspect the manifest, **Then** they can identify the target, mode, proxy backend, CA thumbprint state, cleanup report, aggregate cleanup status, and compatibility fact updates without reading every sidecar.
 3. **Given** an artifact is optional for a session, **When** it is not produced, **Then** the manifest records the omission reason rather than leaving ambiguity.
 
 ### User Story 2 - Correlate packets, processes, flows, and application records (Priority: P1)
@@ -45,7 +45,7 @@ A developer or researcher needs to tie a decrypted HTTP transaction back to the 
 **Acceptance Scenarios**:
 
 1. **Given** an application event is produced by the proxy, **When** it is written to JSONL or HAR-derived records, **Then** it carries `session_id`, `target_id`, `flow_id`, proxy connection id, process id when known, role when known, and timing fields.
-2. **Given** packets exist for the same flow, **When** an analyzer joins sidecars, **Then** it can use `flow_id` plus time bounds to locate the relevant packet window.
+2. **Given** packets exist for the same flow, **When** an analyzer joins sidecars, **Then** it can use the shared packet and sidecar `flow_id` plus time bounds to locate the relevant packet window.
 3. **Given** attribution is unavailable for a record, **When** the record is written, **Then** the missing process/role state is explicit rather than omitted silently.
 
 ### User Story 3 - Protect sensitive Deep Capture material (Priority: P1)
@@ -54,12 +54,12 @@ An operator wants to understand and clean up sensitive session state, including 
 
 **Why this priority**: Deep Capture intentionally creates higher-sensitivity artifacts than ordinary Capture. The design must make doctor and future cleanup implementation straightforward.
 
-**Independent Test**: Validate the example manifest includes sensitivity classifications and cleanup results for key logs, proxy state, local CA trust, and output artifacts.
+**Independent Test**: Validate the example manifest includes sensitivity classifications and the cleanup report reference for key logs, proxy state, local CA trust, and output artifacts.
 
 **Acceptance Scenarios**:
 
 1. **Given** a TLS key log is produced, **When** the manifest is written, **Then** it is marked sensitive, session-scoped, proxy-owned, and analyzer-aid only.
-2. **Given** cleanup succeeds, partially succeeds, or fails, **When** the manifest is written, **Then** the cleanup result names each trust, proxy, port, process, key-log, and artifact state relevant to the session.
+2. **Given** cleanup succeeds, partially succeeds, or fails, **When** the cleanup report is written, **Then** it names each trust, proxy, port, process, key-log, and artifact state relevant to the session.
 3. **Given** human or machine-readable status output references the bundle, **When** it reports completion, **Then** it points to the manifest and names sensitive artifacts without dumping their contents.
 
 ## Requirements
@@ -71,18 +71,20 @@ An operator wants to understand and clean up sensitive session state, including 
 - **FR-003**: Application JSONL MUST be the canonical machine-readable application event stream for proxy observations.
 - **FR-004**: HAR MUST be available only when HTTP semantics are observable. Capture MAY produce HAR for plaintext or otherwise observable HTTP; Deep Capture MAY produce HAR for HTTPS that the proxy can inspect.
 - **FR-005**: TLS key-log files MUST be treated as sensitive analyzer aids for proxy-owned TLS tunnels, not as decrypted output, and MUST be linked from the manifest only when explicitly requested by an output profile or analyzer integration setting.
-- **FR-006**: The manifest MUST identify session id, target id or stable target handle, capture mode, start and stop times, proxy backend identity, proxy backend version, proxy mode, CA thumbprint state, artifact paths, artifact sensitivity, cleanup result, and compatibility fact update references.
+- **FR-006**: The manifest MUST identify session id, target id or stable target handle, capture mode, start and stop times, proxy backend identity, proxy backend version, proxy mode, CA thumbprint state, artifact paths, artifact sensitivity, cleanup report reference, aggregate cleanup status, and compatibility fact update references.
 - **FR-007**: Every application record MUST carry enough correlation fields to join against packet flows, process/role context, and the session manifest without parsing human text.
 - **FR-008**: Proxy logs and process traces MUST be sidecars with structured records suitable for status output and later doctor cleanup.
 - **FR-009**: The design MUST define human-readable and machine-readable status outputs at the level of facts, not visual formatting.
-- **FR-010**: This design slice MUST add no runtime dependency and MUST NOT implement writers, proxy orchestration, or CLI flags.
+- **FR-010**: Packet annotations MUST carry the same `flow_id` used by application sidecars whenever a packet has a flow key.
+- **FR-011**: Status output MUST report session identity, mode, phase, completion state, artifact inventory, omission summary, proxy state, trust state, cleanup summary, and manifest path without dumping sensitive contents.
+- **FR-012**: This design slice MUST add no runtime dependency and MUST NOT implement writers, proxy orchestration, or CLI flags.
 
 ### Key Entities
 
 - **Session bundle**: A directory or logical artifact set rooted at one manifest. It groups packet truth, application events, optional HAR, optional TLS key log, proxy log, process trace, compatibility update records, and cleanup report for one Capture or Deep Capture session.
-- **Session manifest**: The authoritative bundle index. It names the target, mode, artifact roles, sensitivity, paths, proxy/trust state, correlation anchors, and cleanup results.
+- **Session manifest**: The authoritative bundle index. It names the target, mode, artifact roles, sensitivity, paths, proxy/trust state, correlation anchors, cleanup report reference, and aggregate cleanup status.
 - **Correlation anchor**: A stable field used to join artifacts. Required anchors are `session_id`, `target_id` or stable target handle, `flow_id`, proxy connection id where applicable, process id where known, role where known, and time bounds.
-- **Artifact authority**: The rule identifying which artifact owns a fact. Packet bytes and loss accounting are owned by `.fcapng`; application transactions are owned by application JSONL and HAR; bundle membership and cleanup state are owned by the manifest.
+- **Artifact authority**: The rule identifying which artifact owns a fact. Packet bytes, flow ids, and loss accounting are owned by `.fcapng`; application transactions are owned by application JSONL and HAR; bundle membership is owned by the manifest; per-resource cleanup state is owned by the cleanup report.
 
 ## Success Criteria
 
@@ -90,9 +92,9 @@ An operator wants to understand and clean up sensitive session state, including 
 
 - **SC-001**: The slice contains a complete example bundle layout and manifest.
 - **SC-002**: The manifest contract names every artifact role, authority, sensitivity, and omission rule.
-- **SC-003**: The correlation model allows joining application records to packet flows and process/role attribution using structured fields.
+- **SC-003**: The correlation model allows joining application records to packet flows and process/role attribution using structured fields present on both packet and sidecar records.
 - **SC-004**: The design explicitly states when HAR can be produced from Capture and when it requires Deep Capture.
-- **SC-005**: The design gives issue #218 enough stable cleanup targets to implement doctor readiness and cleanup without inventing artifact names or sensitivity rules.
+- **SC-005**: The design gives issue #218 enough stable cleanup targets to implement doctor readiness and cleanup without inventing artifact names, status fields, or sensitivity rules.
 
 ## Assumptions
 

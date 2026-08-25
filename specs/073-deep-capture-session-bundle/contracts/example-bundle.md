@@ -7,7 +7,6 @@ session-fcap-session-00000001/
 ├── manifest.json
 ├── capture.fcapng
 ├── application.jsonl
-├── http.har
 ├── tls-keylog.log
 ├── proxy.jsonl
 ├── process-trace.jsonl
@@ -36,8 +35,7 @@ Example manifest excerpt:
   "trust": {
     "ca_thumbprint": "sha256:example",
     "store": "current-user",
-    "user_confirmed": true,
-    "cleanup_status": "succeeded"
+    "user_confirmed": true
   },
   "artifacts": [
     {
@@ -54,14 +52,6 @@ Example manifest excerpt:
       "authority": "application-layer event stream",
       "sensitivity": "sensitive",
       "content_type": "application/x-ndjson",
-      "required": false
-    },
-    {
-      "role": "har",
-      "path": "http.har",
-      "authority": "HTTP archive projection",
-      "sensitivity": "sensitive",
-      "content_type": "application/json",
       "required": false
     },
     {
@@ -84,12 +74,9 @@ Example manifest excerpt:
     "anchors": ["session_id", "target_id", "flow_id", "proxy_connection_id", "process_id", "role", "started_at", "ended_at"]
   },
   "cleanup": {
-    "resources": [
-      {"resource": "proxy-process", "status": "succeeded", "detail": "stopped"},
-      {"resource": "proxy-port", "status": "succeeded", "detail": "released"},
-      {"resource": "local-ca-trust", "status": "succeeded", "detail": "removed"},
-      {"resource": "tls-key-log", "status": "not-attempted", "detail": "retained by user-selected output profile"}
-    ]
+    "status": "partial",
+    "report": "cleanup.json",
+    "updated_at": "2026-08-25T00:05:05Z"
   }
 }
 ```

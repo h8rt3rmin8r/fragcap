@@ -15,5 +15,6 @@ This is a design-only slice. Validate the contract by reviewing the example bund
 
 1. Read `contracts/example-bundle.md`.
 2. Confirm every artifact named in issue #216 appears either as a produced artifact or an omission with a reason.
-3. Confirm the manifest can answer what `doctor` needs for #218: trust state, proxy process/port state, key-log state, sensitive artifact paths, and cleanup result.
+3. Confirm the manifest can answer what `doctor` needs for #218: trust state, sensitive artifact paths, cleanup report path, and aggregate cleanup status.
 4. Confirm HAR production is tied to HTTP observability rather than Deep Capture mode alone.
+5. Confirm `contracts/status-output.md` defines both machine-readable facts and the equivalent human-readable status surface.
