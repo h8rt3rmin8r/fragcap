@@ -27,6 +27,7 @@
 pub mod authoring;
 pub mod catalog;
 pub mod classifier;
+pub mod compatibility;
 pub mod engine_feed;
 pub mod entry;
 pub mod export;
@@ -61,6 +62,9 @@ pub use catalog::{CatalogBatch, CatalogEntry, CatalogSource, Classification, Fix
 pub use classifier::{
     ClassifierResult, ClassifierVerdict, DirectoryClassifier, FixtureClassifier,
     KnownRootChildIsGame, SignatureClassifier,
+};
+pub use compatibility::{
+    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
 };
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,

@@ -2450,6 +2450,23 @@ recorded-but-absent row is marked rather than rendered as an ordinary, healthy o
 Nothing about this derivation ever mutates the stored entry; a target whose files
 have gone missing remains registered, selectable, and resolvable exactly as before.
 
+Deep Capture compatibility facts are stored beside the target entry, not in a
+parallel resolver. Each fact row belongs to one `targets(id)` row and carries a
+closed fact key, a key-specific value, an optional launch case, a provenance
+source, freshness fields (`observed_at`, fragcap version, target version), proxy
+backend identity/version/mode, the observed final-owner executable, a
+final-owner handoff marker, a stale marker, and an optional note. Unknown is an
+allowed value where the product needs to preserve uncertainty; out-of-vocabulary
+values are rejected by both the Rust model and SQLite CHECK constraints where
+the value domain is closed. Observed routing, propagation, final socket-owner
+role, proxy variables, TLS trust behavior, protocol behavior, and inspectability
+are recorded as facts with provenance rather than inferred from platform
+metadata. Launch case and final-owner handoff are separate fields, so a run can
+retain the actual launch case while still recording that the socket owner moved
+to a later executable. A row can be retained as stale, but no refresh that would
+require launching a target, changing trust state, or altering proxy routing is
+performed silently.
+
 The transition away from profile files is staged: the fidelity-ordered store read,
 the entry model, the handle and identifier scheme, and the selector ship in S051.
 The engine and platform-walker providers become target sources in S052; the JSON
@@ -4017,7 +4034,7 @@ to section 6.2.
 | Q-10 | Which native Rust proxy backend should Deep Capture use? | Build candidate spikes and compare protocol coverage, Windows behavior, licenses, dependency graph, MSRV impact, maintenance posture, and integration cost | #214 | Open |
 | Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | Open |
 | Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | Open |
-| Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | Open |
+| Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-24.** `deep_capture_facts` stores typed facts per target with provenance and freshness. |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.
