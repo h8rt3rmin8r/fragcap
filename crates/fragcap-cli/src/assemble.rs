@@ -335,6 +335,9 @@ pub struct CaptureComponents {
     /// The instant the startup snapshot reflects, when known. `None` offline,
     /// where the orchestrator applies it at the arm instant.
     pub snapshot_at: Option<Timestamp>,
+    /// Optional capture-wide flow registry supplied by Deep Capture so proxy
+    /// observations can resolve packet-side flow ids after the run.
+    pub flow_registry: Option<Arc<fragcap::FlowRegistry>>,
     /// The live process watcher, kept alive for the duration of the run so the
     /// ETW session it owns is not torn down while its receiver is still being
     /// drained. `None` on the offline path, which owns no watcher.
@@ -411,6 +414,7 @@ fn offline_components(
         // Offline the snapshot has no separate instant; the orchestrator applies
         // it at the arm instant, so a snapshot process is present from arm.
         snapshot_at: None,
+        flow_registry: None,
         #[cfg(all(feature = "etw", windows))]
         watcher: None,
     })
@@ -562,6 +566,7 @@ fn live_components(config: &EffectiveConfig) -> Result<CaptureComponents, CliErr
             events: EventStream::Live(rx),
             startup_snapshot,
             snapshot_at,
+            flow_registry: None,
             watcher: Some(watcher),
         })
     }

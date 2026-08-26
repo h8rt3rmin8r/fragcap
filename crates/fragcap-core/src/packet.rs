@@ -9,7 +9,7 @@
 //! separate from the retained payload precisely so a shortened capture says so.
 
 use crate::attribution::Attribution;
-use crate::flow::{Direction, FlowKey};
+use crate::flow::{Direction, FlowId, FlowKey};
 use crate::interface::InterfaceId;
 
 /// The packet payload type.
@@ -152,6 +152,9 @@ pub struct CapturedPacket {
     pub interface: InterfaceId,
     /// Populated by header parsing in slice S03.
     pub flow: Option<FlowKey>,
+    /// Assigned by the capture-wide output thread when a flow-bearing packet is
+    /// admitted to the sinks.
+    pub flow_id: Option<FlowId>,
     /// Populated by header parsing in slice S03.
     pub direction: Option<Direction>,
     /// Populated by the socket table attributor in slice S10.
@@ -172,6 +175,7 @@ impl CapturedPacket {
             orig_len: raw.orig_len,
             interface,
             flow: None,
+            flow_id: None,
             direction: None,
             attribution: None,
         }

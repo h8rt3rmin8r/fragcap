@@ -8,7 +8,12 @@
 //! fragcap design choice, and specification section 8.4 requires that
 //! implementations not paper over it.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Mutex;
+
+use crate::attribution::Attribution;
 
 /// Transport protocol of a flow.
 ///
@@ -104,6 +109,112 @@ pub struct FlowKey {
     pub proto: Proto,
     pub local: SocketAddr,
     pub remote: SocketAddr,
+}
+
+/// A stable, session-local identity assigned to one canonical flow key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FlowId(u64);
+
+impl FlowId {
+    /// Construct a nonzero flow ordinal.
+    pub fn new(ordinal: u64) -> Option<Self> {
+        (ordinal != 0).then_some(Self(ordinal))
+    }
+
+    /// The numeric session-local ordinal.
+    pub fn ordinal(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for FlowId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "flow-{:08}", self.0)
+    }
+}
+
+#[derive(Debug)]
+struct FlowRegistryState {
+    next: u64,
+    flows: HashMap<FlowKey, RegisteredFlow>,
+}
+
+#[derive(Clone, Debug)]
+struct RegisteredFlow {
+    id: FlowId,
+    attribution: Option<Attribution>,
+}
+
+/// The capture-wide mapping from canonical flow keys to session-local ids.
+///
+/// Assignment happens on the pipeline's single output thread, after the write
+/// gate admits a packet. The mutex therefore does not enter packet acquisition;
+/// it only permits Deep Capture to read the completed mapping after capture.
+#[derive(Debug)]
+pub struct FlowRegistry {
+    state: Mutex<FlowRegistryState>,
+}
+
+impl Default for FlowRegistry {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(FlowRegistryState {
+                next: 1,
+                flows: HashMap::new(),
+            }),
+        }
+    }
+}
+
+impl FlowRegistry {
+    /// Return the existing id or assign the next session-local id.
+    pub fn assign(&self, key: FlowKey) -> FlowId {
+        self.observe(key, None)
+    }
+
+    /// Record a flow and its latest resolved attribution, returning its id.
+    pub fn observe(&self, key: FlowKey, attribution: Option<&Attribution>) -> FlowId {
+        let mut state = self.state.lock().expect("flow registry mutex poisoned");
+        if let Some(flow) = state.flows.get_mut(&key) {
+            if let Some(attribution) = attribution {
+                flow.attribution = Some(attribution.clone());
+            }
+            return flow.id;
+        }
+        let id = FlowId::new(state.next).expect("the flow id counter starts at one");
+        state.next = state
+            .next
+            .checked_add(1)
+            .expect("the session-local flow id space is exhausted");
+        state.flows.insert(
+            key,
+            RegisteredFlow {
+                id,
+                attribution: attribution.cloned(),
+            },
+        );
+        id
+    }
+
+    /// Look up an id without creating one.
+    pub fn lookup(&self, key: &FlowKey) -> Option<FlowId> {
+        self.state
+            .lock()
+            .expect("flow registry mutex poisoned")
+            .flows
+            .get(key)
+            .map(|flow| flow.id)
+    }
+
+    /// Return the latest resolved attribution observed for a registered flow.
+    pub fn attribution(&self, key: &FlowKey) -> Option<Attribution> {
+        self.state
+            .lock()
+            .expect("flow registry mutex poisoned")
+            .flows
+            .get(key)
+            .and_then(|flow| flow.attribution.clone())
+    }
 }
 
 impl FlowKey {
@@ -242,6 +353,32 @@ mod tests {
         *seen.entry(tcp()).or_insert(0) += 1;
         assert_eq!(seen.len(), 1, "equal keys must collide in a map");
         assert_eq!(seen[&tcp()], 2);
+    }
+
+    #[test]
+    fn flow_registry_reuses_ids_and_assigns_distinct_ids_in_order() {
+        let registry = FlowRegistry::default();
+        let first = registry.assign(tcp());
+        let repeated = registry.assign(tcp());
+        let second = registry.assign(udp());
+
+        assert_eq!(first, repeated);
+        assert_eq!(first.to_string(), "flow-00000001");
+        assert_eq!(second.to_string(), "flow-00000002");
+        assert_eq!(registry.lookup(&tcp()), Some(first));
+    }
+
+    #[test]
+    fn flow_registry_retains_the_latest_resolved_attribution() {
+        use crate::attribution::Fidelity;
+
+        let registry = FlowRegistry::default();
+        registry.assign(tcp());
+        assert!(registry.attribution(&tcp()).is_none());
+
+        let attribution = Attribution::new(7, "client.exe", Fidelity::Live).with_role("client");
+        registry.observe(tcp(), Some(&attribution));
+        assert_eq!(registry.attribution(&tcp()), Some(attribution));
     }
 
     #[test]

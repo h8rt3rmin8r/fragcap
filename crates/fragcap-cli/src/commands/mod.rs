@@ -10,6 +10,7 @@
 
 pub mod capture;
 pub mod catalog;
+pub mod deep_capture;
 pub mod doctor;
 pub mod extcap;
 pub mod schema;

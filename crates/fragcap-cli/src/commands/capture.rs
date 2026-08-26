@@ -28,7 +28,8 @@
 
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{resolved_client_launch, Store};
-use fragcap::CaptureScope;
+use fragcap::{CaptureScope, FlowRegistry};
+use std::sync::Arc;
 
 use crate::assemble;
 use crate::attach;
@@ -40,6 +41,24 @@ use crate::orchestrator;
 
 /// Run `capture`.
 pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
+    run_inner(args, emitter, None)
+}
+
+/// A stored target and effective configuration validated before capture resources
+/// are opened. Deep Capture prepares this value before starting its proxy or
+/// changing trust, so an unsupported managed launch is a side-effect-free refusal.
+pub(crate) struct PreparedCapture {
+    profile: fragcap::Profile,
+    promotion: Option<Promotion>,
+    config: assemble::EffectiveConfig,
+}
+
+/// Resolve the target and validate every effective Capture option, including the
+/// managed launch request, without opening capture resources or launching anything.
+pub(crate) fn prepare(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+) -> Result<PreparedCapture, CliError> {
     // Exactly one target input is present (the clap group guarantees it). A stored
     // target resolves against the local store (and, when Steam-anchored, through the
     // install-layout cascade); a raw process image synthesizes an identity directly.
@@ -83,7 +102,46 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         }
     };
 
-    let mut config = assemble::effective_config(args, &profile)?;
+    let config = assemble::effective_config(args, &profile)?;
+    Ok(PreparedCapture {
+        profile,
+        promotion,
+        config,
+    })
+}
+
+/// Run a capture that Deep Capture prepared before starting mutable session
+/// resources. Preparation is consumed so the validated launch request is the one
+/// the orchestrator executes.
+pub(crate) fn run_prepared_with_flow_registry(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+    prepared: PreparedCapture,
+    flow_registry: Arc<FlowRegistry>,
+) -> Result<Exit, CliError> {
+    run_prepared(args, emitter, prepared, Some(flow_registry))
+}
+
+fn run_inner(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+    flow_registry: Option<Arc<FlowRegistry>>,
+) -> Result<Exit, CliError> {
+    let prepared = prepare(args, emitter)?;
+    run_prepared(args, emitter, prepared, flow_registry)
+}
+
+fn run_prepared(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+    prepared: PreparedCapture,
+    flow_registry: Option<Arc<FlowRegistry>>,
+) -> Result<Exit, CliError> {
+    let PreparedCapture {
+        profile,
+        promotion,
+        mut config,
+    } = prepared;
     // An observe-mode run cannot scope its output to a target it has not yet
     // identified. That is the whole point of the run: slice S059 promotes an
     // unresolved target to the socket holder this capture observes, and the
@@ -103,7 +161,8 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         ));
         config.scope = CaptureScope::All;
     }
-    let components = assemble::components(&args.offline, &config)?;
+    let mut components = assemble::components(&args.offline, &config)?;
+    components.flow_registry = flow_registry;
 
     // Capture is launch-agnostic: report an already-running attach, and warn when a
     // resolved path anchor cannot be checked against the executable-only startup

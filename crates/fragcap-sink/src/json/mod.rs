@@ -159,6 +159,10 @@ impl<W: Write> JsonLinesWriter<W> {
         write_json_string(a.direction.as_str(), &mut line);
         line.push_str(",\"attr\":");
         write_json_string(fidelity_str(a.fidelity), &mut line);
+        if let Some(flow_id) = a.flow_id {
+            line.push_str(",\"flow_id\":");
+            write_json_string(&flow_id.to_string(), &mut line);
+        }
 
         if let Some(flow) = &packet.flow {
             line.push_str(",\"proto\":");

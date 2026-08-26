@@ -67,6 +67,72 @@ pub enum Event {
     /// capture-wide `dropped`: an eviction is the operator's declared window scope,
     /// not a capture loss, but it is surfaced so the omission is never silent.
     RingEvicted { evicted: u64 },
+    /// A Deep Capture preflight decision.
+    DeepCapturePreflight {
+        status: String,
+        blockers: usize,
+        warnings: usize,
+        target: String,
+        proxy_backend: String,
+        trust_state: String,
+    },
+    /// The Deep Capture proxy backend started.
+    DeepCaptureProxyStarted {
+        session_id: String,
+        backend: String,
+        version: String,
+        listen_addr: String,
+        listen_port: u16,
+    },
+    /// A live TLS key-log file is ready for an analyzer to follow.
+    DeepCaptureKeyLogReady { session_id: String, path: String },
+    /// Deep Capture trust state was confirmed or changed.
+    DeepCaptureTrust {
+        session_id: String,
+        state: String,
+        action: String,
+        thumbprint: Option<String>,
+    },
+    /// Deep Capture issued a managed launch.
+    DeepCaptureLaunch {
+        session_id: String,
+        launch_case: String,
+        scoped_proxy: bool,
+        target: String,
+    },
+    /// Deep Capture observed application traffic.
+    DeepCaptureApplication {
+        session_id: String,
+        flow_id: Option<String>,
+        proxy_connection_id: String,
+        protocol: String,
+        inspectability: String,
+    },
+    /// Deep Capture wrote a bundle artifact.
+    DeepCaptureBundle {
+        session_id: String,
+        role: String,
+        path: String,
+        sensitivity: String,
+        required: bool,
+    },
+    /// Deep Capture cleanup reported a resource outcome.
+    DeepCaptureCleanup {
+        session_id: String,
+        resource: String,
+        status: String,
+        reason: String,
+    },
+    /// Deep Capture completed.
+    DeepCaptureComplete {
+        session_id: String,
+        manifest: String,
+        status: String,
+        cleanup_status: String,
+        inspectable: u64,
+        metadata_only: u64,
+        unsupported: u64,
+    },
     /// A periodic snapshot of the live counters the human status block also
     /// renders (slice S069), for a `--json` consumer watching a long-running
     /// capture. Carries no holder-tally breakdown: that is a human-display aid
@@ -105,6 +171,15 @@ impl Event {
             Event::SessionComplete { .. } => "session.complete",
             Event::StreamConsumer { .. } => "stream.consumer",
             Event::RingEvicted { .. } => "ring.evicted",
+            Event::DeepCapturePreflight { .. } => "deep_capture.preflight",
+            Event::DeepCaptureProxyStarted { .. } => "deep_capture.proxy_started",
+            Event::DeepCaptureKeyLogReady { .. } => "deep_capture.key_log_ready",
+            Event::DeepCaptureTrust { .. } => "deep_capture.trust",
+            Event::DeepCaptureLaunch { .. } => "deep_capture.launch",
+            Event::DeepCaptureApplication { .. } => "deep_capture.application",
+            Event::DeepCaptureBundle { .. } => "deep_capture.bundle",
+            Event::DeepCaptureCleanup { .. } => "deep_capture.cleanup",
+            Event::DeepCaptureComplete { .. } => "deep_capture.complete",
             #[cfg(all(feature = "etw", windows))]
             Event::CaptureProgress { .. } => "capture.progress",
         }
@@ -191,6 +266,163 @@ impl Event {
             Event::RingEvicted { evicted } => {
                 line.push_str(",\"evicted\":");
                 line.push_str(&evicted.to_string());
+            }
+            Event::DeepCapturePreflight {
+                status,
+                blockers,
+                warnings,
+                target,
+                proxy_backend,
+                trust_state,
+            } => {
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"blockers\":");
+                line.push_str(&blockers.to_string());
+                line.push_str(",\"warnings\":");
+                line.push_str(&warnings.to_string());
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
+                line.push_str(",\"proxy_backend\":");
+                write_json_string(proxy_backend, &mut line);
+                line.push_str(",\"trust_state\":");
+                write_json_string(trust_state, &mut line);
+            }
+            Event::DeepCaptureProxyStarted {
+                session_id,
+                backend,
+                version,
+                listen_addr,
+                listen_port,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"backend\":");
+                write_json_string(backend, &mut line);
+                line.push_str(",\"version\":");
+                write_json_string(version, &mut line);
+                line.push_str(",\"listen_addr\":");
+                write_json_string(listen_addr, &mut line);
+                line.push_str(",\"listen_port\":");
+                line.push_str(&listen_port.to_string());
+            }
+            Event::DeepCaptureKeyLogReady { session_id, path } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"path\":");
+                write_json_string(path, &mut line);
+            }
+            Event::DeepCaptureTrust {
+                session_id,
+                state,
+                action,
+                thumbprint,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"state\":");
+                write_json_string(state, &mut line);
+                line.push_str(",\"action\":");
+                write_json_string(action, &mut line);
+                line.push_str(",\"thumbprint\":");
+                match thumbprint {
+                    Some(thumbprint) => write_json_string(thumbprint, &mut line),
+                    None => line.push_str("null"),
+                }
+            }
+            Event::DeepCaptureLaunch {
+                session_id,
+                launch_case,
+                scoped_proxy,
+                target,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"launch_case\":");
+                write_json_string(launch_case, &mut line);
+                line.push_str(",\"scoped_proxy\":");
+                line.push_str(if *scoped_proxy { "true" } else { "false" });
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
+            }
+            Event::DeepCaptureApplication {
+                session_id,
+                flow_id,
+                proxy_connection_id,
+                protocol,
+                inspectability,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"flow_id\":");
+                if let Some(flow_id) = flow_id {
+                    write_json_string(flow_id, &mut line);
+                } else {
+                    line.push_str("null");
+                }
+                line.push_str(",\"proxy_connection_id\":");
+                write_json_string(proxy_connection_id, &mut line);
+                line.push_str(",\"protocol\":");
+                write_json_string(protocol, &mut line);
+                line.push_str(",\"inspectability\":");
+                write_json_string(inspectability, &mut line);
+            }
+            Event::DeepCaptureBundle {
+                session_id,
+                role,
+                path,
+                sensitivity,
+                required,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"role\":");
+                write_json_string(role, &mut line);
+                line.push_str(",\"path\":");
+                write_json_string(path, &mut line);
+                line.push_str(",\"sensitivity\":");
+                write_json_string(sensitivity, &mut line);
+                line.push_str(",\"required\":");
+                line.push_str(if *required { "true" } else { "false" });
+            }
+            Event::DeepCaptureCleanup {
+                session_id,
+                resource,
+                status,
+                reason,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"resource\":");
+                write_json_string(resource, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
+            }
+            Event::DeepCaptureComplete {
+                session_id,
+                manifest,
+                status,
+                cleanup_status,
+                inspectable,
+                metadata_only,
+                unsupported,
+            } => {
+                line.push_str(",\"session_id\":");
+                write_json_string(session_id, &mut line);
+                line.push_str(",\"manifest\":");
+                write_json_string(manifest, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"cleanup_status\":");
+                write_json_string(cleanup_status, &mut line);
+                line.push_str(",\"inspectable\":");
+                line.push_str(&inspectable.to_string());
+                line.push_str(",\"metadata_only\":");
+                line.push_str(&metadata_only.to_string());
+                line.push_str(",\"unsupported\":");
+                line.push_str(&unsupported.to_string());
             }
             #[cfg(all(feature = "etw", windows))]
             Event::CaptureProgress {
@@ -329,6 +561,15 @@ mod tests {
         let ring = Event::RingEvicted { evicted: 17 }.render(now);
         assert!(ring.contains("\"event\":\"ring.evicted\""));
         assert!(ring.contains("\"evicted\":17"));
+
+        let key_log = Event::DeepCaptureKeyLogReady {
+            session_id: "session-1".to_string(),
+            path: "/session/tls-keylog.log".to_string(),
+        }
+        .render(now);
+        assert!(key_log.contains("\"event\":\"deep_capture.key_log_ready\""));
+        assert!(key_log.contains("\"session_id\":\"session-1\""));
+        assert!(key_log.contains("\"path\":\"/session/tls-keylog.log\""));
     }
 
     // `Event::CaptureProgress` is `etw`+`windows`-gated (see its own doc

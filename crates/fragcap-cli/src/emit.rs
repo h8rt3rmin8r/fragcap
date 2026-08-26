@@ -63,6 +63,7 @@ pub struct Emitter<'w> {
     /// Injected so a test can produce a deterministic event stream; the real
     /// entry passes `SystemTime::now`.
     clock: fn() -> SystemTime,
+    captured_events: Option<Vec<String>>,
     /// How many progress lines [`Emitter::progress`] has actually written
     /// (not merely been asked to). A caller (the S069 non-terminal
     /// heartbeat) reads this before and after a span of calls that may or
@@ -86,6 +87,7 @@ impl<'w> Emitter<'w> {
             format,
             verbosity,
             clock: SystemTime::now,
+            captured_events: None,
             #[cfg(all(feature = "etw", windows))]
             progress_written: 0,
         }
@@ -94,10 +96,25 @@ impl<'w> Emitter<'w> {
     /// Emit a lifecycle event. A no-op in human mode, where progress lines carry
     /// the same information.
     pub fn event(&mut self, event: &Event) {
-        if self.format == Format::Json {
+        if self.format == Format::Json || self.captured_events.is_some() {
             let line = event.render((self.clock)());
-            let _ = writeln!(self.err, "{line}");
+            if let Some(events) = &mut self.captured_events {
+                events.push(line.clone());
+            }
+            if self.format == Format::Json {
+                let _ = writeln!(self.err, "{line}");
+            }
         }
+    }
+
+    /// Begin copying structured lifecycle events for a session sidecar.
+    pub fn begin_event_capture(&mut self) {
+        self.captured_events = Some(Vec::new());
+    }
+
+    /// Finish event copying and return the captured structured records.
+    pub fn take_captured_events(&mut self) -> Vec<String> {
+        self.captured_events.take().unwrap_or_default()
     }
 
     /// A human progress line, suppressed by quiet and silent and by JSON mode.
@@ -220,6 +237,7 @@ mod tests {
                 format,
                 verbosity,
                 clock: || std::time::UNIX_EPOCH,
+                captured_events: None,
                 #[cfg(all(feature = "etw", windows))]
                 progress_written: 0,
             };
@@ -246,6 +264,7 @@ mod tests {
             format: Format::Human,
             verbosity: Verbosity::Normal,
             clock: || std::time::UNIX_EPOCH,
+            captured_events: None,
             progress_written: 0,
         };
         assert_eq!(e.progress_written(), 0);
@@ -259,6 +278,7 @@ mod tests {
             format: Format::Human,
             verbosity: Verbosity::Quiet,
             clock: || std::time::UNIX_EPOCH,
+            captured_events: None,
             progress_written: 0,
         };
         suppressed.progress("never written");
@@ -300,5 +320,20 @@ mod tests {
         });
         assert!(!json.contains("armed"), "no human progress in JSON mode");
         assert!(json.contains("\"event\":\"filter.narrowed\""));
+    }
+
+    #[test]
+    fn event_capture_copies_structured_events_without_changing_human_output() {
+        let mut output = Vec::new();
+        let mut emitter = Emitter::new(&mut output, Format::Human, Verbosity::Normal);
+        emitter.begin_event_capture();
+        emitter.event(&Event::StageExited {
+            role: "client".to_string(),
+            pid: 7,
+        });
+        let events = emitter.take_captured_events();
+        assert!(output.is_empty());
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("\"event\":\"stage.exited\""));
     }
 }

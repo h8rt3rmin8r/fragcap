@@ -390,6 +390,9 @@ fn spawn_pipeline(
         Box::new(stamper),
         PipelineConfig::default(),
     )?;
+    if let Some(registry) = components.flow_registry.take() {
+        pipeline.set_flow_registry(registry);
+    }
     pipeline.set_write_gate(Arc::new(gate));
     for sink in built.sinks {
         pipeline.add_sink(sink);

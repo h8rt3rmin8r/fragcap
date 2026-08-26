@@ -50,6 +50,7 @@ use crate::args::{parse_duration, parse_ring, parse_size, Direction, RingWindow,
 Commands:
   Capture:
     capture       Capture a target's traffic (--target or --process)
+    deep-capture  Capture plus scoped local proxy inspection
     replay        Run a capture file back (not yet implemented)
 
   Targets:
@@ -131,6 +132,15 @@ pub enum Command {
     ///
     ///   fragcap capture --process eso64.exe --duration 5m --out capture.fcapng
     Capture(Box<CaptureArgs>),
+    /// Capture a stored target through a scoped local inspection proxy.
+    ///
+    /// Deep Capture is explicit inspection for known-compatible targets. It
+    /// writes a session bundle containing packet truth, application records,
+    /// proxy and process sidecars, compatibility facts, and cleanup status.
+    DeepCapture(Box<DeepCaptureArgs>),
+    /// Internal controlled target used by the Deep Capture verification harness.
+    #[command(name = "__controlled-target", hide = true)]
+    ControlledTarget(ControlledTargetArgs),
     /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
     /// Register, list, show, and discover capture targets in the user store
@@ -355,6 +365,110 @@ pub struct CaptureArgs {
     #[command(flatten)]
     pub offline: OfflineArgs,
 }
+
+/// Arguments to `deep-capture`, the explicit inspection mode.
+///
+/// Deep Capture requires one stored target and a managed launch, because it must
+/// know which target owns the scoped proxy configuration and where compatibility
+/// facts belong. Raw process capture remains available through `capture
+/// --process`.
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id"])))]
+pub struct DeepCaptureArgs {
+    /// A stored target: an exact handle, a case-insensitive name, or a row number.
+    ///
+    /// A bare integer here is always a row index over the current `fragcap
+    /// targets` listing, never a platform app id.
+    #[arg(value_name = "SELECTOR")]
+    pub selector: Option<String>,
+
+    /// A stored target: an exact handle, a case-insensitive name, or a row number.
+    ///
+    /// The explicit-flag form of the positional selector.
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// Select a stored target by its durable stable identifier.
+    #[arg(long)]
+    pub id: Option<i64>,
+
+    /// The shipped catalog store consulted while resolving target context.
+    #[arg(long)]
+    pub catalog_db: Option<PathBuf>,
+
+    /// The local store holding registered targets and Deep Capture facts.
+    #[arg(long)]
+    pub local_db: Option<PathBuf>,
+
+    /// Start the target under scoped proxy configuration.
+    #[arg(long)]
+    pub launch: bool,
+
+    /// The session bundle directory.
+    ///
+    /// Defaults to a new directory under fragcap's Deep Capture session storage.
+    #[arg(long)]
+    pub bundle: Option<PathBuf>,
+
+    /// The capture duration bound, from arm.
+    #[arg(short = 'd', long, value_parser = parse_duration)]
+    pub duration: Option<Duration>,
+
+    /// How long to wait for the target before giving up.
+    #[arg(long, value_parser = parse_duration)]
+    pub wait: Option<Duration>,
+
+    /// Stop after this many captured packets.
+    #[arg(long)]
+    pub max_packets: Option<u64>,
+
+    /// Stop after this many captured bytes.
+    #[arg(long, value_parser = parse_size)]
+    pub max_bytes: Option<u64>,
+
+    /// A capture interface, repeatable.
+    #[arg(short = 'i', long)]
+    pub interface: Vec<String>,
+
+    /// Write metadata only, no packet payloads.
+    #[arg(long)]
+    pub no_payload: bool,
+
+    /// Confirm fragcap-owned CA trust changes needed for HTTPS inspection.
+    #[arg(long)]
+    pub trust_ca: bool,
+
+    /// Pre-confirm Deep Capture prompts for unattended runs.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Write HAR when HTTP semantics are observable.
+    #[arg(long)]
+    pub har: bool,
+
+    /// Write a proxy-owned analyzer key log.
+    #[arg(long)]
+    pub key_log: bool,
+
+    /// The local inspection proxy backend.
+    #[arg(long, value_enum, default_value_t = DeepCaptureProxyArg::Mitmdump)]
+    pub proxy_backend: DeepCaptureProxyArg,
+
+    /// Run the deterministic controlled target harness.
+    #[arg(long, hide = true)]
+    pub controlled_target: bool,
+}
+
+/// The Deep Capture proxy backend selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DeepCaptureProxyArg {
+    /// External `mitmdump` child process.
+    Mitmdump,
+}
+
+/// Arguments for the internal Deep Capture controlled target.
+#[derive(Debug, Args)]
+pub struct ControlledTargetArgs {}
 
 /// The hidden offline substrate flags shared by `run` and `tap`.
 ///

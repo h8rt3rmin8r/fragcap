@@ -242,6 +242,16 @@ The first GitHub issues should be discovery and governance issues, not detailed 
 6. Expand `doctor` for Deep Capture: read-only detection, explicit cleanup, proxy readiness, trust state, and sensitive artifact warnings.
 7. Define the Deep Capture MVP: one selected target, managed launch, scoped proxy configuration, local CA lifecycle, inspectable HTTP and HTTPS, correlated outputs, and reliable cleanup.
 
+Issue #219 implements that MVP with an external `mitmdump` child behind a
+replaceable boundary. Real sessions reuse the ordinary Capture pipeline and a
+session-local packet flow registry. Continuous verification launches a
+placeholder child through a live deterministic loopback adapter and exercises
+the same observation ingestion, bundle, compatibility, and cleanup paths. The
+Windows trust path is current-user only, installed only after explicit
+confirmation, and removed when the session installed it. Session-selected ports,
+proxy-private CA material, empty key logs, and incomplete sessions are all
+reported and cleaned without system-wide proxy mutation.
+
 ## Non-goals
 
 Deep Capture does not introduce:

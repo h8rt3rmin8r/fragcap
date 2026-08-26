@@ -93,6 +93,7 @@ use crate::packet::{AttributionState, CapturedPacket};
 use crate::parse::{HeaderParser, InterfaceAddrs};
 use crate::stats::CaptureStats;
 use crate::traits::{FlowAttributor, PacketSource, Sink, WriteGate};
+use crate::FlowRegistry;
 
 use buffer::Item;
 
@@ -359,6 +360,9 @@ pub struct Pipeline {
     /// construction, in particular before [`Pipeline::run`] consumes the
     /// pipeline by value.
     live: LiveStats,
+    /// The session-local flow identity map. Assignment happens on the single
+    /// output thread, not on acquisition threads.
+    flow_registry: Arc<FlowRegistry>,
 }
 
 /// A packet source together with the interface identity its packets carry.
@@ -463,6 +467,7 @@ impl Pipeline {
             stop: StopHandle::default(),
             gate: None,
             live: LiveStats::new(),
+            flow_registry: Arc::new(FlowRegistry::default()),
         })
     }
 
@@ -504,6 +509,12 @@ impl Pipeline {
         self.live.clone()
     }
 
+    /// Replace the run's flow registry so a coordinating Deep Capture session
+    /// can resolve proxy observations after packet capture completes.
+    pub fn set_flow_registry(&mut self, registry: Arc<FlowRegistry>) {
+        self.flow_registry = registry;
+    }
+
     /// A handle that ends the run. Valid for the whole run, and obtainable
     /// before [`Pipeline::run`] consumes the pipeline.
     pub fn stop_handle(&self) -> StopHandle {
@@ -539,6 +550,7 @@ impl Pipeline {
             stop,
             gate,
             live,
+            flow_registry,
         } = self;
         let source_count = sources.len();
 
@@ -553,7 +565,7 @@ impl Pipeline {
             // ordinary path this is a no-op: the output thread only returns
             // after acquisition has already ended and sent its terminal item.
             let _end_acquisition = StopOnDrop(output_stop.clone());
-            output_loop(rx, sinks, output_stop, gate, live)
+            output_loop(rx, sinks, output_stop, gate, live, flow_registry)
         });
         // The guard owns the producer as well as the join handle, so that
         // closing the buffer always precedes joining the thread that is
@@ -1013,6 +1025,7 @@ fn output_loop(
     stop: StopHandle,
     gate: Option<Arc<dyn WriteGate>>,
     live: LiveStats,
+    flow_registry: Arc<FlowRegistry>,
 ) -> OutputOutcome {
     let mut failures: Vec<SinkFailure> = Vec::new();
     let mut retired = vec![false; sinks.len()];
@@ -1038,7 +1051,7 @@ fn output_loop(
         let (item, evicted) = rx.next_and_evicted();
         live.set_buffer_dropped(evicted);
         let Some(item) = item else { break };
-        let packet = match item {
+        let mut packet = match item {
             Item::Packet(packet) => packet,
             Item::End(final_stats) => {
                 stats = *final_stats;
@@ -1054,6 +1067,9 @@ fn output_loop(
                 gate_dropped = gate_dropped.saturating_add(1);
                 continue;
             }
+        }
+        if let Some(flow) = packet.flow {
+            packet.flow_id = Some(flow_registry.observe(flow, packet.attribution.as_ref()));
         }
         // The packet is admitted. Tally its socket-holding image, so the run can
         // name the dominant observed holder a launch-and-observe promotion records
@@ -1126,7 +1142,7 @@ mod tests {
     use super::*;
     use crate::attribution::{Attribution, Fidelity};
     use crate::filter::FilterProgram;
-    use crate::flow::{Endpoint, FlowKey, Proto};
+    use crate::flow::{Endpoint, FlowId, FlowKey, Proto};
     use crate::link::LinkType;
     use crate::packet::{Payload, RawPacket, Timestamp};
     use crate::stats::SourceStats;
@@ -2094,6 +2110,34 @@ mod tests {
             assert_eq!(seen.packets_captured, 9);
             assert_eq!(seen.sink_dropped, 1);
         }
+    }
+
+    #[test]
+    fn output_thread_assigns_one_flow_id_per_canonical_flow() {
+        let log = log();
+        let source = StubSource::new(vec![frame(1, 40001), frame(2, 40001), frame(3, 40002)]);
+        let mut p = pipeline(Box::new(source), 64);
+        p.add_sink(StubSink::recording(&log));
+        let report = p.run();
+
+        assert_eq!(report.stats.packets_captured, 3);
+        let ids: Vec<Option<FlowId>> = log
+            .lock()
+            .expect("the log mutex is never poisoned")
+            .written
+            .iter()
+            .map(|packet| packet.flow_id)
+            .collect();
+        assert_eq!(ids[0], ids[1], "one flow must keep one id");
+        assert_ne!(ids[1], ids[2], "a distinct flow must receive a distinct id");
+        assert_eq!(
+            ids[0].map(|id| id.to_string()),
+            Some("flow-00000001".into())
+        );
+        assert_eq!(
+            ids[2].map(|id| id.to_string()),
+            Some("flow-00000002".into())
+        );
     }
 
     // T047. FR-020, FR-039. Retained and marked, and counted nowhere else.

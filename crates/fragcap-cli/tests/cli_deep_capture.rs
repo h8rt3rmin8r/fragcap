@@ -1,0 +1,427 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Deep Capture CLI contract tests.
+//!
+//! These tests use only placeholder targets and scratch stores. They do not start
+//! real games, read local install paths, or require an installed proxy backend.
+
+mod common;
+
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+use common::run;
+use fragcap::profile::FidelityTier;
+use fragcap::targets::{
+    resolved_client_launch, ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact,
+    CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store, TargetClassification,
+    TargetEntry,
+};
+
+fn controlled_environment() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
+    let mut store = Store::open(local).expect("scratch local store");
+    let entry = TargetEntry {
+        id: None,
+        stable_id: 75_000,
+        handle: "sample-target".to_string(),
+        name: "Sample Target".to_string(),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Authored,
+        provenance: None,
+        anchor: None,
+        launch_entries: Some(resolved_client_launch("client.exe")),
+        install_root: None,
+        evidence: None,
+        detection_scan: None,
+        folder_name: None,
+        executable_hint: Some("client.exe".to_string()),
+    };
+    let id = store.insert_target(&entry).expect("insert target");
+    if with_compatibility {
+        for (key, value) in [
+            (CompatibilityFactKey::ProxyRouting, "reached-client"),
+            (CompatibilityFactKey::ProxyPropagation, "confirmed"),
+        ] {
+            let fact =
+                CompatibilityFact::new(id, key, value, CompatibilityEvidenceSource::UserConfirmed)
+                    .expect("compatibility fact");
+            let mut fact = fact;
+            fact.launch_case = Some(CompatibilityLaunchCase::DirectExeWarm);
+            store
+                .insert_compatibility_fact(&fact)
+                .expect("insert compatibility fact");
+        }
+    }
+    id
+}
+
+#[test]
+fn deep_capture_is_listed_on_the_root_help() {
+    let (code, out, _err) = run(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("deep-capture"), "root help:\n{out}");
+}
+
+#[test]
+fn deep_capture_help_exposes_the_operator_contract() {
+    let (code, out, err) = run(&["deep-capture", "--help"]);
+    assert_eq!(code, 0, "stderr:\n{err}");
+    for required in [
+        "--launch",
+        "--bundle",
+        "--duration",
+        "--wait",
+        "--max-packets",
+        "--max-bytes",
+        "--interface",
+        "--no-payload",
+        "--trust-ca",
+        "--har",
+        "--key-log",
+        "--proxy-backend",
+    ] {
+        assert!(
+            out.contains(required),
+            "help must contain {required}:\n{out}"
+        );
+    }
+    assert!(!out.contains("--controlled-target"));
+}
+
+#[test]
+fn deep_capture_requires_managed_launch_before_side_effects() {
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--trust-ca",
+        "--controlled-target",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("requires --launch"),
+        "the refusal names managed launch: {err}"
+    );
+}
+
+#[test]
+fn deep_capture_requires_explicit_trust_confirmation() {
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--controlled-target",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("explicit CA trust confirmation"),
+        "the refusal names trust confirmation: {err}"
+    );
+}
+
+#[test]
+fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--local-db",
+        local.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("requires current compatibility facts"),
+        "the refusal names missing facts rather than backend state: {err}"
+    );
+}
+
+#[test]
+fn deep_capture_refuses_direct_launch_before_creating_session_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let bundle = dir.path().join("bundle");
+
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("does not support managed launch case direct-exe-warm"),
+        "the refusal names the unsupported launch path: {err}"
+    );
+    assert!(
+        !bundle.exists(),
+        "preflight refusal must not create session storage"
+    );
+}
+
+#[test]
+fn deep_capture_refuses_a_nonempty_bundle_before_starting_the_proxy() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let bundle = dir.path().join("bundle");
+    std::fs::create_dir(&bundle).unwrap();
+    std::fs::write(bundle.join("keep.txt"), "operator-owned").unwrap();
+
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("is not empty"), "refusal: {err}");
+    assert_eq!(
+        std::fs::read_to_string(bundle.join("keep.txt")).unwrap(),
+        "operator-owned"
+    );
+}
+
+#[test]
+fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let target_id = seed_target(&local, false);
+    let bundle = dir.path().join("bundle");
+
+    let controlled_executable = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, out, err) = run(&[
+        "--json",
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--har",
+        "--key-log",
+    ]);
+    match controlled_executable {
+        Some(value) => std::env::set_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE", value),
+        None => std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE"),
+    }
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert!(out.is_empty(), "Deep Capture writes status to stderr");
+    assert!(
+        err.contains("\"event\":\"deep_capture.preflight\"")
+            && err.contains("\"event\":\"deep_capture.complete\""),
+        "JSON events include Deep Capture lifecycle:\n{err}"
+    );
+
+    for artifact in [
+        "manifest.json",
+        "capture.fcapng",
+        "application.jsonl",
+        "http.har",
+        "proxy.jsonl",
+        "process-trace.jsonl",
+        "compatibility.json",
+        "cleanup.json",
+    ] {
+        assert!(
+            bundle.join(artifact).is_file(),
+            "{artifact} must be present in the bundle"
+        );
+    }
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["mode"], "deep-capture");
+    assert_eq!(manifest["state"], "complete");
+    assert_eq!(manifest["target"]["handle"], "sample-target");
+    assert_eq!(manifest["cleanup"]["status"], "succeeded");
+    assert_eq!(manifest["trust"]["state"], "simulated-current-user");
+    assert!(
+        manifest["omissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|omission| omission["role"] == "tls-key-log"
+                && omission["reason"] == "not-produced"),
+        "the controlled backend reports the requested key log as an omission"
+    );
+    assert!(
+        !bundle.join("tls-keylog.log").exists(),
+        "the controlled backend must not fabricate TLS secrets"
+    );
+
+    let app = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
+    let application_records: Vec<serde_json::Value> = app
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        application_records.first().unwrap()["type"],
+        "application.header"
+    );
+    assert_eq!(
+        application_records.last().unwrap()["type"],
+        "application.trailer"
+    );
+    assert_eq!(application_records.last().unwrap()["records"], 4);
+    assert!(app.contains("\"protocol\":\"http\""));
+    assert!(app.contains("\"protocol\":\"https\""));
+    assert!(app.contains("\"inspectability\":\"metadata-only\""));
+    assert!(app.contains("\"inspectability\":\"unsupported\""));
+    assert!(application_records[1..application_records.len() - 1]
+        .iter()
+        .all(|record| record["process_id"].as_u64().is_some_and(|pid| pid > 0)));
+
+    let process_trace = std::fs::read_to_string(bundle.join("process-trace.jsonl")).unwrap();
+    assert!(process_trace.contains("controlled-harness.exited"));
+    let process_event: serde_json::Value = serde_json::from_str(process_trace.trim()).unwrap();
+    assert!(process_event["pid"].as_u64().is_some_and(|pid| pid > 0));
+
+    let cleanup: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("cleanup.json")).unwrap()).unwrap();
+    assert!(cleanup["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|resource| {
+            resource["resource"] == "trust-entry" && resource["status"] == "not-needed"
+        }));
+    assert!(cleanup["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|resource| {
+            resource["resource"] == "proxy-port" && resource["status"] == "succeeded"
+        }));
+    assert!(cleanup["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|resource| {
+            resource["resource"] == "manifest-state" && resource["status"] == "written"
+        }));
+
+    let pcap = std::fs::read(bundle.join("capture.fcapng")).unwrap();
+    assert_eq!(&pcap[0..4], &0x0A0D_0D0Au32.to_le_bytes());
+    let pcap_text = String::from_utf8_lossy(&pcap);
+    for ordinal in 1..=4 {
+        assert!(
+            pcap_text.contains(&format!("flow_id=flow-{ordinal:08}")),
+            "controlled packet truth must carry flow-{ordinal:08}"
+        );
+    }
+
+    let store = Store::open(&local).expect("reopen store");
+    let read = match fragcap::targets::resolve_positional(&store, "sample-target").unwrap() {
+        Selection::Resolved(t) => t,
+        Selection::NoMatch => panic!("target must resolve after run"),
+        Selection::Ambiguous(_) => panic!("target must resolve unambiguously after run"),
+    };
+    assert_eq!(read.id, Some(target_id));
+    let facts = store
+        .compatibility_facts_for_target(target_id)
+        .expect("facts");
+    assert!(
+        facts.iter().any(|fact| {
+            fact.key == CompatibilityFactKey::Inspectability && fact.value == "full"
+        }),
+        "Deep Capture writes inspectability facts"
+    );
+    assert!(
+        facts.iter().any(|fact| {
+            fact.key == CompatibilityFactKey::ProtocolBehavior && fact.value == "https"
+        }),
+        "Deep Capture writes protocol facts"
+    );
+    for (key, value) in [
+        (CompatibilityFactKey::ProxyRouting, "reached-client"),
+        (CompatibilityFactKey::ProxyPropagation, "confirmed"),
+        (CompatibilityFactKey::TlsTrustBehavior, "accepts-local-ca"),
+        (CompatibilityFactKey::FinalSocketOwnerRole, "client"),
+    ] {
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.key == key && fact.value == value),
+            "controlled observation must write {}={value}",
+            key.as_str()
+        );
+    }
+}
+
+#[test]
+fn partial_controlled_session_writes_observed_facts_and_manifest() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let target_id = seed_target(&local, false);
+    let bundle = dir.path().join("bundle");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "2");
+
+    let (code, _out, err) = run(&[
+        "--json",
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 1, "partial session must preserve the target failure");
+    assert!(err.contains("\"status\":\"partial\""), "events:\n{err}");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["state"], "partial");
+    assert!(bundle.join("capture.fcapng").is_file());
+    let app = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
+    let trailer: serde_json::Value = serde_json::from_str(app.lines().last().unwrap()).unwrap();
+    assert_eq!(trailer["records"], 2);
+    assert_eq!(trailer["writer_status"], "partial");
+
+    let store = Store::open(&local).unwrap();
+    let facts = store
+        .compatibility_facts_for_target(target_id)
+        .expect("partial facts");
+    assert!(facts.iter().any(|fact| {
+        fact.key == CompatibilityFactKey::ProtocolBehavior && fact.value == "https"
+    }));
+}
