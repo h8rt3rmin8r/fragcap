@@ -1,0 +1,2 @@
+<!-- spec-impact: none -->
+**2026-08-25** Defined the Deep Capture MVP implementation plan for issue #219. The first vertical slice will use an external `mitmdump` backend behind a replaceable adapter, require one stored target with known scoped proxy compatibility, refuse system-wide proxy fallback, require explicit CA trust confirmation, write the #216 session bundle, update #217 compatibility facts, reuse #218 doctor cleanup surfaces, and verify with a controlled local target rather than real game accounts or local title data.
