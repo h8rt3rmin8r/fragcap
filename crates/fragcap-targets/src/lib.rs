@@ -64,7 +64,8 @@ pub use classifier::{
     KnownRootChildIsGame, SignatureClassifier,
 };
 pub use compatibility::{
-    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
+    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityFreshness,
+    CompatibilityLaunchCase, CompatibilityMatrix, CompatibilityMatrixRow,
 };
 pub use engine_feed::{
     EngineBatch, EngineEntry, EngineFeed, FixtureEngineFeed, ResolvedEngine,

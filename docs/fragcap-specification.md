@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.10-draft \
+**Version:** 0.1.11-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -102,6 +102,7 @@ enforcement.
 | 0.1.8-draft | 2026-08-25 | W. Thompson | **Defines the Deep Capture session bundle and output correlation model (issue #216).** Adds section 13.7, updates sections 28 and 29, and records the manifest, artifact authority rules, application JSONL, HAR conditions, sensitive TLS key-log handling, proxy/process sidecars, compatibility update sidecar, cleanup report, and correlation anchors. |
 | 0.1.9-draft | 2026-08-25 | W. Thompson | **Adds Deep Capture readiness and cleanup checks to doctor (issue #218).** Extends section 26.3 so doctor reports proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, and session storage, with confirmation-gated cleanup for fragcap-owned residue. |
 | 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, fact-backed cold Steam managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. Warm Steam and direct-executable cases are side-effect-free preflight refusals. |
+| 0.1.11-draft | 2026-08-26 | W. Thompson | **Publishes Deep Capture traffic support and local compatibility evidence (issue #220).** Extends sections 15, 17.2, 19.6, 28, and 29. `targets show` renders a deterministic, non-aggregating matrix from the selected target's local facts, including launch case, evidence source, and freshness. The public reference distinguishes HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext behavior without publishing a guessed title list or claiming universal decryption. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2509,6 +2510,18 @@ to a later executable. A row can be retained as stale, but no refresh that would
 require launching a target, changing trust state, or altering proxy routing is
 performed silently.
 
+`targets show` projects those rows into the user-facing compatibility matrix for
+the selected target. The projection is read-only, retains repeated and
+conflicting rows, orders stored observations by durable row identity, and
+presents each row's key, value, optional launch case, evidence source, and
+freshness. A row is stale when its stale marker is set or its source is
+`stale-observation`; no timestamp threshold is invented. A successful read with
+no rows is `unknown`, while a stored fact whose value is `unknown` remains
+evidence rather than becoming an empty matrix. Platform, engine, executable,
+and title metadata never create compatibility facts or an aggregate compatible
+or incompatible verdict. Free-form notes and final executable names remain out
+of this display because they can carry local details unrelated to the verdict.
+
 The transition away from profile files is staged: the fidelity-ordered store read,
 the entry model, the handle and identifier scheme, and the selector ship in S051.
 The engine and platform-walker providers become target sources in S052; the JSON
@@ -2942,7 +2955,11 @@ target need no store path unless one is named explicitly.
   coverage conclusion the listing does. An out-of-set coverage value is rejected at
   import and nothing is applied.
 - `targets show <SELECTOR>` and `targets discover` are read-only inspections;
-  `discover`, unlike the listing, registers nothing.
+  `discover`, unlike the listing, registers nothing. `targets show` appends the
+  selected target's Deep Capture compatibility matrix from local facts. It
+  renders every row with its evidence source and freshness, reports `unknown`
+  only when a successful read finds no facts, and performs no launch, proxy,
+  trust, catalog, network, or refresh action.
 
 ## 18. Shell Wrappers
 
@@ -3125,10 +3142,23 @@ extraction, and does not downgrade or interfere with negotiation.
 In Deep Capture mode, fragcap can inspect supported traffic that the selected
 target actually routes through the local inspection proxy and that accepts the
 configured local certificate authority. This is a capability boundary, not a
-promise that every encrypted game flow becomes readable. Certificate-pinned
-traffic, QUIC or UDP traffic until supported, non-HTTP TLS traffic until
-supported, and traffic that bypasses the proxy remain visible only as captured
-packets and metadata.
+promise that every encrypted game flow becomes readable. Current traffic
+support is exact:
+
+| Traffic | Capture | Deep Capture |
+| --- | --- | --- |
+| HTTP | Packets, attribution, and payload bytes unless payload capture is disabled | HTTP method, URL, and response status when the flow reaches the proxy; optional HAR from those fields; current application records retain no request or response headers or bodies |
+| HTTPS | Encrypted packets and attribution | The same HTTP semantics only when proxy-routed and accepted by the fragcap-owned local CA; optional proxy-owned live key log; no certificate-pinning bypass or target key extraction |
+| WebSocket | Packets and attribution | HTTP upgrade handshake semantics can be observed; WebSocket frame records and payload retention are not implemented |
+| Non-HTTP TLS | Encrypted packets and attribution | Metadata-only proxy observation; no custom application dissection |
+| QUIC | UDP packets and attribution | Unsupported by the current HTTP proxy path; no QUIC routing or decryption claim |
+| UDP | Packets, attribution, and payload bytes unless disabled | Unsupported by the current proxy path; no generic UDP proxy inspection |
+| Plaintext | Packets, attribution, and payload bytes unless disabled | Plaintext HTTP follows the HTTP row; arbitrary plaintext protocols have no generic application dissector |
+
+The `full` inspectability fact means that the proxy observed HTTP semantics for
+that run. It does not claim complete retention of headers, bodies, WebSocket
+frames, or custom payloads. A proxy-owned TLS key log is an analyzer aid, not
+decrypted output and not material extracted from a target process.
 
 What remains observable under encryption is substantial: endpoint
 identity, connection topology, packet timing, packet sizing, flow
@@ -4092,10 +4122,10 @@ targets, integrated with ordinary Capture sessions so packet capture, process
 attribution, application records, HAR projections, proxy logs, proxy-owned TLS
 key-log export, process traces, compatibility facts, cleanup reports, and
 analyzer outputs correlate through one session manifest. Planning is recorded in
-`docs/plans/deep-capture.md`; issues #213 through #219 establish the first
-command path, and #220 remains the user-facing supported-traffic and
-compatibility-matrix documentation work. The MVP supports only documented traffic
-types and records unsupported flows plainly.
+`docs/plans/deep-capture.md`; issues #213 through #220 establish the first
+command path, its safety and output contracts, and the user-facing
+supported-traffic and local compatibility-matrix documentation. The MVP supports
+only documented traffic types and records unsupported flows plainly.
 
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
@@ -4154,6 +4184,7 @@ to section 6.2.
 | Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | **Resolved 2026-08-25.** A required manifest indexes `.fcapng`, application JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, omissions, sensitivity, and correlation anchors. |
 | Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
 | Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219 | **Resolved 2026-08-26.** `fragcap deep-capture` is the first command path. Its real-target path is a fact-backed cold Steam protocol launch; warm Steam and direct-executable cases are preflight refusals. It validates and retains the effective Capture launch before proxy or trust side effects, refuses unknown compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
+| Q-15 | How are supported traffic types and target compatibility presented without guessing? | Publish an exact traffic-family reference and project the selected target's local facts through a read-only detail view | #220 | **Resolved 2026-08-26.** The public reference distinguishes Capture and Deep Capture outcomes for HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext traffic. `targets show` renders every local fact with launch case, source, and freshness, preserves conflicts, and reports unknown rather than inferring a title verdict. |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.

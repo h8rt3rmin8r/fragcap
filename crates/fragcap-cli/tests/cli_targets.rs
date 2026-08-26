@@ -15,11 +15,143 @@ mod common;
 use std::path::Path;
 
 use common::run;
+use fragcap::profile::FidelityTier;
+use fragcap::targets::{
+    ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
+    CompatibilityLaunchCase, Store, TargetClassification, TargetEntry,
+};
 use tempfile::TempDir;
 
 /// The scratch store path as a string.
 fn db(dir: &TempDir) -> String {
     dir.path().join("local.db").to_string_lossy().into_owned()
+}
+
+fn seed_compatibility_target(path: &Path) -> i64 {
+    let mut store = Store::open(path).expect("scratch local store");
+    let entry = TargetEntry {
+        id: None,
+        stable_id: 76_000,
+        handle: "sample-target".to_string(),
+        name: "Sample Target".to_string(),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Authored,
+        provenance: None,
+        anchor: None,
+        launch_entries: None,
+        install_root: None,
+        evidence: None,
+        detection_scan: None,
+        folder_name: None,
+        executable_hint: Some("sample.exe".to_string()),
+    };
+    store.insert_target(&entry).expect("insert target")
+}
+
+#[test]
+fn target_show_reports_unknown_when_no_compatibility_facts_exist() {
+    let dir = TempDir::new().expect("tempdir");
+    let store_path = dir.path().join("local.db");
+    seed_compatibility_target(&store_path);
+
+    let (code, out, err) = run(&[
+        "targets",
+        "show",
+        "sample-target",
+        "--db",
+        &store_path.to_string_lossy(),
+    ]);
+
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert!(
+        out.contains("compatibility:  unknown (no stored evidence)"),
+        "target detail:\n{out}"
+    );
+}
+
+#[test]
+fn target_show_renders_all_compatibility_evidence_without_a_verdict() {
+    let dir = TempDir::new().expect("tempdir");
+    let store_path = dir.path().join("local.db");
+    let target_id = seed_compatibility_target(&store_path);
+    let mut store = Store::open(&store_path).expect("scratch local store");
+
+    let mut observed = CompatibilityFact::new(
+        target_id,
+        CompatibilityFactKey::ProxyRouting,
+        "reached-client",
+        CompatibilityEvidenceSource::ObservedRun,
+    )
+    .unwrap();
+    observed.launch_case = Some(CompatibilityLaunchCase::SteamProtocolCold);
+    observed.note = Some("private-placeholder-note".to_string());
+    observed.final_owner_executable = Some("private-placeholder.exe".to_string());
+    store.insert_compatibility_fact(&observed).unwrap();
+
+    let mut imported = CompatibilityFact::new(
+        target_id,
+        CompatibilityFactKey::ProxyRouting,
+        "no-proxy-traffic",
+        CompatibilityEvidenceSource::ImportedCatalog,
+    )
+    .unwrap();
+    imported.stale = true;
+    store.insert_compatibility_fact(&imported).unwrap();
+
+    let stale_source = CompatibilityFact::new(
+        target_id,
+        CompatibilityFactKey::Inspectability,
+        "metadata-only",
+        CompatibilityEvidenceSource::StaleObservation,
+    )
+    .unwrap();
+    store.insert_compatibility_fact(&stale_source).unwrap();
+
+    let confirmed = CompatibilityFact::new(
+        target_id,
+        CompatibilityFactKey::ProtocolBehavior,
+        "https",
+        CompatibilityEvidenceSource::UserConfirmed,
+    )
+    .unwrap();
+    store.insert_compatibility_fact(&confirmed).unwrap();
+    drop(store);
+
+    let args = [
+        "targets",
+        "show",
+        "sample-target",
+        "--db",
+        &store_path.to_string_lossy(),
+    ];
+    let (code, first, err) = run(&args);
+    let (repeat_code, second, repeat_err) = run(&args);
+
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert_eq!(repeat_code, 0, "stderr:\n{repeat_err}");
+    assert_eq!(first, second, "matrix ordering must be deterministic");
+    let required = [
+        "compatibility:\n",
+        "proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current",
+        "proxy-routing = no-proxy-traffic | source=imported-catalog | freshness=stale",
+        "inspectability = metadata-only | source=stale-observation | freshness=stale",
+        "protocol-behavior = https | source=user-confirmed | freshness=current",
+    ];
+    for needle in required {
+        assert!(first.contains(needle), "missing {needle:?}:\n{first}");
+    }
+    for prohibited in [
+        "compatible verdict",
+        "incompatible verdict",
+        "private-placeholder-note",
+        "private-placeholder.exe",
+    ] {
+        assert!(
+            !first.contains(prohibited),
+            "matrix leaked or invented {prohibited:?}:\n{first}"
+        );
+    }
 }
 
 #[test]

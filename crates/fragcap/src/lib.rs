@@ -87,13 +87,13 @@ pub mod targets {
         resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
         sensitivities_summary, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource,
         Classification, ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact,
-        CompatibilityFactKey, CompatibilityLaunchCase, CorpusGate, DetectionScan, Engine,
-        EngineBatch, EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog,
-        FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary, InstallPresence, LaunchEntry,
-        NameDivergence, RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier,
-        Selection, SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError,
-        TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
-        INSTALL_MISSING_NOTE,
+        CompatibilityFactKey, CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityMatrix,
+        CompatibilityMatrixRow, CorpusGate, DetectionScan, Engine, EngineBatch, EngineConfidence,
+        EngineEntry, EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed, Game,
+        HintDatabaseProvider, ImportSummary, InstallPresence, LaunchEntry, NameDivergence,
+        RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
+        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
+        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
     };
 
     /// The machine-wide anti-cheat presence seam (slice S068). The one real

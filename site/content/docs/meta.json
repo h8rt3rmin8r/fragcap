@@ -7,6 +7,7 @@
     "guides/capture-modes",
     "---Reference---",
     "reference/cli",
+    "reference/deep-capture-compatibility",
     "reference/target-schema",
     "reference/output-formats",
     "---Understanding fragcap---",
