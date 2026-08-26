@@ -955,6 +955,14 @@ fn write_steam_fixture(root: &Path) {
     .expect("write manifest");
 }
 
+fn write_many_exes(root: &Path, count: usize) {
+    std::fs::create_dir_all(root).expect("install dir");
+    let bytes = fragcap::profile::pe::fixtures::minimal_pe_with_sections(&[".text"]);
+    for i in 0..count {
+        std::fs::write(root.join(format!("game-{i:04}.exe")), &bytes).expect("write exe");
+    }
+}
+
 #[test]
 fn scan_lists_a_directory_as_one_candidate() {
     // A scratch local store, so this registers into its own db rather than the shared
@@ -1004,6 +1012,48 @@ fn discover_lists_steam_titles_through_the_cli() {
         "the appid identity is shown: {out}"
     );
     assert!(out.contains("account:"), "the account is surfaced: {out}");
+}
+
+#[test]
+fn targets_discovery_marker_cap_warning_names_the_scan_root() {
+    let dir = TempDir::new().expect("tempdir");
+    let steam_root = dir.path().join("steam");
+    write_steam_fixture(&steam_root);
+    let install = steam_root.join("steamapps").join("common").join("Portal 2");
+    write_many_exes(
+        &install,
+        fragcap::profile::signature::MARKER_SCAN_MAX_CANDIDATES + 2,
+    );
+
+    let catalog = dir.path().join("catalog.db");
+    seed_signature_catalog(&catalog);
+    let local = dir.path().join("local.db").to_string_lossy().into_owned();
+    let catalog = catalog.to_string_lossy().into_owned();
+    let steam_root_s = steam_root.to_string_lossy().into_owned();
+
+    let (code, out, err) = run(&[
+        "targets",
+        "discover",
+        "--catalog-db",
+        &catalog,
+        "--local-db",
+        &local,
+        "--steam-root",
+        &steam_root_s,
+    ]);
+    assert_eq!(code, 0, "discover succeeds: {out}\n{err}");
+    assert!(
+        err.contains(&install.display().to_string()),
+        "warning names the scanned Steam install root: {err}"
+    );
+    assert!(
+        err.contains("2 more were not examined"),
+        "warning preserves the skipped count: {err}"
+    );
+    assert!(
+        err.contains("technology detection for this root may be incomplete"),
+        "warning states the technology consequence: {err}"
+    );
 }
 
 #[test]

@@ -474,6 +474,7 @@ impl SignatureSet {
         sort_findings(&mut findings);
 
         Ok(ScanOutcome {
+            root: root.to_path_buf(),
             findings,
             unreadable,
             marker_candidates_skipped,
@@ -516,6 +517,9 @@ impl SignatureSet {
 /// The result of scanning one install directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanOutcome {
+    /// The root directory this outcome describes. Warning text names it so a
+    /// reduced-coverage scan is recoverable to the install root that caused it.
+    root: PathBuf,
     /// The detected technologies, deduplicated per (category, product), grouped by
     /// category then product.
     pub findings: Vec<DetectionFinding>,
@@ -567,9 +571,12 @@ impl ScanOutcome {
             .collect();
         if self.marker_candidates_skipped > 0 {
             out.push(format!(
-                "detection read only the first {} executable(s) for binary markers; \
-                 {} more were not examined",
-                MARKER_SCAN_MAX_CANDIDATES, self.marker_candidates_skipped
+                "binary marker detection for {} read only the first {} executable \
+                 candidate(s); {} more were not examined, so technology detection \
+                 for this root may be incomplete",
+                self.root.display(),
+                MARKER_SCAN_MAX_CANDIDATES,
+                self.marker_candidates_skipped
             ));
         }
         out
@@ -1360,6 +1367,77 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_candidate_set_warning_names_the_scanned_root() {
+        let set = SignatureSet::compile(&[bind_signature()]);
+        let tree = TempTree::new("many-exes-warning");
+        let extra = 3;
+        let total = MARKER_SCAN_MAX_CANDIDATES + extra;
+        for i in 0..total {
+            tree.write(
+                &format!("aa-{i:04}.exe"),
+                &pe::fixtures::minimal_pe_with_sections(&[".text"]),
+            );
+        }
+
+        let outcome = set.detect(tree.path()).expect("readable");
+        let warnings = outcome.coverage_warnings();
+        let warning = warnings
+            .iter()
+            .find(|w| w.contains("binary marker"))
+            .unwrap_or_else(|| panic!("truncation warning is present: {warnings:?}"));
+
+        assert!(
+            warning.contains(&tree.path().display().to_string()),
+            "the warning names the scanned root: {warning}"
+        );
+        assert!(
+            warning.contains("3 more were not examined"),
+            "the warning preserves the skipped count: {warning}"
+        );
+        assert!(
+            warning.contains("technology detection for this root may be incomplete"),
+            "the warning states the operator consequence: {warning}"
+        );
+    }
+
+    #[test]
+    fn two_truncated_scans_for_different_roots_do_not_share_one_warning() {
+        let set = SignatureSet::compile(&[bind_signature()]);
+        let first = TempTree::new("many-exes-first");
+        let second = TempTree::new("many-exes-second");
+        for tree in [&first, &second] {
+            for i in 0..(MARKER_SCAN_MAX_CANDIDATES + 1) {
+                tree.write(
+                    &format!("aa-{i:04}.exe"),
+                    &pe::fixtures::minimal_pe_with_sections(&[".text"]),
+                );
+            }
+        }
+
+        let first_warning = set
+            .detect(first.path())
+            .expect("first readable")
+            .coverage_warnings()
+            .into_iter()
+            .find(|w| w.contains("binary marker"))
+            .expect("first truncation warning");
+        let second_warning = set
+            .detect(second.path())
+            .expect("second readable")
+            .coverage_warnings()
+            .into_iter()
+            .find(|w| w.contains("binary marker"))
+            .expect("second truncation warning");
+
+        assert_ne!(
+            first_warning, second_warning,
+            "warnings for different roots must be distinguishable"
+        );
+        assert!(first_warning.contains(&first.path().display().to_string()));
+        assert!(second_warning.contains(&second.path().display().to_string()));
+    }
+
+    #[test]
     fn a_directory_named_like_an_executable_is_not_a_candidate() {
         let set = SignatureSet::compile(&[bind_signature()]);
         let tree = TempTree::new("dir-named-exe");
@@ -1401,6 +1479,7 @@ mod tests {
         assert_eq!(skipped, 0, "it was not dropped by the cap");
 
         let outcome = ScanOutcome {
+            root: tree.path().to_path_buf(),
             findings: Vec::new(),
             unreadable,
             marker_candidates_skipped: skipped,

@@ -126,7 +126,7 @@ fn a_scan_that_ran_records_its_coverage_state_and_one_that_did_not_records_none(
 }
 
 #[test]
-fn a_truncated_candidate_set_is_named_in_a_warning_not_only_counted() {
+fn a_truncated_candidate_set_names_the_scan_root_in_the_warning() {
     // P-4 asks for a loss to be counted *and* surfaced. The count lives on the scan
     // outcome; this is the surfacing, and without it an operator would see a row
     // marked `incomplete` with nothing saying why.
@@ -149,6 +149,14 @@ fn a_truncated_candidate_set_is_named_in_a_warning_not_only_counted() {
     assert!(
         named.contains("3 more were not examined"),
         "the warning says how many were dropped: {named}"
+    );
+    assert!(
+        named.contains(&tree.root.display().to_string()),
+        "the warning names the scan root: {named}"
+    );
+    assert!(
+        named.contains("technology detection for this root may be incomplete"),
+        "the warning says the technology result may be incomplete: {named}"
     );
     assert!(d.account.is_conserved());
 }

@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.13-draft \
+**Version:** 0.1.15-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -106,6 +106,7 @@ enforcement.
 | 0.1.12-draft | 2026-08-26 | W. Thompson | **Corrects homepage positioning and labels the target listing's next command (issues #232 and #208).** Updates sections 17.7, 23.1, and 23.3. The homepage now leads with process-attributed game traffic, distinguishes Capture from Deep Capture, qualifies attribution and inspection claims, states the live-capture and analyzer dependencies accurately, and uses a synthetic current CLI specimen. The target listing ends with the exact labelled footer `Next command:  fragcap capture <row>`. This revision supersedes S057's frozen homepage-copy requirement without modifying its historical artifacts. |
 | 0.1.13-draft | 2026-08-26 | W. Thompson | **Adds interactive doctor progress and diagnostic timings (issue #202).** Extends section 26.3 so human terminal `fragcap doctor` runs show probe progress on stderr while preserving final human and JSON report bytes. A hidden `--timings` flag exposes per-probe elapsed times for maintainers without changing report contracts. |
 | 0.1.14-draft | 2026-08-26 | W. Thompson | **Marks unverified target technology findings (issue #211).** Extends section 17.7 so `fragcap targets` renders below-verified ENGINE and SENSITIVITIES products with a `?` suffix while verified-or-stronger products remain unmarked. The target-entry export/import contract continues to preserve each finding's raw fidelity token so machine readers can derive the same distinction. |
+| 0.1.15-draft | 2026-08-26 | W. Thompson | **Names capped binary-marker scan subjects (issue #206).** Clarifies section 15.7.2 so capped binary-marker coverage warnings name the scanned root, preserve the skipped candidate count, and state that technology detection for that root may be incomplete. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2391,9 +2392,11 @@ A section-marker scan does not read every binary in the tree. Its candidates are
 executables at a small bounded depth below the install root, which is where a
 launch target sits and where a wrapper is applied, capped at a bounded count, and
 each is read as a bounded prefix rather than whole. A candidate dropped by the
-count cap is counted on the scan outcome and reported by name, and a candidate
-that could not be opened is recorded unreadable rather than treated as carrying no
-marker: unread is not the same as absent (P-4, P-9).
+count cap is counted on the scan outcome and reported with the scanned root, the
+exact skipped candidate count, and the consequence that technology detection for
+that root may be incomplete. A candidate that could not be opened is recorded
+unreadable rather than treated as carrying no marker: unread is not the same as
+absent (P-4, P-9).
 
 The presence of a platform SDK redistributable is not a DRM signal and is not
 seeded as one. The Steamworks client library ships with essentially every Steam
