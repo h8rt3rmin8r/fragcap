@@ -875,6 +875,10 @@ pub struct DoctorArgs {
     /// Still requires an interactive stdout.
     #[arg(long)]
     pub yes: bool,
+
+    /// Show per-probe doctor timings on the interactive progress stream.
+    #[arg(long, hide = true)]
+    pub timings: bool,
 }
 
 /// Arguments to `extcap`.
@@ -1006,4 +1010,22 @@ pub struct ExtcapInstallArgs {
 pub struct StubArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     pub rest: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_timings_hidden_flag_parses() {
+        let cli = Cli::try_parse_from(["fragcap", "doctor", "--timings"]).expect("parse");
+        match cli.command {
+            Some(Command::Doctor(args)) => {
+                assert!(args.timings);
+                assert!(!args.fix);
+                assert!(!args.yes);
+            }
+            other => panic!("expected doctor command, got {other:?}"),
+        }
+    }
 }

@@ -14,6 +14,7 @@ pub mod action;
 pub mod checks;
 pub mod fix;
 pub mod probe;
+pub mod progress;
 
 use fragcap::write_json_string;
 

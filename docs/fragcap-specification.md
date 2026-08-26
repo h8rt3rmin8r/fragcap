@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.12-draft \
+**Version:** 0.1.13-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -104,6 +104,7 @@ enforcement.
 | 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, fact-backed cold Steam managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. Warm Steam and direct-executable cases are side-effect-free preflight refusals. |
 | 0.1.11-draft | 2026-08-26 | W. Thompson | **Publishes Deep Capture traffic support and local compatibility evidence (issue #220).** Extends sections 15, 17.2, 19.6, 28, and 29. `targets show` renders a deterministic, non-aggregating matrix from the selected target's local facts, including launch case, evidence source, and freshness. The public reference distinguishes HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext behavior without publishing a guessed title list or claiming universal decryption. |
 | 0.1.12-draft | 2026-08-26 | W. Thompson | **Corrects homepage positioning and labels the target listing's next command (issues #232 and #208).** Updates sections 17.7, 23.1, and 23.3. The homepage now leads with process-attributed game traffic, distinguishes Capture from Deep Capture, qualifies attribution and inspection claims, states the live-capture and analyzer dependencies accurately, and uses a synthetic current CLI specimen. The target listing ends with the exact labelled footer `Next command:  fragcap capture <row>`. This revision supersedes S057's frozen homepage-copy requirement without modifying its historical artifacts. |
+| 0.1.13-draft | 2026-08-26 | W. Thompson | **Adds interactive doctor progress and diagnostic timings (issue #202).** Extends section 26.3 so human terminal `fragcap doctor` runs show probe progress on stderr while preserving final human and JSON report bytes. A hidden `--timings` flag exposes per-probe elapsed times for maintainers without changing report contracts. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3952,6 +3953,22 @@ version it did not read.
 
 `--json` produces the same content as structured records for
 consumption by the shell wrappers and other automation.
+
+Interactive human `fragcap doctor` runs report probe progress on standard
+error before the final report is rendered. Progress is shown only when the
+human report is going to a terminal, `--json` is absent, `--fix` is absent,
+and the selected verbosity permits progress. Redirected human reports,
+`doctor --json`, `doctor --fix`, `--quiet`, and `--silent` do not emit doctor
+progress. The final report remains the only stdout result and the existing
+classifier remains the authority for readiness.
+
+Doctor progress uses stable operator-facing probe labels: identity, platform,
+capture driver and interfaces, process event tracing, analyzer integration,
+target stores, Deep Capture readiness, and report rendering. A hidden
+maintainer flag, `fragcap doctor --timings`, adds elapsed milliseconds to the
+interactive progress completion lines only; it does not add JSON records and
+does not change the final human report. The timings exist to identify real
+probe costs before optimization work and are not a machine-readable API.
 
 `fragcap doctor --fix` adds an action layer above the same classifier. It
 prints the same report, then offers to perform the remediations the report
