@@ -13,8 +13,36 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
+use super::progress::ProbeName;
 use super::{DeepCaptureCa, DeepCaptureInputs, Inputs, Privilege, ProxyBackendInfo, Subsystem};
+
+/// Receives progress events around doctor probe groups.
+pub trait ProbeObserver {
+    /// A probe has started.
+    fn begin(&mut self, probe: ProbeName);
+
+    /// A probe has completed after `elapsed`.
+    fn complete(&mut self, probe: ProbeName, elapsed: Duration);
+}
+
+/// An observer that keeps the existing silent behavior.
+pub struct NoopObserver;
+
+impl ProbeObserver for NoopObserver {
+    fn begin(&mut self, _probe: ProbeName) {}
+
+    fn complete(&mut self, _probe: ProbeName, _elapsed: Duration) {}
+}
+
+fn observe<T>(observer: &mut dyn ProbeObserver, probe: ProbeName, work: impl FnOnce() -> T) -> T {
+    observer.begin(probe);
+    let started = Instant::now();
+    let value = work();
+    observer.complete(probe, started.elapsed());
+    value
+}
 
 /// The analyzer extcap directories (per-user and machine-wide) and whether a
 /// fragcap binary is installed in each, read-only.
@@ -564,20 +592,47 @@ fn find_on_path(program: &str) -> Option<PathBuf> {
 
 /// Gather the environment facts for `doctor`.
 pub fn gather() -> Inputs {
+    let mut observer = NoopObserver;
+    gather_with(&mut observer)
+}
+
+/// Gather the environment facts for `doctor`, reporting progress to `observer`.
+pub fn gather_with(observer: &mut dyn ProbeObserver) -> Inputs {
     #[cfg(windows)]
     {
-        gather_windows()
+        gather_windows(observer)
     }
     #[cfg(not(windows))]
     {
         let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
-            extcap_status();
-        let (fragcap_version, binary_path, catalog_db_path, local_db_path) = identity_fields();
+            observe(observer, ProbeName::AnalyzerIntegration, extcap_status);
+        let (fragcap_version, binary_path, catalog_db_path, local_db_path) =
+            observe(observer, ProbeName::Identity, identity_fields);
         // wpcap.dll is not loadable on a non-Windows build; the live backend is
         // not linked anyway.
-        let (interfaces, _loopback, interface_error) = live_probe(false);
-        let target_entry_count = read_target_entry_count();
-        let deep_capture = deep_capture_probe();
+        let (interfaces, _loopback, interface_error) =
+            observe(observer, ProbeName::CaptureDriverInterfaces, || {
+                live_probe(false)
+            });
+        let target_entry_count =
+            observe(observer, ProbeName::TargetStores, read_target_entry_count);
+        let deep_capture = observe(
+            observer,
+            ProbeName::DeepCaptureReadiness,
+            deep_capture_probe,
+        );
+        let etw_available = observe(
+            observer,
+            ProbeName::ProcessEventTracing,
+            tracing_availability,
+        );
+        let (os, subsystem, privilege) = observe(observer, ProbeName::Platform, || {
+            (
+                format!("{} (capture is Windows-only)", std::env::consts::OS),
+                Subsystem::Native,
+                Privilege::NotElevated,
+            )
+        });
         Inputs {
             fragcap_version,
             binary_path,
@@ -585,11 +640,11 @@ pub fn gather() -> Inputs {
             catalog_db_path,
             local_db_present: local_db_path.as_ref().is_some_and(|p| p.exists()),
             local_db_path,
-            os: format!("{} (capture is Windows-only)", std::env::consts::OS),
-            subsystem: Subsystem::Native,
-            privilege: Privilege::NotElevated,
+            os,
+            subsystem,
+            privilege,
             npcap: None,
-            etw_available: tracing_availability(),
+            etw_available,
             live_available: live_availability(),
             socket_table_available: socket_table_availability(),
             interfaces,
@@ -608,18 +663,35 @@ pub fn gather() -> Inputs {
 /// without a registry API, which is a best-effort detection the operator reads
 /// as guidance; it installs nothing.
 #[cfg(windows)]
-fn gather_windows() -> Inputs {
+fn gather_windows(observer: &mut dyn ProbeObserver) -> Inputs {
     use super::NpcapInfo;
 
-    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
-    let system32 = PathBuf::from(&system_root).join("System32");
-    let npcap_dir = system32.join("Npcap");
-    let npcap_wpcap = npcap_dir.join("wpcap.dll");
-    let system_wpcap = system32.join("wpcap.dll");
+    let (system32, npcap_wpcap, system_wpcap, npcap_present, privilege) =
+        observe(observer, ProbeName::Platform, || {
+            let system_root =
+                std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+            let system32 = PathBuf::from(&system_root).join("System32");
+            let npcap_dir = system32.join("Npcap");
+            let npcap_wpcap = npcap_dir.join("wpcap.dll");
+            let system_wpcap = system32.join("wpcap.dll");
 
-    // npcap is present when its own wpcap.dll exists in the Npcap directory; this
-    // drives the installation and version report below.
-    let npcap_present = npcap_wpcap.exists();
+            // npcap is present when its own wpcap.dll exists in the Npcap directory; this
+            // drives the installation and version report below.
+            let npcap_present = npcap_wpcap.exists();
+            let privilege = if is_elevated() {
+                Privilege::Elevated
+            } else {
+                Privilege::NotElevated
+            };
+            (
+                system32,
+                npcap_wpcap,
+                system_wpcap,
+                npcap_present,
+                privilege,
+            )
+        });
+    let _ = system32;
 
     // Whether the live backend can be touched at all. enumerate and detect_driver
     // reach the delay-loaded `wpcap.dll` by name, which the loader resolves from
@@ -638,7 +710,10 @@ fn gather_windows() -> Inputs {
     // loopback adapter is among them. Probed only when wpcap.dll is loadable, and
     // linked only under the `live` feature, so this returns empty and
     // undetermined otherwise.
-    let (interfaces, loopback_supported, interface_error) = live_probe(wpcap_loadable);
+    let (interfaces, loopback_supported, interface_error) =
+        observe(observer, ProbeName::CaptureDriverInterfaces, || {
+            live_probe(wpcap_loadable)
+        });
 
     let npcap = if npcap_present {
         Some(NpcapInfo {
@@ -652,10 +727,20 @@ fn gather_windows() -> Inputs {
     };
 
     let (extcap_dir, extcap_installed, extcap_system_dir, extcap_system_installed) =
-        extcap_status();
-    let (fragcap_version, binary_path, catalog_db_path, local_db_path) = identity_fields();
-    let target_entry_count = read_target_entry_count();
-    let deep_capture = deep_capture_probe();
+        observe(observer, ProbeName::AnalyzerIntegration, extcap_status);
+    let (fragcap_version, binary_path, catalog_db_path, local_db_path) =
+        observe(observer, ProbeName::Identity, identity_fields);
+    let target_entry_count = observe(observer, ProbeName::TargetStores, read_target_entry_count);
+    let deep_capture = observe(
+        observer,
+        ProbeName::DeepCaptureReadiness,
+        deep_capture_probe,
+    );
+    let etw_available = observe(
+        observer,
+        ProbeName::ProcessEventTracing,
+        tracing_availability,
+    );
     Inputs {
         fragcap_version,
         binary_path,
@@ -665,13 +750,9 @@ fn gather_windows() -> Inputs {
         local_db_path,
         os: "Windows".to_string(),
         subsystem: Subsystem::Native,
-        privilege: if is_elevated() {
-            Privilege::Elevated
-        } else {
-            Privilege::NotElevated
-        },
+        privilege,
         npcap,
-        etw_available: tracing_availability(),
+        etw_available,
         live_available: live_availability(),
         socket_table_available: socket_table_availability(),
         interfaces,
@@ -725,6 +806,48 @@ pub(crate) fn is_elevated() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observe_reports_begin_before_work_completes() {
+        struct RecordingObserver {
+            started: Instant,
+            events: Vec<(&'static str, Duration)>,
+        }
+
+        impl ProbeObserver for RecordingObserver {
+            fn begin(&mut self, _probe: ProbeName) {
+                self.events.push(("begin", self.started.elapsed()));
+            }
+
+            fn complete(&mut self, _probe: ProbeName, elapsed: Duration) {
+                self.events.push(("complete", elapsed));
+            }
+        }
+
+        let mut observer = RecordingObserver {
+            started: Instant::now(),
+            events: Vec::new(),
+        };
+        let value = observe(&mut observer, ProbeName::Identity, || {
+            std::thread::sleep(Duration::from_millis(50));
+            7
+        });
+
+        assert_eq!(value, 7);
+        assert_eq!(observer.events.len(), 2);
+        assert_eq!(observer.events[0].0, "begin");
+        assert!(
+            observer.events[0].1 < Duration::from_millis(20),
+            "begin was delayed until {:?}",
+            observer.events[0].1
+        );
+        assert_eq!(observer.events[1].0, "complete");
+        assert!(
+            observer.events[1].1 >= Duration::from_millis(50),
+            "completion did not include slow work: {:?}",
+            observer.events[1].1
+        );
+    }
 
     #[test]
     fn manifest_declared_artifacts_use_manifest_paths_and_reject_parent_paths() {

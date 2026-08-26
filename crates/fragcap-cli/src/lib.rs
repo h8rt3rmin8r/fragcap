@@ -201,7 +201,7 @@ fn dispatch(
         Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::DeepCapture(args) => commands::deep_capture::run(&args, emitter),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
-        Command::Doctor(args) => commands::doctor::run(&args, json, out),
+        Command::Doctor(args) => commands::doctor::run(&args, json, out, emitter),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, json, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
