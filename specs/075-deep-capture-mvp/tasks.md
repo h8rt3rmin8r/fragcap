@@ -79,4 +79,4 @@
 - [X] T047 Run `cargo xtask spec`.
 - [X] T048 Run `cargo xtask changelog --check`.
 - [X] T049 Scan added lines for local PII, actual title names, local paths, endpoints, credentials, account material, and captured payloads.
-- [ ] T050 Review PR comments from AI agents and respond under each respective comment before final human review.
+- [X] T050 Review PR comments from AI agents and respond under each respective comment before final human review.

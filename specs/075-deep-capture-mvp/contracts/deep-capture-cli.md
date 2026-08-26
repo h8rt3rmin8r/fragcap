@@ -53,6 +53,8 @@ The command exits before launch and before mutation when:
 - `--launch` is omitted;
 - the selected proxy backend is unavailable;
 - the target lacks stored facts proving scoped proxy propagation to the final client;
+- Steam is already running, so the protocol handler cannot inherit the scoped proxy environment;
+- the selected path is a direct executable or another launch case the managed Capture launcher does not implement;
 - trust mutation is required but not confirmed;
 - the requested launch path requires system-wide proxy configuration;
 - stale fragcap-owned proxy state blocks the selected local port and cannot be cleaned safely.

@@ -18,6 +18,11 @@
 - Q: Does a synthetic controlled target satisfy the verification requirement? A: Yes. The MVP must include a controlled local target path that exercises proxy routing, trust behavior, application records, and bundle correlation without a third-party game account.
 - Q: Should Deep Capture feel like a separate product flow? A: No. It should use the existing target resolution, capture status, session identity, output, compatibility fact, and doctor cleanup surfaces.
 
+### Session 2026-08-26
+
+- Q: Which real managed launch path does the MVP implement? A: A Steam protocol launch from a cold Steam state, and only when current facts prove client routing and proxy propagation for that exact case. Warm Steam cannot inherit environment changes made in fragcap, and the existing Capture launcher does not launch direct executables, so both are preflight refusals.
+- Q: When is the effective Capture launch validated? A: Before the proxy starts, session CA material is created, or current-user trust changes. Deep Capture consumes that prepared configuration for the run rather than resolving it again after side effects.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Run one coherent Deep Capture session (Priority: P1)
@@ -68,9 +73,9 @@ An operator runs Deep Capture on a machine where the fragcap Deep Capture CA is 
 
 - **FR-001**: The CLI MUST expose a Deep Capture command or subcommand that resolves one selected target through the same stored-target selector rules used by `capture`.
 - **FR-002**: Deep Capture MUST require a stored target for the MVP. Raw `--process` Deep Capture is out of scope because it cannot supply target-scoped launch facts or compatibility fact updates.
-- **FR-003**: Deep Capture MUST run a blocking preflight over proxy backend availability, session storage, CA/trust state, target compatibility facts, and launch path support before launching the target.
+- **FR-003**: Deep Capture MUST run a blocking preflight over proxy backend availability, session storage, CA/trust state, target compatibility facts, and the effective Capture launch configuration before starting the proxy, creating session CA material, mutating trust, or launching the target.
 - **FR-004**: The MVP proxy backend MUST be an owned child process using the external `mitmdump` executable detected by doctor. The backend interface MUST be narrow enough to replace with a native Rust backend later without changing the CLI contract.
-- **FR-005**: The command MUST configure proxy settings only for the managed launch environment or equivalent target-scoped launch surface. It MUST NOT mutate system-wide proxy settings.
+- **FR-005**: The command MUST configure proxy settings only for the managed launch environment or equivalent target-scoped launch surface. The real-target MVP supports a fact-backed cold Steam protocol launch; it MUST refuse warm Steam and direct-executable launch cases. It MUST NOT mutate system-wide proxy settings.
 - **FR-006**: The command MUST refuse launch paths whose stored facts do not show scoped proxy routing to the final client or whose behavior is unknown and not being explicitly measured by a controlled harness.
 - **FR-007**: The command MUST create, reuse, trust, and clean up only fragcap-owned Deep Capture CA material, with explicit user confirmation before any trust mutation.
 - **FR-008**: Silent trust changes are prohibited. In non-interactive mode, a missing required trust confirmation MUST be a refusal unless an explicit pre-confirmed flag is present.

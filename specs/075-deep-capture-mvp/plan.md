@@ -6,7 +6,7 @@
 
 ## Summary
 
-Implement the first functional Deep Capture vertical slice: one stored target, one managed launch path whose facts show scoped proxy compatibility, one session-owned `mitmdump` proxy backend, explicit fragcap-owned CA/trust lifecycle, packet capture running beside application-layer observation, a #216 session bundle, #217 compatibility fact updates, and #218 doctor cleanup integration.
+Implement the first functional Deep Capture vertical slice: one stored target, a cold Steam protocol launch whose exact-case facts show scoped proxy compatibility, one session-owned `mitmdump` proxy backend, explicit fragcap-owned CA/trust lifecycle, packet capture running beside application-layer observation, a #216 session bundle, #217 compatibility fact updates, and #218 doctor cleanup integration.
 
 The implementation should be one substantial PR. The internal phases below are checkpoints for development and review, not separate PR boundaries.
 
@@ -40,7 +40,7 @@ In scope:
 - Blocking preflight using existing doctor-compatible proxy and Deep Capture readiness facts.
 - `mitmdump` backend adapter with owned process lifecycle, bound local port, structured event ingestion, and cleanup.
 - Fragcap-owned CA material and explicit current-user trust workflow.
-- Managed launch with scoped proxy environment variables or equivalent target-scoped configuration.
+- Cold Steam protocol managed launch with scoped proxy environment variables; warm Steam and direct-executable launch cases are blocking preflight refusals in this MVP.
 - Existing packet capture path running alongside proxy observation.
 - Session bundle creation using the #216 contracts.
 - Application JSONL and optional HAR when HTTP semantics are observable.
@@ -63,7 +63,7 @@ Out of scope:
 
 ### Phase 1: Command and Preflight
 
-Add the Deep Capture command surface, parse options, resolve exactly one stored target, and refuse unsupported invocation shapes before any proxy, trust, or launch side effect. Preflight should consume the same raw facts doctor reports where possible and layer command-specific blocking rules on top.
+Add the Deep Capture command surface, parse options, resolve exactly one stored target, prepare the effective Capture launch configuration, and refuse unsupported invocation shapes before any proxy, trust, or launch side effect. Preflight should consume the same raw facts doctor reports where possible and layer command-specific blocking rules on top.
 
 ### Phase 2: Proxy and Trust Adapters
 

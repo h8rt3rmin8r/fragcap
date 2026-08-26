@@ -121,7 +121,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let target_id = target.id.ok_or_else(|| {
         CliError::failure("resolved target has no local row id; cannot write compatibility facts")
     })?;
-    let selected_launch_case = launch_case(&target);
+    let selected_launch_case = launch_case(&target)?;
 
     let facts = store
         .compatibility_facts_for_target(target_id)
@@ -130,6 +130,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         require_controlled_target(&target)?;
     } else {
         require_known_compatibility(&facts, selected_launch_case)?;
+        require_supported_launch_case(selected_launch_case)?;
     }
     let backend = resolve_backend(args)?;
     let session = DeepCaptureSession::new(
@@ -140,6 +141,13 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         selected_launch_case,
     )?;
     validate_bundle_root(&session.bundle)?;
+    let prepared_capture = if args.controlled_target {
+        None
+    } else {
+        let capture_args = real_capture_args(args, &session.bundle);
+        let prepared = capture::prepare(&capture_args, emitter)?;
+        Some((capture_args, prepared))
+    };
 
     emitter.event(&Event::DeepCapturePreflight {
         status: "ready".to_string(),
@@ -225,8 +233,10 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
                 ),
             }
         } else {
+            let (capture_args, prepared) = prepared_capture
+                .expect("a real Deep Capture session is prepared before side effects");
             let (flow_registry, capture_result, process_events) =
-                run_real_capture(args, &session.bundle, session.listen_port, emitter);
+                run_real_capture(&capture_args, prepared, session.listen_port, emitter);
             let stop_result = proxy
                 .stop()
                 .map_err(|e| CliError::failure(format!("cannot stop proxy backend: {e}")));
@@ -1284,28 +1294,111 @@ fn session_id() -> String {
     format!("fcap-session-{secs}-{}", std::process::id())
 }
 
-fn launch_case(target: &TargetEntry) -> CompatibilityLaunchCase {
+fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError> {
     if target
         .anchor
         .as_deref()
         .is_some_and(|anchor| anchor.starts_with("steam:"))
     {
-        CompatibilityLaunchCase::SteamProtocolWarm
+        Ok(steam_launch_case(steam_is_running()?))
     } else {
-        CompatibilityLaunchCase::DirectExeWarm
+        Ok(CompatibilityLaunchCase::DirectExeWarm)
     }
 }
 
-fn run_real_capture(
-    args: &DeepCaptureArgs,
-    bundle: &Path,
-    listen_port: u16,
-    emitter: &mut Emitter,
-) -> (Arc<FlowRegistry>, Result<(), CliError>, Vec<String>) {
-    let proxy_url = format!("http://127.0.0.1:{listen_port}");
-    let _env = ScopedProxyEnv::set(&proxy_url);
-    let flow_registry = Arc::new(FlowRegistry::default());
-    let capture_args = CaptureArgs {
+fn steam_launch_case(steam_running: bool) -> CompatibilityLaunchCase {
+    if steam_running {
+        CompatibilityLaunchCase::SteamProtocolWarm
+    } else {
+        CompatibilityLaunchCase::SteamProtocolCold
+    }
+}
+
+fn require_supported_launch_case(launch_case: CompatibilityLaunchCase) -> Result<(), CliError> {
+    match launch_case {
+        CompatibilityLaunchCase::SteamProtocolCold => Ok(()),
+        CompatibilityLaunchCase::SteamProtocolWarm => Err(CliError::usage(
+            "Deep Capture cannot apply scoped proxy settings through an already-running Steam \
+             process; close Steam and retry so fragcap can own the cold launch",
+        )),
+        _ => Err(CliError::usage(format!(
+            "Deep Capture does not support managed launch case {}; this MVP supports only a \
+             cold Steam protocol launch whose compatibility facts prove client routing",
+            launch_case.as_str()
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn steam_is_running() -> Result<bool, CliError> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // This is a handle to a read-only process snapshot, not to any process. It
+    // supplies the image names needed to distinguish a cold launch from a warm
+    // protocol dispatch without requesting rights against Steam or a target.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE || snapshot == 0 {
+        return Err(CliError::failure(format!(
+            "cannot determine whether Steam is already running: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    // SAFETY: the snapshot is live and entry declares its platform structure size.
+    if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: the snapshot handle is closed exactly once before returning.
+        unsafe { CloseHandle(snapshot) };
+        return Err(CliError::failure(format!(
+            "cannot enumerate processes while checking Steam state: {error}"
+        )));
+    }
+
+    loop {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(entry.szExeFile.len());
+        if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case("steam.exe") {
+            // SAFETY: the snapshot handle is closed exactly once before returning.
+            unsafe { CloseHandle(snapshot) };
+            return Ok(true);
+        }
+        // SAFETY: the same live snapshot and initialized entry remain valid.
+        if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+            // SAFETY: read immediately after the failed enumeration call.
+            let code = unsafe { GetLastError() };
+            // SAFETY: the snapshot handle is closed exactly once before returning.
+            unsafe { CloseHandle(snapshot) };
+            if code == ERROR_NO_MORE_FILES {
+                return Ok(false);
+            }
+            return Err(CliError::failure(format!(
+                "cannot finish enumerating processes while checking Steam state: {}",
+                std::io::Error::from_raw_os_error(code as i32)
+            )));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn steam_is_running() -> Result<bool, CliError> {
+    Err(CliError::usage(
+        "Deep Capture managed Steam launch is only supported on Windows",
+    ))
+}
+
+fn real_capture_args(args: &DeepCaptureArgs, bundle: &Path) -> CaptureArgs {
+    CaptureArgs {
         selector: args.selector.clone(),
         target: args.target.clone(),
         id: args.id,
@@ -1330,20 +1423,35 @@ fn run_real_capture(
         ring: None,
         launch: true,
         offline: OfflineArgs::default(),
-    };
+    }
+}
+
+fn run_real_capture(
+    capture_args: &CaptureArgs,
+    prepared: capture::PreparedCapture,
+    listen_port: u16,
+    emitter: &mut Emitter,
+) -> (Arc<FlowRegistry>, Result<(), CliError>, Vec<String>) {
+    let proxy_url = format!("http://127.0.0.1:{listen_port}");
+    let _env = ScopedProxyEnv::set(&proxy_url);
+    let flow_registry = Arc::new(FlowRegistry::default());
     emitter.begin_event_capture();
-    let result =
-        capture::run_with_flow_registry(&capture_args, emitter, Arc::clone(&flow_registry))
-            .and_then(|exit| {
-                if exit == Exit::SUCCESS {
-                    Ok(())
-                } else {
-                    Err(CliError::failure(format!(
-                        "packet capture ended with exit code {}",
-                        exit.code()
-                    )))
-                }
-            });
+    let result = capture::run_prepared_with_flow_registry(
+        capture_args,
+        emitter,
+        prepared,
+        Arc::clone(&flow_registry),
+    )
+    .and_then(|exit| {
+        if exit == Exit::SUCCESS {
+            Ok(())
+        } else {
+            Err(CliError::failure(format!(
+                "packet capture ended with exit code {}",
+                exit.code()
+            )))
+        }
+    });
     let process_events = emitter.take_captured_events();
     (flow_registry, result, process_events)
 }
@@ -2694,6 +2802,35 @@ mod tests {
         latest.launch_case = Some(selected);
         superseded.push(latest);
         assert!(require_known_compatibility(&superseded, selected).is_err());
+    }
+
+    #[test]
+    fn steam_launch_state_selects_the_exact_compatibility_case() {
+        assert_eq!(
+            steam_launch_case(false),
+            CompatibilityLaunchCase::SteamProtocolCold
+        );
+        assert_eq!(
+            steam_launch_case(true),
+            CompatibilityLaunchCase::SteamProtocolWarm
+        );
+    }
+
+    #[test]
+    fn real_mvp_accepts_only_a_cold_steam_protocol_launch() {
+        assert!(require_supported_launch_case(CompatibilityLaunchCase::SteamProtocolCold).is_ok());
+        for unsupported in [
+            CompatibilityLaunchCase::SteamProtocolWarm,
+            CompatibilityLaunchCase::DirectExeWarm,
+            CompatibilityLaunchCase::DirectExeCold,
+            CompatibilityLaunchCase::PublisherLauncherCold,
+        ] {
+            assert!(
+                require_supported_launch_case(unsupported).is_err(),
+                "{} must be refused before side effects",
+                unsupported.as_str()
+            );
+        }
     }
 
     #[test]

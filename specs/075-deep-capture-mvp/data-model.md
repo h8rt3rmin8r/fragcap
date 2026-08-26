@@ -45,6 +45,8 @@ Rules:
 
 - Any missing backend, unsupported launch path, unknown scoped proxy propagation, required but unconfirmed trust mutation, or unsafe residue that blocks the requested port becomes a blocker.
 - Unknown facts are blockers for real targets and permitted only for the controlled local harness.
+- The first real-target path is `steam-protocol-cold`. `steam-protocol-warm` is blocked because a running Steam process cannot inherit fragcap's launch environment, and direct-executable cases are blocked because the existing managed-launch surface does not execute them.
+- The effective Capture configuration is prepared before proxy or trust side effects and consumed unchanged by the run.
 
 ## ProxyBackend
 

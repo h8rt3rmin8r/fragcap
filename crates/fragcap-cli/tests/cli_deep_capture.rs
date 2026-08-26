@@ -14,7 +14,8 @@ use common::run;
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
     resolved_client_launch, ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, Selection, Store, TargetClassification, TargetEntry,
+    CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store, TargetClassification,
+    TargetEntry,
 };
 
 fn controlled_environment() -> &'static Mutex<()> {
@@ -50,6 +51,8 @@ fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
             let fact =
                 CompatibilityFact::new(id, key, value, CompatibilityEvidenceSource::UserConfirmed)
                     .expect("compatibility fact");
+            let mut fact = fact;
+            fact.launch_case = Some(CompatibilityLaunchCase::DirectExeWarm);
             store
                 .insert_compatibility_fact(&fact)
                 .expect("insert compatibility fact");
@@ -139,6 +142,35 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
     assert!(
         err.contains("requires current compatibility facts"),
         "the refusal names missing facts rather than backend state: {err}"
+    );
+}
+
+#[test]
+fn deep_capture_refuses_direct_launch_before_creating_session_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let bundle = dir.path().join("bundle");
+
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("does not support managed launch case direct-exe-warm"),
+        "the refusal names the unsupported launch path: {err}"
+    );
+    assert!(
+        !bundle.exists(),
+        "preflight refusal must not create session storage"
     );
 }
 

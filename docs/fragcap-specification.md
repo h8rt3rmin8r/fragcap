@@ -101,7 +101,7 @@ enforcement.
 | 0.1.7-draft | 2026-08-24 | W. Thompson | **Positions Capture and Deep Capture as first-class product modes (issue #213).** Updates sections 2.1, 3.1, 3.2, 19, 27.2, 28, and 29 so shipped Capture remains passive while planned Deep Capture is explicit, scoped local proxy inspection. Expands constitution principle **P-1** to No Covert Target Instrumentation (constitution 1.4.0), adds target TLS key extraction to the denylist, and records `AI_CONTEXT.md` as required context for cybersecurity-sensitive agent work. |
 | 0.1.8-draft | 2026-08-25 | W. Thompson | **Defines the Deep Capture session bundle and output correlation model (issue #216).** Adds section 13.7, updates sections 28 and 29, and records the manifest, artifact authority rules, application JSONL, HAR conditions, sensitive TLS key-log handling, proxy/process sidecars, compatibility update sidecar, cleanup report, and correlation anchors. |
 | 0.1.9-draft | 2026-08-25 | W. Thompson | **Adds Deep Capture readiness and cleanup checks to doctor (issue #218).** Extends section 26.3 so doctor reports proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, and session storage, with confirmation-gated cleanup for fragcap-owned residue. |
-| 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. |
+| 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, fact-backed cold Steam managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. Warm Steam and direct-executable cases are side-effect-free preflight refusals. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2746,6 +2746,15 @@ the final client, and it refuses missing CA trust confirmation before mutating
 trust state. It never silently promotes an unknown launch path to system-wide
 proxy settings.
 
+The first real-target managed path is a Steam protocol launch from a cold Steam
+state. A running Steam process cannot inherit environment changes made in
+fragcap, so a warm Steam protocol launch is refused even when older facts exist
+for that case. Direct-executable launches are also refused because Capture's
+managed-launch surface does not execute them. Deep Capture resolves and retains
+the effective Capture launch configuration during preflight, before starting the
+proxy, creating session CA material, or changing current-user trust; the run
+consumes that prepared configuration rather than resolving it again afterward.
+
 The initial backend boundary is named by `--proxy-backend mitmdump`. The backend
 is replaceable by design: the CLI contract, bundle contract, status event stream,
 and compatibility facts do not depend on Python-specific implementation details.
@@ -4144,7 +4153,7 @@ to section 6.2.
 | Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | **Resolved 2026-08-24.** Findings are recorded in the proxy-inheritance reports and feed `deep_capture_facts`. |
 | Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | **Resolved 2026-08-25.** A required manifest indexes `.fcapng`, application JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, omissions, sensitivity, and correlation anchors. |
 | Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
-| Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219 | **Resolved 2026-08-25.** `fragcap deep-capture` is the first command path. It refuses unknown real-target compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
+| Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219 | **Resolved 2026-08-26.** `fragcap deep-capture` is the first command path. Its real-target path is a fact-backed cold Steam protocol launch; warm Steam and direct-executable cases are preflight refusals. It validates and retains the effective Capture launch before proxy or trust side effects, refuses unknown compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.
