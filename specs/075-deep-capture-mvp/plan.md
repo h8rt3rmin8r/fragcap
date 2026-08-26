@@ -80,3 +80,15 @@ Write manifest, application JSONL, HAR where observable, proxy/process sidecars,
 ### Phase 5: Verification and Hardening
 
 Run deterministic fake-backend tests in CI, optional local `mitmdump` demonstration tests, privacy scans, and full workspace gates. Validate that ordinary Capture, doctor, and extcap behavior still hold.
+
+## Implementation Decisions
+
+### 2026-08-26
+
+- Added a session-local `FlowRegistry` on the existing pipeline output thread. It assigns stable packet `flow_id` values only after write-gate admission and retains already-computed attribution for proxy correlation. Mitmproxy connection UUIDs remain separate `proxy_connection_id` values.
+- Replaced fake-events-only controlled verification with a live deterministic loopback adapter and a real placeholder child process. The adapter emits observations through the production ingestion path; controlled packet truth remains synthetic because continuous integration has no capture driver.
+- Limited Windows CA trust mutation to the current-user Root store, keyed removal to the exact certificate thumbprint, and separated proxy process, port, trust, private material, packet truth, key-log, artifact, and manifest cleanup results.
+- Made partial sessions durable. Observations collected before target, capture, proxy, or writer failure are bundled and written back only as scrubbed observed facts; missing packet truth and analyzer aids are explicit omissions.
+- Confirmed the external backend's documented `SSLKEYLOGFILE` support. A requested key-log artifact is created and announced at its final bundle path before proxy traffic, populated incrementally for live analyzers, and retained and declared only when nonempty.
+- Placed HAR projection in shared CLI output infrastructure so HTTP-semantic producers outside Deep Capture can reuse the same utility-wide format.
+- Reused the central lifecycle emitter as the real-session process sidecar source, preserving observed stage match and exit records without a second process watcher.

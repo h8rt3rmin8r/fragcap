@@ -100,7 +100,7 @@ pub use attribution::{Attribution, Fidelity, StageId};
 pub use duration::DurationError;
 pub use error::{AttrError, SinkError, SourceError};
 pub use filter::{FilterConfig, FilterManager, FilterProgram, Install};
-pub use flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
+pub use flow::{AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowRegistry, Proto};
 pub use interface::{
     select, DriverReport, ExclusionReason, InterfaceId, InterfaceInventory, InterfaceRecord,
     InterfaceRetirement, RetirementReason, SelectedInterface, SelectionError, SelectionOutcome,

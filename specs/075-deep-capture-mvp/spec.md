@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-25
 
-**Status**: Draft
+**Status**: Implemented
 
 **Input**: User description: "Issue #219. Define and build the Deep Capture MVP path after the architecture, compatibility facts, session bundle, and doctor readiness slices have landed."
 
@@ -103,7 +103,7 @@ An operator runs Deep Capture on a machine where the fragcap Deep Capture CA is 
 - **SC-002**: The same run emits human status and `--json` events for Deep Capture phases without escape sequences in non-terminal output.
 - **SC-003**: Missing backend, missing trust confirmation, unknown launch compatibility, and unsupported protocol cases are refused or reported with distinct messages and machine-readable event fields.
 - **SC-004**: Compatibility facts written by the run can be read through the existing store APIs and contain only scrubbed placeholder-safe values in committed tests.
-- **SC-005**: No existing Capture CLI golden, packet output, or doctor behavior regresses except for expected additions to help text or shared Deep Capture readiness output.
+- **SC-005**: Existing Capture and doctor behavior remains stable except for the intentional Deep Capture command/help additions and the additive packet `flow_id` required for cross-artifact correlation.
 
 ## Assumptions
 

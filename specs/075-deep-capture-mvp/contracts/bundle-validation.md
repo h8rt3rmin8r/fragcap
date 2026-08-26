@@ -15,7 +15,7 @@ The MVP bundle must conform to the #216 manifest and application JSONL contracts
 ## Optional artifacts
 
 - `http.har`: produced only when HTTP semantics are observable and HAR output is requested or enabled by default for the MVP.
-- `tls-keylog.log`: produced only when explicitly requested for analyzer integration.
+- `tls-keylog.log`: created at its final bundle path before proxy traffic only when explicitly requested, populated incrementally for live analyzer integration, and declared as produced only when nonempty at finalization.
 
 ## Required validation
 

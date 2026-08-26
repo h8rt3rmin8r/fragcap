@@ -93,7 +93,7 @@ fn jsonl_facts(buf: &[u8]) -> Vec<Facts> {
             continue; // header or trailer
         }
         let mut facts = Facts::new();
-        for key in ["pid", "proc", "role", "stage", "dir", "attr"] {
+        for key in ["pid", "proc", "role", "stage", "dir", "attr", "flow_id"] {
             if let Some(found) = v.get(key) {
                 let rendered = match found {
                     Value::String(s) => s.clone(),

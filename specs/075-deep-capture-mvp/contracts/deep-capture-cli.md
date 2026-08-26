@@ -29,17 +29,19 @@ Deep Capture may reuse these `capture` controls where they preserve bundle accou
 - `--wait`
 - `--max-packets`
 - `--max-bytes`
-- `--roles`
 - `--interface`
-- `--loopback`
 - `--no-payload`
+
+Deep Capture always includes loopback because the local proxy path requires it.
+Role and direction filtering remain downstream concerns for the MVP so the
+session does not discard useful traffic before analysis.
 
 ## Deep Capture controls
 
 - `--trust-ca`: ask to trust the fragcap Deep Capture CA when HTTPS inspection requires it.
 - `--yes`: pre-confirm trust and cleanup prompts only where the command is otherwise interactive-safe.
 - `--har`: write HAR when HTTP semantics are observable.
-- `--key-log`: write a proxy-owned analyzer key log and mark it secret-adjacent in the manifest.
+- `--key-log`: create and announce a proxy-owned analyzer key log before proxy traffic, append secrets during the session, and mark a nonempty result secret-adjacent in the manifest.
 - `--proxy-backend mitmdump`: select the MVP backend. Other values are refused until implemented.
 
 ## Refusals

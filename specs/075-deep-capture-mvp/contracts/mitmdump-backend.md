@@ -9,7 +9,7 @@ It must:
 - discover the executable through the same PATH-based logic doctor uses;
 - record backend name and version;
 - bind to a loopback address and a session-selected local port;
-- configure CA material and key-log output through backend-supported options;
+- create a requested key log at its final bundle path before startup and configure incremental key-log output through backend-supported options;
 - stream or collect application observations into fragcap's application JSONL model;
 - report backend startup, readiness, abnormal exit, timeout, and cleanup outcomes;
 - stop the child process at session end or interrupt.

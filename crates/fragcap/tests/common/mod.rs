@@ -25,9 +25,9 @@ use std::time::Duration;
 
 use fragcap::{
     AttributionScript, AttributionState, CaptureStats, CapturedPacket, FlowAttributor,
-    HeaderParser, InterfaceAddrs, InterfaceDeclaration, JsonLinesWriter, LinkType, PacketSource,
-    PayloadMode, PcapngWriter, Pipeline, PipelineConfig, PipelineReport, ReplaySource, Sink,
-    SourceError, SourceStats, WriteGate,
+    FlowRegistry, HeaderParser, InterfaceAddrs, InterfaceDeclaration, JsonLinesWriter, LinkType,
+    PacketSource, PayloadMode, PcapngWriter, Pipeline, PipelineConfig, PipelineReport,
+    ReplaySource, Sink, SourceError, SourceStats, WriteGate,
 };
 
 /// Every fixture in the corpus, with the local addresses its script implies.
@@ -81,6 +81,7 @@ pub fn render(name: &str) -> Vec<u8> {
     let attributor: Box<dyn FlowAttributor> = Box::new(fragcap::ScriptedAttributor::new(script));
     let link = source.link_type();
     let mut parser = HeaderParser::new(InterfaceAddrs::new(local.iter().copied()));
+    let flow_registry = FlowRegistry::default();
 
     let mut buf = Vec::new();
     let mut writer = PcapngWriter::new(&mut buf).expect("in-memory write cannot fail");
@@ -99,8 +100,9 @@ pub fn render(name: &str) -> Vec<u8> {
         received += 1;
         let mut packet = CapturedPacket::from_raw(raw, InterfaceId::default());
         parser.apply(link, &mut packet);
-        if let Some(key) = packet.flow.as_ref() {
-            packet.attribution = attributor.resolve(key, packet.ts);
+        if let Some(key) = packet.flow {
+            packet.attribution = attributor.resolve(&key, packet.ts);
+            packet.flow_id = Some(flow_registry.observe(key, packet.attribution.as_ref()));
         }
         writer.write(&packet).expect("every packet is written");
     }
@@ -175,6 +177,7 @@ pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
     let attributor: Box<dyn FlowAttributor> = Box::new(fragcap::ScriptedAttributor::new(script));
     let link = source.link_type();
     let mut parser = HeaderParser::new(InterfaceAddrs::new(local.iter().copied()));
+    let flow_registry = FlowRegistry::default();
 
     let mut packets = Vec::new();
     let mut attributed = 0u64;
@@ -188,8 +191,9 @@ pub fn replay(name: &str) -> (Vec<CapturedPacket>, CaptureStats) {
         };
         let mut packet = CapturedPacket::from_raw(raw, InterfaceId::default());
         parser.apply(link, &mut packet);
-        if let Some(key) = packet.flow.as_ref() {
-            packet.attribution = attributor.resolve(key, packet.ts);
+        if let Some(key) = packet.flow {
+            packet.attribution = attributor.resolve(&key, packet.ts);
+            packet.flow_id = Some(flow_registry.observe(key, packet.attribution.as_ref()));
         }
         // Three states, not two. A packet that produced no flow key was never
         // attempted, which `stats.rs` distinguishes from attempted and

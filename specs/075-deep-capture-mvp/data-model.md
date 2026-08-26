@@ -10,7 +10,7 @@ Fields:
 - `local_db`: optional local store path.
 - `catalog_db`: optional catalog store path.
 - `bundle_root`: optional output bundle root.
-- `duration`, `wait`, `max_packets`, `max_bytes`, `roles`, `scope`, `direction`, `interfaces`, `loopback`, `no_payload`: capture controls reused from `CaptureArgs` where applicable.
+- `duration`, `wait`, `max_packets`, `max_bytes`, `interfaces`, and `no_payload`: capture controls reused from `CaptureArgs`.
 - `trust`: requested trust behavior, such as confirm interactively, pre-confirm, or refuse without mutation.
 - `proxy_backend`: selected backend, initially `mitmdump`.
 - `emit_key_log`: whether to produce a proxy-owned analyzer key log.
@@ -70,6 +70,7 @@ Rules:
 - The proxy is owned by the Deep Capture session.
 - The proxy must bind only to local interfaces.
 - Process exit, kill, timeout, and cleanup outcomes are recorded.
+- The controlled adapter binds a real loopback listener and receives requests from a placeholder child process; it does not fabricate process identity.
 
 ## TrustState
 
@@ -113,6 +114,7 @@ Fields:
 Rules:
 
 - The same `session_id` appears in manifest, application JSONL, HAR metadata, proxy log, process trace, compatibility update sidecar, cleanup report, and status events.
+- Session state is `complete`, `partial`, or `failed`; observations collected before a failure remain eligible for scrubbed local fact updates.
 
 ## ApplicationObservation
 

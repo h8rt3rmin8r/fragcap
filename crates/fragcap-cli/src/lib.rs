@@ -30,6 +30,7 @@ mod commands;
 mod emit;
 mod events;
 mod exit;
+mod har;
 // The live capture status display (slice S069) is reachable only from
 // `capture_live`/`drive_live`, which are themselves `etw`+`windows`-gated
 // (an ETW event stream has no non-Windows meaning). Gating this module the
@@ -159,6 +160,8 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
         first.as_deref(),
         Some(
             "capture"
+                | "deep-capture"
+                | "__controlled-target"
                 | "replay"
                 | "targets"
                 | "technologies"
@@ -196,6 +199,8 @@ fn dispatch(
 ) -> Result<Exit, CliError> {
     match command {
         Command::Capture(args) => commands::capture::run(&args, emitter),
+        Command::DeepCapture(args) => commands::deep_capture::run(&args, emitter),
+        Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::Doctor(args) => commands::doctor::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, json, out, emitter),

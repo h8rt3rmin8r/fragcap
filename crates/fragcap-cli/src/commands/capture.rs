@@ -28,7 +28,8 @@
 
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{resolved_client_launch, Store};
-use fragcap::CaptureScope;
+use fragcap::{CaptureScope, FlowRegistry};
+use std::sync::Arc;
 
 use crate::assemble;
 use crate::attach;
@@ -40,6 +41,24 @@ use crate::orchestrator;
 
 /// Run `capture`.
 pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
+    run_inner(args, emitter, None)
+}
+
+/// Run `capture` with a shared packet-flow registry for Deep Capture
+/// correlation. The ordinary command uses its pipeline-owned registry.
+pub(crate) fn run_with_flow_registry(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+    flow_registry: Arc<FlowRegistry>,
+) -> Result<Exit, CliError> {
+    run_inner(args, emitter, Some(flow_registry))
+}
+
+fn run_inner(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+    flow_registry: Option<Arc<FlowRegistry>>,
+) -> Result<Exit, CliError> {
     // Exactly one target input is present (the clap group guarantees it). A stored
     // target resolves against the local store (and, when Steam-anchored, through the
     // install-layout cascade); a raw process image synthesizes an identity directly.
@@ -103,7 +122,8 @@ pub fn run(args: &CaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> 
         ));
         config.scope = CaptureScope::All;
     }
-    let components = assemble::components(&args.offline, &config)?;
+    let mut components = assemble::components(&args.offline, &config)?;
+    components.flow_registry = flow_registry;
 
     // Capture is launch-agnostic: report an already-running attach, and warn when a
     // resolved path anchor cannot be checked against the executable-only startup

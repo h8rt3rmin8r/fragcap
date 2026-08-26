@@ -29,7 +29,9 @@ pub mod core {
     pub use fragcap_core::attribution::{Attribution, StageId};
     pub use fragcap_core::duration::DurationError;
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
-    pub use fragcap_core::flow::{AttributionKey, Direction, Endpoint, FlowKey, Proto};
+    pub use fragcap_core::flow::{
+        AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowRegistry, Proto,
+    };
     pub use fragcap_core::interface::{
         select, virtual_verdict, InterfaceId, InterfaceInventory, InterfaceRecord,
         SelectedInterface, SelectionError, SelectionOutcome, SelectionSettings, VirtualVerdict,
@@ -84,12 +86,14 @@ pub mod targets {
         name_divergence, observed_executable, register_candidate, register_candidates, resolve_id,
         resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
         sensitivities_summary, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource,
-        Classification, ClassificationSource, CorpusGate, DetectionScan, Engine, EngineBatch,
-        EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed,
-        Game, HintDatabaseProvider, ImportSummary, InstallPresence, LaunchEntry, NameDivergence,
-        RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
-        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
-        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
+        Classification, ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact,
+        CompatibilityFactKey, CompatibilityLaunchCase, CorpusGate, DetectionScan, Engine,
+        EngineBatch, EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog,
+        FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary, InstallPresence, LaunchEntry,
+        NameDivergence, RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier,
+        Selection, SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError,
+        TechCategory, Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS,
+        INSTALL_MISSING_NOTE,
     };
 
     /// The machine-wide anti-cheat presence seam (slice S068). The one real

@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.7-draft \
+**Version:** 0.1.10-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-24 \
+**Date:** 2026-08-26 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -101,6 +101,7 @@ enforcement.
 | 0.1.7-draft | 2026-08-24 | W. Thompson | **Positions Capture and Deep Capture as first-class product modes (issue #213).** Updates sections 2.1, 3.1, 3.2, 19, 27.2, 28, and 29 so shipped Capture remains passive while planned Deep Capture is explicit, scoped local proxy inspection. Expands constitution principle **P-1** to No Covert Target Instrumentation (constitution 1.4.0), adds target TLS key extraction to the denylist, and records `AI_CONTEXT.md` as required context for cybersecurity-sensitive agent work. |
 | 0.1.8-draft | 2026-08-25 | W. Thompson | **Defines the Deep Capture session bundle and output correlation model (issue #216).** Adds section 13.7, updates sections 28 and 29, and records the manifest, artifact authority rules, application JSONL, HAR conditions, sensitive TLS key-log handling, proxy/process sidecars, compatibility update sidecar, cleanup report, and correlation anchors. |
 | 0.1.9-draft | 2026-08-25 | W. Thompson | **Adds Deep Capture readiness and cleanup checks to doctor (issue #218).** Extends section 26.3 so doctor reports proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, and session storage, with confirmation-gated cleanup for fragcap-owned residue. |
+| 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1656,6 +1657,13 @@ regardless of packet direction, and packets with no flow key omit the
 field. Application sidecars use the identical id when proxy observations
 can be joined to the packet flow, which makes `flow_id` the packet-side
 mapping for Deep Capture correlation rather than a sidecar-only token.
+Assignment occurs on the pipeline's single output thread after the packet
+passes the bounded write gate. Acquisition threads remain lock-free. The
+session registry also retains the latest already-computed attribution for
+each flow so a proxy observation can reuse packet-side process and role
+truth without opening a process handle or running a second attributor.
+Proxy connection identifiers remain separate tokens and never substitute
+for `flow_id`.
 
 The cost is parsing overhead in consumers and a modest size increase.
 Both are accepted. Section 28 records binary custom options as a
@@ -1684,7 +1692,7 @@ fragcap writes newline-delimited JSON for consumers that do not read
 pcapng. One object per packet, one object per line, no enclosing array.
 
 ```json
-{"ts":1754500000.123456,"iface":"Ethernet","pid":7412,
+{"ts":1754500000.123456,"iface":"Ethernet","flow_id":"flow-00000001","pid":7412,
  "proc":"eso64.exe","role":"client","dir":"out","attr":"live",
  "proto":"udp","src":"192.0.2.10:51834","dst":"198.51.100.7:24100",
  "len":242,"orig_len":242,"data":"3f8a01..."}
@@ -1743,11 +1751,19 @@ Application JSON Lines is the canonical machine-readable application event strea
 
 HAR is an HTTP-oriented projection, not the only application truth and not exclusive to Deep Capture. Capture may produce HAR when HTTP semantics are actually observable, such as plaintext HTTP or an already-decrypted stream. Deep Capture is the expected mode for useful HTTPS HAR output because the proxy can observe HTTP semantics only when the selected target routes through it and accepts the configured local certificate authority.
 
-TLS key logs are optional analyzer aids for proxy-owned TLS tunnels. They are sensitive session material, not decrypted output. A key log is emitted only when an operator requests analyzer integration or selects an output profile that includes it, and the manifest marks it as session-scoped, proxy-owned, and secret-adjacent.
+TLS key logs are optional analyzer aids for proxy-owned TLS tunnels. They are sensitive session material, not decrypted output. When an operator requests analyzer integration or selects an output profile that includes it, fragcap creates the final bundle's key-log file before starting proxy traffic and announces its absolute path through human status and `deep_capture.key_log_ready`. The proxy appends secrets to that same file during the session so analyzers can consume them without waiting for finalization. The manifest marks a nonempty result as session-scoped, proxy-owned, and secret-adjacent.
 
 Proxy logs, process traces, compatibility update records, and cleanup reports are sidecars. The proxy log owns proxy startup, shutdown, backend errors, and proxy connection ids. The process trace owns process launch and exit chronology. Compatibility update records name Deep Capture facts written or proposed for the local target store. Cleanup reports own per-resource cleanup results for proxy processes, proxy ports, local CA trust, local CA material, TLS key logs, and sensitive output artifacts; the manifest records only the latest cleanup report path and aggregate cleanup status.
 
 Expected artifacts that are not produced are recorded as manifest omissions with reasons, such as `not-requested`, `not-observable`, `unsupported-protocol`, `proxy-not-reached`, `certificate-pinned`, `backend-unavailable`, or `writer-failed`. A Deep Capture session that could only provide metadata remains useful, but it must say which application artifacts were unavailable and why.
+
+The manifest state is `complete`, `partial`, or `failed`. A capture or proxy
+failure does not discard observations already collected: cleanup runs first,
+the manifest records missing artifacts and writer state, and scrubbed local
+compatibility facts are written only for values actually observed. A failed
+session with no packet truth reports that absence rather than creating a
+fabricated capture. A requested TLS key log is declared only when the proxy
+produced non-empty proxy-owned key material.
 
 ## 14. Sinks and Streaming
 
@@ -2690,6 +2706,58 @@ anchor is started by the operator (by any means) and observe-mode captures it; o
 a platform-anchored target is started by `--launch`. A path anchor does not apply
 to an observe-mode capture, whose client the observed ancestry determines, and is
 refused (exit 2) rather than discarded.
+
+#### 17.2.1 Deep Capture Invocation
+
+```text
+fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OPTIONS]
+
+      --target <SELECTOR>    A stored target: handle, name, or listing row index
+      --id <ID>              A stored target by durable identifier
+      --catalog-db <PATH>    The shipped catalog store used to resolve context
+      --local-db <PATH>      The local store holding targets and compatibility facts
+      --bundle <DIR>         Session bundle directory
+  -d, --duration <DURATION>  Capture duration bound
+      --wait <DURATION>      Target acquisition timeout
+      --max-packets <COUNT>  Stop after this many captured packets
+      --max-bytes <SIZE>     Stop after this many captured bytes
+  -i, --interface <NAME>     Capture interface; repeatable
+      --no-payload           Write packet metadata without payload bytes
+      --trust-ca             Confirm fragcap-owned CA trust changes
+      --yes                  Pre-confirm Deep Capture prompts
+      --har                  Write HAR when HTTP semantics are observable
+      --key-log              Write a proxy-owned analyzer key log
+      --proxy-backend <NAME> Local inspection proxy backend [default: mitmdump]
+      --quiet                Suppress progress output
+      --silent               Suppress all non-error output
+      --json                 Emit structured events on stderr
+  -h, --help                 Print help
+```
+
+`deep-capture` is the first functional Deep Capture path. It requires a stored
+target rather than a raw process image because the command needs one target
+identity, one launch path, one local compatibility-fact destination, and one
+session manifest. Raw process observation remains the `capture --process` path.
+
+The MVP requires `--launch`. The command must own the launch environment so
+scoped proxy configuration can be applied to that session only. It refuses real
+targets whose local compatibility facts do not show scoped proxy routing reaching
+the final client, and it refuses missing CA trust confirmation before mutating
+trust state. It never silently promotes an unknown launch path to system-wide
+proxy settings.
+
+The initial backend boundary is named by `--proxy-backend mitmdump`. The backend
+is replaceable by design: the CLI contract, bundle contract, status event stream,
+and compatibility facts do not depend on Python-specific implementation details.
+Continuous verification launches a placeholder child process through the same
+scoped proxy environment used by a real session. A deterministic loopback proxy
+adapter receives its HTTP-like, CONNECT/HTTPS, metadata-only, and unsupported
+requests, then feeds those observations through the production ingestion,
+bundle, compatibility, and cleanup paths. This requires no third-party account,
+external service, locally installed game, capture driver, or trust-store change.
+The controlled packet artifact is synthetic test truth because continuous
+integration has no capture driver; real sessions reuse the ordinary Capture
+pipeline and its packet-side flow registry.
 
 ### 17.3 Worked Invocations
 
@@ -4015,9 +4083,10 @@ targets, integrated with ordinary Capture sessions so packet capture, process
 attribution, application records, HAR projections, proxy logs, proxy-owned TLS
 key-log export, process traces, compatibility facts, cleanup reports, and
 analyzer outputs correlate through one session manifest. Planning is recorded in
-`docs/plans/deep-capture.md`; initial work is tracked by issues #213 through
-#220. The MVP supports only documented traffic types and records unsupported
-flows plainly.
+`docs/plans/deep-capture.md`; issues #213 through #219 establish the first
+command path, and #220 remains the user-facing supported-traffic and
+compatibility-matrix documentation work. The MVP supports only documented traffic
+types and records unsupported flows plainly.
 
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
@@ -4075,6 +4144,7 @@ to section 6.2.
 | Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | **Resolved 2026-08-24.** Findings are recorded in the proxy-inheritance reports and feed `deep_capture_facts`. |
 | Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | **Resolved 2026-08-25.** A required manifest indexes `.fcapng`, application JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, omissions, sensitivity, and correlation anchors. |
 | Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
+| Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219 | **Resolved 2026-08-25.** `fragcap deep-capture` is the first command path. It refuses unknown real-target compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.

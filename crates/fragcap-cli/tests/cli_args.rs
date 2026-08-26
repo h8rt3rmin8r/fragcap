@@ -23,6 +23,7 @@ fn help_lists_the_grouped_command_surface() {
     // Every command appears exactly once under a heading.
     for command in [
         "capture",
+        "deep-capture",
         "replay",
         "targets",
         "technologies",

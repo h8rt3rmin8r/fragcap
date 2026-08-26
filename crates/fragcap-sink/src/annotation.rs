@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use fragcap_core::attribution::StageId;
 use fragcap_core::packet::CapturedPacket;
-use fragcap_core::Direction;
+use fragcap_core::{Direction, FlowId};
 
 /// Re-exported from `fragcap-core`, where the attributor sets it.
 pub use fragcap_core::attribution::Fidelity;
@@ -124,6 +124,8 @@ pub struct Annotation {
     pub fidelity: Fidelity,
     /// Present when the capture holds more than one interface.
     pub interface: Option<Arc<str>>,
+    /// Present when the packet has a canonical flow key admitted to output.
+    pub flow_id: Option<FlowId>,
 }
 
 impl Annotation {
@@ -150,6 +152,7 @@ impl Annotation {
             // is the one case this crate can decide, because nothing was found.
             fidelity: attr.map_or(Fidelity::None, |a| a.fidelity),
             interface: interface.map(Arc::from),
+            flow_id: packet.flow_id,
         }
     }
 
@@ -189,6 +192,9 @@ impl Annotation {
         if let Some(i) = &self.interface {
             pair("iface", i, &mut out);
         }
+        if let Some(flow_id) = self.flow_id {
+            pair("flow_id", &flow_id.to_string(), &mut out);
+        }
         out
     }
 
@@ -210,6 +216,7 @@ impl Annotation {
         let mut direction = None;
         let mut fidelity = None;
         let mut interface = None;
+        let mut flow_id = None;
 
         if !body.is_empty() {
             for part in body.split(';') {
@@ -241,6 +248,18 @@ impl Annotation {
                         )
                     }
                     "iface" => interface = Some(Arc::from(value.as_str())),
+                    "flow_id" => {
+                        let ordinal = value
+                            .strip_prefix("flow-")
+                            .filter(|digits| {
+                                digits.len() >= 8
+                                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                            .and_then(|digits| digits.parse().ok())
+                            .and_then(FlowId::new)
+                            .ok_or_else(|| AnnotationError::BadValue("flow_id", value.clone()))?;
+                        flow_id = Some(ordinal);
+                    }
                     other => return Err(AnnotationError::UnknownKey(other.to_string())),
                 }
             }
@@ -254,6 +273,7 @@ impl Annotation {
             direction: direction.ok_or(AnnotationError::MissingKey("dir"))?,
             fidelity: fidelity.ok_or(AnnotationError::MissingKey("attr"))?,
             interface,
+            flow_id,
         })
     }
 }
@@ -368,6 +388,7 @@ mod tests {
             direction: AnnotatedDirection::Out,
             fidelity: Fidelity::Live,
             interface: Some(Arc::from("Ethernet 2")),
+            flow_id: None,
         }
     }
 
@@ -385,6 +406,7 @@ mod tests {
             direction: AnnotatedDirection::Out,
             fidelity: Fidelity::Live,
             interface: None,
+            flow_id: None,
         };
         assert_eq!(
             a.encode(),
@@ -564,6 +586,15 @@ mod tests {
     }
 
     #[test]
+    fn packet_flow_id_round_trips_as_the_last_optional_key() {
+        let mut a = full();
+        a.flow_id = FlowId::new(42);
+        let encoded = a.encode();
+        assert!(encoded.ends_with("flow_id=flow-00000042"));
+        assert_eq!(Annotation::decode(&encoded).unwrap(), a);
+    }
+
+    #[test]
     fn every_reserved_character_round_trips() {
         for c in [';', '=', '%', '\n', '\0', '\u{7F}', '\u{1}'] {
             let mut a = full();
@@ -597,6 +628,7 @@ mod tests {
                     direction: d,
                     fidelity: fid,
                     interface: None,
+                    flow_id: None,
                 };
                 assert_eq!(Annotation::decode(&a.encode()).unwrap(), a);
             }
