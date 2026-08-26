@@ -26,7 +26,7 @@
 //! loss P-4 forbids: an operator reading a blank engine column cannot otherwise tell
 //! "this title has no detectable engine" from "nobody looked".
 
-use fragcap_profile::SignatureCategory;
+use fragcap_profile::{FidelityTier, SignatureCategory};
 
 use crate::entry::{DetectionScan, TargetEntry};
 use crate::hint_provider::entry_windows_clients;
@@ -206,26 +206,59 @@ fn summarize(entry: &TargetEntry, categories: &[SignatureCategory]) -> String {
     if products.is_empty() {
         return coverage_marker(entry).to_string();
     }
-    products.join(", ")
+    products
+        .into_iter()
+        .map(TechnologyProduct::render)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// The distinct product names an entry carries in its `evidence` JSON, restricted
-/// to the requested categories, in category order then first-seen order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TechnologyProduct {
+    product: String,
+    fidelity: Option<FidelityTier>,
+}
+
+impl TechnologyProduct {
+    fn render(self) -> String {
+        if self.fidelity.is_some_and(|f| f >= FidelityTier::Verified) {
+            self.product
+        } else {
+            format!("{}?", self.product)
+        }
+    }
+
+    fn raise_to(&mut self, fidelity: Option<FidelityTier>) {
+        if let Some(fidelity) = fidelity {
+            if self.fidelity.is_none_or(|current| fidelity > current) {
+                self.fidelity = Some(fidelity);
+            }
+        }
+    }
+}
+
+/// The distinct products an entry carries in its `evidence` JSON, restricted to the
+/// requested categories, in category order then first-seen order.
 ///
 /// Evidence is an array of finding objects each with a `category` and a `product`
-/// string (the serialized detection findings, slice S053). A finding whose category
-/// is absent or unrecognized belongs to no requested category and is therefore not
-/// rendered in either column; that is deliberate, because guessing which column an
-/// unknown category belongs in would put a product under a heading it does not
-/// answer to (P-9). A malformed or absent evidence value yields none.
-fn evidence_products(entry: &TargetEntry, categories: &[SignatureCategory]) -> Vec<String> {
+/// string (the serialized detection findings, slice S053), and may also carry a
+/// finding fidelity. A finding whose category is absent or unrecognized belongs to
+/// no requested category and is therefore not rendered in either column; that is
+/// deliberate, because guessing which column an unknown category belongs in would
+/// put a product under a heading it does not answer to (P-9). Missing or malformed
+/// fidelity makes that product uncertain rather than silently verified. A malformed
+/// or absent evidence value yields none.
+fn evidence_products(
+    entry: &TargetEntry,
+    categories: &[SignatureCategory],
+) -> Vec<TechnologyProduct> {
     let Some(evidence) = &entry.evidence else {
         return Vec::new();
     };
     let Some(items) = evidence.as_array() else {
         return Vec::new();
     };
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<TechnologyProduct> = Vec::new();
     for wanted in categories {
         for item in items {
             let category = item
@@ -236,8 +269,20 @@ fn evidence_products(entry: &TargetEntry, categories: &[SignatureCategory]) -> V
                 continue;
             }
             if let Some(product) = item.get("product").and_then(|v| v.as_str()) {
-                if !product.is_empty() && !out.iter().any(|p| p == product) {
-                    out.push(product.to_string());
+                if product.is_empty() {
+                    continue;
+                }
+                let fidelity = item
+                    .get("fidelity")
+                    .and_then(|v| v.as_str())
+                    .and_then(FidelityTier::parse);
+                if let Some(existing) = out.iter_mut().find(|p| p.product == product) {
+                    existing.raise_to(fidelity);
+                } else {
+                    out.push(TechnologyProduct {
+                        product: product.to_string(),
+                        fidelity,
+                    });
                 }
             }
         }
@@ -310,10 +355,10 @@ mod tests {
             Some("steam:1"),
             None,
             Some(json!([
-                { "category": "engine", "product": "Unreal" },
-                { "category": "drm", "product": "Denuvo" },
-                { "category": "anti-cheat", "product": "Easy Anti-Cheat" },
-                { "category": "drm", "product": "Denuvo" }
+                { "category": "engine", "product": "Unreal", "fidelity": "verified" },
+                { "category": "drm", "product": "Denuvo", "fidelity": "verified" },
+                { "category": "anti-cheat", "product": "Easy Anti-Cheat", "fidelity": "verified" },
+                { "category": "drm", "product": "Denuvo", "fidelity": "verified" }
             ])),
         );
         e.detection_scan = Some(DetectionScan::Complete);
@@ -331,6 +376,43 @@ mod tests {
             !sensitivities_summary(&e).contains("Unreal"),
             "the sensitivities column carries no engine"
         );
+    }
+
+    #[test]
+    fn technology_summary_marks_unverified_findings() {
+        let mut e = entry(
+            Some("steam:1"),
+            None,
+            Some(json!([
+                { "category": "engine", "product": "Unreal", "fidelity": "verified" },
+                { "category": "engine", "product": "Unity", "fidelity": "authored" },
+                { "category": "engine", "product": "GameMaker", "fidelity": "heuristic-unverified" },
+                { "category": "anti-cheat", "product": "Easy Anti-Cheat", "fidelity": "observed" },
+                { "category": "drm", "product": "Steam DRM" }
+            ])),
+        );
+        e.detection_scan = Some(DetectionScan::Complete);
+
+        assert_eq!(engine_summary(&e), "Unreal, Unity, GameMaker?");
+        assert_eq!(sensitivities_summary(&e), "Easy Anti-Cheat?, Steam DRM?");
+    }
+
+    #[test]
+    fn duplicate_products_render_with_the_strongest_fidelity() {
+        let mut e = entry(
+            Some("steam:1"),
+            None,
+            Some(json!([
+                { "category": "engine", "product": "Unreal", "fidelity": "heuristic-unverified" },
+                { "category": "engine", "product": "Unreal", "fidelity": "verified" },
+                { "category": "drm", "product": "Steam DRM", "fidelity": "observed" },
+                { "category": "drm", "product": "Steam DRM", "fidelity": "heuristic-unverified" }
+            ])),
+        );
+        e.detection_scan = Some(DetectionScan::Complete);
+
+        assert_eq!(engine_summary(&e), "Unreal");
+        assert_eq!(sensitivities_summary(&e), "Steam DRM?");
     }
 
     #[test]
@@ -371,7 +453,7 @@ mod tests {
         let mut e = entry(
             Some("steam:1"),
             None,
-            Some(json!([{ "category": "engine", "product": "GameMaker" }])),
+            Some(json!([{ "category": "engine", "product": "GameMaker", "fidelity": "verified" }])),
         );
         e.detection_scan = Some(DetectionScan::Complete);
         assert_eq!(engine_summary(&e), "GameMaker");
@@ -422,7 +504,7 @@ mod tests {
         let mut e = entry(
             Some("steam:1"),
             None,
-            Some(json!([{ "category": "engine", "product": "Ren'Py" }])),
+            Some(json!([{ "category": "engine", "product": "Ren'Py", "fidelity": "verified" }])),
         );
         e.detection_scan = Some(DetectionScan::Complete);
         assert_eq!(engine_summary(&e), "Ren'Py");

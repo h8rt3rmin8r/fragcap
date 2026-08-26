@@ -105,6 +105,7 @@ enforcement.
 | 0.1.11-draft | 2026-08-26 | W. Thompson | **Publishes Deep Capture traffic support and local compatibility evidence (issue #220).** Extends sections 15, 17.2, 19.6, 28, and 29. `targets show` renders a deterministic, non-aggregating matrix from the selected target's local facts, including launch case, evidence source, and freshness. The public reference distinguishes HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext behavior without publishing a guessed title list or claiming universal decryption. |
 | 0.1.12-draft | 2026-08-26 | W. Thompson | **Corrects homepage positioning and labels the target listing's next command (issues #232 and #208).** Updates sections 17.7, 23.1, and 23.3. The homepage now leads with process-attributed game traffic, distinguishes Capture from Deep Capture, qualifies attribution and inspection claims, states the live-capture and analyzer dependencies accurately, and uses a synthetic current CLI specimen. The target listing ends with the exact labelled footer `Next command:  fragcap capture <row>`. This revision supersedes S057's frozen homepage-copy requirement without modifying its historical artifacts. |
 | 0.1.13-draft | 2026-08-26 | W. Thompson | **Adds interactive doctor progress and diagnostic timings (issue #202).** Extends section 26.3 so human terminal `fragcap doctor` runs show probe progress on stderr while preserving final human and JSON report bytes. A hidden `--timings` flag exposes per-probe elapsed times for maintainers without changing report contracts. |
+| 0.1.14-draft | 2026-08-26 | W. Thompson | **Marks unverified target technology findings (issue #211).** Extends section 17.7 so `fragcap targets` renders below-verified ENGINE and SENSITIVITIES products with a `?` suffix while verified-or-stronger products remain unmarked. The target-entry export/import contract continues to preserve each finding's raw fidelity token so machine readers can derive the same distinction. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2906,6 +2907,14 @@ DRM. No column mixes an engine with a protection product, and the same partition
 is recoverable from the target-entry export, so the table and the machine-readable
 output cannot disagree about what a technology is.
 
+Technology products also carry the fidelity of the finding that named them. A
+verified-or-stronger product renders unmarked, for example `Unreal`; any lower,
+missing, or malformed finding fidelity renders with a `?` suffix, for example `Unreal?`.
+Repeated findings for the same product collapse to one product label using the
+strongest fidelity among those findings, so a verified finding is not weakened by
+an earlier heuristic match and a heuristic match is not silently promoted to fact
+(P-9).
+
 When a technology column has no products it carries the row's detection coverage
 state instead of a blank: `-` for a complete scan that matched nothing,
 `incomplete` for a scan whose coverage was reduced, and `not scanned` when no scan
@@ -2964,10 +2973,10 @@ target need no store path unless one is named explicitly.
   export round-trips through an import with identical identifiers and no
   duplicate rows. This representation carries the entry identity and is distinct
   from the master capture schema (section 15). Each record carries the per-finding
-  category of its evidence and, when a scan is recorded, its detection coverage
-  state, so a machine reader can make the same partition and draw the same
-  coverage conclusion the listing does. An out-of-set coverage value is rejected at
-  import and nothing is applied.
+  category and fidelity of its evidence and, when a scan is recorded, its
+  detection coverage state, so a machine reader can make the same partition, mark
+  the same uncertain products, and draw the same coverage conclusion the listing
+  does. An out-of-set coverage value is rejected at import and nothing is applied.
 - `targets show <SELECTOR>` and `targets discover` are read-only inspections;
   `discover`, unlike the listing, registers nothing. `targets show` appends the
   selected target's Deep Capture compatibility matrix from local facts. It

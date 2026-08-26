@@ -307,8 +307,8 @@ fn empty_listing(out: &mut dyn Write) {
 /// therefore overflows visibly, which is a legible failure rather than a lie.
 ///
 /// The budget is therefore stated over the columns the tool controls. With every
-/// bounded column at its widest, everything but the handle costs 53 of an 80 column
-/// terminal, leaving 27 for a handle. The readiness column keeping its two short
+/// bounded column at its widest, everything but the handle costs 55 of an 80 column
+/// terminal, leaving 25 for a handle. The readiness column keeping its two short
 /// labels is what buys that much, which is why slice S065 retired the two long
 /// readiness sentences rather than moving them here (see the slice decisions
 /// fragment).
@@ -319,7 +319,9 @@ fn empty_listing(out: &mut dyn Write) {
 /// columns with every value intact. Shortening the handles a target carries is
 /// issues #166 and #173. `cli_targets.rs` measures the non-handle budget, the fit at
 /// the longest fitting handle, and the no-clipping overflow at that real 47
-/// character handle, all from rendered output, so none of this can drift unnoticed.
+/// character handle, all from rendered output. S083's uncertainty marker adds one
+/// visible character to below-verified technology products and follows the same
+/// no-clipping rule.
 fn render_table(targets: &[TargetEntry], out: &mut dyn Write) {
     let num_w = targets.len().to_string().len().max(1);
     let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");

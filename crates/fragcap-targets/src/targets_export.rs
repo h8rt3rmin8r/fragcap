@@ -225,6 +225,32 @@ mod tests {
     }
 
     #[test]
+    fn the_machine_surface_preserves_finding_fidelity() {
+        let mut e = sample();
+        e.detection_scan = Some(DetectionScan::Complete);
+        e.evidence = Some(json!([
+            { "category": "engine", "product": "Unreal", "evidence": "Binaries/Win64",
+              "fidelity": "verified" },
+            { "category": "drm", "product": "Steam DRM", "evidence": "Game.exe",
+              "fidelity": "heuristic-unverified" }
+        ]));
+
+        let doc = export_targets(&[e.clone()]);
+        let value: Value = serde_json::from_str(&doc).expect("valid JSON");
+        let findings = value.as_array().expect("array")[0]["evidence"]
+            .as_array()
+            .expect("evidence array");
+        let fidelities: Vec<&str> = findings
+            .iter()
+            .filter_map(|f| f.get("fidelity").and_then(Value::as_str))
+            .collect();
+        assert_eq!(fidelities, vec!["verified", "heuristic-unverified"]);
+
+        let back = import_targets(&doc).expect("import");
+        assert_eq!(back[0].evidence, e.evidence);
+    }
+
+    #[test]
     fn an_absent_coverage_key_means_no_scan_recorded_and_is_not_emitted() {
         let e = sample();
         assert_eq!(e.detection_scan, None);
