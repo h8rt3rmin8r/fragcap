@@ -30,24 +30,29 @@ use crate::cli::{
 };
 use crate::color::{use_color, Stream, RESET, WARN};
 use crate::commands::target_resolve;
+use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 use crate::paths;
 
 /// Run the `targets` command, writing results to `out`. With no subcommand, list
 /// the registered targets from the default local store (no footer).
-pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+pub fn run(
+    args: &TargetsArgs,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     let Some(command) = &args.command else {
-        return list_default(out, false);
+        return list_default(out, false, emitter);
     };
     match command {
-        TargetsCommand::Add(args) => add(args, out),
+        TargetsCommand::Add(args) => add(args, out, emitter),
         // `list` mirrors the bare `fragcap targets`: an omitted `--db` resolves the
         // default store, and an unresolvable location degrades to the empty listing
         // rather than erroring, since there is nothing to list either way.
         TargetsCommand::List { db } => {
             let path = db.clone().or_else(default_local_store);
             match path {
-                Some(path) => hero_listing(&path, false, out),
+                Some(path) => hero_listing(&path, false, out, emitter),
                 None => {
                     empty_listing(out);
                     Ok(Exit::SUCCESS)
@@ -55,12 +60,12 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             }
         }
         TargetsCommand::Show(args) => show(args, out),
-        TargetsCommand::Discover(args) => discover(args, out),
+        TargetsCommand::Discover(args) => discover(args, out, emitter),
         TargetsCommand::Scan {
             dir,
             catalog_db,
             db,
-        } => scan(dir, catalog_db.as_deref(), db.as_deref(), out),
+        } => scan(dir, catalog_db.as_deref(), db.as_deref(), out, emitter),
         TargetsCommand::Remove(args) => remove(args, out),
         TargetsCommand::Export(args) => export(args, out),
         TargetsCommand::Import { file, db } => import(file, db.as_deref(), out),
@@ -72,11 +77,15 @@ pub fn run(args: &TargetsArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 /// `--help`, which is what distinguishes a bare `fragcap` (footer) from an explicit
 /// `fragcap targets` (no footer). A store that does not exist yet is an empty
 /// listing, not an error.
-pub fn list_default(out: &mut dyn Write, footer: bool) -> Result<Exit, CliError> {
+pub fn list_default(
+    out: &mut dyn Write,
+    footer: bool,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     // Resolve like the rest of the surface: the FRAGCAP_LOCAL_DB override, else the
     // per-user default (whose parent is created for first use).
     let exit = match default_local_store() {
-        Some(path) => hero_listing(&path, footer, out)?,
+        Some(path) => hero_listing(&path, footer, out, emitter)?,
         None => {
             empty_listing(out);
             print_footer(out, footer);
@@ -141,8 +150,13 @@ fn resolve_store(db: Option<&Path>) -> Result<PathBuf, CliError> {
 /// name the next command. An empty result prints the commands that populate the
 /// store. Registration is additive and idempotent; no existing entry is modified
 /// (FR-001, FR-007).
-fn hero_listing(db: &Path, footer: bool, out: &mut dyn Write) -> Result<Exit, CliError> {
-    hero_listing_with_machine_probe(db, footer, out, real_machine_probe().as_ref())
+fn hero_listing(
+    db: &Path,
+    footer: bool,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
+    hero_listing_with_machine_probe(db, footer, out, emitter, real_machine_probe().as_ref())
 }
 
 /// The real machine-wide anti-cheat probe `hero_listing` uses in production: the
@@ -171,6 +185,7 @@ fn hero_listing_with_machine_probe(
     db: &Path,
     footer: bool,
     out: &mut dyn Write,
+    emitter: &mut Emitter,
     machine_probe: &dyn fragcap::targets::MachineAntiCheatProbe,
 ) -> Result<Exit, CliError> {
     let mut store = Store::open(db).map_err(|e| CliError::failure(e.to_string()))?;
@@ -178,7 +193,7 @@ fn hero_listing_with_machine_probe(
     // Discovery is a best-effort bootstrap: a missing catalog, an absent Steam, or a
     // platform without the known-roots walk registers nothing and lists whatever is
     // already registered. A discovery failure never sinks the listing.
-    register_from_discovery(&mut store, out);
+    register_from_discovery(&mut store, out, emitter);
 
     let mut targets = store
         .targets()
@@ -396,7 +411,7 @@ fn width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
 /// there is simply nothing to classify against, so it returns `Ok(0)`. A discovery
 /// composition failure or a registration failure is a real error and is returned,
 /// so a caller that must report an honest outcome (the `doctor --fix` action) can.
-fn discover_and_register(store: &mut Store, out: &mut dyn Write) -> Result<usize, CliError> {
+fn discover_and_register(store: &mut Store, emitter: &mut Emitter) -> Result<usize, CliError> {
     // Resolve and, on first run, seed the per-user catalog from the template shipped
     // beside the executable, through the same helper the capture path uses. Without
     // this the shipped catalog was never copied into the per-user location for the
@@ -407,7 +422,7 @@ fn discover_and_register(store: &mut Store, out: &mut dyn Write) -> Result<usize
     let catalog_db = match target_resolve::ensure_catalog_store(None) {
         Ok(path) => path,
         Err(message) => {
-            let _ = writeln!(out, "warning: {message}");
+            emitter.warn(&message);
             None
         }
     };
@@ -419,7 +434,7 @@ fn discover_and_register(store: &mut Store, out: &mut dyn Write) -> Result<usize
     }
     let discovery = compose_and_discover(&catalog_db, store, None)?;
     for warning in &discovery.warnings {
-        let _ = writeln!(out, "warning: {warning}");
+        emitter.warn(warning);
     }
     let outcome = fragcap::targets::register_candidates(store, &discovery.candidates)
         .map_err(|e| CliError::failure(e.to_string()))?;
@@ -429,8 +444,8 @@ fn discover_and_register(store: &mut Store, out: &mut dyn Write) -> Result<usize
 /// The hero listing's best-effort bootstrap: discover and register, but never let a
 /// discovery failure sink the listing. A failure is reported as a warning and the
 /// listing continues with whatever is already registered.
-fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
-    match discover_and_register(store, out) {
+fn register_from_discovery(store: &mut Store, out: &mut dyn Write, emitter: &mut Emitter) {
+    match discover_and_register(store, emitter) {
         Ok(registered) if registered > 0 => {
             let _ = writeln!(
                 out,
@@ -439,7 +454,7 @@ fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
         }
         Ok(_) => {}
         Err(e) => {
-            let _ = writeln!(out, "warning: discovery skipped: {}", e.message());
+            emitter.warn(&format!("discovery skipped: {}", e.message()));
         }
     }
 }
@@ -450,11 +465,14 @@ fn register_from_discovery(store: &mut Store, out: &mut dyn Write) {
 /// reports a failed action rather than a false success (P-9). A missing catalog or
 /// an absent platform source registers nothing and is reported as such, not a
 /// failure.
-pub(crate) fn run_discovery_default(out: &mut dyn Write) -> Result<Exit, CliError> {
+pub(crate) fn run_discovery_default(
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     let db = default_local_store()
         .ok_or_else(|| CliError::failure("the local store path could not be determined"))?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
-    let registered = discover_and_register(&mut store, out)?;
+    let registered = discover_and_register(&mut store, emitter)?;
     let _ = writeln!(out, "  discovery registered {registered} target(s).");
     Ok(Exit::SUCCESS)
 }
@@ -471,6 +489,7 @@ fn scan(
     catalog_db: Option<&Path>,
     db: Option<&Path>,
     out: &mut dyn Write,
+    emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
     let path = dir.to_string_lossy().into_owned();
     let source = match catalog_db {
@@ -487,7 +506,7 @@ fn scan(
     let discovery = source
         .discover()
         .map_err(|e| CliError::failure(e.to_string()))?;
-    print_discovery(&discovery, out);
+    print_discovery(&discovery, out, emitter);
 
     // Register the discovered titles (FR-016). The `--db` flag wins, else the local
     // store resolves like the rest of the surface (the `FRAGCAP_LOCAL_DB` override,
@@ -624,7 +643,11 @@ fn import(file: &Path, db: Option<&Path>, out: &mut dyn Write) -> Result<Exit, C
 /// (tier 2) and list the candidates found (slice S052). An inspection command: it
 /// reads and prints, and (unlike the hero listing) registers nothing beyond the
 /// first-run volume eligibility seeding the cross-volume walk needs to be safe.
-fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn discover(
+    args: &TargetsDiscoverArgs,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     // Both stores are overrides, never requirements (issue #179). The local one
     // resolves through the same precedence the hero listing uses; the catalog
     // one through the shared bootstrap, so a first run creates it rather than
@@ -661,7 +684,7 @@ fn discover(args: &TargetsDiscoverArgs, out: &mut dyn Write) -> Result<Exit, Cli
     );
     let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
     let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
-    print_discovery(&discovery, out);
+    print_discovery(&discovery, out, emitter);
     Ok(Exit::SUCCESS)
 }
 
@@ -742,7 +765,7 @@ fn compose_and_discover(
 /// Print a discovery listing: one line per candidate (source, identity, name,
 /// classification) then the conserved account, so an excluded volume or an
 /// unparsable title is visible rather than silent (P-4).
-fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
+fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emitter) {
     if discovery.candidates.is_empty() {
         let _ = writeln!(out, "no candidates discovered");
     }
@@ -789,7 +812,7 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
     // Surface the named diagnostics so a loss the account counts (an unreadable
     // root, a malformed manifest) is recoverable to which one failed (P-4).
     for warning in &discovery.warnings {
-        let _ = writeln!(out, "warning: {warning}");
+        emitter.warn(warning);
     }
 }
 
@@ -821,10 +844,14 @@ fn steam_add_metadata(
     )
 }
 
-fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+fn add(
+    args: &TargetsAddArgs,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     // Resolve `--steam` first: it can supply both the name and the anchor. The
-    // enumeration warnings go to `out` as surfaced diagnostics rather than being
-    // dropped (P-4). A `--steam` app id that is not installed is a usage error.
+    // enumeration warnings go through the emitter rather than being dropped (P-4).
+    // A `--steam` app id that is not installed is a usage error.
     let (name, steam_anchor, steam_install_root, steam_folder_name, steam_executable_hint) =
         if let Some(app_id) = &args.steam {
             // A missing Steam or an unsupported platform is a usage error (exit 2); a
@@ -833,7 +860,7 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             let installation =
                 fragcap::steam::discover().map_err(crate::commands::steam::map_steam_error)?;
             for warning in &installation.warnings {
-                let _ = writeln!(out, "warning: {warning}");
+                emitter.warn(warning);
             }
             let title = installation.find(app_id).ok_or_else(|| {
                 CliError::usage(format!(
@@ -918,7 +945,7 @@ fn add(args: &TargetsAddArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
     // one. This is the fourth producing source and is plumbed like the other three
     // (FR-015).
     let (evidence, detection_scan) = match args.exe.as_deref() {
-        Some(exe) => scan_exe_evidence(exe, out),
+        Some(exe) => scan_exe_evidence(exe, out, emitter),
         None => (None, None),
     };
 
@@ -1028,14 +1055,15 @@ fn prompt_socket_holder(out: &mut dyn Write) -> Result<SocketHolderAnswer, CliEr
 /// records `Incomplete`, matching the other three producing sources: an attempt that
 /// failed is not the absence of an attempt (FR-015).
 ///
-/// Anything the scan did not cover is written to `out` as a named warning, so a row
-/// that lists as `incomplete` has its cause stated at the moment it was registered
-/// rather than counted and left unexplained (P-4).
+/// Anything the scan did not cover is emitted as a named warning, so a row that
+/// lists as `incomplete` has its cause stated at the moment it was registered rather
+/// than counted and left unexplained (P-4).
 fn scan_exe_evidence(
     exe: &str,
     out: &mut dyn Write,
+    emitter: &mut Emitter,
 ) -> (Option<serde_json::Value>, Option<DetectionScan>) {
-    evidence_from_scan(run_exe_scan(exe), out)
+    evidence_from_scan(run_exe_scan(exe), out, emitter)
 }
 
 /// Map a scan attempt to the evidence JSON and the coverage state it earns, printing
@@ -1048,6 +1076,7 @@ fn scan_exe_evidence(
 fn evidence_from_scan(
     scan: ExeScan,
     out: &mut dyn Write,
+    emitter: &mut Emitter,
 ) -> (Option<serde_json::Value>, Option<DetectionScan>) {
     let outcome = match scan {
         ExeScan::NotRun => return (None, None),
@@ -1057,11 +1086,10 @@ fn evidence_from_scan(
             // fact from no attempt, and recording it as no attempt would claim
             // nobody looked (P-9, FR-015). The other three producing sources record
             // it the same way.
-            let _ = writeln!(
-                out,
-                "  warning: could not read {} during detection",
+            emitter.warn(&format!(
+                "could not read {} during detection",
                 path.display()
-            );
+            ));
             return (None, Some(DetectionScan::Incomplete));
         }
         ExeScan::Ran(outcome) => outcome,
@@ -1073,7 +1101,7 @@ fn evidence_from_scan(
     // the early return, so a truncated scan that also matched nothing still says
     // why it is incomplete.
     for warning in outcome.coverage_warnings() {
-        let _ = writeln!(out, "  warning: {warning}");
+        emitter.warn(&warning);
     }
     if outcome.findings.is_empty() {
         return (None, scan);
@@ -1282,6 +1310,17 @@ mod tests {
         render_machine_section, render_table, steam_add_metadata, ClassificationSource,
         DetectionScan, ExeScan, FidelityTier, TargetClassification, TargetEntry,
     };
+    use crate::emit::{Emitter, Format, Verbosity};
+
+    fn with_emitter<T>(f: impl FnOnce(&mut Vec<u8>, &mut Emitter) -> T) -> (T, String) {
+        let mut err = Vec::new();
+        let result = {
+            let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
+            let mut out = Vec::new();
+            f(&mut out, &mut emitter)
+        };
+        (result, String::from_utf8(err).expect("stderr is UTF-8"))
+    }
 
     #[test]
     fn discovery_account_renders_both_container_outcomes() {
@@ -1295,8 +1334,10 @@ mod tests {
             ..fragcap::targets::Discovery::default()
         };
         let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
 
-        print_discovery(&discovery, &mut out);
+        print_discovery(&discovery, &mut out, &mut emitter);
 
         let text = String::from_utf8(out).expect("utf-8");
         assert!(text.contains("container_descended=1"));
@@ -1329,7 +1370,10 @@ mod tests {
             },
         ]);
         let mut out: Vec<u8> = Vec::new();
-        hero_listing_with_machine_probe(&db, false, &mut out, &probe).expect("hero listing");
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
+        hero_listing_with_machine_probe(&db, false, &mut out, &mut emitter, &probe)
+            .expect("hero listing");
         let text = String::from_utf8(out).unwrap();
         assert!(
             text.contains("No targets yet."),
@@ -1379,8 +1423,11 @@ mod tests {
             },
         ]);
         let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
 
-        hero_listing_with_machine_probe(&db, false, &mut out, &probe).expect("hero listing");
+        hero_listing_with_machine_probe(&db, false, &mut out, &mut emitter, &probe)
+            .expect("hero listing");
 
         let text = String::from_utf8(out).expect("utf-8");
         assert!(
@@ -1400,7 +1447,10 @@ mod tests {
         let db = dir.path().join("local.db");
         let empty_probe = fragcap::targets::FixtureMachineAntiCheatProbe::new(Vec::new());
         let mut out: Vec<u8> = Vec::new();
-        hero_listing_with_machine_probe(&db, false, &mut out, &empty_probe).expect("hero listing");
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
+        hero_listing_with_machine_probe(&db, false, &mut out, &mut emitter, &empty_probe)
+            .expect("hero listing");
         let text = String::from_utf8(out).unwrap();
         assert!(
             !text.contains("Machine:"),
@@ -1432,13 +1482,31 @@ mod tests {
         };
 
         let mut with_footer: Vec<u8> = Vec::new();
-        hero_listing_with_machine_probe(&db, true, &mut with_footer, &finding())
-            .expect("hero listing");
+        let mut with_footer_err = Vec::new();
+        let mut with_footer_emitter =
+            Emitter::new(&mut with_footer_err, Format::Human, Verbosity::Normal);
+        hero_listing_with_machine_probe(
+            &db,
+            true,
+            &mut with_footer,
+            &mut with_footer_emitter,
+            &finding(),
+        )
+        .expect("hero listing");
         let with_footer = String::from_utf8(with_footer).unwrap();
 
         let mut without_footer: Vec<u8> = Vec::new();
-        hero_listing_with_machine_probe(&db, false, &mut without_footer, &finding())
-            .expect("hero listing");
+        let mut without_footer_err = Vec::new();
+        let mut without_footer_emitter =
+            Emitter::new(&mut without_footer_err, Format::Human, Verbosity::Normal);
+        hero_listing_with_machine_probe(
+            &db,
+            false,
+            &mut without_footer,
+            &mut without_footer_emitter,
+            &finding(),
+        )
+        .expect("hero listing");
         let without_footer = String::from_utf8(without_footer).unwrap();
 
         const FOOTER: &str = "Run `fragcap --help` to see all commands.";
@@ -1569,11 +1637,11 @@ mod tests {
     fn a_scan_that_was_never_possible_records_no_coverage_claim() {
         // Nothing was attempted: a bare exe name, or no catalog to scan against.
         // Recording any state here would claim a scan that did not happen (P-9).
-        let mut out: Vec<u8> = Vec::new();
-        let (evidence, scan) = evidence_from_scan(ExeScan::NotRun, &mut out);
+        let ((evidence, scan), err) =
+            with_emitter(|out, emitter| evidence_from_scan(ExeScan::NotRun, out, emitter));
         assert!(evidence.is_none());
         assert_eq!(scan, None, "no attempt means no claim");
-        assert!(out.is_empty(), "and nothing to report");
+        assert!(err.is_empty(), "and nothing to report");
     }
 
     #[test]
@@ -1583,23 +1651,24 @@ mod tests {
         // listed as `not scanned`, claiming nobody looked when the tool had looked
         // and failed. The other three producing sources record `Incomplete` here,
         // and FR-015 requires this one to agree.
-        let mut out: Vec<u8> = Vec::new();
-        let (evidence, scan) = evidence_from_scan(
-            ExeScan::Failed {
-                path: std::path::PathBuf::from("D:/Games/Unreadable"),
-            },
-            &mut out,
-        );
+        let ((evidence, scan), err) = with_emitter(|out, emitter| {
+            evidence_from_scan(
+                ExeScan::Failed {
+                    path: std::path::PathBuf::from("D:/Games/Unreadable"),
+                },
+                out,
+                emitter,
+            )
+        });
         assert!(evidence.is_none(), "a failed scan found nothing");
         assert_eq!(
             scan,
             Some(DetectionScan::Incomplete),
             "an attempt that failed is not the absence of an attempt"
         );
-        let text = String::from_utf8(out).expect("utf-8");
         assert!(
-            text.contains("Unreadable") && text.contains("could not read"),
-            "and the failure is named, not only recorded: {text}"
+            err.contains("Unreadable") && err.contains("could not read"),
+            "and the failure is named, not only recorded: {err}"
         );
     }
 

@@ -23,6 +23,7 @@ use super::action::{
     offered_actions, Action, ActionKind, ActionOutcome, Capabilities, ExtcapScope,
 };
 use super::{checks, probe, Report};
+use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 
 /// A human confirmation for one action. Injected so the loop is driven by a
@@ -36,7 +37,12 @@ pub trait ActionConfirm {
 /// tested with a double that takes no side effect.
 pub trait ActionPerformer {
     /// Perform `action`, writing any progress to `out`, and return what happened.
-    fn perform(&mut self, action: &Action, out: &mut dyn Write) -> ActionOutcome;
+    fn perform(
+        &mut self,
+        action: &Action,
+        out: &mut dyn Write,
+        emitter: &mut Emitter,
+    ) -> ActionOutcome;
 }
 
 /// The real console confirmation: prints the action and reads a yes/no from stdin.
@@ -104,6 +110,7 @@ pub fn drive_actions(
     confirm: &mut dyn ActionConfirm,
     performer: &mut dyn ActionPerformer,
     out: &mut dyn Write,
+    emitter: &mut Emitter,
 ) -> Vec<(ActionKind, ActionOutcome)> {
     let mut outcomes = Vec::new();
     for action in offered_actions(report, caps) {
@@ -122,7 +129,7 @@ pub fn drive_actions(
             outcomes.push((action.kind, ActionOutcome::Skipped));
             continue;
         }
-        let outcome = performer.perform(&action, out);
+        let outcome = performer.perform(&action, out, emitter);
         report_outcome(out, &outcome);
         let handed_off =
             action.kind == ActionKind::RelaunchElevated && outcome == ActionOutcome::Performed;
@@ -155,7 +162,13 @@ fn report_outcome(out: &mut dyn Write, outcome: &ActionOutcome) {
 /// performer); the tested surface is [`drive_actions`]. The refusal gates
 /// (`--json`, non-terminal stdout/stdin, `--yes` without `--fix`) are applied by
 /// the command shell before this runs.
-pub fn run_fix(caps: Capabilities, yes: bool, color: bool, out: &mut dyn Write) -> Exit {
+pub fn run_fix(
+    caps: Capabilities,
+    yes: bool,
+    color: bool,
+    out: &mut dyn Write,
+    emitter: &mut Emitter,
+) -> Exit {
     let report = checks::run(&probe::gather());
     let _ = write!(out, "{}", report.render_human_with(color));
 
@@ -183,7 +196,14 @@ pub fn run_fix(caps: Capabilities, yes: bool, color: bool, out: &mut dyn Write) 
         Box::new(ConsoleConfirm)
     };
     let mut performer = RealPerformer { yes };
-    let outcomes = drive_actions(&report, caps, confirm.as_mut(), &mut performer, out);
+    let outcomes = drive_actions(
+        &report,
+        caps,
+        confirm.as_mut(),
+        &mut performer,
+        out,
+        emitter,
+    );
 
     // A confirmed, performed elevation hands off to the elevated child, which
     // re-checks in its own context; the non-elevated parent stops without a
@@ -224,11 +244,16 @@ pub struct RealPerformer {
 }
 
 impl ActionPerformer for RealPerformer {
-    fn perform(&mut self, action: &Action, out: &mut dyn Write) -> ActionOutcome {
+    fn perform(
+        &mut self,
+        action: &Action,
+        out: &mut dyn Write,
+        emitter: &mut Emitter,
+    ) -> ActionOutcome {
         match action.kind {
-            ActionKind::RunDiscovery => {
-                to_outcome(crate::commands::targets::run_discovery_default(out))
-            }
+            ActionKind::RunDiscovery => to_outcome(
+                crate::commands::targets::run_discovery_default(out, emitter),
+            ),
             ActionKind::InstallExtcap(scope) => to_outcome(crate::commands::extcap::install_scope(
                 matches!(scope, ExtcapScope::Machine),
                 out,
@@ -555,10 +580,23 @@ mod tests {
     }
 
     impl ActionPerformer for ScriptedPerformer {
-        fn perform(&mut self, action: &Action, _out: &mut dyn Write) -> ActionOutcome {
+        fn perform(
+            &mut self,
+            action: &Action,
+            _out: &mut dyn Write,
+            _emitter: &mut Emitter,
+        ) -> ActionOutcome {
             self.performed.push(action.kind);
             (self.outcome)(action.kind)
         }
+    }
+
+    fn test_emitter(err: &mut Vec<u8>) -> Emitter<'_> {
+        Emitter::new(
+            err,
+            crate::emit::Format::Human,
+            crate::emit::Verbosity::Normal,
+        )
     }
 
     fn report(actions: Vec<Action>) -> Report {
@@ -592,7 +630,16 @@ mod tests {
             performed: Vec::new(),
         };
         let mut out = Vec::new();
-        let outcomes = drive_actions(&rpt, caps(), &mut confirm, &mut performer, &mut out);
+        let mut err = Vec::new();
+        let mut emitter = test_emitter(&mut err);
+        let outcomes = drive_actions(
+            &rpt,
+            caps(),
+            &mut confirm,
+            &mut performer,
+            &mut out,
+            &mut emitter,
+        );
         assert_eq!(
             outcomes,
             vec![
@@ -619,7 +666,16 @@ mod tests {
             performed: Vec::new(),
         };
         let mut out = Vec::new();
-        let outcomes = drive_actions(&rpt, caps(), &mut confirm, &mut performer, &mut out);
+        let mut err = Vec::new();
+        let mut emitter = test_emitter(&mut err);
+        let outcomes = drive_actions(
+            &rpt,
+            caps(),
+            &mut confirm,
+            &mut performer,
+            &mut out,
+            &mut emitter,
+        );
         assert_eq!(
             outcomes,
             vec![(
@@ -645,7 +701,16 @@ mod tests {
             performed: Vec::new(),
         };
         let mut out = Vec::new();
-        let outcomes = drive_actions(&rpt, caps(), &mut confirm, &mut performer, &mut out);
+        let mut err = Vec::new();
+        let mut emitter = test_emitter(&mut err);
+        let outcomes = drive_actions(
+            &rpt,
+            caps(),
+            &mut confirm,
+            &mut performer,
+            &mut out,
+            &mut emitter,
+        );
         assert_eq!(
             outcomes.first().map(|(k, _)| *k),
             Some(ActionKind::RelaunchElevated)
@@ -668,6 +733,8 @@ mod tests {
             performed: Vec::new(),
         };
         let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = test_emitter(&mut err);
         let outcomes = drive_actions(
             &rpt,
             Capabilities {
@@ -677,6 +744,7 @@ mod tests {
             &mut confirm,
             &mut performer,
             &mut out,
+            &mut emitter,
         );
         assert_eq!(
             outcomes,

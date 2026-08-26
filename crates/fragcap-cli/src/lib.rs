@@ -131,7 +131,7 @@ where
         Some(command) => dispatch(command, json, out, &mut emitter),
         // A bare invocation lists registered targets and points at `--help`
         // (section 17.4). The footer distinguishes it from an explicit `targets`.
-        None => commands::targets::list_default(out, true),
+        None => commands::targets::list_default(out, true, &mut emitter),
     };
 
     match result {
@@ -206,7 +206,7 @@ fn dispatch(
         Command::Steam(args) => commands::steam::run(&args, json, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
         Command::Technologies(args) => commands::technologies::run(&args, out),
-        Command::Targets(args) => commands::targets::run(&args, out),
+        Command::Targets(args) => commands::targets::run(&args, out, emitter),
         Command::Catalog(args) => commands::catalog::run(&args, out),
         Command::Extcap(args) => commands::extcap::run(&args, out, emitter),
     }
