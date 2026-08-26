@@ -15,6 +15,9 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+#[cfg(any(test, all(feature = "live", windows)))]
+use fragcap::core::{is_loopback_adapter, InterfaceInventory, SourceError};
+
 use super::progress::ProbeName;
 use super::{DeepCaptureCa, DeepCaptureInputs, Inputs, Privilege, ProxyBackendInfo, Subsystem};
 
@@ -133,7 +136,6 @@ fn socket_table_availability() -> Option<bool> {
 fn live_probe(wpcap_loadable: bool) -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
     #[cfg(all(feature = "live", windows))]
     {
-        use fragcap::core::virtual_verdict;
         // wpcap.dll is a delay-load import (crates/fragcap-cli/build.rs), so the
         // first call that reaches it forces the load. Both fragcap::enumerate and
         // fragcap::detect_driver call pcap::Device::list, and when the DLL cannot
@@ -146,30 +148,7 @@ fn live_probe(wpcap_loadable: bool) -> (Vec<super::IfaceInfo>, Option<bool>, Opt
         // interface check) carry the remediation. Without this gate `doctor` could
         // not run on the very machine that most needs it to run and say what to
         // install.
-        if !wpcap_loadable {
-            return (Vec::new(), None, None);
-        }
-        // A failed enumeration is preserved as an error string rather than
-        // flattened to an empty set, so the classifier does not report a probe
-        // that could not run as an observed-empty machine (P-9).
-        let (interfaces, error) = match fragcap::enumerate() {
-            Ok(inventory) => (
-                inventory
-                    .interfaces
-                    .iter()
-                    .map(|record| super::IfaceInfo {
-                        name: record.name.to_string(),
-                        addr: record.addresses.first().map(|addr| addr.to_string()),
-                        up: record.is_up,
-                        is_virtual: virtual_verdict(record).is_virtual(),
-                    })
-                    .collect(),
-                None,
-            ),
-            Err(err) => (Vec::new(), Some(err.to_string())),
-        };
-        let loopback = fragcap::detect_driver().loopback_supported;
-        (interfaces, loopback, error)
+        live_probe_with(wpcap_loadable, fragcap::enumerate)
     }
     #[cfg(not(all(feature = "live", windows)))]
     {
@@ -179,6 +158,44 @@ fn live_probe(wpcap_loadable: bool) -> (Vec<super::IfaceInfo>, Option<bool>, Opt
         let _ = wpcap_loadable;
         (Vec::new(), None, None)
     }
+}
+
+#[cfg(any(test, all(feature = "live", windows)))]
+fn live_probe_with(
+    wpcap_loadable: bool,
+    enumerate: impl FnOnce() -> Result<InterfaceInventory, SourceError>,
+) -> (Vec<super::IfaceInfo>, Option<bool>, Option<String>) {
+    if !wpcap_loadable {
+        return (Vec::new(), None, None);
+    }
+
+    // A failed enumeration is preserved as an error string rather than
+    // flattened to an empty set, so the classifier does not report a probe that
+    // could not run as an observed-empty machine (P-9). Loopback stays unknown
+    // because no absence was observed.
+    let inventory = match enumerate() {
+        Ok(inventory) => inventory,
+        Err(err) => return (Vec::new(), None, Some(err.to_string())),
+    };
+
+    let loopback = Some(
+        inventory
+            .interfaces
+            .iter()
+            .any(|record| is_loopback_adapter(record.is_loopback, record.description.as_deref())),
+    );
+    let interfaces = inventory
+        .interfaces
+        .iter()
+        .map(|record| super::IfaceInfo {
+            name: record.name.to_string(),
+            addr: record.addresses.first().map(|addr| addr.to_string()),
+            up: record.is_up,
+            is_virtual: fragcap::core::virtual_verdict(record).is_virtual(),
+        })
+        .collect();
+
+    (interfaces, loopback, None)
 }
 
 /// The identity facts: which fragcap produced this report and where it keeps its
@@ -806,6 +823,27 @@ pub(crate) fn is_elevated() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::net::IpAddr;
+    use std::sync::Arc;
+
+    use fragcap::core::{InterfaceRecord, LinkType};
+
+    fn test_inventory(records: Vec<InterfaceRecord>) -> InterfaceInventory {
+        InterfaceInventory {
+            interfaces: records,
+            default_route_source: None,
+        }
+    }
+
+    fn test_record(name: &str) -> InterfaceRecord {
+        InterfaceRecord {
+            addresses: vec![IpAddr::from([192, 0, 2, 10])],
+            is_up: true,
+            is_running: true,
+            ..InterfaceRecord::new(name, LinkType::ETHERNET)
+        }
+    }
 
     #[test]
     fn observe_reports_begin_before_work_completes() {
@@ -847,6 +885,76 @@ mod tests {
             "completion did not include slow work: {:?}",
             observer.events[1].1
         );
+    }
+
+    #[test]
+    fn live_probe_uses_one_enumeration_for_interfaces_and_loopback() {
+        let calls = Cell::new(0);
+        let (interfaces, loopback, error) = live_probe_with(true, || {
+            calls.set(calls.get() + 1);
+            let mut record = test_record("NPF_Loopback");
+            record.is_loopback = true;
+            Ok(test_inventory(vec![record]))
+        });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(interfaces[0].name, "NPF_Loopback");
+        assert_eq!(loopback, Some(true));
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn live_probe_accepts_loopback_description_marker() {
+        let mut record = test_record("NPF_{1234}");
+        record.description = Some(Arc::from("Npcap Loopback Adapter"));
+
+        let (_, loopback, error) = live_probe_with(true, || Ok(test_inventory(vec![record])));
+
+        assert_eq!(loopback, Some(true));
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn live_probe_reports_observed_loopback_absence_only_after_success() {
+        let record = test_record("NPF_{ETH}");
+
+        let (interfaces, loopback, error) =
+            live_probe_with(true, || Ok(test_inventory(vec![record])));
+
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(loopback, Some(false));
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn live_probe_keeps_loopback_unknown_when_enumeration_fails() {
+        let (interfaces, loopback, error) = live_probe_with(true, || {
+            Err(SourceError::Backend {
+                detail: "interface enumeration failed: boom".to_string(),
+            })
+        });
+
+        assert_eq!(interfaces, Vec::<super::super::IfaceInfo>::new());
+        assert_eq!(loopback, None);
+        assert_eq!(
+            error,
+            Some("capture backend failure: interface enumeration failed: boom".to_string())
+        );
+    }
+
+    #[test]
+    fn live_probe_does_not_enumerate_when_wpcap_is_not_loadable() {
+        let calls = Cell::new(0);
+        let (interfaces, loopback, error) = live_probe_with(false, || {
+            calls.set(calls.get() + 1);
+            Ok(test_inventory(Vec::new()))
+        });
+
+        assert_eq!(calls.get(), 0);
+        assert_eq!(interfaces, Vec::<super::super::IfaceInfo>::new());
+        assert_eq!(loopback, None);
+        assert_eq!(error, None);
     }
 
     #[test]
