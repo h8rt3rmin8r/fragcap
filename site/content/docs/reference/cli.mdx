@@ -76,6 +76,28 @@ output still contains both directions. `--roles` scoping, by contrast, is
 enforced.
 </Callout>
 
+### `deep-capture`
+
+Run Capture together with explicit, target-scoped local proxy inspection. The
+first implementation requires a stored target, `--launch`, explicit CA trust
+confirmation, an installed `mitmdump` backend, and current facts proving the
+supported cold Steam protocol launch path.
+
+```text
+fragcap deep-capture sample-target --launch --trust-ca --har --key-log
+```
+
+`--bundle <DIR>` selects the session bundle directory. The ordinary duration,
+wait, packet, byte, interface, and payload controls remain available. `--har`
+writes an HTTP-oriented projection when HTTP semantics are observable, while
+`--key-log` creates a proxy-owned TLS key log at its final bundle path before
+traffic starts so Wireshark can consume it during the session.
+
+Deep Capture refuses unknown or unsupported launch paths before starting the
+proxy or changing trust. See [Deep Capture compatibility]
+(/docs/reference/deep-capture-compatibility) for current traffic support,
+certificate-pinning and QUIC limits, and the local evidence matrix.
+
 ### `replay`
 
 Play a capture file back. Not yet implemented; the command parses and reports that
@@ -106,7 +128,9 @@ titles, and prints the numbered listing (the row numbers are what `fragcap captu
 - `fragcap targets list --db <local.db>` lists registered targets with their row
   index, handle, and identifier.
 - `fragcap targets show <SELECTOR> --db <local.db>` (or `--id <N>`) shows how one
-  target resolves.
+  target resolves and lists its local Deep Capture compatibility evidence. The
+  view is read-only and reports unknown rather than inferring support when no
+  facts exist.
 - `fragcap targets remove <SELECTOR> --db <local.db>` (or `--id <N>`) removes one
   target; an ambiguous name lists its matches and refuses.
 - `fragcap targets export [SELECTOR] --db <local.db>` writes registered targets as

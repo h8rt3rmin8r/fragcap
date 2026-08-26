@@ -7,6 +7,8 @@
 //! product needs exact language, and `Unknown` is a real value rather than a
 //! prompt to guess.
 
+use std::cmp::Ordering;
+
 use crate::TargetsError;
 
 /// Which Deep Capture behavior a row records.
@@ -228,6 +230,130 @@ impl CompatibilityFact {
     }
 }
 
+/// The presentation freshness of compatibility evidence.
+///
+/// `Unknown` is the state of an empty matrix. A stored row is either current or
+/// stale; a fact whose value token is `unknown` is still current evidence when
+/// neither stale signal is present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompatibilityFreshness {
+    Current,
+    Stale,
+    Unknown,
+}
+
+impl CompatibilityFreshness {
+    /// The stable human-facing token for this freshness state.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompatibilityFreshness::Current => "current",
+            CompatibilityFreshness::Stale => "stale",
+            CompatibilityFreshness::Unknown => "unknown",
+        }
+    }
+}
+
+/// One display-safe row in a target's compatibility matrix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompatibilityMatrixRow {
+    /// Durable chronology when this row came from the local store.
+    pub id: Option<i64>,
+    /// Which behavior this row records.
+    pub key: CompatibilityFactKey,
+    /// The key-specific value token.
+    pub value: String,
+    /// The launch path under which this fact was observed, when recorded.
+    pub launch_case: Option<CompatibilityLaunchCase>,
+    /// Where the evidence came from.
+    pub evidence_source: CompatibilityEvidenceSource,
+    /// Whether the row is current or retained as stale context.
+    pub freshness: CompatibilityFreshness,
+}
+
+impl CompatibilityMatrixRow {
+    fn from_fact(fact: &CompatibilityFact) -> Self {
+        let stale =
+            fact.stale || fact.evidence_source == CompatibilityEvidenceSource::StaleObservation;
+        Self {
+            id: fact.id,
+            key: fact.key,
+            value: fact.value.clone(),
+            launch_case: fact.launch_case,
+            evidence_source: fact.evidence_source,
+            freshness: if stale {
+                CompatibilityFreshness::Stale
+            } else {
+                CompatibilityFreshness::Current
+            },
+        }
+    }
+
+    fn cmp_total(&self, other: &Self) -> Ordering {
+        match (self.id, other.id) {
+            (Some(left), Some(right)) => left.cmp(&right).then_with(|| self.cmp_fact_fields(other)),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => self.cmp_fact_fields(other),
+        }
+    }
+
+    fn cmp_fact_fields(&self, other: &Self) -> Ordering {
+        self.key
+            .as_str()
+            .cmp(other.key.as_str())
+            .then_with(|| self.value.cmp(&other.value))
+            .then_with(|| {
+                self.launch_case
+                    .map(CompatibilityLaunchCase::as_str)
+                    .cmp(&other.launch_case.map(CompatibilityLaunchCase::as_str))
+            })
+            .then_with(|| {
+                self.evidence_source
+                    .as_str()
+                    .cmp(other.evidence_source.as_str())
+            })
+            .then_with(|| self.freshness.as_str().cmp(other.freshness.as_str()))
+    }
+}
+
+/// A deterministic, non-aggregating projection of one target's stored facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompatibilityMatrix {
+    rows: Vec<CompatibilityMatrixRow>,
+}
+
+impl CompatibilityMatrix {
+    /// Project every fact into a display-safe row without selecting a winner.
+    pub fn from_facts(facts: &[CompatibilityFact]) -> Self {
+        let mut rows: Vec<_> = facts
+            .iter()
+            .map(CompatibilityMatrixRow::from_fact)
+            .collect();
+        rows.sort_by(CompatibilityMatrixRow::cmp_total);
+        Self { rows }
+    }
+
+    /// Every projected row in deterministic order.
+    pub fn rows(&self) -> &[CompatibilityMatrixRow] {
+        &self.rows
+    }
+
+    /// The matrix-level freshness state.
+    pub fn state(&self) -> CompatibilityFreshness {
+        if self.rows.is_empty() {
+            CompatibilityFreshness::Unknown
+        } else if self
+            .rows
+            .iter()
+            .any(|row| row.freshness == CompatibilityFreshness::Current)
+        {
+            CompatibilityFreshness::Current
+        } else {
+            CompatibilityFreshness::Stale
+        }
+    }
+}
+
 /// Validate a fact value against the closed set for its key.
 pub fn validate_fact_value(key: CompatibilityFactKey, value: &str) -> Result<(), TargetsError> {
     let allowed = match key {
@@ -305,6 +431,115 @@ pub fn validate_fact_value(key: CompatibilityFactKey, value: &str) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fact(
+        id: Option<i64>,
+        key: CompatibilityFactKey,
+        value: &str,
+        source: CompatibilityEvidenceSource,
+    ) -> CompatibilityFact {
+        let mut fact = CompatibilityFact::new(1, key, value, source).unwrap();
+        fact.id = id;
+        fact
+    }
+
+    #[test]
+    fn compatibility_matrix_is_unknown_only_when_no_facts_exist() {
+        let matrix = CompatibilityMatrix::from_facts(&[]);
+
+        assert_eq!(matrix.state(), CompatibilityFreshness::Unknown);
+        assert!(matrix.rows().is_empty());
+
+        let matrix = CompatibilityMatrix::from_facts(&[fact(
+            Some(1),
+            CompatibilityFactKey::Inspectability,
+            "unknown",
+            CompatibilityEvidenceSource::ObservedRun,
+        )]);
+
+        assert_eq!(matrix.state(), CompatibilityFreshness::Current);
+        assert_eq!(matrix.rows().len(), 1);
+        assert_eq!(matrix.rows()[0].value, "unknown");
+    }
+
+    #[test]
+    fn compatibility_matrix_honors_both_stale_signals() {
+        let mut marked = fact(
+            Some(1),
+            CompatibilityFactKey::ProxyPropagation,
+            "confirmed",
+            CompatibilityEvidenceSource::ObservedRun,
+        );
+        marked.stale = true;
+        let sourced = fact(
+            Some(2),
+            CompatibilityFactKey::Inspectability,
+            "metadata-only",
+            CompatibilityEvidenceSource::StaleObservation,
+        );
+        let current = fact(
+            Some(3),
+            CompatibilityFactKey::TlsTrustBehavior,
+            "accepts-local-ca",
+            CompatibilityEvidenceSource::UserConfirmed,
+        );
+
+        let matrix = CompatibilityMatrix::from_facts(&[current, sourced, marked]);
+
+        assert_eq!(matrix.rows()[0].freshness, CompatibilityFreshness::Stale);
+        assert_eq!(matrix.rows()[1].freshness, CompatibilityFreshness::Stale);
+        assert_eq!(matrix.rows()[2].freshness, CompatibilityFreshness::Current);
+        assert_eq!(matrix.state(), CompatibilityFreshness::Current);
+    }
+
+    #[test]
+    fn compatibility_matrix_preserves_repeated_and_conflicting_stored_rows() {
+        let mut older = fact(
+            Some(4),
+            CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            CompatibilityEvidenceSource::ObservedRun,
+        );
+        older.launch_case = Some(CompatibilityLaunchCase::SteamProtocolCold);
+        let mut newer = fact(
+            Some(9),
+            CompatibilityFactKey::ProxyRouting,
+            "no-proxy-traffic",
+            CompatibilityEvidenceSource::ObservedRun,
+        );
+        newer.launch_case = Some(CompatibilityLaunchCase::SteamProtocolWarm);
+
+        let matrix = CompatibilityMatrix::from_facts(&[newer, older]);
+
+        assert_eq!(matrix.rows().len(), 2);
+        assert_eq!(matrix.rows()[0].id, Some(4));
+        assert_eq!(matrix.rows()[0].value, "reached-client");
+        assert_eq!(matrix.rows()[1].id, Some(9));
+        assert_eq!(matrix.rows()[1].value, "no-proxy-traffic");
+    }
+
+    #[test]
+    fn compatibility_matrix_totally_orders_unsaved_rows() {
+        let first = fact(
+            None,
+            CompatibilityFactKey::Inspectability,
+            "full",
+            CompatibilityEvidenceSource::ImportedCatalog,
+        );
+        let second = fact(
+            None,
+            CompatibilityFactKey::ProtocolBehavior,
+            "https",
+            CompatibilityEvidenceSource::UserConfirmed,
+        );
+
+        let left = CompatibilityMatrix::from_facts(&[second.clone(), first.clone()]);
+        let right = CompatibilityMatrix::from_facts(&[first, second]);
+
+        assert_eq!(left, right);
+        assert_eq!(left.rows()[0].key, CompatibilityFactKey::Inspectability);
+        assert_eq!(left.rows()[1].key, CompatibilityFactKey::ProtocolBehavior);
+    }
 
     #[test]
     fn compatibility_fact_key_round_trips_every_variant() {

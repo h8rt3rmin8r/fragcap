@@ -1,0 +1,86 @@
+---
+title: Deep Capture compatibility
+description: Current traffic support, local target evidence, and the limits of proxy inspection.
+---
+
+<Callout title="The short version">
+**Capture** passively records packets and process attribution. **Deep Capture**
+runs Capture alongside an explicit, target-scoped local proxy. Deep Capture can
+add HTTP semantics only when the selected software actually routes traffic
+through that proxy and accepts the fragcap-owned local certificate authority.
+</Callout>
+
+Deep Capture does not promise that every encrypted flow becomes readable. It
+does not bypass certificate pinning, downgrade TLS, extract keys from a target
+process, or silently change system-wide proxy settings. Packet truth remains
+available through Capture even when application inspection is unavailable.
+
+## Traffic support
+
+| Traffic | Capture | Deep Capture | Outputs and limits |
+| --- | --- | --- | --- |
+| HTTP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Observes the HTTP method, URL, and response status when the request reaches the proxy. | Application JSONL records those fields. `--har` can project them into HAR. Current application records do not retain request or response headers or bodies. |
+| HTTPS | Records encrypted packets and attribution. | Observes the same HTTP fields only when the connection reaches the proxy and accepts the fragcap-owned local CA. | Application JSONL and optional HAR are available for observed HTTP semantics. `--key-log` exposes proxy-owned TLS secrets to an analyzer in real time and in the final bundle. Certificate-pinned traffic is not decrypted. |
+| WebSocket | Records packets and attribution. | Can observe the HTTP upgrade handshake when it reaches the HTTP proxy. | WebSocket frame records and frame payload retention are not implemented. An observed handshake is not full WebSocket support. |
+| Non-HTTP TLS | Records encrypted packets and attribution. | Records proxy connection metadata when the flow reaches the proxy, without interpreting the application protocol. | Metadata-only application records. No custom TLS protocol dissector currently ships. |
+| QUIC | Records the underlying UDP packets and attribution. | Unsupported by the current HTTP proxy path. | No QUIC routing or decryption claim. Analyze the packet capture as encrypted UDP traffic. |
+| UDP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Unsupported by the current proxy path. | No generic UDP proxy inspection. The packet capture remains available. |
+| Plaintext | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Plaintext HTTP follows the HTTP row. Other plaintext protocols have no generic application dissector. | Inspect packet payloads in the capture. Custom application records require a future protocol-specific dissector. |
+
+In compatibility facts, `full` means the proxy observed HTTP semantics for that
+run. It does not mean that every header, body, WebSocket frame, or custom
+payload was retained. A TLS key log is an analyzer aid produced by the proxy
+side of the session. It is not a key extracted from the selected process.
+
+## Local target matrix
+
+Compatibility depends on the launch path and local evidence. fragcap therefore
+does not publish a guessed title list. Inspect the facts stored for one selected
+target instead:
+
+```text
+fragcap targets show sample-target
+```
+
+With evidence, the detail view adds one line per stored fact:
+
+```text
+compatibility:
+  proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current
+  inspectability = metadata-only | source=stale-observation | freshness=stale
+```
+
+Without evidence, it says:
+
+```text
+compatibility:  unknown (no stored evidence)
+```
+
+Repeated or conflicting rows remain visible. fragcap does not collapse them
+into a single compatible or incompatible verdict because two launch cases,
+target versions, or proxy backends can produce different results.
+
+## Evidence and freshness
+
+| Label | Meaning |
+| --- | --- |
+| `observed-run` | fragcap recorded the fact during an authorized run. |
+| `user-confirmed` | An operator explicitly confirmed the fact. |
+| `imported-catalog` | The fact came from an external catalog source. Import provenance does not by itself make the fact current or stale. |
+| `stale-observation` | Historical context that always appears as stale. |
+| `current` | The row is not marked stale and is not a stale observation. |
+| `stale` | The row is marked stale or has the `stale-observation` source. |
+| `unknown` | A successful local-store read found no compatibility facts. No result was inferred from the title, engine, platform, or executable. |
+
+`targets show` is read-only. It does not launch software, start a proxy, change
+certificate trust, contact a catalog, or refresh facts. A later explicit and
+authorized Deep Capture measurement can add newer evidence. Existing
+launch-specific rows remain available as context rather than being silently
+rewritten.
+
+## Publishing compatibility evidence
+
+Public documentation and committed fixtures use placeholders such as
+`sample-target` and `sample.exe`. Do not publish local title names, account
+identifiers, access tokens, filesystem paths, private endpoints, host
+identifiers, or unreviewed free-form notes collected during compatibility work.

@@ -18,9 +18,10 @@ use std::io::IsTerminal;
 
 use fragcap::targets::{
     handle, identifier, install_presence, is_row_index, name_divergence, resolve_id,
-    resolve_positional, CandidateIdentity, ClassificationSource, DetectionScan, DirectorySource,
-    Discovery, InstallPresence, NameDivergence, Selection, SocketHolderAnswer, Store,
-    TargetClassification, TargetEntry, TargetSource, INSTALL_MISSING_NOTE,
+    resolve_positional, CandidateIdentity, ClassificationSource, CompatibilityMatrix,
+    DetectionScan, DirectorySource, Discovery, InstallPresence, NameDivergence, Selection,
+    SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetSource,
+    INSTALL_MISSING_NOTE,
 };
 
 use crate::cli::{
@@ -1165,7 +1166,17 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
 
     match selection {
         Selection::Resolved(t) => {
+            let target_id = t.id.ok_or_else(|| {
+                CliError::failure(
+                    "resolved target has no local row id; cannot read compatibility facts",
+                )
+            })?;
+            let facts = store
+                .compatibility_facts_for_target(target_id)
+                .map_err(|e| CliError::failure(e.to_string()))?;
+            let compatibility = CompatibilityMatrix::from_facts(&facts);
             print_target(&t, out);
+            print_compatibility(&compatibility, out);
             Ok(Exit::SUCCESS)
         }
         Selection::NoMatch => {
@@ -1187,6 +1198,28 @@ fn show(args: &TargetsShowArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
             }
             Ok(Exit::USAGE)
         }
+    }
+}
+
+/// Print every stored compatibility fact without selecting an aggregate verdict.
+fn print_compatibility(matrix: &CompatibilityMatrix, out: &mut dyn Write) {
+    if matrix.rows().is_empty() {
+        let _ = writeln!(out, "compatibility:  unknown (no stored evidence)");
+        return;
+    }
+
+    let _ = writeln!(out, "compatibility:");
+    for row in matrix.rows() {
+        let _ = write!(out, "  {} = {}", row.key.as_str(), row.value);
+        if let Some(launch_case) = row.launch_case {
+            let _ = write!(out, " | launch={}", launch_case.as_str());
+        }
+        let _ = writeln!(
+            out,
+            " | source={} | freshness={}",
+            row.evidence_source.as_str(),
+            row.freshness.as_str()
+        );
     }
 }
 
