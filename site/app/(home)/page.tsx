@@ -4,10 +4,11 @@ import { fragcapVersion } from '@/lib/version.generated';
 import { Mermaid } from '@/components/mermaid';
 
 // The dependency model, promoted from the Architecture page (slice S057): npcap
-// required, Wireshark recommended, the extcap integration optional. It answers
-// "what is npcap and why do I need it" where a first-time visitor meets it.
+// required for live packet capture, Wireshark recommended, and the extcap
+// integration optional. It answers "what is npcap and why do I need it" where a
+// first-time visitor meets it.
 const DEPENDENCY_MODEL = `flowchart TD
-  fragcap["fragcap: capture and attribution"]
+  fragcap["fragcap: Capture and Deep Capture"]
   npcap["npcap: capture driver (required)"]
   ws["Wireshark: analyzer (recommended)"]
   extcap["Wireshark extcap: optional"]
@@ -17,23 +18,18 @@ const DEPENDENCY_MODEL = `flowchart TD
   extcap -->|ships with| ws
   fragcap -.->|registered by fragcap extcap install| extcap`;
 
-// The landing page, held to specification section 23.1 (as amended, slice S057):
-// it opens with the problem fragcap solves that standard tooling does not, stated
-// plainly enough that a technically competent visitor who has never thought about
-// attribution understands the gap within one screen; it states what fragcap is;
-// it shows the tool working with one real command and its real output (the
-// `fragcap targets` hero listing) as the primary persuasive asset; it names the
-// prerequisites; it carries the dependency diagram and a small number of concrete
-// capability statements, each linking to the docs that prove it; and it directs
-// the visitor to getting started with a single primary action. It carries no
-// testimonials, feature grid, badges, pricing, or sponsorship solicitation; the
-// capability statements are plain facts with links, not marketing. Voice per
-// section 23.3: precise, dry, no hype.
+// The landing page, held to specification section 23.1 (corrected by S078): it
+// leads with the result, explains flow attribution as correlation across separate
+// observations, distinguishes passive Capture from explicit scoped Deep Capture,
+// and shows synthetic current CLI output as its primary evidence. It names the
+// live-capture dependency, recommends an analyzer, keeps one primary action, and
+// retains section 23.3's precise instrument voice without universal claims.
 export default function HomePage() {
   return (
     <main
       className="fc-page"
       style={{
+        width: '100%',
         maxWidth: '48rem',
         margin: '0 auto',
         padding: '4rem 1.5rem',
@@ -76,25 +72,23 @@ export default function HomePage() {
       </h1>
 
       <p style={{ fontSize: '1.375rem', lineHeight: 1.4, fontWeight: 600 }}>
-        Your capture recorded 40,000 packets. It cannot tell you which one your
-        game sent.
+        Game traffic, attributed to the process responsible for it.
       </p>
 
       <p style={{ fontSize: '1.125rem', lineHeight: 1.6 }}>
-        Capture happens at the network driver, below the socket layer, where the
-        operating system has already thrown away the link between a packet and the
-        process that produced it. For a game client started by a platform launcher
-        that starts a publisher launcher, the process you care about is three hops
-        from the thing you launched. fragcap reconstructs that link and writes it
-        into the capture file.
+        Packet captures preserve network frames, not process ownership. fragcap
+        correlates captured flows with Windows socket and process-lifecycle
+        observations, including clients started through platform and publisher
+        launchers. Resolved flows carry their observed attribution and fidelity;
+        unresolved traffic remains visible rather than being discarded.
       </p>
 
       <p style={{ lineHeight: 1.6 }}>
-        fragcap is a passive network capture tool for Windows that attributes each
-        captured flow to the process that produced it, including game clients
-        launched indirectly through platform and publisher launchers, and writes
-        the result as an extended pcapng file that unmodified analyzers still read
-        as ordinary pcapng.
+        <strong>Capture</strong> passively records packets and process attribution.
+        {' '}<strong>Deep Capture</strong> runs that same capture alongside an
+        explicit, target-scoped local proxy for compatible targets, adding
+        correlated application records and optional proxy-owned TLS key logs when
+        the proxy can inspect the traffic.
       </p>
 
       <aside
@@ -105,15 +99,15 @@ export default function HomePage() {
           lineHeight: 1.6,
         }}
       >
-        Two prerequisites, up front. Live capture needs the{' '}
-        <a href="https://npcap.com/">npcap</a> driver, installed in
-        WinPcap-compatible mode; fragcap detects it and never bundles or hosts it.
-        To read a capture, open the resulting file in{' '}
-        <a href="https://www.wireshark.org/">Wireshark</a> or any pcapng-aware
-        analyzer: capture with fragcap, then inspect the result in Wireshark.
+        Live packet capture requires the <a href="https://npcap.com/">Npcap</a>{' '}
+        driver in WinPcap-compatible mode; fragcap never bundles, hosts, embeds,
+        or redistributes it. <a href="https://www.wireshark.org/">Wireshark</a>{' '}
+        is recommended for live or post-session analysis, but any pcapng-aware
+        analyzer can read Capture output. Run <code>fragcap doctor</code> for
+        Capture and Deep Capture readiness.
       </aside>
 
-      <figure style={{ margin: 0 }}>
+      <figure style={{ margin: 0, minWidth: 0 }}>
         <figcaption
           style={{
             fontFamily: 'var(--font-mono)',
@@ -132,16 +126,17 @@ export default function HomePage() {
             fontSize: '0.9rem',
             padding: '1rem 1.25rem',
             borderRadius: '0.5rem',
+            maxWidth: '100%',
             overflowX: 'auto',
           }}
           className="fd-codeblock"
         >
           <code>{`$ fragcap targets
-  #  TARGET                     CAPTURE          KNOWN
-  1  the_elder_scrolls_online   ready            no online mode recorded
-  2  the_division_2             ready            Denuvo, EasyAntiCheat
+  #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
+  1  sample_adventure  ready           Sample Engine  not scanned
+  2  sample_arena      needs a target  not scanned    Sample Protection
 
-  fragcap capture 1`}</code>
+Next command:  fragcap capture 1`}</code>
         </pre>
         <figcaption style={{ marginTop: '0.5rem', fontSize: '0.9rem', opacity: 0.8 }}>
           fragcap discovers the capturable titles on your machine and ends by
@@ -170,8 +165,8 @@ export default function HomePage() {
         }}
       >
         <li>
-          Each flow is attributed to the process that owns it, and the
-          attribution rides in packet comments, so an unmodified analyzer still
+          Resolved flows carry process attribution and fidelity in packet comments;
+          unresolved flows remain in the capture. An unmodified analyzer still
           reads the file as ordinary pcapng.{' '}
           <Link href="/docs/reference/output-formats">Output formats</Link>
         </li>
@@ -182,8 +177,9 @@ export default function HomePage() {
           <Link href="/docs/getting-started">Getting started</Link>
         </li>
         <li>
-          fragcap observes only. It never modifies, injects, or replays traffic,
-          and never reads the memory of another process.{' '}
+          Capture observes passively. Deep Capture runs only when explicitly
+          selected and uses a session-scoped local proxy; neither mode injects
+          code or reads target-process memory.{' '}
           <Link href="/docs/glossary/anti-cheat-and-security">
             Security posture
           </Link>

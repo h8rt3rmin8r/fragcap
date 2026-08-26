@@ -247,7 +247,7 @@ fn hero_listing_with_machine_probe(
         })
         .map(|i| i + 1)
         .unwrap_or(1);
-    let _ = writeln!(out, "\n  fragcap capture {next}");
+    let _ = writeln!(out, "\nNext command:  fragcap capture {next}");
 
     print_footer(out, footer);
     Ok(Exit::SUCCESS)
@@ -1339,6 +1339,55 @@ mod tests {
             text.contains("Machine:") && text.contains("Easy Anti-Cheat"),
             "the machine section renders even with zero targets: {text}"
         );
+        assert!(
+            !text.contains("Next command:"),
+            "an empty listing has population suggestions, not a capture suggestion: {text}"
+        );
+        assert!(text.contains("Add one:") && text.contains("Scan a folder:"));
+    }
+
+    #[test]
+    fn populated_listing_labels_the_next_command_after_machine_findings() {
+        isolate_discovery();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("local.db");
+        let mut store = fragcap::targets::Store::open(&db).expect("target store");
+        store
+            .insert_target(&TargetEntry {
+                id: None,
+                stable_id: 1,
+                handle: "sample_title".to_string(),
+                name: "Sample Title".to_string(),
+                classification: TargetClassification::Unknown,
+                classification_source: ClassificationSource::User,
+                fidelity: FidelityTier::Authored,
+                provenance: None,
+                anchor: Some("steam:1".to_string()),
+                launch_entries: None,
+                install_root: Some(dir.path().to_string_lossy().into_owned()),
+                evidence: None,
+                detection_scan: None,
+                folder_name: None,
+                executable_hint: None,
+            })
+            .expect("insert target");
+        drop(store);
+        let probe = fragcap::targets::FixtureMachineAntiCheatProbe::new(vec![
+            fragcap::targets::MachineAntiCheatFinding {
+                product: "Sample Protection".to_string(),
+                evidence: "sample machine finding".to_string(),
+            },
+        ]);
+        let mut out = Vec::new();
+
+        hero_listing_with_machine_probe(&db, false, &mut out, &probe).expect("hero listing");
+
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(
+            text.contains("Machine:\n  Sample Protection (sample machine finding)\n\nNext command:  fragcap capture 1\n"),
+            "the suggestion must be a labelled section after machine findings: {text:?}"
+        );
+        assert_eq!(text.matches("Next command:").count(), 1);
     }
 
     #[test]

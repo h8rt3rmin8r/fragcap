@@ -416,9 +416,10 @@ fn hero_listing_shows_columns_ordered_by_handle_and_names_the_next_command() {
     // A steam-anchored target is ready and the listing names the next command.
     assert!(out.contains("ready"), "{out}");
     assert!(
-        out.contains("fragcap capture 1"),
-        "ends by naming the next command:\n{out}"
+        out.contains("\n\nNext command:  fragcap capture 1\n"),
+        "ends with a labelled next command:\n{out}"
     );
+    assert_eq!(out.matches("Next command:").count(), 1, "{out}");
 }
 
 #[test]
