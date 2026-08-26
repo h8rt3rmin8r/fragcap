@@ -39,6 +39,7 @@ the owning category page.
 - [Catalog seeder](process-and-attribution.md#catalog-seeder)
 - [Catalog store](process-and-attribution.md#catalog-store)
 - [Completion summary](command-line-and-diagnostics.md#completion-summary)
+- [Container verdict](process-and-attribution.md#container-verdict)
 - [Corpus gate](process-and-attribution.md#corpus-gate)
 - [Coverage state](command-line-and-diagnostics.md#coverage-state)
 - [Deep Capture](capture-and-networking.md#deep-capture)

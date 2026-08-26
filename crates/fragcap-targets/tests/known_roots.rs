@@ -8,8 +8,8 @@
 use std::collections::HashSet;
 
 use fragcap_targets::{
-    CandidateIdentity, DriveType, FixtureClassifier, FixtureTree, KnownRootChildIsGame,
-    KnownRootsSource, TargetSource, Volume,
+    CandidateIdentity, ClassifierResult, ClassifierVerdict, DirectoryClassifier, DriveType,
+    FixtureClassifier, FixtureTree, KnownRootChildIsGame, KnownRootsSource, TargetSource, Volume,
 };
 
 fn vol(id: &str, mount: &str) -> Volume {
@@ -36,6 +36,36 @@ fn candidate_paths(d: &fragcap_targets::Discovery) -> Vec<String> {
             other => panic!("expected a path identity, got {other:?}"),
         })
         .collect()
+}
+
+struct ContainerClassifier {
+    hits: HashSet<String>,
+    containers: HashSet<String>,
+}
+
+impl ContainerClassifier {
+    fn new(hits: &[&str], containers: &[&str]) -> Self {
+        ContainerClassifier {
+            hits: hits.iter().map(|path| (*path).to_string()).collect(),
+            containers: containers.iter().map(|path| (*path).to_string()).collect(),
+        }
+    }
+}
+
+impl DirectoryClassifier for ContainerClassifier {
+    fn classify(&self, dir: &str) -> ClassifierResult {
+        let verdict = if self.containers.contains(dir) {
+            ClassifierVerdict::Container
+        } else if self.hits.contains(dir) {
+            fragcap_targets::KnownRootChildIsGame.classify(dir).verdict
+        } else {
+            ClassifierVerdict::Miss
+        };
+        ClassifierResult {
+            verdict,
+            coverage_warnings: Vec::new(),
+        }
+    }
 }
 
 #[test]
@@ -145,6 +175,66 @@ fn descent_stops_on_a_hit_and_descends_on_a_miss() {
         d.account.considered_not_a_game, 1,
         "Launcher is the one miss"
     );
+    assert!(d.account.is_conserved());
+}
+
+#[test]
+fn a_container_is_suppressed_and_descended_to_its_titles() {
+    let inv = Inv(vec![vol("vol-c", "C:")]);
+    let eligible: HashSet<String> = ["vol-c".to_string()].into_iter().collect();
+    let tree = FixtureTree::new()
+        .with_dir("C:/Games", &["C:/Games/Collection", "C:/Games/Standalone"])
+        .with_dir(
+            "C:/Games/Collection",
+            &["C:/Games/Collection/TitleA", "C:/Games/Collection/TitleB"],
+        );
+    let classifier = ContainerClassifier::new(
+        &[
+            "C:/Games/Standalone",
+            "C:/Games/Collection/TitleA",
+            "C:/Games/Collection/TitleB",
+        ],
+        &["C:/Games/Collection"],
+    );
+
+    let source = KnownRootsSource::new(&inv, &eligible, &tree, &classifier);
+    let d = source.discover().unwrap();
+    let paths = candidate_paths(&d);
+
+    assert_eq!(d.account.produced, 3);
+    assert_eq!(d.account.container_descended, 1);
+    assert_eq!(d.account.container_descent_truncated, 0);
+    assert!(!paths.iter().any(|path| path.ends_with("Collection")));
+    assert!(paths.iter().any(|path| path.ends_with("TitleA")));
+    assert!(paths.iter().any(|path| path.ends_with("TitleB")));
+    assert!(paths.iter().any(|path| path.ends_with("Standalone")));
+    assert!(d.account.is_conserved());
+}
+
+#[test]
+fn a_container_at_the_depth_limit_reports_truncated_coverage() {
+    let inv = Inv(vec![vol("vol-c", "C:")]);
+    let eligible: HashSet<String> = ["vol-c".to_string()].into_iter().collect();
+    let tree = FixtureTree::new()
+        .with_dir("C:/Games", &["C:/Games/Publisher"])
+        .with_dir("C:/Games/Publisher", &["C:/Games/Publisher/Collection"])
+        .with_dir(
+            "C:/Games/Publisher/Collection",
+            &["C:/Games/Publisher/Collection/HiddenTitle"],
+        );
+    let classifier = ContainerClassifier::new(&[], &["C:/Games/Publisher/Collection"]);
+
+    let source = KnownRootsSource::new(&inv, &eligible, &tree, &classifier);
+    let d = source.discover().unwrap();
+
+    assert_eq!(d.account.considered_not_a_game, 1);
+    assert_eq!(d.account.container_descended, 0);
+    assert_eq!(d.account.container_descent_truncated, 1);
+    assert!(d.candidates.is_empty());
+    assert!(d.warnings.iter().any(|warning| {
+        warning.contains("C:/Games/Publisher/Collection")
+            && warning.contains("descendants may remain undiscovered")
+    }));
     assert!(d.account.is_conserved());
 }
 

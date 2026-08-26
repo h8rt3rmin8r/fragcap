@@ -84,6 +84,25 @@ fn unity_set() -> SignatureSet {
     ])
 }
 
+fn multi_engine_set() -> SignatureSet {
+    SignatureSet::compile(&[
+        Signature {
+            category: SignatureCategory::Engine,
+            kind: SignatureKind::Filename,
+            pattern: "EngineAlpha.dll".to_string(),
+            product: "Engine Alpha".to_string(),
+            confidence: SignatureConfidence::Definitive,
+        },
+        Signature {
+            category: SignatureCategory::Engine,
+            kind: SignatureKind::Filename,
+            pattern: "EngineBeta.dll".to_string(),
+            product: "Engine Beta".to_string(),
+            confidence: SignatureConfidence::Definitive,
+        },
+    ])
+}
+
 #[test]
 fn a_detected_engine_reaches_the_candidate_and_stops_descent() {
     // The "Games" known root under a temp volume holds two game directories: one a
@@ -150,4 +169,56 @@ fn a_detected_engine_reaches_the_candidate_and_stops_descent() {
         "a known-root child with no engine is a heuristic game"
     );
     assert!(mystery.evidence.is_empty(), "no evidence without a match");
+}
+
+#[test]
+fn a_multi_engine_container_yields_its_child_titles_with_native_paths() {
+    let tree = TempTree::new("container");
+    tree.touch("Games/Collection/TitleA/EngineAlpha.dll");
+    tree.touch("Games/Collection/TitleB/EngineBeta.dll");
+
+    let inv = Inv(vec![Volume {
+        identity: "vol-t".to_string(),
+        mount_point: tree.mount(),
+        drive_type: DriveType::Fixed,
+    }]);
+    let eligible: HashSet<String> = ["vol-t".to_string()].into_iter().collect();
+    let lister = FsDirectoryLister;
+    let classifier = SignatureClassifier::for_known_root(multi_engine_set());
+
+    let source = KnownRootsSource::new(&inv, &eligible, &lister, &classifier);
+    let d = source.discover().unwrap();
+
+    assert_eq!(d.account.container_descended, 1);
+    assert_eq!(d.account.container_descent_truncated, 0);
+    assert_eq!(d.account.produced, 2);
+    assert!(d.account.is_conserved());
+    assert!(!d
+        .candidates
+        .iter()
+        .any(|candidate| candidate.display_name == "Collection"));
+    assert!(d
+        .candidates
+        .iter()
+        .any(|candidate| candidate.display_name == "TitleA"));
+    assert!(d
+        .candidates
+        .iter()
+        .any(|candidate| candidate.display_name == "TitleB"));
+
+    for candidate in &d.candidates {
+        let CandidateIdentity::Path(identity) = &candidate.identity else {
+            panic!("known-roots candidate must use a path identity");
+        };
+        assert_eq!(candidate.install_root.as_deref(), Some(identity.as_str()));
+        assert!(
+            !(identity.contains('/') && identity.contains('\\')),
+            "candidate path mixes separators: {identity}"
+        );
+        #[cfg(windows)]
+        assert!(
+            !identity.contains('/'),
+            "Windows candidate path must be native: {identity}"
+        );
+    }
 }

@@ -709,7 +709,10 @@ what attributes the socket-holding descendant.
 walk, a scan of the known game-install roots, a directory the user points at, is
 a discovery source implementing one seam. Each yields the same kind of value, a
 candidate target, plus a discovery account whose named outcomes reconcile to the
-number of items it considered (constitution P-4). Single-target authoring and bulk
+number of items it considered (constitution P-4). Its outcomes distinguish a
+known-roots container that was descended from one whose descendants remained
+outside the shallow depth bound; the latter is also reported by path so reduced
+coverage is visible. Single-target authoring and bulk
 platform walking are the same operation at different batch sizes (constitution
 P-10), so adding a new platform is a new implementor of the seam with no
 downstream change. A candidate is surfaced live and becomes a durable target entry
@@ -728,10 +731,14 @@ non-Windows executables that would bury the game.
 **FR-6c. Directory-shape descent.** Tiers 2 and 3 classify a directory by its
 shape (an engine signature such as a Unity player library or an Unreal
 engine-binaries tree), not a curated per-title list. The walk tests each directory
-and stops descending on a hit, emitting one candidate; it never enumerates a
-directory's executables first and then asks whether each is a game. The signature
-matcher is a separate concern (a later slice); the descent-and-stop contract and
-the seam it plugs into are the discovery layer's.
+and stops descending on a title hit, emitting one candidate. A directory whose
+observed findings name more than one distinct engine product is an organizational
+container rather than one title: it is not emitted, and the walk descends through it
+while the same shallow depth bound permits. A container at the bound is counted and
+reported as truncated coverage. Repeated markers for one engine and non-engine
+findings do not establish a container. The walk never enumerates a directory's
+executables first and then asks whether each is a game. The signature matcher and
+the descent control remain separate concerns joined through the classifier seam.
 
 **FR-6d. Volume eligibility.** The cross-volume walk enumerates known roots only
 on volumes the volume eligibility table marks eligible. The table is a persistent,

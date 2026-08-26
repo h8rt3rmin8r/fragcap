@@ -775,12 +775,14 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write) {
     let a = &discovery.account;
     let _ = writeln!(
         out,
-        "account: considered={} produced={} parse_failed={} declined={} not_a_game={} volume_skipped={} access_error={}",
+        "account: considered={} produced={} parse_failed={} declined={} not_a_game={} container_descended={} container_descent_truncated={} volume_skipped={} access_error={}",
         a.considered,
         a.produced,
         a.parse_failed,
         a.declined_by_user,
         a.considered_not_a_game,
+        a.container_descended,
+        a.container_descent_truncated,
         a.volume_skipped,
         a.access_error,
     );
@@ -1276,10 +1278,30 @@ fn exe_stem(exe: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        evidence_from_scan, hero_listing_with_machine_probe, render_machine_section, render_table,
-        steam_add_metadata, ClassificationSource, DetectionScan, ExeScan, FidelityTier,
-        TargetClassification, TargetEntry,
+        evidence_from_scan, hero_listing_with_machine_probe, print_discovery,
+        render_machine_section, render_table, steam_add_metadata, ClassificationSource,
+        DetectionScan, ExeScan, FidelityTier, TargetClassification, TargetEntry,
     };
+
+    #[test]
+    fn discovery_account_renders_both_container_outcomes() {
+        let discovery = fragcap::targets::Discovery {
+            account: fragcap::targets::DiscoveryAccount {
+                considered: 2,
+                container_descended: 1,
+                container_descent_truncated: 1,
+                ..fragcap::targets::DiscoveryAccount::default()
+            },
+            ..fragcap::targets::Discovery::default()
+        };
+        let mut out = Vec::new();
+
+        print_discovery(&discovery, &mut out);
+
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(text.contains("container_descended=1"));
+        assert!(text.contains("container_descent_truncated=1"));
+    }
 
     /// Point discovery at a catalog that cannot exist, so `hero_listing_with_machine_probe`
     /// registers nothing and the empty-listing path is deterministic regardless of

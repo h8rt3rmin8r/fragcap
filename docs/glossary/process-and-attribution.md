@@ -1398,6 +1398,8 @@ of directories that only ever contain games (the Epic, GOG, Riot, Battle.net,
 Ubisoft, EA, Origin, Xbox, and Steam-library roots), across every eligible fixed
 volume. It classifies each directory by shape through the descent contract
 ([descent stop-on-hit](#descent-stop-on-hit)) rather than a curated per-title list.
+A [container verdict](#container-verdict) prevents an organizational directory
+from being emitted as one title and requests bounded descent to its children.
 Introduced by slice S052.
 
 {: .matters }
@@ -1432,8 +1434,9 @@ for it; a rejected one is counted declined, never lost. Introduced by slice S052
 The truthful per-run tally a [discovery source](#discovery-source) returns alongside
 its candidates, mirroring the [seed summary](#seed-summary): every item considered
 lands in exactly one named outcome (produced, parse-failed, declined, not-a-game,
-volume-skipped, access-error) and the outcomes reconcile to the number considered.
-Introduced by slice S052.
+container-descended, container-descent-truncated, volume-skipped, access-error) and
+the outcomes reconcile to the number considered. Introduced by slice S052; the two
+container outcomes were added by slice S077.
 
 {: .matters }
 > A discard path added later with no counter fails the conservation check rather
@@ -1460,14 +1463,34 @@ Introduced by slice S052.
 
 **See also:** [Known-roots source](#known-roots-source), [Local store](#local-store)
 
+## Container verdict
+
+The classification outcome for a directory whose observed findings name more than
+one distinct engine product. The directory is treated as an organizational
+container, not emitted as one [candidate target](#candidate-target), and descended
+through while the known-roots shallow bound permits. Repeated markers for one
+engine and anti-cheat or DRM findings do not establish this verdict. Introduced by
+slice S077.
+
+{: .matters }
+> A container verdict prevents one aggregate row from making a false claim about a
+> title and hiding every actual game below it. If the depth bound prevents descent,
+> the [discovery account](#discovery-account) and warning report that reduced
+> coverage rather than claiming discovery completed.
+
+**See also:** [Known-roots source](#known-roots-source),
+[Discovery account](#discovery-account), [Descent stop-on-hit](#descent-stop-on-hit)
+
 ## Descent stop-on-hit
 
 The rule the [known-roots source](#known-roots-source) walk follows: test each
-directory for a game signature and, on a hit, emit one [candidate target](#candidate-target)
-and stop descending into that directory's subtree; never enumerate a directory's
-executables first and then ask whether each is a game. The signature matcher itself
-is a separate seam (slice S053); slice S052 ships the descent contract and a
-stand-in classifier. Introduced by slice S052.
+directory for a game signature and, on a title hit, emit one
+[candidate target](#candidate-target) and stop descending into that directory's
+subtree. A [container verdict](#container-verdict) is the explicit exception: emit
+nothing and continue bounded descent. Never enumerate a directory's executables
+first and then ask whether each is a game. The signature matcher itself is a
+separate seam (slice S053); slice S052 introduced the descent contract and slice
+S077 added the container-aware correction.
 
 {: .matters }
 > Performance is load-bearing: stopping on a hit is what keeps the walk from

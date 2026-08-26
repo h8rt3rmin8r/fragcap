@@ -10,10 +10,12 @@
 //! fills it with [`SignatureClassifier`], the generic matcher over the catalog's
 //! signature table.
 //!
-//! The descent contract (S052 FR-015): a walk tests each directory through a
-//! classifier and stops descending on a [`ClassifierVerdict::Hit`], emitting one
-//! candidate; it never enumerates a directory's executables first and then asks
-//! whether each is a game (FR-009).
+//! The descent contract (S052 FR-015, corrected by S077): a walk tests each
+//! directory through a classifier and stops descending on a
+//! [`ClassifierVerdict::Hit`], emitting one candidate. A
+//! [`ClassifierVerdict::Container`] emits nothing and requests bounded descent. The
+//! walk never enumerates a directory's executables first and then asks whether each
+//! is a game (FR-009).
 //!
 //! A [`ClassifierVerdict::Hit`] carries the fidelity the match earns (a definitive
 //! local engine marker is [`FidelityTier::Verified`], which outranks a remote
@@ -21,9 +23,10 @@
 //! anti-cheat or DRM). The evidence is a set of facts and nothing more: no field on
 //! it characterizes a title as off limits (section 3.6).
 
+use std::collections::HashSet;
 use std::path::Path;
 
-use fragcap_profile::signature::SignatureSet;
+use fragcap_profile::signature::{SignatureCategory, SignatureSet};
 use fragcap_profile::{DetectionFinding, FidelityTier};
 
 use crate::entry::{DetectionScan, TargetClassification};
@@ -48,6 +51,9 @@ pub enum ClassifierVerdict {
         /// ran no scan.
         detection_scan: Option<DetectionScan>,
     },
+    /// This directory aggregates more than one engine product and is therefore a
+    /// container to descend through, not one target to emit.
+    Container,
     /// Not a classified target: count it considered-not-a-game.
     Miss,
 }
@@ -81,8 +87,8 @@ impl ClassifierResult {
     }
 }
 
-/// Decides, from a directory's shape, whether it is a target. A seam so S053's
-/// signature matcher drops in without touching the walk.
+/// Decides, from a directory's shape, whether it is a target or a container that
+/// should be descended. A seam so the signature matcher and walk remain separate.
 pub trait DirectoryClassifier {
     /// Classify one directory by its path and its shape, reporting any subtree it
     /// could not read alongside the verdict.
@@ -189,7 +195,17 @@ impl DirectoryClassifier for SignatureClassifier {
         // presented as complete (P-4). Taken from the outcome's own helper, so a new
         // cause is forwarded without touching this seam.
         let coverage_warnings = outcome.coverage_warnings();
+        // The detector already deduplicates per category and canonical product, but
+        // count explicitly here so this control decision remains correct if a second
+        // finding source is composed without that implementation detail later.
+        let engine_products: HashSet<&str> = outcome
+            .findings
+            .iter()
+            .filter(|finding| finding.category == SignatureCategory::Engine)
+            .map(|finding| finding.product.as_str())
+            .collect();
         let verdict = match outcome.detected_engine() {
+            Some(_) if engine_products.len() > 1 => ClassifierVerdict::Container,
             // A detected engine: a game at the fidelity the signature earns, carrying
             // every finding (engine, anti-cheat, DRM) as neutral evidence.
             Some(engine) => ClassifierVerdict::Hit {
@@ -311,6 +327,58 @@ mod tests {
         ])
     }
 
+    fn multi_engine_set() -> SignatureSet {
+        SignatureSet::compile(&[
+            Signature {
+                category: SignatureCategory::Engine,
+                kind: SignatureKind::Filename,
+                pattern: "UnityPlayer.dll".to_string(),
+                product: "Engine Alpha".to_string(),
+                confidence: SignatureConfidence::Definitive,
+            },
+            Signature {
+                category: SignatureCategory::Engine,
+                kind: SignatureKind::Filename,
+                pattern: "GameAssembly.dll".to_string(),
+                product: "Engine Alpha".to_string(),
+                confidence: SignatureConfidence::Definitive,
+            },
+            Signature {
+                category: SignatureCategory::Engine,
+                kind: SignatureKind::Filename,
+                pattern: "EngineBeta.dll".to_string(),
+                product: "Engine Beta".to_string(),
+                confidence: SignatureConfidence::Definitive,
+            },
+        ])
+    }
+
+    #[test]
+    fn distinct_engine_products_identify_a_container() {
+        let tree = TempTree::new("multi-engine-container");
+        tree.touch("child-a/UnityPlayer.dll");
+        tree.touch("child-b/EngineBeta.dll");
+        let classifier = SignatureClassifier::for_known_root(multi_engine_set());
+
+        assert_eq!(
+            classifier.classify(&tree.path_str()).verdict,
+            ClassifierVerdict::Container
+        );
+    }
+
+    #[test]
+    fn repeated_markers_for_one_engine_remain_a_title_hit() {
+        let tree = TempTree::new("same-engine-markers");
+        tree.touch("UnityPlayer.dll");
+        tree.touch("GameAssembly.dll");
+        let classifier = SignatureClassifier::for_known_root(multi_engine_set());
+
+        assert!(matches!(
+            classifier.classify(&tree.path_str()).verdict,
+            ClassifierVerdict::Hit { .. }
+        ));
+    }
+
     #[test]
     fn an_engine_marker_is_a_verified_game_hit() {
         let tree = TempTree::new("unity");
@@ -330,7 +398,7 @@ mod tests {
                 assert!(evidence.iter().any(|f| f.product == "Unity"));
                 assert!(evidence.iter().any(|f| f.product == "Easy Anti-Cheat"));
             }
-            ClassifierVerdict::Miss => panic!("expected a hit"),
+            other => panic!("expected a hit, got {other:?}"),
         }
     }
 
@@ -366,7 +434,7 @@ mod tests {
                 assert_eq!(fidelity, FidelityTier::HeuristicUnverified);
                 assert!(evidence.iter().any(|f| f.product == "Easy Anti-Cheat"));
             }
-            ClassifierVerdict::Miss => panic!("a known-root child is still a game"),
+            other => panic!("a known-root child is still a game, got {other:?}"),
         }
     }
 
@@ -379,7 +447,7 @@ mod tests {
             ClassifierVerdict::Hit { fidelity, .. } => {
                 assert_eq!(fidelity, FidelityTier::Verified);
             }
-            ClassifierVerdict::Miss => panic!("expected a verified hit"),
+            other => panic!("expected a verified hit, got {other:?}"),
         }
     }
 

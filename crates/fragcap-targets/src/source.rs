@@ -19,8 +19,9 @@
 //!
 //! [`DiscoveryAccount`] mirrors [`crate::seed::SeedSummary`]'s conservation: every
 //! item a source considered lands in exactly one named outcome, and the outcomes
-//! reconcile to the number considered. A discard path added later with no counter
-//! fails [`DiscoveryAccount::is_conserved`] rather than dropping a candidate
+//! reconcile to the number considered. Container directories distinguish successful
+//! bounded descent from depth-limited coverage. A discard path added later with no
+//! counter fails [`DiscoveryAccount::is_conserved`] rather than dropping a candidate
 //! silently (P-4).
 
 use fragcap_profile::{DetectionFinding, FidelityTier};
@@ -104,6 +105,12 @@ pub struct DiscoveryAccount {
     /// whose appinfo type is `Music` (a soundtrack, which has no network
     /// behavior; slice S066, issue #166).
     pub considered_not_a_game: u64,
+    /// Container directories that were not emitted and whose immediate children
+    /// were enumerated within the known-roots depth bound.
+    pub container_descended: u64,
+    /// Container directories that were not emitted and whose children could not
+    /// be enumerated because the known-roots depth bound was reached.
+    pub container_descent_truncated: u64,
     /// Items not examined because their volume was ineligible.
     pub volume_skipped: u64,
     /// Items not examined because of a permission or I/O error.
@@ -119,6 +126,8 @@ impl DiscoveryAccount {
             + self.parse_failed
             + self.declined_by_user
             + self.considered_not_a_game
+            + self.container_descended
+            + self.container_descent_truncated
             + self.volume_skipped
             + self.access_error
             == self.considered
@@ -179,6 +188,8 @@ pub fn discover_all(sources: &[&dyn TargetSource]) -> Result<Discovery, TargetsE
         merged.account.parse_failed += d.account.parse_failed;
         merged.account.declined_by_user += d.account.declined_by_user;
         merged.account.considered_not_a_game += d.account.considered_not_a_game;
+        merged.account.container_descended += d.account.container_descended;
+        merged.account.container_descent_truncated += d.account.container_descent_truncated;
         merged.account.volume_skipped += d.account.volume_skipped;
         merged.account.access_error += d.account.access_error;
     }
@@ -286,6 +297,20 @@ mod tests {
         assert_eq!(merged.account.considered, 3);
         assert_eq!(merged.account.produced, 2);
         assert_eq!(merged.account.considered_not_a_game, 1);
+        assert_eq!(merged.account.container_descended, 0);
+        assert_eq!(merged.account.container_descent_truncated, 0);
         assert!(merged.account.is_conserved());
+    }
+
+    #[test]
+    fn account_conserves_container_outcomes() {
+        let account = DiscoveryAccount {
+            considered: 2,
+            container_descended: 1,
+            container_descent_truncated: 1,
+            ..DiscoveryAccount::default()
+        };
+
+        assert!(account.is_conserved());
     }
 }
