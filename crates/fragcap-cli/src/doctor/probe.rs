@@ -76,18 +76,19 @@ fn extcap_status() -> (Option<PathBuf>, bool, Option<PathBuf>, bool) {
 fn tracing_availability() -> Option<bool> {
     #[cfg(all(windows, feature = "etw"))]
     {
-        match fragcap::EtwWatcher::start("fragcap-doctor-probe") {
-            Ok(watcher) => {
-                let _ = watcher.stop();
-                Some(true)
-            }
-            Err(_) => Some(false),
-        }
+        tracing_availability_with(|| {
+            fragcap::EtwWatcher::probe_session("fragcap-doctor-probe").is_ok()
+        })
     }
     #[cfg(not(all(windows, feature = "etw")))]
     {
         None
     }
+}
+
+#[cfg(any(test, all(windows, feature = "etw")))]
+fn tracing_availability_with(probe: impl FnOnce() -> bool) -> Option<bool> {
+    Some(probe())
 }
 
 /// Whether the live capture backend is compiled into this binary.
@@ -955,6 +956,24 @@ mod tests {
         assert_eq!(interfaces, Vec::<super::super::IfaceInfo>::new());
         assert_eq!(loopback, None);
         assert_eq!(error, None);
+    }
+
+    #[test]
+    fn tracing_availability_maps_probe_success_and_failure() {
+        assert_eq!(tracing_availability_with(|| true), Some(true));
+        assert_eq!(tracing_availability_with(|| false), Some(false));
+    }
+
+    #[test]
+    fn tracing_availability_does_not_start_the_full_watcher() {
+        let source = include_str!("probe.rs");
+        let full_watcher_probe_call = concat!("EtwWatcher::", "start(\"fragcap-doctor-probe\")");
+
+        assert!(
+            !source.contains(full_watcher_probe_call),
+            "doctor readiness must use the probe-only ETW entry point"
+        );
+        assert!(source.contains("EtwWatcher::probe_session(\"fragcap-doctor-probe\")"));
     }
 
     #[test]
