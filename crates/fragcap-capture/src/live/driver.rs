@@ -35,11 +35,7 @@
 //!
 //! Presentation belongs to slice S14. This module supplies the facts.
 
-use fragcap_core::interface::{DriverReport, DRIVER_DOWNLOAD_URL};
-
-/// What npcap calls its loopback adapter when the loopback capture option is
-/// installed. Matched case-insensitively against the adapter description.
-const LOOPBACK_MARKER: &str = "loopback";
+use fragcap_core::interface::{is_loopback_adapter, DriverReport, DRIVER_DOWNLOAD_URL};
 
 /// What is installed, as far as can be determined without opening a handle.
 ///
@@ -61,12 +57,11 @@ pub fn detect_driver() -> DriverReport {
     // The loopback option's effect is that an adapter exists, so enumeration is
     // also how that question gets answered. Here the enumeration succeeded, so
     // `Some` is a real observation rather than an assumption.
-    let loopback_supported = Some(devices.iter().any(|d| {
-        d.flags.is_loopback()
-            || d.desc
-                .as_deref()
-                .is_some_and(|desc| desc.to_lowercase().contains(LOOPBACK_MARKER))
-    }));
+    let loopback_supported = Some(
+        devices
+            .iter()
+            .any(|d| is_loopback_adapter(d.flags.is_loopback(), d.desc.as_deref())),
+    );
 
     DriverReport {
         present: true,

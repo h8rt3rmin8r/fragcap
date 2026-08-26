@@ -125,6 +125,21 @@ pub struct InterfaceInventory {
     pub default_route_source: Option<IpAddr>,
 }
 
+/// Description marker used by npcap's loopback adapter.
+const NPCAP_LOOPBACK_MARKER: &str = "loopback";
+
+/// Whether an interface carries the evidence fragcap treats as loopback support.
+///
+/// The platform loopback flag is the direct signal. The description marker keeps
+/// npcap's own loopback adapter detectable on systems where the flag is not the
+/// only evidence surfaced through libpcap.
+pub fn is_loopback_adapter(is_loopback: bool, description: Option<&str>) -> bool {
+    is_loopback
+        || description
+            .map(str::to_lowercase)
+            .is_some_and(|desc| desc.contains(NPCAP_LOOPBACK_MARKER))
+}
+
 /// What the caller is asking for.
 ///
 /// Plain values rather than a profile. `fragcap-capture` and `fragcap-profile`
@@ -622,6 +637,18 @@ mod tests {
             is_running: true,
             ..InterfaceRecord::new(name, LinkType::ETHERNET)
         }
+    }
+
+    #[test]
+    fn loopback_evidence_accepts_platform_flag_and_npcap_description() {
+        assert!(is_loopback_adapter(true, None));
+        assert!(is_loopback_adapter(false, Some("Npcap LoopBack Adapter")));
+        assert!(is_loopback_adapter(
+            false,
+            Some("network adapter 'npcap loopback adapter'")
+        ));
+        assert!(!is_loopback_adapter(false, Some("Ethernet Adapter")));
+        assert!(!is_loopback_adapter(false, None));
     }
 
     /// The machine the whole matrix is decided against: one wired adapter

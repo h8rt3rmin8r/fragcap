@@ -33,9 +33,9 @@ pub mod core {
         AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowRegistry, Proto,
     };
     pub use fragcap_core::interface::{
-        select, virtual_verdict, InterfaceId, InterfaceInventory, InterfaceRecord,
-        SelectedInterface, SelectionError, SelectionOutcome, SelectionSettings, VirtualVerdict,
-        DRIVER_DOWNLOAD_URL, WIRESHARK_DOWNLOAD_URL,
+        is_loopback_adapter, select, virtual_verdict, InterfaceId, InterfaceInventory,
+        InterfaceRecord, SelectedInterface, SelectionError, SelectionOutcome, SelectionSettings,
+        VirtualVerdict, DRIVER_DOWNLOAD_URL, WIRESHARK_DOWNLOAD_URL,
     };
     pub use fragcap_core::link::LinkType;
     pub use fragcap_core::packet::{
