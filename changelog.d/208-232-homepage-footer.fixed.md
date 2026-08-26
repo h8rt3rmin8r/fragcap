@@ -2,5 +2,5 @@
 
 Corrected the documentation homepage to describe process-attributed Capture and
 explicit, target-scoped Deep Capture accurately, replaced its stale target
-listing with synthetic current output, and labelled the CLI's suggested next
-capture command.
+listing with synthetic current output, aligned its public metadata with both
+modes, and labelled the CLI's suggested next capture command.

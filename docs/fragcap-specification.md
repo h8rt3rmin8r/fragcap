@@ -2920,13 +2920,15 @@ truncated value is the same class of loss as a silently dropped packet.
 
 After any machine-findings section, a populated listing ends with one blank line
 and the exact labelled footer `Next command:  fragcap capture <row>`. The row is
-the first ready target in display order, or the first displayed target when none
-is ready. An empty result prints the commands that populate the store rather
-than an empty table and prints no next-command footer. Registration is additive
-and idempotent: a repeat listing over an unchanged environment registers nothing
-new and never modifies or removes an existing entry. A bare `fragcap` prints the
-same listing with a `--help` footer after the target output; the labelled target
-footer remains unchanged.
+the first ready target whose install root is not missing, then the first target
+whose install root is not missing when none is both ready and present, and only
+then the first displayed target when every install root is missing. An empty
+result prints the commands that populate the store rather than an empty table
+and prints no next-command footer. Registration is additive and idempotent: a
+repeat listing over an unchanged environment registers nothing new and never
+modifies or removes an existing entry. A bare `fragcap` prints the same listing
+with a `--help` footer after the target output; the labelled target footer remains
+unchanged.
 
 The listing writes a snapshot of the rows it displayed to `local.db`, and a
 bare-integer selector resolves against that snapshot (section 17.2), so a row
@@ -3551,6 +3553,10 @@ target-scoped local proxy for compatible traffic and can produce application
 records and proxy-owned TLS key logs when that traffic is inspectable. The page
 must not imply that all traffic is attributable, proxy-compatible, decrypted, or
 HTTP-shaped.
+
+The site's default, Open Graph, and Twitter descriptions summarize both modes
+with the same bounded language. Public metadata must not describe the whole
+product as passive-only or imply universal Deep Capture compatibility.
 
 The page then shows a current command and synthetic output, rendered in the
 interface typeface, as its primary persuasive asset. The specimen uses invented

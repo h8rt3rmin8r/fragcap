@@ -82,3 +82,10 @@ Phases 2 through 4 are the minimum useful delivery. Omitting any one leaves eith
 ## Phase 6: Convergence
 
 - [X] T021 Correct the homepage and master-specification specimens from `needs target` to the live CLI vocabulary `needs a target` per FR-013 and US3/AC1 (partial).
+
+---
+
+## Phase 7: Review Remediation
+
+- [X] T022 Correct specification section 17.7 to preserve the shipped ready-and-present, present, then all-missing row-selection precedence per FR-010.
+- [X] T023 Replace passive-only default, Open Graph, and Twitter metadata with one shared mode-aware description and record the public-metadata rule in specification section 23.1 per FR-004/FR-018.

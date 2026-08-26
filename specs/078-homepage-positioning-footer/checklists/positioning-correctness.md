@@ -27,5 +27,6 @@
 
 - [X] The specimen uses only synthetic target data.
 - [X] The specimen is bound to current CLI column and footer vocabulary.
+- [X] Default, Open Graph, and Twitter metadata describe both product modes consistently.
 - [X] Historical S057 artifacts remain historical rather than silently rewritten.
 - [X] The master specification changes in the same slice as the public page.

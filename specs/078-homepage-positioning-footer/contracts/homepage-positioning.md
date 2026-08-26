@@ -10,4 +10,6 @@ The first viewport follows this semantic order:
 
 The prose must not contain the retired packet-count thought experiment, destroyed-information claim, fixed-hop claim, passive-only product description, universal attribution/decryption claim, or two-prerequisite framing.
 
+The default, Open Graph, and Twitter descriptions share one mode-aware summary and must not retain a passive-only product description.
+
 Exact prose is intentionally not contractual. Facts, mode boundaries, and voice are.

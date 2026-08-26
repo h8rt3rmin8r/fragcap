@@ -5,6 +5,8 @@ import type { ReactNode } from 'react';
 import type { Metadata, Viewport } from 'next';
 
 const url = 'https://fragcap.com';
+const description =
+  'Passive, process-attributed Capture and explicit, target-scoped Deep Capture for Windows game traffic.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(url),
@@ -12,8 +14,7 @@ export const metadata: Metadata = {
     default: 'fragcap',
     template: '%s | fragcap',
   },
-  description:
-    'Passive, process-attributed network capture for Windows game clients.',
+  description,
   applicationName: 'fragcap',
   manifest: '/site.webmanifest',
   icons: {
@@ -29,16 +30,14 @@ export const metadata: Metadata = {
     type: 'website',
     url,
     title: 'fragcap',
-    description:
-      'Passive, process-attributed network capture for Windows game clients.',
+    description,
     siteName: 'fragcap',
     images: [{ url: '/social-preview.png', width: 1280, height: 640 }],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'fragcap',
-    description:
-      'Passive, process-attributed network capture for Windows game clients.',
+    description,
     images: ['/social-preview.png'],
   },
 };
