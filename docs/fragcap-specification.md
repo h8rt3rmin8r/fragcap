@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.11-draft \
+**Version:** 0.1.12-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -103,6 +103,7 @@ enforcement.
 | 0.1.9-draft | 2026-08-25 | W. Thompson | **Adds Deep Capture readiness and cleanup checks to doctor (issue #218).** Extends section 26.3 so doctor reports proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, and session storage, with confirmation-gated cleanup for fragcap-owned residue. |
 | 0.1.10-draft | 2026-08-26 | W. Thompson | **Adds the first Deep Capture MVP command path (issue #219).** Extends sections 13.3, 13.5, 13.7, 17.2, 28, and 29. The MVP requires one stored target, fact-backed cold Steam managed launch ownership, explicit current-user CA trust confirmation, current scoped-proxy compatibility facts for real targets, a replaceable `mitmdump` backend boundary, packet-side flow correlation, complete or partial session bundles, live analyzer access to requested TLS key logs, observed compatibility fact updates, and controlled local verification without game accounts. Warm Steam and direct-executable cases are side-effect-free preflight refusals. |
 | 0.1.11-draft | 2026-08-26 | W. Thompson | **Publishes Deep Capture traffic support and local compatibility evidence (issue #220).** Extends sections 15, 17.2, 19.6, 28, and 29. `targets show` renders a deterministic, non-aggregating matrix from the selected target's local facts, including launch case, evidence source, and freshness. The public reference distinguishes HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext behavior without publishing a guessed title list or claiming universal decryption. |
+| 0.1.12-draft | 2026-08-26 | W. Thompson | **Corrects homepage positioning and labels the target listing's next command (issues #232 and #208).** Updates sections 17.7, 23.1, and 23.3. The homepage now leads with process-attributed game traffic, distinguishes Capture from Deep Capture, qualifies attribution and inspection claims, states the live-capture and analyzer dependencies accurately, and uses a synthetic current CLI specimen. The target listing ends with the exact labelled footer `Next command:  fragcap capture <row>`. This revision supersedes S057's frozen homepage-copy requirement without modifying its historical artifacts. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2884,12 +2885,11 @@ newly found titles into `local.db` idempotently, and lists the registered
 targets as a numbered table:
 
 ```text
-  #  TARGET                     CAPTURE          ENGINE     SENSITIVITIES
-  1  the_elder_scrolls_online   ready            Unreal     -
-  2  the_division_2             ready            -          Denuvo, Easy Anti-Cheat
-  3  some_indie_thing           needs a target   GameMaker  not scanned
+  #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
+  1  sample_adventure  ready           Sample Engine  not scanned
+  2  sample_arena      needs a target  not scanned    Sample Protection
 
-  fragcap capture 1
+Next command:  fragcap capture 1
 ```
 
 Rows are ordered by handle. The CAPTURE column is `ready` when the entry names
@@ -2918,11 +2918,15 @@ target handle cost a bounded width; a handle wider than the remainder of an 80
 column terminal overflows visibly rather than being clipped, because a silently
 truncated value is the same class of loss as a silently dropped packet.
 
-The listing ends by naming the next command, and an
-empty result prints the commands that populate the store rather than an empty
-table. Registration is additive and idempotent: a repeat listing over an
-unchanged environment registers nothing new and never modifies or removes an
-existing entry. A bare `fragcap` prints the same listing with a `--help` footer.
+After any machine-findings section, a populated listing ends with one blank line
+and the exact labelled footer `Next command:  fragcap capture <row>`. The row is
+the first ready target in display order, or the first displayed target when none
+is ready. An empty result prints the commands that populate the store rather
+than an empty table and prints no next-command footer. Registration is additive
+and idempotent: a repeat listing over an unchanged environment registers nothing
+new and never modifies or removes an existing entry. A bare `fragcap` prints the
+same listing with a `--help` footer after the target output; the labelled target
+footer remains unchanged.
 
 The listing writes a snapshot of the rows it displayed to `local.db`, and a
 bare-integer selector resolves against that snapshot (section 17.2), so a row
@@ -3533,15 +3537,30 @@ so local and built output cannot diverge through configuration drift.
 The site is one application serving a landing page and the
 documentation described in section 22, deployed to `fragcap.com`.
 
-The landing page opens with the problem fragcap solves that standard
-tooling does not, stated plainly enough that a technically competent
-visitor who has never thought about attribution understands the gap
-within one screen. It then shows the tool working: a real command and
-its real output, rendered in the interface typeface, which is the page's
-primary persuasive asset. It states what fragcap is, presents a small
-number of concrete capability statements each linking to the
-documentation that proves it, names the prerequisite, and links to
-getting started, the repository, and the glossary.
+The landing page opens with fragcap's outcome: game traffic attributed to the
+process responsible for it. Within the first viewport it explains the gap
+without overstating it: ordinary packet records preserve network frames but do
+not carry process ownership, and fragcap correlates captured flows with Windows
+socket and process lifecycle evidence. Resolved flows carry their attribution
+and fidelity; unresolved traffic remains unresolved rather than being assigned
+speculatively.
+
+The opening distinguishes both product modes. Capture is passive,
+process-attributed packet capture. Deep Capture adds an explicitly selected,
+target-scoped local proxy for compatible traffic and can produce application
+records and proxy-owned TLS key logs when that traffic is inspectable. The page
+must not imply that all traffic is attributable, proxy-compatible, decrypted, or
+HTTP-shaped.
+
+The page then shows a current command and synthetic output, rendered in the
+interface typeface, as its primary persuasive asset. The specimen uses invented
+targets and technologies, matches the current columns and footer contract in
+section 17.7, and contains no operator-specific or real-title data. The page
+presents a small number of qualified capability statements linking to the
+documentation that proves them. It states that Npcap in WinPcap-compatible mode
+is required for live packet capture, that fragcap does not bundle or host Npcap,
+that Wireshark is recommended but any pcapng-aware analyzer can read Capture
+output, and that `fragcap doctor` reports readiness.
 
 The page may use rhetorical framing, a diagram of fragcap's relationship
 to its third-party dependencies, and a single primary action directing
@@ -3550,7 +3569,8 @@ grids, badges, pricing, or sponsorship solicitation. Capability
 statements remain plain facts with links rather than marketing claims,
 and the section 23.3 voice remains the acceptance test: the page should
 read as instrument documentation with a strong opening, not as a product
-page.
+page. This section supersedes S057's requirement to preserve its homepage copy
+verbatim; S057 remains an unchanged historical record.
 
 ### 23.2 Hosting and Domain
 
@@ -3572,11 +3592,12 @@ former open questions Q-7 and Q-8 are closed (section 29). The following
 guardrails governed that work and remain the acceptance test for the site
 and interface design.
 
-**Governing principle: instrument, not weapon.** Every visual and
-verbal decision reads as laboratory equipment. This is accurate
-positioning, since fragcap is a passive observation tool, and it is
-also load-bearing: identity that reads as cheat tooling attracts
-platform removal, security software heuristics, and community
+**Governing principle: instrument, not weapon.** Every visual and verbal
+decision reads as laboratory equipment. This is accurate positioning: Capture
+is passive observation, while Deep Capture is deliberate, visible, scoped, and
+reversible local proxy inspection. Neither mode covertly instruments a target
+process. The distinction is also load-bearing: identity that reads as cheat
+tooling attracts platform removal, security software heuristics, and community
 moderation regardless of what the software does.
 
 **Excluded.** Saturated multi-color peripheral palettes, angular
