@@ -30,6 +30,17 @@ pub struct EtwWatcher {
 }
 
 impl EtwWatcher {
+    /// Probe whether a process trace session can be opened, without starting
+    /// the full watcher machinery.
+    ///
+    /// This is for readiness diagnostics that need the runtime session answer
+    /// but do not need a consumer thread, event fanout, or startup process
+    /// snapshot. Dropping the owned session stops the trace before returning.
+    pub fn probe_session(session_name: &str) -> Result<(), WatcherError> {
+        let _session = Session::start(session_name)?;
+        Ok(())
+    }
+
     /// Start watching.
     ///
     /// The order here is load-bearing and is not an implementation detail.
@@ -146,4 +157,19 @@ fn now() -> Option<Timestamp> {
         .ok()?
         .as_nanos();
     Some(Timestamp::from_nanos(nanos as i64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_session_uses_session_validation_without_full_watcher_startup() {
+        let long = "x".repeat(512);
+
+        match EtwWatcher::probe_session(&long) {
+            Err(WatcherError::SessionUnavailable { code, .. }) => assert_eq!(code, 0),
+            other => panic!("expected local session-name validation failure, got {other:?}"),
+        }
+    }
 }
