@@ -52,6 +52,9 @@ pub enum ActionKind {
     InitializeCatalog,
     /// No target entries are registered: run discovery.
     RunDiscovery,
+    /// Deep Capture residue is present under fragcap-owned session storage:
+    /// remove known stale/sensitive artifacts.
+    CleanupDeepCapture,
 }
 
 impl ActionKind {
@@ -87,6 +90,9 @@ impl ActionKind {
             }
             ActionKind::RunDiscovery => {
                 "Run discovery (tiers 1 and 2) to register installed titles".to_string()
+            }
+            ActionKind::CleanupDeepCapture => {
+                "Clean stale Deep Capture residue under fragcap-owned session storage".to_string()
             }
         }
     }
@@ -167,9 +173,9 @@ pub enum ActionOutcome {
 
 /// The pure selection: the actions `--fix` will offer for a report.
 ///
-/// Walks the report in order, collecting each check's action; drops an action the
-/// platform cannot perform (elevation off this platform); degrades a net-required
-/// action when the capability is absent; and moves a
+/// Walks the report in order, collecting the first occurrence of each check
+/// action; drops an action the platform cannot perform (elevation off this
+/// platform); degrades a net-required action when the capability is absent; and moves a
 /// [`ActionKind::RelaunchElevated`] to the front so escalation precedes any
 /// privilege-gated action (FR-014). The result is always a subset of the actions
 /// carried by checks in `report` (FR-003): there is no other source of actions.
@@ -189,6 +195,9 @@ pub fn offered_actions(report: &Report, caps: Capabilities) -> Vec<Action> {
         if action.net_required && !caps.net {
             action.degraded = true;
             action.label = action.kind.degraded_label();
+        }
+        if actions.iter().any(|existing| existing.kind == action.kind) {
+            continue;
         }
         actions.push(action);
     }
@@ -251,6 +260,27 @@ mod tests {
                 ActionKind::InstallExtcap(ExtcapScope::User),
                 ActionKind::RunDiscovery
             ]
+        );
+    }
+
+    #[test]
+    fn duplicate_action_kinds_are_offered_once() {
+        let report = report_with(vec![
+            Some(Action::new(ActionKind::CleanupDeepCapture)),
+            Some(Action::new(ActionKind::CleanupDeepCapture)),
+            Some(Action::new(ActionKind::RunDiscovery)),
+        ]);
+        let offered = offered_actions(
+            &report,
+            Capabilities {
+                net: true,
+                elevation: true,
+            },
+        );
+        let kinds: Vec<ActionKind> = offered.iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![ActionKind::CleanupDeepCapture, ActionKind::RunDiscovery]
         );
     }
 

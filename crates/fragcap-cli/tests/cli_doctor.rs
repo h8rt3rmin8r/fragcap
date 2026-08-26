@@ -9,7 +9,10 @@
 mod common;
 
 use fragcap_cli::doctor::action::{offered_actions, ActionKind, Capabilities, ExtcapScope};
-use fragcap_cli::doctor::{checks, IfaceInfo, Inputs, NpcapInfo, Privilege, Status, Subsystem};
+use fragcap_cli::doctor::{
+    checks, DeepCaptureCa, DeepCaptureInputs, IfaceInfo, Inputs, NpcapInfo, Privilege,
+    ProxyBackendInfo, Status, Subsystem,
+};
 
 fn ready() -> Inputs {
     Inputs {
@@ -52,6 +55,24 @@ fn ready() -> Inputs {
             "C:\\Program Files\\Wireshark\\extcap",
         )),
         target_entry_count: Some(3),
+        deep_capture: DeepCaptureInputs {
+            session_dir: Some(std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions",
+            )),
+            session_dir_present: false,
+            proxy_backend: Some(ProxyBackendInfo {
+                name: "mitmdump".to_string(),
+                version: Some("Mitmproxy: 12.1.0".to_string()),
+            }),
+            proxy_backend_error: None,
+            analyzer_keylog_configured: true,
+            ca: DeepCaptureCa::Absent,
+            occupied_proxy_ports: Some(Vec::new()),
+            orphaned_proxy_processes: Some(Vec::new()),
+            stale_manifests: Vec::new(),
+            stale_tls_key_logs: Vec::new(),
+            sensitive_artifacts: Vec::new(),
+        },
     }
 }
 
@@ -419,4 +440,32 @@ fn a_ready_machine_offers_no_actions() {
         }
     )
     .is_empty());
+}
+
+#[test]
+fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
+    let mut inputs = ready();
+    inputs.deep_capture.stale_tls_key_logs = vec![std::path::PathBuf::from(
+        "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions\\s1\\tls-keylog.log",
+    )];
+    let report = checks::run(&inputs);
+    let keylog = report
+        .checks
+        .iter()
+        .find(|check| check.section == "Deep Capture" && check.name == "tls key logs")
+        .unwrap();
+    assert_eq!(keylog.status, Status::Warn);
+    assert_eq!(
+        keylog.action.as_ref().map(|action| action.kind),
+        Some(ActionKind::CleanupDeepCapture)
+    );
+    let json = report.render_json();
+    assert!(
+        json.lines().any(|line| {
+            line.contains("\"section\":\"Deep Capture\"")
+                && line.contains("\"name\":\"tls key logs\"")
+                && line.contains("\"status\":\"warn\"")
+        }),
+        "Deep Capture residue is present in machine output: {json}"
+    );
 }

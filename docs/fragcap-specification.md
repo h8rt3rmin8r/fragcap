@@ -100,6 +100,7 @@ enforcement.
 | 0.1.6-draft | 2026-08-16 | W. Thompson | **Reconciles the specification with shipped reality (slice S049).** v0.2.0 shipped 2026-08-12 as the first functional release (the S01 through S18 roadmap); v0.3.0 and v0.4.0 followed on 2026-08-14; the document had continued to describe v0.2.0 as unshipped. Adds the **Applies-To** header field (0.4.0), bound to the workspace version by `cargo xtask spec`; makes the title version-neutral; reframes 3.3, updates the 27.3 release table, retitles section 28 version-neutrally, and corrects the scope prose throughout; replaces the 23.1 landing-page paragraph. Adds constitution principles **P-10** (One Path To A Target) and **P-11** (The Specification Describes What Shipped, constitution 1.2.0). Per-release scope beyond v0.2.0 is recorded in CHANGELOG.md rather than restated here. |
 | 0.1.7-draft | 2026-08-24 | W. Thompson | **Positions Capture and Deep Capture as first-class product modes (issue #213).** Updates sections 2.1, 3.1, 3.2, 19, 27.2, 28, and 29 so shipped Capture remains passive while planned Deep Capture is explicit, scoped local proxy inspection. Expands constitution principle **P-1** to No Covert Target Instrumentation (constitution 1.4.0), adds target TLS key extraction to the denylist, and records `AI_CONTEXT.md` as required context for cybersecurity-sensitive agent work. |
 | 0.1.8-draft | 2026-08-25 | W. Thompson | **Defines the Deep Capture session bundle and output correlation model (issue #216).** Adds section 13.7, updates sections 28 and 29, and records the manifest, artifact authority rules, application JSONL, HAR conditions, sensitive TLS key-log handling, proxy/process sidecars, compatibility update sidecar, cleanup report, and correlation anchors. |
+| 0.1.9-draft | 2026-08-25 | W. Thompson | **Adds Deep Capture readiness and cleanup checks to doctor (issue #218).** Extends section 26.3 so doctor reports proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, and session storage, with confirmation-gated cleanup for fragcap-owned residue. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3845,6 +3846,19 @@ emptiness, a condition the first-run bootstrap and the bundled signatures
 already satisfy offline. The
 classifier itself is unchanged: it remains a pure function from injected
 inputs to a report, and the action layer lives entirely above it.
+
+Doctor also reports Deep Capture readiness and residue. The Deep Capture section
+names the supported proxy backend and version when one is found, local CA trust
+state, analyzer key-log readiness, occupied proxy ports, orphaned proxy
+processes, stale session manifests, stale TLS key logs, sensitive sidecars, and
+the session-bundle storage path. A fact that no implemented probe can observe
+yet is reported as unknown rather than clean. These checks are read-only during
+ordinary `doctor` and are non-blocking for Capture mode. Stale Deep Capture
+residue under fragcap-owned session storage carries a `CleanupDeepCapture`
+action, so `doctor --fix` can remove known Deep Capture session files only after
+the same confirmation gate used for every other fix action. CA lifecycle
+creation and proxy orchestration remain outside `doctor`; doctor reports their
+state and cleans up residue it can name.
 
 ### 26.4 Failure Reporting
 

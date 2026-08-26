@@ -11,9 +11,10 @@
 //! A non-Windows build returns a minimal [`Inputs`] so the command still runs
 //! and classifies, which is what keeps `doctor` exercised on any target.
 
+use std::io::Read;
 use std::path::PathBuf;
 
-use super::{Inputs, Privilege, Subsystem};
+use super::{DeepCaptureCa, DeepCaptureInputs, Inputs, Privilege, ProxyBackendInfo, Subsystem};
 
 /// The analyzer extcap directories (per-user and machine-wide) and whether a
 /// fragcap binary is installed in each, read-only.
@@ -280,6 +281,287 @@ fn read_target_entry_count() -> Option<usize> {
     store.targets().ok().map(|targets| targets.len())
 }
 
+fn deep_capture_probe() -> DeepCaptureInputs {
+    let session_dir = crate::paths::deep_capture_session_dir();
+    let session_dir_present = session_dir.as_ref().is_some_and(|p| p.is_dir());
+    let mut stale_manifests = Vec::new();
+    let mut stale_tls_key_logs = Vec::new();
+    let mut sensitive_artifacts = Vec::new();
+    if let Some(root) = &session_dir {
+        scan_deep_capture_residue(
+            root,
+            &mut stale_manifests,
+            &mut stale_tls_key_logs,
+            &mut sensitive_artifacts,
+        );
+    }
+    let (proxy_backend, proxy_backend_error) = proxy_backend_status();
+    DeepCaptureInputs {
+        session_dir,
+        session_dir_present,
+        proxy_backend,
+        proxy_backend_error,
+        analyzer_keylog_configured: std::env::var_os("SSLKEYLOGFILE").is_some(),
+        ca: DeepCaptureCa::Unknown("fragcap CA trust probing is not implemented yet".to_string()),
+        occupied_proxy_ports: None,
+        orphaned_proxy_processes: None,
+        stale_manifests,
+        stale_tls_key_logs,
+        sensitive_artifacts,
+    }
+}
+
+fn scan_deep_capture_residue(
+    root: &std::path::Path,
+    stale_manifests: &mut Vec<PathBuf>,
+    stale_tls_key_logs: &mut Vec<PathBuf>,
+    sensitive_artifacts: &mut Vec<PathBuf>,
+) {
+    fn walk(
+        dir: &std::path::Path,
+        depth: usize,
+        visited: &mut usize,
+        stale_manifests: &mut Vec<PathBuf>,
+        stale_tls_key_logs: &mut Vec<PathBuf>,
+        sensitive_artifacts: &mut Vec<PathBuf>,
+    ) {
+        if depth > 3 || *visited >= 200 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if *visited >= 200 {
+                break;
+            }
+            *visited += 1;
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                walk(
+                    &path,
+                    depth + 1,
+                    visited,
+                    stale_manifests,
+                    stale_tls_key_logs,
+                    sensitive_artifacts,
+                );
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name == "manifest.json" {
+                manifest_declared_artifacts(&path, stale_tls_key_logs, sensitive_artifacts);
+                if manifest_cleanup_unfinished(&path) {
+                    push_unique(stale_manifests, path.clone());
+                }
+            }
+            if name.eq_ignore_ascii_case("tls-keylog.log")
+                || name.eq_ignore_ascii_case("sslkeylog.log")
+            {
+                push_unique(stale_tls_key_logs, path.clone());
+            }
+            if matches!(
+                name,
+                "application.jsonl" | "http.har" | "proxy.jsonl" | "process-trace.jsonl"
+            ) {
+                push_unique(sensitive_artifacts, path);
+            }
+        }
+    }
+
+    let mut visited = 0;
+    walk(
+        root,
+        0,
+        &mut visited,
+        stale_manifests,
+        stale_tls_key_logs,
+        sensitive_artifacts,
+    );
+}
+
+pub(crate) fn manifest_declared_artifacts(
+    manifest: &std::path::Path,
+    stale_tls_key_logs: &mut Vec<PathBuf>,
+    sensitive_artifacts: &mut Vec<PathBuf>,
+) {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    let Some(artifacts) = value
+        .get("artifacts")
+        .and_then(|artifacts| artifacts.as_array())
+    else {
+        return;
+    };
+    let bundle_root = manifest
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    for artifact in artifacts {
+        let role = artifact.get("role").and_then(|role| role.as_str());
+        let path = artifact.get("path").and_then(|path| path.as_str());
+        let Some(path) = path.and_then(safe_manifest_relative_path) else {
+            continue;
+        };
+        let resolved = bundle_root.join(path);
+        if !resolved.is_file() {
+            continue;
+        }
+        match role {
+            Some("tls-key-log") => push_unique(stale_tls_key_logs, resolved),
+            Some("application-jsonl" | "har" | "proxy-log" | "process-trace") => {
+                push_unique(sensitive_artifacts, resolved);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn manifest_declared_cleanup_paths(manifest: &std::path::Path) -> Vec<PathBuf> {
+    let mut tls = Vec::new();
+    let mut sensitive = Vec::new();
+    manifest_declared_artifacts(manifest, &mut tls, &mut sensitive);
+    tls.extend(sensitive);
+    tls
+}
+
+fn safe_manifest_relative_path(path: &str) -> Option<PathBuf> {
+    let path = std::path::Path::new(path);
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+pub(crate) fn manifest_cleanup_unfinished(path: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return true;
+    };
+    let status = value
+        .get("cleanup")
+        .and_then(|cleanup| cleanup.get("status"))
+        .and_then(|status| status.as_str());
+    !matches!(status, Some("succeeded" | "not-needed"))
+}
+
+pub(crate) fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn proxy_backend_status() -> (Option<ProxyBackendInfo>, Option<String>) {
+    let Some(path) = find_on_path("mitmdump") else {
+        return (None, None);
+    };
+    match command_stdout_with_timeout(
+        std::process::Command::new(&path)
+            .arg("--version")
+            .stderr(std::process::Stdio::null()),
+        std::time::Duration::from_secs(2),
+    ) {
+        Ok((status, stdout)) if status.success() => {
+            let text = String::from_utf8_lossy(&stdout);
+            let first = text
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("version undetermined")
+                .trim()
+                .to_string();
+            (
+                Some(ProxyBackendInfo {
+                    name: "mitmdump".to_string(),
+                    version: Some(first),
+                }),
+                None,
+            )
+        }
+        Ok((status, _stdout)) => (
+            None,
+            Some(format!(
+                "mitmdump found at {} but `mitmdump --version` exited {}",
+                path.display(),
+                status
+            )),
+        ),
+        Err(err) => (
+            None,
+            Some(format!(
+                "mitmdump found at {} but version probing failed: {err}",
+                path.display()
+            )),
+        ),
+    }
+}
+
+fn command_stdout_with_timeout(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    pipe.read_to_end(&mut stdout)
+                        .map_err(|err| err.to_string())?;
+                }
+                return Ok((status, stdout));
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("timed out after {} ms", timeout.as_millis()));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let candidates = std::env::split_paths(&path).flat_map(|dir| {
+        #[cfg(windows)]
+        {
+            vec![dir.join(format!("{program}.exe")), dir.join(program)]
+        }
+        #[cfg(not(windows))]
+        {
+            vec![dir.join(program)]
+        }
+    });
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 /// Gather the environment facts for `doctor`.
 pub fn gather() -> Inputs {
     #[cfg(windows)]
@@ -295,6 +577,7 @@ pub fn gather() -> Inputs {
         // not linked anyway.
         let (interfaces, _loopback, interface_error) = live_probe(false);
         let target_entry_count = read_target_entry_count();
+        let deep_capture = deep_capture_probe();
         Inputs {
             fragcap_version,
             binary_path,
@@ -316,6 +599,7 @@ pub fn gather() -> Inputs {
             extcap_system_installed,
             extcap_system_dir,
             target_entry_count,
+            deep_capture,
         }
     }
 }
@@ -371,6 +655,7 @@ fn gather_windows() -> Inputs {
         extcap_status();
     let (fragcap_version, binary_path, catalog_db_path, local_db_path) = identity_fields();
     let target_entry_count = read_target_entry_count();
+    let deep_capture = deep_capture_probe();
     Inputs {
         fragcap_version,
         binary_path,
@@ -396,6 +681,7 @@ fn gather_windows() -> Inputs {
         extcap_system_installed,
         extcap_system_dir,
         target_entry_count,
+        deep_capture,
     }
 }
 
@@ -434,4 +720,35 @@ pub(crate) fn is_elevated() -> bool {
         )
     };
     ok != 0 && elevation.TokenIsElevated != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_declared_artifacts_use_manifest_paths_and_reject_parent_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = dir.path().join("bundle");
+        std::fs::create_dir_all(bundle.join("logs")).expect("bundle dirs");
+        let tls = bundle.join("logs").join("proxy.keys");
+        let app = bundle.join("logs").join("app.events");
+        let outside = dir.path().join("outside.har");
+        std::fs::write(&tls, "keys").expect("tls");
+        std::fs::write(&app, "{}").expect("app");
+        std::fs::write(&outside, "{}").expect("outside");
+        let manifest = bundle.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            r#"{"artifacts":[{"role":"tls-key-log","path":"logs/proxy.keys"},{"role":"application-jsonl","path":"logs/app.events"},{"role":"har","path":"../outside.har"}]}"#,
+        )
+        .expect("manifest");
+
+        let mut tls_paths = Vec::new();
+        let mut sensitive = Vec::new();
+        manifest_declared_artifacts(&manifest, &mut tls_paths, &mut sensitive);
+
+        assert_eq!(tls_paths, vec![tls]);
+        assert_eq!(sensitive, vec![app]);
+    }
 }

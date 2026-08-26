@@ -10,7 +10,7 @@
 //! elevated and the process-event session could not open.
 
 use super::action::{Action, ActionKind, ExtcapScope};
-use super::{Check, Inputs, Privilege, Report, Subsystem};
+use super::{Check, DeepCaptureCa, Inputs, Privilege, Report, Subsystem};
 use fragcap::core::WIRESHARK_DOWNLOAD_URL;
 
 const IDENTITY: &str = "Identity";
@@ -20,6 +20,7 @@ const TRACING: &str = "Tracing";
 const INTERFACES: &str = "Interfaces";
 const INTEGRATION: &str = "Integration";
 const PREPARATION: &str = "Preparation";
+const DEEP_CAPTURE: &str = "Deep Capture";
 
 /// Where to obtain npcap. fragcap never installs it (the Licensing section). The
 /// Wireshark URL is single-sourced from [`WIRESHARK_DOWNLOAD_URL`], whose
@@ -52,6 +53,7 @@ pub fn run(inputs: &Inputs) -> Report {
     // unchanged. Each carries the action the `--fix` layer performs (slice S056).
     checks.extend(catalog_store(inputs));
     checks.extend(target_entries(inputs));
+    checks.extend(deep_capture(inputs));
     Report { checks }
 }
 
@@ -424,10 +426,187 @@ fn target_entries(inputs: &Inputs) -> Option<Check> {
     ))
 }
 
+pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
+    let dc = &inputs.deep_capture;
+    let mut checks = Vec::new();
+    checks.push(match &dc.proxy_backend {
+        Some(backend) => {
+            let detail = match &backend.version {
+                Some(version) => format!("{} {version}", backend.name),
+                None => format!("{} present, version undetermined", backend.name),
+            };
+            Check::ok(DEEP_CAPTURE, "proxy backend", detail)
+        }
+        None => {
+            let detail = dc.proxy_backend_error.as_deref().unwrap_or(
+                "no supported proxy backend found; Deep Capture proxy inspection is unavailable",
+            );
+            Check::warn(DEEP_CAPTURE, "proxy backend", detail)
+        }
+    });
+    checks.push(match &dc.ca {
+        DeepCaptureCa::Absent => Check::ok(
+            DEEP_CAPTURE,
+            "local CA trust",
+            "no fragcap Deep Capture CA trust found",
+        ),
+        DeepCaptureCa::CurrentUser { thumbprint } => Check::ok(
+            DEEP_CAPTURE,
+            "local CA trust",
+            format!("trusted in current-user store ({thumbprint})"),
+        ),
+        DeepCaptureCa::WrongStore { store, thumbprint } => Check::warn_action(
+            DEEP_CAPTURE,
+            "local CA trust",
+            format!("fragcap CA is trusted in unexpected store {store} ({thumbprint})"),
+            "run `fragcap doctor --fix` to remove stale Deep Capture trust",
+            Action::new(ActionKind::CleanupDeepCapture),
+        ),
+        DeepCaptureCa::Mismatched {
+            expected,
+            actual,
+            store,
+        } => Check::warn_action(
+            DEEP_CAPTURE,
+            "local CA trust",
+            format!("manifest expects {expected}, but {store} contains {actual}"),
+            "run `fragcap doctor --fix` to remove mismatched Deep Capture trust",
+            Action::new(ActionKind::CleanupDeepCapture),
+        ),
+        DeepCaptureCa::Unknown(reason) => Check::warn(
+            DEEP_CAPTURE,
+            "local CA trust",
+            format!("CA trust state could not be determined: {reason}"),
+        ),
+    });
+    checks.push(if dc.analyzer_keylog_configured {
+        Check::ok(
+            DEEP_CAPTURE,
+            "analyzer key log",
+            "TLS key-log path is visible to this session",
+        )
+    } else {
+        Check::warn(
+            DEEP_CAPTURE,
+            "analyzer key log",
+            "TLS key-log path is not configured; analyzer decryption may need manual setup",
+        )
+    });
+    checks.push(match &dc.occupied_proxy_ports {
+        Some(ports) if ports.is_empty() => Check::ok(
+            DEEP_CAPTURE,
+            "proxy ports",
+            "no stale Deep Capture proxy ports found",
+        ),
+        Some(ports) => Check::warn(
+            DEEP_CAPTURE,
+            "proxy ports",
+            format!("occupied Deep Capture proxy ports: {}", join_u16(ports)),
+        ),
+        None => Check::warn(
+            DEEP_CAPTURE,
+            "proxy ports",
+            "Deep Capture proxy port state is not yet observable",
+        ),
+    });
+    checks.push(match &dc.orphaned_proxy_processes {
+        Some(processes) if processes.is_empty() => Check::ok(
+            DEEP_CAPTURE,
+            "proxy processes",
+            "no orphaned Deep Capture proxy processes found",
+        ),
+        Some(processes) => Check::warn(
+            DEEP_CAPTURE,
+            "proxy processes",
+            format!(
+                "orphaned Deep Capture proxy processes: {}",
+                processes.join("; ")
+            ),
+        ),
+        None => Check::warn(
+            DEEP_CAPTURE,
+            "proxy processes",
+            "Deep Capture proxy process state is not yet observable",
+        ),
+    });
+    checks.push(residue_check(
+        "session manifests",
+        "no stale Deep Capture manifests found",
+        "stale Deep Capture manifests",
+        &dc.stale_manifests,
+    ));
+    checks.push(residue_check(
+        "tls key logs",
+        "no stale Deep Capture TLS key logs found",
+        "stale Deep Capture TLS key logs",
+        &dc.stale_tls_key_logs,
+    ));
+    checks.push(residue_check(
+        "sensitive artifacts",
+        "no sensitive Deep Capture sidecars found",
+        "sensitive Deep Capture sidecars",
+        &dc.sensitive_artifacts,
+    ));
+    checks.push(match &dc.session_dir {
+        Some(path) if dc.session_dir_present => Check::ok(
+            DEEP_CAPTURE,
+            "session storage",
+            format!("{} (present)", path.display()),
+        ),
+        Some(path) => Check::ok(
+            DEEP_CAPTURE,
+            "session storage",
+            format!("{} (absent)", path.display()),
+        ),
+        None => Check::warn(
+            DEEP_CAPTURE,
+            "session storage",
+            "Deep Capture session storage path is undetermined",
+        ),
+    });
+    checks
+}
+
+fn residue_check(
+    name: &'static str,
+    clean: &'static str,
+    dirty: &'static str,
+    paths: &[std::path::PathBuf],
+) -> Check {
+    if paths.is_empty() {
+        Check::ok(DEEP_CAPTURE, name, clean)
+    } else {
+        Check::warn_action(
+            DEEP_CAPTURE,
+            name,
+            format!("{dirty}: {}", join_paths(paths)),
+            "run `fragcap doctor --fix` to clean stale Deep Capture residue",
+            Action::new(ActionKind::CleanupDeepCapture),
+        )
+    }
+}
+
+fn join_paths(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .take(5)
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn join_u16(values: &[u16]) -> String {
+    values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doctor::{IfaceInfo, NpcapInfo, Status};
+    use crate::doctor::{DeepCaptureInputs, IfaceInfo, NpcapInfo, ProxyBackendInfo, Status};
     use crate::exit::Exit;
 
     fn ready_inputs() -> Inputs {
@@ -471,6 +650,24 @@ mod tests {
                 "C:\\Program Files\\Wireshark\\extcap",
             )),
             target_entry_count: Some(3),
+            deep_capture: DeepCaptureInputs {
+                session_dir: Some(std::path::PathBuf::from(
+                    "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions",
+                )),
+                session_dir_present: false,
+                proxy_backend: Some(ProxyBackendInfo {
+                    name: "mitmdump".to_string(),
+                    version: Some("Mitmproxy: 12.1.0".to_string()),
+                }),
+                proxy_backend_error: None,
+                analyzer_keylog_configured: true,
+                ca: DeepCaptureCa::Absent,
+                occupied_proxy_ports: Some(Vec::new()),
+                orphaned_proxy_processes: Some(Vec::new()),
+                stale_manifests: Vec::new(),
+                stale_tls_key_logs: Vec::new(),
+                sensitive_artifacts: Vec::new(),
+            },
         }
     }
 
@@ -863,5 +1060,57 @@ mod tests {
         let binary = report.checks.iter().find(|c| c.name == "binary").unwrap();
         assert_eq!(binary.status, Status::Ok);
         assert_eq!(binary.detail, "undetermined");
+    }
+
+    #[test]
+    fn deep_capture_ready_inputs_are_non_blocking_and_name_storage() {
+        let checks = deep_capture(&ready_inputs());
+        assert!(checks.iter().all(|check| check.status == Status::Ok));
+        assert!(checks
+            .iter()
+            .any(|check| check.name == "session storage" && check.detail.contains("sessions")));
+    }
+
+    #[test]
+    fn deep_capture_residue_warns_and_offers_cleanup() {
+        let mut inputs = ready_inputs();
+        inputs.deep_capture.stale_manifests = vec![std::path::PathBuf::from(
+            "C:\\fragcap\\sessions\\old\\manifest.json",
+        )];
+        inputs.deep_capture.stale_tls_key_logs = vec![std::path::PathBuf::from(
+            "C:\\fragcap\\sessions\\old\\tls-keylog.log",
+        )];
+        inputs.deep_capture.sensitive_artifacts = vec![std::path::PathBuf::from(
+            "C:\\fragcap\\sessions\\old\\application.jsonl",
+        )];
+        let checks = deep_capture(&inputs);
+        for name in ["session manifests", "tls key logs", "sensitive artifacts"] {
+            let check = checks.iter().find(|check| check.name == name).unwrap();
+            assert_eq!(check.status, Status::Warn);
+            assert_eq!(
+                check.action.as_ref().map(|action| action.kind),
+                Some(ActionKind::CleanupDeepCapture)
+            );
+        }
+    }
+
+    #[test]
+    fn deep_capture_ca_wrong_store_warns_with_cleanup() {
+        let mut inputs = ready_inputs();
+        inputs.deep_capture.ca = DeepCaptureCa::WrongStore {
+            store: "local-machine".to_string(),
+            thumbprint: "sha256:example".to_string(),
+        };
+        let checks = deep_capture(&inputs);
+        let ca = checks
+            .iter()
+            .find(|check| check.name == "local CA trust")
+            .unwrap();
+        assert_eq!(ca.status, Status::Warn);
+        assert!(ca.detail.contains("local-machine"));
+        assert_eq!(
+            ca.action.as_ref().map(|action| action.kind),
+            Some(ActionKind::CleanupDeepCapture)
+        );
     }
 }

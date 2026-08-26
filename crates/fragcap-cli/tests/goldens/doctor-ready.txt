@@ -28,4 +28,16 @@ Integration
   analyzer extcap        ok    installed for the current user in
                                C:\Users\gamer\AppData\Roaming\Wireshark\extcap
 
+Deep Capture
+  proxy backend          ok    mitmdump Mitmproxy: 12.1.0
+  local CA trust         ok    no fragcap Deep Capture CA trust found
+  analyzer key log       ok    TLS key-log path is visible to this session
+  proxy ports            ok    no stale Deep Capture proxy ports found
+  proxy processes        ok    no orphaned Deep Capture proxy processes found
+  session manifests      ok    no stale Deep Capture manifests found
+  tls key logs           ok    no stale Deep Capture TLS key logs found
+  sensitive artifacts    ok    no sensitive Deep Capture sidecars found
+  session storage        ok    C:\Users\gamer\AppData\Roaming\fragcap\sessions
+                               (absent)
+
 Ready to capture.
