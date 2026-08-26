@@ -109,10 +109,12 @@ pub struct DeepCaptureInputs {
     pub analyzer_keylog_configured: bool,
     /// The fragcap-owned CA trust state.
     pub ca: DeepCaptureCa,
-    /// Proxy ports that appear occupied by stale Deep Capture state.
-    pub occupied_proxy_ports: Vec<u16>,
-    /// Proxy process descriptions that appear orphaned.
-    pub orphaned_proxy_processes: Vec<String>,
+    /// Proxy ports that appear occupied by stale Deep Capture state, or `None`
+    /// when no implemented probe can answer yet.
+    pub occupied_proxy_ports: Option<Vec<u16>>,
+    /// Proxy process descriptions that appear orphaned, or `None` when no
+    /// implemented probe can answer yet.
+    pub orphaned_proxy_processes: Option<Vec<String>>,
     /// Manifest paths whose cleanup status is unfinished or failed.
     pub stale_manifests: Vec<std::path::PathBuf>,
     /// TLS key-log paths found under the session-bundle root.

@@ -3851,13 +3851,14 @@ Doctor also reports Deep Capture readiness and residue. The Deep Capture section
 names the supported proxy backend and version when one is found, local CA trust
 state, analyzer key-log readiness, occupied proxy ports, orphaned proxy
 processes, stale session manifests, stale TLS key logs, sensitive sidecars, and
-the session-bundle storage path. These checks are read-only during ordinary
-`doctor` and are non-blocking for Capture mode. Stale Deep Capture residue under
-fragcap-owned session storage carries a `CleanupDeepCapture` action, so
-`doctor --fix` can remove known Deep Capture session files only after the same
-confirmation gate used for every other fix action. CA lifecycle creation and
-proxy orchestration remain outside `doctor`; doctor reports their state and
-cleans up residue it can name.
+the session-bundle storage path. A fact that no implemented probe can observe
+yet is reported as unknown rather than clean. These checks are read-only during
+ordinary `doctor` and are non-blocking for Capture mode. Stale Deep Capture
+residue under fragcap-owned session storage carries a `CleanupDeepCapture`
+action, so `doctor --fix` can remove known Deep Capture session files only after
+the same confirmation gate used for every other fix action. CA lifecycle
+creation and proxy orchestration remain outside `doctor`; doctor reports their
+state and cleans up residue it can name.
 
 ### 26.4 Failure Reporting
 

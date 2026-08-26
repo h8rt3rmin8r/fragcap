@@ -492,37 +492,42 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             "TLS key-log path is not configured; analyzer decryption may need manual setup",
         )
     });
-    checks.push(if dc.occupied_proxy_ports.is_empty() {
-        Check::ok(
+    checks.push(match &dc.occupied_proxy_ports {
+        Some(ports) if ports.is_empty() => Check::ok(
             DEEP_CAPTURE,
             "proxy ports",
             "no stale Deep Capture proxy ports found",
-        )
-    } else {
-        Check::warn(
+        ),
+        Some(ports) => Check::warn(
             DEEP_CAPTURE,
             "proxy ports",
-            format!(
-                "occupied Deep Capture proxy ports: {}",
-                join_u16(&dc.occupied_proxy_ports)
-            ),
-        )
+            format!("occupied Deep Capture proxy ports: {}", join_u16(ports)),
+        ),
+        None => Check::warn(
+            DEEP_CAPTURE,
+            "proxy ports",
+            "Deep Capture proxy port state is not yet observable",
+        ),
     });
-    checks.push(if dc.orphaned_proxy_processes.is_empty() {
-        Check::ok(
+    checks.push(match &dc.orphaned_proxy_processes {
+        Some(processes) if processes.is_empty() => Check::ok(
             DEEP_CAPTURE,
             "proxy processes",
             "no orphaned Deep Capture proxy processes found",
-        )
-    } else {
-        Check::warn(
+        ),
+        Some(processes) => Check::warn(
             DEEP_CAPTURE,
             "proxy processes",
             format!(
                 "orphaned Deep Capture proxy processes: {}",
-                dc.orphaned_proxy_processes.join("; ")
+                processes.join("; ")
             ),
-        )
+        ),
+        None => Check::warn(
+            DEEP_CAPTURE,
+            "proxy processes",
+            "Deep Capture proxy process state is not yet observable",
+        ),
     });
     checks.push(residue_check(
         "session manifests",
@@ -657,8 +662,8 @@ mod tests {
                 proxy_backend_error: None,
                 analyzer_keylog_configured: true,
                 ca: DeepCaptureCa::Absent,
-                occupied_proxy_ports: Vec::new(),
-                orphaned_proxy_processes: Vec::new(),
+                occupied_proxy_ports: Some(Vec::new()),
+                orphaned_proxy_processes: Some(Vec::new()),
                 stale_manifests: Vec::new(),
                 stale_tls_key_logs: Vec::new(),
                 sensitive_artifacts: Vec::new(),

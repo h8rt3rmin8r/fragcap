@@ -299,7 +299,6 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             Err(err) => failed.push(format!("{}: {err}", path.display())),
         }
     }
-    remove_empty_session_dirs(&root);
     if failed.is_empty() {
         let _ = writeln!(out, "  removed {removed} Deep Capture residue file(s)");
         ActionOutcome::Performed
@@ -313,23 +312,29 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
 }
 
 fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
-        if depth > 3 || out.len() > 200 {
+    fn walk(
+        dir: &std::path::Path,
+        depth: usize,
+        visited: &mut usize,
+        out: &mut Vec<std::path::PathBuf>,
+    ) {
+        if depth > 3 || *visited >= 200 {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
-            if out.len() > 200 {
+            if *visited >= 200 {
                 break;
             }
+            *visited += 1;
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             let path = entry.path();
             if file_type.is_dir() {
-                walk(&path, depth + 1, out);
+                walk(&path, depth + 1, visited, out);
                 continue;
             }
             if !file_type.is_file() {
@@ -338,8 +343,14 @@ fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::Pat
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            let cleanup_manifest =
-                name == "manifest.json" && super::probe::manifest_cleanup_unfinished(&path);
+            let cleanup_manifest = name == "manifest.json";
+            if cleanup_manifest {
+                for declared in super::probe::manifest_declared_cleanup_paths(&path) {
+                    super::probe::push_unique(out, declared);
+                }
+            }
+            let stale_manifest =
+                cleanup_manifest && super::probe::manifest_cleanup_unfinished(&path);
             let sensitive_sidecar = matches!(
                 name,
                 "application.jsonl"
@@ -349,34 +360,16 @@ fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::Pat
                     | "proxy.jsonl"
                     | "process-trace.jsonl"
             );
-            if cleanup_manifest || sensitive_sidecar {
-                out.push(path);
+            if stale_manifest || sensitive_sidecar {
+                super::probe::push_unique(out, path);
             }
         }
     }
 
     let mut out = Vec::new();
-    walk(root, 0, &mut out);
+    let mut visited = 0;
+    walk(root, 0, &mut visited, &mut out);
     out
-}
-
-fn remove_empty_session_dirs(root: &std::path::Path) {
-    fn walk(dir: &std::path::Path) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                let path = entry.path();
-                walk(&path);
-                let _ = std::fs::remove_dir(&path);
-            }
-        }
-    }
-    walk(root);
 }
 
 /// The stable vendor URL for the Windows installer that provides npcap. Wireshark
@@ -707,14 +700,23 @@ mod tests {
         let keylog = session.join("tls-keylog.log");
         let app = session.join("application.jsonl");
         let clean_manifest = session.join("manifest.json");
+        let nested = session.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+        let declared_app = nested.join("app-stream.jsonl");
         let stale = session.join("stale");
         std::fs::create_dir_all(&stale).expect("stale dir");
         let stale_manifest = stale.join("manifest.json");
+        let unrelated_empty_dir = session.join("operator-empty-dir");
+        std::fs::create_dir_all(&unrelated_empty_dir).expect("unrelated empty dir");
         let keep = session.join("notes.txt");
         std::fs::write(&keylog, "secret-adjacent").expect("keylog");
         std::fs::write(&app, "{}").expect("application");
-        std::fs::write(&clean_manifest, r#"{"cleanup":{"status":"succeeded"}}"#)
-            .expect("clean manifest");
+        std::fs::write(&declared_app, "{}").expect("declared application");
+        std::fs::write(
+            &clean_manifest,
+            r#"{"cleanup":{"status":"succeeded"},"artifacts":[{"role":"application-jsonl","path":"nested/app-stream.jsonl"}]}"#,
+        )
+        .expect("clean manifest");
         std::fs::write(&stale_manifest, r#"{"cleanup":{"status":"failed"}}"#)
             .expect("stale manifest");
         std::fs::write(&keep, "keep").expect("unrelated");
@@ -728,10 +730,18 @@ mod tests {
         assert!(!keylog.exists(), "known key-log residue removed");
         assert!(!app.exists(), "known application sidecar removed");
         assert!(
+            !declared_app.exists(),
+            "manifest-declared application sidecar removed"
+        );
+        assert!(
             clean_manifest.exists(),
             "successful manifests are historical records, not residue"
         );
         assert!(!stale_manifest.exists(), "unfinished manifest removed");
         assert!(keep.exists(), "unrelated file remains");
+        assert!(
+            unrelated_empty_dir.exists(),
+            "unrelated empty directories remain"
+        );
     }
 }

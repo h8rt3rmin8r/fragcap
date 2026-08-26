@@ -16,6 +16,7 @@
 - Q: Should Deep Capture warnings make Capture mode not ready? A: No. Deep Capture readiness is reported separately and remains non-blocking for ordinary Capture unless a future Deep Capture command asks for a blocking preflight.
 - Q: What can be cleaned in this slice? A: Only known fragcap-owned session files under the configured Deep Capture session directory.
 - Q: Does this slice create a CA or proxy backend? A: No. It reports readiness and residue only.
+- Q: How should doctor report Deep Capture machine facts before a probe exists? A: As unknown warnings, not as observed-clean results.
 
 ## User Scenarios & Testing
 
@@ -64,8 +65,8 @@ An operator runs `fragcap doctor --fix` and confirms Deep Capture cleanup. The a
 - **FR-003**: Deep Capture checks MUST report proxy backend availability and version when available.
 - **FR-004**: Deep Capture checks MUST report local CA trust state as absent, current-user trusted, wrong-store, mismatched, or unknown.
 - **FR-005**: Deep Capture checks MUST report analyzer key-log readiness.
-- **FR-006**: Deep Capture checks MUST report occupied proxy ports and orphaned proxy process facts when known.
-- **FR-007**: Deep Capture checks MUST report stale manifests, stale TLS key logs, sensitive sidecars, and session storage path.
+- **FR-006**: Deep Capture checks MUST report occupied proxy ports and orphaned proxy process facts when known, and MUST report unknown when no implemented probe can observe them.
+- **FR-007**: Deep Capture checks MUST report stale manifests, stale TLS key logs, sensitive sidecars, and session storage path. Conforming manifests MUST be used to resolve declared sensitive artifact paths.
 - **FR-008**: Stale Deep Capture residue MUST carry a structured cleanup action bound to the printed finding.
 - **FR-009**: `doctor --fix` MUST clean only unfinished manifests and known sensitive Deep Capture session sidecars under the configured fragcap session directory and only after the existing confirmation gate.
 - **FR-010**: This slice MUST NOT implement proxy orchestration, CA creation, trust installation, system-wide proxy settings, or deletion of arbitrary user-selected output directories.
