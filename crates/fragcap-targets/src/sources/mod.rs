@@ -38,7 +38,15 @@ pub struct FsDirectoryLister;
 
 impl DirectoryLister for FsDirectoryLister {
     fn subdirectories(&self, dir: &str) -> DirListing {
-        let read = match std::fs::read_dir(dir) {
+        // Known roots are stored with `/` so fixtures and live discovery share one
+        // list. Convert that neutral form exactly at the Windows filesystem
+        // boundary; otherwise `ReadDir::path` preserves the mixed prefix and appends
+        // children with `\`, producing a mixed durable candidate identity.
+        #[cfg(windows)]
+        let native_dir = dir.replace('/', "\\");
+        #[cfg(not(windows))]
+        let native_dir = dir.to_string();
+        let read = match std::fs::read_dir(&native_dir) {
             Ok(read) => read,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DirListing::Absent,
             Err(_) => return DirListing::AccessError,

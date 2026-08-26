@@ -8,7 +8,9 @@
 //! the system drive). Exhaustive enumeration of every executable on the machine is
 //! rejected (FR-009): a normal machine carries thousands of updaters, uninstallers,
 //! and helpers that would bury the game. Instead the walk tests each directory
-//! through a [`DirectoryClassifier`] and stops descending on a hit (FR-015).
+//! through a [`DirectoryClassifier`], stops descending on a title hit, and descends
+//! through a multi-engine container while the shallow bound permits (FR-015,
+//! S077).
 
 use std::collections::HashSet;
 
@@ -76,9 +78,10 @@ impl<'a> KnownRootsSource<'a> {
     }
 
     /// Walk one directory, classifying its immediate children. A hit emits one
-    /// candidate and stops (no descent into the hit's subtree, FR-015); a miss is
-    /// counted and, while depth remains, descended one level (a launcher-nested
-    /// layout). `Absent` contributes nothing (FR-010); an access error is counted.
+    /// candidate and stops (no descent into the hit's subtree, FR-015); a container
+    /// is counted separately and descended while depth remains; a miss is counted
+    /// and, while depth remains, descended one level (a launcher-nested layout).
+    /// `Absent` contributes nothing (FR-010); an access error is counted.
     fn walk(&self, dir: &str, depth: usize, out: &mut Discovery) {
         match self.lister.subdirectories(dir) {
             DirListing::Absent => {}
@@ -123,6 +126,17 @@ impl<'a> KnownRootsSource<'a> {
                                 executable_hint: None,
                             });
                             // Stop-on-hit: do not descend into a hit's subtree.
+                        }
+                        ClassifierVerdict::Container => {
+                            if depth + 1 < MAX_DESCENT {
+                                out.account.container_descended += 1;
+                                self.walk(&child, depth + 1, out);
+                            } else {
+                                out.account.container_descent_truncated += 1;
+                                out.warnings.push(format!(
+                                    "known-roots container reached the descent limit; descendants may remain undiscovered: {child}"
+                                ));
+                            }
                         }
                         ClassifierVerdict::Miss => {
                             out.account.considered_not_a_game += 1;
