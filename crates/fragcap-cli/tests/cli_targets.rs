@@ -49,6 +49,135 @@ fn seed_compatibility_target(path: &Path) -> i64 {
     store.insert_target(&entry).expect("insert target")
 }
 
+fn seed_signature_catalog(path: &Path) {
+    let catalog = path.to_string_lossy().into_owned();
+    let (code, out, err) = run(&["catalog", "seed", "--tier", "signature", "--db", &catalog]);
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+}
+
+fn scan_missing_dir_with_warning(dir: &TempDir, extra: &[&str]) -> (u8, String, String) {
+    let catalog = dir.path().join("catalog.db");
+    seed_signature_catalog(&catalog);
+    let local = dir.path().join("local.db");
+    let missing = dir.path().join("missing-game");
+    let catalog = catalog.to_string_lossy().into_owned();
+    let local = local.to_string_lossy().into_owned();
+    let missing = missing.to_string_lossy().into_owned();
+    let mut args = extra.to_vec();
+    args.extend([
+        "targets",
+        "scan",
+        &missing,
+        "--catalog-db",
+        &catalog,
+        "--db",
+        &local,
+    ]);
+    run(&args)
+}
+
+fn scan_missing_dir_without_warning(dir: &TempDir) -> (u8, String, String) {
+    let local = dir.path().join("local.db").to_string_lossy().into_owned();
+    let missing = dir
+        .path()
+        .join("missing-game")
+        .to_string_lossy()
+        .into_owned();
+    run(&["targets", "scan", &missing, "--db", &local])
+}
+
+fn normalize_missing_scan_path(text: &str, dir: &TempDir) -> String {
+    let missing = dir
+        .path()
+        .join("missing-game")
+        .to_string_lossy()
+        .into_owned();
+    text.replace(&missing, "<missing-game>")
+}
+
+#[test]
+fn targets_warning_does_not_contaminate_stdout() {
+    let warning_dir = TempDir::new().expect("tempdir");
+    let clean_dir = TempDir::new().expect("tempdir");
+
+    let (warning_code, warning_out, warning_err) = scan_missing_dir_with_warning(&warning_dir, &[]);
+    let (clean_code, clean_out, clean_err) = scan_missing_dir_without_warning(&clean_dir);
+
+    assert_eq!(warning_code, 0, "stderr:\n{warning_err}");
+    assert_eq!(clean_code, 0, "stderr:\n{clean_err}");
+    assert_eq!(
+        normalize_missing_scan_path(&warning_out, &warning_dir),
+        normalize_missing_scan_path(&clean_out, &clean_dir),
+        "warnings must not change the command-result stream"
+    );
+    assert!(
+        !warning_out.contains("warning:"),
+        "stdout must stay diagnostic-free:\n{warning_out}"
+    );
+    assert!(
+        warning_err.contains("warning: could not read") && warning_err.contains("during detection"),
+        "the warning moves to stderr:\n{warning_err}"
+    );
+    assert!(
+        clean_err.is_empty(),
+        "the clean run emits no diagnostics: {clean_err}"
+    );
+}
+
+#[test]
+fn targets_warning_honors_quiet_and_silent() {
+    let quiet_dir = TempDir::new().expect("tempdir");
+    let silent_dir = TempDir::new().expect("tempdir");
+
+    let (quiet_code, quiet_out, quiet_err) =
+        scan_missing_dir_with_warning(&quiet_dir, &["--quiet"]);
+    let (silent_code, silent_out, silent_err) =
+        scan_missing_dir_with_warning(&silent_dir, &["--silent"]);
+
+    assert_eq!(quiet_code, 0, "stderr:\n{quiet_err}");
+    assert_eq!(silent_code, 0, "stderr:\n{silent_err}");
+    assert!(quiet_err.contains("warning: could not read"), "{quiet_err}");
+    assert!(
+        silent_err.is_empty(),
+        "silent suppresses warning diagnostics: {silent_err}"
+    );
+    assert_eq!(
+        normalize_missing_scan_path(&quiet_out, &quiet_dir),
+        normalize_missing_scan_path(&silent_out, &silent_dir),
+        "verbosity must not change targets command results"
+    );
+    assert!(!quiet_out.contains("warning:"));
+    assert!(!silent_out.contains("warning:"));
+}
+
+#[test]
+fn targets_warning_is_structured_in_json_mode() {
+    let dir = TempDir::new().expect("tempdir");
+
+    let (code, out, err) = scan_missing_dir_with_warning(&dir, &["--json"]);
+
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert!(
+        !out.contains("warning:"),
+        "stdout is still result-only:\n{out}"
+    );
+    let line = err.lines().next().expect("one warning diagnostic");
+    let value: serde_json::Value = serde_json::from_str(line).expect("valid JSON diagnostic");
+    assert_eq!(value["event"], "warning");
+    assert!(
+        value["message"]
+            .as_str()
+            .expect("message")
+            .contains("could not read"),
+        "warning message is preserved: {value}"
+    );
+    assert_eq!(
+        err.lines().count(),
+        1,
+        "only the warning diagnostic is emitted: {err}"
+    );
+}
+
 #[test]
 fn target_show_reports_unknown_when_no_compatibility_facts_exist() {
     let dir = TempDir::new().expect("tempdir");

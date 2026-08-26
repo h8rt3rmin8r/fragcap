@@ -93,7 +93,13 @@ fn run_with_terminal(
         // is not offered rather than offered only to fail.
         elevation: cfg!(windows),
     };
-    Ok(fix::run_fix(caps, args.yes, use_color(Stream::Stdout), out))
+    Ok(fix::run_fix(
+        caps,
+        args.yes,
+        use_color(Stream::Stdout),
+        out,
+        emitter,
+    ))
 }
 
 struct DoctorProgress<'e, 'w> {
