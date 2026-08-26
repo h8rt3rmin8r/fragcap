@@ -1176,6 +1176,58 @@ fn the_split_columns_never_mix_an_engine_with_a_protection_product() {
 }
 
 #[test]
+fn targets_listing_marks_unverified_technology_findings() {
+    let dir = TempDir::new().expect("tempdir");
+    let store = db(&dir);
+    import_row(
+        &store,
+        r#"[
+            {
+                "stable_id": 111, "handle": "verified_game", "name": "Verified Game",
+                "classification": "game", "classification_source": "platform",
+                "fidelity": "verified", "anchor": "steam:111",
+                "detection_scan": "complete",
+                "evidence": [
+                    { "category": "engine", "product": "Unreal", "fidelity": "verified" },
+                    { "category": "drm", "product": "Steam DRM", "fidelity": "verified" }
+                ]
+            },
+            {
+                "stable_id": 112, "handle": "guessed_game", "name": "Guessed Game",
+                "classification": "game", "classification_source": "platform",
+                "fidelity": "heuristic-unverified", "anchor": "steam:112",
+                "detection_scan": "complete",
+                "evidence": [
+                    { "category": "engine", "product": "Unreal", "fidelity": "heuristic-unverified" },
+                    { "category": "anti-cheat", "product": "Easy Anti-Cheat", "fidelity": "observed" },
+                    { "category": "drm", "product": "Steam DRM" }
+                ]
+            }
+        ]"#,
+        &dir,
+    );
+
+    let (code, out, _err) = run(&["targets", "list", "--db", &store]);
+    assert_eq!(code, 0, "{out}");
+    let verified = out
+        .lines()
+        .find(|l| l.contains("verified_game"))
+        .expect("verified row renders");
+    assert!(verified.contains("Unreal"), "{verified}");
+    assert!(verified.contains("Steam DRM"), "{verified}");
+    assert!(!verified.contains("Unreal?"), "{verified}");
+    assert!(!verified.contains("Steam DRM?"), "{verified}");
+
+    let guessed = out
+        .lines()
+        .find(|l| l.contains("guessed_game"))
+        .expect("guessed row renders");
+    assert!(guessed.contains("Unreal?"), "{guessed}");
+    assert!(guessed.contains("Easy Anti-Cheat?"), "{guessed}");
+    assert!(guessed.contains("Steam DRM?"), "{guessed}");
+}
+
+#[test]
 fn a_missing_install_root_renders_a_note_and_the_snapshot_names_the_healthy_row() {
     // Issue #167. Two targets: one whose install_root points at a path that does
     // not exist (a fixture-safe stand-in for an uninstalled title or a
@@ -1457,14 +1509,15 @@ fn the_retired_readiness_sentences_appear_nowhere_in_the_listing() {
 /// row number, the readiness label, the engine column, the sensitivities column, and
 /// the five separators. Measured, not computed from the layout, so adding a column or
 /// widening a marker moves it and the test says so.
-const NON_HANDLE_COLUMNS: usize = 53;
+const NON_HANDLE_COLUMNS: usize = 55;
 
 /// The terminal width the listing is budgeted against.
 const TERMINAL_COLUMNS: usize = 80;
 
-/// Two rows whose values force every bounded column to its widest: `Unity, Unreal`
-/// widens ENGINE past the `not scanned` marker, `Easy Anti-Cheat` is the widest
-/// realistic sensitivity, and the second row puts the widest coverage marker in play.
+/// Two rows whose values force every bounded column to its widest: `Unity, Unreal?`
+/// widens ENGINE past the `not scanned` marker, `Easy Anti-Cheat?` is the widest
+/// realistic sensitivity in this fixture, and the second row puts the widest coverage
+/// marker in play.
 fn widest_value_rows(handle: &str) -> String {
     // The second handle is the same length as the first on purpose: a longer one
     // would widen the shared TARGET column and the budget would no longer describe
@@ -1478,8 +1531,10 @@ fn widest_value_rows(handle: &str) -> String {
             "classification": "game", "classification_source": "platform",
             "fidelity": "verified", "detection_scan": "complete",
             "evidence": [
-                {{ "category": "engine", "product": "Unity, Unreal" }},
-                {{ "category": "anti-cheat", "product": "Easy Anti-Cheat" }}
+                {{ "category": "engine", "product": "Unity, Unreal",
+                   "fidelity": "heuristic-unverified" }},
+                {{ "category": "anti-cheat", "product": "Easy Anti-Cheat",
+                   "fidelity": "heuristic-unverified" }}
             ] }},
           {{ "stable_id": 9002, "handle": "{second}", "name": "Never Scanned",
             "classification": "game", "classification_source": "platform",
@@ -1652,6 +1707,10 @@ fn the_machine_surface_carries_the_partition_and_the_coverage_state() {
     assert_eq!(
         row["evidence"][0]["category"], "drm",
         "every finding names its category: {json}"
+    );
+    assert_eq!(
+        row["evidence"][0]["fidelity"], "verified",
+        "every finding keeps its fidelity: {json}"
     );
 
     // And the table renders the same finding in the sensitivities column.
