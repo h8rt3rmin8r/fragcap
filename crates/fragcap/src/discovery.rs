@@ -32,6 +32,16 @@ use fragcap_targets::{
     TargetClassification, TargetSource, TargetsError,
 };
 
+/// A Steam install that appinfo identifies as installed but not a capturable game
+/// target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamNonGameInstall {
+    /// The Steam app id string as recorded in the manifest.
+    pub app_id: String,
+    /// The resolved installation directory for the non-game app.
+    pub install_dir: PathBuf,
+}
+
 /// Detect the technologies in an install directory (slice S053), returning the
 /// fidelity the local evidence earns, the findings as neutral evidence, and the
 /// coverage state of the scan (slice S065). A detected engine raises the fidelity to
@@ -102,6 +112,23 @@ impl<'a> SteamSource<'a> {
             steam_root: steam_root.as_ref().to_path_buf(),
             catalog,
         }
+    }
+
+    /// Return the installed Steam apps whose appinfo type is known to be
+    /// non-game. Callers use this to keep lower-authority discovery tiers and
+    /// listing surfaces from reintroducing platform-filtered app ids.
+    pub fn non_game_installs(&self) -> Result<Vec<SteamNonGameInstall>, TargetsError> {
+        let installation = fragcap_steam::discover_in(&self.steam_root)
+            .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
+        Ok(installation
+            .titles
+            .iter()
+            .filter(|title| is_non_game_steam_app_type(title.app_type.as_deref()))
+            .map(|title| SteamNonGameInstall {
+                app_id: title.app_id.clone(),
+                install_dir: title.install_dir.clone(),
+            })
+            .collect())
     }
 }
 

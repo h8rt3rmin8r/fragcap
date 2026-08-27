@@ -23,6 +23,8 @@ An operator running target discovery does not see Steam utility entries, redistr
 1. **Given** an installed Steam app whose app type is `Tool`, **When** Steam discovery runs, **Then** the app is not emitted as a candidate and the discovery account remains conserved.
 2. **Given** installed Steam apps whose app types are `Music`, `Application`, `Config`, or `Video`, **When** Steam discovery runs, **Then** none are emitted as candidates and each increments the not-a-game outcome.
 3. **Given** one or more excluded non-game apps beside valid games, **When** discovery prints or registers candidates downstream, **Then** the valid games are unchanged and the excluded apps do not reach registration.
+4. **Given** a Steam non-game install under a known-root Steam `common` directory, **When** composed discovery runs, **Then** the lower-authority known-roots pass does not reintroduce that exact install directory as a path candidate.
+5. **Given** a platform-created target row already stored from a previously discovered Steam non-game app, **When** the hero listing runs after this slice, **Then** the row is hidden from the listing and row-index snapshot without deleting or hiding user-authored rows.
 
 ---
 
@@ -58,13 +60,17 @@ An operator still sees real game-like Steam entries, including demos and entries
 - **FR-005**: Steam discovery MUST keep `Game` app types eligible for candidate output.
 - **FR-006**: Steam discovery MUST keep titles with absent or unreadable app type eligible for candidate output.
 - **FR-007**: Steam app type matching MUST be case-insensitive.
-- **FR-008**: The change MUST NOT add a new storage field, CLI flag, dependency, network access, process access, capture behavior, or registration path.
-- **FR-009**: The master specification MUST describe the widened non-game app type filter and the preserved eligibility of demos and unknown app types.
+- **FR-008**: Composed discovery MUST pass the current Steam non-game install roots to the known-roots source and the known-roots source MUST suppress only exact matching child directories.
+- **FR-009**: The hero target listing MUST hide already stored platform-created rows whose current Steam app id or install root matches an excluded Steam non-game install.
+- **FR-010**: The hero target listing MUST NOT hide user-authored rows solely because they share a Steam app id or install root with an excluded Steam app type.
+- **FR-011**: The change MUST NOT add a new storage field, CLI flag, dependency, network access, process access, capture behavior, or registration path.
+- **FR-012**: The master specification MUST describe the widened non-game app type filter, lower-tier coordination, and the preserved eligibility of demos and unknown app types.
 
 ### Key Entities
 
 - **Steam App Type**: A local Steam appinfo value describing the installed app class. This slice treats `Music`, `Tool`, `Application`, `Config`, and `Video` as non-capturable, keeps `Demo` eligible, and treats a missing value as unknown rather than non-game.
 - **Discovery Account**: The conservation record for discovery. This slice reuses the existing `considered_not_a_game` outcome and adds no account field.
+- **Steam Non-Game Install**: The current Steam app id and resolved install directory for an installed app whose appinfo type is excluded. The value is observed at runtime and is not stored by this slice.
 
 ## Success Criteria *(mandatory)*
 
@@ -73,8 +79,10 @@ An operator still sees real game-like Steam entries, including demos and entries
 - **SC-001**: A fixture library containing five excluded app types emits zero candidates for those five app ids.
 - **SC-002**: The same fixture increments `considered_not_a_game` by five and remains conserved.
 - **SC-003**: Fixture titles with `Demo`, `Game`, and absent app types are still emitted as candidates.
-- **SC-004**: Focused Steam discovery tests pass without requiring a live Steam installation.
-- **SC-005**: `cargo xtask ci` passes after implementation.
+- **SC-004**: A known-roots fixture excludes a Steam non-game install root and emits a sibling game unchanged.
+- **SC-005**: A listing filter fixture hides matching platform-created rows while preserving a user-authored row with the same anchor and install root.
+- **SC-006**: Focused Steam discovery tests pass without requiring a live Steam installation.
+- **SC-007**: `cargo xtask ci` passes after implementation.
 
 ## Assumptions
 

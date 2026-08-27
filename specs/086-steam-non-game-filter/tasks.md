@@ -47,6 +47,8 @@
 
 - [X] T007 [US1] Add a case-insensitive non-game app type predicate in `crates/fragcap/src/discovery.rs`
 - [X] T008 [US1] Use the predicate before app-id parsing and candidate construction in `crates/fragcap/src/discovery.rs`
+- [X] T008a [US1] Share current Steam non-game install roots with the known-roots source in `crates/fragcap-cli/src/commands/targets.rs`
+- [X] T008b [US1] Suppress exact excluded directories in `crates/fragcap-targets/src/sources/known_roots.rs`
 
 ---
 
@@ -63,6 +65,8 @@
 ### Implementation for User Story 2
 
 - [X] T010 [US2] Keep `Demo`, `Game`, and absent app types outside the exclusion predicate in `crates/fragcap/src/discovery.rs`
+- [X] T010a [US2] Hide existing platform-created listing rows matching current Steam non-game app ids or install roots in `crates/fragcap-cli/src/commands/targets.rs`
+- [X] T010b [US2] Preserve user-authored rows that share the same app id or install root in `crates/fragcap-cli/src/commands/targets.rs`
 
 ---
 

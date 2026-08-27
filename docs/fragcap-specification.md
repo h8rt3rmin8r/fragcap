@@ -2597,7 +2597,10 @@ Redistributables is never offered as ready to capture. `Demo` remains eligible
 because a demo can be a playable title, and an app type that cannot be
 determined (no appinfo entry, an unreadable cache) falls back to the `common/`
 assumption and remains eligible because absence of the type is not evidence that
-the title is non-game.
+the title is non-game. When Steam discovery runs alongside the known-roots pass,
+the current non-game Steam install roots are passed down as exact directory
+exclusions so the structural `steamapps/common` prior cannot reintroduce the same
+utility entry as a path candidate.
 
 ### 16.3 Registering an Installed Title
 
@@ -2949,6 +2952,12 @@ repeat listing over an unchanged environment registers nothing new and never
 modifies or removes an existing entry. A bare `fragcap` prints the same listing
 with a `--help` footer after the target output; the labelled target footer remains
 unchanged.
+
+The listing suppresses already stored platform-created rows whose current Steam
+app id or install root matches an appinfo type excluded by section 16.2. This is
+a presentation and row-index rule, not a destructive migration: the row remains
+in `local.db`, and user-authored rows are not hidden solely because they share
+the same anchor or install directory.
 
 The listing writes a snapshot of the rows it displayed to `local.db`, and a
 bare-integer selector resolves against that snapshot (section 17.2), so a row

@@ -58,6 +58,7 @@ pub struct KnownRootsSource<'a> {
     eligible_ids: &'a HashSet<String>,
     lister: &'a dyn DirectoryLister,
     classifier: &'a dyn DirectoryClassifier,
+    excluded_dirs: HashSet<String>,
 }
 
 impl<'a> KnownRootsSource<'a> {
@@ -74,7 +75,20 @@ impl<'a> KnownRootsSource<'a> {
             eligible_ids,
             lister,
             classifier,
+            excluded_dirs: HashSet::new(),
         }
+    }
+
+    /// Exclude exact directory roots that another, more authoritative platform
+    /// source has already identified as non-game. This keeps a Steam utility under
+    /// `steamapps/common` from being reintroduced by the known-roots structural
+    /// prior while leaving siblings untouched.
+    pub fn with_excluded_dirs(mut self, dirs: impl IntoIterator<Item = String>) -> Self {
+        self.excluded_dirs = dirs
+            .into_iter()
+            .map(|dir| normalized_dir_key(&dir))
+            .collect();
+        self
     }
 
     /// Walk one directory, classifying its immediate children. A hit emits one
@@ -97,6 +111,10 @@ impl<'a> KnownRootsSource<'a> {
             DirListing::Present(children) => {
                 for child in children {
                     out.account.considered += 1;
+                    if self.excluded_dirs.contains(&normalized_dir_key(&child)) {
+                        out.account.considered_not_a_game += 1;
+                        continue;
+                    }
                     let classification = self.classifier.classify(&child);
                     // Whatever the classifier could not cover reduces detection
                     // coverage; name it so a partial scan is visible, not silent
@@ -149,6 +167,12 @@ impl<'a> KnownRootsSource<'a> {
             }
         }
     }
+}
+
+fn normalized_dir_key(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 impl TargetSource for KnownRootsSource<'_> {

@@ -24,11 +24,18 @@ For every excluded Steam app:
 - `DiscoveryAccount.considered` includes the app.
 - `DiscoveryAccount.considered_not_a_game` includes the app.
 - `DiscoveryAccount::is_conserved()` remains true.
+- The composed known-roots pass receives the exact excluded Steam install roots and does not emit those same directories as path candidates.
 
 For every preserved Steam app:
 
 - Existing candidate fields remain governed by the prior Steam discovery contract.
 - Catalog classification, evidence detection, fidelity, install root, folder name, and executable hint behavior are unchanged.
+
+For already stored targets:
+
+- The hero listing hides platform-created rows whose current Steam app id or install root matches an excluded Steam app type.
+- User-authored rows are not hidden by that current Steam app-type filter.
+- Hidden rows are not deleted by this slice.
 
 ## Non-Contract
 

@@ -10,6 +10,7 @@
 //! With no subcommand, the command lists registered targets from the default local
 //! store, the same listing a bare `fragcap` invocation prints.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -198,6 +199,8 @@ fn hero_listing_with_machine_probe(
     let mut targets = store
         .targets()
         .map_err(|e| CliError::failure(e.to_string()))?;
+    let exclusions = steam_non_game_exclusions(&store);
+    filter_platform_non_game_steam_targets(&mut targets, &exclusions);
     targets.sort_by(|a, b| a.handle.cmp(&b.handle));
 
     if targets.is_empty() {
@@ -747,8 +750,25 @@ fn compose_and_discover(
         fragcap::targets::SignatureClassifier::for_known_root(set)
     };
     #[cfg(windows)]
+    let steam_excluded_dirs: Vec<String> = steam
+        .as_ref()
+        .map(|source| {
+            source
+                .non_game_installs()
+                .map(|installs| {
+                    installs
+                        .into_iter()
+                        .map(|install| install.install_dir.display().to_string())
+                        .collect()
+                })
+                .map_err(|e| CliError::failure(e.to_string()))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    #[cfg(windows)]
     let known_roots =
-        fragcap::targets::KnownRootsSource::new(&inventory, &eligible, &lister, &classifier);
+        fragcap::targets::KnownRootsSource::new(&inventory, &eligible, &lister, &classifier)
+            .with_excluded_dirs(steam_excluded_dirs);
 
     // Compose the sources into one listing through the shared driver (SC-006).
     let mut sources: Vec<&dyn TargetSource> = Vec::new();
@@ -759,6 +779,67 @@ fn compose_and_discover(
     sources.push(&known_roots);
 
     fragcap::targets::discover_all(&sources).map_err(|e| CliError::failure(e.to_string()))
+}
+
+#[derive(Default)]
+struct SteamNonGameExclusions {
+    anchors: HashSet<String>,
+    install_roots: HashSet<String>,
+}
+
+fn steam_non_game_exclusions(catalog: &Store) -> SteamNonGameExclusions {
+    let Some(steam_root) = fragcap::steam::discover().ok().map(|i| i.root) else {
+        return SteamNonGameExclusions::default();
+    };
+    let source = fragcap::SteamSource::new(&steam_root, catalog);
+    let Ok(installs) = source.non_game_installs() else {
+        return SteamNonGameExclusions::default();
+    };
+    let mut exclusions = SteamNonGameExclusions::default();
+    for install in installs {
+        if let Ok(appid) = install.app_id.parse::<u32>() {
+            exclusions
+                .anchors
+                .insert(identifier::canonicalize_anchor(&format!("steam:{appid}")));
+        }
+        exclusions.install_roots.insert(normalized_dir_key(
+            &install.install_dir.display().to_string(),
+        ));
+    }
+    exclusions
+}
+
+fn filter_platform_non_game_steam_targets(
+    targets: &mut Vec<TargetEntry>,
+    exclusions: &SteamNonGameExclusions,
+) {
+    targets.retain(|target| !is_platform_non_game_steam_target(target, exclusions));
+}
+
+fn is_platform_non_game_steam_target(
+    target: &TargetEntry,
+    exclusions: &SteamNonGameExclusions,
+) -> bool {
+    if target.classification_source != ClassificationSource::Platform {
+        return false;
+    }
+    let anchor_excluded = target
+        .anchor
+        .as_deref()
+        .map(identifier::canonicalize_anchor)
+        .is_some_and(|anchor| exclusions.anchors.contains(&anchor));
+    let root_excluded = target
+        .install_root
+        .as_deref()
+        .map(normalized_dir_key)
+        .is_some_and(|root| exclusions.install_roots.contains(&root));
+    anchor_excluded || root_excluded
+}
+
+fn normalized_dir_key(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 /// Print a discovery listing: a headed candidate table, attached evidence, and the
@@ -1434,10 +1515,10 @@ fn exe_stem(exe: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_width, evidence_from_scan, hero_listing_with_machine_probe, print_discovery,
-        render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
-        ClassificationSource, DetectionScan, ExeScan, FidelityTier, TargetClassification,
-        TargetEntry,
+        display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
+        hero_listing_with_machine_probe, print_discovery, render_machine_section, render_table,
+        steam_add_metadata, CandidateIdentity, ClassificationSource, DetectionScan, ExeScan,
+        FidelityTier, SteamNonGameExclusions, TargetClassification, TargetEntry,
     };
     use crate::emit::{Emitter, Format, Verbosity};
 
@@ -1516,6 +1597,79 @@ mod tests {
             folder_name: None,
             executable_hint: None,
         }
+    }
+
+    fn listing_entry(
+        handle: &str,
+        source: ClassificationSource,
+        anchor: Option<&str>,
+        install_root: Option<&str>,
+    ) -> TargetEntry {
+        TargetEntry {
+            id: None,
+            stable_id: 1,
+            handle: handle.to_string(),
+            name: handle.to_string(),
+            classification: TargetClassification::Game,
+            classification_source: source,
+            fidelity: FidelityTier::HeuristicUnverified,
+            provenance: None,
+            anchor: anchor.map(str::to_string),
+            launch_entries: None,
+            install_root: install_root.map(str::to_string),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        }
+    }
+
+    #[test]
+    fn listing_hides_platform_rows_for_current_non_game_steam_installs_only() {
+        let mut exclusions = SteamNonGameExclusions::default();
+        exclusions
+            .anchors
+            .insert(fragcap::targets::identifier::canonicalize_anchor(
+                "steam:228980",
+            ));
+        exclusions
+            .install_roots
+            .insert("c:/steamlibrary/steamapps/common/steamworks shared".to_string());
+
+        let mut targets = vec![
+            listing_entry(
+                "steamworks_shared",
+                ClassificationSource::Platform,
+                Some("steam:228980"),
+                Some("C:/SteamLibrary/steamapps/common/Steamworks Shared"),
+            ),
+            listing_entry(
+                "known_roots_duplicate",
+                ClassificationSource::Platform,
+                None,
+                Some("C:\\SteamLibrary\\steamapps\\common\\Steamworks Shared"),
+            ),
+            listing_entry(
+                "user_authored_override",
+                ClassificationSource::User,
+                Some("steam:228980"),
+                Some("C:/SteamLibrary/steamapps/common/Steamworks Shared"),
+            ),
+            listing_entry(
+                "real_game",
+                ClassificationSource::Platform,
+                Some("steam:620"),
+                Some("C:/SteamLibrary/steamapps/common/Portal 2"),
+            ),
+        ];
+
+        filter_platform_non_game_steam_targets(&mut targets, &exclusions);
+
+        let handles: Vec<&str> = targets
+            .iter()
+            .map(|target| target.handle.as_str())
+            .collect();
+        assert_eq!(handles, vec!["user_authored_override", "real_game"]);
     }
 
     fn display_cell_index(line: &str, needle: &str) -> usize {

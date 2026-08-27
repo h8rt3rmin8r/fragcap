@@ -103,6 +103,33 @@ fn no_steam_but_a_known_root_lists_games_across_volumes() {
 }
 
 #[test]
+fn excluded_steam_common_children_are_not_reintroduced_as_known_root_games() {
+    let inv = Inv(vec![vol("vol-c", "C:")]);
+    let eligible: HashSet<String> = ["vol-c".to_string()].into_iter().collect();
+    let tree = FixtureTree::new().with_dir(
+        "C:/SteamLibrary/steamapps/common",
+        &[
+            "C:/SteamLibrary/steamapps/common/Steamworks Shared",
+            "C:/SteamLibrary/steamapps/common/Real Game",
+        ],
+    );
+    let classifier = KnownRootChildIsGame;
+
+    let source = KnownRootsSource::new(&inv, &eligible, &tree, &classifier)
+        .with_excluded_dirs(["c:\\SteamLibrary\\steamapps\\common\\Steamworks Shared".to_string()]);
+    let d = source.discover().unwrap();
+    let paths = candidate_paths(&d);
+
+    assert_eq!(paths, vec!["C:/SteamLibrary/steamapps/common/Real Game"]);
+    assert_eq!(
+        d.account.considered_not_a_game, 1,
+        "the exact excluded child is counted, not emitted"
+    );
+    assert_eq!(d.account.produced, 1);
+    assert!(d.account.is_conserved());
+}
+
+#[test]
 fn a_missing_root_contributes_nothing_and_no_error() {
     let inv = Inv(vec![vol("vol-c", "C:")]);
     let eligible: HashSet<String> = ["vol-c".to_string()].into_iter().collect();
