@@ -780,26 +780,28 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emi
 }
 
 fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out: &mut dyn Write) {
-    let source_w = width_of(candidates.iter().map(|c| c.source_name.clone()), "SOURCE");
-    let identity_w = width_of(candidates.iter().map(discovery_identity), "IDENTITY");
-    let fidelity_w = width_of(
+    let source_w = display_width_of(candidates.iter().map(|c| c.source_name.clone()), "SOURCE");
+    let identity_w = display_width_of(candidates.iter().map(discovery_identity), "IDENTITY");
+    let fidelity_w = display_width_of(
         candidates.iter().map(|c| c.fidelity.as_str().to_string()),
         "FIDELITY",
     );
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "  {:<source_w$}  {:<identity_w$}  {:<fidelity_w$}  NAME",
-        "SOURCE", "IDENTITY", "FIDELITY"
+        "  {}  {}  {}  NAME",
+        pad_display("SOURCE", source_w),
+        pad_display("IDENTITY", identity_w),
+        pad_display("FIDELITY", fidelity_w)
     );
     for c in candidates {
         let identity = discovery_identity(c);
         let _ = writeln!(
             out,
-            "  {:<source_w$}  {:<identity_w$}  {:<fidelity_w$}  {}",
-            c.source_name,
-            identity,
-            c.fidelity.as_str(),
+            "  {}  {}  {}  {}",
+            pad_display(&c.source_name, source_w),
+            pad_display(&identity, identity_w),
+            pad_display(c.fidelity.as_str(), fidelity_w),
             c.display_name
         );
         // Detected technologies ride as neutral evidence (slice S053): a fact per
@@ -813,6 +815,98 @@ fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out:
                 f.fidelity.as_str()
             );
         }
+    }
+}
+
+/// Display-cell width for the discovery table. This is deliberately narrower than
+/// full terminal rendering: it handles the operator path cases that break scalar
+/// counting, namely combining marks, joiners/selectors, CJK, fullwidth forms, and
+/// emoji ranges.
+fn display_width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
+    values
+        .map(|v| display_width(&v))
+        .chain(std::iter::once(display_width(heading)))
+        .max()
+        .unwrap_or_else(|| display_width(heading))
+}
+
+fn pad_display(value: &str, width: usize) -> String {
+    let mut padded = String::from(value);
+    for _ in display_width(value)..width {
+        padded.push(' ');
+    }
+    padded
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().map(display_cell_width).sum()
+}
+
+fn display_cell_width(c: char) -> usize {
+    let u = c as u32;
+    if c.is_control()
+        || matches!(
+            u,
+            0x0300..=0x036F
+                | 0x1AB0..=0x1AFF
+                | 0x1DC0..=0x1DFF
+                | 0x200C..=0x200D
+                | 0x20D0..=0x20FF
+                | 0xFE00..=0xFE0F
+                | 0xFE20..=0xFE2F
+        )
+    {
+        0
+    } else if matches!(
+        u,
+        0x1100..=0x115F
+            | 0x231A..=0x231B
+            | 0x2329..=0x232A
+            | 0x23E9..=0x23EC
+            | 0x23F0
+            | 0x23F3
+            | 0x25FD..=0x25FE
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267F
+            | 0x2693
+            | 0x26A1
+            | 0x26AA..=0x26AB
+            | 0x26BD..=0x26BE
+            | 0x26C4..=0x26C5
+            | 0x26CE
+            | 0x26D4
+            | 0x26EA
+            | 0x26F2..=0x26F3
+            | 0x26F5
+            | 0x26FA
+            | 0x26FD
+            | 0x2705
+            | 0x270A..=0x270B
+            | 0x2728
+            | 0x274C
+            | 0x274E
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27B0
+            | 0x27BF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE10..=0xFE19
+            | 0xFE30..=0xFE6F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x1F300..=0x1FAFF
+            | 0x20000..=0x3FFFD
+    ) {
+        2
+    } else {
+        1
     }
 }
 
@@ -1340,7 +1434,7 @@ fn exe_stem(exe: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        evidence_from_scan, hero_listing_with_machine_probe, print_discovery,
+        display_width, evidence_from_scan, hero_listing_with_machine_probe, print_discovery,
         render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
         ClassificationSource, DetectionScan, ExeScan, FidelityTier, TargetClassification,
         TargetEntry,
@@ -1406,6 +1500,60 @@ mod tests {
         assert!(
             !text.contains('\t'),
             "human discovery output uses spaces, not tabs:\n{text}"
+        );
+    }
+
+    fn discovery_candidate(identity: &str, name: &str) -> fragcap::targets::CandidateTarget {
+        fragcap::targets::CandidateTarget {
+            identity: CandidateIdentity::Path(identity.to_string()),
+            display_name: name.to_string(),
+            fidelity: FidelityTier::Verified,
+            classification: TargetClassification::Game,
+            evidence: Vec::new(),
+            detection_scan: None,
+            source_name: "known-roots".to_string(),
+            install_root: None,
+            folder_name: None,
+            executable_hint: None,
+        }
+    }
+
+    fn display_cell_index(line: &str, needle: &str) -> usize {
+        let byte = line.find(needle).expect("needle appears");
+        display_width(&line[..byte])
+    }
+
+    #[test]
+    fn discovery_table_pads_wide_and_combining_identities_by_display_cell() {
+        let discovery = fragcap::targets::Discovery {
+            candidates: vec![
+                discovery_candidate("C:/Games/遊戲", "Wide Path"),
+                discovery_candidate("C:/Games/Cafe\u{301}", "Combining Path"),
+            ],
+            account: fragcap::targets::DiscoveryAccount {
+                considered: 2,
+                produced: 2,
+                ..fragcap::targets::DiscoveryAccount::default()
+            },
+            ..fragcap::targets::Discovery::default()
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
+
+        print_discovery(&discovery, &mut out, &mut emitter);
+
+        let text = String::from_utf8(out).expect("utf-8");
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("  known-roots"))
+            .collect();
+        assert_eq!(rows.len(), 2, "two candidate rows:\n{text}");
+        let first_fidelity = display_cell_index(rows[0], "verified");
+        let second_fidelity = display_cell_index(rows[1], "verified");
+        assert_eq!(
+            first_fidelity, second_fidelity,
+            "fidelity starts in the same display column:\n{text}"
         );
     }
 
