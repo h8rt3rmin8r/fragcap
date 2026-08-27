@@ -84,11 +84,13 @@ log_msg() {
     printf '%s%s%s %s\n' "$color" "$level" "$reset" "$*" >&2
 }
 
+# shellcheck disable=SC2329  # standard fixture: reserved for future verbose modes
 log_info() { log_msg INFO "$@"; }
 log_ok() { log_msg OK "$@"; }
 log_error() { log_msg FAIL "$@"; }
 
 # Run a command, echoing it first, so a failing step is legible.
+# shellcheck disable=SC2329  # standard fixture: kept for Bash compliance parity
 safe_run() {
     log_info "run: $*"
     "$@"
