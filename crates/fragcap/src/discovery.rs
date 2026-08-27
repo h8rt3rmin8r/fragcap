@@ -11,16 +11,16 @@
 //! [`fragcap_targets::TargetSource`], and [`WindowsVolumeInventory`], the real
 //! fixed-volume enumeration the known-roots walk consumes.
 //!
-//! `SteamSource` is a thin wrapper: it calls `fragcap-steam`'s library walk
-//! unchanged, so the observable set of Steam candidates does not change (FR-006),
-//! maps each installed title to a candidate at heuristic-unverified fidelity, and
-//! joins the title's appid against the shipped catalog for a classification. A
-//! title whose appid is not a number is counted `parse_failed` and the rest
-//! survive (P-4); an appid absent from the catalog is classified `Unknown`, never
-//! dropped (P-9). A manifest that was present but would not parse is a title the
-//! walk omitted: `fragcap-steam` counts them, and this adapter folds that count
-//! into the discovery account's `parse_failed` and surfaces every Steam warning on
-//! the discovery result, so a damaged install cannot omit games while the account
+//! `SteamSource` is a thin wrapper: it calls `fragcap-steam`'s library walk,
+//! filters appinfo types that cannot be capture targets, maps each remaining
+//! installed title to a candidate at heuristic-unverified fidelity, and joins the
+//! title's appid against the shipped catalog for a classification. A title whose
+//! appid is not a number is counted `parse_failed` and the rest survive (P-4); an
+//! appid absent from the catalog is classified `Unknown`, never dropped (P-9). A
+//! manifest that was present but would not parse is a title the walk omitted:
+//! `fragcap-steam` counts them, and this adapter folds that count into the
+//! discovery account's `parse_failed` and surfaces every Steam warning on the
+//! discovery result, so a damaged install cannot omit games while the account
 //! reports a clean run (P-4).
 
 use std::path::{Path, PathBuf};
@@ -78,6 +78,15 @@ fn detect_evidence(
     }
 }
 
+fn is_non_game_steam_app_type(app_type: Option<&str>) -> bool {
+    app_type.is_some_and(|t| {
+        matches!(
+            t.to_ascii_lowercase().as_str(),
+            "music" | "tool" | "application" | "config" | "video"
+        )
+    })
+}
+
 /// Tier 1 discovery: Steam. Wraps `fragcap-steam`'s library walk and joins each
 /// installed title's appid to the shipped catalog.
 pub struct SteamSource<'a> {
@@ -121,16 +130,11 @@ impl TargetSource for SteamSource<'_> {
         let mut candidates = Vec::new();
         for title in &installation.titles {
             account.considered += 1;
-            // A Music-type app (a soundtrack or similar) has no network behavior and
-            // is not a capture target: counted through the existing
-            // `considered_not_a_game` outcome (the same bucket the known-roots walk
-            // uses for a directory matching no signature) rather than a new one, so
-            // `DiscoveryAccount::is_conserved` needs no change (slice S066, #166).
-            if title
-                .app_type
-                .as_deref()
-                .is_some_and(|t| t.eq_ignore_ascii_case("music"))
-            {
+            // Some Steam app types are installed records rather than playable game
+            // clients. Count them through the existing considered_not_a_game outcome
+            // rather than adding a Steam-specific bucket, so conservation stays
+            // shared across sources (P-4). Demo and unknown types stay eligible (P-9).
+            if is_non_game_steam_app_type(title.app_type.as_deref()) {
                 account.considered_not_a_game += 1;
                 continue;
             }
