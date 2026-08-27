@@ -199,6 +199,14 @@ mod tests {
             text.contains(&format!("{extra} more were not examined")),
             "and it says how many were dropped: {text}"
         );
+        assert!(
+            text.contains(&dir.display().to_string()),
+            "and it names the scanned root: {text}"
+        );
+        assert!(
+            text.contains("technology detection for this root may be incomplete"),
+            "and it says what that means to the operator: {text}"
+        );
     }
 
     #[test]
