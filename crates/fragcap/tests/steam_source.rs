@@ -318,26 +318,56 @@ fn candidate_set_matches_the_underlying_steam_walk_no_regression() {
 }
 
 #[test]
-fn a_music_type_title_is_never_a_candidate_and_is_counted_not_a_game() {
-    // Issue #166 (slice S066): a Steam soundtrack has no network behavior and must
-    // never be registered as a capture target. It is counted through the existing
+fn non_game_app_types_are_never_candidates_and_are_counted_not_a_game() {
+    // Issues #166 and #212: Steam records several installed app classes that are
+    // not capture targets. Each is counted through the existing
     // considered_not_a_game outcome (P-4) rather than dropped silently.
     use fragcap_steam::appinfo::fixtures::{appinfo_bytes, FixtureApp, V29};
 
     let tree = TempTree::new();
     fixture_steam_root(&tree); // CS2 (730), Portal 2 (620), Some Indie (400500)
-    tree.write(
-        &tree.path().join("steamapps").join("appmanifest_450070.acf"),
-        &manifest("450070", "Oblivion Soundtrack", "Oblivion Soundtrack"),
-    );
+    let excluded = [
+        (
+            450070,
+            "Oblivion Soundtrack",
+            "Oblivion Soundtrack",
+            "Music",
+        ),
+        (
+            228980,
+            "Steamworks Common Redistributables",
+            "Steamworks Shared",
+            "Tool",
+        ),
+        (900010, "Dedicated Server Config", "Server Config", "Config"),
+        (900011, "Trailer Collection", "Trailer Collection", "Video"),
+        (
+            900012,
+            "Benchmark Companion",
+            "Benchmark Companion",
+            "Application",
+        ),
+    ];
+    for (appid, name, installdir, _) in excluded {
+        tree.write(
+            &tree
+                .path()
+                .join("steamapps")
+                .join(format!("appmanifest_{appid}.acf")),
+            &manifest(&appid.to_string(), name, installdir),
+        );
+    }
     let bytes = appinfo_bytes(
         V29,
-        &[FixtureApp {
-            appid: 450070,
-            change_number: 1,
-            launch: vec![],
-            common_type: Some("Music".to_string()),
-        }],
+        &excluded
+            .iter()
+            .map(|(appid, _, _, app_type)| FixtureApp {
+                appid: *appid,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some((*app_type).to_string()),
+            })
+            .collect::<Vec<_>>(),
     );
     tree.write_bytes(&tree.path().join("appcache").join("appinfo.vdf"), &bytes);
 
@@ -345,21 +375,89 @@ fn a_music_type_title_is_never_a_candidate_and_is_counted_not_a_game() {
     let source = SteamSource::new(tree.path(), &catalog);
     let d = source.discover().unwrap();
 
-    assert!(
-        !d.candidates
-            .iter()
-            .any(|c| c.identity == CandidateIdentity::SteamAppId(450070)),
-        "a Music-typed app must never be produced as a candidate"
-    );
+    for (appid, _, _, app_type) in excluded {
+        assert!(
+            !d.candidates
+                .iter()
+                .any(|c| c.identity == CandidateIdentity::SteamAppId(appid)),
+            "a {app_type}-typed app must never be produced as a candidate"
+        );
+    }
     assert_eq!(
-        d.account.considered, 5,
-        "the four numeric titles plus the soundtrack"
+        d.account.considered, 9,
+        "the four fixture titles plus the five excluded app types"
     );
     assert_eq!(d.account.produced, 3, "unchanged from the non-music case");
     assert_eq!(
-        d.account.considered_not_a_game, 1,
-        "the soundtrack is counted, not silently dropped"
+        d.account.considered_not_a_game, 5,
+        "every excluded app type is counted, not silently dropped"
     );
+    assert!(d.account.is_conserved());
+}
+
+#[test]
+fn demo_game_and_unknown_app_types_remain_candidates() {
+    // S086 keeps the filter narrow: a demo can be playable, and an unknown app
+    // type is an observation gap rather than evidence that the title is non-game.
+    use fragcap_steam::appinfo::fixtures::{appinfo_bytes, FixtureApp, V29};
+
+    let tree = TempTree::new();
+    let root = tree.path();
+    tree.write(
+        &root.join("steamapps").join("libraryfolders.vdf"),
+        &format!(
+            "\"libraryfolders\"\n{{\n  \"0\" {{ \"path\" \"{}\" }}\n}}\n",
+            root.display().to_string().replace('\\', "\\\\"),
+        ),
+    );
+    let preserved = [
+        (111, "Playable Demo", "Playable Demo"),
+        (222, "Full Game", "Full Game"),
+        (333, "Untyped Game", "Untyped Game"),
+    ];
+    for (appid, name, installdir) in preserved {
+        tree.write(
+            &root
+                .join("steamapps")
+                .join(format!("appmanifest_{appid}.acf")),
+            &manifest(&appid.to_string(), name, installdir),
+        );
+    }
+    let bytes = appinfo_bytes(
+        V29,
+        &[
+            FixtureApp {
+                appid: 111,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Demo".to_string()),
+            },
+            FixtureApp {
+                appid: 222,
+                change_number: 1,
+                launch: vec![],
+                common_type: Some("Game".to_string()),
+            },
+        ],
+    );
+    tree.write_bytes(&root.join("appcache").join("appinfo.vdf"), &bytes);
+
+    let catalog = Store::open_in_memory().unwrap();
+    let source = SteamSource::new(tree.path(), &catalog);
+    let d = source.discover().unwrap();
+    let appids: BTreeSet<u32> = d
+        .candidates
+        .iter()
+        .map(|c| match c.identity {
+            CandidateIdentity::SteamAppId(appid) => appid,
+            ref other => panic!("expected a Steam appid identity, got {other:?}"),
+        })
+        .collect();
+
+    assert_eq!(appids, BTreeSet::from([111, 222, 333]));
+    assert_eq!(d.account.considered, 3);
+    assert_eq!(d.account.produced, 3);
+    assert_eq!(d.account.considered_not_a_game, 0);
     assert!(d.account.is_conserved());
 }
 

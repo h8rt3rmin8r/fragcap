@@ -101,9 +101,9 @@ pub struct DiscoveryAccount {
     /// Candidates a human rejected at the interactive step.
     pub declined_by_user: u64,
     /// Considered and determined not to be a capturable game: a known-root
-    /// directory matching no signature and no known-root rule, or a Steam title
-    /// whose appinfo type is `Music` (a soundtrack, which has no network
-    /// behavior; slice S066, issue #166).
+    /// directory matching no signature and no known-root rule, a Steam title whose
+    /// appinfo type is non-game, or a lower-authority known-root child excluded by
+    /// current platform metadata.
     pub considered_not_a_game: u64,
     /// Container directories that were not emitted and whose immediate children
     /// were enumerated within the known-roots depth bound.

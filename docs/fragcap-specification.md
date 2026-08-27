@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.16-draft \
+**Version:** 0.1.17-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -108,6 +108,7 @@ enforcement.
 | 0.1.14-draft | 2026-08-26 | W. Thompson | **Marks unverified target technology findings (issue #211).** Extends section 17.7 so `fragcap targets` renders below-verified ENGINE and SENSITIVITIES products with a `?` suffix while verified-or-stronger products remain unmarked. The target-entry export/import contract continues to preserve each finding's raw fidelity token so machine readers can derive the same distinction. |
 | 0.1.15-draft | 2026-08-26 | W. Thompson | **Names capped binary-marker scan subjects (issue #206).** Clarifies section 15.7.2 so capped binary-marker coverage warnings name the scanned root, preserve the skipped candidate count, and state that technology detection for that root may be incomplete. |
 | 0.1.16-draft | 2026-08-27 | W. Thompson | **Renders target discovery as a listing (issue #207).** Extends section 17.7 so `fragcap targets discover` prints labelled store paths, a headed aligned candidate table with source, identity, fidelity, and name columns, indented evidence lines, and a labelled discovery account block with zero-valued outcomes grouped. |
+| 0.1.17-draft | 2026-08-27 | W. Thompson | **Excludes non-capturable Steam app types from target discovery (issue #212).** Extends section 16.2 so Steam `Music`, `Tool`, `Application`, `Config`, and `Video` app types are counted as not-a-game and never emitted as capture candidates, while `Demo`, `Game`, and unknown app types remain eligible. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2588,10 +2589,18 @@ dependency.
 A title's install directory is resolved by its app type, read from Steam's
 appinfo cache (which the crate also reads for launch entries), rather than
 unconditionally under `common/` (slice S066). A `Music`-typed title (a
-soundtrack) resolves under `music/` instead and is excluded from discovery
-entirely: it has no network behavior and is not a capturable target. An app type
-that cannot be determined (no appinfo entry, an unreadable cache) falls back to
-the `common/` assumption, which is every other type's real location.
+soundtrack) resolves under `music/` instead of `common/`. Steam app types that
+cannot be capture targets (`Music`, `Tool`, `Application`, `Config`, and
+`Video`) are excluded from target discovery and counted through the existing
+not-a-game discovery outcome, so a utility bundle such as Steamworks Common
+Redistributables is never offered as ready to capture. `Demo` remains eligible
+because a demo can be a playable title, and an app type that cannot be
+determined (no appinfo entry, an unreadable cache) falls back to the `common/`
+assumption and remains eligible because absence of the type is not evidence that
+the title is non-game. When Steam discovery runs alongside the known-roots pass,
+the current non-game Steam install roots are passed down as exact directory
+exclusions so the structural `steamapps/common` prior cannot reintroduce the same
+utility entry as a path candidate.
 
 ### 16.3 Registering an Installed Title
 
@@ -2943,6 +2952,12 @@ repeat listing over an unchanged environment registers nothing new and never
 modifies or removes an existing entry. A bare `fragcap` prints the same listing
 with a `--help` footer after the target output; the labelled target footer remains
 unchanged.
+
+The listing suppresses already stored platform-created rows whose current Steam
+app id or install root matches an appinfo type excluded by section 16.2. This is
+a presentation and row-index rule, not a destructive migration: the row remains
+in `local.db`, and user-authored rows are not hidden solely because they share
+the same anchor or install directory.
 
 The listing writes a snapshot of the rows it displayed to `local.db`, and a
 bare-integer selector resolves against that snapshot (section 17.2), so a row
