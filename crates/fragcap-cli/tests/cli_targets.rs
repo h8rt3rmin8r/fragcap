@@ -1006,12 +1006,39 @@ fn discover_lists_steam_titles_through_the_cli() {
         &steam_root_s,
     ]);
     assert_eq!(code, 0, "discover succeeds: {out}");
+    assert!(
+        !out.contains('\t'),
+        "human discovery output must not be tab-separated:\n{out}"
+    );
+    assert!(
+        out.contains("Discovery stores:"),
+        "store paths are labelled:\n{out}"
+    );
+    assert!(
+        out.contains("  catalog: "),
+        "catalog path is labelled:\n{out}"
+    );
+    assert!(
+        out.contains("  local:   "),
+        "local path is labelled:\n{out}"
+    );
+    assert!(
+        out.contains("SOURCE") && out.contains("IDENTITY") && out.contains("FIDELITY"),
+        "candidate table has named headings:\n{out}"
+    );
     assert!(out.contains("Portal 2"), "a Steam title is listed: {out}");
     assert!(
         out.contains("steam:620"),
         "the appid identity is shown: {out}"
     );
-    assert!(out.contains("account:"), "the account is surfaced: {out}");
+    assert!(
+        out.contains("Discovery account:"),
+        "the account is surfaced as a labelled block: {out}"
+    );
+    assert!(
+        out.contains("  zero: "),
+        "zero-valued account outcomes are grouped: {out}"
+    );
 }
 
 #[test]

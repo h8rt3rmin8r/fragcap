@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.15-draft \
+**Version:** 0.1.16-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-26 \
+**Date:** 2026-08-27 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -107,6 +107,7 @@ enforcement.
 | 0.1.13-draft | 2026-08-26 | W. Thompson | **Adds interactive doctor progress and diagnostic timings (issue #202).** Extends section 26.3 so human terminal `fragcap doctor` runs show probe progress on stderr while preserving final human and JSON report bytes. A hidden `--timings` flag exposes per-probe elapsed times for maintainers without changing report contracts. |
 | 0.1.14-draft | 2026-08-26 | W. Thompson | **Marks unverified target technology findings (issue #211).** Extends section 17.7 so `fragcap targets` renders below-verified ENGINE and SENSITIVITIES products with a `?` suffix while verified-or-stronger products remain unmarked. The target-entry export/import contract continues to preserve each finding's raw fidelity token so machine readers can derive the same distinction. |
 | 0.1.15-draft | 2026-08-26 | W. Thompson | **Names capped binary-marker scan subjects (issue #206).** Clarifies section 15.7.2 so capped binary-marker coverage warnings name the scanned root, preserve the skipped candidate count, and state that technology detection for that root may be incomplete. |
+| 0.1.16-draft | 2026-08-27 | W. Thompson | **Renders target discovery as a listing (issue #207).** Extends section 17.7 so `fragcap targets discover` prints labelled store paths, a headed aligned candidate table with source, identity, fidelity, and name columns, indented evidence lines, and a labelled discovery account block with zero-valued outcomes grouped. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2981,11 +2982,25 @@ target need no store path unless one is named explicitly.
   the same uncertain products, and draw the same coverage conclusion the listing
   does. An out-of-set coverage value is rejected at import and nothing is applied.
 - `targets show <SELECTOR>` and `targets discover` are read-only inspections;
-  `discover`, unlike the listing, registers nothing. `targets show` appends the
-  selected target's Deep Capture compatibility matrix from local facts. It
-  renders every row with its evidence source and freshness, reports `unknown`
-  only when a successful read finds no facts, and performs no launch, proxy,
-  trust, catalog, network, or refresh action.
+  `discover`, unlike the listing, registers nothing. Human `targets discover`
+  output names the catalog and local stores as labelled lines, then prints a
+  headed, aligned candidate table whose visible columns are SOURCE, IDENTITY,
+  FIDELITY, and NAME. It does not print the candidate classification as a human
+  table column, because a stock barebones catalog commonly makes that column
+  read `unknown` for every row while adding no operator value. Candidate
+  evidence prints directly under the owning row as indented category, product,
+  and fidelity lines. Discovery rows contain spaces rather than tabs, size every
+  column except the final NAME column to the widest rendered value or heading,
+  and never truncate or wrap values. The discovery account prints as a labelled
+  block: `considered` and `produced` always appear, non-zero outcome buckets
+  appear on individual lines, and zero-valued outcomes may be grouped on one
+  `zero:` line. `container descended` and `container descent truncated` remain
+  separately named. Warnings stay diagnostics on the emitter path, not in the
+  command-result stream. `targets show` appends the selected target's Deep
+  Capture compatibility matrix from local facts. It renders every row with its
+  evidence source and freshness, reports `unknown` only when a successful read
+  finds no facts, and performs no launch, proxy, trust, catalog, network, or
+  refresh action.
 
 ## 18. Shell Wrappers
 

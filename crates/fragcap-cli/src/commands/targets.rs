@@ -678,12 +678,9 @@ fn discover(
     // while writing volume eligibility to the other, so an operator who cannot
     // see which is which cannot tell what was consulted or what was touched
     // (FR-005, raised in review of PR #190).
-    let _ = writeln!(
-        out,
-        "discovering with catalog {} into local store {}",
-        catalog_db.display(),
-        local_db.display()
-    );
+    let _ = writeln!(out, "Discovery stores:");
+    let _ = writeln!(out, "  catalog: {}", catalog_db.display());
+    let _ = writeln!(out, "  local:   {}", local_db.display());
     let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
     let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
     print_discovery(&discovery, out, emitter);
@@ -764,25 +761,47 @@ fn compose_and_discover(
     fragcap::targets::discover_all(&sources).map_err(|e| CliError::failure(e.to_string()))
 }
 
-/// Print a discovery listing: one line per candidate (source, identity, name,
-/// classification) then the conserved account, so an excluded volume or an
-/// unparsable title is visible rather than silent (P-4).
+/// Print a discovery listing: a headed candidate table, attached evidence, and the
+/// conserved account, so an excluded volume or an unparsable title is visible rather
+/// than silent (P-4).
 fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emitter) {
     if discovery.candidates.is_empty() {
-        let _ = writeln!(out, "no candidates discovered");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "No candidates discovered.");
+    } else {
+        render_discovery_table(&discovery.candidates, out);
     }
-    for c in &discovery.candidates {
-        let identity = match &c.identity {
-            CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
-            CandidateIdentity::Path(path) => path.clone(),
-        };
+    render_discovery_account(&discovery.account, out);
+    // Surface the named diagnostics so a loss the account counts (an unreadable
+    // root, a malformed manifest) is recoverable to which one failed (P-4).
+    for warning in &discovery.warnings {
+        emitter.warn(warning);
+    }
+}
+
+fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out: &mut dyn Write) {
+    let source_w = display_width_of(candidates.iter().map(|c| c.source_name.clone()), "SOURCE");
+    let identity_w = display_width_of(candidates.iter().map(discovery_identity), "IDENTITY");
+    let fidelity_w = display_width_of(
+        candidates.iter().map(|c| c.fidelity.as_str().to_string()),
+        "FIDELITY",
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  {}  {}  {}  NAME",
+        pad_display("SOURCE", source_w),
+        pad_display("IDENTITY", identity_w),
+        pad_display("FIDELITY", fidelity_w)
+    );
+    for c in candidates {
+        let identity = discovery_identity(c);
         let _ = writeln!(
             out,
-            "{}\t{}\t{}\t{}\t{}",
-            c.source_name,
-            identity,
-            c.classification.as_str(),
-            c.fidelity.as_str(),
+            "  {}  {}  {}  {}",
+            pad_display(&c.source_name, source_w),
+            pad_display(&identity, identity_w),
+            pad_display(c.fidelity.as_str(), fidelity_w),
             c.display_name
         );
         // Detected technologies ride as neutral evidence (slice S053): a fact per
@@ -797,24 +816,131 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emi
             );
         }
     }
-    let a = &discovery.account;
-    let _ = writeln!(
-        out,
-        "account: considered={} produced={} parse_failed={} declined={} not_a_game={} container_descended={} container_descent_truncated={} volume_skipped={} access_error={}",
-        a.considered,
-        a.produced,
-        a.parse_failed,
-        a.declined_by_user,
-        a.considered_not_a_game,
-        a.container_descended,
-        a.container_descent_truncated,
-        a.volume_skipped,
-        a.access_error,
-    );
-    // Surface the named diagnostics so a loss the account counts (an unreadable
-    // root, a malformed manifest) is recoverable to which one failed (P-4).
-    for warning in &discovery.warnings {
-        emitter.warn(warning);
+}
+
+/// Display-cell width for the discovery table. This is deliberately narrower than
+/// full terminal rendering: it handles the operator path cases that break scalar
+/// counting, namely combining marks, joiners/selectors, CJK, fullwidth forms, and
+/// emoji ranges.
+fn display_width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
+    values
+        .map(|v| display_width(&v))
+        .chain(std::iter::once(display_width(heading)))
+        .max()
+        .unwrap_or_else(|| display_width(heading))
+}
+
+fn pad_display(value: &str, width: usize) -> String {
+    let mut padded = String::from(value);
+    for _ in display_width(value)..width {
+        padded.push(' ');
+    }
+    padded
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().map(display_cell_width).sum()
+}
+
+fn display_cell_width(c: char) -> usize {
+    let u = c as u32;
+    if c.is_control()
+        || matches!(
+            u,
+            0x0300..=0x036F
+                | 0x1AB0..=0x1AFF
+                | 0x1DC0..=0x1DFF
+                | 0x200C..=0x200D
+                | 0x20D0..=0x20FF
+                | 0xFE00..=0xFE0F
+                | 0xFE20..=0xFE2F
+        )
+    {
+        0
+    } else if matches!(
+        u,
+        0x1100..=0x115F
+            | 0x231A..=0x231B
+            | 0x2329..=0x232A
+            | 0x23E9..=0x23EC
+            | 0x23F0
+            | 0x23F3
+            | 0x25FD..=0x25FE
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267F
+            | 0x2693
+            | 0x26A1
+            | 0x26AA..=0x26AB
+            | 0x26BD..=0x26BE
+            | 0x26C4..=0x26C5
+            | 0x26CE
+            | 0x26D4
+            | 0x26EA
+            | 0x26F2..=0x26F3
+            | 0x26F5
+            | 0x26FA
+            | 0x26FD
+            | 0x2705
+            | 0x270A..=0x270B
+            | 0x2728
+            | 0x274C
+            | 0x274E
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27B0
+            | 0x27BF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE10..=0xFE19
+            | 0xFE30..=0xFE6F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x1F300..=0x1FAFF
+            | 0x20000..=0x3FFFD
+    ) {
+        2
+    } else {
+        1
+    }
+}
+
+fn discovery_identity(candidate: &fragcap::targets::CandidateTarget) -> String {
+    match &candidate.identity {
+        CandidateIdentity::SteamAppId(appid) => format!("steam:{appid}"),
+        CandidateIdentity::Path(path) => path.clone(),
+    }
+}
+
+fn render_discovery_account(a: &fragcap::targets::DiscoveryAccount, out: &mut dyn Write) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Discovery account:");
+    let _ = writeln!(out, "  considered: {}", a.considered);
+    let _ = writeln!(out, "  produced: {}", a.produced);
+    let outcomes = [
+        ("parse failed", a.parse_failed),
+        ("declined", a.declined_by_user),
+        ("not a game", a.considered_not_a_game),
+        ("container descended", a.container_descended),
+        ("container descent truncated", a.container_descent_truncated),
+        ("volume skipped", a.volume_skipped),
+        ("access error", a.access_error),
+    ];
+    let mut zero = Vec::new();
+    for (label, count) in outcomes {
+        if count == 0 {
+            zero.push(label);
+        } else {
+            let _ = writeln!(out, "  {label}: {count}");
+        }
+    }
+    if !zero.is_empty() {
+        let _ = writeln!(out, "  zero: {}", zero.join(", "));
     }
 }
 
@@ -1308,9 +1434,10 @@ fn exe_stem(exe: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        evidence_from_scan, hero_listing_with_machine_probe, print_discovery,
-        render_machine_section, render_table, steam_add_metadata, ClassificationSource,
-        DetectionScan, ExeScan, FidelityTier, TargetClassification, TargetEntry,
+        display_width, evidence_from_scan, hero_listing_with_machine_probe, print_discovery,
+        render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
+        ClassificationSource, DetectionScan, ExeScan, FidelityTier, TargetClassification,
+        TargetEntry,
     };
     use crate::emit::{Emitter, Format, Verbosity};
 
@@ -1325,12 +1452,28 @@ mod tests {
     }
 
     #[test]
-    fn discovery_account_renders_both_container_outcomes() {
+    fn discovery_table_preserves_evidence_under_rows() {
         let discovery = fragcap::targets::Discovery {
+            candidates: vec![fragcap::targets::CandidateTarget {
+                identity: CandidateIdentity::SteamAppId(620),
+                display_name: "Portal 2".to_string(),
+                fidelity: FidelityTier::HeuristicUnverified,
+                classification: TargetClassification::Game,
+                evidence: vec![fragcap::profile::DetectionFinding {
+                    category: fragcap::profile::SignatureCategory::Engine,
+                    product: "Source".to_string(),
+                    evidence: "bin/source.dll".to_string(),
+                    fidelity: FidelityTier::Verified,
+                }],
+                detection_scan: None,
+                source_name: "steam".to_string(),
+                install_root: None,
+                folder_name: None,
+                executable_hint: None,
+            }],
             account: fragcap::targets::DiscoveryAccount {
-                considered: 2,
-                container_descended: 1,
-                container_descent_truncated: 1,
+                considered: 1,
+                produced: 1,
                 ..fragcap::targets::DiscoveryAccount::default()
             },
             ..fragcap::targets::Discovery::default()
@@ -1342,8 +1485,111 @@ mod tests {
         print_discovery(&discovery, &mut out, &mut emitter);
 
         let text = String::from_utf8(out).expect("utf-8");
-        assert!(text.contains("container_descended=1"));
-        assert!(text.contains("container_descent_truncated=1"));
+        assert!(
+            text.contains("  SOURCE  IDENTITY   FIDELITY              NAME"),
+            "header names the discovery fields:\n{text}"
+        );
+        assert!(
+            text.contains("  steam   steam:620  heuristic-unverified  Portal 2"),
+            "candidate row is aligned and classification-free:\n{text}"
+        );
+        assert!(
+            text.contains("    engine: Source (verified)"),
+            "evidence remains under its candidate with fidelity:\n{text}"
+        );
+        assert!(
+            !text.contains('\t'),
+            "human discovery output uses spaces, not tabs:\n{text}"
+        );
+    }
+
+    fn discovery_candidate(identity: &str, name: &str) -> fragcap::targets::CandidateTarget {
+        fragcap::targets::CandidateTarget {
+            identity: CandidateIdentity::Path(identity.to_string()),
+            display_name: name.to_string(),
+            fidelity: FidelityTier::Verified,
+            classification: TargetClassification::Game,
+            evidence: Vec::new(),
+            detection_scan: None,
+            source_name: "known-roots".to_string(),
+            install_root: None,
+            folder_name: None,
+            executable_hint: None,
+        }
+    }
+
+    fn display_cell_index(line: &str, needle: &str) -> usize {
+        let byte = line.find(needle).expect("needle appears");
+        display_width(&line[..byte])
+    }
+
+    #[test]
+    fn discovery_table_pads_wide_and_combining_identities_by_display_cell() {
+        let discovery = fragcap::targets::Discovery {
+            candidates: vec![
+                discovery_candidate("C:/Games/遊戲", "Wide Path"),
+                discovery_candidate("C:/Games/Cafe\u{301}", "Combining Path"),
+            ],
+            account: fragcap::targets::DiscoveryAccount {
+                considered: 2,
+                produced: 2,
+                ..fragcap::targets::DiscoveryAccount::default()
+            },
+            ..fragcap::targets::Discovery::default()
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
+
+        print_discovery(&discovery, &mut out, &mut emitter);
+
+        let text = String::from_utf8(out).expect("utf-8");
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("  known-roots"))
+            .collect();
+        assert_eq!(rows.len(), 2, "two candidate rows:\n{text}");
+        let first_fidelity = display_cell_index(rows[0], "verified");
+        let second_fidelity = display_cell_index(rows[1], "verified");
+        assert_eq!(
+            first_fidelity, second_fidelity,
+            "fidelity starts in the same display column:\n{text}"
+        );
+    }
+
+    #[test]
+    fn discovery_account_groups_zero_outcomes() {
+        let discovery = fragcap::targets::Discovery {
+            account: fragcap::targets::DiscoveryAccount {
+                considered: 3,
+                produced: 1,
+                considered_not_a_game: 1,
+                container_descended: 1,
+                ..fragcap::targets::DiscoveryAccount::default()
+            },
+            ..fragcap::targets::Discovery::default()
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut emitter = Emitter::new(&mut err, Format::Human, Verbosity::Normal);
+
+        print_discovery(&discovery, &mut out, &mut emitter);
+
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(
+            text.contains("Discovery account:"),
+            "account is a labelled block:\n{text}"
+        );
+        assert!(text.contains("  considered: 3"), "{text}");
+        assert!(text.contains("  produced: 1"), "{text}");
+        assert!(text.contains("  not a game: 1"), "{text}");
+        assert!(text.contains("  container descended: 1"), "{text}");
+        assert!(
+            text.contains(
+                "  zero: parse failed, declined, container descent truncated, volume skipped, access error"
+            ),
+            "zero-valued outcomes are grouped and container truncation remains named:\n{text}"
+        );
     }
 
     /// Point discovery at a catalog that cannot exist, so `hero_listing_with_machine_probe`
