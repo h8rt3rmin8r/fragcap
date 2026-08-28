@@ -1,2 +1,0 @@
-<!-- spec-impact: none -->
-**2026-08-24** Recorded the Deep Capture proxy backend research for issue #214. The recommended path is a staged native spike with `hudsucker` as the first candidate and external `mitmdump` retained as the baseline and fallback; Pingora is deferred, `mitmproxy_rs` is rejected for the default target-scoped design, and `soth-mitm` and `slinger-mitm` are rejected for policy blockers.

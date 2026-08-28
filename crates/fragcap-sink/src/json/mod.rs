@@ -390,7 +390,7 @@ mod tests {
         );
         let v: Value = serde_json::from_str(first).unwrap();
         assert_eq!(v["type"], "header");
-        assert_eq!(v["version"], "fragcap/0.6.0");
+        assert_eq!(v["version"], "fragcap/0.7.0");
         assert_eq!(v["interfaces"], serde_json::json!(["eth0"]));
     }
 
