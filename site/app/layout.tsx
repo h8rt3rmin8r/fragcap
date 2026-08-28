@@ -3,6 +3,7 @@ import './global.css';
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import type { ReactNode } from 'react';
 import type { Metadata, Viewport } from 'next';
+import { SkipLink } from '@/components/skip-link';
 
 const url = 'https://fragcap.com';
 const description =
@@ -50,6 +51,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <body style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+        <SkipLink />
         <RootProvider
           search={{ options: { type: 'static', api: '/static.json' } }}
         >

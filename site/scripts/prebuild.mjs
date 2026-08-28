@@ -25,6 +25,7 @@ import {
   cpSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { normalizeChangelogHeadings } from './changelog-headings.mjs';
 
 const srcDir = join('..', 'docs', 'glossary');
 const destDir = join('content', 'docs', 'glossary');
@@ -382,7 +383,7 @@ function bucketCategories(bodyLines) {
         key = 'Notes';
         if (!buckets.has(key)) buckets.set(key, []);
       }
-      buckets.get(key).push(`#### ${heading}`);
+      buckets.get(key).push(line);
       continue;
     }
     if (key) buckets.get(key).push(line);
@@ -416,7 +417,7 @@ function writeChangelog() {
     const pages = [];
     for (const category of present) {
       const cslug = slugify(category);
-      const body = escapeMdx(buckets.get(category).join('\n'))
+      const body = escapeMdx(normalizeChangelogHeadings(buckets.get(category)).join('\n'))
         .replace(/\n{3,}/g, '\n\n')
         .trim();
       const frontmatter = [

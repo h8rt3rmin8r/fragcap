@@ -24,6 +24,8 @@ node_modules
 .next
 out
 .turbo
+site/test-results/
+site/playwright-report/
 *.tsbuildinfo
 
 # Local environment and secrets
