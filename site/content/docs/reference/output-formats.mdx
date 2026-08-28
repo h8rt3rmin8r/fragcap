@@ -21,7 +21,7 @@ Packet JSON Lines is the machine-readable Capture stream. It is distinct from De
 
 ```json
 {"type":"header","version":"fragcap/0.7.0","interfaces":["capture"]}
-{"ts":1700000000.000000,"iface":"capture","pid":4242,"proc":"sample.exe","role":"client","stage":"client","dir":"out","attr":"live","flow_id":"flow-00000001","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":74,"orig_len":74,"data":"0200"}
+{"ts":1700000000.000000,"iface":"capture","pid":4242,"proc":"sample.exe","role":"client","stage":"client","dir":"out","attr":"live","flow_id":"flow-00000001","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":2,"orig_len":74,"data":"0200"}
 {"type":"trailer","packets":24,"attributed":24,"unattributed":0,"kernel_dropped":0,"interface_dropped":0,"buffer_dropped":0,"sink_dropped":0,"filter_gaps":0}
 ```
 
@@ -94,7 +94,7 @@ An observation can carry `session_id`, target id, `flow_id`, proxy connection id
 
 ### HAR
 
-`http.har` is an optional [HAR](/docs/glossary/file-and-wire-formats#har) projection, not an independent application authority. v0.7.0 projects only the observed start time, HTTP method, URL, and response status. Request and response headers, cookies, query entries, and bodies are empty because the application stream does not retain those values. Size and timing placeholders do not reconstruct facts that were never observed.
+`http.har` is an optional [HAR](/docs/glossary/file-and-wire-formats#har) projection, not an independent application authority. v0.7.0 projects only the observed start time, HTTP method, URL, and response status when available. When no response status was observed, the projection writes `0` as a placeholder. Request and response headers, cookies, query entries, and bodies are empty because the application stream does not retain those values. Status, size, and timing placeholders do not reconstruct facts that were never observed.
 
 ### Proxy-owned TLS key log
 
