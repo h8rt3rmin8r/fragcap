@@ -27,7 +27,7 @@ body:
         a specific title, say which and at what stage (launcher,
         authentication, character select, gameplay, shutdown).
       placeholder: |
-        1. fragcap run --profile eso --launch --duration 30m
+        1. fragcap capture 1 --duration 30m
         2. ...
     validations:
       required: true
@@ -57,7 +57,7 @@ body:
     id: version
     attributes:
       label: fragcap version
-      placeholder: "0.1.0"
+      placeholder: "Paste the output of: fragcap --version"
     validations:
       required: true
 
@@ -65,7 +65,8 @@ body:
     id: npcap-version
     attributes:
       label: npcap version
-      placeholder: "1.79"
+      description: Enter the installed version when live packet capture was involved; otherwise enter "not applicable".
+      placeholder: "Paste the version or enter not applicable"
     validations:
       required: true
 
@@ -74,14 +75,14 @@ body:
     attributes:
       label: npcap installation options
       description: >-
-        Both are required and neither is default. If you are unsure, fragcap
-        doctor reports them by name.
-      multiple: true
+        WinPcap API-compatible mode is required for live packet capture. Current
+        Npcap installs loopback support automatically. If you are unsure,
+        fragcap doctor reports readiness.
       options:
-        - Loopback traffic capture support
-        - WinPcap API-compatible mode
-        - Neither
+        - WinPcap API-compatible mode enabled
+        - WinPcap API-compatible mode not enabled
         - Not sure
+        - Not applicable; no live packet capture
 
   - type: input
     id: os
@@ -98,5 +99,4 @@ body:
       options:
         - label: I have removed addresses, account identifiers, and session tokens from everything above.
           required: true
-        - label: I ran the invocation from an administrative shell.
-          required: true
+        - label: If this report involves live Capture or Deep Capture, I ran the invocation from an administrative shell.

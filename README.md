@@ -9,7 +9,7 @@
 </h1>
 
 <p align="center">
-  <em>Process-attributed Capture, and planned Deep Capture, for PC game traffic on Windows.</em>
+  <em>Process-attributed Capture and explicit Deep Capture for PC game traffic on Windows.</em>
 </p>
 
 <p align="center">
@@ -23,27 +23,13 @@
 
 ---
 
-fragcap watches the network traffic leaving and entering your machine and labels
-every connection with the program that made it. Ordinary capture tools can tell
-you a conversation happened; fragcap tells you which process on your machine had
-it, even when that process is a game client started indirectly by a launcher.
+fragcap records Windows game traffic and correlates captured flows with the socket and process-lifecycle observations that identify the program responsible. That association is absent from ordinary packet records, especially when a platform or publisher launcher starts the final game client indirectly.
 
-The shipped **Capture** mode observes passively. It never modifies, injects, or
-replays traffic, and it never reads or attaches to the memory of another
-process. It writes an extended [pcapng](https://pcapng.com) file that
-unmodified analyzers such as Wireshark read as an ordinary packet trace.
+The shipped **Capture** mode observes passively. It never modifies, injects, or replays traffic, and it never reads or attaches to the memory of another process. It writes an extended [pcapng](https://pcapng.com) file that unmodified analyzers such as Wireshark read as an ordinary packet trace.
 
-The planned **Deep Capture** mode adds explicit, scoped local proxy inspection
-for selected targets. It is being designed for authorized game-development and
-research workflows where application-layer traffic needs to be inspectable, and
-it remains bounded by the same no-injection, no-hooking, no-target-memory-read
-posture.
+The shipped **Deep Capture** mode runs Capture alongside explicit, target-scoped local proxy inspection for authorized sessions. For compatible targets and traffic, it adds application observations and correlated bundle artifacts without code injection, target hooks, target memory reads, target TLS key extraction, certificate-pinning bypass, or silent system-wide proxy settings. Unsupported or unobserved traffic remains reported as such.
 
-Two prerequisites sit outside fragcap. Live capture needs the
-[npcap](https://npcap.com) driver installed separately (fragcap detects it and
-never installs, downloads, or bundles it), and reading a capture needs
-[Wireshark](https://www.wireshark.org) or another pcapng-aware analyzer. You
-capture with fragcap, then open the result in Wireshark.
+Live packet capture requires [Npcap](https://npcap.com) to be installed separately. fragcap never bundles, hosts, caches as its own, or redistributes Npcap. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page; a source build with the optional `net` feature can instead fetch and launch the vendor's signed installer. [Wireshark](https://www.wireshark.org) or another pcapng-aware analyzer is recommended for reading `.fcapng` output.
 
 **The full documentation, including a first-run guide, lives at
 [fragcap.com](https://fragcap.com).**
@@ -53,12 +39,8 @@ capture with fragcap, then open the result in Wireshark.
 - **Curious players and tinkerers** who want to see what a game client actually
   talks to. Start at [the getting-started guide](https://fragcap.com/docs/getting-started);
   it walks the whole first capture. You do not need to read Rust to use the tool.
-- **Network and security researchers** who need attribution-grade captures:
-  every packet tied to its owning process and role, in a format existing
-  analysis tooling already understands.
-- **Rust developers and contributors.** The library is the product; the
-  command-line tool is one consumer of it. See [Building](#building) and
-  [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Network and security researchers** who need packet captures correlated with process and role evidence, including explicit unresolved states, in a format existing analysis tooling already understands.
+- **Rust developers and contributors.** See [Building](#building) and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workspace and contribution workflow.
 
 ## Quick links
 
@@ -67,27 +49,18 @@ capture with fragcap, then open the result in Wireshark.
 | Documentation and first-run guide | [fragcap.com](https://fragcap.com) |
 | Glossary of every term | [fragcap.com/docs/glossary](https://fragcap.com/docs/glossary) |
 | Architecture of record | [`docs/fragcap-specification.md`](docs/fragcap-specification.md) |
+| Deep Capture compatibility | [fragcap.com/docs/reference/deep-capture-compatibility](https://fragcap.com/docs/reference/deep-capture-compatibility) |
 | Contributor workflow | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Windows installer | [Windows installer (MSI)](#windows-installer-msi) |
 | Releases | [github.com/h8rt3rmin8r/fragcap/releases](https://github.com/h8rt3rmin8r/fragcap/releases) |
 
 ## Status
 
-All eighteen roadmap slices (**S01 through S18**) are complete and merged: the
-crate graph, the capture pipeline, both output writers, the profile schema, the
-socket-table attributor, the ETW process watcher, transports and streaming
-sinks, ring mode, Steam integration and managed launch, the extcap analyzer
-integration, the shell wrappers, and the documentation site. **v0.2.0 is the
-first public release** and packages the whole roadmap; see the
-[Releases](https://github.com/h8rt3rmin8r/fragcap/releases) page.
+**v0.7.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for known-compatible stored targets. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
 
-Live capture requires the npcap driver (below) and administrative privilege; the
-socket-table attribution path and the offline replay substrate run without
-either.
+v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 
-Deep Capture is planned and not present in released binaries yet. The positioning
-record is [`docs/plans/deep-capture.md`](docs/plans/deep-capture.md), and the
-initial implementation track is issue #213 through issue #220.
+Live Capture and Deep Capture packet recording require Npcap and administrative privilege. Socket-table attribution, target management, and offline replay support do not require the capture driver. Deep Capture additionally requires a supported proxy backend, current compatibility evidence for the selected launch case, and explicit confirmation before fragcap changes current-user CA trust. The [compatibility reference](https://fragcap.com/docs/reference/deep-capture-compatibility) states the shipped traffic limits.
 
 ## The problem
 
@@ -147,13 +120,9 @@ roles that separate launcher, client, and platform-service traffic.
   tool that loses data without saying so produces conclusions the user cannot
   check.
 
-Planned next, Deep Capture will augment Capture sessions with local proxy
-inspection, proxy logs, proxy-owned TLS key-log export for analyzer correlation,
-and a documented compatibility matrix for supported traffic types.
+- Runs explicit Deep Capture sessions for stored targets with current compatibility evidence, correlating packet and application observations in one session bundle and reporting proxy, trust, omission, and cleanup state.
 
-The command-line tool exposes one capture verb, `capture`, alongside `targets`,
-`technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. Anything
-reachable through the CLI is reachable through the public Rust API.
+The command-line tool exposes `capture` and `deep-capture` alongside `targets`, `technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. Most capabilities are also exposed through the public Rust facade. Deep Capture session orchestration is the current exception, tracked for library-first extraction in issue #252.
 
 Start with `fragcap targets`: it lists the capturable titles on your machine and
 ends by naming the next command.
@@ -161,15 +130,15 @@ ends by naming the next command.
 ```bash
 # The hero command: discover and list your own targets, then follow the hint
 fragcap targets
-#   #  TARGET                     CAPTURE          KNOWN
-#   1  the_elder_scrolls_online   ready            no online mode recorded
-#   2  the_division_2             ready            Denuvo, EasyAntiCheat
+#   #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
+#   1  sample_adventure  ready           Sample Engine  not scanned
+#   2  sample_arena      needs a target  not scanned    Sample Protection
 #
-#   fragcap capture 1
+# Next command:  fragcap capture 1
 
 # Register an installed Steam title, or author one interactively
-fragcap targets add --steam 306130
-fragcap targets add "My Game" --exe game.exe        # asks who holds the sockets
+fragcap targets add --steam <APP_ID>
+fragcap targets add "Sample Adventure" --exe sample-game.exe  # asks who holds the sockets
 ```
 
 The row numbers `fragcap targets` shows are the numbers `fragcap capture <n>`
@@ -180,24 +149,22 @@ for the full surface):
 
 ```bash
 # Bounded capture of a registered title, launched by fragcap
-fragcap capture --target eso --launch --duration 30m --out capture.fcapng
+fragcap capture --target sample_adventure --launch --duration 30m --out capture.fcapng
 
 # Client traffic only, streamed to an analyzer through a named pipe
-fragcap capture --target div2 --mode stream --roles client --sink pipe:fragcap,format=pcapng
+fragcap capture --target sample_arena --mode stream --roles client --sink pipe:fragcap,format=pcapng
 
 # Rolling ten-minute window, dumped on interrupt
-fragcap capture --target eso --mode ring --ring 10m --out captures/eso.fcapng
+fragcap capture --target sample_adventure --mode ring --ring 10m --out captures/sample-adventure.fcapng
 
 # Ad-hoc capture of a running process, no stored target
-fragcap capture --process eso64.exe --duration 5m --out capture.fcapng
+fragcap capture --process sample-game.exe --duration 5m --out capture.fcapng
+
+# Guarded local-proxy inspection of a known-compatible stored target
+fragcap deep-capture 1 --launch --duration 30m --trust-ca --har
 ```
 
-`eso` and `div2` stand in for target selectors. A target is registered in your
-local store; register an installed Steam title with `fragcap targets add --steam
-<APP_ID>`, then capture it by handle, name, or row index. A bare `fragcap` lists
-your registered targets. Non-file sinks (`pipe:`, `tcp://`) have no extension to
-infer a format from, so they name it explicitly with `,format=pcapng` or
-`,format=jsonl`.
+`sample_adventure` and `sample_arena` are synthetic target selectors. A target is registered in your local store; register an installed Steam title with `fragcap targets add --steam <APP_ID>`, then capture it by handle, name, or row index. A bare `fragcap` lists your registered targets. Non-file sinks (`pipe:`, `tcp://`) have no extension to infer a format from, so they name it explicitly with `,format=pcapng` or `,format=jsonl`.
 
 ## What it will not do
 
@@ -208,14 +175,13 @@ documented:
 - **No process injection, memory reading, or hooking** of any target.
 - **No packet modification, injection, or replay** against a live server.
 - **No target TLS key extraction** and no certificate-pinning bypass.
-- **No ambient system proxying by default.** Deep Capture is planned as an
-  explicit, scoped, reversible local proxy mode for selected target sessions.
+- **No ambient system proxying by default.** Deep Capture is an explicit, scoped, reversible local proxy mode for selected target sessions.
 - **No game-specific protocol logic in core.** Dissectors are a plugin seam.
 - **Not a cheat, accelerator, or latency optimizer.**
 
 In Capture mode, where a game uses transport encryption, payloads are captured
 as ciphertext. What you get is timing, sizing, endpoints, and attribution. Deep
-Capture is the planned explicit-inspection path for supported traffic, not a
+Capture is the shipped explicit-inspection path for supported traffic, not a
 covert decryption or key-recovery path.
 
 ## Windows installer (MSI)
@@ -255,16 +221,19 @@ your own machine as you capture.
 before any capture.** Run `fragcap doctor` to check your environment; it reports
 npcap's presence and names any missing option, and captures nothing. Run
 `fragcap doctor --fix` to be walked through the remediations it names, one at a
-time, under your confirmation (register the analyzer integration, fetch the
-catalog, run discovery, and, with your explicit yes, obtain npcap). `--fix` is
+time, under your confirmation (register the analyzer integration, initialize the
+catalog, run discovery, and, with your explicit yes, open the npcap download
+page). `--fix` is
 interactive: it is refused with `--json` and when the session is not a terminal,
 and it acts only on what `doctor` first printed.
 
 npcap is by the [Nmap Project](https://nmap.org) and is not redistributable
 under its standard license, so fragcap does not and will not bundle it. fragcap
-detects it and reports its absence with the download location, and only fetches
-and launches the vendor's own signed installer when you explicitly confirm it in
-`fragcap doctor --fix`, storing nothing of it in any fragcap artifact. The
+detects it and reports its absence with the download location. The shipped
+`fragcap doctor --fix` opens that page only when you explicitly confirm it. A
+source build with the optional `net` feature may instead fetch and launch the
+vendor's own signed installer after the same confirmation, storing nothing of it
+in any fragcap artifact. The
 simplest way to obtain npcap is the [Wireshark](https://www.wireshark.org/)
 installer, which bundles it; the
 [Getting started guide](https://fragcap.com/docs/getting-started) walks through
@@ -383,7 +352,7 @@ no relationship between those owners and this project.
 fragcap is built and published for demonstration, research, and educational
 purposes. Capture mode is passive observation: it does not modify, inject, or
 replay network traffic, and it does not read, write, or attach to the memory of
-any other process. Planned Deep Capture is explicit local proxy inspection for
+any other process. Deep Capture is explicit local proxy inspection for
 authorized workflows, not covert process instrumentation. The authors cannot
 control what third parties choose to do with an open source utility. Use of
 fragcap may nonetheless violate the terms of service of a given game or

@@ -11,8 +11,9 @@ license.
 
 ## Before anything else: what fragcap will not accept
 
-fragcap is a passive observation tool, and that is enforced rather than
-aspirational. Constitution principle P-1 prohibits, absolutely:
+fragcap has two shipped modes under constitution principle P-1. Capture is passive process-attributed packet capture. Deep Capture is explicit, target-scoped, reversible local proxy inspection for authorized sessions. Neither mode permits covert target instrumentation.
+
+P-1 prohibits, absolutely:
 
 - Packet interception or filtering drivers
 - Code injection into any target process
@@ -20,22 +21,20 @@ aspirational. Constitution principle P-1 prohibits, absolutely:
 - Process handles carrying memory-read rights against a target
 - Layered service providers or Winsock catalog modification
 - Executable image modification
+- Target TLS key extraction
 
-A pull request using any of these will be declined regardless of how well it
-works or what it enables. This is not negotiable and is not a judgment about
-the contributor. If a capability seems to require one of them, open an issue
-rather than an implementation; it usually means the problem has been framed in
-a way that has a passive solution.
+A pull request using any of these will be declined regardless of how well it works or what it enables. This is not negotiable and is not a judgment about the contributor. If a capability seems to require one, open an issue rather than an implementation so the requirement can be checked against the architecture.
+
+Deep Capture may start a session-owned local proxy, apply target-scoped launch configuration, manage a purpose-specific local certificate authority after explicit confirmation, and export proxy-owned TLS key-log material. It may not fall back silently to system-wide proxy settings, trust a certificate silently, bypass certificate pinning, or leave cleanup residue unreported.
 
 Copyleft-licensed dependencies are also declined. See constitution, licensing
 section.
 
 ## Current state
 
-The repository is pre-implementation. There is no Cargo workspace yet; slice
-S01 creates it. Until then the useful contributions are review of the
-specification, the constitution, and the slice ordering, plus the
-reconnaissance work described in `docs/plans/reconnaissance.md`.
+v0.7.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
+
+Npcap remains a separately installed prerequisite for live packet capture. fragcap never bundles, hosts, caches as its own, or redistributes Npcap or its installer. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page. A source build with the optional `net` feature may instead fetch and launch the vendor's signed installer. The default workspace build and offline tests require neither Npcap nor administrative privilege.
 
 ## The rule
 
@@ -54,10 +53,7 @@ reconnaissance work described in `docs/plans/reconnaissance.md`.
    first. Every feature traces to `docs/fragcap-specification.md` and lands as
    a numbered `specs/NNN-slug/` slice. See `AGENTS.md` for the full cycle. Bug
    fixes and documentation corrections do not need a slice.
-3. Make the change. Follow the constitution, `CONVENTIONS.md`, and the existing
-   patterns. Do not modify pinned artifacts (`.github/workflows/**`,
-   `rust-toolchain.toml`, `release.toml`, `scripts/**`, release documentation)
-   without a dated decision recorded in `CHANGELOG.md`.
+3. Make the change. Follow the constitution, `CONVENTIONS.md`, and the existing patterns. Do not modify pinned artifacts (`.github/workflows/**`, `rust-toolchain.toml`, `release.toml`, `scripts/**`, release documentation) without a dated `changelog.d/*.decisions.md` fragment.
 4. Add or update tests. Run verification in the foreground and watch it finish:
 
    ```sh

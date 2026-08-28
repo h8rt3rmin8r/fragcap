@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.18-draft \
+**Version:** 0.1.19-draft \
 **Applies-To:** 0.7.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-27 \
+**Date:** 2026-08-28 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -56,8 +56,8 @@ package version and is bound to it by `cargo xtask spec`, so the specification
 and the shipped artifact cannot drift (constitution P-11). **Version** is this
 document's own revision, recorded in the history below. As of this revision the
 released software runs from v0.1.0, the crates.io namespace-reservation stub
-carrying no functionality, through v0.4.0; v0.5.0 is in progress. The
-per-release scope is in section 27.3.
+carrying no functionality, through v0.7.0. The per-release scope is in section
+27.3.
 
 ### 1.1 Relationship to Spec Kit
 
@@ -110,6 +110,7 @@ enforcement.
 | 0.1.16-draft | 2026-08-27 | W. Thompson | **Renders target discovery as a listing (issue #207).** Extends section 17.7 so `fragcap targets discover` prints labelled store paths, a headed aligned candidate table with source, identity, fidelity, and name columns, indented evidence lines, and a labelled discovery account block with zero-valued outcomes grouped. |
 | 0.1.17-draft | 2026-08-27 | W. Thompson | **Excludes non-capturable Steam app types from target discovery (issue #212).** Extends section 16.2 so Steam `Music`, `Tool`, `Application`, `Config`, and `Video` app types are counted as not-a-game and never emitted as capture candidates, while `Demo`, `Game`, and unknown app types remain eligible. |
 | 0.1.18-draft | 2026-08-27 | W. Thompson | **Delegates Bash wrapper compliance to the vendored checker (issue #199).** Extends sections 18.4 and 24.3 so `cargo xtask wrappers` invokes the vendored ShruggieTech Bash checker for every gated Bash script, treats missing scripts or checker bytes as failed checks, and treats a missing Bash-runnable ShellCheck executable as an unable-to-run environment failure. |
+| 0.1.19-draft | 2026-08-28 | W. Thompson | **Reconciles public entry points with v0.7.0 (issue #244).** Corrects sections 1, 2.1, 19.1, 27.3, and 28 so current-status prose and release history describe Capture and Deep Capture as shipped modes, record releases through v0.7.0, and leave only unshipped work in the roadmap. The repository landing page, contributor guides, documentation index, issue forms, and GitHub description now project the same bounded product definition. |
 
 ## 2. Purpose and Problem Statement
 
@@ -122,16 +123,17 @@ packet to the process that produced it. It writes attributed captures to disk
 in a pcapng-compatible format, and streams them live to downstream consumers
 over named pipes, Unix domain sockets, or TCP.
 
-The planned **Deep Capture** mode adds explicit, scoped local proxy inspection
-for targets whose traffic can be routed through a proxy. Deep Capture exists to
-make supported application-layer traffic inspectable for game developers and
+The shipped **Deep Capture** mode adds explicit, scoped local proxy inspection
+for targets whose traffic can be routed through a proxy. Deep Capture makes
+supported application-layer traffic inspectable for game developers and
 researchers without process injection, function hooking, target memory reads,
 packet interception drivers, or target TLS key extraction.
 
-The library is the product. The command line tool is one consumer of
-it, and the shell wrappers are consumers of the command line tool.
-Anything a user can do through the CLI is reachable through the public
-Rust API.
+The library is the product. The command line tool is one consumer of it, and
+the shell wrappers are consumers of the command line tool. Deep Capture's
+v0.7.0 session orchestration is the current exception: it ships through the CLI
+but is not yet exposed through the public facade API. Issue #252 tracks the
+required library-first extraction.
 
 ### 2.2 The Problem
 
@@ -3098,7 +3100,7 @@ skipped.
 
 This section defines an engineering constraint, not a policy position.
 fragcap's shipped Capture mode observes network traffic passively and confers
-no gameplay advantage. Its planned Deep Capture mode is explicit local proxy
+no gameplay advantage. Its shipped Deep Capture mode is explicit local proxy
 inspection for authorized analysis of selected targets. The constraint exists
 because several techniques that would be convenient for an observation tool are
 also the primitives that memory-reading and traffic-manipulating cheats
@@ -4187,7 +4189,10 @@ restated here. The scope of each release is:
 | v0.2.0 | 2026-08-12 | First functional release; the complete roadmap | S01 through S18 |
 | v0.3.0 | 2026-08-14 | Windows installer, target resolution and watch mode, targets hint database, engine-aware resolution, one JSON master schema | follow-on slices |
 | v0.4.0 | 2026-08-14 | Wireshark extcap integration, truthful and readable doctor, documentation, schema, and brand pass | follow-on slices |
-| v0.5.0 | in progress | UX overhaul: the targets hero command, unified capture verb, discovery, and this reconciliation | S049 and later |
+| v0.5.0 | 2026-08-18 | Target discovery, the targets hero command, unified capture verb, doctor actions, and the two-store target model | follow-on slices |
+| v0.5.1 | 2026-08-19 | First-run catalog seeding correction for target discovery | follow-on slice |
+| v0.6.0 | 2026-08-22 | Truthful live status, target-scoped output, loss accounting, and evidence-based target discovery corrections | follow-on slices |
+| v0.7.0 | 2026-08-27 | Deep Capture architecture and MVP, compatibility facts, session bundles, readiness and cleanup, and target-discovery corrections | follow-on slices |
 
 ### 27.4 Critical Path
 
@@ -4223,18 +4228,8 @@ during implementation is recorded in the slice and promoted to section
 
 ## 28. Roadmap Beyond the Current Release
 
-Recorded so that scope pressure has a destination. None of the following has
+Recorded so that scope pressure has a destination. The following work has not
 shipped as of the release this document applies to.
-
-**Deep Capture.** Explicit, scoped local proxy inspection for selected game
-targets, integrated with ordinary Capture sessions so packet capture, process
-attribution, application records, HAR projections, proxy logs, proxy-owned TLS
-key-log export, process traces, compatibility facts, cleanup reports, and
-analyzer outputs correlate through one session manifest. Planning is recorded in
-`docs/plans/deep-capture.md`; issues #213 through #220 establish the first
-command path, its safety and output contracts, and the user-facing
-supported-traffic and local compatibility-matrix documentation. The MVP supports
-only documented traffic types and records unsupported flows plainly.
 
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
