@@ -607,7 +607,8 @@ pub enum TargetsCommand {
         catalog_db: Option<PathBuf>,
         /// The local store (local.db) to register the discovered titles into.
         ///
-        /// Without it the scan lists what it finds but registers nothing.
+        /// Defaults to `FRAGCAP_LOCAL_DB`, then the per-user local store, when
+        /// omitted. Registration is idempotent.
         #[arg(long)]
         db: Option<PathBuf>,
     },

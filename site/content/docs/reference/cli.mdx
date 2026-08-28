@@ -227,7 +227,8 @@ the candidates.
 ### `targets scan`
 
 Treat positional `DIR` as one game location. With `--catalog-db`, attach
-technology evidence; with `--db`, register what is found.
+technology evidence. Discovered candidates are registered idempotently in the
+resolved local store.
 
 ```powershell
 fragcap targets scan "C:\Games\Sample Game"
@@ -236,7 +237,7 @@ fragcap targets scan "C:\Games\Sample Game"
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--catalog-db` | open | none | all | Select a catalog store whose signature table labels the directory. |
-| `--db` | open | none | all | Select a local store to register discoveries into; omission leaves the scan read-only. |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store used to register discoveries. |
 
 ### `targets remove`
 

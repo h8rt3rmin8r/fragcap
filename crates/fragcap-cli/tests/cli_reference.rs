@@ -361,7 +361,7 @@ fn public_reference_matches_command_tree() {
     );
 }
 
-fn match_arm_keys(source: &str, function: &str) -> BTreeSet<String> {
+fn function_body<'a>(source: &'a str, function: &str) -> &'a str {
     let function_start = source
         .find(&format!("fn {function}"))
         .unwrap_or_else(|| panic!("{function} must exist"));
@@ -369,7 +369,11 @@ fn match_arm_keys(source: &str, function: &str) -> BTreeSet<String> {
     let next_function = after[1..]
         .find("\nfn ")
         .map_or(after.len(), |offset| offset + 1);
-    let body = &after[..next_function];
+    &after[..next_function]
+}
+
+fn match_arm_keys(source: &str, function: &str) -> BTreeSet<String> {
+    let body = function_body(source, function);
     // Both parser functions put their accepted top-level keys one indent
     // inside the outer match. Nested value matches are indented farther and
     // must not become scheme or modifier names.
@@ -385,6 +389,14 @@ fn match_arm_keys(source: &str, function: &str) -> BTreeSet<String> {
         }
     }
     result
+}
+
+fn authority_prefix_schemes(source: &str, function: &str) -> BTreeSet<String> {
+    let prefix = Regex::new(r#"strip_prefix\("([a-z][a-z0-9-]*)://"\)"#).unwrap();
+    prefix
+        .captures_iter(function_body(source, function))
+        .map(|capture| capture[1].to_string())
+        .collect()
 }
 
 fn labeled_tokens(source: &str, label: &str) -> Result<BTreeSet<String>, String> {
@@ -412,7 +424,7 @@ fn sink_reference_matches_parser() {
     let source = std::fs::read_to_string(repository_root().join("crates/fragcap-cli/src/args.rs"))
         .expect("args.rs must be readable");
     let mut schemes = match_arm_keys(&source, "parse_destination");
-    schemes.insert("tcp".to_string());
+    schemes.extend(authority_prefix_schemes(&source, "parse_destination"));
     let modifiers = match_arm_keys(&source, "apply_option");
     let reference = read_reference();
     let documented_schemes = labeled_tokens(&reference, "Accepted sink schemes").unwrap();
