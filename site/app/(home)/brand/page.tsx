@@ -28,7 +28,7 @@ const downloadLink = {
 
 export default function BrandPage() {
   return (
-    <main
+    <div
       className="fc-page"
       style={{
         maxWidth: '52rem',
@@ -204,6 +204,6 @@ export default function BrandPage() {
           </a>
         </nav>
       </section>
-    </main>
+    </div>
   );
 }

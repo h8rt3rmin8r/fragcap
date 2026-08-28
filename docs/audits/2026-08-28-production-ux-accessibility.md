@@ -366,3 +366,25 @@ accessibility or navigation defects were reproduced and assigned to narrow
 milestone issues. The repository gates pass. The disclosed native keyboard,
 screen-reader, zoom, and forced-colors checks must not be interpreted as
 passes.
+
+## 12. S095 Remediation Evidence
+
+S095 corrected F01, F02, F03, and F06 together and added a blocking Chromium
+regression over the built static export. The regression enumerates all 54
+public routes at 320, 768, and 1440 px, requires nonempty subject populations,
+and verifies the following outcomes:
+
+- F01: every public route has exactly one `main-content` primary region; the
+  first focusable control is a visible-on-focus skip link whose activation
+  transfers focus without a network request.
+- F02: every generated changelog route has a truthful heading sequence, with
+  the known `installing-on-windows` destination and links preserved.
+- F03: the corrected light muted foreground and light Shiki red both measure
+  at least 4.5:1 against their rendered opaque backgrounds.
+- F06: the two hydrated architecture SVGs retain their graphics-document roles
+  and expose the distinct names `Capture packet attribution architecture` and
+  `Deep Capture session architecture`.
+
+F04 and F05 remain open for S096. The limitations disclosed in section 10 also
+remain limitations; S095 adds automated Chromium keyboard activation and
+computed-style evidence, not native assistive-technology results.

@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "node scripts/prebuild.mjs && next dev",
     "build": "node scripts/prebuild.mjs && next build && node scripts/postbuild.mjs",
+    "test:accessibility": "playwright test --config=playwright.config.mjs",
+    "test:unit": "node --test tests/changelog-headings.test.mjs",
     "start": "next start",
     "postinstall": "fumadocs-mdx"
   },
@@ -19,6 +21,7 @@
     "zod": "4.1.13"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "4.2.4",
     "@types/mdx": "2.0.14",
     "@types/node": "22.18.11",

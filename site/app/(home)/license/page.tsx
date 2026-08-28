@@ -17,7 +17,7 @@ const repo = 'https://github.com/h8rt3rmin8r/fragcap';
 
 export default function LicensePage() {
   return (
-    <main
+    <div
       className="fc-page"
       style={{
         maxWidth: '48rem',
@@ -83,6 +83,6 @@ export default function LicensePage() {
       >
         <code>{noticeText}</code>
       </pre>
-    </main>
+    </div>
   );
 }

@@ -81,6 +81,7 @@
 :root {
   --color-fd-primary: #006f82;
   --color-fd-ring: #006f82;
+  --color-fd-muted-foreground: #6e6e6e;
 }
 
 .dark {
@@ -88,6 +89,29 @@
   --color-fd-primary: #27c7e7;
   --color-fd-ring: #27c7e7;
   --color-fd-accent-foreground: #27c7e7;
+}
+
+/* Shared keyboard bypass. It remains first in sequential focus order, sits
+ * outside both layout clipping contexts, and enters the viewport only while
+ * focused. */
+.fc-skip-link {
+  position: fixed;
+  inset: 0.75rem auto auto 0.75rem;
+  z-index: 100;
+  max-width: calc(100vw - 1.5rem);
+  transform: translateY(calc(-100% - 1rem));
+  border: 2px solid var(--color-fd-primary);
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--color-fd-background);
+  color: var(--color-fd-foreground);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.fc-skip-link:focus,
+.fc-skip-link:focus-visible {
+  transform: translateY(0);
 }
 
 /* The display face on documentation page titles; body prose stays Geist. */

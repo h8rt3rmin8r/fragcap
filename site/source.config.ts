@@ -36,8 +36,33 @@ function remarkMermaid() {
   };
 }
 
+// Shiki's light palette uses a red that falls just below WCAG AA on the code
+// surfaces used by the site. Rewrite that one emitted custom property after
+// highlighting while leaving the dark palette and token semantics intact.
+function rehypeAccessibleLightSyntax() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (tree: any) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const walk = (node: any) => {
+      const style = node?.properties?.style;
+      if (typeof style === 'string') {
+        node.properties.style = style.replace(/#d73a49/gi, '#cc3346');
+      } else if (style && typeof style === 'object') {
+        for (const [key, value] of Object.entries(style)) {
+          if (typeof value === 'string') {
+            style[key] = value.replace(/#d73a49/gi, '#cc3346');
+          }
+        }
+      }
+      if (Array.isArray(node?.children)) node.children.forEach(walk);
+    };
+    walk(tree);
+  };
+}
+
 export default defineConfig({
   mdxOptions: {
     remarkPlugins: [remarkMermaid],
+    rehypePlugins: [rehypeAccessibleLightSyntax],
   },
 });

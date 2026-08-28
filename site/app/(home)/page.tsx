@@ -26,7 +26,7 @@ const DEPENDENCY_MODEL = `flowchart TD
 // retains section 23.3's precise instrument voice without universal claims.
 export default function HomePage() {
   return (
-    <main
+    <div
       className="fc-page"
       style={{
         width: '100%',
@@ -192,6 +192,6 @@ Next command:  fragcap capture 1`}</code>
         <Link href="/docs/glossary">Glossary</Link>
         <Link href="/docs/changelog">Changelog</Link>
       </nav>
-    </main>
+    </div>
   );
 }

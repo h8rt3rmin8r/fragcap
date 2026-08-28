@@ -13,6 +13,7 @@ A packet carries addresses and ports, but not the identity of the process that s
 
 ```mermaid
 flowchart LR
+  accTitle: Capture packet attribution architecture
   nic["Selected interfaces"] --> npcap["Npcap"]
   npcap --> threads["Capture threads"]
   threads --> buffer["Bounded buffer"]
@@ -35,6 +36,7 @@ Deep Capture starts from one stored target. Its read-only preflight resolves the
 
 ```mermaid
 flowchart LR
+  accTitle: Deep Capture session architecture
   target["Stored target"] --> preflight["Read-only preflight"]
   preflight -->|refused| stop["No session side effects"]
   preflight -->|eligible| prepare["Prepared session"]

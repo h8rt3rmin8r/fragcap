@@ -12,7 +12,9 @@ import { Footer } from '@/components/footer';
 export default function Layout({ children }: { children: ReactNode }) {
   return (
     <>
-      <HomeLayout {...baseOptions()}>{children}</HomeLayout>
+      <HomeLayout id="main-content" tabIndex={-1} {...baseOptions()}>
+        {children}
+      </HomeLayout>
       <Footer />
     </>
   );

@@ -45,6 +45,27 @@ async function firstFile(paths) {
   return null;
 }
 
+// Next encodes dynamic RSC segment paths as dots in browser requests while a
+// static export stores those segment parts as directories. Add the emitted
+// path as a candidate so the loopback server represents the complete export
+// instead of returning false 404s during client prefetch.
+function nextPayloadCandidate(relative) {
+  const parts = relative.split('/');
+  const filename = parts.pop();
+  const encoded = filename?.split('.') ?? [];
+  if (encoded.length < 4 || encoded[0] !== '__next' || encoded.at(-1) !== 'txt') {
+    return null;
+  }
+
+  return resolve(
+    root,
+    ...parts,
+    `${encoded[0]}.${encoded[1]}`,
+    ...encoded.slice(2, -2),
+    `${encoded.at(-2)}.${encoded.at(-1)}`,
+  );
+}
+
 const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -63,10 +84,12 @@ const server = createServer(async (request, response) => {
     }
 
     const relative = pathname.replace(/^\/+/, '');
+    const payloadCandidate = nextPayloadCandidate(relative);
     const candidates = pathname === '/'
       ? [resolve(root, 'index.html')]
       : [
           resolve(root, relative),
+          ...(payloadCandidate ? [payloadCandidate] : []),
           resolve(root, `${relative}.html`),
           resolve(root, relative, 'index.html'),
         ];

@@ -41,6 +41,11 @@ export function auditDocument() {
     .map((element) => element.id)
     .filter((id, index, ids) => id && ids.indexOf(id) !== index)
     .filter((id, index, ids) => ids.indexOf(id) === index);
+  const primary = document.querySelector('main, [role="main"]');
+  const skip = document.querySelector('.fc-skip-link');
+  const firstFocusable = [...document.querySelectorAll(
+    'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )].filter(visible).find((element) => !element.hasAttribute('disabled'));
   const rootOverflow = document.documentElement.scrollWidth
     > document.documentElement.clientWidth + 2;
   const hiddenClipping = [...document.querySelectorAll('article *')]
@@ -87,6 +92,9 @@ export function auditDocument() {
     language: document.documentElement.lang,
     viewport: innerWidth,
     mainCount: document.querySelectorAll('main, [role="main"]').length,
+    primaryId: primary?.id || null,
+    skipHref: skip?.getAttribute('href') || null,
+    firstFocusableClass: String(firstFocusable?.className || ''),
     h1: headings.filter((heading) => heading.level === 1),
     headingSkips,
     unnamedControls,

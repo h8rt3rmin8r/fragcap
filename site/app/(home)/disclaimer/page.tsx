@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 
 export default function DisclaimerPage() {
   return (
-    <main
+    <div
       style={{
         maxWidth: '48rem',
         margin: '0 auto',
@@ -41,6 +41,6 @@ export default function DisclaimerPage() {
           {paragraph}
         </p>
       ))}
-    </main>
+    </div>
   );
 }
