@@ -308,6 +308,15 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
     };
     let mut removed = 0usize;
     let mut failed = Vec::new();
+    if let Some((store, thumbprint)) = super::probe::ca_cleanup_target(&root) {
+        match remove_ca_trust(&store, &thumbprint) {
+            Ok(()) => {
+                removed += 1;
+                let _ = writeln!(out, "  removed {thumbprint} from {store}");
+            }
+            Err(err) => failed.push(err),
+        }
+    }
     for path in deep_capture_cleanup_candidates(&root) {
         if !path.starts_with(&root) {
             failed.push(format!(
@@ -325,15 +334,46 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
         }
     }
     if failed.is_empty() {
-        let _ = writeln!(out, "  removed {removed} Deep Capture residue file(s)");
+        let _ = writeln!(out, "  removed {removed} Deep Capture residue resource(s)");
         ActionOutcome::Performed
     } else {
         ActionOutcome::Failed(format!(
-            "removed {removed} file(s), failed to remove {} file(s): {}",
+            "removed {removed} resource(s), failed to remove {} resource(s): {}",
             failed.len(),
             failed.join("; ")
         ))
     }
+}
+
+#[cfg(windows)]
+fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
+    let mut command = std::process::Command::new("certutil");
+    match store {
+        "CurrentUser/Root" => {
+            command.args(["-user", "-delstore", "Root", thumbprint]);
+        }
+        "LocalMachine/Root" => {
+            command.args(["-delstore", "Root", thumbprint]);
+        }
+        _ => return Err(format!("refused unsupported certificate store {store}")),
+    }
+    let status = command
+        .status()
+        .map_err(|err| format!("could not remove {thumbprint} from {store}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "certutil could not remove {thumbprint} from {store} (exit {status})"
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
+    Err(format!(
+        "cannot remove {thumbprint} from {store}: Windows certificate stores are unavailable"
+    ))
 }
 
 fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::PathBuf> {

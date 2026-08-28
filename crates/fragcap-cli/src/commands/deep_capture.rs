@@ -708,65 +708,7 @@ struct WindowsCurrentUserTrustManager {
 #[cfg(windows)]
 impl WindowsCurrentUserTrustManager {
     fn thumbprint(&self) -> Result<String, CliError> {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Security::Cryptography::{
-            CertFreeCertificateContext, CertGetCertificateContextProperty, CryptQueryObject,
-            CERT_CONTEXT, CERT_QUERY_CONTENT_FLAG_CERT, CERT_QUERY_FORMAT_FLAG_ALL,
-            CERT_QUERY_OBJECT_FILE, CERT_SHA1_HASH_PROP_ID,
-        };
-
-        let path: Vec<u16> = self
-            .ca_cert_path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut context: *mut core::ffi::c_void = core::ptr::null_mut();
-        // SAFETY: `path` is a live, null-terminated UTF-16 filename. All unused
-        // out parameters are null, and `context` is a live out pointer. The
-        // returned certificate context is released below on every path.
-        let queried = unsafe {
-            CryptQueryObject(
-                CERT_QUERY_OBJECT_FILE,
-                path.as_ptr().cast(),
-                CERT_QUERY_CONTENT_FLAG_CERT,
-                CERT_QUERY_FORMAT_FLAG_ALL,
-                0,
-                core::ptr::null_mut(),
-                core::ptr::null_mut(),
-                core::ptr::null_mut(),
-                core::ptr::null_mut(),
-                core::ptr::null_mut(),
-                &mut context,
-            )
-        };
-        if queried == 0 || context.is_null() {
-            return Err(CliError::failure(
-                "Windows could not parse the Deep Capture session CA certificate",
-            ));
-        }
-
-        let certificate = context.cast::<CERT_CONTEXT>();
-        let mut hash = [0u8; 20];
-        let mut hash_len = hash.len() as u32;
-        // SAFETY: `certificate` is the live context returned above; `hash` and
-        // `hash_len` are live writable buffers of the size passed to the API.
-        let read = unsafe {
-            CertGetCertificateContextProperty(
-                certificate,
-                CERT_SHA1_HASH_PROP_ID,
-                hash.as_mut_ptr().cast(),
-                &mut hash_len,
-            )
-        };
-        // SAFETY: `certificate` is owned by this function and has not been freed.
-        unsafe { CertFreeCertificateContext(certificate) };
-        if read == 0 || hash_len != hash.len() as u32 {
-            return Err(CliError::failure(
-                "Windows could not read the Deep Capture session CA thumbprint",
-            ));
-        }
-        Ok(hash.iter().map(|byte| format!("{byte:02X}")).collect())
+        crate::windows_cert::file_thumbprint(&self.ca_cert_path).map_err(CliError::failure)
     }
 
     fn certutil(&self, args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {

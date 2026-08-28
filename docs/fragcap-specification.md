@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.19-draft \
+**Version:** 0.1.20-draft \
 **Applies-To:** 0.7.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -111,6 +111,7 @@ enforcement.
 | 0.1.17-draft | 2026-08-27 | W. Thompson | **Excludes non-capturable Steam app types from target discovery (issue #212).** Extends section 16.2 so Steam `Music`, `Tool`, `Application`, `Config`, and `Video` app types are counted as not-a-game and never emitted as capture candidates, while `Demo`, `Game`, and unknown app types remain eligible. |
 | 0.1.18-draft | 2026-08-27 | W. Thompson | **Delegates Bash wrapper compliance to the vendored checker (issue #199).** Extends sections 18.4 and 24.3 so `cargo xtask wrappers` invokes the vendored ShruggieTech Bash checker for every gated Bash script, treats missing scripts or checker bytes as failed checks, and treats a missing Bash-runnable ShellCheck executable as an unable-to-run environment failure. |
 | 0.1.19-draft | 2026-08-28 | W. Thompson | **Reconciles public entry points with v0.7.0 (issue #244).** Corrects sections 1, 2.1, 19.1, 27.3, and 28 so current-status prose and release history describe Capture and Deep Capture as shipped modes, record releases through v0.7.0, and leave only unshipped work in the roadmap. The repository landing page, contributor guides, documentation index, issue forms, and GitHub description now project the same bounded product definition. |
+| 0.1.20-draft | 2026-08-28 | W. Thompson | **Implements the Deep Capture CA trust-state probe (issue #250).** Corrects section 26.3 so doctor derives exact owned identities from session-manifest thumbprints, reads current-user and local-machine Root inventories without mutation, reports absent, supported, wrong-store, mismatch, and unknown states honestly, and offers cleanup only for an exact observed owned resource. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4076,7 +4077,19 @@ residue under fragcap-owned session storage carries a `CleanupDeepCapture`
 action, so `doctor --fix` can remove known Deep Capture session files only after
 the same confirmation gate used for every other fix action. CA lifecycle
 creation and proxy orchestration remain outside `doctor`; doctor reports their
-state and cleans up residue it can name.
+state and cleans up residue it can name. CA ownership is established only by the
+normalized SHA-1 thumbprint recorded in a fragcap Deep Capture session manifest
+under fragcap-owned storage. Subject, issuer, and friendly names are never
+ownership evidence. On Windows, ordinary doctor enumerates the current-user Root
+and local-machine Root stores read-only. It reports an exact owned thumbprint as
+supported in current-user Root, warns when it is in the broader local-machine
+Root scope, and reports disagreement between a manifest thumbprint and remaining
+bundled CA material as a mismatch. Malformed manifests, failed store reads, and
+ambiguous multiple entries are unknown rather than absent. A wrong-store or
+mismatch result carries `CleanupDeepCapture` only when the exact observed
+thumbprint and store are available; the existing `doctor --fix` confirmation gate
+then scopes removal to that resource. These Deep Capture-only states never block
+passive Capture readiness.
 
 ### 26.4 Failure Reporting
 

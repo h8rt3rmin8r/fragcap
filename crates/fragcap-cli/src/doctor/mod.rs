@@ -89,7 +89,7 @@ pub enum DeepCaptureCa {
     Mismatched {
         expected: String,
         actual: String,
-        store: String,
+        store: Option<String>,
     },
     /// The probe could not determine trust state.
     Unknown(String),

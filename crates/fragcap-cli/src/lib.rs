@@ -49,6 +49,8 @@ mod live_status;
 mod orchestrator;
 mod output;
 mod paths;
+#[cfg(windows)]
+mod windows_cert;
 
 use std::ffi::OsString;
 use std::io::{self, Write};

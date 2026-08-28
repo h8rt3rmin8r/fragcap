@@ -333,22 +333,31 @@ fn deep_capture_probe() -> DeepCaptureInputs {
     let mut stale_manifests = Vec::new();
     let mut stale_tls_key_logs = Vec::new();
     let mut sensitive_artifacts = Vec::new();
+    let mut manifests = Vec::new();
+    let mut scan_errors = Vec::new();
     if let Some(root) = &session_dir {
         scan_deep_capture_residue(
             root,
             &mut stale_manifests,
             &mut stale_tls_key_logs,
             &mut sensitive_artifacts,
+            &mut manifests,
+            &mut scan_errors,
         );
     }
     let (proxy_backend, proxy_backend_error) = proxy_backend_status();
+    let ca = if scan_errors.is_empty() {
+        probe_ca(&manifests)
+    } else {
+        DeepCaptureCa::Unknown(scan_errors.join("; "))
+    };
     DeepCaptureInputs {
         session_dir,
         session_dir_present,
         proxy_backend,
         proxy_backend_error,
         analyzer_keylog_configured: std::env::var_os("SSLKEYLOGFILE").is_some(),
-        ca: DeepCaptureCa::Unknown("fragcap CA trust probing is not implemented yet".to_string()),
+        ca,
         occupied_proxy_ports: None,
         orphaned_proxy_processes: None,
         stale_manifests,
@@ -362,39 +371,51 @@ fn scan_deep_capture_residue(
     stale_manifests: &mut Vec<PathBuf>,
     stale_tls_key_logs: &mut Vec<PathBuf>,
     sensitive_artifacts: &mut Vec<PathBuf>,
+    manifests: &mut Vec<PathBuf>,
+    scan_errors: &mut Vec<String>,
 ) {
-    fn walk(
-        dir: &std::path::Path,
-        depth: usize,
-        visited: &mut usize,
-        stale_manifests: &mut Vec<PathBuf>,
-        stale_tls_key_logs: &mut Vec<PathBuf>,
-        sensitive_artifacts: &mut Vec<PathBuf>,
-    ) {
+    struct ScanState<'a> {
+        stale_manifests: &'a mut Vec<PathBuf>,
+        stale_tls_key_logs: &'a mut Vec<PathBuf>,
+        sensitive_artifacts: &'a mut Vec<PathBuf>,
+        manifests: &'a mut Vec<PathBuf>,
+        errors: &'a mut Vec<String>,
+    }
+
+    fn walk(dir: &std::path::Path, depth: usize, visited: &mut usize, state: &mut ScanState<'_>) {
         if depth > 3 || *visited >= 200 {
             return;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                state
+                    .errors
+                    .push(format!("could not read {}: {err}", dir.display()));
+                return;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
             if *visited >= 200 {
                 break;
             }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    state.errors.push(format!(
+                        "could not read an entry in {}: {err}",
+                        dir.display()
+                    ));
+                    continue;
+                }
+            };
             *visited += 1;
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             let path = entry.path();
             if file_type.is_dir() {
-                walk(
-                    &path,
-                    depth + 1,
-                    visited,
-                    stale_manifests,
-                    stale_tls_key_logs,
-                    sensitive_artifacts,
-                );
+                walk(&path, depth + 1, visited, state);
                 continue;
             }
             if !file_type.is_file() {
@@ -404,34 +425,232 @@ fn scan_deep_capture_residue(
                 continue;
             };
             if name == "manifest.json" {
-                manifest_declared_artifacts(&path, stale_tls_key_logs, sensitive_artifacts);
+                push_unique(state.manifests, path.clone());
+                manifest_declared_artifacts(
+                    &path,
+                    state.stale_tls_key_logs,
+                    state.sensitive_artifacts,
+                );
                 if manifest_cleanup_unfinished(&path) {
-                    push_unique(stale_manifests, path.clone());
+                    push_unique(state.stale_manifests, path.clone());
                 }
             }
             if name.eq_ignore_ascii_case("tls-keylog.log")
                 || name.eq_ignore_ascii_case("sslkeylog.log")
             {
-                push_unique(stale_tls_key_logs, path.clone());
+                push_unique(state.stale_tls_key_logs, path.clone());
             }
             if matches!(
                 name,
                 "application.jsonl" | "http.har" | "proxy.jsonl" | "process-trace.jsonl"
             ) {
-                push_unique(sensitive_artifacts, path);
+                push_unique(state.sensitive_artifacts, path);
             }
         }
     }
 
     let mut visited = 0;
-    walk(
-        root,
-        0,
-        &mut visited,
+    let mut state = ScanState {
         stale_manifests,
         stale_tls_key_logs,
         sensitive_artifacts,
+        manifests,
+        errors: scan_errors,
+    };
+    walk(root, 0, &mut visited, &mut state);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OwnedCaIdentity {
+    recorded: String,
+    material: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CaInventory {
+    current_user_root: Vec<String>,
+    local_machine_root: Vec<String>,
+}
+
+fn normalize_thumbprint(value: &str) -> Option<String> {
+    let normalized: String = value
+        .chars()
+        .filter(|ch| !matches!(ch, ':' | '-' | ' ' | '\t' | '\r' | '\n'))
+        .map(|ch| ch.to_ascii_uppercase())
+        .collect();
+    (normalized.len() == 40 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .then_some(normalized)
+}
+
+fn manifest_ca_identities(manifests: &[PathBuf]) -> Result<Vec<OwnedCaIdentity>, String> {
+    let mut identities = Vec::new();
+    for manifest in manifests {
+        let text = std::fs::read_to_string(manifest)
+            .map_err(|err| format!("could not read {}: {err}", manifest.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|err| format!("could not parse {}: {err}", manifest.display()))?;
+        let Some(raw) = value
+            .get("trust")
+            .and_then(|trust| trust.get("thumbprint"))
+            .and_then(|thumbprint| thumbprint.as_str())
+        else {
+            continue;
+        };
+        let recorded = normalize_thumbprint(raw)
+            .ok_or_else(|| format!("{} contains an invalid CA thumbprint", manifest.display()))?;
+        let material_path = manifest
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .join("mitmproxy")
+            .join("mitmproxy-ca-cert.cer");
+        #[cfg(windows)]
+        let material = if material_path.is_file() {
+            Some(crate::windows_cert::file_thumbprint(&material_path)?)
+        } else {
+            None
+        };
+        #[cfg(not(windows))]
+        let material = {
+            let _ = material_path;
+            None
+        };
+        let identity = OwnedCaIdentity { recorded, material };
+        if let Some(existing) = identities
+            .iter_mut()
+            .find(|existing: &&mut OwnedCaIdentity| existing.recorded == identity.recorded)
+        {
+            match (&existing.material, &identity.material) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err(format!(
+                        "multiple bundles for {} contain conflicting CA material",
+                        identity.recorded
+                    ));
+                }
+                (None, Some(_)) => existing.material = identity.material,
+                _ => {}
+            }
+        } else {
+            identities.push(identity);
+        }
+    }
+    Ok(identities)
+}
+
+fn classify_ca(identities: &[OwnedCaIdentity], inventory: &CaInventory) -> DeepCaptureCa {
+    let mut findings = Vec::new();
+    for identity in identities {
+        if let Some(material) = &identity.material {
+            if material != &identity.recorded {
+                return DeepCaptureCa::Mismatched {
+                    expected: identity.recorded.clone(),
+                    actual: material.clone(),
+                    store: observed_store(material, inventory)
+                        .or_else(|| observed_store(&identity.recorded, inventory)),
+                };
+            }
+        }
+        if inventory.current_user_root.contains(&identity.recorded) {
+            findings.push(DeepCaptureCa::CurrentUser {
+                thumbprint: identity.recorded.clone(),
+            });
+        }
+        if inventory.local_machine_root.contains(&identity.recorded) {
+            findings.push(DeepCaptureCa::WrongStore {
+                store: "LocalMachine/Root".to_string(),
+                thumbprint: identity.recorded.clone(),
+            });
+        }
+    }
+    match findings.len() {
+        0 => DeepCaptureCa::Absent,
+        1 => findings.pop().expect("one finding"),
+        count => DeepCaptureCa::Unknown(format!(
+            "multiple ({count}) fragcap-owned CA trust entries were observed"
+        )),
+    }
+}
+
+fn observed_store(thumbprint: &str, inventory: &CaInventory) -> Option<String> {
+    let current = inventory
+        .current_user_root
+        .iter()
+        .any(|item| item == thumbprint);
+    let machine = inventory
+        .local_machine_root
+        .iter()
+        .any(|item| item == thumbprint);
+    match (current, machine) {
+        (true, false) => Some("CurrentUser/Root".to_string()),
+        (false, true) => Some("LocalMachine/Root".to_string()),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
+    let identities = match manifest_ca_identities(manifests) {
+        Ok(identities) => identities,
+        Err(reason) => return DeepCaptureCa::Unknown(reason),
+    };
+    if identities.is_empty() {
+        return DeepCaptureCa::Absent;
+    }
+    let current_user_root =
+        match crate::windows_cert::store_thumbprints(crate::windows_cert::CURRENT_USER_ROOT) {
+            Ok(values) => values,
+            Err(reason) => return DeepCaptureCa::Unknown(reason),
+        };
+    let local_machine_root =
+        match crate::windows_cert::store_thumbprints(crate::windows_cert::LOCAL_MACHINE_ROOT) {
+            Ok(values) => values,
+            Err(reason) => return DeepCaptureCa::Unknown(reason),
+        };
+    classify_ca(
+        &identities,
+        &CaInventory {
+            current_user_root,
+            local_machine_root,
+        },
+    )
+}
+
+#[cfg(not(windows))]
+fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
+    match manifest_ca_identities(manifests) {
+        Err(reason) => DeepCaptureCa::Unknown(reason),
+        Ok(identities) if identities.is_empty() => DeepCaptureCa::Absent,
+        Ok(_) => DeepCaptureCa::Unknown(
+            "Windows certificate stores are unavailable on this platform".to_string(),
+        ),
+    }
+}
+
+pub(crate) fn ca_cleanup_target(root: &std::path::Path) -> Option<(String, String)> {
+    let mut stale_manifests = Vec::new();
+    let mut stale_tls = Vec::new();
+    let mut sensitive = Vec::new();
+    let mut manifests = Vec::new();
+    let mut scan_errors = Vec::new();
+    scan_deep_capture_residue(
+        root,
+        &mut stale_manifests,
+        &mut stale_tls,
+        &mut sensitive,
+        &mut manifests,
+        &mut scan_errors,
     );
+    if !scan_errors.is_empty() {
+        return None;
+    }
+    match probe_ca(&manifests) {
+        DeepCaptureCa::WrongStore { store, thumbprint } => Some((store, thumbprint)),
+        DeepCaptureCa::Mismatched {
+            actual,
+            store: Some(store),
+            ..
+        } => Some((store, actual)),
+        _ => None,
+    }
 }
 
 pub(crate) fn manifest_declared_artifacts(
@@ -1000,5 +1219,110 @@ mod tests {
 
         assert_eq!(tls_paths, vec![tls]);
         assert_eq!(sensitive, vec![app]);
+    }
+
+    fn identity(recorded: &str, material: Option<&str>) -> OwnedCaIdentity {
+        OwnedCaIdentity {
+            recorded: recorded.to_string(),
+            material: material.map(str::to_string),
+        }
+    }
+
+    fn inventory(current_user: &[&str], local_machine: &[&str]) -> CaInventory {
+        CaInventory {
+            current_user_root: current_user
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            local_machine_root: local_machine
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn ca_classifier_covers_absent_supported_wrong_store_and_unrelated() {
+        let owned = "00112233445566778899AABBCCDDEEFF00112233";
+        let unrelated = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+
+        assert_eq!(
+            classify_ca(
+                &[identity(owned, Some(owned))],
+                &inventory(&[unrelated], &[])
+            ),
+            DeepCaptureCa::Absent
+        );
+        assert_eq!(
+            classify_ca(&[identity(owned, Some(owned))], &inventory(&[owned], &[])),
+            DeepCaptureCa::CurrentUser {
+                thumbprint: owned.to_string()
+            }
+        );
+        assert_eq!(
+            classify_ca(&[identity(owned, Some(owned))], &inventory(&[], &[owned])),
+            DeepCaptureCa::WrongStore {
+                store: "LocalMachine/Root".to_string(),
+                thumbprint: owned.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn ca_classifier_reports_material_mismatch_and_ambiguity() {
+        let recorded = "00112233445566778899AABBCCDDEEFF00112233";
+        let material = "112233445566778899AABBCCDDEEFF0011223344";
+        assert_eq!(
+            classify_ca(
+                &[identity(recorded, Some(material))],
+                &inventory(&[material], &[])
+            ),
+            DeepCaptureCa::Mismatched {
+                expected: recorded.to_string(),
+                actual: material.to_string(),
+                store: Some("CurrentUser/Root".to_string())
+            }
+        );
+
+        let second = "2233445566778899AABBCCDDEEFF001122334455";
+        assert!(matches!(
+            classify_ca(
+                &[identity(recorded, None), identity(second, None)],
+                &inventory(&[recorded, second], &[])
+            ),
+            DeepCaptureCa::Unknown(reason) if reason.contains("multiple")
+        ));
+    }
+
+    #[test]
+    fn thumbprint_normalization_is_strict_and_canonical() {
+        assert_eq!(
+            normalize_thumbprint("00:11 22-33 44 55 66 77 88 99 aa bb cc dd ee ff 00 11 22 33"),
+            Some("00112233445566778899AABBCCDDEEFF00112233".to_string())
+        );
+        assert_eq!(normalize_thumbprint("controlled-thumbprint"), None);
+        assert_eq!(normalize_thumbprint("0011"), None);
+    }
+
+    #[test]
+    fn manifest_identities_are_exact_and_deduplicated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("one.json");
+        let second = dir.path().join("two.json");
+        std::fs::write(
+            &first,
+            r#"{"trust":{"thumbprint":"00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33"}}"#,
+        )
+        .expect("first manifest");
+        std::fs::write(
+            &second,
+            r#"{"trust":{"thumbprint":"00112233445566778899AABBCCDDEEFF00112233"}}"#,
+        )
+        .expect("second manifest");
+
+        assert_eq!(
+            manifest_ca_identities(&[first, second]).expect("identities"),
+            vec![identity("00112233445566778899AABBCCDDEEFF00112233", None)]
+        );
     }
 }
