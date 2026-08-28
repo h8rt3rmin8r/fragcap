@@ -9,8 +9,9 @@
 //! - `docs build` produces the static export and asserts it carries the
 //!   `.nojekyll` marker and `CNAME` (the same build continuous integration
 //!   runs).
-//! - `docs check` runs the documentation linter (`scripts/lint-docs.sh check`),
-//!   the mode that enforces P-6 on every push.
+//! - `docs check` runs the documentation linter (`scripts/lint-docs.sh check`)
+//!   and checks the public CLI reference against the clap command tree under
+//!   both the default and network-capable feature sets.
 //!
 //! Every subcommand returns the house 0/1/2 contract: 0 ran and passed, 1 ran
 //! and failed, 2 could not run (a required tool, or the site app, is absent).
@@ -52,14 +53,38 @@ fn has(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `docs check`: run the documentation linter over the glossary. Returns the
-/// 0/1/2 code so the `ci` aggregate can branch on could-not-run.
+/// Run one focused CLI-reference contract variant.
+fn cli_reference(root: &Path, net: bool) -> i32 {
+    let mut command = Command::new(env!("CARGO"));
+    command.current_dir(root).args([
+        "test",
+        "-p",
+        "fragcap-cli",
+        "--test",
+        "cli_reference",
+        "--locked",
+    ]);
+    if net {
+        command.args(["--features", "net"]);
+    }
+    match command.status() {
+        Ok(status) if status.success() => 0,
+        Ok(_) => 1,
+        Err(error) => {
+            eprintln!("docs: could not run the CLI-reference check: {error}");
+            2
+        }
+    }
+}
+
+/// `docs check`: run the documentation linter and CLI-reference contracts.
+/// Returns the 0/1/2 code so the `ci` aggregate can branch on could-not-run.
 pub fn check(root: &Path) -> i32 {
     if !has("bash") {
         eprintln!("docs: bash is required to run scripts/lint-docs.sh");
         return 2;
     }
-    match Command::new("bash")
+    let lint = match Command::new("bash")
         .current_dir(root)
         .arg("scripts/lint-docs.sh")
         .arg("check")
@@ -77,7 +102,18 @@ pub fn check(root: &Path) -> i32 {
             eprintln!("docs: could not run the linter: {e}");
             2
         }
+    };
+    if lint != 0 {
+        return lint;
     }
+
+    for net in [false, true] {
+        let result = cli_reference(root, net);
+        if result != 0 {
+            return result;
+        }
+    }
+    0
 }
 
 /// `docs build`: build the static export with pnpm, then assert its markers.

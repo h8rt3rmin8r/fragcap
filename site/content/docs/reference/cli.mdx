@@ -1,265 +1,462 @@
 ---
 title: Command line
-description: "The fragcap command surface: the commands, their flags, and the global options."
+description: "The checked fragcap command surface: commands, options, values, defaults, sinks, and output routing."
 ---
 
-<Callout title="Why it matters here">
-Every command that captures needs the **npcap** driver installed in
-WinPcap-compatible mode. Run `fragcap doctor` first; it reports the driver's
-presence without capturing anything.
+<Callout title="Before capturing">
+Capture requires the **npcap** driver in WinPcap-compatible mode. Run
+`fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-fragcap has one binary and a small set of commands, grouped into Capture, Targets,
-Environment, and Data. This page lists what each one does and the flags it accepts.
-The binary's own `--help` is authoritative and is generated from the same
-definitions; this page is the readable version. Running `fragcap` with no command
-lists your registered targets and points at `--help`.
+This page describes the public v0.7.0 command tree. Its command headings,
+option tables, sink vocabulary, and executable examples are checked against the
+same parser used by the binary. Hidden test controls are excluded. clap's
+generated `help` and `version` controls remain available but are not repeated in
+every table.
+
+In the tables, `open` means the parser accepts a value whose grammar is explained
+in the Meaning column. `none` means clap declares no default; the application may
+still apply the fallback described in Meaning. `all` means every build carries
+the option, while `net` means a maintainer build with the optional network
+feature carries it.
+
+Running `fragcap` with no command lists registered targets and points at
+`--help`.
 
 ## Global options
 
-These apply to every command:
+These options propagate to every command.
 
-| Flag | Effect |
-| --- | --- |
-| `--quiet` | Suppress progress; keep warnings and errors. |
-| `--silent` | Suppress everything except errors. |
-| `--json` | Emit machine-readable structured output instead of human text. |
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--json` | open | false | all | Emit structured command results instead of human text where the command supports them. See [Output routing](#output-routing). |
+| `--quiet` | open | false | all | Suppress progress while retaining warnings and errors. |
+| `--silent` | open | false | all | Suppress progress, summaries, and warnings. Errors still surface. |
 
 ## Capture
 
 ### `capture`
 
-Capture a target's traffic. This is the primary command. Name the target one of
-three ways, exactly one of which is required:
+Capture a stored target or a directly named running process. Exactly one target
+input is required: positional `SELECTOR`, `--target`, `--id`, or `--process`.
+A selector is an exact handle, a case-insensitive exact name, or a 1-based row
+number from `targets list`.
 
-```text
+```powershell
 fragcap capture 1 --out capture.fcapng
-fragcap capture --target the_elder_scrolls_online --out capture.fcapng
-fragcap capture --process eso64.exe --out capture.fcapng
+fragcap capture --target sample-target --duration 30s --out capture.fcapng
+fragcap capture --process sample.exe --out capture.fcapng
 ```
 
-| Flag | Meaning |
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then `%APPDATA%\fragcap\catalog.db`, for target context. The managed path is not required. |
+| `--direction` | `both`, `in`, `out` | `both` | all | Record the requested flow direction. Non-default directional output filtering is not yet enforced. |
+| `-d`, `--duration` | open | none | all | Stop after a duration measured from arm, such as `30s`, `5m`, or `2h`. |
+| `--id` | open | none | all | Select a stored target by durable numeric identifier. |
+| `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
+| `--launch` | open | `false` | all | Start a Steam-anchored stored target through its platform launcher, then capture. |
+| `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then `%APPDATA%\fragcap\local.db`, for stored-target resolution. The managed path is not required. |
+| `--loopback` | open | `false` | all | Include the loopback adapter. |
+| `--max-bytes` | open | none | all | Stop after a byte count using an integer plus `b`, `kb`, `mb`, or `gb`. |
+| `--max-packets` | open | none | all | Stop after this many captured packets. |
+| `--mode` | `file`, `ring`, `stream` | none | all | Select a capture mode. The fallback is a profile mode when present, otherwise `file`; `ring` and `stream` are not yet implemented. |
+| `--no-payload` | open | `false` | all | Write metadata without packet payload bytes. |
+| `-o`, `--out` | open | none | all | Write a pcapng file; shorthand for a file sink. |
+| `--path` | open | none | all | Require a case-insensitive substring in the target image path. |
+| `--path-regex` | open | none | all | Require the target image path to match a regular expression. |
+| `--process` | open | none | all | Capture a running process by image name without a stored target. |
+| `--ring` | open | none | all | Set the ring window as a duration or size; ring mode is not yet implemented. |
+| `--roles` | open | none | all | Capture a comma-separated role list. The fallback is profile roles, then all roles. |
+| `--scope` | `all`, `target` | `target` | all | Write only attributed target traffic or everything captured. Exclusions are counted. |
+| `--sink` | open | none | all | Add an output sink; repeat for multiple destinations. See [Sink specifications](#sink-specifications). |
+| `--target` | open | none | all | Explicit form of the stored-target selector. A numeric value is a row number, not a platform app id. |
+| `--wait` | open | none | all | Set the target acquisition timeout. With no value, wait until start or interruption. |
+
+`--roles` is enforced. `--direction in` and `--direction out` are recorded and
+reported, but v0.7.0 still writes both directions.
+
+### Sink specifications
+
+The grammar is `<destination>[,<key>=<value>]...`.
+
+**Accepted sink schemes**: `file`, `pcapng`, `jsonl`, `pipe`, `fifo`, `unix`, `tcp`
+
+**Accepted sink modifiers**: `format`, `payload`, `rotate-size`, `rotate-duration`, `queue`, `timeout`
+
+| Form | Behavior |
 | --- | --- |
-| `--target <SELECTOR>` | A stored target: an exact handle, a case-insensitive exact name, or a 1-based row index from the `targets` listing. A bare number given here is a row index. |
-| `--id <N>` | Select a stored target by its durable stable identifier (the machine-facing form automation uses). |
-| `--process <NAME>` | Capture a running process by image name, with no stored target. |
-| `--path <SUBSTR>` | A case-insensitive substring the target's full image path must contain (disambiguates a shared image name). |
-| `--path-regex <RE>` | A regular expression the target's full image path must match. |
-| `-o, --out <PATH>` | The output capture file (pcapng). Shorthand for a file sink. |
-| `--mode <MODE>` | Capture mode: `file`, `stream`, or `ring`. Defaults to `file`. |
-| `--sink <SPEC>` | An output sink, repeatable: `file:PATH`, `jsonl:PATH`, `pipe:NAME`, or `tcp://HOST:PORT`. |
-| `-d, --duration <DUR>` | The capture duration bound, measured from arm. |
-| `--wait <DUR>` | How long to wait for the target before giving up (the acquisition timeout). |
-| `--max-packets <N>` | Stop after this many captured packets. |
-| `--max-bytes <SIZE>` | Stop after this many captured bytes (integer plus `b`/`kb`/`mb`/`gb`). |
-| `--roles <A,B>` | The roles to capture, comma-separated. Scopes which stages trigger (enforced). |
-| `--direction <DIR>` | The flow direction to scope to: `in`, `out`, or `both`. Recorded but not yet enforced (see below). |
-| `-i, --interface <NAME>` | A capture interface, repeatable. |
-| `--loopback` | Include the loopback adapter. |
-| `--no-payload` | Write metadata only, no packet payloads. |
-| `--ring <WINDOW>` | The ring window, for `--mode ring` (a duration or a size). |
-| `--launch` | Start the target through its platform launcher, then capture it (Windows only). The target must be Steam anchored; register one with `targets add --steam <app_id>`. This is a property of the stored target, not a value passed to `--target`, which never accepts an app id. |
-| `--catalog-db <PATH>` | Override the catalog store consulted while resolving a `--target`. |
-| `--local-db <PATH>` | Override the local store where `--target` selectors resolve. |
+| `file:PATH` | File destination. Format follows `format=` or the extension (`.jsonl` means JSON Lines; anything else means pcapng). |
+| `pcapng:PATH` | Alias for `file:PATH`; format can still be overridden explicitly. |
+| `jsonl:PATH` | File destination defaulting to JSON Lines; `format=pcapng` overrides it. |
+| `pipe:NAME` | Windows named-pipe server. Requires `format=pcapng` or `format=jsonl`. |
+| `fifo:PATH` | Analyzer-provided FIFO or named-pipe path opened for pcapng writing. Used by extcap. |
+| `unix:PATH` | Unix-domain socket listener on supported non-Windows systems. Requires an explicit format. |
+| `tcp://HOST:PORT` | TCP listener. Requires an explicit format. |
 
-Durations accept the same grammar throughout: an integer and a unit, such as
-`30s`, `5m`, or `2h`. See [capture modes](/docs/guides/capture-modes) for what
-`--mode` and `--ring` do. A non-file sink (`pipe:`, `tcp://`) has no extension to
-infer a format from, so it names one explicitly with `,format=pcapng` or
-`,format=jsonl`.
+`format` accepts `pcapng` or `jsonl`; `payload` accepts `true` or `false`.
+`rotate-size` and `rotate-duration` apply only to file destinations and are
+mutually exclusive. `queue` and `timeout` apply only to streaming destinations;
+their runtime fallbacks are 1024 records and 5 seconds. Streaming destinations
+cannot use rotation modifiers. Example:
 
-<Callout title="Directional filtering is not yet enforced">
-`--direction in` or `--direction out` is recorded on the effective configuration
-and reported, and fragcap warns that directional output filtering is deferred: a
-non-default direction does not currently scope the captured packets, so the
-output still contains both directions. `--roles` scoping, by contrast, is
-enforced.
-</Callout>
+```powershell
+fragcap capture 1 --sink "tcp://127.0.0.1:9000,format=jsonl,payload=false,queue=2048,timeout=10s"
+```
 
 ### `deep-capture`
 
-Run Capture together with explicit, target-scoped local proxy inspection. The
-first implementation requires a stored target, `--launch`, explicit CA trust
-confirmation, an installed `mitmdump` backend, and current facts proving the
-supported cold Steam protocol launch path.
+Run Capture with explicit, target-scoped local proxy inspection. Exactly one
+stored-target input is required: positional `SELECTOR`, `--target`, or `--id`.
+The current implementation requires a managed launch, explicit CA trust
+confirmation, an installed `mitmdump`, and compatible cold Steam launch facts.
 
-```text
+```powershell
 fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 ```
 
-`--bundle <DIR>` selects the session bundle directory. The ordinary duration,
-wait, packet, byte, interface, and payload controls remain available. `--har`
-writes an HTTP-oriented projection when HTTP semantics are observable, while
-`--key-log` creates a proxy-owned TLS key log at its final bundle path before
-traffic starts so Wireshark can consume it during the session.
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--bundle` | open | none | all | Select the session bundle directory. The fallback is a new directory under `FRAGCAP_SESSION_DIR`, then `%APPDATA%\fragcap\sessions`. |
+| `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
+| `-d`, `--duration` | open | none | all | Stop after a duration measured from arm. |
+| `--har` | open | `false` | all | Write an HTTP-oriented projection when HTTP semantics are observable. |
+| `--id` | open | none | all | Select a stored target by durable identifier. |
+| `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
+| `--key-log` | open | `false` | all | Write a proxy-owned TLS key log at its final bundle path. |
+| `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
+| `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--max-bytes` | open | none | all | Stop after a byte count. |
+| `--max-packets` | open | none | all | Stop after this many captured packets. |
+| `--no-payload` | open | `false` | all | Write packet metadata without payload bytes. |
+| `--proxy-backend` | `mitmdump` | `mitmdump` | all | Select the local inspection proxy backend. |
+| `--target` | open | none | all | Explicit form of the stored-target selector. |
+| `--trust-ca` | open | `false` | all | Confirm the fragcap-owned CA trust change needed for HTTPS inspection. |
+| `--wait` | open | none | all | Set the target acquisition timeout. |
+| `--yes` | open | `false` | all | Pre-confirm Deep Capture prompts for an unattended run. |
 
-Read [Output formats and session bundles](/docs/reference/output-formats) for every bundle artifact's authority, sensitivity, production and omission conditions, correlation anchors, retention, and cleanup behavior.
-
-Deep Capture refuses unknown or unsupported launch paths before starting the
-proxy or changing trust. See [Deep Capture compatibility]
-(/docs/reference/deep-capture-compatibility) for current traffic support,
-certificate-pinning and QUIC limits, and the local evidence matrix.
+Read [Output formats and session bundles](/docs/reference/output-formats) for
+artifact authority, sensitivity, omission, correlation, retention, and cleanup.
+See [Deep Capture compatibility](/docs/reference/deep-capture-compatibility) for
+certificate-pinning, QUIC, and launch limits.
 
 ### `replay`
 
-Play a capture file back. Not yet implemented; the command parses and reports that
-it is unavailable rather than the parser rejecting it.
+Accept a capture path and trailing arguments, then report that replay is not yet
+implemented.
+
+```powershell
+fragcap replay capture.fcapng
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
 
 ## Targets
 
-Capture targets live in your local store (`local.db`). fragcap discovers installed
-titles and registers them for you; you can also register, inspect, and remove them
-by hand.
+The local target store resolves from an explicit local-store option, then
+`FRAGCAP_LOCAL_DB`, then `%APPDATA%\fragcap\local.db`. The final location is a
+managed fallback, so a `--db` or `--local-db` option is never required merely to
+use the ordinary per-user store.
 
 ### `targets`
 
-With no subcommand, `fragcap targets` runs discovery, registers any newly found
-titles, and prints the numbered listing (the row numbers are what `fragcap capture
-<n>` honors). See [Getting started](/docs/getting-started#3-find-a-target).
+With no subcommand, discover and register newly installed titles, then print the
+numbered target listing.
 
-- `fragcap targets add [NAME] --db <local.db>` registers a target and derives a
-  unique handle. `--steam <APP_ID>` registers an installed Steam title (anchored to
-  `steam:<APP_ID>`, taking its name from the installation); `--anchor <PLATFORM:ID>`
-  gives a deterministic identity (mutually exclusive with `--steam`); `--exe <NAME>`
-  names a launch executable; `--handle <OVERRIDE>` overrides the derived handle; and
-  `--socket-holder yes|no|unsure` is the non-interactive form of the "which process
-  holds the sockets" question (requires `--exe`). A `no` or `unsure` answer leaves
-  the target's client unresolved (it reads `needs a target`); capturing it anyway
-  runs in launch-and-observe mode, and when the run sees the real socket holder the
-  target is promoted to that client, after which it reads `ready`.
-- `fragcap targets list --db <local.db>` lists registered targets with their row
-  index, handle, and identifier.
-- `fragcap targets show <SELECTOR> --db <local.db>` (or `--id <N>`) shows how one
-  target resolves and lists its local Deep Capture compatibility evidence. The
-  view is read-only and reports unknown rather than inferring support when no
-  facts exist.
-- `fragcap targets remove <SELECTOR> --db <local.db>` (or `--id <N>`) removes one
-  target; an ambiguous name lists its matches and refuses.
-- `fragcap targets export [SELECTOR] --db <local.db>` writes registered targets as
-  a JSON array to standard output; `fragcap targets import <FILE> --db <local.db>`
-  merges a target-entry array back in on the stable identifier.
-- `fragcap targets discover --catalog-db <catalog.db> --local-db <local.db>
-  [--steam-root <PATH>]` walks Steam and the known install roots and lists the
-  candidates found (reads only).
-- `fragcap targets scan <DIR> [--catalog-db <catalog.db>] [--db <local.db>]` treats
-  one directory as a single candidate; with `--catalog-db` it detects the engine,
-  anti-cheat, and DRM technologies present and carries them as evidence; with
-  `--db` it registers what it finds.
-
-### `technologies`
-
-Detect the technologies present in a game's install directory (engine, anti-cheat,
-and DRM), from the catalog's signature table.
-
-```text
-fragcap technologies --path "C:\Games\MyGame" --catalog-db catalog.db
+```powershell
+fragcap targets
 ```
 
-### `steam`
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
 
-Steam-specific inspection. `fragcap steam list` enumerates the installed Steam
-titles this machine can see. Registering a Steam title as a capture target is
-`fragcap targets add --steam <APP_ID>`, not a `steam` subcommand.
+### `targets add`
+
+Register a target. Positional `NAME` is optional when `--steam` supplies the
+installed title name.
+
+```powershell
+fragcap targets add "Sample Game" --exe sample.exe --socket-holder yes
+fragcap targets add --steam 620
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--anchor` | open | none | all | Give the target a stable `platform:id` identity; mutually exclusive with `--steam`. |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--exe` | open | none | all | Record a launch executable name. |
+| `--handle` | open | none | all | Override the derived handle, subject to normal validity and uniqueness rules. |
+| `--socket-holder` | open | none | all | Record whether `--exe` holds sockets: `yes`, `no`, or `unsure`. Requires `--exe`. |
+| `--steam` | open | none | all | Register an installed Steam title by app id and anchor it as `steam:<app_id>`. |
+
+### `targets list`
+
+Discover and register newly installed titles, then list row number, handle,
+readiness, and known technologies.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+
+### `targets show`
+
+Show one target selected by positional `SELECTOR` or `--id`, including local
+Deep Capture compatibility evidence.
+
+```powershell
+fragcap targets show sample-target
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--id` | open | none | all | Select by durable identifier instead of positional selector. |
+
+### `targets discover`
+
+Read installed-game candidates from Steam and known roots without registering
+the candidates.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store used to classify Steam titles. |
+| `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user store holding volume eligibility. |
+| `--steam-root` | open | none | all | Override automatic Steam installation discovery. |
+
+### `targets scan`
+
+Treat positional `DIR` as one game location. With `--catalog-db`, attach
+technology evidence. Discovered candidates are registered idempotently in the
+resolved local store.
+
+```powershell
+fragcap targets scan "C:\Games\Sample Game"
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--catalog-db` | open | none | all | Select a catalog store whose signature table labels the directory. |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store used to register discoveries. |
+
+### `targets remove`
+
+Remove one target selected by positional `SELECTOR` or `--id`.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--id` | open | none | all | Select by durable identifier instead of positional selector. |
+
+### `targets export`
+
+Write all registered targets, or positional `SELECTOR` or `--id`, as a JSON
+array to standard output.
+
+```powershell
+fragcap targets export
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--id` | open | none | all | Export one target by durable identifier. |
+
+### `targets import`
+
+Merge the target-entry JSON array at positional `FILE` by stable identifier.
+
+```powershell
+fragcap targets import targets.json
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store, creating the selected store if absent. |
 
 ## Environment
 
+### `technologies`
+
+Detect engine, anti-cheat, and DRM signatures in an install directory.
+
+```powershell
+fragcap technologies --path "C:\Games\Sample Game"
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store containing signatures. |
+| `-p`, `--path` | open | none | all | Required install directory to scan. |
+
+### `steam`
+
+Group Steam-specific inspection commands.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `steam list`
+
+List installed Steam titles. Register one with `targets add --steam <app_id>`.
+
+```powershell
+fragcap steam list
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
 ### `doctor`
 
-Report environment readiness: identity, platform, the capture driver, tracing,
-interfaces, and the Wireshark integration. It captures nothing.
+Report environment readiness. The default is read-only; `--fix` offers only the
+remediations already named by the report.
 
-```text
+```powershell
 fragcap doctor
 ```
 
-`fragcap doctor --fix` adds an interactive action layer above the same report: it
-offers to perform the remediations the report named, one at a time, under your
-confirmation (for example relaunching elevated, registering the extcap integration,
-fetching the catalog, or, in a network-capable build, fetching and launching
-npcap's own signed installer). It acts only on remediations the plain report
-already printed and never installs anything without asking. `--yes` pre-confirms
-every offered action for unattended interactive use. `--fix` is refused with
-`--json`, and when stdout (or, without `--yes`, stdin) is not an interactive
-terminal.
-
-The Deep Capture section reads local CA trust without changing it. On Windows it
-matches only exact SHA-1 thumbprints previously recorded by fragcap session
-manifests, then checks current-user Root (the supported scope) and local-machine
-Root (an unexpected broader scope). It does not identify ownership from certificate
-names. The report distinguishes absent, supported, wrong-store, mismatched, and
-unobservable states and prints observed thumbprints identically in human and JSON
-output. Wrong-store or mismatched trust offers confirmation-gated cleanup only
-when the exact manifest-backed thumbprint and store can be named. Deep Capture CA
-warnings do not block passive Capture readiness.
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--fix` | open | `false` | all | Offer remediations interactively. Refused with `--json` or non-interactive standard output. |
+| `--yes` | open | `false` | all | Pre-confirm offered actions with `--fix`; interactive standard output is still required. |
 
 ### `extcap`
 
-Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an
-extcap capture source; you do not normally run the protocol form by hand. It
-presents one `fragcap` interface whose capture dialog selects a stored **target**
-and mirrors `capture`'s options (`--target`, `--roles`, `--direction`,
-`--loopback`), so the analyzer dialog and the command line select capture
-identically: you pick a registered target (by handle, name, or row index) in the
-dialog exactly as you would pass `--target` to `capture`. The other part you use
-directly is registration, below.
+Serve Wireshark's extcap protocol. Query flags print declarations to standard
+output; capture streams pcapng to the analyzer-provided FIFO.
 
-#### `extcap install` / `extcap uninstall`
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--capture` | open | `false` | all | Start extcap capture. |
+| `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
+| `--direction` | `both`, `in`, `out` | none | all | Configure the requested direction. |
+| `--extcap-config` | open | `false` | all | Print configurable extcap options and exit. |
+| `--extcap-dlts` | open | `false` | all | Print link types and exit. |
+| `--extcap-interface` | open | none | all | Select the extcap interface. |
+| `--extcap-interfaces` | open | `false` | all | Print available extcap interfaces and exit. |
+| `--extcap-version` | open | none | all | Accept the analyzer protocol version query; currently not acted on. |
+| `--fifo` | open | none | all | Analyzer FIFO or named-pipe path for capture bytes. |
+| `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--loopback` | open | `false` | all | Include loopback. |
+| `--roles` | open | none | all | Configure comma-separated capture roles. |
+| `--target` | open | none | all | Select the stored target by the same selector grammar as Capture. |
 
-Register or unregister fragcap as a Wireshark extcap source, so Wireshark lists it
-in its capture interfaces.
+### `extcap install`
 
-```text
-fragcap extcap install            # register for the current user (the default; idempotent)
-fragcap extcap uninstall          # unregister (idempotent; a no-op if not registered)
-fragcap extcap install --system   # register machine-wide, for every user
-fragcap extcap install --dir DIR  # register into an explicit directory
+Register fragcap in Wireshark's extcap directory. With no scope flag, use the
+per-user directory.
+
+```powershell
+fragcap extcap install --user
 ```
 
-The scope selectors `--user`, `--system`, and `--dir` are mutually exclusive; with
-none given, the default is the current user. The per-user form copies the running
-fragcap binary into your own Wireshark extcap directory and needs no elevation. On a
-shared computer, **each user who wants the Wireshark integration runs `fragcap
-extcap install` once.** If Wireshark does not show fragcap as a capture source, run
-`fragcap doctor`, which reports whether the integration is registered for you and
-prints the exact command to fix it. To register for every user, an administrator
-runs the machine-wide form (writing into Wireshark's system extcap directory needs
-the privilege to write there).
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--dir` | open | none | all | Use an explicit extcap directory instead of a discovered scope. |
+| `--system` | open | `false` | all | Use the machine-wide Wireshark directory; write privilege is required. |
+| `--user` | open | `false` | all | Use `%APPDATA%\Wireshark\extcap`, the default scope. |
 
-The Windows installer (`.msi`) can also register the integration for you, for the
-current user or machine-wide, through its optional Wireshark integration step (both
-choices off by default). Both are exposed as installer properties
-(`REGISTEREXTCAP_USER`, `REGISTEREXTCAP_MACHINE`) for a silent install.
+### `extcap uninstall`
+
+Remove the corresponding extcap registration. Scope flags have the same
+precedence as `extcap install`.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--dir` | open | none | all | Use an explicit extcap directory instead of a discovered scope. |
+| `--system` | open | `false` | all | Use the machine-wide Wireshark directory. |
+| `--user` | open | `false` | all | Use the per-user Wireshark directory, the default scope. |
 
 ## Data
 
+Catalog store options resolve from explicit `--db`, then
+`FRAGCAP_CATALOG_DB`, then `%APPDATA%\fragcap\catalog.db`. The managed path is
+the ordinary fallback, not a required argument.
+
 ### `catalog`
 
-Maintain the disposable catalog store (`catalog.db`).
+Group commands for the shipped, disposable catalog store.
 
-`--db` is an override, never a requirement: with none, every command below
-resolves the store fragcap manages, through `FRAGCAP_CATALOG_DB` if set and the
-per-user default otherwise, creating it on first use.
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
 
-- `fragcap catalog import <SEED>` loads a local JSON seed document.
-- `fragcap catalog export` exports the store to schema-conformant JSON on
-  standard output.
-- `fragcap catalog seed` fills the store. With no `--tier` it fills every tier
-  that has a source available and names every tier it skipped, with the reason.
-  `--tier catalog|launch|engine|signature` selects one, and is repeatable.
-- `fragcap catalog seed --tier signature` fills the detection signature table
-  from a bundled document, so `technologies` and discovery detect engines,
-  anti-cheat, and DRM from the store. Offline and idempotent; the released
-  `catalog.db` already ships with it done.
-- `fragcap catalog seed --tier engine --from <doc>` seeds one tier from a local
-  document. `--from` requires exactly one `--tier`: the offline documents are
-  bare JSON arrays that do not say which tier they are, and guessing would write
-  the wrong columns silently, so an ambiguous invocation is refused. A
-  network-capable build adds the live `--steam` and `--pcgamingwiki` sources.
+### `catalog import`
+
+Load positional `SEED`, a schema-conformant local JSON export, transactionally.
+
+```powershell
+fragcap catalog import catalog.json
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
+
+### `catalog export`
+
+Write the catalog store as schema-conformant JSON to standard output.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
+
+### `catalog seed`
+
+Fill one repeatable `--tier` or every tier with an available source. `--from`
+is the hermetic local source. `--steam` and `--pcgamingwiki` exist only in an
+optional network-capable maintainer build.
+
+```powershell
+fragcap catalog seed --tier signature
+fragcap catalog seed --tier catalog --from catalog.json
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
+| `--from` | open | none | all | Read one local source document; requires exactly one consumable `--tier`. |
+| `--min-reviews` | open | `500` | all | Set the title-tier review-count corpus threshold. |
+| `--pcgamingwiki` | open | `false` | net | Seed the engine tier from the live PCGamingWiki query API. |
+| `--steam` | open | `false` | net | Seed the title tier from the live Steam catalog. |
+| `--tier` | `catalog`, `engine`, `launch`, `signature` | none | all | Select a tier; repeat as needed. `signature` is always offline. |
 
 ### `schema`
 
-Validate JSON artifacts against the master schema, or print it.
+Group commands for the embedded master JSON schema.
 
-- `fragcap schema validate <FILE>` reports every structural violation in one pass.
-  See [the target schema](/docs/reference/target-schema).
-- `fragcap schema print` writes the embedded master schema to standard output.
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `schema validate`
+
+Validate positional `FILE` and report every structural violation in one pass.
+
+```powershell
+fragcap schema validate targets.json
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `schema print`
+
+Write the embedded master schema to standard output.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+## Output routing
+
+`--json` changes presentation, not the ownership of streams. Structured command
+results, such as target, Steam, doctor, catalog, and schema results, go to
+standard output. Capture and Deep Capture lifecycle events go to standard error
+so they cannot contaminate capture bytes. Packet bytes and packet JSON Lines go
+only to the configured `--out`, `--sink`, or extcap FIFO destination. Warnings
+and errors are diagnostics on standard error.
+
+`--quiet` suppresses progress but keeps warnings and errors. `--silent`
+suppresses progress, completion summaries, and warnings, but errors still
+surface and configured sinks continue writing. A consumer should therefore
+parse the command's documented result stream and lifecycle stream separately;
+there is no single combined JSON stream.
