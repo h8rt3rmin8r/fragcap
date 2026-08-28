@@ -23,6 +23,19 @@ feature carries it.
 Running `fragcap` with no command lists registered targets and points at
 `--help`.
 
+## Retired command migration
+
+Older releases and their preserved changelog pages may refer to command forms
+that the current CLI no longer accepts. Use these replacements with v0.7.0:
+
+| Retired form | Current form |
+| --- | --- |
+| `fragcap run ...` | `fragcap capture ...` |
+| `fragcap tap --process <image> ...` | `fragcap capture --process <image> ...` |
+
+Historical pages remain searchable as release records. This page is the source
+of truth for commands accepted by the current binary.
+
 ## Global options
 
 These options propagate to every command.
