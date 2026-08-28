@@ -17,7 +17,14 @@ Enumerate static application routes, content routes, and exported HTML under `si
 
 ## 3. Serve the immutable export
 
-Use an available local static server rooted at `site/out/`. Record its command and bind it to loopback. Do not use the development server as audit evidence.
+Serve the export with the committed clean-route helper. It binds only to
+loopback and reproduces the route and 404 resolution used by the audit:
+
+```text
+node site/scripts/serve-export.mjs site/out 4174
+```
+
+Do not use the development server as audit evidence.
 
 ## 4. Execute the browser matrix
 
@@ -25,7 +32,15 @@ Open every public route at desktop width. Open every documentation route at 768 
 
 Complete the keyboard journey through the skip link, top or mobile navigation, sidebar, search, table of contents, content links, theme control, and footer. Record absent surfaces as not applicable, not as passes.
 
-Run the search and link cases named in the specification. Probe one unknown route for not-found and recovery behavior.
+Run the search and link cases named in the specification. Probe one unknown
+route for not-found and recovery behavior. The deterministic page rules are
+preserved in `site/scripts/audit-export-dom.mjs`; a Playwright-compatible runner
+invokes them with `page.evaluate(auditDocument)` after selecting each required
+viewport. Run the external-link surface separately with:
+
+```text
+bash scripts/lint-docs.sh link
+```
 
 ## 5. Triage findings
 

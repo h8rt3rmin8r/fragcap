@@ -33,14 +33,16 @@ cd site
 pnpm install --frozen-lockfile
 pnpm build
 
-node <clean-route static server> site/out 127.0.0.1:4174
+node site/scripts/serve-export.mjs site/out 4174
 
 cargo xtask docs check
 cargo xtask docs build
+bash scripts/lint-docs.sh link
+bash -lc 'shopt -s expand_aliases; alias curl=/mnt/c/Windows/System32/curl.exe; cd /mnt/a/Code/fragcap; set -- link; source scripts/lint-docs.sh'
 cargo xtask ci
 ```
 
-The loopback server resolved an exact file, then `<path>.html`, then
+The committed loopback server resolved an exact file, then `<path>.html`, then
 `<path>/index.html`, and returned the exported `404.html` otherwise. This avoids
 directory-index behavior that the deployed clean-route site does not have.
 `pnpm install --frozen-lockfile` and `pnpm build` passed. The lockfile did not
@@ -153,11 +155,22 @@ to desktop and 320 px mobile navigation.
 ## 6. Semantic And Automated Accessibility Results
 
 Every documentation route received a deterministic, read-only DOM rule pass.
-It checked document language, visible H1 count, content heading steps, main
-landmarks, accessible names for visible buttons and form controls, image `alt`
-attributes, duplicate IDs, root horizontal overflow, silently clipped article
-content, complex-content scroll containment, and footer visibility. This was a
-declared local rule set, not axe, Lighthouse, or a conformance certification.
+The exact predicates are preserved in `site/scripts/audit-export-dom.mjs`.
+With a Playwright-compatible page, the invocation is:
+
+```js
+const { auditDocument } = await import('./site/scripts/audit-export-dom.mjs');
+const result = await page.evaluate(auditDocument);
+```
+
+The run set the page viewport to 1440, 768, or 320 CSS pixels before evaluation
+and retained the returned object for the route matrix. The function may also be
+serialized into another read-only page evaluator. It checked document language,
+visible H1 count, content heading steps, main landmarks, accessible names for
+visible buttons and form controls, image `alt` attributes, duplicate IDs, root
+horizontal overflow, silently clipped article content, complex-content scroll
+containment, and footer visibility. This was a declared local rule set, not axe,
+Lighthouse, or a conformance certification.
 
 Passed results:
 
@@ -225,8 +238,19 @@ pixel-level diagram contrast are not claimed.
 The export check examined 3,062 internal route references, including 1,789
 fragment references. It found zero missing routes and zero missing anchors.
 Shared navigation and representative in-content links resolved in the browser.
-The repository's existing external-link surface is `cargo xtask docs check`;
-its final result is recorded in section 11. No additional crawler was added.
+The repository's external-link surface is `bash scripts/lint-docs.sh link`.
+Its first run used WSL `/usr/bin/curl` and failed because that environment could
+not resolve `npcap.com`. A direct Windows `curl.exe` request resolved the host
+and returned HTTP 200. The same repository link mode was then sourced with
+Windows curl substituted for the unavailable WSL network path:
+
+```text
+bash -lc 'shopt -s expand_aliases; alias curl=/mnt/c/Windows/System32/curl.exe; cd /mnt/a/Code/fragcap; set -- link; source scripts/lint-docs.sh'
+```
+
+That run passed with `OK all external references responded`. The initial DNS
+failure is retained here because it was an environment failure observed by the
+required check, not a passing result.
 
 ## 9. Findings And Dispositions
 
@@ -331,6 +355,8 @@ implemented in S094. Epic #255 remains open.
 | `pnpm build` | Pass |
 | `cargo xtask docs check` | Pass |
 | `cargo xtask docs build` | Pass |
+| `bash scripts/lint-docs.sh link` | Fail because WSL `/usr/bin/curl` could not resolve `npcap.com` |
+| `scripts/lint-docs.sh link` sourced with Windows curl | Pass; all external references responded |
 | `cargo xtask ci` | Pass |
 | Final encoding and diff hygiene | Pass |
 
