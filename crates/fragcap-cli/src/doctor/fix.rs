@@ -308,13 +308,25 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
     };
     let mut removed = 0usize;
     let mut failed = Vec::new();
-    if let Some((store, thumbprint)) = super::probe::ca_cleanup_target(&root) {
-        match remove_ca_trust(&store, &thumbprint) {
-            Ok(()) => {
-                removed += 1;
-                let _ = writeln!(out, "  removed {thumbprint} from {store}");
+    let mut preserve_manifests = false;
+    match super::probe::ca_cleanup_targets(&root) {
+        Ok(targets) => {
+            for (store, thumbprint) in targets {
+                match remove_ca_trust(&store, &thumbprint) {
+                    Ok(()) => {
+                        removed += 1;
+                        let _ = writeln!(out, "  removed {thumbprint} from {store}");
+                    }
+                    Err(err) => {
+                        preserve_manifests = true;
+                        failed.push(err);
+                    }
+                }
             }
-            Err(err) => failed.push(err),
+        }
+        Err(err) => {
+            preserve_manifests = true;
+            failed.push(format!("could not audit Deep Capture CA trust: {err}"));
         }
     }
     for path in deep_capture_cleanup_candidates(&root) {
@@ -323,6 +335,14 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
                 "refused path outside session storage: {}",
                 path.display()
             ));
+            continue;
+        }
+        if preserve_manifests && path.file_name().is_some_and(|name| name == "manifest.json") {
+            let _ = writeln!(
+                out,
+                "  preserved {} because CA trust cleanup is incomplete",
+                path.display()
+            );
             continue;
         }
         match std::fs::remove_file(&path) {
@@ -361,7 +381,16 @@ fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
         .status()
         .map_err(|err| format!("could not remove {thumbprint} from {store}: {err}"))?;
     if status.success() {
-        Ok(())
+        let remaining = crate::windows_cert::store_thumbprints(store).map_err(|err| {
+            format!("removed {thumbprint} from {store}, but verification failed: {err}")
+        })?;
+        if remaining.iter().any(|item| item == thumbprint) {
+            Err(format!(
+                "{thumbprint} remains in {store} after certutil reported success"
+            ))
+        } else {
+            Ok(())
+        }
     } else {
         Err(format!(
             "certutil could not remove {thumbprint} from {store} (exit {status})"

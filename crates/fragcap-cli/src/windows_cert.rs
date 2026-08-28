@@ -5,6 +5,7 @@
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
+use windows_sys::Win32::Foundation::{GetLastError, SetLastError, CRYPT_E_NOT_FOUND};
 use windows_sys::Win32::Security::Cryptography::{
     CertCloseStore, CertEnumCertificatesInStore, CertFreeCertificateContext,
     CertGetCertificateContextProperty, CertOpenStore, CryptQueryObject, CERT_CONTEXT,
@@ -78,10 +79,24 @@ pub(crate) fn store_thumbprints(location: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut previous = core::ptr::null();
     loop {
+        // SAFETY: resetting thread-local last-error state immediately before the
+        // API call makes its null-result reason unambiguous.
+        unsafe { SetLastError(0) };
         // SAFETY: `store` is live. CryptoAPI frees `previous` as it advances and
         // returns either a live context owned by the enumeration or null at end.
         let context = unsafe { CertEnumCertificatesInStore(store, previous) };
         if context.is_null() {
+            // SAFETY: read immediately after the failed enumeration call, before
+            // any other Windows API can replace the thread-local value.
+            let error = unsafe { GetLastError() };
+            if error != CRYPT_E_NOT_FOUND as u32 {
+                // SAFETY: enumeration has released `previous`; `store` is still
+                // the live handle opened above.
+                unsafe { CertCloseStore(store, 0) };
+                return Err(format!(
+                    "Windows stopped enumerating {location} with error 0x{error:08X}"
+                ));
+            }
             break;
         }
         match context_thumbprint(context) {
