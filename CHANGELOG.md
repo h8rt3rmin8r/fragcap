@@ -16,6 +16,134 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-27
+
+### Highlights
+
+- **Deep Capture has a real first path.** The release adds scoped proxy-inspection architecture, compatibility fact storage, doctor readiness and cleanup checks, session bundles, and the first guarded `fragcap deep-capture` command path.
+- **Target discovery is easier to trust.** Steam non-game entries are filtered, known-root discovery handles multi-engine containers, detection marks heuristic findings as unverified, warnings go to the right stream, and discovery output now renders as a readable listing.
+- **Release and wrapper gates are tighter.** The Bash wrapper gate delegates to the vendored standard checker, requires ShellCheck to actually run in CI, and keeps release notes focused on highlights with the full changelog as the exhaustive record.
+
+### Added
+
+Added scrubbed Steam and publisher-launcher proxy-inheritance findings for the
+Deep Capture issue #215 research.
+
+Added the full alias-only proxy inheritance matrix for issue #215, including
+cold and warm platform launches, direct executable handoff behavior, and
+publisher-launcher proxy sensitivity findings.
+
+Added a privacy-preserving proxy-inheritance report generator and alias-only
+evidence template for the issue #215 measurement work.
+
+Adds a privacy-preserving measurement protocol for Steam and publisher-launcher proxy inheritance so Deep Capture launch compatibility can be recorded without committing local titles, paths, endpoints, or account material.
+
+Added local Deep Capture compatibility fact storage to the targets database,
+including typed fact keys, launch-case context, proxy backend provenance, final
+socket-owner details, freshness fields, and stale observation support.
+
+Added Deep Capture readiness and cleanup checks to `fragcap doctor`: proxy backend availability, local CA trust state, analyzer key-log readiness, stale proxy ports/processes, stale manifests, TLS key logs, sensitive sidecars, session storage reporting, manifest-declared sensitive artifact discovery, and confirmation-gated cleanup for unfinished manifests and known sensitive sidecars under fragcap-owned session storage.
+
+Added the first Deep Capture command path. `fragcap deep-capture` resolves one stored target, requires managed launch ownership and explicit CA trust confirmation, refuses real targets without current scoped proxy compatibility, correlates packet and proxy observations with stable session-local flow ids, writes complete or partial bundles with application, proxy, process, compatibility, cleanup, optional HAR, and optional proxy-owned key-log artifacts, exposes requested key logs to live analyzers from their final bundle paths, emits Deep Capture lifecycle events, and updates local compatibility facts from scrubbed observations.
+
+Published the current Deep Capture traffic-support reference and added a
+read-only compatibility matrix to `fragcap targets show`. The matrix comes from
+the selected target's local facts, preserves conflicting evidence, and labels
+source, launch case, freshness, and unknown state without guessing a title
+verdict.
+
+The architecture documents now define `Capture` and `Deep Capture` as
+first-class product modes. Capture remains the passive, process-attributed
+packet-capture path, while Deep Capture is positioned as explicit, scoped local
+proxy inspection for authorized game-development and research workflows. The
+constitution now frames P-1 as no covert target instrumentation, wires
+`AI_CONTEXT.md` into agent-facing required context, and keeps process injection,
+hooks, memory reads, packet interception drivers, Winsock catalog modification,
+executable modification, and target TLS key extraction denylisted.
+
+`docs/plans/deep-capture.md` records the planned Deep Capture product direction: explicit scoped application-layer inspection through a local proxy, preserved passive Capture mode, compatibility fact storage, session-bundle outputs, doctor cleanup requirements, and the first discovery workstreams.
+
+### Fixed
+
+Fixed `cargo xtask wrappers` so Bash script compliance now delegates to the vendored ShruggieTech Bash checker for `fragcap.sh`, `lint-docs.sh`, and `cut-release.sh` instead of a stale Rust reimplementation. The gate now treats missing Bash-runnable ShellCheck as an unable-to-run environment failure.
+
+Applies-To: 0.6.0
+
+Fixed `fragcap doctor` looking hung during slow first-run readiness checks by
+printing named interactive progress on stderr while keeping the final human and
+JSON report outputs unchanged.
+
+Fixed `fragcap doctor` doing duplicate npcap device-list enumeration by deriving
+the loopback-adapter verdict from the interface inventory it already gathered.
+
+Fixed `fragcap doctor` doing full ETW watcher startup for one process-event
+tracing readiness boolean by using a session-only runtime probe.
+
+`fragcap targets` warnings now follow the CLI stream contract: command results stay on standard output, while warnings route through standard error and honor `--quiet`, `--silent`, and `--json`.
+
+Detection coverage warnings for capped binary-marker scans now name the scanned root and state that technology detection for that root may be incomplete, so `fragcap targets`, `targets discover`, and `technologies` no longer emit indistinguishable skipped-candidate warnings.
+
+`fragcap targets discover` now renders as a human listing instead of a raw tab dump. The output names the catalog and local stores on labelled lines, prints discovered candidates in a headed aligned table with no tab characters, keeps evidence under the owning row with fidelity intact, and renders the discovery account as labelled lines with zero-valued outcomes grouped.
+
+Corrected the documentation homepage to describe process-attributed Capture and
+explicit, target-scoped Deep Capture accurately, replaced its stale target
+listing with synthetic current output, aligned its public metadata with both
+modes, and labelled the CLI's suggested next capture command.
+
+Known-roots discovery now descends through multi-engine container directories instead of registering them as one title, reports containers hidden by the shallow depth bound, and emits platform-native candidate paths without mixed separators.
+
+`fragcap targets` now marks below-verified technology findings in the ENGINE and SENSITIVITIES columns instead of rendering heuristic guesses the same way as verified evidence. Target export/import continues to preserve each finding's raw fidelity token.
+
+Steam discovery no longer offers Steam utility, application, configuration, or video records as capture targets. Those entries are counted as not-a-game, while demos and titles with unknown app type remain eligible.
+Composed discovery also passes current Steam non-game install roots to known-roots so those directories are not reintroduced as path candidates, and the target listing hides existing platform-created rows for current Steam non-game installs without deleting user-authored entries.
+
+`CONVENTIONS.md` no longer requires hard-wrapping Markdown prose at 80 columns. Repository Markdown now follows the current house standard: soft wrap by default, with hard wrap only for a checked surface or an explicit operator request.
+
+### Decisions
+
+Decision: `cargo xtask wrappers` uses the vendored `shruggie-bash` checker as the single Bash compliance authority, and keeps fragcap-specific syntax, help, and dry-run seam checks in `xtask`. `scripts/lint-docs.sh` keeps the standard `log_info` and `safe_run` fixtures with a file-level ShellCheck fixture suppression because the house Bash standard requires those fixtures even though this linter does not currently call them.
+
+Rationale: S071 vendored the Bash standard checker after `xtask` already carried a Rust structural checker. Keeping both would let the repository gate drift from the standard agents are instructed to follow. The direct checker still warns when ShellCheck is absent, but the CI gate now preflights ShellCheck from the same plain Bash mode that invokes the checker and exits 2 if it cannot run static analysis. Deleting the unused fixtures from `lint-docs.sh` would make the script less compliant with the standard this slice is enforcing. The file-level `SC2317,SC2329` suppression is the portable pinned-script change because ShellCheck versions differ on whether the dormant fixture is reported as an unused function or unreachable commands.
+
+Alternatives considered: Keeping `check_bash` would preserve the duplicate authority issue; running both checkers would hide rather than remove the drift risk; modifying the vendored checker would exceed this slice and change shared skill bytes.
+
+Applies-To: 0.6.0
+
+**2026-08-26** Recorded S079 doctor probe timing evidence before optimizing
+suspected slow checks. A terminal run of `cargo run -p fragcap-cli -- doctor
+--timings` measured Deep Capture readiness as the dominant local probe at 623
+ms, target stores at 2 ms, and platform, capture driver/interface, analyzer
+integration, identity, process event tracing, and report rendering at 0 ms each.
+The command exited 1 because the local dev binary lacked the live backend, not
+because timing failed.
+
+Recorded S081 measurement limitations for issue #204. The local shell was not
+elevated, so baseline `fragcap doctor --timings` reported the process event
+tracing probe as unavailable without entering the expensive elevated
+`EtwWatcher::start` path. `logman query -ets | Select-String
+fragcap-doctor-probe` returned no matching session after the run.
+
+The implementation replaces doctor's full watcher readiness probe with
+`EtwWatcher::probe_session`, which starts and drops only the ETW session. This
+proves the consumer thread and startup process snapshot are no longer on the
+doctor readiness path by code structure, but the local non-elevated shell still
+cannot provide representative elevated before and after timing.
+
+After implementation, `cargo run -p fragcap-cli --features etw -- doctor
+--timings` still exited 1 because the local binary lacked the live backend, and
+the tracing check still reported unavailable without elevation. A second `logman
+query -ets | Select-String fragcap-doctor-probe` returned no matching session.
+
+**2026-08-24** Recorded the Deep Capture proxy backend research for issue #214. The recommended path is a staged native spike with `hudsucker` as the first candidate and external `mitmdump` retained as the baseline and fallback; Pingora is deferred, `mitmproxy_rs` is rejected for the default target-scoped design, and `soth-mitm` and `slinger-mitm` are rejected for policy blockers.
+
+**2026-08-25** Defined the Deep Capture session bundle and output correlation model for issue #216. `.fcapng` remains packet truth, application JSONL is the canonical application event stream, HAR is emitted when HTTP semantics are observable in either Capture or Deep Capture, TLS key logs are sensitive proxy-owned analyzer aids, packet annotations carry sidecar `flow_id` joins, and the required manifest indexes artifacts, omissions, sensitivity, correlation anchors, compatibility updates, and cleanup report status.
+
+**2026-08-25** Defined the Deep Capture MVP implementation plan for issue #219. The first vertical slice will use an external `mitmdump` backend behind a replaceable adapter, require one stored target with known scoped proxy compatibility, refuse system-wide proxy fallback, require explicit CA trust confirmation, write the #216 session bundle, update #217 compatibility facts, reuse #218 doctor cleanup surfaces, and verify with a controlled local target rather than real game accounts or local title data.
+
+**2026-08-26** Implemented packet-side flow correlation on the existing output thread, kept proxy connection ids separate, replaced fake-events-only verification with a live loopback adapter and placeholder child, limited trust mutation to explicit current-user certificate lifecycle operations, and made partial bundles preserve only observed compatibility evidence. This intentionally adds `flow_id` to ordinary Capture packet outputs because the #216 correlation contract cannot be satisfied by proxy-only identifiers.
+
+**2026-08-26** Restricted the first real-target path to a fact-backed cold Steam protocol launch. Warm Steam cannot inherit fragcap's scoped proxy environment, and Capture does not manage direct-executable launches. Deep Capture now prepares and retains the effective Capture configuration before starting the proxy or changing trust, making both unsupported cases side-effect-free preflight refusals.
+
 ## [0.6.0] - 2026-08-22
 
 ### Highlights
@@ -6889,6 +7017,7 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.7.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.7.0
 [0.6.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.6.0
 [0.5.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.1
 [0.5.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.0
