@@ -466,13 +466,20 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             expected,
             actual,
             store,
-        } => Check::warn_action(
-            DEEP_CAPTURE,
-            "local CA trust",
-            format!("manifest expects {expected}, but {store} contains {actual}"),
-            "run `fragcap doctor --fix` to remove mismatched Deep Capture trust",
-            Action::new(ActionKind::CleanupDeepCapture),
-        ),
+        } => match store {
+            Some(store) => Check::warn_action(
+                DEEP_CAPTURE,
+                "local CA trust",
+                format!("manifest expects {expected}, but {store} contains {actual}"),
+                "run `fragcap doctor --fix` to remove mismatched Deep Capture trust",
+                Action::new(ActionKind::CleanupDeepCapture),
+            ),
+            None => Check::warn(
+                DEEP_CAPTURE,
+                "local CA trust",
+                format!("manifest expects {expected}, but bundled CA material is {actual}"),
+            ),
+        },
         DeepCaptureCa::Unknown(reason) => Check::warn(
             DEEP_CAPTURE,
             "local CA trust",
@@ -1112,5 +1119,25 @@ mod tests {
             ca.action.as_ref().map(|action| action.kind),
             Some(ActionKind::CleanupDeepCapture)
         );
+    }
+
+    #[test]
+    fn unobserved_ca_mismatch_warns_without_cleanup() {
+        let mut inputs = ready_inputs();
+        inputs.deep_capture.ca = DeepCaptureCa::Mismatched {
+            expected: "00112233445566778899AABBCCDDEEFF00112233".to_string(),
+            actual: "112233445566778899AABBCCDDEEFF0011223344".to_string(),
+            store: None,
+        };
+        let checks = deep_capture(&inputs);
+        let ca = checks
+            .iter()
+            .find(|check| check.name == "local CA trust")
+            .unwrap();
+        assert_eq!(ca.status, Status::Warn);
+        assert_eq!(ca.action, None);
+        assert!(ca
+            .detail
+            .contains("112233445566778899AABBCCDDEEFF0011223344"));
     }
 }

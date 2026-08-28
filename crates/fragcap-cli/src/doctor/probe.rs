@@ -330,71 +330,108 @@ fn read_target_entry_count() -> Option<usize> {
 fn deep_capture_probe() -> DeepCaptureInputs {
     let session_dir = crate::paths::deep_capture_session_dir();
     let session_dir_present = session_dir.as_ref().is_some_and(|p| p.is_dir());
-    let mut stale_manifests = Vec::new();
-    let mut stale_tls_key_logs = Vec::new();
-    let mut sensitive_artifacts = Vec::new();
-    if let Some(root) = &session_dir {
-        scan_deep_capture_residue(
-            root,
-            &mut stale_manifests,
-            &mut stale_tls_key_logs,
-            &mut sensitive_artifacts,
-        );
-    }
+    let scan = scan_deep_capture_root(session_dir.as_deref());
     let (proxy_backend, proxy_backend_error) = proxy_backend_status();
+    let ca = if scan.errors.is_empty() {
+        probe_ca(&scan.manifests)
+    } else {
+        DeepCaptureCa::Unknown(scan.errors.join("; "))
+    };
     DeepCaptureInputs {
         session_dir,
         session_dir_present,
         proxy_backend,
         proxy_backend_error,
         analyzer_keylog_configured: std::env::var_os("SSLKEYLOGFILE").is_some(),
-        ca: DeepCaptureCa::Unknown("fragcap CA trust probing is not implemented yet".to_string()),
+        ca,
         occupied_proxy_ports: None,
         orphaned_proxy_processes: None,
-        stale_manifests,
-        stale_tls_key_logs,
-        sensitive_artifacts,
+        stale_manifests: scan.stale_manifests,
+        stale_tls_key_logs: scan.stale_tls_key_logs,
+        sensitive_artifacts: scan.sensitive_artifacts,
     }
 }
 
-fn scan_deep_capture_residue(
-    root: &std::path::Path,
-    stale_manifests: &mut Vec<PathBuf>,
-    stale_tls_key_logs: &mut Vec<PathBuf>,
-    sensitive_artifacts: &mut Vec<PathBuf>,
-) {
-    fn walk(
-        dir: &std::path::Path,
-        depth: usize,
-        visited: &mut usize,
-        stale_manifests: &mut Vec<PathBuf>,
-        stale_tls_key_logs: &mut Vec<PathBuf>,
-        sensitive_artifacts: &mut Vec<PathBuf>,
-    ) {
-        if depth > 3 || *visited >= 200 {
+fn scan_deep_capture_root(root: Option<&std::path::Path>) -> DeepCaptureScan {
+    root.filter(|path| path.is_dir())
+        .map(scan_deep_capture_residue)
+        .unwrap_or_default()
+}
+
+#[derive(Default)]
+struct DeepCaptureScan {
+    stale_manifests: Vec<PathBuf>,
+    stale_tls_key_logs: Vec<PathBuf>,
+    sensitive_artifacts: Vec<PathBuf>,
+    manifests: Vec<PathBuf>,
+    errors: Vec<String>,
+}
+
+fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
+    struct ScanState<'a> {
+        stale_manifests: &'a mut Vec<PathBuf>,
+        stale_tls_key_logs: &'a mut Vec<PathBuf>,
+        sensitive_artifacts: &'a mut Vec<PathBuf>,
+        manifests: &'a mut Vec<PathBuf>,
+        errors: &'a mut Vec<String>,
+    }
+
+    fn walk(dir: &std::path::Path, depth: usize, visited: &mut usize, state: &mut ScanState<'_>) {
+        if depth > 3 {
+            push_scan_error(
+                state.errors,
+                format!("session scan reached the depth limit at {}", dir.display()),
+            );
             return;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        if *visited >= 200 {
+            push_scan_error(
+                state.errors,
+                "session scan reached the 200-entry limit".to_string(),
+            );
             return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                state
+                    .errors
+                    .push(format!("could not read {}: {err}", dir.display()));
+                return;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
             if *visited >= 200 {
+                push_scan_error(
+                    state.errors,
+                    "session scan reached the 200-entry limit".to_string(),
+                );
                 break;
             }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    state.errors.push(format!(
+                        "could not read an entry in {}: {err}",
+                        dir.display()
+                    ));
+                    continue;
+                }
+            };
             *visited += 1;
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => {
+                    push_scan_error(
+                        state.errors,
+                        format!("could not inspect {}: {err}", entry.path().display()),
+                    );
+                    continue;
+                }
             };
             let path = entry.path();
             if file_type.is_dir() {
-                walk(
-                    &path,
-                    depth + 1,
-                    visited,
-                    stale_manifests,
-                    stale_tls_key_logs,
-                    sensitive_artifacts,
-                );
+                walk(&path, depth + 1, visited, state);
                 continue;
             }
             if !file_type.is_file() {
@@ -404,34 +441,279 @@ fn scan_deep_capture_residue(
                 continue;
             };
             if name == "manifest.json" {
-                manifest_declared_artifacts(&path, stale_tls_key_logs, sensitive_artifacts);
+                push_unique(state.manifests, path.clone());
+                manifest_declared_artifacts(
+                    &path,
+                    state.stale_tls_key_logs,
+                    state.sensitive_artifacts,
+                );
                 if manifest_cleanup_unfinished(&path) {
-                    push_unique(stale_manifests, path.clone());
+                    push_unique(state.stale_manifests, path.clone());
                 }
             }
             if name.eq_ignore_ascii_case("tls-keylog.log")
                 || name.eq_ignore_ascii_case("sslkeylog.log")
             {
-                push_unique(stale_tls_key_logs, path.clone());
+                push_unique(state.stale_tls_key_logs, path.clone());
             }
             if matches!(
                 name,
                 "application.jsonl" | "http.har" | "proxy.jsonl" | "process-trace.jsonl"
             ) {
-                push_unique(sensitive_artifacts, path);
+                push_unique(state.sensitive_artifacts, path);
             }
         }
     }
 
+    fn push_scan_error(errors: &mut Vec<String>, error: String) {
+        if !errors.contains(&error) {
+            errors.push(error);
+        }
+    }
+
+    let mut scan = DeepCaptureScan::default();
+    let mut state = ScanState {
+        stale_manifests: &mut scan.stale_manifests,
+        stale_tls_key_logs: &mut scan.stale_tls_key_logs,
+        sensitive_artifacts: &mut scan.sensitive_artifacts,
+        manifests: &mut scan.manifests,
+        errors: &mut scan.errors,
+    };
     let mut visited = 0;
-    walk(
-        root,
-        0,
-        &mut visited,
-        stale_manifests,
-        stale_tls_key_logs,
-        sensitive_artifacts,
-    );
+    walk(root, 0, &mut visited, &mut state);
+    scan
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OwnedCaIdentity {
+    recorded: String,
+    material: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(test, windows))]
+struct CaInventory {
+    current_user_root: Vec<String>,
+    local_machine_root: Vec<String>,
+}
+
+fn normalize_thumbprint(value: &str) -> Option<String> {
+    let normalized: String = value
+        .chars()
+        .filter(|ch| !matches!(ch, ':' | '-' | ' ' | '\t' | '\r' | '\n'))
+        .map(|ch| ch.to_ascii_uppercase())
+        .collect();
+    (normalized.len() == 40 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .then_some(normalized)
+}
+
+fn manifest_ca_identities(manifests: &[PathBuf]) -> Result<Vec<OwnedCaIdentity>, String> {
+    let mut identities = Vec::new();
+    for manifest in manifests {
+        let text = std::fs::read_to_string(manifest)
+            .map_err(|err| format!("could not read {}: {err}", manifest.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|err| format!("could not parse {}: {err}", manifest.display()))?;
+        let Some(raw) = value
+            .get("trust")
+            .and_then(|trust| trust.get("thumbprint"))
+            .and_then(|thumbprint| thumbprint.as_str())
+        else {
+            continue;
+        };
+        let recorded = normalize_thumbprint(raw)
+            .ok_or_else(|| format!("{} contains an invalid CA thumbprint", manifest.display()))?;
+        let material_path = manifest
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .join("mitmproxy")
+            .join("mitmproxy-ca-cert.cer");
+        #[cfg(windows)]
+        let material = if material_path.is_file() {
+            Some(crate::windows_cert::file_thumbprint(&material_path)?)
+        } else {
+            None
+        };
+        #[cfg(not(windows))]
+        let material = {
+            let _ = material_path;
+            None
+        };
+        let identity = OwnedCaIdentity { recorded, material };
+        if let Some(existing) = identities
+            .iter_mut()
+            .find(|existing: &&mut OwnedCaIdentity| existing.recorded == identity.recorded)
+        {
+            match (&existing.material, &identity.material) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err(format!(
+                        "multiple bundles for {} contain conflicting CA material",
+                        identity.recorded
+                    ));
+                }
+                (None, Some(_)) => existing.material = identity.material,
+                _ => {}
+            }
+        } else {
+            identities.push(identity);
+        }
+    }
+    Ok(identities)
+}
+
+#[cfg(any(test, windows))]
+fn classify_ca(identities: &[OwnedCaIdentity], inventory: &CaInventory) -> DeepCaptureCa {
+    let mut findings = Vec::new();
+    for identity in identities {
+        if let Some(material) = &identity.material {
+            if material != &identity.recorded {
+                return DeepCaptureCa::Mismatched {
+                    expected: identity.recorded.clone(),
+                    actual: material.clone(),
+                    store: observed_store(material, inventory)
+                        .or_else(|| observed_store(&identity.recorded, inventory)),
+                };
+            }
+        }
+        if inventory.current_user_root.contains(&identity.recorded) {
+            findings.push(DeepCaptureCa::CurrentUser {
+                thumbprint: identity.recorded.clone(),
+            });
+        }
+        if inventory.local_machine_root.contains(&identity.recorded) {
+            findings.push(DeepCaptureCa::WrongStore {
+                store: "LocalMachine/Root".to_string(),
+                thumbprint: identity.recorded.clone(),
+            });
+        }
+    }
+    match findings.len() {
+        0 => DeepCaptureCa::Absent,
+        1 => findings.pop().expect("one finding"),
+        count => DeepCaptureCa::Unknown(format!(
+            "multiple ({count}) fragcap-owned CA trust entries were observed"
+        )),
+    }
+}
+
+#[cfg(any(test, windows))]
+fn observed_store(thumbprint: &str, inventory: &CaInventory) -> Option<String> {
+    let current = inventory
+        .current_user_root
+        .iter()
+        .any(|item| item == thumbprint);
+    let machine = inventory
+        .local_machine_root
+        .iter()
+        .any(|item| item == thumbprint);
+    match (current, machine) {
+        (true, false) => Some("CurrentUser/Root".to_string()),
+        (false, true) => Some("LocalMachine/Root".to_string()),
+        _ => None,
+    }
+}
+
+#[cfg(any(test, windows))]
+fn cleanup_targets(
+    identities: &[OwnedCaIdentity],
+    inventory: &CaInventory,
+) -> Vec<(String, String)> {
+    let mut targets = Vec::new();
+    for identity in identities {
+        let mut thumbprints = vec![identity.recorded.as_str()];
+        if let Some(material) = identity.material.as_deref() {
+            if material != identity.recorded {
+                thumbprints.push(material);
+            }
+        }
+        for thumbprint in thumbprints {
+            if inventory
+                .current_user_root
+                .iter()
+                .any(|item| item == thumbprint)
+            {
+                let target = ("CurrentUser/Root".to_string(), thumbprint.to_string());
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+            if inventory
+                .local_machine_root
+                .iter()
+                .any(|item| item == thumbprint)
+            {
+                let target = ("LocalMachine/Root".to_string(), thumbprint.to_string());
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+        }
+    }
+    targets
+}
+
+#[cfg(windows)]
+fn read_ca_inventory() -> Result<CaInventory, String> {
+    Ok(CaInventory {
+        current_user_root: crate::windows_cert::store_thumbprints(
+            crate::windows_cert::CURRENT_USER_ROOT,
+        )?,
+        local_machine_root: crate::windows_cert::store_thumbprints(
+            crate::windows_cert::LOCAL_MACHINE_ROOT,
+        )?,
+    })
+}
+
+#[cfg(windows)]
+fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
+    let identities = match manifest_ca_identities(manifests) {
+        Ok(identities) => identities,
+        Err(reason) => return DeepCaptureCa::Unknown(reason),
+    };
+    if identities.is_empty() {
+        return DeepCaptureCa::Absent;
+    }
+    match read_ca_inventory() {
+        Ok(inventory) => classify_ca(&identities, &inventory),
+        Err(reason) => DeepCaptureCa::Unknown(reason),
+    }
+}
+
+#[cfg(not(windows))]
+fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
+    match manifest_ca_identities(manifests) {
+        Err(reason) => DeepCaptureCa::Unknown(reason),
+        Ok(identities) if identities.is_empty() => DeepCaptureCa::Absent,
+        Ok(_) => DeepCaptureCa::Unknown(
+            "Windows certificate stores are unavailable on this platform".to_string(),
+        ),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn ca_cleanup_targets(root: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+    let scan = scan_deep_capture_residue(root);
+    if !scan.errors.is_empty() {
+        return Err(scan.errors.join("; "));
+    }
+    let identities = manifest_ca_identities(&scan.manifests)?;
+    if identities.is_empty() {
+        return Ok(Vec::new());
+    }
+    let inventory = read_ca_inventory()?;
+    Ok(cleanup_targets(&identities, &inventory))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn ca_cleanup_targets(root: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+    let scan = scan_deep_capture_residue(root);
+    if !scan.errors.is_empty() {
+        return Err(scan.errors.join("; "));
+    }
+    if manifest_ca_identities(&scan.manifests)?.is_empty() {
+        return Ok(Vec::new());
+    }
+    Err("Windows certificate stores are unavailable on this platform".to_string())
 }
 
 pub(crate) fn manifest_declared_artifacts(
@@ -1000,5 +1282,153 @@ mod tests {
 
         assert_eq!(tls_paths, vec![tls]);
         assert_eq!(sensitive, vec![app]);
+    }
+
+    fn identity(recorded: &str, material: Option<&str>) -> OwnedCaIdentity {
+        OwnedCaIdentity {
+            recorded: recorded.to_string(),
+            material: material.map(str::to_string),
+        }
+    }
+
+    fn inventory(current_user: &[&str], local_machine: &[&str]) -> CaInventory {
+        CaInventory {
+            current_user_root: current_user
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            local_machine_root: local_machine
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn ca_classifier_covers_absent_supported_wrong_store_and_unrelated() {
+        let owned = "00112233445566778899AABBCCDDEEFF00112233";
+        let unrelated = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+
+        assert_eq!(
+            classify_ca(
+                &[identity(owned, Some(owned))],
+                &inventory(&[unrelated], &[])
+            ),
+            DeepCaptureCa::Absent
+        );
+        assert_eq!(
+            classify_ca(&[identity(owned, Some(owned))], &inventory(&[owned], &[])),
+            DeepCaptureCa::CurrentUser {
+                thumbprint: owned.to_string()
+            }
+        );
+        assert_eq!(
+            classify_ca(&[identity(owned, Some(owned))], &inventory(&[], &[owned])),
+            DeepCaptureCa::WrongStore {
+                store: "LocalMachine/Root".to_string(),
+                thumbprint: owned.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn ca_classifier_reports_material_mismatch_and_ambiguity() {
+        let recorded = "00112233445566778899AABBCCDDEEFF00112233";
+        let material = "112233445566778899AABBCCDDEEFF0011223344";
+        assert_eq!(
+            classify_ca(
+                &[identity(recorded, Some(material))],
+                &inventory(&[material], &[])
+            ),
+            DeepCaptureCa::Mismatched {
+                expected: recorded.to_string(),
+                actual: material.to_string(),
+                store: Some("CurrentUser/Root".to_string())
+            }
+        );
+
+        let second = "2233445566778899AABBCCDDEEFF001122334455";
+        assert!(matches!(
+            classify_ca(
+                &[identity(recorded, None), identity(second, None)],
+                &inventory(&[recorded, second], &[])
+            ),
+            DeepCaptureCa::Unknown(reason) if reason.contains("multiple")
+        ));
+    }
+
+    #[test]
+    fn thumbprint_normalization_is_strict_and_canonical() {
+        assert_eq!(
+            normalize_thumbprint("00:11 22-33 44 55 66 77 88 99 aa bb cc dd ee ff 00 11 22 33"),
+            Some("00112233445566778899AABBCCDDEEFF00112233".to_string())
+        );
+        assert_eq!(normalize_thumbprint("controlled-thumbprint"), None);
+        assert_eq!(normalize_thumbprint("0011"), None);
+    }
+
+    #[test]
+    fn manifest_identities_are_exact_and_deduplicated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("one.json");
+        let second = dir.path().join("two.json");
+        std::fs::write(
+            &first,
+            r#"{"trust":{"thumbprint":"00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33"}}"#,
+        )
+        .expect("first manifest");
+        std::fs::write(
+            &second,
+            r#"{"trust":{"thumbprint":"00112233445566778899AABBCCDDEEFF00112233"}}"#,
+        )
+        .expect("second manifest");
+
+        assert_eq!(
+            manifest_ca_identities(&[first, second]).expect("identities"),
+            vec![identity("00112233445566778899AABBCCDDEEFF00112233", None)]
+        );
+    }
+
+    #[test]
+    fn an_absent_session_root_is_an_empty_scan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scan = scan_deep_capture_root(Some(&dir.path().join("never-created")));
+
+        assert!(scan.manifests.is_empty());
+        assert!(scan.errors.is_empty());
+    }
+
+    #[test]
+    fn a_truncated_session_scan_is_incomplete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for index in 0..201 {
+            std::fs::write(dir.path().join(format!("artifact-{index:03}")), "x").expect("artifact");
+        }
+
+        let scan = scan_deep_capture_residue(dir.path());
+
+        assert!(scan
+            .errors
+            .iter()
+            .any(|error| error.contains("200-entry limit")));
+    }
+
+    #[test]
+    fn cleanup_targets_include_every_exact_observed_owned_entry() {
+        let first = "00112233445566778899AABBCCDDEEFF00112233";
+        let second = "112233445566778899AABBCCDDEEFF0011223344";
+        let unrelated = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let targets = cleanup_targets(
+            &[identity(first, None), identity(second, None)],
+            &inventory(&[first, unrelated], &[second]),
+        );
+
+        assert_eq!(
+            targets,
+            vec![
+                ("CurrentUser/Root".to_string(), first.to_string()),
+                ("LocalMachine/Root".to_string(), second.to_string()),
+            ]
+        );
     }
 }

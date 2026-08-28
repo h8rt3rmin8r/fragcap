@@ -180,6 +180,16 @@ every offered action for unattended interactive use. `--fix` is refused with
 `--json`, and when stdout (or, without `--yes`, stdin) is not an interactive
 terminal.
 
+The Deep Capture section reads local CA trust without changing it. On Windows it
+matches only exact SHA-1 thumbprints previously recorded by fragcap session
+manifests, then checks current-user Root (the supported scope) and local-machine
+Root (an unexpected broader scope). It does not identify ownership from certificate
+names. The report distinguishes absent, supported, wrong-store, mismatched, and
+unobservable states and prints observed thumbprints identically in human and JSON
+output. Wrong-store or mismatched trust offers confirmation-gated cleanup only
+when the exact manifest-backed thumbprint and store can be named. Deep Capture CA
+warnings do not block passive Capture readiness.
+
 ### `extcap`
 
 Analyzer integration. Wireshark and compatible analyzers invoke `fragcap` as an

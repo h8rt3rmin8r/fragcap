@@ -308,12 +308,41 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
     };
     let mut removed = 0usize;
     let mut failed = Vec::new();
+    let mut preserve_manifests = false;
+    match super::probe::ca_cleanup_targets(&root) {
+        Ok(targets) => {
+            for (store, thumbprint) in targets {
+                match remove_ca_trust(&store, &thumbprint) {
+                    Ok(()) => {
+                        removed += 1;
+                        let _ = writeln!(out, "  removed {thumbprint} from {store}");
+                    }
+                    Err(err) => {
+                        preserve_manifests = true;
+                        failed.push(err);
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            preserve_manifests = true;
+            failed.push(format!("could not audit Deep Capture CA trust: {err}"));
+        }
+    }
     for path in deep_capture_cleanup_candidates(&root) {
         if !path.starts_with(&root) {
             failed.push(format!(
                 "refused path outside session storage: {}",
                 path.display()
             ));
+            continue;
+        }
+        if preserve_manifests && path.file_name().is_some_and(|name| name == "manifest.json") {
+            let _ = writeln!(
+                out,
+                "  preserved {} because CA trust cleanup is incomplete",
+                path.display()
+            );
             continue;
         }
         match std::fs::remove_file(&path) {
@@ -325,15 +354,55 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
         }
     }
     if failed.is_empty() {
-        let _ = writeln!(out, "  removed {removed} Deep Capture residue file(s)");
+        let _ = writeln!(out, "  removed {removed} Deep Capture residue resource(s)");
         ActionOutcome::Performed
     } else {
         ActionOutcome::Failed(format!(
-            "removed {removed} file(s), failed to remove {} file(s): {}",
+            "removed {removed} resource(s), failed to remove {} resource(s): {}",
             failed.len(),
             failed.join("; ")
         ))
     }
+}
+
+#[cfg(windows)]
+fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
+    let mut command = std::process::Command::new("certutil");
+    match store {
+        "CurrentUser/Root" => {
+            command.args(["-user", "-delstore", "Root", thumbprint]);
+        }
+        "LocalMachine/Root" => {
+            command.args(["-delstore", "Root", thumbprint]);
+        }
+        _ => return Err(format!("refused unsupported certificate store {store}")),
+    }
+    let status = command
+        .status()
+        .map_err(|err| format!("could not remove {thumbprint} from {store}: {err}"))?;
+    if status.success() {
+        let remaining = crate::windows_cert::store_thumbprints(store).map_err(|err| {
+            format!("removed {thumbprint} from {store}, but verification failed: {err}")
+        })?;
+        if remaining.iter().any(|item| item == thumbprint) {
+            Err(format!(
+                "{thumbprint} remains in {store} after certutil reported success"
+            ))
+        } else {
+            Ok(())
+        }
+    } else {
+        Err(format!(
+            "certutil could not remove {thumbprint} from {store} (exit {status})"
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
+    Err(format!(
+        "cannot remove {thumbprint} from {store}: Windows certificate stores are unavailable"
+    ))
 }
 
 fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::PathBuf> {
