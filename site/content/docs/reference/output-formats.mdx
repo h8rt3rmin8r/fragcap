@@ -1,38 +1,27 @@
 ---
-title: Output formats
-description: "The two formats fragcap writes: extended pcapng and JSON Lines."
+title: Output formats and session bundles
+description: Packet outputs, Deep Capture bundle artifacts, their authority, sensitivity, omissions, and correlation.
 ---
 
-fragcap writes two output formats. Both carry the same facts; they differ in what
-reads them. You choose a format per sink: `--out FILE.fcapng` and `file:` sinks
-write pcapng, `jsonl:` sinks write JSON Lines.
+fragcap has two output families. **Capture** writes packet streams as pcapng or packet JSON Lines. **Deep Capture** writes a [session bundle](/docs/glossary/file-and-wire-formats#session-bundle) containing packet truth alongside separate proxy observations, projections, diagnostic sidecars, compatibility evidence, and cleanup evidence. These files do not carry equivalent facts, so begin with the artifact that owns the question you are asking.
 
-## pcapng
+## Capture outputs
 
-The default. fragcap writes standard pcapng, so any unmodified analyzer reads the
-capture as an ordinary packet trace. Compatibility is the point: the process
-attribution rides in each packet's comment, a field pcapng already defines, rather
-than in a private extension an analyzer would have to understand.
+Capture chooses a format per sink. `--out FILE.fcapng` and `file:` sinks write pcapng, while `jsonl:` sinks write packet JSON Lines. Both describe packets processed by the Capture pipeline, but they serve different readers.
 
-Open a `.fcapng` file in [Wireshark](https://www.wireshark.org/), the most widely
-used pcapng analyzer, or any other pcapng-aware tool. The packets are there as
-usual; the owning process, its role, and the attribution fidelity appear in the
-per-packet comment. An analyzer that ignores comments still shows you the traffic.
-Wireshark is effectively part of the workflow: fragcap produces the capture, and
-Wireshark is where you read it.
+### pcapng
 
-## JSON Lines
+The default Capture format is standard pcapng. Any unmodified pcapng analyzer can read the file as an ordinary packet trace. Process attribution rides in each packet's standard comment rather than a private extension, so an analyzer that ignores comments still shows the traffic.
 
-One JSON object per line, for programs rather than analyzers. A stream has three
-record kinds, distinguished by the `type` field: the first line is a `header`,
-every line in between is a packet (no `type` field), and the final line of a
-successfully finalized stream is a `trailer` carrying the run's counts. A consumer
-should switch on `type` and treat the trailer as end-of-stream, not as a
-malformed packet.
+A `.fcapng` file owns the packet bytes, timestamps, capturing interface, process attribution, role, attribution fidelity, and final loss accounting that fragcap recorded. Open it in [Wireshark](https://www.wireshark.org/) or another pcapng-aware analyzer. Deep Capture uses the same format for `capture.fcapng`; application observations remain separate sidecars.
+
+### Packet JSON Lines
+
+Packet JSON Lines is the machine-readable Capture stream. It is distinct from Deep Capture's `application.jsonl`. The first line is a `header`, every intervening line is one packet with no `type` field, and a successfully finalized stream ends with a `trailer` carrying run counts.
 
 ```json
-{"type":"header","version":"fragcap/0.2.0","interfaces":["capture"]}
-{"ts":1700000000.000000,"iface":"capture","pid":4242,"proc":"game.exe","role":"client","stage":"client","dir":"out","attr":"live","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":74,"orig_len":74,"data":"0200..."}
+{"type":"header","version":"fragcap/0.7.0","interfaces":["capture"]}
+{"ts":1700000000.000000,"iface":"capture","pid":4242,"proc":"sample.exe","role":"client","stage":"client","dir":"out","attr":"live","flow_id":"flow-00000001","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":74,"orig_len":74,"data":"0200"}
 {"type":"trailer","packets":24,"attributed":24,"unattributed":0,"kernel_dropped":0,"interface_dropped":0,"buffer_dropped":0,"sink_dropped":0,"filter_gaps":0}
 ```
 
@@ -40,39 +29,173 @@ Each packet line carries:
 
 | Field | Meaning |
 | --- | --- |
-| `ts` | The capture timestamp, seconds since the epoch. |
+| `ts` | The capture timestamp, in seconds since the epoch. |
 | `iface` | The capturing interface. |
-| `pid`, `proc` | The owning process id and image name. |
+| `pid`, `proc` | The owning process id and image name when attributed. |
 | `role`, `stage` | The role and stage that attributed the flow. |
-| `dir` | Direction relative to the capturing host: `in` or `out`. |
-| `attr` | The attribution fidelity, for example `live` or `retained`. |
+| `dir` | Direction relative to the capturing host: `in`, `out`, `local`, or `unknown`. |
+| `attr` | Attribution fidelity, such as `live` or `retained`. |
+| `flow_id` | A session-local flow correlation id when one was assigned. |
 | `proto` | The transport protocol. |
-| `src`, `dst` | The endpoints, `address:port`. |
+| `src`, `dst` | Wire-order endpoints when direction is known. |
+| `local`, `remote` | Normalized endpoints when direction is unknown, replacing `src` and `dst` rather than guessing wire order. |
 | `len`, `orig_len` | The captured and original lengths. |
-| `data` | The packet bytes, hex-encoded. Omitted content under `--no-payload`. |
+| `data` | Hex-encoded packet bytes, omitted under `--no-payload`. |
 
-The `attr` field distinguishes a live socket-table match from a retained one: a
-flow attributed from a connection that has since closed is marked, because a
-reused port inside the retention window is the one way that answer can be wrong.
-See [attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity).
+The `attr` field distinguishes a live socket-table match from a retained one. See [attribution fidelity](/docs/glossary/file-and-wire-formats#attribution-fidelity). The trailer owns the stream's packet and discard counts. A stream that ends without a trailer did not finalize cleanly.
 
-The trailer line carries the run's accounting: `packets`, `attributed`,
-`unattributed`, and the discard counters `kernel_dropped`, `interface_dropped`,
-`buffer_dropped`, `sink_dropped`, and `filter_gaps`. Every packet fragcap
-observed is accounted for across these; a stream that ends without a trailer did
-not finalize cleanly.
+### Packet payloads
 
-## What is in the payload
+Payloads are the bytes Capture observed. fragcap does not infer whether they are ciphertext or plaintext. `--no-payload` is an explicit [capture scope](/docs/glossary/capture-and-networking#capture-scope) choice that retains metadata without payload bytes.
 
-Payloads are the game's own bytes. fragcap records that a conversation happened
-and which process owned it; whether those bytes are readable is something the
-capture lets you find out, not something fragcap presumes. `--no-payload` drops
-the bytes entirely and keeps the metadata, for when the payload is more than you
-want to store.
-
-<Callout type="warn" title="fragcap does not know whether a payload is encrypted">
-fragcap observes at the socket layer and cannot tell ciphertext from plaintext.
-Whether a title's traffic is encrypted is a question the capture helps you
-answer, not an assumption fragcap makes. Surfacing traffic that turns out to be
-plaintext when it should not be is a primary reason the tool exists.
+<Callout type="warn" title="Packet output is private by default">
+Packet captures can contain addresses, payloads, identifiers, or session material. The manifest currently labels `capture.fcapng` as `ordinary`, but that label is an artifact class, not permission to publish the file without review.
 </Callout>
+
+## Deep Capture session bundle
+
+Deep Capture writes a directory of distinct artifacts. When finalization succeeds, read `manifest.json` first. It is the durable bundle index: it identifies the session and target, launch and proxy context, [local development certificate authority](/docs/glossary/anti-cheat-and-security#local-development-certificate-authority) trust state, produced artifacts, omissions, available correlation, and aggregate cleanup result.
+
+The manifest's `manifest_version` is the version of this bundle index contract. It is separate from the fragcap release version.
+
+### Session states
+
+| State | Meaning |
+| --- | --- |
+| `complete` | The recorded operation reached finalization without an operation failure. This does not mean every flow reached the proxy, every protocol was inspectable, or every optional artifact was produced. |
+| `partial` | Useful packet or sidecar evidence exists even though a later operation failed. Keep the bundle and read its omissions and cleanup report. |
+| `failed` | The operation failed and packet truth was not produced. A finalized manifest records that absence instead of pointing at a fabricated capture. |
+
+An earlier initialization failure can leave `cleanup.json` without a final `manifest.json`. In that recovery case, the cleanup record can report `manifest-state` as `not-written`; it is not a fourth finalized session state.
+
+### Artifact authority and lifetime
+
+The `authority` and `sensitivity` columns below reproduce the values written into the v0.7.0 manifest. `ordinary` means the artifact is not in the manifest's sensitive sidecar classes. It does not mean the file is anonymous or safe to share.
+
+| Role and path | Authority | Sensitivity | Required | Produced and retained when |
+| --- | --- | --- | --- | --- |
+| `manifest`, `manifest.json` | `bundle-index` | `ordinary` | yes | Written after resource cleanup when finalization succeeds. A completed manifest remains until the operator removes it; an unfinished manifest can be removed by confirmed residue cleanup. |
+| `pcapng`, `capture.fcapng` | `packet-truth` | `ordinary` | yes | Declared when packet truth exists. Retained as evidence; omitted with `writer-failed` rather than fabricated when absent. |
+| `application-jsonl`, `application.jsonl` | `application-events` | `sensitive` | yes | Written at finalization, including header and trailer even when there are no observation records. Retained until operator removal or confirmed residue cleanup. |
+| `har`, `http.har` | `http-projection` | `sensitive` | no | Written only when `--har` was requested and an observation has both HTTP method and URL. Retained like other sensitive sidecars. |
+| `tls-key-log`, `tls-keylog.log` | `analyzer-aid` | `secret-adjacent` | no | Requested explicitly and declared only when the proxy leaves a nonempty file. Retained for analyzer use until operator removal or confirmed residue cleanup. |
+| `proxy-log`, `proxy.jsonl` | `proxy-events` | `sensitive` | yes | Written at finalization with proxy start and stop context. Retained like other sensitive sidecars. |
+| `process-trace`, `process-trace.jsonl` | `process-events` | `sensitive` | yes | Written at finalization with observed stage lifecycle events or one explicit unavailable record. Retained like other sensitive sidecars. |
+| `compatibility`, `compatibility.json` | `compatibility-updates` | `ordinary` | yes | Written at finalization with scrubbed run context and observations. It does not prove that the later local-store fact write succeeded. |
+| `cleanup`, `cleanup.json` | `cleanup-report` | `ordinary` | yes | Written with per-resource disposition and updated after the final manifest write. Retained as the cleanup authority. |
+
+## Application observations and projections
+
+### Application JSON Lines
+
+`application.jsonl` is the canonical machine-readable stream for observations emitted by the Deep Capture proxy path. It does not contain packet records. Its first record is `application.header`, followed by zero or more `application.http`, `application.metadata`, or `application.unsupported` records, and one `application.trailer` with the record count and writer status.
+
+An observation can carry `session_id`, target id, `flow_id`, proxy connection id, start and end time, direction, protocol, inspectability, process id and image, role, attribution state, an HTTP object, and explanatory reason. Fields are null or absent when the observation does not support them. A metadata-only or unsupported record still describes what reached the proxy; it does not claim that the corresponding packet traffic was absent.
+
+### HAR
+
+`http.har` is an optional [HAR](/docs/glossary/file-and-wire-formats#har) projection, not an independent application authority. v0.7.0 projects only the observed start time, HTTP method, URL, and response status. Request and response headers, cookies, query entries, and bodies are empty because the application stream does not retain those values. Size and timing placeholders do not reconstruct facts that were never observed.
+
+### Proxy-owned TLS key log
+
+When `--key-log` is selected, fragcap creates `tls-keylog.log` at its final bundle path before proxy traffic and announces that path so an analyzer can consume new entries during the session. The proxy appends its own TLS session material. Finalization retains and declares the file only when it is nonempty; an empty placeholder is removed and appears as a `not-produced` omission.
+
+This [proxy-owned TLS key-log export](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export) is secret-adjacent analyzer material. It is not decrypted application output, does not contain keys extracted from the selected process, and does not bypass certificate pinning.
+
+## Diagnostic and audit sidecars
+
+- `proxy.jsonl` owns the proxy backend identity, loopback listener, start, stop, and final operation status recorded by v0.7.0. It is not packet truth or a complete application event stream.
+- `process-trace.jsonl` owns observed target-stage match and exit chronology. When no stage lifecycle event is available, it writes `process-trace.unavailable` and says packet attribution remains authoritative.
+- `compatibility.json` records the selected target identity, launch case, proxy backend, and scrubbed protocol and inspectability observations used as compatibility-update context. Inspect the local target matrix with `fragcap targets show`; the sidecar alone does not prove the later database update committed.
+- `cleanup.json` owns each resource's cleanup status and human-readable reason. The manifest repeats only its path and aggregate status.
+
+Session state, cleanup status, and artifact omissions answer different questions. A partial session can clean up successfully, and a complete operation still relies on `cleanup.json` for per-resource results.
+
+## Manifest omissions
+
+The finalized v0.7.0 manifest emits these omission entries:
+
+| Role | Reason | Severity | Meaning |
+| --- | --- | --- | --- |
+| `pcapng` | `writer-failed` | `error` | No packet-truth file existed at finalization. |
+| `har` | `no-http-semantics` | `info` | HAR was requested, but no observation contained both HTTP method and URL. |
+| `har` | `not-requested` | `info` | HAR output was not selected. |
+| `tls-key-log` | `not-produced` | `warn` | Key logging was selected, but the proxy left no nonempty key-log file. |
+| `tls-key-log` | `not-requested` | `info` | Key logging was not selected. |
+
+These tokens describe absent artifact roles only. An application record's free-form `reason` explains that observation or unavailable packet correlation. A cleanup resource's `status`, such as `succeeded`, `failed`, `retained`, `not-needed`, or `not-produced`, describes resource disposition. Do not treat the three vocabularies as one enum.
+
+## Correlation across artifacts
+
+| Anchor | Present in | Limit |
+| --- | --- | --- |
+| `session_id` | Manifest, application stream, proxy log, process trace, compatibility record, cleanup report, and status events | HAR and pcapng do not carry this field directly. |
+| Target id or handle | Manifest, application target id, and compatibility record | Proxy and process sidecars do not repeat target identity. |
+| `flow_id` | Application observations, matching pcapng packet comments, and the manifest's summary list | Missing when proxy endpoints cannot be joined to packet truth. |
+| `proxy_connection_id` | Application observations | The v0.7.0 proxy lifecycle log does not repeat every observation id. |
+| `started_at`, `ended_at` | Application observations; HAR projects `started_at` | Other sidecars do not expose one complete shared event-time contract. |
+| Process id, image, and role | Correlated application observations, process trace where observed, and pcapng attribution comments | Values can be null or unavailable and are never inferred merely to complete a join. |
+| Attribution state | Application observations and packet-side attribution comments | `packet-flow-only` and `proxy-only` describe the available evidence path, not the absence of other activity. |
+
+An absent anchor means the join is unavailable. It does not prove that a packet, process event, or application action did not occur.
+
+## Synthetic manifest example
+
+This shortened example shows the relationships rather than every field. Paths are relative to a synthetic bundle and contain no local or account material.
+
+```json
+{
+  "manifest_version": 1,
+  "session_id": "sample-session-0001",
+  "mode": "deep-capture",
+  "state": "complete",
+  "target": {
+    "id": 42,
+    "stable_id": 420042,
+    "handle": "sample-target"
+  },
+  "artifacts": [
+    {
+      "role": "pcapng",
+      "path": "capture.fcapng",
+      "authority": "packet-truth",
+      "sensitivity": "ordinary",
+      "content_type": "application/x-pcapng",
+      "required": true
+    },
+    {
+      "role": "application-jsonl",
+      "path": "application.jsonl",
+      "authority": "application-events",
+      "sensitivity": "sensitive",
+      "content_type": "application/x-ndjson",
+      "required": true
+    }
+  ],
+  "omissions": [
+    {
+      "role": "tls-key-log",
+      "reason": "not-requested",
+      "severity": "info"
+    }
+  ],
+  "correlation": {
+    "flow_ids": ["flow-00000001"],
+    "process_roles": ["client"]
+  },
+  "cleanup": {
+    "status": "succeeded",
+    "report": "cleanup.json"
+  }
+}
+```
+
+## Retention, cleanup, and sharing
+
+Finalized bundle artifacts remain until the operator removes them. Normal session cleanup attempts to stop the owned proxy, release its port, undo authorized trust, and remove proxy-private temporary material. It retains declared evidence, including a nonempty requested key log.
+
+Plain `fragcap doctor` is read-only. Under fragcap-owned session storage, it reports sensitive sidecars, key logs, unfinished manifests, and incomplete trust cleanup. After confirmation, `fragcap doctor --fix` can remove known sensitive sidecars and unfinished manifests. It does not promise to erase every file from a completed bundle, and it preserves manifest ownership evidence when CA trust cleanup is incomplete.
+
+Keep the whole bundle private by default. Preserve the original observation. If material must be shared, make a copy, remove or transform sensitive content deliberately, record what changed, and review the copy for packet payloads, URLs, identifiers, local paths, process details, and session secrets.
+
+See [Deep Capture compatibility](/docs/reference/deep-capture-compatibility) for traffic and certificate-pinning limits, [Command line](/docs/reference/cli#deep-capture) for invocation options, and [Getting started](/docs/getting-started#8-review-the-bundle-and-cleanup) for the first-run review and cleanup journey.
