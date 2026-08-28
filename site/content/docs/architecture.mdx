@@ -31,7 +31,7 @@ The primary file is `.fcapng`, ordinary pcapng with attribution in standard pack
 
 ## Deep Capture: explicit proxy observations beside Capture
 
-Deep Capture starts from one stored target. Its read-only preflight resolves the launch case, current compatibility evidence, Capture readiness, proxy backend, bundle path, and trust authorization before creating the session directory or starting the proxy.
+Deep Capture starts from one stored target. Its read-only preflight resolves the launch case, current compatibility evidence, Capture configuration, proxy backend, bundle path, and trust authorization before creating the session directory or starting the proxy.
 
 ```mermaid
 flowchart LR
@@ -53,7 +53,7 @@ flowchart LR
 
 The current real-target path is deliberately narrow. The selected target must have current `proxy-routing = reached-client` and `proxy-propagation = confirmed` facts for `steam-protocol-cold`. Unknown, stale, conflicting, or wrong-launch evidence is refused. An already-running Steam process is a warm launch fragcap does not own, and direct-executable managed launch is not implemented in v0.7.0, so both are refused before session side effects. The [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility) carries the complete current traffic and launch matrix.
 
-After preflight, fragcap starts a loopback `mitmdump` child, manages any authorized CA trust, prepares ordinary Capture, and launches the target through Steam with launch-scoped proxy environment. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
+After preflight, fragcap starts a loopback `mitmdump` child, manages any authorized CA trust, opens the ordinary Capture backend, and launches the target through Steam with launch-scoped proxy environment. The preflight does not prove that Npcap is available, the process is elevated, or a selected interface can be opened; `fragcap doctor` reports that environment readiness, and a later Capture startup failure is recorded through cleanup and the partial or failed bundle path. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
 
 ## Trust and routing boundaries
 

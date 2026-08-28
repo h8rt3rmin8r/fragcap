@@ -33,7 +33,7 @@
 **Alternatives considered**:
 
 - Generalize the gate to known compatible targets: rejected because it hides the exact evidence and launch case.
-- Show compatibility as a post-run observation only: rejected because the read-only preflight is the side-effect boundary.
+- Show compatibility as a post-run observation only: rejected because compatibility is enforced at the read-only boundary before session side effects.
 - Describe direct execution as a fallback: rejected because the implementation refuses it.
 
 ## Trust Authorization and Ownership

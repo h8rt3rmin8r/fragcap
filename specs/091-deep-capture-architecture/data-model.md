@@ -7,7 +7,7 @@ This slice changes documentation rather than runtime data. The model defines the
 | Component | Mode | Owner | Input | Output or decision |
 | --- | --- | --- | --- | --- |
 | Stored target selection | Deep Capture | fragcap | Existing target identity | One selected target or refusal |
-| Compatibility preflight | Deep Capture | fragcap | Current launch-specific facts | Eligible cold Steam launch or refusal before side effects |
+| Compatibility preflight | Deep Capture | fragcap | Current launch-specific facts and Capture configuration | Eligible cold Steam launch or refusal before side effects; live Capture environment readiness remains a later operation |
 | Npcap acquisition | Shared packet foundation | Npcap and fragcap Capture | Selected interfaces | Raw observed packets |
 | Socket and process evidence | Capture | Windows adapters and fragcap attribution | Socket snapshots and process lifecycle | External process attribution |
 | Scope and loss accounting | Capture | fragcap | Packets plus attribution | Retained packets and named counters |

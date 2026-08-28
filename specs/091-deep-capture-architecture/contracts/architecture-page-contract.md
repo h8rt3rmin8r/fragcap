@@ -13,6 +13,7 @@
 - The diagram begins with one stored target and a read-only compatibility preflight.
 - The only shipped real-target success path is current `reached-client` and `confirmed` evidence for `steam-protocol-cold`.
 - Preflight refusal occurs before proxy, trust, managed launch, and bundle side effects.
+- Preflight validates Capture configuration but does not claim that Npcap, elevation, or interface opening has succeeded. Those live checks occur after session resources may have started, and their failures flow through cleanup and bundle state.
 - The eligible path prepares ordinary Capture, a fragcap-owned loopback mitmdump child, optional current-user Root trust, and launch-scoped proxy configuration before the target launch.
 - Packet Capture and proxy observations remain distinct inputs to correlation and the session bundle.
 - Cleanup is a first-class execution stage whose per-resource result is retained in audit evidence.
