@@ -37,3 +37,53 @@ test('does not interpret heading markers inside either fence style', () => {
     ],
   );
 });
+
+test('only closes on a plain same-character fence at least as long as its opener', () => {
+  assert.deepEqual(
+    normalizeChangelogHeadings([
+      '````md',
+      '```not-a-close',
+      '### literal after suffix',
+      '```',
+      '#### literal after short marker',
+      '~~~~',
+      '##### literal after other marker',
+      '    `````',
+      '###### literal after indented marker',
+      '`````',
+      '#### Authored heading',
+    ]),
+    [
+      '````md',
+      '```not-a-close',
+      '### literal after suffix',
+      '```',
+      '#### literal after short marker',
+      '~~~~',
+      '##### literal after other marker',
+      '    `````',
+      '###### literal after indented marker',
+      '`````',
+      '## Authored heading',
+    ],
+  );
+});
+
+test('normalizes headings indented up to three spaces but not indented code', () => {
+  assert.deepEqual(
+    normalizeChangelogHeadings([
+      ' ### One space',
+      '   ##### Three-space child',
+      '    #### Indented code',
+      '```bad`info',
+      '  #### Heading after invalid backtick opener',
+    ]),
+    [
+      ' ## One space',
+      '   ### Three-space child',
+      '    #### Indented code',
+      '```bad`info',
+      '  ### Heading after invalid backtick opener',
+    ],
+  );
+});

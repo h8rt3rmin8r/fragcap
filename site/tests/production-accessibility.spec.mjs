@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { expect, test } from '@playwright/test';
+import { expect, test as base } from '@playwright/test';
 import { readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,26 @@ const expectedDiagramNames = [
   'Capture packet attribution architecture',
   'Deep Capture session architecture',
 ];
+
+const test = base.extend({
+  browserErrors: [async ({ page }, use) => {
+    const errors = [];
+    page.on('pageerror', (error) => {
+      errors.push(`${new URL(page.url()).pathname}: page: ${error.message}`);
+    });
+    page.on('console', (message) => {
+      if (message.type() !== 'error') return;
+      const location = message.location();
+      errors.push(
+        `${new URL(page.url()).pathname}: console: ${message.text()} (${location.url || 'unknown URL'})`,
+      );
+    });
+
+    await use(errors);
+    await page.waitForTimeout(50);
+    expect(errors, 'browser and console errors').toEqual([]);
+  }, { auto: true }],
+});
 
 function exportedHtmlFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

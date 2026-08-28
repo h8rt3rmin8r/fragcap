@@ -9,31 +9,41 @@ export function normalizeChangelogHeadings(lines) {
   let fence = null;
 
   for (const line of lines) {
-    const fenceMarker = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fenceMarker) {
-      const marker = fenceMarker[1][0];
-      fence = fence === marker ? null : (fence ?? marker);
-      normalized.push(line);
-      continue;
-    }
     if (fence) {
+      const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+      if (
+        closing
+        && closing[1][0] === fence.marker
+        && closing[1].length >= fence.length
+      ) {
+        fence = null;
+      }
       normalized.push(line);
       continue;
     }
 
-    const heading = line.match(/^(#{1,6})(\s+.+)$/);
+    const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (opening) {
+      const marker = opening[1][0];
+      const validInfo = marker !== '`' || !opening[2].includes('`');
+      if (validInfo) fence = { marker, length: opening[1].length };
+      normalized.push(line);
+      continue;
+    }
+
+    const heading = line.match(/^( {0,3})(#{1,6})(\s+.+)$/);
     if (!heading) {
       normalized.push(line);
       continue;
     }
 
-    const sourceLevel = heading[1].length;
+    const sourceLevel = heading[2].length;
     while (parents.length && parents.at(-1).sourceLevel >= sourceLevel) {
       parents.pop();
     }
     const outputLevel = Math.min(6, (parents.at(-1)?.outputLevel ?? 1) + 1);
     parents.push({ sourceLevel, outputLevel });
-    normalized.push(`${'#'.repeat(outputLevel)}${heading[2]}`);
+    normalized.push(`${heading[1]}${'#'.repeat(outputLevel)}${heading[3]}`);
   }
 
   return normalized;

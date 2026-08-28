@@ -63,6 +63,8 @@
 - Keep the S094 evaluator as manual evidence. Rejected because an evaluator without a runner is not a regression gate.
 - Depend on a preinstalled browser executable. Rejected because runner images can change and would make the test environment implicit.
 
+**Review evidence**: The error gate initially exposed false 404s from Next's RSC prefetch requests because the browser encodes dynamic segment parts with dots while the static export stores those parts as directories. The loopback server now resolves that emitted path shape, allowing every console and uncaught page error to remain fatal instead of filtering framework errors from the contract.
+
 ## Decision 6: Require nonempty test populations
 
 **Decision**: The browser gate must fail if it finds no public routes, no affected muted text, no affected syntax token, or fewer than two architecture diagrams, in addition to checking the values of each observation.
