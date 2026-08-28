@@ -34,7 +34,7 @@ These tools have distinct jobs:
 
 - **Npcap is required for live packets.** fragcap never bundles, hosts, caches as its own, or redistributes Npcap. The published `doctor --fix` opens the official acquisition page after confirmation; a source build with the optional `net` feature may instead fetch and launch the vendor's signed installer after confirmation.
 - **Wireshark is recommended for analysis.** It opens `.fcapng` directly. The optional fragcap extcap integration adds a live fragcap source inside Wireshark.
-- **mitmdump is required only for Deep Capture.** Install the Windows mitmproxy package so `mitmdump` is on `PATH`. Do not configure a system-wide proxy or install mitmproxy's CA for this guide; fragcap prepares its target-scoped proxy session and manages its own purpose-specific CA after explicit confirmation.
+- **mitmdump is required only for Deep Capture.** Install the Windows mitmproxy package so `mitmdump` is on `PATH`. Do not configure a system-wide proxy or install mitmproxy's CA for this guide; fragcap prepares its target-scoped proxy session and manages its own purpose-specific CA only when the command explicitly includes `--trust-ca`.
 
 Capture records the payload bytes it observes unless you select `--no-payload`. fragcap does not guess whether those bytes are encrypted. Deep Capture can add HTTP semantics only for traffic that follows the scoped proxy route and, for HTTPS, accepts the fragcap-owned local CA. It does not bypass certificate pinning or extract keys from a target process.
 
@@ -145,7 +145,7 @@ fragcap capture 1 --duration 5m --out first-capture.fcapng
 
 If the target is not already running, start it after fragcap arms. For a Steam-anchored stored target, `fragcap capture 1 --launch --duration 5m --out first-capture.fcapng` can own the platform launch instead. Run `fragcap capture --help` for target, interface, scope, and stopping options.
 
-Capture observes packets on the selected interfaces and attributes matching flows to the target process when the available socket and process evidence permits it. Unattributed packets remain present and marked. Payload bytes are retained by default; `--no-payload` is an explicit choice to retain metadata without payload bytes. Excluded or discarded observations are accounted for in the completion statistics.
+Capture observes packets on the selected interfaces and attributes matching flows to the target process when the available socket and process evidence permits it. The default `target` scope writes only packets bound to the selected target; unattributed and other-process packets are omitted and counted in the completion statistics. Use `--scope all` only when you deliberately need those packets retained with their attribution state marked. Payload bytes are retained by default for packets admitted by the selected scope; `--no-payload` is an explicit choice to retain metadata without payload bytes.
 
 Capture does not turn encrypted traffic into readable application messages. It also does not assume that a payload is encrypted. The capture lets you inspect what was actually present on the wire.
 
@@ -181,7 +181,7 @@ The supported real-target launch case also requires Steam to be closed before th
 
 ## 7. Run a known-compatible Deep Capture
 
-Review the planned side effects before continuing: fragcap starts a loopback mitmdump child, starts ordinary packet Capture, prepares target-scoped proxy environment for the managed launch, may trust a purpose-specific CA in the current-user Root store after your explicit confirmation, writes a session bundle, and attempts to remove session-owned trust and processes during cleanup. It never falls back to a system-wide proxy.
+Review the planned side effects before continuing: fragcap starts a loopback mitmdump child, starts ordinary packet Capture, prepares target-scoped proxy environment for the managed launch, may trust a purpose-specific CA in the current-user Root store when you authorize it with `--trust-ca`, writes a session bundle, and attempts to remove session-owned trust and processes during cleanup. It never falls back to a system-wide proxy.
 
 For a target that passed the eligibility check, run:
 
@@ -189,7 +189,7 @@ For a target that passed the eligibility check, run:
 fragcap deep-capture sample-target --launch --duration 5m --trust-ca --har --key-log
 ```
 
-`--trust-ca` confirms that this run may make the stated current-user trust change when HTTPS inspection needs it. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Do not add `--yes` on a first run; read the interactive confirmation and planned side effects.
+`--trust-ca` is the trust confirmation. Adding it authorizes this run to make the stated current-user trust change when HTTPS inspection needs it; there is no second interactive trust prompt. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Do not substitute `--yes` on a first run because that broader flag pre-confirms Deep Capture prompts for unattended use.
 
 Run `fragcap deep-capture --help` to review the current launch, duration, trust, and artifact options before changing this command.
 

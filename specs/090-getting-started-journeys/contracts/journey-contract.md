@@ -36,7 +36,7 @@ The final `doctor --fix` is conditional. It is offered only when the post-sessio
 ## Consent and Cleanup Contract
 
 - `--launch` owns the target-scoped launch and is required for the documented real-target path.
-- `--trust-ca` explicitly permits the prompt for a fragcap-owned current-user CA trust change. It does not make the change silent and does not bypass pinning.
+- `--trust-ca` is the explicit authorization for a fragcap-owned current-user CA trust change. There is no second interactive trust prompt; the flag itself must be present before the change is allowed, and it does not bypass pinning.
 - The session is bounded. Cleanup removes session-owned proxy and trust changes when possible and records the exact result in the manifest.
 - A post-session `doctor` report is the read-only verification step. `doctor --fix` is used only for named residue and retains per-action confirmation.
 

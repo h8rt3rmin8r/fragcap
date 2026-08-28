@@ -8,7 +8,7 @@ This slice changes documentation rather than runtime data. The model captures th
 | --- | --- | --- |
 | Entry condition | Installed fragcap and Npcap; elevated terminal; stored or directly named target | First Capture context plus a stored target, current launch-specific evidence, and available mitmdump backend |
 | Selection | Numbered listing row or stored handle | Stored handle or row resolved from the current listing |
-| Side effects | Opens live capture and writes the selected output | Starts proxy and capture, may add current-user CA trust after confirmation, launches the target, writes a session bundle, then cleans up |
+| Side effects | Opens live capture and writes the selected output | Starts proxy and capture, may add current-user CA trust when authorized by `--trust-ca`, launches the target, writes a session bundle, then cleans up |
 | Primary truth | `.fcapng` packet observations and process attribution | `.fcapng` packet truth plus separate proxy application observations |
 | Completion | Finalized capture opened in an unmodified analyzer | Manifest records complete, partial, or failed state and cleanup outcome |
 | Refusal | Missing capture prerequisites or unresolved target | Unknown, stale, conflicting, or wrong-launch compatibility evidence; unsupported launch case; unavailable proxy; declined trust |
@@ -57,7 +57,7 @@ flowchart LR
   targets --> capture["First Capture"]
   capture --> packets["Packet truth opened"]
   packets --> evidence["Compatibility facts inspected"]
-  evidence -->|current supported launch evidence| confirm["Deep Capture side effects confirmed"]
+  evidence -->|current supported launch evidence| confirm["Trust authorized by --trust-ca"]
   evidence -->|unknown, stale, conflicting, or unsupported| stop["Stop without Deep Capture side effects"]
   confirm --> session["Bounded Deep Capture session"]
   session --> bundle["Manifest and cleanup evidence reviewed"]

@@ -21,7 +21,7 @@
 
 ## Safety and Privacy Boundaries
 
-- [x] CHK010 Are managed launch, current launch-specific evidence, proxy availability, and trust confirmation all required before the documented Deep Capture run? [Coverage, Spec §FR-006]
+- [x] CHK010 Are managed launch, current launch-specific evidence, proxy availability, and trust authorization through `--trust-ca` all required before the documented Deep Capture run? [Coverage, Spec §FR-006]
 - [x] CHK011 Are warm Steam, direct-executable, unknown-evidence, and certificate-pinning cases explicitly bounded? [Completeness, Spec §FR-007, Spec §FR-012, Spec §FR-015]
 - [x] CHK012 Are forbidden silent trust, system-wide proxy fallback, target instrumentation, and target key extraction claims excluded consistently? [Consistency, Spec §FR-015]
 - [x] CHK013 Are sensitive artifact handling requirements defined directly for application observations and proxy-owned TLS key logs without relying on the stale output-format page? [Coverage, Spec §FR-010, Spec §FR-014]

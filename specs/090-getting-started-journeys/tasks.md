@@ -57,11 +57,11 @@
 
 **Goal**: Continue from packet Capture into a consent-forward Deep Capture session for an already proven stored target.
 
-**Independent Test**: The guide requires current launch-specific evidence, cold Steam managed launch, mitmdump, explicit current-user trust confirmation, a bounded run, and review of manifest and cleanup evidence.
+**Independent Test**: The guide requires current launch-specific evidence, cold Steam managed launch, mitmdump, explicit current-user trust authorization through `--trust-ca`, a bounded run, and review of manifest and cleanup evidence.
 
 ### Tests for User Story 2
 
-- [X] T010 [US2] Run the eligibility, managed-launch, proxy-backend, trust-confirmation, traffic-limit, bundle-state, sensitivity, and cleanup baseline checks against `site/content/docs/getting-started.mdx`
+- [X] T010 [US2] Run the eligibility, managed-launch, proxy-backend, trust-authorization, traffic-limit, bundle-state, sensitivity, and cleanup baseline checks against `site/content/docs/getting-started.mdx`
 
 ### Implementation for User Story 2
 

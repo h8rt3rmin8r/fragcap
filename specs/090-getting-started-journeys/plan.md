@@ -32,7 +32,7 @@ Rewrite the v0.5-era getting-started page as two connected v0.7.0 journeys: a fi
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- **P-1 No Covert Target Instrumentation**: Pass. The guide requires explicit Deep Capture selection, target-scoped managed launch, visible CA trust confirmation, and auditable cleanup. It rejects system-wide fallback, pinning bypass, target key extraction, and every denylisted technique.
+- **P-1 No Covert Target Instrumentation**: Pass. The guide requires explicit Deep Capture selection, target-scoped managed launch, visible CA trust authorization through `--trust-ca`, and auditable cleanup. It rejects system-wide fallback, pinning bypass, target key extraction, and every denylisted technique.
 - **P-2 Core Stays Platform-Neutral**: Pass. No runtime crate changes.
 - **P-3 Capture And Attribution Stay Separate**: Pass. The guide distinguishes packet acquisition from process attribution and changes neither implementation.
 - **P-4 No Silent Loss**: Pass. Capture scope and unsupported inspection remain visible; the guide does not reinterpret absent application observations as complete coverage.

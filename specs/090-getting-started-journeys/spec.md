@@ -34,7 +34,7 @@ An operator who has a stored target with current compatibility evidence can cont
 
 **Acceptance Scenarios**:
 
-1. **Given** a stored target with current cold Steam launch compatibility evidence, **When** the operator follows the Deep Capture path, **Then** the guide requires managed launch, the current supported launch case, a supported proxy backend, explicit CA trust confirmation, and a bounded run.
+1. **Given** a stored target with current cold Steam launch compatibility evidence, **When** the operator follows the Deep Capture path, **Then** the guide requires managed launch, the current supported launch case, a supported proxy backend, explicit CA trust authorization through `--trust-ca`, and a bounded run.
 2. **Given** a Deep Capture session that completes, partially completes, or fails, **When** the operator reads the result guidance, **Then** the guide identifies the manifest as the session index, distinguishes packet truth from application observations, and explains the corresponding cleanup record.
 3. **Given** application and TLS artifacts in a bundle, **When** the operator reads the handling guidance, **Then** the guide identifies their sensitivity and links to the detailed compatibility and output references.
 
@@ -71,7 +71,7 @@ An operator whose target lacks current compatibility evidence can recognize the 
 - **FR-003**: Doctor and target-listing specimens MUST match the current human-output structure, including v0.7.0, Deep Capture readiness, current target columns, and the labelled next command.
 - **FR-004**: The guide MUST describe catalog and local database paths as optional overrides rather than installation requirements.
 - **FR-005**: The Capture journey MUST state exactly that Capture records packet observations and process attribution, retains payload bytes unless the operator selects `--no-payload`, and does not by itself provide HTTP semantics or decrypted encrypted traffic.
-- **FR-006**: The Deep Capture journey MUST require a stored target, managed launch, current launch-specific compatibility evidence, the shipped mitmdump backend, explicit confirmation before current-user CA trust changes, and a bounded session.
+- **FR-006**: The Deep Capture journey MUST require a stored target, managed launch, current launch-specific compatibility evidence, the shipped mitmdump backend, explicit authorization through `--trust-ca` before current-user CA trust changes, and a bounded session.
 - **FR-007**: The guide MUST identify the currently supported real-target launch path as a cold Steam protocol launch and MUST identify warm Steam and direct-executable cases as refused in v0.7.0.
 - **FR-008**: The guide MUST explain complete, partial, and failed bundle states, the manifest's role as the session index, and the existence and meaning of cleanup evidence.
 - **FR-009**: The guide MUST distinguish `.fcapng` packet truth, application JSONL observations, optional HAR, optional proxy-owned TLS key logs, proxy logs, process traces, compatibility updates, and cleanup reports without claiming that all artifacts carry equivalent facts.
