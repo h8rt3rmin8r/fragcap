@@ -6,14 +6,15 @@ body:
     attributes:
       value: |
         Read the non-goals in `README.md` and constitution principle P-1 first.
-        fragcap does not inject, hook, read target memory, or modify traffic,
-        and a proposal requiring any of those will be declined regardless of
-        how useful it would be. That is a scope boundary, not a judgment about
-        the request.
+        Capture is passive. Deep Capture permits explicit, target-scoped,
+        reversible local proxy inspection for authorized sessions. Neither mode
+        permits covert target instrumentation, and a proposal requiring a
+        denylisted technique will be declined regardless of how useful it would
+        be. That is a scope boundary, not a judgment about the request.
 
-        Check `docs/plans/README.md` too. The capability may already be a
-        planned slice, and specification section 28 records what is
-        deliberately deferred beyond v0.2.0.
+        Check the open issues and GitHub milestones too. The capability may
+        already be planned, and specification section 28 records work deferred
+        beyond the current release.
 
   - type: textarea
     id: problem
@@ -48,9 +49,9 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: This does not require injecting into, hooking, or reading the memory of any target process.
+        - label: This does not require injection, target hooks, target memory reads, executable modification, Winsock catalog changes, packet interception drivers, or target TLS key extraction.
           required: true
-        - label: This does not require modifying, injecting, or replaying network traffic.
+        - label: Any proposed Deep Capture proxy or trust change is explicit, target-scoped, reversible, auditable, and never a silent system-wide fallback or certificate-pinning bypass.
           required: true
-        - label: I have checked docs/plans/README.md and specification section 28.
+        - label: I have checked the open issues, GitHub milestones, and specification section 28 for overlap.
           required: true

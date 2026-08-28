@@ -1,25 +1,17 @@
 ---
 title: Documentation
-description: Passive, process-attributed network capture for Windows game clients.
+description: Process-attributed Capture and explicit, target-scoped Deep Capture for Windows game traffic.
 ---
 
-fragcap is a passive network capture tool for Windows. It attributes each
-captured flow to the process that produced it, including game clients launched
-indirectly through platform and publisher launchers, and writes the result as an
-extended pcapng file that unmodified analyzers still read as ordinary pcapng.
+fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.
 
-Packet capture is a solved problem; attribution is not. Standard tooling captures
-below the socket layer, where the association between a packet and the process
-that produced it has already been discarded. fragcap reconstructs that
-association and records it, without touching the processes it names.
+Ordinary packet records do not preserve process ownership. fragcap correlates them with separate Windows socket and process-lifecycle observations and records the result without reaching inside the processes it names. Deep Capture adds application observations only when the selected target reaches the local proxy and accepts its trust path; unsupported and unobserved traffic remains explicit.
 
 ## What you need first
 
 Two prerequisites, before anything else:
 
-- **[npcap](https://npcap.com/)**, installed in WinPcap-compatible mode, is
-  required for live capture. fragcap detects it and reports where to obtain it
-  when it is absent; it never installs, downloads, or bundles it.
+- **[Npcap](https://npcap.com/)**, installed in WinPcap API-compatible mode, is required for live packet capture. fragcap never bundles or redistributes it. After explicit interactive confirmation, `fragcap doctor --fix` can fetch and launch the vendor's signed installer from the official location.
 - **[Wireshark](https://www.wireshark.org/)** (or another pcapng-aware analyzer)
   is how you read a capture. fragcap writes extended pcapng; you capture with
   fragcap, then open the result in Wireshark to inspect it.
@@ -32,7 +24,9 @@ Two prerequisites, before anything else:
   [capture mode](/docs/guides/capture-modes) that decides where packets go.
 - **Reference** is the exact surface: the [command line](/docs/reference/cli),
   the [target schema](/docs/reference/target-schema), and the
-  [output formats](/docs/reference/output-formats).
+  [output formats](/docs/reference/output-formats). The
+  [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility)
+  states which traffic is currently inspectable and how local evidence is shown.
 - **[Architecture](/docs/architecture)** explains how attribution works, and
   **[Contributing](/docs/contributing)** covers building and the check set.
 
@@ -41,6 +35,4 @@ assume, one term to a heading.
 
 ## The security posture
 
-fragcap observes only. It never modifies traffic, never injects or replays, and
-never reaches inside the processes it names or opens a process handle carrying
-memory-read rights against a target.
+Capture observes passively. Deep Capture is active by design, but runs only after explicit selection and remains scoped to the chosen target session, visible in output, reversible through cleanup, and auditable afterward. Neither mode injects code, hooks target functions, reads target memory, modifies target executables, changes the Winsock catalog, uses a packet interception driver, extracts target TLS keys, or bypasses certificate pinning. Deep Capture never falls back silently to system-wide proxy settings or silent certificate trust.
