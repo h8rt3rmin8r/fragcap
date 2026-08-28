@@ -62,13 +62,7 @@ verdict reflects what actually changed.
 
 ## Lifecycle event
 
-One record in the machine-readable event stream `fragcap` emits on standard
-error under `--json`, over a capture's life. There are five: **session.armed**
-(the handle is open and the watcher attached), **stage.matched** (a stage bound
-a process), **stage.exited** (a bound process exited), **filter.narrowed** (the
-capture filter narrowed to a set of active endpoints), and **session.complete**
-(the run ended, carrying the headline counters). Each carries an RFC3339 `Z`
-timestamp.
+One record in the machine-readable event stream `fragcap` emits on standard error under `--json`, over a capture's life. Capture lifecycle records cover arming, stage matching and exit, filter narrowing, live progress, streaming consumers, ring eviction, and completion. Deep Capture adds preflight, compatibility calibration, proxy, trust, launch, application, bundle, cleanup, and completion records. Each carries an RFC3339 `Z` timestamp and a stable `event` discriminator.
 
 {: .matters }
 > The event stream is what lets a wrapper react to a capture without parsing

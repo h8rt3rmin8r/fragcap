@@ -76,6 +76,28 @@ pub enum Event {
         proxy_backend: String,
         trust_state: String,
     },
+    /// A complete compatibility calibration plan, emitted before confirmation.
+    DeepCaptureCalibrationPlan {
+        target: String,
+        phase: String,
+        declared_launch_case: String,
+        observed_launch_case: String,
+        proxy_backend: String,
+        bundle: String,
+        trust_action: String,
+        launch_timeout_secs: u64,
+        observation_timeout_secs: u64,
+        shutdown_timeout_secs: u64,
+        cleanup_timeout_secs: u64,
+    },
+    /// A compatibility calibration phase transition or terminal outcome.
+    DeepCaptureCalibrationPhase {
+        session_id: Option<String>,
+        phase: String,
+        stage: String,
+        status: String,
+        reason: String,
+    },
     /// The Deep Capture proxy backend started.
     DeepCaptureProxyStarted {
         session_id: String,
@@ -172,6 +194,8 @@ impl Event {
             Event::StreamConsumer { .. } => "stream.consumer",
             Event::RingEvicted { .. } => "ring.evicted",
             Event::DeepCapturePreflight { .. } => "deep_capture.preflight",
+            Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
+            Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
             Event::DeepCaptureProxyStarted { .. } => "deep_capture.proxy_started",
             Event::DeepCaptureKeyLogReady { .. } => "deep_capture.key_log_ready",
             Event::DeepCaptureTrust { .. } => "deep_capture.trust",
@@ -287,6 +311,65 @@ impl Event {
                 write_json_string(proxy_backend, &mut line);
                 line.push_str(",\"trust_state\":");
                 write_json_string(trust_state, &mut line);
+            }
+            Event::DeepCaptureCalibrationPlan {
+                target,
+                phase,
+                declared_launch_case,
+                observed_launch_case,
+                proxy_backend,
+                bundle,
+                trust_action,
+                launch_timeout_secs,
+                observation_timeout_secs,
+                shutdown_timeout_secs,
+                cleanup_timeout_secs,
+            } => {
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
+                line.push_str(",\"phase\":");
+                write_json_string(phase, &mut line);
+                line.push_str(",\"declared_launch_case\":");
+                write_json_string(declared_launch_case, &mut line);
+                line.push_str(",\"observed_launch_case\":");
+                write_json_string(observed_launch_case, &mut line);
+                line.push_str(",\"proxy_backend\":");
+                write_json_string(proxy_backend, &mut line);
+                line.push_str(",\"proxy_mode\":\"launch-scoped-env\"");
+                line.push_str(",\"bundle\":");
+                write_json_string(bundle, &mut line);
+                line.push_str(",\"trust_action\":");
+                write_json_string(trust_action, &mut line);
+                line.push_str(",\"launch_timeout_secs\":");
+                line.push_str(&launch_timeout_secs.to_string());
+                line.push_str(",\"observation_timeout_secs\":");
+                line.push_str(&observation_timeout_secs.to_string());
+                line.push_str(",\"shutdown_timeout_secs\":");
+                line.push_str(&shutdown_timeout_secs.to_string());
+                line.push_str(",\"cleanup_timeout_secs\":");
+                line.push_str(&cleanup_timeout_secs.to_string());
+                line.push_str(",\"system_proxy_change\":false,\"publishes_evidence\":false");
+            }
+            Event::DeepCaptureCalibrationPhase {
+                session_id,
+                phase,
+                stage,
+                status,
+                reason,
+            } => {
+                line.push_str(",\"session_id\":");
+                match session_id {
+                    Some(session_id) => write_json_string(session_id, &mut line),
+                    None => line.push_str("null"),
+                }
+                line.push_str(",\"phase\":");
+                write_json_string(phase, &mut line);
+                line.push_str(",\"stage\":");
+                write_json_string(stage, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
             }
             Event::DeepCaptureProxyStarted {
                 session_id,
@@ -570,6 +653,34 @@ mod tests {
         assert!(key_log.contains("\"event\":\"deep_capture.key_log_ready\""));
         assert!(key_log.contains("\"session_id\":\"session-1\""));
         assert!(key_log.contains("\"path\":\"/session/tls-keylog.log\""));
+
+        let plan = Event::DeepCaptureCalibrationPlan {
+            target: "sample-target".to_string(),
+            phase: "reachability".to_string(),
+            declared_launch_case: "direct-exe-warm".to_string(),
+            observed_launch_case: "direct-exe-warm".to_string(),
+            proxy_backend: "controlled".to_string(),
+            bundle: "bundle".to_string(),
+            trust_action: "none".to_string(),
+            launch_timeout_secs: 30,
+            observation_timeout_secs: 60,
+            shutdown_timeout_secs: 10,
+            cleanup_timeout_secs: 15,
+        }
+        .render(now);
+        assert!(plan.contains("\"event\":\"deep_capture.calibration_plan\""));
+        assert!(plan.contains("\"system_proxy_change\":false"));
+
+        let phase = Event::DeepCaptureCalibrationPhase {
+            session_id: Some("session-1".to_string()),
+            phase: "tls".to_string(),
+            stage: "complete".to_string(),
+            status: "metadata-only".to_string(),
+            reason: "observed metadata".to_string(),
+        }
+        .render(now);
+        assert!(phase.contains("\"event\":\"deep_capture.calibration_phase\""));
+        assert!(phase.contains("\"status\":\"metadata-only\""));
     }
 
     // `Event::CaptureProgress` is `etw`+`windows`-gated (see its own doc

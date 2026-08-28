@@ -82,6 +82,8 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--interface",
         "--no-payload",
         "--trust-ca",
+        "--calibrate",
+        "--launch-case",
         "--har",
         "--key-log",
         "--proxy-backend",
@@ -92,6 +94,165 @@ fn deep_capture_help_exposes_the_operator_contract() {
         );
     }
     assert!(!out.contains("--controlled-target"));
+}
+
+#[test]
+fn calibration_arguments_are_paired() {
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "reachability",
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--launch-case"), "pairing refusal: {err}");
+
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--launch-case",
+        "direct-exe-warm",
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--calibrate"), "pairing refusal: {err}");
+}
+
+#[test]
+fn controlled_calibration_runs_reachability_then_tls() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let target_id = seed_target(&local, false);
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let reachability_bundle = dir.path().join("reachability");
+    let (code, out, reachability_events) = run(&[
+        "--json",
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "reachability",
+        "--launch-case",
+        "direct-exe-warm",
+        "--yes",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        reachability_bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "reachability events:\n{reachability_events}");
+    assert!(out.is_empty());
+    assert!(reachability_events.contains("deep_capture.calibration_plan"));
+    assert!(reachability_events.contains("\"status\":\"reached-client\""));
+    assert!(!reachability_events.contains("deep_capture.trust"));
+    let reachability_manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(reachability_bundle.join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(reachability_manifest["trust"]["state"], "not-requested");
+
+    let store = Store::open(&local).unwrap();
+    let facts = store.compatibility_facts_for_target(target_id).unwrap();
+    assert!(facts.iter().any(|fact| {
+        fact.key == CompatibilityFactKey::ProxyRouting && fact.value == "reached-client"
+    }));
+    assert!(facts.iter().any(|fact| {
+        fact.key == CompatibilityFactKey::ProxyPropagation && fact.value == "confirmed"
+    }));
+    assert!(!facts
+        .iter()
+        .any(|fact| fact.key == CompatibilityFactKey::TlsTrustBehavior));
+    drop(store);
+
+    let tls_bundle = dir.path().join("tls");
+    let (code, _out, tls_events) = run(&[
+        "--json",
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "tls",
+        "--launch-case",
+        "direct-exe-warm",
+        "--yes",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        tls_bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+    assert_eq!(code, 0, "TLS events:\n{tls_events}");
+    assert!(tls_events.contains("deep_capture.trust"));
+    assert!(tls_events.contains("\"status\":\"local-ca-accepted\""));
+
+    let store = Store::open(&local).unwrap();
+    let facts = store.compatibility_facts_for_target(target_id).unwrap();
+    assert!(facts.iter().any(|fact| {
+        fact.key == CompatibilityFactKey::TlsTrustBehavior && fact.value == "accepts-local-ca"
+    }));
+}
+
+#[test]
+fn reachability_calibration_rejects_trust_and_tls_outputs_before_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let bundle = dir.path().join("bundle");
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "reachability",
+        "--launch-case",
+        "direct-exe-warm",
+        "--trust-ca",
+        "--yes",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("does not change trust"), "refusal: {err}");
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn tls_calibration_requires_current_same_case_routing_before_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let bundle = dir.path().join("bundle");
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "tls",
+        "--launch-case",
+        "direct-exe-warm",
+        "--yes",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("run reachability calibration first"),
+        "refusal: {err}"
+    );
+    assert!(!bundle.exists());
 }
 
 #[test]

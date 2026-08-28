@@ -131,6 +131,7 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--bundle` | open | none | all | Select the session bundle directory. The fallback is a new directory under `FRAGCAP_SESSION_DIR`, then `%APPDATA%\fragcap\sessions`. |
+| `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case`. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
 | `-d`, `--duration` | open | none | all | Stop after a duration measured from arm. |
 | `--har` | open | `false` | all | Write an HTTP-oriented projection when HTTP semantics are observable. |
@@ -138,6 +139,7 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
 | `--key-log` | open | `false` | all | Write a proxy-owned TLS key log at its final bundle path. |
 | `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
+| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the launch case measured by `--calibrate`. Real calibration currently supports only `steam-protocol-cold`; other values receive a pre-side-effect refusal. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |

@@ -163,19 +163,32 @@ Replace the synthetic handle with the handle from your own target listing:
 fragcap targets show sample-target
 ```
 
-`targets show` is read-only. It does not start a proxy or target, change trust, contact a catalog, or refresh evidence. The v0.7.0 real-target path requires current facts proving that scoped proxy configuration both propagated through a cold Steam protocol launch and reached the final client:
+`targets show` is read-only. It does not start a proxy or target, change trust, contact a catalog, or refresh evidence. Ordinary Deep Capture requires current facts proving that scoped proxy routing reached the final client through a cold Steam protocol launch:
 
 ```text
 compatibility:
   proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current
-  proxy-propagation = confirmed | launch=steam-protocol-cold | source=observed-run | freshness=current
 ```
 
-Proceed only when both facts are current for `steam-protocol-cold`. Other rows, including protocol behavior, CA acceptance, and inspectability, describe observations without replacing those two routing requirements.
+Proceed only when the routing fact is current for `steam-protocol-cold`. Propagation, protocol behavior, CA acceptance, and inspectability describe separate observations without replacing that routing requirement.
 
-<Callout type="warn" title="Unknown is a stop, not a guess">
-If the detail view reports `unknown`, stale or conflicting routing facts, or evidence for another launch case, stop here. v0.7.0 has no supported end-user workflow that creates the initial compatibility evidence for an unknown target. Do not infer compatibility from the title, engine, launcher, executable, or another target. See the [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility).
+<Callout type="warn" title="Unknown requires an explicit measurement">
+If the detail view reports `unknown`, stale or conflicting routing facts, or evidence for another launch case, do not run ordinary Deep Capture. Close Steam and run reachability calibration for the exact target and `steam-protocol-cold` launch case. Do not infer compatibility from the title, engine, launcher, executable, or another target. See the [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility).
 </Callout>
+
+Reachability calibration displays its complete plan before confirmation and never changes certificate trust:
+
+```powershell
+fragcap deep-capture sample-target --launch --calibrate reachability --launch-case steam-protocol-cold
+```
+
+Review the resulting rows with `fragcap targets show sample-target`. When current same-case evidence says `proxy-routing = reached-client`, measure TLS behavior separately:
+
+```powershell
+fragcap deep-capture sample-target --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
+```
+
+Review the target again before ordinary Deep Capture. Calibration outcomes and fact rows preserve uncertainty; they do not create an aggregate compatibility verdict.
 
 The supported real-target launch case also requires Steam to be closed before the session begins. An already-running Steam process is a warm launch that fragcap does not own, so Deep Capture refuses it. Direct-executable managed launch is also not implemented in v0.7.0.
 

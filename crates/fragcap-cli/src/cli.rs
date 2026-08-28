@@ -442,6 +442,14 @@ pub struct DeepCaptureArgs {
     #[arg(long)]
     pub yes: bool,
 
+    /// Run one explicit compatibility calibration phase.
+    #[arg(long, value_enum, requires = "launch_case")]
+    pub calibrate: Option<DeepCaptureCalibrationArg>,
+
+    /// Declare the launch case whose compatibility is being measured.
+    #[arg(long, value_enum, requires = "calibrate")]
+    pub launch_case: Option<DeepCaptureLaunchCaseArg>,
+
     /// Write HAR when HTTP semantics are observable.
     #[arg(long)]
     pub har: bool,
@@ -464,6 +472,28 @@ pub struct DeepCaptureArgs {
 pub enum DeepCaptureProxyArg {
     /// External `mitmdump` child process.
     Mitmdump,
+}
+
+/// A compatibility calibration phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DeepCaptureCalibrationArg {
+    /// Measure target-scoped proxy reachability without changing trust.
+    Reachability,
+    /// Measure TLS trust behavior after reachability has been established.
+    Tls,
+}
+
+/// A declared Deep Capture compatibility launch case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DeepCaptureLaunchCaseArg {
+    SteamProtocolWarm,
+    SteamProtocolCold,
+    DirectExeWarm,
+    DirectExeCold,
+    PublisherLauncher,
+    PublisherLauncherWarm,
+    PublisherLauncherGameStartCleanWarm,
+    PublisherLauncherCold,
 }
 
 /// Arguments for the internal Deep Capture controlled target.

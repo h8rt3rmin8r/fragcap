@@ -208,13 +208,9 @@ the Wireshark extcap integration, which lets fragcap appear inside
 Wireshark's own interface picker, and the directional filtering options
 from the original brief.
 
-## 15. Game Profiles
+## 15. Targets And Compatibility Evidence
 
-The TOML profile schema: stage definitions, role names, match rules,
-lifecycle hints, and capture defaults. This is the mechanism that keeps
-core game-agnostic while making specific titles first-class. Includes
-the profile resolution order, validation rules, and why v0.2.0 bundles no
-profiles (they are scaffolded from an installed title or authored per title).
+The single local target store, source and fidelity model, resolution order, discovery signatures, and append-only Deep Capture compatibility facts. Unknown targets can produce initial evidence only through an explicit compatibility calibration, while `targets show` remains read-only and never selects an aggregate verdict.
 
 ## 16. Steam Integration
 
@@ -226,10 +222,7 @@ technique and why it is used only on non-protected processes.
 
 ## 17. Command Line Interface
 
-Full command surface, argument grammar, exit-code contract, and the
-machine-readable output mode that makes thin wrappers possible. The
-exit-code contract follows the house 0/1/2 convention. Every command
-gets a stated purpose and at least one worked example.
+Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, Deep Capture, the two-phase compatibility calibration plan and confirmation contract, target management, doctor, and integration commands.
 
 ## 18. Shell Wrappers
 
@@ -245,17 +238,7 @@ binary and translates paths across the boundary.
 
 ## 19. Security Posture and Anti-Cheat Interaction
 
-Framed as engineering constraint rather than policy. Documents the
-technique allowlist and denylist with reasoning: npcap's NDIS filter
-driver is acceptable and ubiquitous in legitimate tooling; packet
-interception drivers, layered service providers, hooking, and
-`PROCESS_VM_READ` handles against protected clients are excluded because
-they are the primitives detection systems watch for and because none of
-them are needed for the stated capabilities.
-
-Also covers what fragcap does not see: encrypted payloads remain
-encrypted, and the specification should set that expectation plainly so
-users understand what analysis is and is not possible.
+Framed as engineering constraint rather than policy. Documents the mode-specific allowlist and absolute denylist. Capture remains passive. Deep Capture and compatibility calibration are explicit, target-scoped, plan-visible, confirmed, reversible, and audited local proxy inspection with no system-proxy fallback or pinning bypass.
 
 ## 20. Licensing and Third-Party Obligations
 
@@ -307,20 +290,11 @@ site deployment and the custom-domain configuration.
 
 ## 25. Testing Strategy
 
-**(gate)** The strategy that makes the trait design pay off immediately:
-a replay `PacketSource` backed by capture files and a scripted
-`FlowAttributor` make the entire pipeline testable offline with no game
-running. Defines the fixture corpus, the tiers (unit, pipeline
-integration, live smoke), which tiers run in CI, and how the live tier
-is exercised manually.
+**(gate)** The replay and scripted seams that keep the packet pipeline offline-testable, plus the controlled Deep Capture target that proves calibration orchestration, local fact persistence, bundle contracts, and cleanup without a game account, remote service, or real trust mutation. Real launcher inheritance remains a manual evidence tier.
 
 ## 26. Observability and Diagnostics
 
-Structured logging, the verbosity contract matching the house standard,
-capture statistics reporting, and the diagnostic command that reports
-environment readiness (npcap presence and version, privilege level,
-interface inventory, ETW session availability). The diagnostic command
-is the first thing a confused user runs, so it deserves specification.
+Structured lifecycle events, human progress, capture statistics, calibration phase outcomes, and the diagnostic command that reports Capture and Deep Capture readiness, exact CA trust state, target stores, interfaces, ETW, proxy support, and owned cleanup residue.
 
 ## 27. Spec Kit Decomposition
 

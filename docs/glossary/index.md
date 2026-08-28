@@ -38,6 +38,7 @@ the owning category page.
 - [Capture-time promotion](process-and-attribution.md#capture-time-promotion)
 - [Catalog seeder](process-and-attribution.md#catalog-seeder)
 - [Catalog store](process-and-attribution.md#catalog-store)
+- [Compatibility calibration](capture-and-networking.md#compatibility-calibration)
 - [Completion summary](command-line-and-diagnostics.md#completion-summary)
 - [Container verdict](process-and-attribution.md#container-verdict)
 - [Corpus gate](process-and-attribution.md#corpus-gate)

@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.20-draft \
+**Version:** 0.1.21-draft \
 **Applies-To:** 0.7.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -112,6 +112,7 @@ enforcement.
 | 0.1.18-draft | 2026-08-27 | W. Thompson | **Delegates Bash wrapper compliance to the vendored checker (issue #199).** Extends sections 18.4 and 24.3 so `cargo xtask wrappers` invokes the vendored ShruggieTech Bash checker for every gated Bash script, treats missing scripts or checker bytes as failed checks, and treats a missing Bash-runnable ShellCheck executable as an unable-to-run environment failure. |
 | 0.1.19-draft | 2026-08-28 | W. Thompson | **Reconciles public entry points with v0.7.0 (issue #244).** Corrects sections 1, 2.1, 19.1, 27.3, and 28 so current-status prose and release history describe Capture and Deep Capture as shipped modes, record releases through v0.7.0, and leave only unshipped work in the roadmap. The repository landing page, contributor guides, documentation index, issue forms, and GitHub description now project the same bounded product definition. |
 | 0.1.20-draft | 2026-08-28 | W. Thompson | **Implements the Deep Capture CA trust-state probe (issue #250).** Corrects section 26.3 so doctor derives exact owned identities from session-manifest thumbprints, reads current-user and local-machine Root inventories without mutation, reports absent, supported, wrong-store, mismatch, and unknown states honestly, and offers cleanup only for an exact observed owned resource. |
+| 0.1.21-draft | 2026-08-28 | W. Thompson | **Adds an explicit Deep Capture compatibility bootstrap (issue #251).** Extends sections 13.7, 15, 17.2.1, 19, 25, 26, 28, and 29. Compatibility calibration measures one declared launch case in separate reachability and TLS phases, displays and confirms every bounded effect, retains partial observed facts and cleanup truth, and leaves ordinary Deep Capture's eligibility refusal intact. Corrects the prior MVP inference that final-client routing proves environment propagation; routing is the eligibility fact, while propagation remains independently observed evidence. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1783,6 +1784,8 @@ session with no packet truth reports that absence rather than creating a
 fabricated capture. A requested TLS key log is declared only when the proxy
 produced non-empty proxy-owned key material.
 
+For compatibility calibration, `compatibility.json` also owns the displayed plan, declared phase, phase outcome, observation summaries, omissions, proposed fact rows, and the result of each attempted local-store append. The plan is emitted before confirmation and names the target, launch case, loopback proxy action, bundle destination, finite launch, observation, shutdown, and cleanup deadlines, possible fact families, trust action, and cleanup obligations. `cleanup.json` remains authoritative for individual cleanup resources, and `manifest.json` remains the bundle index. A phase outcome is not a target compatibility verdict.
+
 ## 14. Sinks and Streaming
 
 ### 14.1 Sink Model
@@ -2541,6 +2544,8 @@ and title metadata never create compatibility facts or an aggregate compatible
 or incompatible verdict. Free-form notes and final executable names remain out
 of this display because they can carry local details unrelated to the verdict.
 
+An unknown target can produce local facts only through an explicitly selected compatibility calibration. One invocation measures one stored target, one declared launch case, and either scoped proxy reachability or TLS behavior. Reachability never changes certificate trust. TLS is a separate invocation and is refused before side effects unless a current `proxy-routing=reached-client` row exists for the same target and launch case. Routing to the final client does not prove how proxy configuration propagated through a launcher, so `proxy-propagation=confirmed` is written only from independent non-invasive evidence such as a controlled target reporting its own environment. Repeated, conflicting, partial, and negative observations remain individual rows or phase outcomes rather than an aggregate title verdict.
+
 The transition away from profile files is staged: the fidelity-ordered store read,
 the entry model, the handle and identifier scheme, and the selector ship in S051.
 The engine and platform-walker providers become target sources in S052; the JSON
@@ -2765,6 +2770,8 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --no-payload           Write packet metadata without payload bytes
       --trust-ca             Confirm fragcap-owned CA trust changes
       --yes                  Pre-confirm Deep Capture prompts
+      --calibrate <PHASE>    Measure compatibility: reachability or tls
+      --launch-case <CASE>   Declare the launch case being measured
       --har                  Write HAR when HTTP semantics are observable
       --key-log              Write a proxy-owned analyzer key log
       --proxy-backend <NAME> Local inspection proxy backend [default: mitmdump]
@@ -2785,6 +2792,19 @@ targets whose local compatibility facts do not show scoped proxy routing reachin
 the final client, and it refuses missing CA trust confirmation before mutating
 trust state. It never silently promotes an unknown launch path to system-wide
 proxy settings.
+
+Compatibility calibration is the deliberate evidence-producing path for an unknown stored target:
+
+```text
+fragcap deep-capture <SELECTOR> --launch --calibrate reachability --launch-case steam-protocol-cold
+fragcap deep-capture <SELECTOR> --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
+```
+
+The two calibration flags are a pair and are absent from an ordinary Deep Capture invocation. Real calibration initially supports only a cold Steam protocol launch; warm Steam, direct executable, publisher launcher, a declared-versus-observed case mismatch, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
+
+After side-effect-free resolution, launch-state validation, bundle validation, and Capture preparation, calibration emits the complete plan in human or structured form. It then requires an interactive affirmative answer or `--yes`. Preconfirmation never suppresses the plan. JSON and noninteractive runs without `--yes` refuse before mutation. Reachability refuses trust, HAR, and key-log options and never constructs a trust manager. TLS requires current same-case final-client routing and explicit trust intent.
+
+Each phase has finite launch, observation, proxy-shutdown, and cleanup deadlines. Structured events include `deep_capture.calibration_plan` before confirmation and `deep_capture.calibration_phase` for transitions and the terminal phase outcome. Existing proxy, trust, launch, application, bundle, cleanup, and completion events remain authoritative for their resources. Outcomes distinguish reached client, launcher only, escaped tree, proxy not reached, no relevant traffic, inconclusive, local CA accepted, explicitly observed certificate pinning, unknown trust, metadata only, unsupported protocol, interruption, and failure. Silence alone never proves a negative routing or pinning fact.
 
 The first real-target managed path is a Steam protocol launch from a cold Steam
 state. A running Steam process cannot inherit environment changes made in
@@ -3189,6 +3209,8 @@ operator-visible, reversible through `doctor` cleanup, and logged as structured
 process traces. A Deep Capture implementation that silently changes system-wide
 proxy settings, silently trusts a certificate authority, or leaves residue
 without a cleanup path fails this section even if the packet output is correct.
+
+Compatibility calibration is subject to the same gate. Its target, phase, launch case, bounded effects, possible fact writes, and cleanup obligations are displayed before confirmation. Reachability performs no trust mutation, TLS requires prior same-case final-client routing, and neither phase publishes local evidence or changes system proxy settings.
 
 ### 19.5 Privilege Handling
 
@@ -3837,6 +3859,8 @@ the test itself over loopback, and processes are spawned by the test.
 No game is required. Runs on a Windows runner with the capture driver
 installed.
 
+Compatibility calibration adds a controlled target path to Tier 1. The target reports its own inherited proxy variables, sends synthetic loopback traffic, and can drive routing, TLS, partial-evidence, and cleanup outcomes through the production bundle and fact-store paths. This proves orchestration and contract behavior without a game account, capture driver, remote service, or real trust-store mutation. It does not prove how a real Steam or publisher launch behaves; that remains a private Tier 3 manual measurement whose public summary must be scrubbed.
+
 **Tier 3, live.** Manual verification against a real game session,
 executed before release. Verifies end-to-end acquisition through the
 launcher chain, attribution accuracy against SC-7, and analyzer
@@ -4091,6 +4115,8 @@ thumbprint and store are available; the existing `doctor --fix` confirmation gat
 then scopes removal to that resource. These Deep Capture-only states never block
 passive Capture readiness.
 
+Compatibility calibration progress names confirmation, proxy readiness, managed launch, observation, fact persistence, finalization, and cleanup. Human output and structured events carry the same phase and terminal outcome without requiring a machine consumer to parse prose. Every refusal names the missing precondition and states that no calibration effects were applied.
+
 ### 26.4 Failure Reporting
 
 Errors state what was attempted, what happened, and what to do next.
@@ -4302,6 +4328,7 @@ to section 6.2.
 | Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
 | Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219 | **Resolved 2026-08-26.** `fragcap deep-capture` is the first command path. Its real-target path is a fact-backed cold Steam protocol launch; warm Steam and direct-executable cases are preflight refusals. It validates and retains the effective Capture launch before proxy or trust side effects, refuses unknown compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
 | Q-15 | How are supported traffic types and target compatibility presented without guessing? | Publish an exact traffic-family reference and project the selected target's local facts through a read-only detail view | #220 | **Resolved 2026-08-26.** The public reference distinguishes Capture and Deep Capture outcomes for HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext traffic. `targets show` renders every local fact with launch case, source, and freshness, preserves conflicts, and reports unknown rather than inferring a title verdict. |
+| Q-16 | How can an unknown target produce the first Deep Capture compatibility evidence without weakening the ordinary safety gate? | Add an explicit, confirmed, bounded measurement workflow with separate reachability and TLS phases | #251 | **Resolved 2026-08-28.** `deep-capture --calibrate` measures one declared launch case, keeps reachability trust-free, gates TLS on current final-client routing, appends only direct observations to the existing store, and records phase and cleanup outcomes in the local bundle. Routing is no longer treated as proof of environment propagation. |
 
 Q-1 through Q-6 were answered by one reconnaissance session per focal
 title, using existing analyzer tooling and requiring no fragcap code.
