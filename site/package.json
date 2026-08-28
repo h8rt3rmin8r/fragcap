@@ -18,6 +18,7 @@
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "zbsearch": "3.3.4",
     "zod": "4.1.13"
   },
   "devDependencies": {

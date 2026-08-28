@@ -388,3 +388,22 @@ and verifies the following outcomes:
 F04 and F05 remain open for S096. The limitations disclosed in section 10 also
 remain limitations; S095 adds automated Chromium keyboard activation and
 computed-style evidence, not native assistive-technology results.
+
+## 13. S096 Remediation Evidence
+
+S096 corrected F04 and F05 without altering the 54-route public inventory. The
+same hydrated production regression verifies the following outcomes:
+
+- F04: exact `fragcap run` and `fragcap tap` searches, including case and outer
+  whitespace variants, activate the current command reference first and expose
+  the replacement syntax. The preserved v0.5.0 Highlights group remains later
+  in the result set. Four unrelated current-query leaders remain unchanged.
+- F05: shallow and nested absent paths retain HTTP status 404 at 320 and 1440
+  px. Each response exposes one `main-content` region, the `Page not found`
+  heading, and keyboard-reachable links to `/` and `/docs/getting-started`, with
+  no horizontal overflow. The shared skip link transfers focus to the recovery
+  content.
+
+The limitations disclosed in section 10 remain limitations. This correction
+adds Chromium transport, keyboard, landmark, search-order, and responsive
+evidence, not native assistive-technology results.

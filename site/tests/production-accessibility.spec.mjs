@@ -22,6 +22,9 @@ const test = base.extend({
     page.on('console', (message) => {
       if (message.type() !== 'error') return;
       const location = message.location();
+      const expectedMissingDocument = location.url === page.url()
+        && /^Failed to load resource: the server responded with a status of 404 \(Not Found\)$/.test(message.text());
+      if (expectedMissingDocument) return;
       errors.push(
         `${new URL(page.url()).pathname}: console: ${message.text()} (${location.url || 'unknown URL'})`,
       );
@@ -75,6 +78,24 @@ function rgb(value) {
     throw new Error(`expected an RGB color, received ${value}`);
   }
   return channels;
+}
+
+async function openSearch(page, query) {
+  await page.goto('/docs/getting-started');
+  await page.locator('[data-search-full]:visible, [data-search]:visible').first().click();
+  const dialog = page.getByRole('dialog', { name: 'Search' });
+  await dialog.getByPlaceholder('Search').fill(query);
+  const results = dialog.locator('button[aria-selected]');
+  await page.waitForTimeout(500);
+  await expect(results.first(), `${query} result population`).toBeVisible();
+  expect(await results.count(), `${query} result count`).toBeGreaterThan(0);
+  return { dialog, results };
+}
+
+async function activateFirstSearchResult(page, query, destination) {
+  const { results } = await openSearch(page, query);
+  await results.first().click();
+  await expect(page).toHaveURL((url) => url.pathname === destination);
 }
 
 test.describe('production accessibility contract', () => {
@@ -210,6 +231,97 @@ test.describe('production accessibility contract', () => {
       expect(new Set(diagrams.map((diagram) => diagram.name)).size).toBe(2);
       for (const diagram of diagrams) {
         expect(diagram.role).toContain('graphics-document');
+      }
+    });
+  }
+
+  test('retired command searches lead to current guidance and retain history', async ({ page }) => {
+    const cases = [
+      { query: 'fragcap run', replacement: 'fragcap capture' },
+      { query: '  FRAGCAP RUN  ', replacement: 'fragcap capture' },
+      { query: 'fragcap tap', replacement: 'fragcap capture --process' },
+      { query: '  FrAgCaP TaP  ', replacement: 'fragcap capture --process' },
+    ];
+
+    for (const { query, replacement } of cases) {
+      const { results } = await openSearch(page, query);
+      const labels = await results.allInnerTexts();
+      const historicalIndex = labels.findIndex((label) => (
+        /Changelog\s+0\.5\.0/i.test(label.replace(/\s+/g, ' '))
+      ));
+      expect(historicalIndex, `${query} preserved historical group`).toBeGreaterThan(0);
+
+      await results.first().click();
+      await expect(page).toHaveURL((url) => url.pathname === '/docs/reference/cli');
+      await expect(page.getByRole('main')).toContainText(replacement);
+    }
+  });
+
+  test('current guidance searches retain their leading destinations', async ({ page }) => {
+    const cases = [
+      ['packet attribution', '/docs/reference/deep-capture-compatibility'],
+      ['capture scope', '/docs/architecture'],
+      ['Deep Capture', '/docs/architecture'],
+      ['proxy-owned TLS key', '/docs/reference/output-formats'],
+    ];
+
+    for (const [query, destination] of cases) {
+      await activateFirstSearchResult(page, query, destination);
+    }
+  });
+
+  for (const width of [320, 1440]) {
+    test(`not-found responses provide recovery at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      const missingPaths = [
+        '/definitely-missing-s096',
+        '/docs/reference/no/such/route-s096',
+      ];
+
+      for (const missingPath of missingPaths) {
+        const response = await page.goto(missingPath);
+        expect(response?.status(), `${missingPath} response`).toBe(404);
+        await expect(page.locator('main#main-content')).toHaveCount(1);
+        await expect(page.getByRole('heading', { level: 1, name: 'Page not found' })).toHaveCount(1);
+        await expect(page.locator('main#main-content')).toContainText('fragcap');
+
+        const recovery = page.getByRole('navigation', { name: 'Page recovery' });
+        const links = recovery.getByRole('link');
+        await expect(links).toHaveCount(2);
+        await expect(links.nth(0)).toHaveAttribute('href', '/');
+        await expect(links.nth(1)).toHaveAttribute('href', '/docs/getting-started');
+        for (const link of await links.all()) {
+          await expect(link).toBeVisible();
+          await link.focus();
+          await expect(link).toBeFocused();
+          const box = await link.boundingBox();
+          expect(box, `${missingPath} recovery link bounds`).not.toBeNull();
+          expect(box.x, `${missingPath} recovery link left`).toBeGreaterThanOrEqual(0);
+          expect(box.x + box.width, `${missingPath} recovery link right`).toBeLessThanOrEqual(width);
+        }
+
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2),
+          `${missingPath} root overflow`,
+        ).toBe(true);
+
+        await page.reload();
+        await page.keyboard.press('Tab');
+        await expect(page.locator('.fc-skip-link')).toBeFocused();
+        await page.locator('.fc-skip-link').press('Enter');
+        await expect.poll(
+          () => page.evaluate(() => ({
+            hash: location.hash,
+            activeId: document.activeElement?.id,
+          })),
+          { message: `${missingPath} skip activation` },
+        ).toEqual({ hash: '#main-content', activeId: 'main-content' });
+
+        await links.nth(0).click();
+        await expect(page).toHaveURL((url) => url.pathname === '/');
+        await page.goto(missingPath);
+        await page.getByRole('navigation', { name: 'Page recovery' }).getByRole('link').nth(1).click();
+        await expect(page).toHaveURL((url) => url.pathname === '/docs/getting-started');
       }
     });
   }
