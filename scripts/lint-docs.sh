@@ -51,6 +51,9 @@
 #     1   ran and found failures
 #     2   could not run (a required tool is absent)
 #
+# The house Bash standard requires fixture functions even when this script does
+# not call all of them directly.
+# shellcheck disable=SC2317,SC2329
 set -euo pipefail
 IFS=$'\n\t'
 

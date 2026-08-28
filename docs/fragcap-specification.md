@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.17-draft \
+**Version:** 0.1.18-draft \
 **Applies-To:** 0.6.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -109,6 +109,7 @@ enforcement.
 | 0.1.15-draft | 2026-08-26 | W. Thompson | **Names capped binary-marker scan subjects (issue #206).** Clarifies section 15.7.2 so capped binary-marker coverage warnings name the scanned root, preserve the skipped candidate count, and state that technology detection for that root may be incomplete. |
 | 0.1.16-draft | 2026-08-27 | W. Thompson | **Renders target discovery as a listing (issue #207).** Extends section 17.7 so `fragcap targets discover` prints labelled store paths, a headed aligned candidate table with source, identity, fidelity, and name columns, indented evidence lines, and a labelled discovery account block with zero-valued outcomes grouped. |
 | 0.1.17-draft | 2026-08-27 | W. Thompson | **Excludes non-capturable Steam app types from target discovery (issue #212).** Extends section 16.2 so Steam `Music`, `Tool`, `Application`, `Config`, and `Video` app types are counted as not-a-game and never emitted as capture candidates, while `Demo`, `Game`, and unknown app types remain eligible. |
+| 0.1.18-draft | 2026-08-27 | W. Thompson | **Delegates Bash wrapper compliance to the vendored checker (issue #199).** Extends sections 18.4 and 24.3 so `cargo xtask wrappers` invokes the vendored ShruggieTech Bash checker for every gated Bash script, treats missing scripts or checker bytes as failed checks, and treats a missing Bash-runnable ShellCheck executable as an unable-to-run environment failure. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3077,7 +3078,19 @@ options unchanged, and consume the structured event stream from section
 
 Both are covered by the compliance checkers bundled with their
 respective house standards, and both checkers run in continuous
-integration.
+integration. `cargo xtask wrappers` invokes the vendored ShruggieTech
+Bash checker for `scripts/fragcap.sh`, `scripts/lint-docs.sh`, and
+`scripts/cut-release.sh`. It invokes the vendored ShruggieTech
+PowerShell checker for `scripts/Invoke-FragCap.ps1` and
+`scripts/New-Release.ps1`. Missing scripts or missing checker files are
+failed checks, not skipped checks.
+
+ShellCheck is a required part of the Bash compliance gate. Because the
+vendored Bash checker runs inside Bash, `cargo xtask wrappers` checks
+from inside Bash that ShellCheck can be run before reporting
+compliance. If ShellCheck is unavailable there, the gate exits as
+unable to run rather than reporting a clean pass with static analysis
+skipped.
 
 ## 19. Security Posture and Anti-Cheat Interaction
 
@@ -3707,6 +3720,9 @@ Formatting is clean. Clippy produces no warnings under
 for a Linux target, verifying the portability discipline in section
 9.3. The repository conventions linter passes. The documentation linter
 passes in check mode. Both shell wrapper compliance checkers pass.
+The Bash wrapper compliance gate requires ShellCheck to be runnable
+from Bash, because a skipped static-analysis pass is not a successful
+compliance pass.
 
 The pipeline tests run on runners with no capture driver installed and
 no game present, which is the property section 25 exists to guarantee.
