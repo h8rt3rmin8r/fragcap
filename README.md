@@ -29,7 +29,7 @@ The shipped **Capture** mode observes passively. It never modifies, injects, or 
 
 The shipped **Deep Capture** mode runs Capture alongside explicit, target-scoped local proxy inspection for authorized sessions. For compatible targets and traffic, it adds application observations and correlated bundle artifacts without code injection, target hooks, target memory reads, target TLS key extraction, certificate-pinning bypass, or silent system-wide proxy settings. Unsupported or unobserved traffic remains reported as such.
 
-Live packet capture requires [Npcap](https://npcap.com) to be installed separately. fragcap never bundles, hosts, caches as its own, or redistributes Npcap. After explicit interactive confirmation, `fragcap doctor --fix` can fetch and launch the vendor's signed installer from the official location. [Wireshark](https://www.wireshark.org) or another pcapng-aware analyzer is recommended for reading `.fcapng` output.
+Live packet capture requires [Npcap](https://npcap.com) to be installed separately. fragcap never bundles, hosts, caches as its own, or redistributes Npcap. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page; a source build with the optional `net` feature can instead fetch and launch the vendor's signed installer. [Wireshark](https://www.wireshark.org) or another pcapng-aware analyzer is recommended for reading `.fcapng` output.
 
 **The full documentation, including a first-run guide, lives at
 [fragcap.com](https://fragcap.com).**
@@ -221,16 +221,19 @@ your own machine as you capture.
 before any capture.** Run `fragcap doctor` to check your environment; it reports
 npcap's presence and names any missing option, and captures nothing. Run
 `fragcap doctor --fix` to be walked through the remediations it names, one at a
-time, under your confirmation (register the analyzer integration, fetch the
-catalog, run discovery, and, with your explicit yes, obtain npcap). `--fix` is
+time, under your confirmation (register the analyzer integration, initialize the
+catalog, run discovery, and, with your explicit yes, open the npcap download
+page). `--fix` is
 interactive: it is refused with `--json` and when the session is not a terminal,
 and it acts only on what `doctor` first printed.
 
 npcap is by the [Nmap Project](https://nmap.org) and is not redistributable
 under its standard license, so fragcap does not and will not bundle it. fragcap
-detects it and reports its absence with the download location, and only fetches
-and launches the vendor's own signed installer when you explicitly confirm it in
-`fragcap doctor --fix`, storing nothing of it in any fragcap artifact. The
+detects it and reports its absence with the download location. The shipped
+`fragcap doctor --fix` opens that page only when you explicitly confirm it. A
+source build with the optional `net` feature may instead fetch and launch the
+vendor's own signed installer after the same confirmation, storing nothing of it
+in any fragcap artifact. The
 simplest way to obtain npcap is the [Wireshark](https://www.wireshark.org/)
 installer, which bundles it; the
 [Getting started guide](https://fragcap.com/docs/getting-started) walks through

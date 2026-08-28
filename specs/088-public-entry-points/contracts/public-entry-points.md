@@ -40,7 +40,7 @@ Passive process-attributed Capture and explicit, target-scoped Deep Capture for 
 
 ## Npcap Boundary
 
-Npcap remains a separate installation and is never bundled or redistributed. Public surfaces may state that `fragcap doctor --fix`, after explicit interactive confirmation, fetches and launches the vendor's own signed installer from the official location. They must not describe that action as fragcap distributing or silently installing Npcap.
+Npcap remains a separate installation and is never bundled or redistributed. Public surfaces must state that the shipped `fragcap doctor --fix`, after explicit interactive confirmation, opens the official download page. They may state separately that a source build with the optional `net` feature can instead fetch and launch the vendor's own signed installer after the same confirmation. They must not describe either action as fragcap distributing or silently installing Npcap.
 
 ## Historical Integrity
 

@@ -33,7 +33,7 @@ cargo test --workspace
 
 Capture backends are behind feature flags, so the workspace builds and its logic
 is tested on any platform without a capture driver. The live capture path needs
-Npcap and runs only where it is installed. Npcap is never bundled or redistributed. After explicit interactive confirmation, `fragcap doctor --fix` may fetch and launch the vendor's signed installer from the official location.
+Npcap and runs only where it is installed. Npcap is never bundled or redistributed. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page. A source build with the optional `net` feature may instead fetch and launch the vendor's signed installer.
 
 ## The check set
 

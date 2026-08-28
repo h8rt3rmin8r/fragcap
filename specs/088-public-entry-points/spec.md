@@ -38,7 +38,7 @@ A contributor receives current repository status, security boundaries, developme
 
 1. **Given** a contributor opens either contributor guide, **When** they read the project status, **Then** neither surface says the repository is pre-implementation, lacks a Cargo workspace, or ends at the original S01 through S18 roadmap.
 2. **Given** a contributor reviews prohibited techniques, **When** they compare the list with constitution P-1, **Then** the contributor guide distinguishes passive Capture from explicit Deep Capture while preserving the complete technique denylist.
-3. **Given** a contributor reads the Npcap policy, **When** they compare it with the current constitution, **Then** the guide permits only the user-confirmed vendor fetch and forbids bundling or redistribution.
+3. **Given** a contributor reads the Npcap policy, **When** they compare it with the current release build and constitution, **Then** the guide distinguishes the shipped browser handoff from the optional user-confirmed vendor fetch and forbids bundling or redistribution.
 
 ---
 
@@ -60,7 +60,7 @@ A reporter filing a bug or feature request sees current commands, release expect
 
 - Capture must remain described as passive even while the product summary also names Deep Capture.
 - Deep Capture wording must state explicit scope, reversibility, and authorization without implying certificate-pinning bypass, target key extraction, system-wide proxy fallback, or universal protocol support.
-- Npcap remains separately licensed and never bundled or redistributed; only `doctor --fix` may fetch and launch the vendor's own signed installer after explicit confirmation.
+- Npcap remains separately licensed and never bundled or redistributed; the shipped `doctor --fix` opens the official download page after explicit confirmation, while a `net`-enabled source build may fetch and launch the vendor's own signed installer after the same confirmation.
 - Historical release records and completed slice directories remain historical truth and are not rewritten as if v0.7.0 existed earlier.
 - Deeper pages owned by issues #245 through #248 may remain stale during this slice, but entry points must link to current destinations and must not repeat their stale claims.
 - Public examples must use synthetic targets and contain no account, local path, endpoint, or payload material.
@@ -74,7 +74,7 @@ A reporter filing a bug or feature request sees current commands, release expect
 - **FR-003**: Every in-scope product definition MUST describe Deep Capture as explicit, selected-target-scoped, reversible local proxy inspection for authorized sessions.
 - **FR-004**: No in-scope surface MAY claim that Deep Capture is absent from released binaries or merely planned.
 - **FR-005**: No in-scope surface MAY claim that the repository is pre-implementation, lacks a Cargo workspace, or stops at the S01 through S18 roadmap.
-- **FR-006**: Npcap guidance MUST state that fragcap never bundles, hosts, caches as its own, or redistributes Npcap, while accurately describing the explicit `doctor --fix` vendor-fetch confirmation path.
+- **FR-006**: Npcap guidance MUST state that fragcap never bundles, hosts, caches as its own, or redistributes Npcap, while distinguishing the shipped `doctor --fix` browser handoff from the optional `net`-enabled vendor-fetch path and their explicit confirmation requirement.
 - **FR-007**: The repository landing page MUST present current v0.7.0 status, current primary commands, and current Capture and Deep Capture capabilities without expanding into the walkthrough, CLI-reference, architecture-diagram, or bundle-reference work owned by later issues.
 - **FR-008**: Both contributor entry points MUST agree with constitution P-1, P-8, P-10, and P-11 and with the current pull-request and Spec Kit workflow.
 - **FR-009**: The bug issue form MUST use a current reproduction command, current version expectation, and the single still-required Npcap installation option.
@@ -88,7 +88,7 @@ A reporter filing a bug or feature request sees current commands, release expect
 
 - **Public entry point**: A first-contact surface in scope for this slice: `README.md`, `CONTRIBUTING.md`, the public documentation index, the public contributing page, a GitHub issue form, or the GitHub repository description.
 - **Product definition**: The shared statement that distinguishes passive Capture from explicit, scoped, reversible Deep Capture.
-- **Npcap policy**: The licensing and acquisition rule that prohibits bundling and redistribution while permitting a user-confirmed fetch of the vendor installer through `doctor --fix`.
+- **Npcap policy**: The licensing and acquisition rule that prohibits bundling and redistribution, makes the shipped `doctor --fix` open the official download page, and permits a `net`-enabled source build to fetch the vendor installer after user confirmation.
 
 ## Success Criteria *(mandatory)*
 

@@ -37,14 +37,15 @@
 
 ## Npcap Acquisition Wording
 
-**Decision**: State the complete current rule: Npcap is installed separately and never bundled, hosted, cached as fragcap's own, or redistributed; `doctor --fix` may fetch and launch the vendor's own signed installer only after explicit interactive confirmation.
+**Decision**: State the complete current rule: Npcap is installed separately and never bundled, hosted, cached as fragcap's own, or redistributed; after explicit interactive confirmation, the shipped `doctor --fix` opens the official download page, while a source build with the optional `net` feature may fetch and launch the vendor's own signed installer.
 
-**Rationale**: Saying fragcap never downloads Npcap contradicts constitution 1.3.0 and shipped behavior. Saying fragcap installs Npcap would overstate the carve-out and blur the licensing boundary.
+**Rationale**: Constitution 1.3.0 permits a user-confirmed vendor fetch, but the v0.7.0 release artifact omits the `net` feature and deliberately degrades that action to a browser handoff. Treating the permitted source-build capability as shipped behavior would overstate the release; saying fragcap installs Npcap would overstate the carve-out and blur the licensing boundary.
 
 **Alternatives considered**:
 
 - Say only "Npcap is required": rejected because the acquisition and redistribution boundary is material to users and contributors.
-- Describe `doctor --fix` as an installer: rejected because fragcap fetches and launches the vendor installer but does not own or redistribute it.
+- Describe every `doctor --fix` build as fetching the installer: rejected because published release binaries omit `net` and open the official download page instead.
+- Describe `doctor --fix` as an installer: rejected because even a `net`-enabled build only fetches and launches the vendor installer; fragcap does not own or redistribute it.
 
 ## Issue Form Contract
 

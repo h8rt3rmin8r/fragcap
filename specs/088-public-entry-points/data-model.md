@@ -29,7 +29,8 @@ This slice changes documentation and repository metadata rather than runtime dat
 | --- | --- |
 | Runtime relationship | Separate prerequisite for live packet capture |
 | Distribution | Never bundled, hosted, cached as fragcap's own, or redistributed |
-| Assisted acquisition | Vendor installer may be fetched and launched only by `doctor --fix` after explicit interactive confirmation |
+| Shipped assisted acquisition | `doctor --fix` opens the official download page after explicit interactive confirmation |
+| Optional assisted acquisition | A `net`-enabled source build may fetch and launch the vendor installer after explicit interactive confirmation |
 | Non-interactive behavior | Report the official location without fetching or launching |
 | Installation option | WinPcap API-compatible mode remains required; loopback support is automatic in current Npcap |
 

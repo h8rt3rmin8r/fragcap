@@ -10,7 +10,7 @@
 
 - [x] CHK001 Are the required Capture and Deep Capture definitions specified for every in-scope audience and surface? [Completeness, Spec §FR-001 through FR-003]
 - [x] CHK002 Are present-tense release and repository-status corrections defined, including the stale master-spec states found during planning? [Completeness, Spec §FR-004, FR-005, Plan §Summary]
-- [x] CHK003 Is the complete Npcap distribution and confirmed vendor-fetch boundary documented? [Completeness, Spec §FR-006]
+- [x] CHK003 Are the Npcap distribution rule, shipped browser handoff, and optional confirmed vendor-fetch boundary documented? [Completeness, Spec §FR-006]
 - [x] CHK004 Are the required bug-form and feature-form corrections defined separately? [Completeness, Spec §FR-009, FR-010]
 
 ## Requirement Clarity And Consistency
