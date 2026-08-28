@@ -51,12 +51,12 @@ fn has_bash() -> bool {
         .unwrap_or(false)
 }
 
-/// How ShellCheck is visible inside bash, where the Bash compliance checker
-/// runs. Checking from the host shell is insufficient on Windows because Git
-/// Bash and WSL can see a different PATH than PowerShell.
+/// How ShellCheck is visible inside the same plain bash mode that runs the
+/// Bash compliance checker. Checking from the host shell or login bash is
+/// insufficient because either can see a different PATH than the checker.
 fn shellcheck_for_bash() -> Option<BashShellcheck> {
     if Command::new("bash")
-        .args(["-lc", "command -v shellcheck >/dev/null 2>&1"])
+        .args(["-c", "command -v shellcheck >/dev/null 2>&1"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -65,7 +65,7 @@ fn shellcheck_for_bash() -> Option<BashShellcheck> {
     }
 
     if Command::new("bash")
-        .args(["-lc", "command -v shellcheck.exe >/dev/null 2>&1"])
+        .args(["-c", "command -v shellcheck.exe >/dev/null 2>&1"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)

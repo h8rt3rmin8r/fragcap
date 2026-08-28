@@ -14,9 +14,9 @@
 
 ## Decision 2: Require ShellCheck from Bash before running the gate
 
-**Decision**: `cargo xtask wrappers` preflights ShellCheck from inside Bash and returns an unable-to-run result when Bash cannot run it. On Windows, Bash-visible `shellcheck.exe` is accepted and bridged to the bare command name for the checker process.
+**Decision**: `cargo xtask wrappers` preflights ShellCheck from inside the same plain Bash mode that invokes the vendored checker, and returns an unable-to-run result when that Bash mode cannot run it. On Windows, Bash-visible `shellcheck.exe` is accepted and bridged to the bare command name for the checker process.
 
-**Rationale**: The vendored checker warns and continues when ShellCheck is missing. Direct skill use can tolerate that, but CI cannot report a clean gate when static analysis did not run. Checking inside Bash is necessary because Windows host shells, Git Bash, and WSL can see different executable paths and command-name behavior.
+**Rationale**: The vendored checker warns and continues when ShellCheck is missing. Direct skill use can tolerate that, but CI cannot report a clean gate when static analysis did not run. Checking inside the checker-equivalent Bash mode is necessary because Windows host shells, Git Bash, WSL, and login-shell initialization can see different executable paths and command-name behavior.
 
 **Alternatives considered**:
 

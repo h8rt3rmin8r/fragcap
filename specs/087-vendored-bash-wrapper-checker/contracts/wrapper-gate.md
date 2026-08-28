@@ -9,7 +9,7 @@ cargo xtask wrappers
 ## Environment Contract
 
 - Returns `2` if Bash is unavailable.
-- Returns `2` if ShellCheck is not runnable from Bash.
+- Returns `2` if ShellCheck is not runnable from the same plain Bash mode that invokes the vendored checker.
 - Returns `2` if PowerShell 7 is unavailable.
 
 ## Compliance Contract

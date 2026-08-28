@@ -47,6 +47,7 @@ A maintainer whose shell environment cannot run ShellCheck from Bash receives an
 - Missing Bash itself remains an environment failure.
 - Missing PowerShell 7 remains an environment failure.
 - The direct vendored checker may still warn when invoked by hand without ShellCheck; only `cargo xtask wrappers` strengthens that condition for CI.
+- ShellCheck preflight and vendored checker invocation use the same plain Bash mode, so login-shell PATH customization cannot make preflight pass while the checker skips static analysis.
 - Relative repository paths remain the invocation contract so Git Bash, WSL Bash, and native Bash can resolve targets consistently from the repository root.
 
 ## Requirements *(mandatory)*
