@@ -1,128 +1,101 @@
 ---
 title: Architecture
-description: How fragcap recovers which process owns a flow, and the security posture that shapes every part of it.
+description: How passive Capture and explicit Deep Capture produce distinct, auditable evidence.
 ---
 
-This page explains how fragcap works at the level a user benefits from knowing.
-The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md)
-is the architecture of record; this is the shape of it.
+fragcap has two shipped modes. [Capture](/docs/glossary/capture-and-networking#capture-mode) passively records packets and attributes flows to processes from evidence outside those processes. [Deep Capture](/docs/glossary/capture-and-networking#deep-capture) runs that same Capture path beside explicit, target-scoped local proxy inspection for one compatible stored target. Deep Capture is active by design, and it adds observations only for traffic that reaches its proxy.
 
-## The pieces
+The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md) is the architecture of record. This page explains the execution and trust boundaries a user or reviewer needs to understand.
 
-fragcap captures and attributes; npcap is the required capture driver; Wireshark
-is the recommended analyzer and its installer also provides npcap; the Wireshark
-extcap integration is optional. See the dependency model in the
-[glossary](/docs/glossary/platform-and-distribution#dependency-model).
+## Capture: passive packet truth
+
+A packet carries addresses and ports, but not the identity of the process that sent it. Capture joins the packet's [flow key](/docs/glossary/capture-and-networking#flow-key) with Windows socket-table and process-lifecycle evidence, then writes the result without opening or modifying the target process.
 
 ```mermaid
-flowchart TD
-  fragcap["fragcap: capture and attribution"]
-  npcap["npcap: capture driver (required)"]
-  ws["Wireshark: analyzer (recommended)"]
-  extcap["Wireshark extcap: optional"]
-  fragcap -->|captures through| npcap
-  fragcap -->|writes captures opened in| ws
-  ws -->|installer bundles| npcap
-  extcap -->|ships with| ws
-  fragcap -.->|registered by fragcap extcap install| extcap
+flowchart LR
+  nic["Selected interfaces"] --> npcap["Npcap"]
+  npcap --> threads["Capture threads"]
+  threads --> buffer["Bounded buffer"]
+  evidence["Socket and process evidence"] --> attr["Flow attribution"]
+  buffer --> attr
+  attr --> scope["Scope and loss accounting"]
+  scope --> packets[".fcapng packet truth"]
+  packets --> analyzer["Unmodified analyzer"]
 ```
 
-## The problem
+Npcap supplies raw packets, one capture thread runs per selected interface, and a bounded drop-oldest buffer keeps acquisition from waiting on consumers. Attribution uses immutable socket snapshots and a process tree. A socket created after a packet cannot have owned it; a connection tail resolved from the short retention window is marked as retained rather than presented as a live match.
 
-A packet on the wire does not carry the identity of the process that sent it.
-Standard capture tools tap the network driver, below the socket layer, where the
-association between a packet and its process has already been discarded. So they
-can tell you a conversation happened, but not who on your machine had it. For a
-game client started indirectly through a launcher, "who" is exactly the question.
+[Capture scope](/docs/glossary/capture-and-networking#capture-scope) is a userspace output decision after attribution. The default `target` scope writes packets bound to the selected target roles and omits unattributed and other-process packets with separate named counters. `--scope all` retains all acquired traffic and preserves each packet's attribution state. Buffer, sink, parser, backend, bound, and scope losses remain visible in the final accounting.
 
-## The join
+The primary file is `.fcapng`, ordinary pcapng with attribution in standard packet comments. Wireshark and other unmodified pcapng analyzers can open it and safely ignore annotations they do not understand. Capture can also write the documented [JSON Lines form](/docs/reference/output-formats), but richer formatting does not change which packets were observed.
 
-fragcap recovers the association by joining two things it can observe without
-touching any target process:
+## Deep Capture: explicit proxy observations beside Capture
 
-- **The captured flow**, identified by its
-  [5-tuple](/docs/glossary/capture-and-networking#5-tuple): protocol and the two
-  endpoints.
-- **The operating system's socket table**, which lists open sockets and the
-  module that owns each one.
-
-Matching a flow's tuple against the socket table yields the owning process. The
-join is ordered deterministically: a socket created after a packet cannot have
-owned it, so creation time filters out the previous owner of a reused port. When a
-connection closes, its tail stays attributed through a short retention window, and
-an answer that comes from that window is marked as
-[retained](/docs/glossary/file-and-wire-formats#attribution-fidelity) rather than
-presented as a live match, because a port reused inside the window is the one way
-that answer can be wrong.
-
-## Naming an indirectly launched client
-
-The socket table names a process; a capture target names which process is the
-game. When a launcher starts the client, "the game" is not a fixed image name but
-"the client that this launcher started." fragcap builds a process tree from
-creation-time telemetry and resolves a client's ancestry against it, so a target
-can name the client by its lineage rather than by assuming it is a direct child.
-You register a target with [`fragcap targets`](/docs/getting-started#3-find-a-target),
-and fragcap discovers installed titles for you.
-
-## The pipeline
-
-Capture runs one thread per interface into a single bounded buffer; a separate
-thread drains the buffer, attributes each packet, and fans it out to every sink.
-The buffer is bounded and drops the oldest packet under pressure rather than
-blocking capture, and every discard, at the buffer, at a sink, or against a
-capture bound, has a named counter that appears in the completion summary. The
-accounting is conservation, not decoration: for every sink, received plus dropped
-plus refused equals captured.
+Deep Capture starts from one stored target. Its read-only preflight resolves the launch case, current compatibility evidence, Capture readiness, proxy backend, bundle path, and trust authorization before creating the session directory or starting the proxy.
 
 ```mermaid
-flowchart TD
-  nic["Network interface"]
-  npcap["npcap driver"]
-  cap["fragcap capture: one thread per interface"]
-  buf["Bounded buffer: drop-oldest, counted"]
-  attr["Attribution: socket table and process tree"]
-  pcapng["pcapng file"]
-  jsonl["JSON Lines"]
-  ws["Wireshark"]
-  nic --> npcap --> cap --> buf --> attr
-  attr --> pcapng
-  attr --> jsonl
-  pcapng -->|opened in| ws
-  attr -.->|live via extcap| ws
+flowchart LR
+  target["Stored target"] --> preflight["Read-only preflight"]
+  preflight -->|refused| stop["No session side effects"]
+  preflight -->|eligible| prepare["Prepared session"]
+  prepare --> capture["Ordinary Capture"]
+  prepare --> proxy["Loopback mitmdump"]
+  proxy --> trust["Current-user CA trust"]
+  trust --> launch["Managed target launch"]
+  launch --> observations["Proxy observations"]
+  proxy --> observations
+  capture --> correlate["Structured correlation"]
+  observations --> correlate
+  correlate --> cleanup["Session cleanup"]
+  trust --> cleanup
+  cleanup --> bundle["Manifest-indexed bundle"]
 ```
 
-## Getting npcap
+The current real-target path is deliberately narrow. The selected target must have current `proxy-routing = reached-client` and `proxy-propagation = confirmed` facts for `steam-protocol-cold`. Unknown, stale, conflicting, or wrong-launch evidence is refused. An already-running Steam process is a warm launch fragcap does not own, and direct-executable managed launch is not implemented in v0.7.0, so both are refused before session side effects. The [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility) carries the complete current traffic and launch matrix.
 
-fragcap never downloads, installs, or bundles npcap; it detects it and reports
-its absence through `fragcap doctor`. npcap is by the Nmap Project. The usual way
-to get it is the Wireshark installer, which bundles it; you can also install it
-directly.
+After preflight, fragcap starts a loopback `mitmdump` child, manages any authorized CA trust, prepares ordinary Capture, and launches the target through Steam with launch-scoped proxy environment. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
 
-```mermaid
-flowchart TD
-  user["You"]
-  ws["Wireshark installer"]
-  npcap["npcap: by the Nmap Project"]
-  fragcap["fragcap"]
-  user -->|installs| ws
-  ws -->|bundles and installs| npcap
-  user -.->|or installs directly| npcap
-  fragcap -->|detects only, never bundles| npcap
-  fragcap -->|reports absence via fragcap doctor| user
-```
+## Trust and routing boundaries
 
-## The security posture
+| Boundary | Trigger | Scope and owner | Cleanup or refusal |
+| --- | --- | --- | --- |
+| Compatibility | Current exact routing facts for `steam-protocol-cold` | One selected stored target and launch case, evaluated by fragcap | Refusal occurs before the proxy, trust, launch, or bundle side effects |
+| Proxy | Successful preflight | One fragcap-owned mitmdump child on a loopback port | The child, port, and ephemeral proxy material receive recorded cleanup outcomes |
+| CA trust | Explicit `--trust-ca`, or the broader unattended `--yes` confirmation | The exact fragcap-owned CA in the current user's Root store | fragcap attempts removal and records the exact identity and result |
+| Target routing | Prepared managed launch | Proxy environment for the selected launch session | No system-wide proxy fallback is attempted |
 
-fragcap observes. It does not modify traffic, and it does not reach inside the
-processes it names. That is not a default; it is enforced. A denylist of
-techniques -- packet interception drivers, code injection, function hooking,
-process handles carrying memory-read rights, layered service providers, executable
-image modification -- is absolute, and it is checked mechanically, not just
-promised. Nothing fragcap does resembles what anti-cheat systems watch for,
-because none of those techniques are needed for anything fragcap claims. See the
-[technique denylist](/docs/glossary/anti-cheat-and-security#technique-denylist).
+`--trust-ca` is the trust authorization. When it is present, no second interactive trust prompt follows. Omit it to refuse that run before the trust change; use `--yes` only when broader unattended preconfirmation is intended. Trust is never silently added to the local-machine store or broadened to an unrelated CA.
 
-Image names come from an ordinary process enumeration, and the socket table comes
-from the IP Helper API that ships with Windows. Neither requires a capture driver
-or elevation. Capture itself needs npcap; attribution does not.
+Proxy visibility depends on actual target behavior. A flow that bypasses the proxy still belongs to ordinary Capture, but it produces no proxy semantics. HTTPS inspection also depends on the target accepting the fragcap-owned CA. Certificate-pinned traffic is not bypassed, and unsupported non-HTTP protocols remain metadata-only or unsupported according to what the proxy actually observed.
+
+## Output authority and correlation
+
+The [session bundle](/docs/glossary/file-and-wire-formats#session-bundle) keeps several kinds of evidence together without pretending they have equal authority:
+
+| Evidence | Producer and authority |
+| --- | --- |
+| `capture.fcapng` | Packet truth from ordinary Capture, including external process attribution and loss accounting |
+| `application.jsonl` | Proxy-observed application events; sensitive and potentially partial |
+| `http.har` | Optional projection of HTTP semantics the proxy observed; omitted when not requested or when no suitable HTTP event exists |
+| `tls-keylog.log` | Optional, sensitive [proxy-owned TLS key-log material](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export) for analyzer workflows; never extracted from the target |
+| `proxy.jsonl`, `process-trace.jsonl`, `compatibility.json` | Proxy, process, and launch-specific compatibility evidence used to interpret and correlate the run |
+| `manifest.json`, `cleanup.json` | Artifact index, omissions, session state, trust identity, and per-resource cleanup evidence |
+
+Proxy observations carry the session and proxy connection identities. fragcap adds packet flow identifiers only when structured endpoint evidence matches the live flow registry. If no structured match exists, correlation stays absent; fragcap does not fabricate one from timing or content similarity.
+
+This is the high-level authority model. The [CLI reference](/docs/reference/cli#deep-capture) defines the command surface, and the [getting-started guide](/docs/getting-started#7-run-a-known-compatible-deep-capture) shows one bounded session and post-run cleanup check.
+
+## External dependency boundaries
+
+- **Npcap** is the Windows live-packet backend used by Capture, including the ordinary Capture running inside Deep Capture. Attribution itself uses Windows socket and process evidence and does not depend on Npcap.
+- **mitmdump** is the shipped local proxy backend for Deep Capture only. If it is unavailable, Deep Capture is unavailable, but ordinary Capture remains usable.
+- **Wireshark or another pcapng analyzer** consumes `.fcapng`. It is not part of fragcap's capture or attribution engine. Wireshark's installer is a common way to obtain Npcap.
+- **extcap** is an optional adapter that streams Capture into Wireshark. It does not change the packet, attribution, proxy, or trust architecture.
+
+fragcap never bundles, hosts, caches as its own, or redistributes Npcap or its installer. `fragcap doctor --fix` offers a remediation action and performs it only after explicit confirmation. The published build opens the official acquisition page. A source build compiled with optional `net` support may instead fetch the vendor's signed installer to a uniquely named temporary path and launch it after confirmation. fragcap does not install Npcap silently or represent the vendor package as a fragcap artifact. See the glossary's [dependency model](/docs/glossary/platform-and-distribution#dependency-model).
+
+## Security boundary
+
+Capture is passive. Deep Capture is explicitly selected, target-scoped, visible in its events and manifest, reversible through session cleanup, and auditable afterward. Neither mode injects code, hooks target functions, reads target memory, modifies target executables, changes the Winsock catalog through a layered service provider, installs a packet interception driver, or extracts TLS keys from a target process. Deep Capture does not bypass certificate pinning and never falls back to silent trust or system-wide proxy settings.
+
+These exclusions are architectural boundaries rather than compatibility gaps. See the [technique denylist](/docs/glossary/anti-cheat-and-security#technique-denylist) and [local development certificate authority](/docs/glossary/anti-cheat-and-security#local-development-certificate-authority) entries for the governing distinction.
