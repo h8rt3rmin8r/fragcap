@@ -707,11 +707,13 @@ pub(crate) fn ca_cleanup_targets(root: &std::path::Path) -> Result<Vec<(String, 
 #[cfg(not(windows))]
 pub(crate) fn ca_cleanup_targets(root: &std::path::Path) -> Result<Vec<(String, String)>, String> {
     let scan = scan_deep_capture_residue(root);
-    if scan.manifests.is_empty() && scan.errors.is_empty() {
-        Ok(Vec::new())
-    } else {
-        Err("Windows certificate stores are unavailable on this platform".to_string())
+    if !scan.errors.is_empty() {
+        return Err(scan.errors.join("; "));
     }
+    if manifest_ca_identities(&scan.manifests)?.is_empty() {
+        return Ok(Vec::new());
+    }
+    Err("Windows certificate stores are unavailable on this platform".to_string())
 }
 
 pub(crate) fn manifest_declared_artifacts(
