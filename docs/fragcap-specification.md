@@ -113,6 +113,7 @@ enforcement.
 | 0.1.19-draft | 2026-08-28 | W. Thompson | **Reconciles public entry points with v0.7.0 (issue #244).** Corrects sections 1, 2.1, 19.1, 27.3, and 28 so current-status prose and release history describe Capture and Deep Capture as shipped modes, record releases through v0.7.0, and leave only unshipped work in the roadmap. The repository landing page, contributor guides, documentation index, issue forms, and GitHub description now project the same bounded product definition. |
 | 0.1.20-draft | 2026-08-28 | W. Thompson | **Implements the Deep Capture CA trust-state probe (issue #250).** Corrects section 26.3 so doctor derives exact owned identities from session-manifest thumbprints, reads current-user and local-machine Root inventories without mutation, reports absent, supported, wrong-store, mismatch, and unknown states honestly, and offers cleanup only for an exact observed owned resource. |
 | 0.1.21-draft | 2026-08-28 | W. Thompson | **Adds an explicit Deep Capture compatibility bootstrap (issue #251).** Extends sections 13.7, 15, 17.2.1, 19, 25, 26, 28, and 29. Compatibility calibration measures one declared launch case in separate reachability and TLS phases, displays and confirms every bounded effect, retains partial observed facts and cleanup truth, and leaves ordinary Deep Capture's eligibility refusal intact. Corrects the prior MVP inference that final-client routing proves environment propagation; routing is the eligibility fact, while propagation remains independently observed evidence. |
+| 0.1.22-draft | 2026-08-29 | W. Thompson | **Makes Deep Capture a library-first session capability (issue #252).** Updates sections 8, 13.7, 17.2.1, 25, and 29. The `fragcap` facade now owns side-effect-free preparation, plan-bound authorization, typed lifecycle ordering, evidence classification, append-only fact selection, bounded resource cleanup, immutable terminal reports, and adapter contracts. The CLI maps arguments, supplies the shipped production effect bridges, presents plans and events, and maps terminal status while the same controlled API remains usable without a driver, elevation, game, remote service, or trust mutation. |
 
 ## 2. Purpose and Problem Statement
 
@@ -879,8 +880,8 @@ fragcap-capture     PacketSource backends: live capture and replay.
 fragcap-attr        FlowAttributor and ProcessWatcher backends.
 fragcap-sink        Sink implementations and transports.
 fragcap-steam       Steam library parsing and profile scaffolding.
-fragcap             Facade. Re-exports the assembled public API.
-fragcap-cli         Binary. Argument parsing, orchestration, reporting.
+fragcap             Facade. Assembles and orchestrates the public product API.
+fragcap-cli         Binary. Arguments, production effect bridges, presentation, exit mapping.
 ```
 
 ### 8.3 Dependency Direction
@@ -909,6 +910,35 @@ building it for a target with no capture backend available.
 
 No crate depends on `fragcap-cli`. No crate below the facade depends on
 a sibling at its own level.
+
+### 8.3.1 Deep Capture Session API
+
+Deep Capture orchestration lives in the `fragcap::deep_capture` facade module,
+not in `fragcap-core` and not in the binary. Side-effect-free preflight resolves
+one target, launch case, ordinary Capture preparation, proxy descriptor, bundle
+destination, effective deadlines, loopback scope, and compatibility prerequisites
+into one immutable prepared plan. Caller authorization names that plan identifier;
+a declined, stale, or mismatched authorization causes no proxy, trust, launch,
+bundle, or fact effect.
+
+The public coordinator exposes checked start, observation, stop, finalization, and
+cleanup operations plus an end-to-end convenience runner. Invalid order and reuse
+return typed transition errors before adapter calls. Once effects begin, the
+authoritative terminal report retains every observation and chronological failure,
+records each independent fact and artifact attempt, and names each cleanup result.
+Facts and cleanup are attempted before the coordinator freezes one terminal
+snapshot. Bundle finalization consumes that snapshot, while each artifact result
+is returned independently so a late write failure cannot produce a complete
+terminal report.
+
+Proxy execution, trust management, managed launch, ordinary Capture execution,
+target-owned fact persistence, bundle persistence, time, identifiers, loopback
+allocation, and typed event delivery are narrow injectable interfaces. Adapters
+perform effects only. The coordinator owns ordering, classification, fact
+selection, outcome, and finalization timing. Blocking adapters receive finite budgets
+and must cooperatively honor them. Event-delivery failure after effects begin is
+reported but never prevents bounded cleanup. Controlled adapters exercise the
+whole public API without platform or privileged effects.
 
 ### 8.4 Core Types
 
@@ -2785,6 +2815,15 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
 target rather than a raw process image because the command needs one target
 identity, one launch path, one local compatibility-fact destination, and one
 session manifest. Raw process observation remains the `capture --process` path.
+
+The command is an adapter over `fragcap::deep_capture`. It maps clap values into
+the public session configuration, supplies production bridges to the existing
+proxy, trust, Capture, target-store, and bundle implementations, presents the
+immutable prepared plan, supplies the caller's exact-plan authorization, renders
+typed library events, and maps the terminal report to the established exit-code classes. Target resolution,
+compatibility prerequisites, lifecycle order, observation classification, fact
+selection, cleanup ordering, snapshot authority, and terminal outcome belong to
+the library coordinator and are directly testable without invoking the binary.
 
 The MVP requires `--launch`. The command must own the launch environment so
 scoped proxy configuration can be applied to that session only. It refuses real

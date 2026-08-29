@@ -10,6 +10,13 @@ add HTTP semantics only when the selected software actually routes traffic
 through that proxy and accepts the fragcap-owned local certificate authority.
 </Callout>
 
+Rust integrations can drive the same behavior through `fragcap::deep_capture`.
+The public API supports side-effect-free preflight, exact-plan authorization,
+checked lifecycle methods, narrow proxy, trust, launch, Capture, and storage
+adapters, typed events, and one authoritative terminal report. Controlled
+adapters require no capture driver, elevation, game account, remote service, or
+trust-store change.
+
 Deep Capture does not promise that every encrypted flow becomes readable. It
 does not bypass certificate pinning, downgrade TLS, extract keys from a target
 process, or silently change system-wide proxy settings. Packet truth remains

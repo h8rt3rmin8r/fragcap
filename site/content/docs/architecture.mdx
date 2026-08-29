@@ -5,6 +5,8 @@ description: How passive Capture and explicit Deep Capture produce distinct, aud
 
 fragcap has two shipped modes. [Capture](/docs/glossary/capture-and-networking#capture-mode) passively records packets and attributes flows to processes from evidence outside those processes. [Deep Capture](/docs/glossary/capture-and-networking#deep-capture) runs that same Capture path beside explicit, target-scoped local proxy inspection for one compatible stored target. Deep Capture is active by design, and it adds observations only for traffic that reaches its proxy.
 
+Both modes are library capabilities. Deep Capture is exposed through the public `fragcap::deep_capture` session API: side-effect-free preparation returns an immutable plan, caller authorization binds to that exact plan, and a checked coordinator owns start, observation, stop, fact attempts, cleanup, bundle finalization timing, and the terminal report. The CLI maps arguments, supplies the shipped effect bridges, and presents those typed results rather than defining a second lifecycle.
+
 The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md) is the architecture of record. This page explains the execution and trust boundaries a user or reviewer needs to understand.
 
 ## Capture: passive packet truth

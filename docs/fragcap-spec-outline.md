@@ -142,7 +142,8 @@ have different platform requirements, different failure modes, and
 different upgrade paths. A Mermaid diagram of the pipeline belongs here.
 
 Covers the facade crate, the dependency direction rule (core depends on
-nothing platform-specific), and the plugin seam for dissectors.
+nothing platform-specific), the public Deep Capture prepared-plan and session
+coordinator, its narrow effect adapters, and the plugin seam for dissectors.
 
 ## 9. Platform Strategy
 
@@ -222,7 +223,7 @@ technique and why it is used only on non-protected processes.
 
 ## 17. Command Line Interface
 
-Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, Deep Capture, the two-phase compatibility calibration plan and confirmation contract, target management, doctor, and integration commands.
+Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, the two-phase compatibility calibration plan and confirmation contract, target management, doctor, and integration commands.
 
 ## 18. Shell Wrappers
 
