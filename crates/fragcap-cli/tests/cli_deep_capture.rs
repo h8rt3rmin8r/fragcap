@@ -140,6 +140,10 @@ fn controlled_calibration_runs_reachability_then_tls() {
         "reachability",
         "--launch-case",
         "direct-exe-warm",
+        "--duration",
+        "5s",
+        "--wait",
+        "7s",
         "--yes",
         "--controlled-target",
         "--local-db",
@@ -152,10 +156,29 @@ fn controlled_calibration_runs_reachability_then_tls() {
     assert!(reachability_events.contains("deep_capture.calibration_plan"));
     assert!(reachability_events.contains("\"status\":\"reached-client\""));
     assert!(!reachability_events.contains("deep_capture.trust"));
+    let plan: serde_json::Value = reachability_events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["event"] == "deep_capture.calibration_plan")
+        .unwrap();
+    assert_eq!(plan["launch_timeout_secs"], 7);
+    assert_eq!(plan["observation_timeout_secs"], 5);
     let reachability_manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(reachability_bundle.join("manifest.json")).unwrap())
             .unwrap();
     assert_eq!(reachability_manifest["trust"]["state"], "not-requested");
+    let compatibility: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(reachability_bundle.join("compatibility.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        compatibility["calibration"]["deadlines_seconds"]["launch"],
+        7
+    );
+    assert_eq!(
+        compatibility["calibration"]["deadlines_seconds"]["observation"],
+        5
+    );
 
     let store = Store::open(&local).unwrap();
     let facts = store.compatibility_facts_for_target(target_id).unwrap();
@@ -585,4 +608,43 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
     assert!(facts.iter().any(|fact| {
         fact.key == CompatibilityFactKey::ProtocolBehavior && fact.value == "https"
     }));
+}
+
+#[test]
+fn partial_calibration_persists_the_same_failed_terminal_outcome_it_emits() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, true);
+    let bundle = dir.path().join("bundle");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+    std::env::set_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER", "2");
+
+    let (code, _out, events) = run(&[
+        "--json",
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "tls",
+        "--launch-case",
+        "direct-exe-warm",
+        "--yes",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER");
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 1, "events:\n{events}");
+    assert!(events.contains("\"status\":\"failed\""));
+    let compatibility: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("compatibility.json")).unwrap()).unwrap();
+    assert_eq!(compatibility["calibration"]["outcome"], "failed");
 }

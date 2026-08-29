@@ -155,6 +155,38 @@ struct CalibrationPlan {
     declared_launch_case: CompatibilityLaunchCase,
     observed_launch_case: CompatibilityLaunchCase,
     bundle: PathBuf,
+    deadlines: CalibrationDeadlines,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CalibrationDeadlines {
+    launch: Duration,
+    observation: Duration,
+    shutdown: Duration,
+    cleanup: Duration,
+}
+
+impl CalibrationDeadlines {
+    fn from_args(args: &DeepCaptureArgs) -> Self {
+        Self {
+            launch: bounded_timeout(args.wait, CALIBRATION_LAUNCH_TIMEOUT),
+            observation: bounded_timeout(args.duration, CALIBRATION_OBSERVATION_TIMEOUT),
+            shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
+            cleanup: CALIBRATION_CLEANUP_TIMEOUT,
+        }
+    }
+
+    fn seconds(duration: Duration) -> u64 {
+        u64::try_from(duration.as_millis().saturating_add(999) / 1_000).unwrap_or(u64::MAX)
+    }
+}
+
+fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
+    provided.unwrap_or(maximum).min(maximum)
+}
+
+fn remaining_timeout(started: Instant, total: Duration) -> Duration {
+    total.saturating_sub(started.elapsed())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,8 +261,13 @@ fn calibration_outcome(
                 .any(|observation| observation.reason.as_deref() == Some("no-relevant-traffic"))
             {
                 CalibrationOutcome::NoRelevantTraffic
-            } else if observations.is_empty() {
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+            {
                 CalibrationOutcome::ProxyNotReached
+            } else if observations.is_empty() {
+                CalibrationOutcome::Inconclusive
             } else if observations
                 .iter()
                 .all(|observation| observation.inspectability == "unsupported")
@@ -241,17 +278,23 @@ fn calibration_outcome(
             }
         }
         CalibrationPhase::Tls => {
-            if observations.iter().any(|observation| {
-                observation.protocol == "https" && observation.inspectability == "full"
-            }) {
+            if observations
+                .iter()
+                .any(observation_proves_final_client_ca_acceptance)
+            {
                 CalibrationOutcome::LocalCaAccepted
             } else if observations
                 .iter()
                 .any(|observation| observation.reason.as_deref() == Some("certificate-pinned"))
             {
                 CalibrationOutcome::CertificatePinned
-            } else if observations.is_empty() {
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+            {
                 CalibrationOutcome::ProxyNotReached
+            } else if observations.is_empty() {
+                CalibrationOutcome::Inconclusive
             } else if observations
                 .iter()
                 .all(|observation| observation.inspectability == "unsupported")
@@ -267,6 +310,21 @@ fn calibration_outcome(
             }
         }
     }
+}
+
+fn observation_is_correlated_to_final_client(observation: &Observation) -> bool {
+    observation.flow_id.is_some()
+        && observation
+            .role
+            .as_deref()
+            .and_then(compatibility_owner_role)
+            == Some("client")
+}
+
+fn observation_proves_final_client_ca_acceptance(observation: &Observation) -> bool {
+    observation_is_correlated_to_final_client(observation)
+        && observation.protocol == "https"
+        && observation.inspectability == "full"
 }
 
 fn terminal_calibration_outcome(
@@ -328,10 +386,10 @@ impl CalibrationPlan {
                 "none"
             }
             .to_string(),
-            launch_timeout_secs: CALIBRATION_LAUNCH_TIMEOUT.as_secs(),
-            observation_timeout_secs: CALIBRATION_OBSERVATION_TIMEOUT.as_secs(),
-            shutdown_timeout_secs: CALIBRATION_SHUTDOWN_TIMEOUT.as_secs(),
-            cleanup_timeout_secs: CALIBRATION_CLEANUP_TIMEOUT.as_secs(),
+            launch_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.launch),
+            observation_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.observation),
+            shutdown_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.shutdown),
+            cleanup_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.cleanup),
         });
         emitter.required_human(&format!(
             "Compatibility calibration plan\n  target: {}\n  phase: {}\n  launch case: {} (observed {})\n  proxy: loopback only, launch-scoped environment\n  bundle: {}\n  deadlines: launch {}s, observation {}s, shutdown {}s, cleanup {}s\n  trust action: {}\n  facts: append only directly observed rows to the selected target\n  cleanup: proxy process, listener, private CA material, and session trust if created\n  system proxy change: none\n  evidence publication: none\n",
@@ -340,10 +398,10 @@ impl CalibrationPlan {
             self.declared_launch_case.as_str(),
             self.observed_launch_case.as_str(),
             self.bundle.display(),
-            CALIBRATION_LAUNCH_TIMEOUT.as_secs(),
-            CALIBRATION_OBSERVATION_TIMEOUT.as_secs(),
-            CALIBRATION_SHUTDOWN_TIMEOUT.as_secs(),
-            CALIBRATION_CLEANUP_TIMEOUT.as_secs(),
+            CalibrationDeadlines::seconds(self.deadlines.launch),
+            CalibrationDeadlines::seconds(self.deadlines.observation),
+            CalibrationDeadlines::seconds(self.deadlines.shutdown),
+            CalibrationDeadlines::seconds(self.deadlines.cleanup),
             if self.phase == CalibrationPhase::Tls {
                 "session-owned current-user CA trust"
             } else {
@@ -384,6 +442,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         ));
     }
     let calibration = args.calibrate.map(CalibrationPhase::from);
+    let deadlines = CalibrationDeadlines::from_args(args);
     if calibration == Some(CalibrationPhase::Reachability)
         && (args.trust_ca || args.har || args.key_log)
     {
@@ -446,7 +505,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let prepared_capture = if args.controlled_target {
         None
     } else {
-        let capture_args = real_capture_args(args, &pending_bundle);
+        let capture_args = real_capture_args(args, &pending_bundle, deadlines);
         let prepared = capture::prepare(&capture_args, emitter)?;
         Some((capture_args, prepared))
     };
@@ -459,6 +518,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             declared_launch_case: declared,
             observed_launch_case: selected_launch_case,
             bundle: pending_bundle.clone(),
+            deadlines,
         };
         plan.emit(emitter);
         if !confirm_calibration(args, emitter)? {
@@ -540,14 +600,20 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         let mut manager = match trust_manager(args, &proxy) {
             Ok(manager) => manager,
             Err(err) => {
-                report_early_cleanup(&session, &mut proxy, None, emitter);
+                report_early_cleanup(&session, &mut proxy, None, deadlines, emitter);
                 return Err(err);
             }
         };
         let trust = match manager.ensure_trusted(args.trust_ca || args.yes) {
             Ok(trust) => trust,
             Err(err) => {
-                report_early_cleanup(&session, &mut proxy, Some(manager.as_mut()), emitter);
+                report_early_cleanup(
+                    &session,
+                    &mut proxy,
+                    Some(manager.as_mut()),
+                    deadlines,
+                    emitter,
+                );
                 return Err(err);
             }
         };
@@ -571,10 +637,14 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
 
     let (observations, mut operation_failure, controlled_process_id, process_events, interrupted) =
         if args.controlled_target {
-            let target_result = run_controlled_target_harness(session.listen_port, calibration);
+            let target_result = run_controlled_target_harness(
+                session.listen_port,
+                calibration,
+                deadlines.launch.saturating_add(deadlines.observation),
+            );
             let controlled_process_id = target_result.as_ref().ok().copied();
             let stop_result = proxy
-                .stop()
+                .stop_with_timeout(deadlines.shutdown)
                 .map_err(|e| CliError::failure(format!("cannot stop controlled proxy: {e}")));
             let failure = target_result.err().or_else(|| stop_result.err());
             match read_proxy_observations(&proxy.events_path) {
@@ -602,7 +672,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             let (flow_registry, capture_result, process_events, interrupted) =
                 run_real_capture(&capture_args, prepared, session.listen_port, emitter);
             let stop_result = proxy
-                .stop()
+                .stop_with_timeout(deadlines.shutdown)
                 .map_err(|e| CliError::failure(format!("cannot stop proxy backend: {e}")));
             let failure = capture_result.err().or_else(|| stop_result.err());
             match read_proxy_observations(&proxy.events_path) {
@@ -619,7 +689,9 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
                 ),
             }
         };
-    let proxy_cleanup = proxy.cleanup_process();
+    let cleanup_started = Instant::now();
+    let proxy_cleanup =
+        proxy.cleanup_process_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup));
     let port_cleanup = proxy.cleanup_port();
     let trust_cleanup = trust_manager.as_mut().map_or_else(
         || {
@@ -629,18 +701,24 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
                 "reachability did not use trust",
             )
         },
-        |manager| manager.cleanup(),
+        |manager| manager.cleanup(remaining_timeout(cleanup_started, deadlines.cleanup)),
     );
     if args.key_log {
         proxy.retain_key_log();
     }
-    let material_cleanup = proxy.cleanup_ephemeral();
+    let material_cleanup =
+        proxy.cleanup_ephemeral_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup));
     let cleanup = CleanupReport::new(vec![
         proxy_cleanup,
         port_cleanup,
         trust_cleanup,
         material_cleanup,
     ]);
+    if cleanup.status() == "failed" && operation_failure.is_none() {
+        operation_failure = Some(CliError::failure(
+            "one or more Deep Capture cleanup obligations failed",
+        ));
+    }
     let (fact_writes, fact_failure) = write_compatibility_facts(
         &mut store,
         session.target_id,
@@ -653,6 +731,14 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     if operation_failure.is_none() {
         operation_failure = fact_failure;
     }
+    let mut terminal_outcome = calibration.map(|phase| {
+        terminal_calibration_outcome(
+            phase,
+            &observations,
+            interrupted,
+            operation_failure.is_some(),
+        )
+    });
     let session_state = match operation_failure.as_ref() {
         None => "complete",
         Some(_) if args.controlled_target || session.bundle.join("capture.fcapng").is_file() => {
@@ -681,7 +767,8 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             controlled_process_id,
             process_events: &process_events,
             calibration,
-            calibration_outcome: calibration.map(|phase| calibration_outcome(phase, &observations)),
+            calibration_outcome: terminal_outcome,
+            deadlines,
             fact_writes: &fact_writes,
         },
         emitter,
@@ -690,6 +777,30 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     if let Err(err) = bundle_result {
         if operation_failure.is_none() {
             operation_failure = Some(err);
+        }
+        terminal_outcome = calibration
+            .map(|phase| terminal_calibration_outcome(phase, &observations, interrupted, true));
+        let repair_context = BundleContext {
+            session: &session,
+            args,
+            observations: &observations,
+            trust: &trust,
+            cleanup: &cleanup,
+            session_state: "partial",
+            controlled_process_id,
+            process_events: &process_events,
+            calibration,
+            calibration_outcome: terminal_outcome,
+            deadlines,
+            fact_writes: &fact_writes,
+        };
+        if session.bundle.join("compatibility.json").is_file() {
+            if let Ok(content) = compatibility_json(&repair_context) {
+                let _ = write_file(
+                    session.bundle.join("compatibility.json"),
+                    content.as_bytes(),
+                );
+            }
         }
     }
     let terminal_state = match operation_failure.as_ref() {
@@ -701,12 +812,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     };
 
     if let Some(phase) = calibration {
-        let outcome = terminal_calibration_outcome(
-            phase,
-            &observations,
-            interrupted,
-            operation_failure.is_some(),
-        );
+        let outcome = terminal_outcome.expect("calibration has a terminal outcome");
         emitter.event(&Event::DeepCaptureCalibrationPhase {
             session_id: Some(session.session_id.clone()),
             phase: phase.as_str().to_string(),
@@ -855,6 +961,7 @@ struct RunningProxy {
     started_controlled: bool,
     listen_port: u16,
     ephemeral_paths: Vec<PathBuf>,
+    stop_result: Option<Result<(), String>>,
 }
 
 #[derive(Clone)]
@@ -878,6 +985,20 @@ struct Observation {
 
 impl RunningProxy {
     fn stop(&mut self) -> Result<(), String> {
+        self.stop_with_timeout(CALIBRATION_SHUTDOWN_TIMEOUT)
+    }
+
+    fn stop_with_timeout(&mut self, timeout: Duration) -> Result<(), String> {
+        if let Some(result) = &self.stop_result {
+            return result.clone();
+        }
+        let result = self.stop_once(timeout);
+        self.stop_result = Some(result.clone());
+        result
+    }
+
+    fn stop_once(&mut self, timeout: Duration) -> Result<(), String> {
+        let started = Instant::now();
         if let Some(shutdown) = &self.controlled_shutdown {
             shutdown.store(true, Ordering::Release);
         }
@@ -888,9 +1009,30 @@ impl RunningProxy {
                 Err(err) => return Err(err.to_string()),
             }
             child.kill().map_err(|err| err.to_string())?;
-            child.wait().map_err(|err| err.to_string())?;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if started.elapsed() >= timeout => {
+                        return Err(format!(
+                            "proxy process did not stop within {} seconds",
+                            CalibrationDeadlines::seconds(timeout)
+                        ));
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
         }
         if let Some(thread) = self.controlled_thread.take() {
+            while !thread.is_finished() {
+                if started.elapsed() >= timeout {
+                    return Err(format!(
+                        "controlled proxy did not stop within {} seconds",
+                        CalibrationDeadlines::seconds(timeout)
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
             thread
                 .join()
                 .map_err(|_| "controlled proxy thread panicked".to_string())??;
@@ -899,7 +1041,11 @@ impl RunningProxy {
     }
 
     fn cleanup_process(&mut self) -> CleanupResource {
-        match self.stop() {
+        self.cleanup_process_with_timeout(CALIBRATION_CLEANUP_TIMEOUT)
+    }
+
+    fn cleanup_process_with_timeout(&mut self, timeout: Duration) -> CleanupResource {
+        match self.stop_with_timeout(timeout) {
             Ok(()) if self.started_child => {
                 CleanupResource::new("proxy-process", "succeeded", "owned proxy child stopped")
             }
@@ -937,8 +1083,21 @@ impl RunningProxy {
     }
 
     fn cleanup_ephemeral(&self) -> CleanupResource {
+        self.cleanup_ephemeral_with_timeout(CALIBRATION_CLEANUP_TIMEOUT)
+    }
+
+    fn cleanup_ephemeral_with_timeout(&self, timeout: Duration) -> CleanupResource {
+        let started = Instant::now();
         let mut failures = Vec::new();
         for path in &self.ephemeral_paths {
+            if started.elapsed() >= timeout {
+                failures.push(format!(
+                    "cleanup deadline of {} seconds expired before {}",
+                    CalibrationDeadlines::seconds(timeout),
+                    path.display()
+                ));
+                break;
+            }
             let result = if path.is_dir() {
                 fs::remove_dir_all(path)
             } else if path.exists() {
@@ -1028,8 +1187,10 @@ fn report_early_cleanup(
     session: &DeepCaptureSession,
     proxy: &mut RunningProxy,
     trust_manager: Option<&mut dyn TrustManager>,
+    deadlines: CalibrationDeadlines,
     emitter: &mut Emitter,
 ) {
+    let cleanup_started = Instant::now();
     let trust_cleanup = trust_manager.map_or_else(
         || {
             CleanupResource::new(
@@ -1038,13 +1199,13 @@ fn report_early_cleanup(
                 "trust manager initialization failed before a trust change could be attempted",
             )
         },
-        TrustManager::cleanup,
+        |manager| manager.cleanup(remaining_timeout(cleanup_started, deadlines.cleanup)),
     );
     let cleanup = CleanupReport::new(vec![
-        proxy.cleanup_process(),
+        proxy.cleanup_process_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup)),
         proxy.cleanup_port(),
         trust_cleanup,
-        proxy.cleanup_ephemeral(),
+        proxy.cleanup_ephemeral_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup)),
         CleanupResource::new(
             "manifest-state",
             "not-written",
@@ -1066,7 +1227,7 @@ fn report_early_cleanup(
 
 trait TrustManager {
     fn ensure_trusted(&mut self, confirmed: bool) -> Result<TrustOutcome, CliError>;
-    fn cleanup(&mut self) -> CleanupResource;
+    fn cleanup(&mut self, timeout: Duration) -> CleanupResource;
 }
 
 struct ControlledTrustManager;
@@ -1085,7 +1246,7 @@ impl TrustManager for ControlledTrustManager {
         })
     }
 
-    fn cleanup(&mut self) -> CleanupResource {
+    fn cleanup(&mut self, _timeout: Duration) -> CleanupResource {
         CleanupResource::new(
             "trust-entry",
             "not-needed",
@@ -1137,12 +1298,22 @@ impl WindowsCurrentUserTrustManager {
     }
 
     fn certutil(&self, args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {
+        self.certutil_with_timeout(args, CALIBRATION_CLEANUP_TIMEOUT)
+    }
+
+    fn certutil_with_timeout(
+        &self,
+        args: impl IntoIterator<Item = OsString>,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        if timeout.is_zero() {
+            return Err("cleanup deadline expired before certutil could run".to_string());
+        }
         let certutil = find_on_path("certutil")
             .ok_or_else(|| "certutil.exe is required for current-user CA trust".to_string())?;
         let mut command = std::process::Command::new(certutil);
         command.args(args).stderr(Stdio::null());
-        command_stdout_with_timeout(&mut command, Duration::from_secs(15))
-            .map(|(status, _)| status.success())
+        command_stdout_with_timeout(&mut command, timeout).map(|(status, _)| status.success())
     }
 
     fn is_trusted(&self, thumbprint: &str) -> Result<bool, String> {
@@ -1158,6 +1329,24 @@ impl WindowsCurrentUserTrustManager {
             ["-user", "-delstore", "Root", thumbprint]
                 .into_iter()
                 .map(OsString::from),
+        )
+    }
+
+    fn is_trusted_with_timeout(&self, thumbprint: &str, timeout: Duration) -> Result<bool, String> {
+        self.certutil_with_timeout(
+            ["-user", "-verifystore", "Root", thumbprint]
+                .into_iter()
+                .map(OsString::from),
+            timeout,
+        )
+    }
+
+    fn remove_with_timeout(&self, thumbprint: &str, timeout: Duration) -> Result<bool, String> {
+        self.certutil_with_timeout(
+            ["-user", "-delstore", "Root", thumbprint]
+                .into_iter()
+                .map(OsString::from),
+            timeout,
         )
     }
 }
@@ -1215,7 +1404,8 @@ impl TrustManager for WindowsCurrentUserTrustManager {
         })
     }
 
-    fn cleanup(&mut self) -> CleanupResource {
+    fn cleanup(&mut self, timeout: Duration) -> CleanupResource {
+        let started = Instant::now();
         if !self.installed_this_session {
             return CleanupResource::new(
                 "trust-entry",
@@ -1230,8 +1420,10 @@ impl TrustManager for WindowsCurrentUserTrustManager {
                 "the installed trust entry has no recorded thumbprint",
             );
         };
-        match self.remove(thumbprint) {
-            Ok(true) => match self.is_trusted(thumbprint) {
+        match self.remove_with_timeout(thumbprint, remaining_timeout(started, timeout)) {
+            Ok(true) => match self
+                .is_trusted_with_timeout(thumbprint, remaining_timeout(started, timeout))
+            {
                 Ok(false) => {
                     self.installed_this_session = false;
                     CleanupResource::new(
@@ -1413,6 +1605,7 @@ fn start_controlled_proxy(bundle: &Path, listen_port: u16) -> Result<RunningProx
         started_controlled: true,
         listen_port,
         ephemeral_paths: vec![events_path],
+        stop_result: None,
     })
 }
 
@@ -1489,6 +1682,7 @@ fn start_mitmdump_proxy(
                 started_controlled: false,
                 listen_port,
                 ephemeral_paths,
+                stop_result: None,
             };
             let _ = proxy.cleanup_ephemeral();
             return Err(CliError::failure(format!(
@@ -1508,6 +1702,7 @@ fn start_mitmdump_proxy(
         started_controlled: false,
         listen_port,
         ephemeral_paths,
+        stop_result: None,
     };
     if let Err(err) = wait_for_proxy_ready(listen_port, Duration::from_secs(5)) {
         let _ = proxy.cleanup_process();
@@ -1769,7 +1964,11 @@ fn steam_is_running() -> Result<bool, CliError> {
     ))
 }
 
-fn real_capture_args(args: &DeepCaptureArgs, bundle: &Path) -> CaptureArgs {
+fn real_capture_args(
+    args: &DeepCaptureArgs,
+    bundle: &Path,
+    deadlines: CalibrationDeadlines,
+) -> CaptureArgs {
     CaptureArgs {
         selector: args.selector.clone(),
         target: args.target.clone(),
@@ -1782,16 +1981,16 @@ fn real_capture_args(args: &DeepCaptureArgs, bundle: &Path) -> CaptureArgs {
         out: Some(bundle.join("capture.fcapng")),
         mode: None,
         sink: Vec::new(),
-        duration: args.duration.or_else(|| {
-            args.calibrate
-                .is_some()
-                .then_some(CALIBRATION_OBSERVATION_TIMEOUT)
-        }),
-        wait: args.wait.or_else(|| {
-            args.calibrate
-                .is_some()
-                .then_some(CALIBRATION_LAUNCH_TIMEOUT)
-        }),
+        duration: if args.calibrate.is_some() {
+            Some(deadlines.observation)
+        } else {
+            args.duration
+        },
+        wait: if args.calibrate.is_some() {
+            Some(deadlines.launch)
+        } else {
+            args.wait
+        },
         max_packets: args.max_packets,
         max_bytes: args.max_bytes,
         roles: None,
@@ -2068,6 +2267,7 @@ fn serve_controlled_proxy(
 fn run_controlled_target_harness(
     listen_port: u16,
     calibration: Option<CalibrationPhase>,
+    execution_timeout: Duration,
 ) -> Result<u32, CliError> {
     let proxy_url = format!("http://127.0.0.1:{listen_port}");
     let _env = ScopedProxyEnv::set(&proxy_url);
@@ -2092,15 +2292,14 @@ fn run_controlled_target_harness(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < CALIBRATION_LAUNCH_TIMEOUT => {
+            Ok(None) if started.elapsed() < execution_timeout => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
                 let _ = child.kill();
-                let _ = child.wait();
                 return Err(CliError::failure(format!(
-                    "controlled target exceeded the {} second launch deadline",
-                    CALIBRATION_LAUNCH_TIMEOUT.as_secs()
+                    "controlled target exceeded its {} second combined launch and observation deadline",
+                    CalibrationDeadlines::seconds(execution_timeout)
                 )));
             }
             Err(err) => {
@@ -2200,6 +2399,7 @@ struct BundleContext<'a> {
     process_events: &'a [String],
     calibration: Option<CalibrationPhase>,
     calibration_outcome: Option<CalibrationOutcome>,
+    deadlines: CalibrationDeadlines,
     fact_writes: &'a [FactWriteResult],
 }
 
@@ -2586,10 +2786,10 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
             "system_proxy_change": false,
             "published": false,
             "deadlines_seconds": {
-                "launch": CALIBRATION_LAUNCH_TIMEOUT.as_secs(),
-                "observation": CALIBRATION_OBSERVATION_TIMEOUT.as_secs(),
-                "shutdown": CALIBRATION_SHUTDOWN_TIMEOUT.as_secs(),
-                "cleanup": CALIBRATION_CLEANUP_TIMEOUT.as_secs(),
+                "launch": CalibrationDeadlines::seconds(ctx.deadlines.launch),
+                "observation": CalibrationDeadlines::seconds(ctx.deadlines.observation),
+                "shutdown": CalibrationDeadlines::seconds(ctx.deadlines.shutdown),
+                "cleanup": CalibrationDeadlines::seconds(ctx.deadlines.cleanup),
             },
         })),
         "fact_writes": ctx.fact_writes.iter().map(|write| json!({
@@ -2845,14 +3045,9 @@ fn write_compatibility_facts(
         );
     }
     if !observations.is_empty() && calibration != Some(CalibrationPhase::Tls) {
-        let reached_client = observations.iter().any(|observation| {
-            observation.flow_id.is_some()
-                && observation
-                    .role
-                    .as_deref()
-                    .and_then(compatibility_owner_role)
-                    == Some("client")
-        });
+        let reached_client = observations
+            .iter()
+            .any(observation_is_correlated_to_final_client);
         for (key, value) in [
             (
                 CompatibilityFactKey::ProxyRouting,
@@ -2890,7 +3085,7 @@ fn write_compatibility_facts(
     if calibration != Some(CalibrationPhase::Reachability)
         && observations
             .iter()
-            .any(|o| o.protocol == "https" && o.inspectability == "full")
+            .any(observation_proves_final_client_ca_acceptance)
     {
         write_fact!(
             CompatibilityFactKey::TlsTrustBehavior,
@@ -3102,7 +3297,6 @@ fn command_stdout_with_timeout(
             }
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
-                let _ = child.wait();
                 return Err(format!("timed out after {} ms", timeout.as_millis()));
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
@@ -3148,7 +3342,7 @@ mod tests {
         let mut launcher = client.clone();
         launcher.role = Some("launcher".to_string());
         assert_eq!(
-            calibration_outcome(CalibrationPhase::Reachability, &[launcher]),
+            calibration_outcome(CalibrationPhase::Reachability, &[launcher.clone()]),
             CalibrationOutcome::LauncherOnly
         );
 
@@ -3162,12 +3356,25 @@ mod tests {
         );
         assert_eq!(
             calibration_outcome(CalibrationPhase::Reachability, &[]),
+            CalibrationOutcome::Inconclusive
+        );
+        let mut proxy_not_reached = observation();
+        proxy_not_reached.flow_id = None;
+        proxy_not_reached.role = None;
+        proxy_not_reached.reason = Some("proxy-not-reached".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[proxy_not_reached]),
             CalibrationOutcome::ProxyNotReached
         );
 
         assert_eq!(
             calibration_outcome(CalibrationPhase::Tls, &[client.clone()]),
             CalibrationOutcome::LocalCaAccepted
+        );
+        assert!(!observation_proves_final_client_ca_acceptance(&launcher));
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Tls, &[launcher]),
+            CalibrationOutcome::UnknownTrust
         );
         let mut pinned = client.clone();
         pinned.inspectability = "unknown".to_string();
@@ -3199,6 +3406,22 @@ mod tests {
         assert!(!calibration_answer_is_affirmative(""));
         assert!(!calibration_answer_is_affirmative("no"));
         assert!(!calibration_answer_is_affirmative("later"));
+    }
+
+    #[test]
+    fn calibration_deadlines_preserve_shorter_values_and_cap_longer_ones() {
+        assert_eq!(
+            bounded_timeout(Some(Duration::from_secs(7)), CALIBRATION_LAUNCH_TIMEOUT),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            bounded_timeout(Some(Duration::from_secs(90)), CALIBRATION_LAUNCH_TIMEOUT),
+            CALIBRATION_LAUNCH_TIMEOUT
+        );
+        assert_eq!(
+            bounded_timeout(None, CALIBRATION_OBSERVATION_TIMEOUT),
+            CALIBRATION_OBSERVATION_TIMEOUT
+        );
     }
 
     #[test]
@@ -3285,9 +3508,37 @@ mod tests {
         assert!(manager.ensure_trusted(false).is_err());
         let trust = manager.ensure_trusted(true).unwrap();
         assert_eq!(trust.state, "simulated-current-user");
-        let cleanup = manager.cleanup();
+        let cleanup = manager.cleanup(CALIBRATION_CLEANUP_TIMEOUT);
         assert_eq!(cleanup.resource, "trust-entry");
         assert_eq!(cleanup.status, "not-needed");
+    }
+
+    #[test]
+    fn proxy_shutdown_returns_when_its_deadline_expires() {
+        let thread = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(())
+        });
+        let mut proxy = RunningProxy {
+            events_path: PathBuf::new(),
+            ca_cert_path: None,
+            key_log_path: None,
+            child: None,
+            started_child: false,
+            controlled_thread: Some(thread),
+            controlled_shutdown: Some(Arc::new(AtomicBool::new(false))),
+            started_controlled: true,
+            listen_port: 0,
+            ephemeral_paths: Vec::new(),
+            stop_result: None,
+        };
+        let started = Instant::now();
+        let error = proxy
+            .stop_with_timeout(Duration::from_millis(1))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(error.contains("did not stop within"));
+        assert_eq!(proxy.stop(), Err(error));
     }
 
     #[test]
