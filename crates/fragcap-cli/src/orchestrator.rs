@@ -34,12 +34,10 @@ use fragcap::core::CaptureStats;
 // The stamper's active_endpoints (profiled-filtered, slice 015) is read for the
 // filter-narrowed event; the trait brings the method into scope.
 use fragcap::core::FlowAttributor;
-#[cfg(all(feature = "etw", windows))]
-use fragcap::StopReason;
 use fragcap::{
     BindingPublisher, CaptureScope, CaptureSession, GateHandle, LiveStats, Pipeline,
     PipelineConfig, PipelineReport, ProcessEvent, Profile, SessionGate, SessionState, StopHandle,
-    Timestamp,
+    StopReason, Timestamp,
 };
 
 use crate::args::Direction;
@@ -87,6 +85,9 @@ pub struct CaptureOutcome {
     pub exit: Exit,
     /// The dominant observed socket-holder, or `None` if nothing was attributed.
     pub observed_holder: Option<Arc<str>>,
+    /// The terminal session reason, retained for composed commands that need to
+    /// distinguish a clean operator interruption from ordinary completion.
+    pub stop_reason: Option<StopReason>,
 }
 
 impl CaptureOutcome {
@@ -96,6 +97,7 @@ impl CaptureOutcome {
         CaptureOutcome {
             exit,
             observed_holder: None,
+            stop_reason: None,
         }
     }
 }
@@ -349,6 +351,7 @@ fn capture_prerecorded(
     Ok(CaptureOutcome {
         exit: final_exit(!report.sink_failures.is_empty(), sink_failure_is_clean),
         observed_holder: report.stats.dominant_holder(),
+        stop_reason: summary.stop_reason,
     })
 }
 
@@ -826,6 +829,7 @@ fn capture_live(
     Ok(CaptureOutcome {
         exit: final_exit(!report.sink_failures.is_empty(), sink_failure_is_clean),
         observed_holder: report.stats.dominant_holder(),
+        stop_reason: summary.stop_reason,
     })
 }
 

@@ -37,7 +37,11 @@ Deep Capture starts from one stored target. Its read-only preflight resolves the
 ```mermaid
 flowchart LR
   accTitle: Deep Capture session architecture
-  target["Stored target"] --> preflight["Read-only preflight"]
+  target["Stored target"] --> choice["Ordinary run or calibration"]
+  choice --> calibrate["Reachability, then optional TLS"]
+  calibrate --> plan["Displayed plan and confirmation"]
+  plan --> preflight["Read-only preflight"]
+  choice --> preflight
   preflight -->|refused| stop["No session side effects"]
   preflight -->|eligible| prepare["Prepared session"]
   prepare --> capture["Ordinary Capture"]
@@ -53,7 +57,7 @@ flowchart LR
   cleanup --> bundle["Manifest-indexed bundle"]
 ```
 
-The current real-target path is deliberately narrow. The selected target must have current `proxy-routing = reached-client` and `proxy-propagation = confirmed` facts for `steam-protocol-cold`. Unknown, stale, conflicting, or wrong-launch evidence is refused. An already-running Steam process is a warm launch fragcap does not own, and direct-executable managed launch is not implemented in v0.7.0, so both are refused before session side effects. The [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility) carries the complete current traffic and launch matrix.
+The current real-target path is deliberately narrow. Ordinary Deep Capture requires current `proxy-routing = reached-client` evidence for `steam-protocol-cold`. Unknown, stale, conflicting, or wrong-launch evidence is refused. Compatibility calibration can produce initial local evidence through a trust-free reachability phase followed, only after current final-client routing, by a separate TLS phase. Routing does not itself prove environment propagation. An already-running Steam process is a warm launch fragcap does not own, and direct-executable managed launch is not implemented, so both are refused before session side effects. The [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility) carries the complete current traffic and launch matrix.
 
 After preflight, fragcap starts a loopback `mitmdump` child, manages any authorized CA trust, opens the ordinary Capture backend, and launches the target through Steam with launch-scoped proxy environment. The preflight does not prove that Npcap is available, the process is elevated, or a selected interface can be opened; `fragcap doctor` reports that environment readiness, and a later Capture startup failure is recorded through cleanup and the partial or failed bundle path. The proxy and packet paths run beside each other. Traffic can appear in packet truth without producing an application observation.
 
@@ -62,6 +66,7 @@ After preflight, fragcap starts a loopback `mitmdump` child, manages any authori
 | Boundary | Trigger | Scope and owner | Cleanup or refusal |
 | --- | --- | --- | --- |
 | Compatibility | Current exact routing facts for `steam-protocol-cold` | One selected stored target and launch case, evaluated by fragcap | Refusal occurs before the proxy, trust, launch, or bundle side effects |
+| Calibration | Displayed and confirmed plan for one phase | One selected stored target and declared launch case | Reachability changes no trust; TLS requires prior same-case final-client routing |
 | Proxy | Successful preflight | One fragcap-owned mitmdump child on a loopback port | The child, port, and ephemeral proxy material receive recorded cleanup outcomes |
 | CA trust | Explicit `--trust-ca`, or the broader unattended `--yes` confirmation | The exact fragcap-owned CA in the current user's Root store | fragcap attempts removal and records the exact identity and result |
 | Target routing | Prepared managed launch | Proxy environment for the selected launch session | No system-wide proxy fallback is attempted |

@@ -118,8 +118,8 @@ pub(crate) fn run_prepared_with_flow_registry(
     emitter: &mut Emitter,
     prepared: PreparedCapture,
     flow_registry: Arc<FlowRegistry>,
-) -> Result<Exit, CliError> {
-    run_prepared(args, emitter, prepared, Some(flow_registry))
+) -> Result<orchestrator::CaptureOutcome, CliError> {
+    run_prepared_outcome(args, emitter, prepared, Some(flow_registry))
 }
 
 fn run_inner(
@@ -137,6 +137,15 @@ fn run_prepared(
     prepared: PreparedCapture,
     flow_registry: Option<Arc<FlowRegistry>>,
 ) -> Result<Exit, CliError> {
+    run_prepared_outcome(args, emitter, prepared, flow_registry).map(|outcome| outcome.exit)
+}
+
+fn run_prepared_outcome(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+    prepared: PreparedCapture,
+    flow_registry: Option<Arc<FlowRegistry>>,
+) -> Result<orchestrator::CaptureOutcome, CliError> {
     let PreparedCapture {
         profile,
         promotion,
@@ -193,7 +202,7 @@ fn run_prepared(
         promote_if_observed(&promotion, outcome.observed_holder.as_deref(), emitter);
     }
 
-    Ok(outcome.exit)
+    Ok(outcome)
 }
 
 /// Promote an unresolved target after a run that observed its socket holder.

@@ -56,11 +56,11 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 ## Status
 
-**v0.7.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for known-compatible stored targets. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
+**v0.7.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
 
 v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 
-Live Capture and Deep Capture packet recording require Npcap and administrative privilege. Socket-table attribution, target management, and offline replay support do not require the capture driver. Deep Capture additionally requires a supported proxy backend, current compatibility evidence for the selected launch case, and explicit confirmation before fragcap changes current-user CA trust. The [compatibility reference](https://fragcap.com/docs/reference/deep-capture-compatibility) states the shipped traffic limits.
+Live Capture and Deep Capture packet recording require Npcap and administrative privilege. Socket-table attribution, target management, and offline replay support do not require the capture driver. Deep Capture additionally requires a supported proxy backend and current compatibility evidence for the selected launch case. Compatibility calibration displays and confirms its bounded effects, and TLS calibration separately confirms any current-user CA trust change. The [compatibility reference](https://fragcap.com/docs/reference/deep-capture-compatibility) states the shipped traffic limits.
 
 ## The problem
 

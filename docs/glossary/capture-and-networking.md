@@ -170,10 +170,10 @@ ring behavior all operate without reaching inside the target process.
 
 ## Deep Capture
 
-The planned fragcap mode that augments a Capture session with explicit, scoped
+The shipped fragcap mode that augments a Capture session with explicit, scoped
 local proxy inspection for a selected target.
 
-Deep Capture is intended for authorized game-development and research workflows
+Deep Capture serves authorized game-development and research workflows
 where application-layer traffic needs to be inspectable. It may route the target
 through a [local inspection proxy](capture-and-networking.md#local-inspection-proxy) and may produce proxy-owned analyzer artifacts,
 but it does not inject code, install hooks, read target memory, modify
@@ -190,6 +190,17 @@ target process.
 [Local inspection proxy](capture-and-networking.md#local-inspection-proxy),
 [Session bundle](file-and-wire-formats.md#session-bundle),
 [Technique denylist](anti-cheat-and-security.md#technique-denylist)
+
+## Compatibility calibration
+
+An explicitly confirmed Deep Capture measurement that collects local compatibility evidence for one stored target, one declared launch case, and either proxy reachability or TLS behavior.
+
+Reachability calibration runs without a certificate trust change. TLS calibration is a separate phase and is available only after current evidence shows that the same target and launch case reached the final client through the scoped proxy. Each phase writes only directly observed facts to the existing local target store and records its run outcome separately.
+
+{: .matters }
+> Calibration is an evidence-producing workflow, not a bypass around ordinary Deep Capture eligibility. Its plan is displayed before confirmation, its effects have finite deadlines, and its local evidence is never published automatically.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture), [Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration), [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event)
 
 ## Local inspection proxy
 
@@ -217,10 +228,7 @@ The Deep Capture routing choice that applies proxy settings to the selected
 target session rather than silently changing proxy behavior for the whole
 machine.
 
-The exact mechanism is implementation-specific and remains under research. The
-intent is stable: if a game is launched under Deep Capture, proxy routing should
-follow that launched target where the platform permits it, and any wider
-configuration must be explicit to the operator.
+The current mechanism applies proxy environment variables only to a managed launch owned by fragcap. If a game is launched under Deep Capture, proxy routing should follow that launched target where the platform permits it. fragcap does not silently widen the configuration to the machine.
 
 {: .matters }
 > Steam and publisher launchers can re-launch child processes in ways that may

@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -26,13 +26,14 @@ use fragcap::targets::{
 };
 use fragcap::{
     CaptureStats, CapturedPacket, Fidelity, FlowId, FlowKey, FlowRegistry, InterfaceDeclaration,
-    InterfaceId, LinkType, Payload, PcapngWriter, Proto, RawPacket, Sink, Timestamp,
+    InterfaceId, LinkType, Payload, PcapngWriter, Proto, RawPacket, Sink, StopReason, Timestamp,
 };
 use serde_json::json;
 
 use crate::args::Direction;
 use crate::cli::{
-    CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureProxyArg, OfflineArgs, ScopeArg,
+    CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureCalibrationArg,
+    DeepCaptureLaunchCaseArg, DeepCaptureProxyArg, OfflineArgs, ScopeArg,
 };
 use crate::commands::{capture, target_resolve};
 use crate::emit::Emitter;
@@ -101,6 +102,337 @@ def tcp_message(flow: tcp.TCPFlow):
 "#;
 const CONTROLLED_TARGET_HANDLE: &str = "sample-target";
 const CONTROLLED_TARGET_STABLE_ID: i64 = 75_000;
+const CALIBRATION_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+const CALIBRATION_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(60);
+const CALIBRATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const CALIBRATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CalibrationPhase {
+    Reachability,
+    Tls,
+}
+
+impl CalibrationPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Reachability => "reachability",
+            Self::Tls => "tls",
+        }
+    }
+}
+
+impl From<DeepCaptureCalibrationArg> for CalibrationPhase {
+    fn from(value: DeepCaptureCalibrationArg) -> Self {
+        match value {
+            DeepCaptureCalibrationArg::Reachability => Self::Reachability,
+            DeepCaptureCalibrationArg::Tls => Self::Tls,
+        }
+    }
+}
+
+impl From<DeepCaptureLaunchCaseArg> for CompatibilityLaunchCase {
+    fn from(value: DeepCaptureLaunchCaseArg) -> Self {
+        match value {
+            DeepCaptureLaunchCaseArg::SteamProtocolWarm => Self::SteamProtocolWarm,
+            DeepCaptureLaunchCaseArg::SteamProtocolCold => Self::SteamProtocolCold,
+            DeepCaptureLaunchCaseArg::DirectExeWarm => Self::DirectExeWarm,
+            DeepCaptureLaunchCaseArg::DirectExeCold => Self::DirectExeCold,
+            DeepCaptureLaunchCaseArg::PublisherLauncher => Self::PublisherLauncher,
+            DeepCaptureLaunchCaseArg::PublisherLauncherWarm => Self::PublisherLauncherWarm,
+            DeepCaptureLaunchCaseArg::PublisherLauncherGameStartCleanWarm => {
+                Self::PublisherLauncherGameStartCleanWarm
+            }
+            DeepCaptureLaunchCaseArg::PublisherLauncherCold => Self::PublisherLauncherCold,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CalibrationPlan {
+    target: String,
+    phase: CalibrationPhase,
+    declared_launch_case: CompatibilityLaunchCase,
+    observed_launch_case: CompatibilityLaunchCase,
+    bundle: PathBuf,
+    deadlines: CalibrationDeadlines,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CalibrationDeadlines {
+    launch: Duration,
+    observation: Duration,
+    shutdown: Duration,
+    cleanup: Duration,
+}
+
+impl CalibrationDeadlines {
+    fn from_args(args: &DeepCaptureArgs) -> Self {
+        Self {
+            launch: bounded_timeout(args.wait, CALIBRATION_LAUNCH_TIMEOUT),
+            observation: bounded_timeout(args.duration, CALIBRATION_OBSERVATION_TIMEOUT),
+            shutdown: CALIBRATION_SHUTDOWN_TIMEOUT,
+            cleanup: CALIBRATION_CLEANUP_TIMEOUT,
+        }
+    }
+
+    fn seconds(duration: Duration) -> u64 {
+        u64::try_from(duration.as_millis().saturating_add(999) / 1_000).unwrap_or(u64::MAX)
+    }
+}
+
+fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
+    provided.unwrap_or(maximum).min(maximum)
+}
+
+fn remaining_timeout(started: Instant, total: Duration) -> Duration {
+    total.saturating_sub(started.elapsed())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CalibrationOutcome {
+    Failed,
+    Interrupted,
+    ReachedClient,
+    LauncherOnly,
+    EscapedTree,
+    ProxyNotReached,
+    NoRelevantTraffic,
+    Inconclusive,
+    LocalCaAccepted,
+    CertificatePinned,
+    UnknownTrust,
+    MetadataOnly,
+    UnsupportedProtocol,
+}
+
+impl std::fmt::Display for CalibrationOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::ReachedClient => "reached-client",
+            Self::LauncherOnly => "launcher-only",
+            Self::EscapedTree => "escaped-tree",
+            Self::ProxyNotReached => "proxy-not-reached",
+            Self::NoRelevantTraffic => "no-relevant-traffic",
+            Self::Inconclusive => "inconclusive",
+            Self::LocalCaAccepted => "local-ca-accepted",
+            Self::CertificatePinned => "certificate-pinned",
+            Self::UnknownTrust => "unknown-trust",
+            Self::MetadataOnly => "metadata-only",
+            Self::UnsupportedProtocol => "unsupported-protocol",
+        })
+    }
+}
+
+fn calibration_outcome(
+    phase: CalibrationPhase,
+    observations: &[Observation],
+) -> CalibrationOutcome {
+    match phase {
+        CalibrationPhase::Reachability => {
+            if observations.iter().any(|observation| {
+                observation.flow_id.is_some()
+                    && observation
+                        .role
+                        .as_deref()
+                        .and_then(compatibility_owner_role)
+                        == Some("client")
+            }) {
+                CalibrationOutcome::ReachedClient
+            } else if observations.iter().any(|observation| {
+                matches!(
+                    observation
+                        .role
+                        .as_deref()
+                        .and_then(compatibility_owner_role),
+                    Some("launcher" | "platform" | "platform-service")
+                )
+            }) {
+                CalibrationOutcome::LauncherOnly
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("escaped-tree"))
+            {
+                CalibrationOutcome::EscapedTree
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("no-relevant-traffic"))
+            {
+                CalibrationOutcome::NoRelevantTraffic
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+            {
+                CalibrationOutcome::ProxyNotReached
+            } else if observations.is_empty() {
+                CalibrationOutcome::Inconclusive
+            } else if observations
+                .iter()
+                .all(|observation| observation.inspectability == "unsupported")
+            {
+                CalibrationOutcome::UnsupportedProtocol
+            } else {
+                CalibrationOutcome::Inconclusive
+            }
+        }
+        CalibrationPhase::Tls => {
+            if observations
+                .iter()
+                .any(observation_proves_final_client_ca_acceptance)
+            {
+                CalibrationOutcome::LocalCaAccepted
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("certificate-pinned"))
+            {
+                CalibrationOutcome::CertificatePinned
+            } else if observations
+                .iter()
+                .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+            {
+                CalibrationOutcome::ProxyNotReached
+            } else if observations.is_empty() {
+                CalibrationOutcome::Inconclusive
+            } else if observations
+                .iter()
+                .all(|observation| observation.inspectability == "unsupported")
+            {
+                CalibrationOutcome::UnsupportedProtocol
+            } else if observations
+                .iter()
+                .any(|observation| observation.inspectability == "metadata-only")
+            {
+                CalibrationOutcome::MetadataOnly
+            } else {
+                CalibrationOutcome::UnknownTrust
+            }
+        }
+    }
+}
+
+fn observation_is_correlated_to_final_client(observation: &Observation) -> bool {
+    observation.flow_id.is_some()
+        && observation
+            .role
+            .as_deref()
+            .and_then(compatibility_owner_role)
+            == Some("client")
+}
+
+fn observation_proves_final_client_ca_acceptance(observation: &Observation) -> bool {
+    observation_is_correlated_to_final_client(observation)
+        && observation.protocol == "https"
+        && observation.inspectability == "full"
+}
+
+fn terminal_calibration_outcome(
+    phase: CalibrationPhase,
+    observations: &[Observation],
+    interrupted: bool,
+    failed: bool,
+) -> CalibrationOutcome {
+    if interrupted {
+        CalibrationOutcome::Interrupted
+    } else if failed {
+        CalibrationOutcome::Failed
+    } else {
+        calibration_outcome(phase, observations)
+    }
+}
+
+fn calibration_outcome_reason(
+    phase: CalibrationPhase,
+    outcome: CalibrationOutcome,
+) -> &'static str {
+    match (phase, outcome) {
+        (_, CalibrationOutcome::Failed) => {
+            "the calibration operation did not complete successfully"
+        }
+        (_, CalibrationOutcome::Interrupted) => "the operator interrupted the calibration",
+        (CalibrationPhase::Reachability, CalibrationOutcome::ReachedClient) => {
+            "proxy traffic correlated to the final client"
+        }
+        (CalibrationPhase::Tls, CalibrationOutcome::LocalCaAccepted) => {
+            "HTTPS application semantics were observed through the session CA"
+        }
+        (_, CalibrationOutcome::ProxyNotReached) => {
+            "no proxy observation was available before the phase ended"
+        }
+        (_, CalibrationOutcome::CertificatePinned) => {
+            "the backend supplied explicit certificate-pinning evidence"
+        }
+        _ => "the phase retained only the observations supporting this outcome",
+    }
+}
+
+fn calibration_answer_is_affirmative(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+impl CalibrationPlan {
+    fn emit(&self, emitter: &mut Emitter) {
+        emitter.event(&Event::DeepCaptureCalibrationPlan {
+            target: self.target.clone(),
+            phase: self.phase.as_str().to_string(),
+            declared_launch_case: self.declared_launch_case.as_str().to_string(),
+            observed_launch_case: self.observed_launch_case.as_str().to_string(),
+            proxy_backend: "mitmdump".to_string(),
+            bundle: self.bundle.display().to_string(),
+            trust_action: if self.phase == CalibrationPhase::Tls {
+                "session-owned current-user CA trust"
+            } else {
+                "none"
+            }
+            .to_string(),
+            launch_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.launch),
+            observation_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.observation),
+            shutdown_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.shutdown),
+            cleanup_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.cleanup),
+        });
+        emitter.required_human(&format!(
+            "Compatibility calibration plan\n  target: {}\n  phase: {}\n  launch case: {} (observed {})\n  proxy: loopback only, launch-scoped environment\n  bundle: {}\n  deadlines: launch {}s, observation {}s, shutdown {}s, cleanup {}s\n  trust action: {}\n  facts: append only directly observed rows to the selected target\n  cleanup: proxy process, listener, private CA material, and session trust if created\n  system proxy change: none\n  evidence publication: none\n",
+            self.target,
+            self.phase.as_str(),
+            self.declared_launch_case.as_str(),
+            self.observed_launch_case.as_str(),
+            self.bundle.display(),
+            CalibrationDeadlines::seconds(self.deadlines.launch),
+            CalibrationDeadlines::seconds(self.deadlines.observation),
+            CalibrationDeadlines::seconds(self.deadlines.shutdown),
+            CalibrationDeadlines::seconds(self.deadlines.cleanup),
+            if self.phase == CalibrationPhase::Tls {
+                "session-owned current-user CA trust"
+            } else {
+                "none"
+            }
+        ));
+    }
+}
+
+fn confirm_calibration(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<bool, CliError> {
+    if args.yes {
+        return Ok(true);
+    }
+    if emitter.is_json() {
+        return Err(CliError::usage(
+            "JSON compatibility calibration requires --yes because it cannot prompt",
+        ));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::usage(
+            "compatibility calibration requires interactive input or --yes",
+        ));
+    }
+    emitter.required_human("Proceed with this calibration? [y/N] ");
+    emitter.flush();
+    let mut answer = String::new();
+    match std::io::stdin().read_line(&mut answer) {
+        Ok(0) | Err(_) => Ok(false),
+        Ok(_) => Ok(calibration_answer_is_affirmative(&answer)),
+    }
+}
 
 /// Run `deep-capture`.
 pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
@@ -109,7 +441,16 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             "Deep Capture requires --launch so scoped proxy configuration is owned by the session",
         ));
     }
-    if !(args.trust_ca || args.yes) {
+    let calibration = args.calibrate.map(CalibrationPhase::from);
+    let deadlines = CalibrationDeadlines::from_args(args);
+    if calibration == Some(CalibrationPhase::Reachability)
+        && (args.trust_ca || args.har || args.key_log)
+    {
+        return Err(CliError::usage(
+            "reachability calibration does not change trust or produce HAR or TLS key logs",
+        ));
+    }
+    if calibration != Some(CalibrationPhase::Reachability) && !(args.trust_ca || args.yes) {
         return Err(CliError::usage(
             "Deep Capture HTTPS inspection requires explicit CA trust confirmation; pass --trust-ca \
              or --yes",
@@ -122,32 +463,86 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         CliError::failure("resolved target has no local row id; cannot write compatibility facts")
     })?;
     let selected_launch_case = launch_case(&target)?;
+    let declared_launch_case = args.launch_case.map(CompatibilityLaunchCase::from);
 
     let facts = store
         .compatibility_facts_for_target(target_id)
         .map_err(|e| CliError::failure(format!("cannot read Deep Capture facts: {e}")))?;
     if args.controlled_target {
         require_controlled_target(&target)?;
+        if let Some(declared) = declared_launch_case {
+            if declared != selected_launch_case {
+                return Err(CliError::usage(format!(
+                    "declared launch case {} does not match observed controlled launch case {}",
+                    declared.as_str(),
+                    selected_launch_case.as_str()
+                )));
+            }
+        }
+        if calibration == Some(CalibrationPhase::Tls) {
+            require_current_routing(&facts, selected_launch_case)?;
+        }
+    } else if let Some(declared) = declared_launch_case {
+        require_supported_launch_case(declared)?;
+        if declared != selected_launch_case {
+            return Err(CliError::usage(format!(
+                "declared launch case {} does not match observed launch case {}; no calibration effects were applied",
+                declared.as_str(),
+                selected_launch_case.as_str()
+            )));
+        }
+        if calibration == Some(CalibrationPhase::Tls) {
+            require_current_routing(&facts, declared)?;
+        }
     } else {
         require_known_compatibility(&facts, selected_launch_case)?;
         require_supported_launch_case(selected_launch_case)?;
     }
+
+    let pending_session_id = session_id();
+    let pending_bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
+    validate_bundle_root(&pending_bundle)?;
+    let prepared_capture = if args.controlled_target {
+        None
+    } else {
+        let capture_args = real_capture_args(args, &pending_bundle, deadlines);
+        let prepared = capture::prepare(&capture_args, emitter)?;
+        Some((capture_args, prepared))
+    };
+
+    if let Some(phase) = calibration {
+        let declared = declared_launch_case.expect("clap requires launch-case with calibration");
+        let plan = CalibrationPlan {
+            target: target.handle.clone(),
+            phase,
+            declared_launch_case: declared,
+            observed_launch_case: selected_launch_case,
+            bundle: pending_bundle.clone(),
+            deadlines,
+        };
+        plan.emit(emitter);
+        if !confirm_calibration(args, emitter)? {
+            emitter.event(&Event::DeepCaptureCalibrationPhase {
+                session_id: None,
+                phase: phase.as_str().to_string(),
+                stage: "confirmed".to_string(),
+                status: "declined".to_string(),
+                reason: "operator declined the displayed calibration plan".to_string(),
+            });
+            emitter.progress("compatibility calibration declined; no effects were applied");
+            return Ok(Exit::SUCCESS);
+        }
+    }
+
     let backend = resolve_backend(args)?;
     let session = DeepCaptureSession::new(
-        args,
+        pending_session_id,
+        pending_bundle,
         target,
         target_id,
         backend.descriptor().clone(),
         selected_launch_case,
     )?;
-    validate_bundle_root(&session.bundle)?;
-    let prepared_capture = if args.controlled_target {
-        None
-    } else {
-        let capture_args = real_capture_args(args, &session.bundle);
-        let prepared = capture::prepare(&capture_args, emitter)?;
-        Some((capture_args, prepared))
-    };
 
     emitter.event(&Event::DeepCapturePreflight {
         status: "ready".to_string(),
@@ -158,6 +553,16 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         trust_state: "confirmation-present".to_string(),
     });
     emitter.progress("Deep Capture preflight passed");
+
+    if let Some(phase) = calibration {
+        emitter.event(&Event::DeepCaptureCalibrationPhase {
+            session_id: Some(session.session_id.clone()),
+            phase: phase.as_str().to_string(),
+            stage: "confirmed".to_string(),
+            status: "started".to_string(),
+            reason: "operator confirmed the displayed calibration plan".to_string(),
+        });
+    }
 
     fs::create_dir_all(&session.bundle).map_err(|e| {
         CliError::failure(format!(
@@ -182,27 +587,45 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         announce_key_log(&session.session_id, path, emitter);
     }
 
-    let mut trust_manager = match trust_manager(args, &proxy) {
-        Ok(manager) => manager,
-        Err(err) => {
-            report_early_cleanup(&session, &mut proxy, None, emitter);
-            return Err(err);
-        }
+    let (mut trust_manager, trust) = if calibration == Some(CalibrationPhase::Reachability) {
+        (
+            None,
+            TrustOutcome {
+                state: "not-requested".to_string(),
+                action: "none".to_string(),
+                thumbprint: None,
+            },
+        )
+    } else {
+        let mut manager = match trust_manager(args, &proxy) {
+            Ok(manager) => manager,
+            Err(err) => {
+                report_early_cleanup(&session, &mut proxy, None, deadlines, emitter);
+                return Err(err);
+            }
+        };
+        let trust = match manager.ensure_trusted(args.trust_ca || args.yes) {
+            Ok(trust) => trust,
+            Err(err) => {
+                report_early_cleanup(
+                    &session,
+                    &mut proxy,
+                    Some(manager.as_mut()),
+                    deadlines,
+                    emitter,
+                );
+                return Err(err);
+            }
+        };
+        emitter.event(&Event::DeepCaptureTrust {
+            session_id: session.session_id.clone(),
+            state: trust.state.clone(),
+            action: trust.action.clone(),
+            thumbprint: trust.thumbprint.clone(),
+        });
+        emitter.progress(&format!("Deep Capture CA trust: {}", trust.action));
+        (Some(manager), trust)
     };
-    let trust = match trust_manager.ensure_trusted(args.trust_ca || args.yes) {
-        Ok(trust) => trust,
-        Err(err) => {
-            report_early_cleanup(&session, &mut proxy, Some(trust_manager.as_mut()), emitter);
-            return Err(err);
-        }
-    };
-    emitter.event(&Event::DeepCaptureTrust {
-        session_id: session.session_id.clone(),
-        state: trust.state.clone(),
-        action: trust.action.clone(),
-        thumbprint: trust.thumbprint.clone(),
-    });
-    emitter.progress(&format!("Deep Capture CA trust: {}", trust.action));
 
     emitter.event(&Event::DeepCaptureLaunch {
         session_id: session.session_id.clone(),
@@ -212,56 +635,110 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     });
     emitter.progress("managed launch prepared with scoped proxy configuration");
 
-    let (observations, operation_failure, controlled_process_id, process_events) =
+    let (observations, mut operation_failure, controlled_process_id, process_events, interrupted) =
         if args.controlled_target {
-            let target_result = run_controlled_target_harness(session.listen_port);
+            let target_result = run_controlled_target_harness(
+                session.listen_port,
+                calibration,
+                deadlines.launch.saturating_add(deadlines.observation),
+            );
             let controlled_process_id = target_result.as_ref().ok().copied();
             let stop_result = proxy
-                .stop()
+                .stop_with_timeout(deadlines.shutdown)
                 .map_err(|e| CliError::failure(format!("cannot stop controlled proxy: {e}")));
             let failure = target_result.err().or_else(|| stop_result.err());
             match read_proxy_observations(&proxy.events_path) {
                 Ok(mut observations) => {
                     assign_controlled_flow_ids(&mut observations, controlled_process_id);
-                    (observations, failure, controlled_process_id, Vec::new())
+                    (
+                        observations,
+                        failure,
+                        controlled_process_id,
+                        Vec::new(),
+                        false,
+                    )
                 }
                 Err(err) => (
                     Vec::new(),
                     failure.or(Some(err)),
                     controlled_process_id,
                     Vec::new(),
+                    false,
                 ),
             }
         } else {
             let (capture_args, prepared) = prepared_capture
                 .expect("a real Deep Capture session is prepared before side effects");
-            let (flow_registry, capture_result, process_events) =
+            let (flow_registry, capture_result, process_events, interrupted) =
                 run_real_capture(&capture_args, prepared, session.listen_port, emitter);
             let stop_result = proxy
-                .stop()
+                .stop_with_timeout(deadlines.shutdown)
                 .map_err(|e| CliError::failure(format!("cannot stop proxy backend: {e}")));
             let failure = capture_result.err().or_else(|| stop_result.err());
             match read_proxy_observations(&proxy.events_path) {
                 Ok(mut observations) => {
                     correlate_observations(&mut observations, &flow_registry);
-                    (observations, failure, None, process_events)
+                    (observations, failure, None, process_events, interrupted)
                 }
-                Err(err) => (Vec::new(), failure.or(Some(err)), None, process_events),
+                Err(err) => (
+                    Vec::new(),
+                    failure.or(Some(err)),
+                    None,
+                    process_events,
+                    interrupted,
+                ),
             }
         };
-    let proxy_cleanup = proxy.cleanup_process();
+    let cleanup_started = Instant::now();
+    let proxy_cleanup =
+        proxy.cleanup_process_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup));
     let port_cleanup = proxy.cleanup_port();
-    let trust_cleanup = trust_manager.cleanup();
+    let trust_cleanup = trust_manager.as_mut().map_or_else(
+        || {
+            CleanupResource::new(
+                "trust-entry",
+                "not-needed",
+                "reachability did not use trust",
+            )
+        },
+        |manager| manager.cleanup(remaining_timeout(cleanup_started, deadlines.cleanup)),
+    );
     if args.key_log {
         proxy.retain_key_log();
     }
-    let material_cleanup = proxy.cleanup_ephemeral();
+    let material_cleanup =
+        proxy.cleanup_ephemeral_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup));
     let cleanup = CleanupReport::new(vec![
         proxy_cleanup,
         port_cleanup,
         trust_cleanup,
         material_cleanup,
     ]);
+    if cleanup.status() == "failed" && operation_failure.is_none() {
+        operation_failure = Some(CliError::failure(
+            "one or more Deep Capture cleanup obligations failed",
+        ));
+    }
+    let (fact_writes, fact_failure) = write_compatibility_facts(
+        &mut store,
+        session.target_id,
+        session.launch_case,
+        &session.backend,
+        &observations,
+        args.controlled_target,
+        calibration,
+    );
+    if operation_failure.is_none() {
+        operation_failure = fact_failure;
+    }
+    let mut terminal_outcome = calibration.map(|phase| {
+        terminal_calibration_outcome(
+            phase,
+            &observations,
+            interrupted,
+            operation_failure.is_some(),
+        )
+    });
     let session_state = match operation_failure.as_ref() {
         None => "complete",
         Some(_) if args.controlled_target || session.bundle.join("capture.fcapng").is_file() => {
@@ -279,7 +756,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         });
     }
 
-    write_bundle(
+    let bundle_result = write_bundle(
         &BundleContext {
             session: &session,
             args,
@@ -289,23 +766,71 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             session_state,
             controlled_process_id,
             process_events: &process_events,
+            calibration,
+            calibration_outcome: terminal_outcome,
+            deadlines,
+            fact_writes: &fact_writes,
         },
         emitter,
-    )?;
-    write_compatibility_facts(
-        &mut store,
-        session.target_id,
-        session.launch_case,
-        &session.backend,
-        &observations,
-        args.controlled_target,
-    )?;
+    );
+    let bundle_written = bundle_result.is_ok();
+    if let Err(err) = bundle_result {
+        if operation_failure.is_none() {
+            operation_failure = Some(err);
+        }
+        terminal_outcome = calibration
+            .map(|phase| terminal_calibration_outcome(phase, &observations, interrupted, true));
+        let repair_context = BundleContext {
+            session: &session,
+            args,
+            observations: &observations,
+            trust: &trust,
+            cleanup: &cleanup,
+            session_state: "partial",
+            controlled_process_id,
+            process_events: &process_events,
+            calibration,
+            calibration_outcome: terminal_outcome,
+            deadlines,
+            fact_writes: &fact_writes,
+        };
+        if session.bundle.join("compatibility.json").is_file() {
+            if let Ok(content) = compatibility_json(&repair_context) {
+                let _ = write_file(
+                    session.bundle.join("compatibility.json"),
+                    content.as_bytes(),
+                );
+            }
+        }
+    }
+    let terminal_state = match operation_failure.as_ref() {
+        None => "complete",
+        Some(_) if args.controlled_target || session.bundle.join("capture.fcapng").is_file() => {
+            "partial"
+        }
+        Some(_) => "failed",
+    };
+
+    if let Some(phase) = calibration {
+        let outcome = terminal_outcome.expect("calibration has a terminal outcome");
+        emitter.event(&Event::DeepCaptureCalibrationPhase {
+            session_id: Some(session.session_id.clone()),
+            phase: phase.as_str().to_string(),
+            stage: "complete".to_string(),
+            status: outcome.to_string(),
+            reason: calibration_outcome_reason(phase, outcome).to_string(),
+        });
+        emitter.progress(&format!(
+            "compatibility calibration {} outcome: {outcome}",
+            phase.as_str()
+        ));
+    }
 
     let manifest = "manifest.json".to_string();
     emitter.event(&Event::DeepCaptureComplete {
         session_id: session.session_id.clone(),
         manifest: manifest.clone(),
-        status: session_state.to_string(),
+        status: terminal_state.to_string(),
         cleanup_status: cleanup.status().to_string(),
         inspectable: observations
             .iter()
@@ -320,10 +845,16 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             .filter(|o| o.inspectability == "unsupported")
             .count() as u64,
     });
-    emitter.progress(&format!(
-        "Deep Capture bundle written to {}",
-        session.bundle.join(manifest).display()
-    ));
+    if bundle_written {
+        emitter.progress(&format!(
+            "Deep Capture bundle written to {}",
+            session.bundle.join(manifest).display()
+        ));
+    } else {
+        emitter.progress(
+            "Deep Capture bundle finalization failed; observed fact writes were retained",
+        );
+    }
 
     match operation_failure {
         Some(err) => Err(err),
@@ -344,15 +875,15 @@ struct DeepCaptureSession {
 
 impl DeepCaptureSession {
     fn new(
-        args: &DeepCaptureArgs,
+        session_id: String,
+        bundle: PathBuf,
         target: TargetEntry,
         target_id: i64,
         backend: ProxyBackend,
         launch_case: CompatibilityLaunchCase,
     ) -> Result<Self, CliError> {
-        let session_id = session_id();
         Ok(Self {
-            bundle: bundle_root(args.bundle.as_deref(), &session_id)?,
+            bundle,
             launch_case,
             target,
             target_id,
@@ -430,6 +961,7 @@ struct RunningProxy {
     started_controlled: bool,
     listen_port: u16,
     ephemeral_paths: Vec<PathBuf>,
+    stop_result: Option<Result<(), String>>,
 }
 
 #[derive(Clone)]
@@ -453,6 +985,20 @@ struct Observation {
 
 impl RunningProxy {
     fn stop(&mut self) -> Result<(), String> {
+        self.stop_with_timeout(CALIBRATION_SHUTDOWN_TIMEOUT)
+    }
+
+    fn stop_with_timeout(&mut self, timeout: Duration) -> Result<(), String> {
+        if let Some(result) = &self.stop_result {
+            return result.clone();
+        }
+        let result = self.stop_once(timeout);
+        self.stop_result = Some(result.clone());
+        result
+    }
+
+    fn stop_once(&mut self, timeout: Duration) -> Result<(), String> {
+        let started = Instant::now();
         if let Some(shutdown) = &self.controlled_shutdown {
             shutdown.store(true, Ordering::Release);
         }
@@ -463,9 +1009,30 @@ impl RunningProxy {
                 Err(err) => return Err(err.to_string()),
             }
             child.kill().map_err(|err| err.to_string())?;
-            child.wait().map_err(|err| err.to_string())?;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if started.elapsed() >= timeout => {
+                        return Err(format!(
+                            "proxy process did not stop within {} seconds",
+                            CalibrationDeadlines::seconds(timeout)
+                        ));
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
         }
         if let Some(thread) = self.controlled_thread.take() {
+            while !thread.is_finished() {
+                if started.elapsed() >= timeout {
+                    return Err(format!(
+                        "controlled proxy did not stop within {} seconds",
+                        CalibrationDeadlines::seconds(timeout)
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
             thread
                 .join()
                 .map_err(|_| "controlled proxy thread panicked".to_string())??;
@@ -474,7 +1041,11 @@ impl RunningProxy {
     }
 
     fn cleanup_process(&mut self) -> CleanupResource {
-        match self.stop() {
+        self.cleanup_process_with_timeout(CALIBRATION_CLEANUP_TIMEOUT)
+    }
+
+    fn cleanup_process_with_timeout(&mut self, timeout: Duration) -> CleanupResource {
+        match self.stop_with_timeout(timeout) {
             Ok(()) if self.started_child => {
                 CleanupResource::new("proxy-process", "succeeded", "owned proxy child stopped")
             }
@@ -512,8 +1083,21 @@ impl RunningProxy {
     }
 
     fn cleanup_ephemeral(&self) -> CleanupResource {
+        self.cleanup_ephemeral_with_timeout(CALIBRATION_CLEANUP_TIMEOUT)
+    }
+
+    fn cleanup_ephemeral_with_timeout(&self, timeout: Duration) -> CleanupResource {
+        let started = Instant::now();
         let mut failures = Vec::new();
         for path in &self.ephemeral_paths {
+            if started.elapsed() >= timeout {
+                failures.push(format!(
+                    "cleanup deadline of {} seconds expired before {}",
+                    CalibrationDeadlines::seconds(timeout),
+                    path.display()
+                ));
+                break;
+            }
             let result = if path.is_dir() {
                 fs::remove_dir_all(path)
             } else if path.exists() {
@@ -603,8 +1187,10 @@ fn report_early_cleanup(
     session: &DeepCaptureSession,
     proxy: &mut RunningProxy,
     trust_manager: Option<&mut dyn TrustManager>,
+    deadlines: CalibrationDeadlines,
     emitter: &mut Emitter,
 ) {
+    let cleanup_started = Instant::now();
     let trust_cleanup = trust_manager.map_or_else(
         || {
             CleanupResource::new(
@@ -613,13 +1199,13 @@ fn report_early_cleanup(
                 "trust manager initialization failed before a trust change could be attempted",
             )
         },
-        TrustManager::cleanup,
+        |manager| manager.cleanup(remaining_timeout(cleanup_started, deadlines.cleanup)),
     );
     let cleanup = CleanupReport::new(vec![
-        proxy.cleanup_process(),
+        proxy.cleanup_process_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup)),
         proxy.cleanup_port(),
         trust_cleanup,
-        proxy.cleanup_ephemeral(),
+        proxy.cleanup_ephemeral_with_timeout(remaining_timeout(cleanup_started, deadlines.cleanup)),
         CleanupResource::new(
             "manifest-state",
             "not-written",
@@ -641,7 +1227,7 @@ fn report_early_cleanup(
 
 trait TrustManager {
     fn ensure_trusted(&mut self, confirmed: bool) -> Result<TrustOutcome, CliError>;
-    fn cleanup(&mut self) -> CleanupResource;
+    fn cleanup(&mut self, timeout: Duration) -> CleanupResource;
 }
 
 struct ControlledTrustManager;
@@ -660,7 +1246,7 @@ impl TrustManager for ControlledTrustManager {
         })
     }
 
-    fn cleanup(&mut self) -> CleanupResource {
+    fn cleanup(&mut self, _timeout: Duration) -> CleanupResource {
         CleanupResource::new(
             "trust-entry",
             "not-needed",
@@ -712,12 +1298,22 @@ impl WindowsCurrentUserTrustManager {
     }
 
     fn certutil(&self, args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {
+        self.certutil_with_timeout(args, CALIBRATION_CLEANUP_TIMEOUT)
+    }
+
+    fn certutil_with_timeout(
+        &self,
+        args: impl IntoIterator<Item = OsString>,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        if timeout.is_zero() {
+            return Err("cleanup deadline expired before certutil could run".to_string());
+        }
         let certutil = find_on_path("certutil")
             .ok_or_else(|| "certutil.exe is required for current-user CA trust".to_string())?;
         let mut command = std::process::Command::new(certutil);
         command.args(args).stderr(Stdio::null());
-        command_stdout_with_timeout(&mut command, Duration::from_secs(15))
-            .map(|(status, _)| status.success())
+        command_stdout_with_timeout(&mut command, timeout).map(|(status, _)| status.success())
     }
 
     fn is_trusted(&self, thumbprint: &str) -> Result<bool, String> {
@@ -733,6 +1329,24 @@ impl WindowsCurrentUserTrustManager {
             ["-user", "-delstore", "Root", thumbprint]
                 .into_iter()
                 .map(OsString::from),
+        )
+    }
+
+    fn is_trusted_with_timeout(&self, thumbprint: &str, timeout: Duration) -> Result<bool, String> {
+        self.certutil_with_timeout(
+            ["-user", "-verifystore", "Root", thumbprint]
+                .into_iter()
+                .map(OsString::from),
+            timeout,
+        )
+    }
+
+    fn remove_with_timeout(&self, thumbprint: &str, timeout: Duration) -> Result<bool, String> {
+        self.certutil_with_timeout(
+            ["-user", "-delstore", "Root", thumbprint]
+                .into_iter()
+                .map(OsString::from),
+            timeout,
         )
     }
 }
@@ -790,7 +1404,8 @@ impl TrustManager for WindowsCurrentUserTrustManager {
         })
     }
 
-    fn cleanup(&mut self) -> CleanupResource {
+    fn cleanup(&mut self, timeout: Duration) -> CleanupResource {
+        let started = Instant::now();
         if !self.installed_this_session {
             return CleanupResource::new(
                 "trust-entry",
@@ -805,8 +1420,10 @@ impl TrustManager for WindowsCurrentUserTrustManager {
                 "the installed trust entry has no recorded thumbprint",
             );
         };
-        match self.remove(thumbprint) {
-            Ok(true) => match self.is_trusted(thumbprint) {
+        match self.remove_with_timeout(thumbprint, remaining_timeout(started, timeout)) {
+            Ok(true) => match self
+                .is_trusted_with_timeout(thumbprint, remaining_timeout(started, timeout))
+            {
                 Ok(false) => {
                     self.installed_this_session = false;
                     CleanupResource::new(
@@ -988,6 +1605,7 @@ fn start_controlled_proxy(bundle: &Path, listen_port: u16) -> Result<RunningProx
         started_controlled: true,
         listen_port,
         ephemeral_paths: vec![events_path],
+        stop_result: None,
     })
 }
 
@@ -1064,6 +1682,7 @@ fn start_mitmdump_proxy(
                 started_controlled: false,
                 listen_port,
                 ephemeral_paths,
+                stop_result: None,
             };
             let _ = proxy.cleanup_ephemeral();
             return Err(CliError::failure(format!(
@@ -1083,6 +1702,7 @@ fn start_mitmdump_proxy(
         started_controlled: false,
         listen_port,
         ephemeral_paths,
+        stop_result: None,
     };
     if let Err(err) = wait_for_proxy_ready(listen_port, Duration::from_secs(5)) {
         let _ = proxy.cleanup_process();
@@ -1186,6 +1806,13 @@ fn require_known_compatibility(
     facts: &[CompatibilityFact],
     launch_case: CompatibilityLaunchCase,
 ) -> Result<(), CliError> {
+    require_current_routing(facts, launch_case)
+}
+
+fn require_current_routing(
+    facts: &[CompatibilityFact],
+    launch_case: CompatibilityLaunchCase,
+) -> Result<(), CliError> {
     let latest = |key| {
         facts
             .iter()
@@ -1194,14 +1821,12 @@ fn require_known_compatibility(
     };
     let routes = latest(CompatibilityFactKey::ProxyRouting)
         .is_some_and(|fact| !fact.stale && fact.value == "reached-client");
-    let propagates = latest(CompatibilityFactKey::ProxyPropagation)
-        .is_some_and(|fact| !fact.stale && fact.value == "confirmed");
-    if routes && propagates {
+    if routes {
         Ok(())
     } else {
         Err(CliError::usage(format!(
             "Deep Capture requires current compatibility facts proving scoped proxy routing \
-                 reaches the final client for launch case {}; run compatibility measurement first",
+                 reaches the final client for launch case {}; run reachability calibration first",
             launch_case.as_str()
         )))
     }
@@ -1339,7 +1964,11 @@ fn steam_is_running() -> Result<bool, CliError> {
     ))
 }
 
-fn real_capture_args(args: &DeepCaptureArgs, bundle: &Path) -> CaptureArgs {
+fn real_capture_args(
+    args: &DeepCaptureArgs,
+    bundle: &Path,
+    deadlines: CalibrationDeadlines,
+) -> CaptureArgs {
     CaptureArgs {
         selector: args.selector.clone(),
         target: args.target.clone(),
@@ -1352,8 +1981,16 @@ fn real_capture_args(args: &DeepCaptureArgs, bundle: &Path) -> CaptureArgs {
         out: Some(bundle.join("capture.fcapng")),
         mode: None,
         sink: Vec::new(),
-        duration: args.duration,
-        wait: args.wait,
+        duration: if args.calibrate.is_some() {
+            Some(deadlines.observation)
+        } else {
+            args.duration
+        },
+        wait: if args.calibrate.is_some() {
+            Some(deadlines.launch)
+        } else {
+            args.wait
+        },
         max_packets: args.max_packets,
         max_bytes: args.max_bytes,
         roles: None,
@@ -1373,7 +2010,7 @@ fn run_real_capture(
     prepared: capture::PreparedCapture,
     listen_port: u16,
     emitter: &mut Emitter,
-) -> (Arc<FlowRegistry>, Result<(), CliError>, Vec<String>) {
+) -> (Arc<FlowRegistry>, Result<(), CliError>, Vec<String>, bool) {
     let proxy_url = format!("http://127.0.0.1:{listen_port}");
     let _env = ScopedProxyEnv::set(&proxy_url);
     let flow_registry = Arc::new(FlowRegistry::default());
@@ -1383,19 +2020,22 @@ fn run_real_capture(
         emitter,
         prepared,
         Arc::clone(&flow_registry),
-    )
-    .and_then(|exit| {
-        if exit == Exit::SUCCESS {
+    );
+    let interrupted = result
+        .as_ref()
+        .is_ok_and(|outcome| outcome.stop_reason == Some(StopReason::Interrupt));
+    let result = result.and_then(|outcome| {
+        if outcome.exit == Exit::SUCCESS {
             Ok(())
         } else {
             Err(CliError::failure(format!(
                 "packet capture ended with exit code {}",
-                exit.code()
+                outcome.exit.code()
             )))
         }
     });
     let process_events = emitter.take_captured_events();
-    (flow_registry, result, process_events)
+    (flow_registry, result, process_events, interrupted)
 }
 
 struct ScopedProxyEnv {
@@ -1624,24 +2264,51 @@ fn serve_controlled_proxy(
     Ok(())
 }
 
-fn run_controlled_target_harness(listen_port: u16) -> Result<u32, CliError> {
+fn run_controlled_target_harness(
+    listen_port: u16,
+    calibration: Option<CalibrationPhase>,
+    execution_timeout: Duration,
+) -> Result<u32, CliError> {
     let proxy_url = format!("http://127.0.0.1:{listen_port}");
     let _env = ScopedProxyEnv::set(&proxy_url);
     let executable = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .ok_or_else(|| CliError::failure("cannot locate the controlled target executable"))?;
-    let mut child = std::process::Command::new(executable)
+    let mut command = std::process::Command::new(executable);
+    command
         .arg("__controlled-target")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if calibration == Some(CalibrationPhase::Reachability) {
+        command.env("FRAGCAP_CONTROLLED_REQUEST_LIMIT", "1");
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| CliError::failure(format!("cannot start controlled target: {e}")))?;
     let process_id = child.id();
-    let status = child
-        .wait()
-        .map_err(|e| CliError::failure(format!("cannot wait for controlled target: {e}")))?;
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < execution_timeout => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                return Err(CliError::failure(format!(
+                    "controlled target exceeded its {} second combined launch and observation deadline",
+                    CalibrationDeadlines::seconds(execution_timeout)
+                )));
+            }
+            Err(err) => {
+                return Err(CliError::failure(format!(
+                    "cannot wait for controlled target: {err}"
+                )));
+            }
+        }
+    };
     if status.success() {
         Ok(process_id)
     } else {
@@ -1681,6 +2348,10 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
     let fail_after = std::env::var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER")
         .ok()
         .and_then(|value| value.parse::<usize>().ok());
+    let request_limit = std::env::var("FRAGCAP_CONTROLLED_REQUEST_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4);
     for (index, request) in [
         "GET http://127.0.0.1/fragcap-controlled/http HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
         "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n",
@@ -1688,6 +2359,7 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
         "FRAGCAP-UNSUPPORTED 127.0.0.1:443 HTTP/1.1\r\n\r\n",
     ]
     .into_iter()
+    .take(request_limit)
     .enumerate()
     {
         let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
@@ -1725,6 +2397,10 @@ struct BundleContext<'a> {
     session_state: &'a str,
     controlled_process_id: Option<u32>,
     process_events: &'a [String],
+    calibration: Option<CalibrationPhase>,
+    calibration_outcome: Option<CalibrationOutcome>,
+    deadlines: CalibrationDeadlines,
+    fact_writes: &'a [FactWriteResult],
 }
 
 fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), CliError> {
@@ -1780,14 +2456,7 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     )?;
     write_file(
         ctx.session.bundle.join("compatibility.json"),
-        compatibility_json(
-            &ctx.session.session_id,
-            &ctx.session.target,
-            &ctx.session.backend,
-            ctx.session.launch_case,
-            ctx.observations,
-        )?
-        .as_bytes(),
+        compatibility_json(ctx)?.as_bytes(),
     )?;
     let key_log_path = ctx.session.bundle.join("tls-keylog.log");
     let key_log_produced = key_log_path
@@ -2095,23 +2764,41 @@ fn har_json(observations: &[Observation]) -> Result<String, CliError> {
     crate::har::render(&entries).map_err(|e| CliError::failure(e.to_string()))
 }
 
-fn compatibility_json(
-    session_id: &str,
-    target: &TargetEntry,
-    backend: &ProxyBackend,
-    launch_case: CompatibilityLaunchCase,
-    observations: &[Observation],
-) -> Result<String, CliError> {
+fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
     serde_json::to_string_pretty(&json!({
-        "session_id": session_id,
+        "session_id": ctx.session.session_id,
         "target": {
-            "id": target.id,
-            "handle": target.handle,
+            "id": ctx.session.target.id,
+            "handle": ctx.session.target.handle,
         },
-        "launch_case": launch_case.as_str(),
-        "proxy_backend": backend.name,
-        "proxy_backend_version": backend.version,
-        "observations": observations.iter().map(|o| {
+        "launch_case": ctx.session.launch_case.as_str(),
+        "proxy_backend": ctx.session.backend.name,
+        "proxy_backend_version": ctx.session.backend.version,
+        "calibration": ctx.calibration.map(|phase| json!({
+            "phase": phase.as_str(),
+            "outcome": ctx.calibration_outcome.map(|outcome| outcome.to_string()),
+            "trust_action": if phase == CalibrationPhase::Tls {
+                "session-owned-current-user-ca"
+            } else {
+                "none"
+            },
+            "proxy_mode": "launch-scoped-env",
+            "system_proxy_change": false,
+            "published": false,
+            "deadlines_seconds": {
+                "launch": CalibrationDeadlines::seconds(ctx.deadlines.launch),
+                "observation": CalibrationDeadlines::seconds(ctx.deadlines.observation),
+                "shutdown": CalibrationDeadlines::seconds(ctx.deadlines.shutdown),
+                "cleanup": CalibrationDeadlines::seconds(ctx.deadlines.cleanup),
+            },
+        })),
+        "fact_writes": ctx.fact_writes.iter().map(|write| json!({
+            "key": write.key,
+            "value": write.value,
+            "status": write.status,
+            "reason": write.reason,
+        })).collect::<Vec<_>>(),
+        "observations": ctx.observations.iter().map(|o| {
             json!({
                 "protocol": o.protocol,
                 "inspectability": o.inspectability,
@@ -2306,16 +2993,61 @@ fn write_compatibility_facts(
     backend: &ProxyBackend,
     observations: &[Observation],
     controlled: bool,
-) -> Result<(), CliError> {
-    if !observations.is_empty() {
-        let reached_client = observations.iter().any(|observation| {
-            observation.flow_id.is_some()
-                && observation
-                    .role
-                    .as_deref()
-                    .and_then(compatibility_owner_role)
-                    == Some("client")
-        });
+    calibration: Option<CalibrationPhase>,
+) -> (Vec<FactWriteResult>, Option<CliError>) {
+    let mut writes = Vec::new();
+    let mut first_error = None;
+    macro_rules! write_fact {
+        ($key:expr, $value:expr, $phase:expr, $owner:expr) => {{
+            let key = $key;
+            let value = $value;
+            match insert_fact(
+                store,
+                key,
+                value,
+                FactContext {
+                    target_id,
+                    launch_case,
+                    backend,
+                    controlled,
+                    final_owner: $owner,
+                    phase: $phase,
+                },
+            ) {
+                Ok(()) => writes.push(FactWriteResult::new(key, value, "performed", None)),
+                Err(err) => {
+                    writes.push(FactWriteResult::new(
+                        key,
+                        value,
+                        "failed",
+                        Some(err.to_string()),
+                    ));
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
+        }};
+    }
+    let final_owner = observations.iter().rev().find(|observation| {
+        observation
+            .role
+            .as_deref()
+            .and_then(compatibility_owner_role)
+            == Some("client")
+    });
+    if let Some(phase) = calibration {
+        write_fact!(
+            CompatibilityFactKey::LaunchCase,
+            launch_case.as_str(),
+            phase,
+            final_owner
+        );
+    }
+    if !observations.is_empty() && calibration != Some(CalibrationPhase::Tls) {
+        let reached_client = observations
+            .iter()
+            .any(observation_is_correlated_to_final_client);
         for (key, value) in [
             (
                 CompatibilityFactKey::ProxyRouting,
@@ -2328,7 +3060,11 @@ fn write_compatibility_facts(
             (
                 CompatibilityFactKey::ProxyPropagation,
                 if reached_client {
-                    "confirmed"
+                    if controlled {
+                        "confirmed"
+                    } else {
+                        "not-tested"
+                    }
                 } else {
                     "not-confirmed"
                 },
@@ -2338,30 +3074,25 @@ fn write_compatibility_facts(
             (CompatibilityFactKey::ProxyVariableTested, "ALL_PROXY"),
             (CompatibilityFactKey::ProxyVariableTested, "NO_PROXY"),
         ] {
-            insert_fact(
-                store,
-                target_id,
+            write_fact!(
                 key,
                 value,
-                launch_case,
-                backend,
-                controlled,
-            )?;
+                calibration.unwrap_or(CalibrationPhase::Reachability),
+                final_owner
+            );
         }
     }
-    if observations
-        .iter()
-        .any(|o| o.protocol == "https" && o.inspectability == "full")
+    if calibration != Some(CalibrationPhase::Reachability)
+        && observations
+            .iter()
+            .any(observation_proves_final_client_ca_acceptance)
     {
-        insert_fact(
-            store,
-            target_id,
+        write_fact!(
             CompatibilityFactKey::TlsTrustBehavior,
             "accepts-local-ca",
-            launch_case,
-            backend,
-            controlled,
-        )?;
+            calibration.unwrap_or(CalibrationPhase::Tls),
+            final_owner
+        );
     }
     let final_roles: BTreeSet<&str> = observations
         .iter()
@@ -2369,47 +3100,59 @@ fn write_compatibility_facts(
         .filter_map(compatibility_owner_role)
         .collect();
     for role in final_roles {
-        insert_fact(
-            store,
-            target_id,
+        write_fact!(
             CompatibilityFactKey::FinalSocketOwnerRole,
             role,
-            launch_case,
-            backend,
-            controlled,
-        )?;
+            calibration.unwrap_or(CalibrationPhase::Reachability),
+            final_owner
+        );
     }
-    let inspectability: BTreeSet<&str> = observations
-        .iter()
-        .map(|observation| observation.inspectability.as_str())
-        .collect();
-    for inspectability in inspectability {
-        insert_fact(
-            store,
-            target_id,
-            CompatibilityFactKey::Inspectability,
-            inspectability,
-            launch_case,
-            backend,
-            controlled,
-        )?;
+    if calibration != Some(CalibrationPhase::Reachability) {
+        let inspectability: BTreeSet<&str> = observations
+            .iter()
+            .map(|observation| observation.inspectability.as_str())
+            .collect();
+        for inspectability in inspectability {
+            write_fact!(
+                CompatibilityFactKey::Inspectability,
+                inspectability,
+                calibration.unwrap_or(CalibrationPhase::Tls),
+                final_owner
+            );
+        }
+        let protocols: BTreeSet<&str> = observations
+            .iter()
+            .map(|observation| observation.protocol.as_str())
+            .collect();
+        for protocol in protocols {
+            write_fact!(
+                CompatibilityFactKey::ProtocolBehavior,
+                protocol,
+                calibration.unwrap_or(CalibrationPhase::Tls),
+                final_owner
+            );
+        }
     }
-    let protocols: BTreeSet<&str> = observations
-        .iter()
-        .map(|observation| observation.protocol.as_str())
-        .collect();
-    for protocol in protocols {
-        insert_fact(
-            store,
-            target_id,
-            CompatibilityFactKey::ProtocolBehavior,
-            protocol,
-            launch_case,
-            backend,
-            controlled,
-        )?;
+    (writes, first_error)
+}
+
+#[derive(Clone, Debug)]
+struct FactWriteResult {
+    key: String,
+    value: String,
+    status: String,
+    reason: Option<String>,
+}
+
+impl FactWriteResult {
+    fn new(key: CompatibilityFactKey, value: &str, status: &str, reason: Option<String>) -> Self {
+        Self {
+            key: key.as_str().to_string(),
+            value: value.to_string(),
+            status: status.to_string(),
+            reason,
+        }
     }
-    Ok(())
 }
 
 fn compatibility_owner_role(role: &str) -> Option<&str> {
@@ -2428,33 +3171,52 @@ fn compatibility_owner_role(role: &str) -> Option<&str> {
 
 fn insert_fact(
     store: &mut Store,
-    target_id: i64,
     key: CompatibilityFactKey,
     value: &str,
-    launch_case: CompatibilityLaunchCase,
-    backend: &ProxyBackend,
-    controlled: bool,
+    ctx: FactContext<'_>,
 ) -> Result<(), CliError> {
     let mut fact = CompatibilityFact::new(
-        target_id,
+        ctx.target_id,
         key,
         value,
         CompatibilityEvidenceSource::ObservedRun,
     )
     .map_err(|e| CliError::failure(e.to_string()))?;
-    fact.launch_case = Some(launch_case);
+    fact.launch_case = Some(ctx.launch_case);
     fact.observed_at = Some(rfc3339_utc(SystemTime::now()));
     fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
-    fact.proxy_backend = Some(backend.name.clone());
-    fact.proxy_backend_version = Some(backend.version.clone());
+    fact.proxy_backend = Some(ctx.backend.name.clone());
+    fact.proxy_backend_version = Some(ctx.backend.version.clone());
     fact.proxy_mode = Some("launch-scoped-env".to_string());
-    fact.final_owner_executable = controlled.then(|| "client.exe".to_string());
-    fact.final_owner_handoff = false;
-    fact.note = Some("scrubbed Deep Capture MVP observation".to_string());
+    fact.final_owner_executable = ctx
+        .final_owner
+        .and_then(|owner| owner.process_image.clone());
+    fact.final_owner_handoff = ctx
+        .final_owner
+        .and_then(|owner| owner.attribution.as_deref())
+        .is_some_and(|attribution| attribution.contains("handoff"));
+    fact.note = Some(format!(
+        "scrubbed Deep Capture {} observation{}",
+        ctx.phase.as_str(),
+        if ctx.controlled {
+            " from controlled target"
+        } else {
+            ""
+        }
+    ));
     store
         .insert_compatibility_fact(&fact)
         .map_err(|e| CliError::failure(format!("cannot write Deep Capture facts: {e}")))?;
     Ok(())
+}
+
+struct FactContext<'a> {
+    target_id: i64,
+    launch_case: CompatibilityLaunchCase,
+    backend: &'a ProxyBackend,
+    controlled: bool,
+    final_owner: Option<&'a Observation>,
+    phase: CalibrationPhase,
 }
 
 fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<(), CliError> {
@@ -2535,7 +3297,6 @@ fn command_stdout_with_timeout(
             }
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
-                let _ = child.wait();
                 return Err(format!("timed out after {} ms", timeout.as_millis()));
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
@@ -2567,6 +3328,116 @@ mod tests {
             status: Some(200),
             reason: None,
         }
+    }
+
+    #[test]
+    fn calibration_classification_keeps_outcomes_distinct() {
+        let mut client = observation();
+        client.role = Some("client".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[client.clone()]),
+            CalibrationOutcome::ReachedClient
+        );
+
+        let mut launcher = client.clone();
+        launcher.role = Some("launcher".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[launcher.clone()]),
+            CalibrationOutcome::LauncherOnly
+        );
+
+        let mut escaped = client.clone();
+        escaped.flow_id = None;
+        escaped.role = None;
+        escaped.reason = Some("escaped-tree".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[escaped]),
+            CalibrationOutcome::EscapedTree
+        );
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[]),
+            CalibrationOutcome::Inconclusive
+        );
+        let mut proxy_not_reached = observation();
+        proxy_not_reached.flow_id = None;
+        proxy_not_reached.role = None;
+        proxy_not_reached.reason = Some("proxy-not-reached".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[proxy_not_reached]),
+            CalibrationOutcome::ProxyNotReached
+        );
+
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Tls, &[client.clone()]),
+            CalibrationOutcome::LocalCaAccepted
+        );
+        assert!(!observation_proves_final_client_ca_acceptance(&launcher));
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Tls, &[launcher]),
+            CalibrationOutcome::UnknownTrust
+        );
+        let mut pinned = client.clone();
+        pinned.inspectability = "unknown".to_string();
+        pinned.reason = Some("certificate-pinned".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Tls, &[pinned]),
+            CalibrationOutcome::CertificatePinned
+        );
+        let mut metadata = client.clone();
+        metadata.inspectability = "metadata-only".to_string();
+        metadata.protocol = "non-http-tls".to_string();
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Tls, &[metadata]),
+            CalibrationOutcome::MetadataOnly
+        );
+        let mut unsupported = client;
+        unsupported.inspectability = "unsupported".to_string();
+        unsupported.protocol = "quic".to_string();
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Tls, &[unsupported]),
+            CalibrationOutcome::UnsupportedProtocol
+        );
+    }
+
+    #[test]
+    fn calibration_confirmation_is_explicit_and_defaults_to_no() {
+        assert!(calibration_answer_is_affirmative("y"));
+        assert!(calibration_answer_is_affirmative(" YES \r\n"));
+        assert!(!calibration_answer_is_affirmative(""));
+        assert!(!calibration_answer_is_affirmative("no"));
+        assert!(!calibration_answer_is_affirmative("later"));
+    }
+
+    #[test]
+    fn calibration_deadlines_preserve_shorter_values_and_cap_longer_ones() {
+        assert_eq!(
+            bounded_timeout(Some(Duration::from_secs(7)), CALIBRATION_LAUNCH_TIMEOUT),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            bounded_timeout(Some(Duration::from_secs(90)), CALIBRATION_LAUNCH_TIMEOUT),
+            CALIBRATION_LAUNCH_TIMEOUT
+        );
+        assert_eq!(
+            bounded_timeout(None, CALIBRATION_OBSERVATION_TIMEOUT),
+            CALIBRATION_OBSERVATION_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn terminal_calibration_outcome_distinguishes_interrupt_and_failure() {
+        assert_eq!(
+            terminal_calibration_outcome(CalibrationPhase::Tls, &[], true, false),
+            CalibrationOutcome::Interrupted
+        );
+        assert_eq!(
+            terminal_calibration_outcome(CalibrationPhase::Tls, &[], false, true),
+            CalibrationOutcome::Failed
+        );
+        assert_eq!(
+            terminal_calibration_outcome(CalibrationPhase::Tls, &[], true, true),
+            CalibrationOutcome::Interrupted
+        );
     }
 
     #[test]
@@ -2637,9 +3508,37 @@ mod tests {
         assert!(manager.ensure_trusted(false).is_err());
         let trust = manager.ensure_trusted(true).unwrap();
         assert_eq!(trust.state, "simulated-current-user");
-        let cleanup = manager.cleanup();
+        let cleanup = manager.cleanup(CALIBRATION_CLEANUP_TIMEOUT);
         assert_eq!(cleanup.resource, "trust-entry");
         assert_eq!(cleanup.status, "not-needed");
+    }
+
+    #[test]
+    fn proxy_shutdown_returns_when_its_deadline_expires() {
+        let thread = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(())
+        });
+        let mut proxy = RunningProxy {
+            events_path: PathBuf::new(),
+            ca_cert_path: None,
+            key_log_path: None,
+            child: None,
+            started_child: false,
+            controlled_thread: Some(thread),
+            controlled_shutdown: Some(Arc::new(AtomicBool::new(false))),
+            started_controlled: true,
+            listen_port: 0,
+            ephemeral_paths: Vec::new(),
+            stop_result: None,
+        };
+        let started = Instant::now();
+        let error = proxy
+            .stop_with_timeout(Duration::from_millis(1))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(error.contains("did not stop within"));
+        assert_eq!(proxy.stop(), Err(error));
     }
 
     #[test]
@@ -2736,8 +3635,8 @@ mod tests {
         let mut superseded = routing_facts(selected, false);
         let mut latest = CompatibilityFact::new(
             1,
-            CompatibilityFactKey::ProxyPropagation,
-            "not-confirmed",
+            CompatibilityFactKey::ProxyRouting,
+            "inconclusive",
             CompatibilityEvidenceSource::ObservedRun,
         )
         .unwrap();
@@ -2801,6 +3700,8 @@ mod tests {
             no_payload: false,
             trust_ca: true,
             yes: false,
+            calibrate: None,
+            launch_case: None,
             har: false,
             key_log: true,
             proxy_backend: DeepCaptureProxyArg::Mitmdump,

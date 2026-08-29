@@ -128,6 +128,24 @@ impl<'w> Emitter<'w> {
         }
     }
 
+    /// Write required human-facing text even when ordinary progress is quiet.
+    /// JSON mode remains exclusive and receives the corresponding event instead.
+    pub fn required_human(&mut self, text: &str) {
+        if self.format == Format::Human {
+            let _ = write!(self.err, "{text}");
+        }
+    }
+
+    /// Flush the diagnostic stream before reading an interactive answer.
+    pub fn flush(&mut self) {
+        let _ = self.err.flush();
+    }
+
+    /// Whether this emitter is producing the structured event stream.
+    pub fn is_json(&self) -> bool {
+        self.format == Format::Json
+    }
+
     /// How many progress lines have actually been written so far. See the
     /// field's own documentation for why this exists.
     ///
