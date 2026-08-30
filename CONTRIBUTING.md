@@ -35,11 +35,12 @@ section.
 v0.8.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
 
 Deep Capture is functional but incomplete. Its current CLI path uses external
-mitmdump and certutil. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+mitmdump, while certificate trust effects now use the native Windows API.
+[Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
 is the native-completion authority; contributors must not describe the feature
-as native, self-contained, or feature-complete until #334 closes. The S102
-native crate is a bounded lifecycle foundation, not a protocol-inspection or
-CLI-cutover claim.
+as native, self-contained, or feature-complete until #334 closes. S103 completes
+the security, upstream, certificate, event, and protocol-lab foundation. It is
+not a production protocol-inspection or CLI-cutover claim.
 
 Npcap remains a separately installed prerequisite for live packet capture. fragcap never bundles, hosts, caches as its own, or redistributes Npcap or its installer. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page. A source build with the optional `net` feature may instead fetch and launch the vendor's signed installer. The default workspace build and offline tests require neither Npcap nor administrative privilege.
 

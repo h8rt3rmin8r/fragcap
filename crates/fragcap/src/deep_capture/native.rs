@@ -5,6 +5,11 @@ use std::time::Duration;
 
 use fragcap_proxy::{NativeProxyBackend as RuntimeBackend, NativeProxyConfig, ShutdownReport};
 
+pub use fragcap_proxy::{
+    CertificateStore, NativeCertificateStore, TrustController, TrustError, TrustMutation,
+    TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
+};
+
 use super::{
     BackendDescriptor, Budget, CleanupResult, CleanupStatus, CompatibilityObservation,
     ProxyBackend, ProxyLease, SessionPlan, Stage, StageFailure,

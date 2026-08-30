@@ -45,6 +45,7 @@ hyper-util = { version = "=0.1.20", default-features = false, features = [
     "tokio",
 ] }
 http-body-util = { version = "=0.1.5", default-features = false }
+h2 = { version = "=0.4.19", default-features = false }
 rustls = { version = "=0.23.43", default-features = false, features = [
     "ring",
     "std",
@@ -54,8 +55,19 @@ tokio-rustls = { version = "=0.26.4", default-features = false, features = [
     "ring",
     "tls12",
 ] }
-rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
+rcgen = { version = "=0.14.10", default-features = false, features = [
+    "ring",
+    "zeroize",
+] }
 rustls-native-certs = { version = "=0.8.4", default-features = false }
+ring = { version = "=0.17.14", default-features = false, features = ["alloc"] }
+subtle = { version = "=2.6.1", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+quinn = { version = "=0.11.11", default-features = false, features = [
+    "runtime-tokio",
+    "rustls-ring",
+] }
+x509-parser = { version = "=0.18.1", default-features = false }
 
 # External. Slice S05, research R-1: TOML parsing for game profiles, with byte
 # spans on every value so a diagnostic can point an author at their own line.

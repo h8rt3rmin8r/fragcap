@@ -13,6 +13,8 @@ use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::{timeout, Instant};
 
+use crate::{CapabilityProof, SessionCapability, CAPABILITY_BYTES};
+
 use crate::{
     BackendCapabilities, BackendIdentity, BackendKind, LifecycleState, NativeProxyConfig,
     ObserveError, RuntimeFailure, RuntimeObservation, ShutdownReport, StartError,
@@ -99,13 +101,17 @@ impl NativeProxyBackend {
         }
 
         // The lease is the only sender and the one-slot channel keeps timed-out commands finite.
+        let capability = SessionCapability::generate()
+            .map_err(|error| StartError::new("capability-generation-failed", error.to_string()))?;
+        let capability_proof = capability.proof();
         let (commands, receiver) = mpsc::channel(1);
         let (completion_send, completion) = std_mpsc::sync_channel(1);
         let config = self.config.clone();
         let worker = thread::Builder::new()
             .name("fragcap-native-proxy".to_string())
             .spawn(move || {
-                let report = runtime.block_on(run(listener, endpoint, config, receiver));
+                let report =
+                    runtime.block_on(run(listener, endpoint, config, capability, receiver));
                 drop(runtime);
                 let _ = completion_send.send(report.clone());
                 report
@@ -124,6 +130,7 @@ impl NativeProxyBackend {
             cached: None,
             pending_report: None,
             last_observation: RuntimeObservation::running(endpoint),
+            capability_proof,
         })
     }
 }
@@ -140,9 +147,14 @@ pub struct NativeProxyLease {
     cached: Option<ShutdownReport>,
     pending_report: Option<ShutdownReport>,
     last_observation: RuntimeObservation,
+    capability_proof: CapabilityProof,
 }
 
 impl NativeProxyLease {
+    pub fn capability_proof(&self) -> CapabilityProof {
+        self.capability_proof.clone()
+    }
+
     pub fn observation(&mut self, budget: Duration) -> Result<RuntimeObservation, ObserveError> {
         if let Some(report) = &self.cached {
             return Ok(report.observation.clone());
@@ -231,14 +243,26 @@ impl Drop for NativeProxyLease {
 enum ConnectionOutcome {
     Completed,
     Failed,
+    AuthenticationRefused,
 }
 
 async fn connection_task(
     mut stream: TcpStream,
     mut shutdown: watch::Receiver<bool>,
     buffer_bytes: usize,
+    capability: SessionCapability,
     _permit: OwnedSemaphorePermit,
 ) -> ConnectionOutcome {
+    let mut proof = [0_u8; CAPABILITY_BYTES];
+    let authenticated = tokio::select! {
+        _ = shutdown.changed() => false,
+        result = timeout(Duration::from_secs(1), stream.read_exact(&mut proof)) => {
+            matches!(result, Ok(Ok(_))) && capability.authenticates(&proof)
+        }
+    };
+    if !authenticated {
+        return ConnectionOutcome::AuthenticationRefused;
+    }
     let mut buffer = vec![0_u8; buffer_bytes];
     tokio::select! {
         changed = shutdown.changed() => {
@@ -261,6 +285,7 @@ async fn run(
     listener: TcpListener,
     endpoint: std::net::SocketAddr,
     config: NativeProxyConfig,
+    capability: SessionCapability,
     mut commands: mpsc::Receiver<Command>,
 ) -> ShutdownReport {
     let permits = Arc::new(Semaphore::new(config.max_connections()));
@@ -309,6 +334,7 @@ async fn run(
                                 let connection_id = next_connection_id;
                                 let connection_shutdown = shutdown_receive.clone();
                                 let buffer_bytes = config.per_connection_buffer_bytes();
+                                let connection_capability = capability.clone();
                                 next_connection_id = next_connection_id.saturating_add(1);
                                 observation.accepted_connections = observation.accepted_connections.saturating_add(1);
                                 observation.live_connections = config
@@ -322,6 +348,7 @@ async fn run(
                                         stream,
                                         connection_shutdown,
                                         buffer_bytes,
+                                        connection_capability,
                                         permit,
                                     ).await;
                                     (connection_id, outcome)
@@ -412,6 +439,13 @@ fn account_join(
     observation.live_connections = observation.live_connections.saturating_sub(1);
     match result {
         Ok((_id, ConnectionOutcome::Completed)) => {
+            observation.authenticated_connections =
+                observation.authenticated_connections.saturating_add(1);
+            observation.completed_connections = observation.completed_connections.saturating_add(1);
+        }
+        Ok((_id, ConnectionOutcome::AuthenticationRefused)) => {
+            observation.authentication_refused =
+                observation.authentication_refused.saturating_add(1);
             observation.completed_connections = observation.completed_connections.saturating_add(1);
         }
         Ok((id, ConnectionOutcome::Failed)) => {
@@ -562,6 +596,7 @@ mod tests {
             cached: None,
             pending_report: None,
             last_observation: running,
+            capability_proof: SessionCapability::generate().unwrap().proof(),
         };
 
         let started_at = StdInstant::now();

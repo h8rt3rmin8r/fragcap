@@ -119,6 +119,7 @@ enforcement.
 | 0.1.25-draft | 2026-08-30 | W. Thompson | **Adds managed direct-executable launch (issue #254).** Updates sections 7.1, 16.4, 17.2.1, 19.2, 19.4, and 29. Capture and Deep Capture consume one immutable launch prepared from the selected stored target. A cold direct target uses an exact executable beneath its install root, an explicit working directory and argument vector, and child-only proxy environment additions without a command shell or post-effect re-resolution. Warm direct targets remain refused. |
 | 0.1.26-draft | 2026-08-30 | W. Thompson | **Reconciles the specification and public documentation with v0.8.0.** Updates sections 1, 2.1, and 27.3 so current-status prose and release history include compatibility calibration, the public library-first session API, and managed direct-executable launch. Corrects public current-version examples and the assembled Decisions hierarchy. |
 | 0.1.27-draft | 2026-08-30 | W. Thompson | **Makes complete native Rust Deep Capture the required product end state (issues #279, #280, #281, #282, and #291).** Adds the native proxy leaf crate and bounded runtime foundation, raises the workspace MSRV to 1.88 for the selected exact protocol graph, and publishes the #278 ownership, support, refusal, and milestone gates. Explicitly supersedes S100's external-backend end state while retaining mitmdump as the v0.8 functional CLI backend until #290. |
+| 0.1.28-draft | 2026-08-30 | W. Thompson | **Completes the secure native proxy foundation (issues #283 through #289).** Adds authenticated loopback admission, bounded upstream policy and native roots, per-session certificate and exact current-user trust ownership, a loss-accounted raw observation contract, and the deterministic local protocol lab. Production forwarding and inspection remain external until #290. |
 
 ## 2. Purpose and Problem Statement
 
@@ -143,10 +144,10 @@ session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
 
 Deep Capture is functional but incomplete. v0.8.0 delegates proxy serving, CA
-creation, HTTP/TLS observation, and TLS key logging to external `mitmdump`, and
-uses `certutil` for current-user trust changes. The native Rust foundation in
-S102 owns a bounded loopback listener and lifecycle only; it does not yet
-forward or inspect traffic and is not selected by the CLI. Issue #278 is the
+creation, HTTP/TLS observation, and TLS key logging to external `mitmdump`.
+S103 completes the native authenticated-listener, upstream-policy,
+certificate/trust, raw-observation, and controlled-protocol-lab foundation. It
+does not yet forward or inspect production traffic and is not selected by the CLI. Issue #278 is the
 completion authority. Deep Capture MUST NOT be described as native,
 self-contained, or feature-complete until issue #334 closes.
 
@@ -962,7 +963,9 @@ The production native proxy implementation belongs to the leaf
 dependency. Its S102 foundation owns an explicit loopback listener, finite
 connection permits and buffers, runtime tasks, cancellation, bounded drain,
 forced termination, and terminal accounting. It reports a stable backend
-identity and zero protocol-inspection capabilities. The CLI MUST continue to
+identity, authenticated admission, bounded upstream policy, session certificate
+ownership, exact native trust effects, raw observations, and zero production
+protocol-inspection capabilities. The CLI MUST continue to
 use its current external adapter until #290 deliberately switches production;
 mere availability of the native foundation is not a cutover.
 
@@ -4368,8 +4371,10 @@ shipped as of the release this document applies to.
 Issue #278 is the sole completion authority for native Rust Deep Capture. The
 functional v0.8 path remains external until #290, and the Python prerequisite
 remains until #329. S102 establishes a library-owned, loopback-only,
-finite-capacity runtime foundation. It closes accepted sockets without parsing,
-forwarding, decrypting, or reporting application observations.
+finite-capacity runtime foundation. S103 completes authenticated admission,
+bounded upstream policy, session certificate and trust ownership, raw event
+accounting, and the controlled protocol lab. It still does not claim production
+forwarding, decryption, or application observation.
 
 The required dependency direction is:
 

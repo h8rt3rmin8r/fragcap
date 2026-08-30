@@ -25,3 +25,23 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
 rustls-native-certs.workspace = true
+ring.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+] }
+
+[dev-dependencies]
+h2.workspace = true
+quinn.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+x509-parser.workspace = true

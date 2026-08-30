@@ -59,11 +59,12 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 **v0.8.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. The public library API and CLI can orchestrate eligible cold Steam and direct-executable launches. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
 
 > **Deep Capture is functional but incomplete.** v0.8.0 still delegates proxy
-> serving, certificate generation, HTTP/TLS observation, and TLS key logging to
-> external `mitmdump`, and uses `certutil` for confirmed current-user trust
-> changes. S102 adds a native Rust library foundation with bounded loopback
-> listener and task ownership, but it does not yet forward or inspect traffic
-> and the CLI does not select it. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+> serving, HTTP/TLS observation, and TLS key logging to external `mitmdump`.
+> S103 completes the native foundation for authenticated loopback admission,
+> bounded upstream policy, session certificate issuance, direct current-user
+> trust-store effects, loss-accounted raw events, and the controlled protocol
+> lab. It does not yet forward or inspect production traffic and the CLI does
+> not select it. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
 > owns the complete four-milestone roadmap. Do not treat Deep Capture as native,
 > self-contained, or feature-complete until the final gate, #334, closes.
 
