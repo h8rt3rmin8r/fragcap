@@ -8,7 +8,7 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-This page describes the public v0.7.0 command tree. Its command headings,
+This page describes the public v0.8.0 command tree. Its command headings,
 option tables, sink vocabulary, and executable examples are checked against the
 same parser used by the binary. Hidden test controls are excluded. clap's
 generated `help` and `version` controls remain available but are not repeated in
@@ -26,7 +26,7 @@ Running `fragcap` with no command lists registered targets and points at
 ## Retired command migration
 
 Older releases and their preserved changelog pages may refer to command forms
-that the current CLI no longer accepts. Use these replacements with v0.7.0:
+that the current CLI no longer accepts. Use these replacements with v0.8.0:
 
 | Retired form | Current form |
 | --- | --- |
@@ -87,7 +87,7 @@ fragcap capture --process sample.exe --out capture.fcapng
 | `--wait` | open | none | all | Set the target acquisition timeout. With no value, wait until start or interruption. |
 
 `--roles` is enforced. `--direction in` and `--direction out` are recorded and
-reported, but v0.7.0 still writes both directions.
+reported, but v0.8.0 still writes both directions.
 
 ### Sink specifications
 
@@ -139,7 +139,7 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
 | `--key-log` | open | `false` | all | Write a proxy-owned TLS key log at its final bundle path. |
 | `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
-| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the launch case measured by `--calibrate`. Real calibration currently supports only `steam-protocol-cold`; other values receive a pre-side-effect refusal. |
+| `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the launch case measured by `--calibrate`. Real calibration supports cold Steam protocol and cold direct-executable launches; other values receive a pre-side-effect refusal. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |

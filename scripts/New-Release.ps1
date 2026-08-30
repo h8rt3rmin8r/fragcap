@@ -330,9 +330,9 @@ Next steps (each is a deliberate, authorized act this script does not perform):
         Write-Log 'regenerating the golden corpus for the new version' 'Info'
         $env:FRAGCAP_UPDATE_GOLDENS = '1'
         try {
-            Invoke-Native cargo test -p fragcap --test goldens --quiet
-            Invoke-Native cargo test -p fragcap-cli --test cli_capture --quiet
-            Invoke-Native cargo test -p fragcap-cli --test cli_extcap --quiet
+            Invoke-Native -Exe cargo -Arguments @('test', '-p', 'fragcap', '--test', 'goldens', '--quiet')
+            Invoke-Native -Exe cargo -Arguments @('test', '-p', 'fragcap-cli', '--test', 'cli_capture', '--quiet')
+            Invoke-Native -Exe cargo -Arguments @('test', '-p', 'fragcap-cli', '--test', 'cli_extcap', '--quiet')
         } finally {
             Remove-Item Env:FRAGCAP_UPDATE_GOLDENS -ErrorAction SilentlyContinue
         }

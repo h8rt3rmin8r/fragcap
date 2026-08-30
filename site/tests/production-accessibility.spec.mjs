@@ -107,7 +107,7 @@ test.describe('production accessibility contract', () => {
   for (const width of viewports) {
     test(`all public routes expose one primary region and keyboard bypass at ${width}px`, async ({ page }) => {
       const routes = publicRoutes();
-      expect(routes, 'public route population').toHaveLength(54);
+      expect(routes, 'public route population').toHaveLength(57);
       await page.setViewportSize({ width, height: 900 });
       for (const route of routes) {
         const response = await page.goto(route);

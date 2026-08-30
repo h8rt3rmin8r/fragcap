@@ -2623,6 +2623,7 @@ fn serve_controlled_proxy(
             Err(err) => return Err(err.to_string()),
         };
         ordinal += 1;
+        stream.set_nonblocking(false).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .map_err(|e| e.to_string())?;

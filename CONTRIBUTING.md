@@ -32,7 +32,7 @@ section.
 
 ## Current state
 
-v0.7.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
+v0.8.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
 
 Npcap remains a separately installed prerequisite for live packet capture. fragcap never bundles, hosts, caches as its own, or redistributes Npcap or its installer. After explicit interactive confirmation, the shipped `fragcap doctor --fix` opens the official download page. A source build with the optional `net` feature may instead fetch and launch the vendor's signed installer. The default workspace build and offline tests require neither Npcap nor administrative privilege.
 
