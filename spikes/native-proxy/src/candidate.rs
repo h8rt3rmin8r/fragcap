@@ -65,27 +65,41 @@ impl HttpHandler for RecordingHandler {
                 } else {
                     "proxy-request"
                 };
-                self.observations
-                    .lock()
-                    .expect("observation lock")
-                    .push(Observation::complete(
+                let observation = if scenario == "websocket" {
+                    Observation::complete_empty(
+                        scenario,
+                        kind,
+                        Some(&format!("{:?}", parts.version)),
+                    )
+                } else {
+                    Observation::complete(
                         scenario,
                         kind,
                         Some(&format!("{:?}", parts.version)),
                         &bytes,
-                    ));
+                    )
+                };
+                self.observations
+                    .lock()
+                    .expect("observation lock")
+                    .push(observation);
                 RequestOrResponse::Request(Request::from_parts(
                     parts,
                     Body::from(http_body_util::Full::new(bytes)),
                 ))
             }
             Err(error) => {
+                let kind = if scenario == "websocket" {
+                    "proxy-handshake-request"
+                } else {
+                    "proxy-request"
+                };
                 self.observations
                     .lock()
                     .expect("observation lock")
                     .push(Observation::result(
                         scenario,
-                        "proxy-request",
+                        kind,
                         Status::Failed,
                         error.to_string(),
                     ));
@@ -105,24 +119,39 @@ impl HttpHandler for RecordingHandler {
                 } else {
                     "proxy-response"
                 };
-                self.observations
-                    .lock()
-                    .expect("observation lock")
-                    .push(Observation::complete(
+                let observation = if scenario == "websocket" {
+                    Observation::complete_empty(
+                        scenario,
+                        kind,
+                        Some(&format!("{:?}", parts.version)),
+                    )
+                } else {
+                    Observation::complete(
                         scenario,
                         kind,
                         Some(&format!("{:?}", parts.version)),
                         &bytes,
-                    ));
+                    )
+                };
+                self.observations
+                    .lock()
+                    .expect("observation lock")
+                    .push(observation);
                 Response::from_parts(parts, Body::from(http_body_util::Full::new(bytes)))
             }
             Err(error) => {
+                let scenario = self.current_scenario.as_deref().unwrap_or("unknown");
+                let kind = if scenario == "websocket" {
+                    "proxy-handshake-response"
+                } else {
+                    "proxy-response"
+                };
                 self.observations
                     .lock()
                     .expect("observation lock")
                     .push(Observation::result(
-                        self.current_scenario.as_deref().unwrap_or("unknown"),
-                        "proxy-response",
+                        scenario,
+                        kind,
                         Status::Failed,
                         error.to_string(),
                     ));

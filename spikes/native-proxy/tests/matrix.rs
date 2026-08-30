@@ -20,8 +20,12 @@ fn negative_states_never_become_parity() {
         b"body",
     ));
     let comparison = Comparison::new(candidate, baseline);
-    assert_eq!(comparison.rows.len(), 1);
-    assert!(!comparison.rows[0].parity);
+    let row = comparison
+        .rows
+        .iter()
+        .find(|row| row.scenario == "https-http2" && row.kind == "proxy-request")
+        .expect("HTTP/2 request row");
+    assert!(!row.parity);
 }
 
 #[test]
@@ -42,10 +46,57 @@ fn missing_rows_are_explicitly_not_measured() {
     let row = comparison
         .rows
         .iter()
-        .find(|row| row.scenario == "http1")
+        .find(|row| row.scenario == "http1" && row.kind == "proxy-request")
         .expect("candidate-only row");
     assert_eq!(row.baseline, Status::NotMeasured);
     assert!(!row.parity);
+}
+
+#[test]
+fn shared_missing_required_rows_remain_explicitly_not_measured() {
+    let comparison = Comparison::new(
+        run_with_observations(Vec::new()),
+        run_with_observations(Vec::new()),
+    );
+    let row = comparison
+        .rows
+        .iter()
+        .find(|row| row.scenario == "https-http1" && row.kind == "proxy-response")
+        .expect("required HTTPS response row");
+    assert_eq!(row.candidate, Status::NotMeasured);
+    assert_eq!(row.baseline, Status::NotMeasured);
+    assert!(!row.parity);
+}
+
+#[test]
+fn complete_rows_require_matching_protocol_length_and_digest() {
+    let baseline = Observation::complete("http1", "proxy-response", Some("HTTP/1.1"), b"body");
+    let mut wrong_protocol = baseline.clone();
+    wrong_protocol.protocol = Some("HTTP/2.0".to_string());
+    let mut wrong_length = baseline.clone();
+    wrong_length.byte_length += 1;
+    let wrong_digest = Observation::complete("http1", "proxy-response", Some("HTTP/1.1"), b"copy");
+    for candidate in [wrong_protocol, wrong_length, wrong_digest] {
+        let comparison = Comparison::new(run_with(candidate), run_with(baseline.clone()));
+        let row = comparison
+            .rows
+            .iter()
+            .find(|row| row.scenario == "http1" && row.kind == "proxy-response")
+            .expect("HTTP response row");
+        assert!(!row.parity);
+    }
+}
+
+#[test]
+fn matching_complete_rows_are_parity() {
+    let observation = Observation::complete("http1", "proxy-response", Some("HTTP/1.1"), b"body");
+    let comparison = Comparison::new(run_with(observation.clone()), run_with(observation));
+    let row = comparison
+        .rows
+        .iter()
+        .find(|row| row.scenario == "http1" && row.kind == "proxy-response")
+        .expect("HTTP response row");
+    assert!(row.parity);
 }
 
 #[tokio::test]
@@ -81,6 +132,11 @@ async fn candidate_proves_protocol_fidelity_key_logging_and_cleanup() {
     assert!(run.observations.iter().any(|row| {
         row.scenario == "matrix" && row.kind == "har-source" && row.status == Status::Complete
     }));
+    assert!(run.observations.iter().any(|row| {
+        row.scenario == "websocket"
+            && row.kind == "proxy-handshake-request"
+            && row.status == Status::Complete
+    }));
     let directions: Vec<_> = run
         .observations
         .iter()
@@ -106,6 +162,10 @@ async fn baseline_is_bounded_when_installed() {
 }
 
 fn run_with(observation: Observation) -> BackendRun {
+    run_with_observations(vec![observation])
+}
+
+fn run_with_observations(observations: Vec<Observation>) -> BackendRun {
     BackendRun {
         backend: "test".to_string(),
         version: "0".to_string(),
@@ -115,7 +175,7 @@ fn run_with(observation: Observation) -> BackendRun {
         cache_capacity: None,
         key_log_lines: 0,
         shutdown_trials: Vec::new(),
-        observations: vec![observation],
+        observations,
         limitations: Vec::new(),
     }
 }

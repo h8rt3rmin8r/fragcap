@@ -33,7 +33,7 @@ the harness are not part of a product adoption delta.
 | HTTP/1.1 response body | Pass | Pass | Both observed all 26 bytes with SHA-256 `f93615f3...`. |
 | HTTPS through CONNECT | Pass | Pass | Request, response, and client result were complete. |
 | HTTP/2 through CONNECT | Pass | Fail | Candidate observed client-facing HTTP/2 request and response bodies; its upstream response was HTTP/1.1. The same forced HTTP/2 client attempt failed before the baseline addon received an HTTP/2 flow, so this run does not establish baseline parity. |
-| WebSocket handshake | Pass | Pass | Each backend exposed the empty upgrade request and response separately from message bodies. |
+| WebSocket handshake | Partial | Pass | The candidate exposed the empty upgrade request and successful message streams, but its public response hook did not receive the upgrade response, so the required response row remains `not-measured`. The baseline exposed the request and response separately from message bodies. |
 | WebSocket messages | Pass | Pass | Both directions and the client echo contained all 22 bytes. |
 | HAR authority | Pass | Pass | Candidate public handlers exposed method, URI, versions, headers, status, and complete bodies for fragcap-owned HAR generation. Baseline finalized a HAR from its saved flow. |
 | Client-facing TLS key log | Pass | Pass | Candidate public CA wrapper wrote 10 NSS key-log lines; the child-scoped baseline variable wrote 21. |
@@ -105,7 +105,7 @@ are identical within the measurement ledger:
 | HTTP/1.1 fidelity | Pass | Exact request and response lengths and digests matched. |
 | HTTPS CONNECT | Pass | Complete controlled exchange. |
 | HTTP/2 CONNECT | Pass | Candidate client-facing HTTP/2 was observed; upstream downgraded. |
-| WebSocket visibility | Pass | Handshake plus both message directions were observed. |
+| WebSocket visibility | Partial | The candidate observed the handshake request and both message directions, but not the handshake response. |
 | HAR-source adequacy | Pass | Public handlers expose required source fields. |
 | CA/trust separation | Pass | Session CA never entered an OS trust store. |
 | Certificate cache control | Partial | Bounded ownership exists; enumeration and explicit invalidation do not. |

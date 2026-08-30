@@ -15,6 +15,7 @@ use std::{
 #[derive(Deserialize)]
 struct AddonEvent {
     kind: String,
+    method: Option<String>,
     path: Option<String>,
     http_version: Option<String>,
     byte_length: usize,
@@ -99,27 +100,50 @@ fn parse_events(path: &Path) -> Vec<Observation> {
     content
         .lines()
         .filter_map(|line| serde_json::from_str::<AddonEvent>(line).ok())
+        .filter(|event| {
+            !event
+                .method
+                .as_deref()
+                .is_some_and(|method| method.eq_ignore_ascii_case("CONNECT"))
+        })
+        .filter(|event| {
+            event.path.as_deref().is_some_and(|path| {
+                ["http1", "https-http1", "https-http2", "websocket"]
+                    .iter()
+                    .any(|scenario| path.contains(scenario))
+            })
+        })
         .map(|event| {
             let scenario = event
                 .path
                 .as_deref()
                 .map(scenario_from_path)
                 .unwrap_or("websocket");
+            let kind = match (scenario, event.kind.as_str()) {
+                ("websocket", "request") => "proxy-handshake-request",
+                ("websocket", "response") => "proxy-handshake-response",
+                (_, "request") => "proxy-request",
+                (_, "response") => "proxy-response",
+                _ => "proxy-message",
+            };
+            let protocol = if event.kind == "websocket-message" {
+                Some("websocket".to_string())
+            } else {
+                event.http_version
+            };
             Observation {
                 scenario: scenario.to_string(),
-                kind: match (scenario, event.kind.as_str()) {
-                    ("websocket", "request") => "proxy-handshake-request".to_string(),
-                    ("websocket", "response") => "proxy-handshake-response".to_string(),
-                    (_, "request") => "proxy-request".to_string(),
-                    (_, "response") => "proxy-response".to_string(),
-                    _ => "proxy-message".to_string(),
-                },
-                status: if event.byte_length == 0 {
+                kind: kind.to_string(),
+                status: if scenario == "websocket"
+                    && matches!(event.kind.as_str(), "request" | "response")
+                {
+                    Status::Complete
+                } else if event.byte_length == 0 {
                     Status::Empty
                 } else {
                     Status::Complete
                 },
-                protocol: event.http_version,
+                protocol,
                 direction: event.direction,
                 byte_length: event.byte_length,
                 digest: Some(event.digest),

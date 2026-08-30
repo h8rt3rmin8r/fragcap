@@ -18,4 +18,4 @@ Committed evidence may contain loopback addresses without ephemeral ports, fixed
 
 ## Completeness Invariant
 
-For each backend, every scenario and required proof point has exactly one result row. A missing event becomes `not-measured`, never an absent row. Every non-complete row carries a reason. Candidate and baseline rows sort by the same scenario and proof-point keys.
+For each backend, every scenario and required proof point has exactly one result row. The comparison is seeded from the declared matrix before either backend's observations are joined, so an event missing from both backends becomes `not-measured` on both sides rather than an absent row. Every non-complete row carries a reason. Candidate and baseline rows sort by the same scenario and proof-point keys. Parity requires both rows to be `complete` and to agree on protocol, byte length, and digest.
