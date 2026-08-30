@@ -141,6 +141,42 @@ impl BackendRun {
     pub fn sort(&mut self) {
         self.observations.sort_by_key(Observation::key);
     }
+
+    pub fn harness_error(&self) -> Option<String> {
+        if !self.loopback_only {
+            return Some("candidate used an endpoint outside loopback".into());
+        }
+        if self.trust_store_mutated {
+            return Some("candidate mutated the operating-system trust store".into());
+        }
+        if self.shutdown_trials.len() != 10 {
+            return Some(format!(
+                "candidate recorded {} of 10 required shutdown trials",
+                self.shutdown_trials.len()
+            ));
+        }
+        if let Some(index) = self
+            .shutdown_trials
+            .iter()
+            .position(|status| *status == Status::Failed)
+        {
+            return Some(format!("shutdown trial {} failed", index + 1));
+        }
+        self.observations
+            .iter()
+            .find(|row| row.status == Status::Failed)
+            .map(|row| {
+                format!(
+                    "{} {} observation failed{}",
+                    row.scenario,
+                    row.kind,
+                    row.detail
+                        .as_deref()
+                        .map(|detail| format!(": {detail}"))
+                        .unwrap_or_default()
+                )
+            })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

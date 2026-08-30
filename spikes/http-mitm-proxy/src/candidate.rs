@@ -267,7 +267,7 @@ pub async fn run() -> BackendRun {
                     status,
                     "bind cancellation releases the listener, but internally spawned connection tasks have no public join or drain handle",
                 ));
-                shutdown_trials.push(Status::Complete);
+                shutdown_trials.push(status);
             }
             Ok(proxy) => {
                 let (status, mut rows, entries) = stop_proxy(proxy).await;

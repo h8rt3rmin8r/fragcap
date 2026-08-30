@@ -32,7 +32,7 @@ The executable and candidate-only audit are nested workspaces under `spikes/http
 | Client-facing TLS key log | Unsupported | Pass | Pass | Fallback constructs the client-facing rustls server configuration privately and has no public key-log hook. |
 | CA and trust separation | Pass | Pass | Pass | The fallback CA was supplied only to controlled clients. |
 | Certificate cache | Pass | Partial | Not measured | Caller-owned fallback cache is capacity 32 and reached one observed entry. |
-| Shutdown and cleanup | Partial | Pass | Partial | Fallback released its listener in 10 of 10 trials, but internally spawned accepted and CONNECT tasks have no public drain or join handle. |
+| Shutdown and cleanup | Partial | Pass | Partial | Fallback released its listener in 10 of 10 trials. Its status vector preserves nine complete ordinary trials and one unsupported active-connection trial because internally spawned accepted and CONNECT tasks have no public drain or join handle. |
 
 Missing directional WebSocket rows remain `not-measured` in normalized comparison output. No unsupported, failed, partial, or absent row counts as parity. Complete payload parity requires the same protocol, length, and digest.
 
@@ -66,7 +66,7 @@ The released root manifest and lock have no diff, root metadata contains no `htt
 
 | Criterion | Result | Deciding note |
 | --- | --- | --- |
-| Windows loopback lifecycle | Partial | Listener cancellation passed 10 of 10; active connection tasks cannot be joined through public API. |
+| Windows loopback lifecycle | Partial | All ten listeners were released; the active-connection trial remains unsupported because its tasks cannot be joined through public API. |
 | Explicit scoped proxying | Pass | No ambient proxy configuration changed. |
 | HTTP/1.1 fidelity | Pass | Request and response lengths and digests match S099. |
 | HTTPS CONNECT | Pass | Complete client-facing exchange. |

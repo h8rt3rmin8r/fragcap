@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use fragcap_http_mitm_proxy_spike::run_candidate;
-use std::{env, fs::File, io::BufWriter, path::PathBuf};
+use std::{
+    env,
+    fs::File,
+    io::{BufWriter, Write},
+    path::PathBuf,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,8 +23,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let run = run_candidate().await;
     match output {
-        Some(path) => serde_json::to_writer_pretty(BufWriter::new(File::create(path)?), &run)?,
+        Some(path) => {
+            let mut writer = BufWriter::new(File::create(path)?);
+            serde_json::to_writer_pretty(&mut writer, &run)?;
+            writer.flush()?;
+        }
         None => serde_json::to_writer_pretty(std::io::stdout().lock(), &run)?,
+    }
+    if let Some(error) = run.harness_error() {
+        return Err(error.into());
     }
     Ok(())
 }

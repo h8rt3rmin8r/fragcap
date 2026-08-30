@@ -71,10 +71,19 @@ async fn candidate_records_fidelity_and_hard_limitations() {
     assert_eq!(run.cache_capacity, Some(32));
     assert_eq!(run.key_log_lines, 0);
     assert_eq!(run.shutdown_trials.len(), 10);
-    assert!(
+    assert_eq!(
         run.shutdown_trials
             .iter()
-            .all(|status| *status == Status::Complete)
+            .filter(|status| **status == Status::Complete)
+            .count(),
+        9
+    );
+    assert_eq!(
+        run.shutdown_trials
+            .iter()
+            .filter(|status| **status == Status::Unsupported)
+            .count(),
+        1
     );
     for scenario in ["http1", "https-http1", "https-http2", "websocket"] {
         assert!(
@@ -103,6 +112,31 @@ async fn candidate_records_fidelity_and_hard_limitations() {
             .any(|row| row.scenario == "lifecycle"
                 && row.kind == "active-connection-shutdown"
                 && row.status == Status::Unsupported)
+    );
+}
+
+#[test]
+fn harness_failures_are_reported_after_evidence_is_built() {
+    let mut run = run_with(Vec::new());
+    run.shutdown_trials = vec![Status::Complete; 10];
+    assert_eq!(run.harness_error(), None);
+
+    run.shutdown_trials[4] = Status::Failed;
+    assert_eq!(
+        run.harness_error().as_deref(),
+        Some("shutdown trial 5 failed")
+    );
+
+    run.shutdown_trials[4] = Status::Complete;
+    run.observations.push(Observation::result(
+        "matrix",
+        "traffic",
+        Status::Failed,
+        "deadline exceeded",
+    ));
+    assert_eq!(
+        run.harness_error().as_deref(),
+        Some("matrix traffic observation failed: deadline exceeded")
     );
 }
 
