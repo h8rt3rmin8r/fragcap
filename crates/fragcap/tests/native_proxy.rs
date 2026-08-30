@@ -60,15 +60,17 @@ fn public_native_adapter_runs_real_controlled_http_and_tls_without_leaking_route
     )
     .unwrap();
 
+    // Stopping joins every connection worker and caches its terminal observation.
+    // Sampling before that join races the worker's final HTTPS publication.
+    assert_eq!(
+        lease.stop(Budget::new(Duration::from_secs(2))).status,
+        CleanupStatus::Released
+    );
     let observations = lease
         .observations(Budget::new(Duration::from_secs(1)))
         .unwrap();
     assert!(observations.iter().any(|item| item.protocol == "http"));
     assert!(observations.iter().any(|item| item.protocol == "https"));
-    assert_eq!(
-        lease.stop(Budget::new(Duration::from_secs(2))).status,
-        CleanupStatus::Released
-    );
     assert!(lease
         .cleanup(Budget::new(Duration::from_secs(2)))
         .iter()
