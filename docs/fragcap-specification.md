@@ -2670,13 +2670,16 @@ including a launcher whose entire lifetime is shorter than any
 practical poll interval.
 
 Direct launch is prepared before capture resources open. The immutable value
-carries a canonical absolute executable path, canonical install-root working
-directory, and ordered argument vector as separate fields. An absent install
-root, missing or ambiguous client, absolute stored client, path escape, missing
-file, or non-file is a configuration error. Direct execution creates that exact
-child without a command shell and does not inspect it or retain a second process
-observer. ETW and socket-table attribution remain authoritative for the process
-and its descendants.
+carries a canonical absolute executable path, canonical working directory, and
+ordered argument vector as separate fields. `targets add --exe <absolute-path>`
+stores the executable's parent as the install root and the file name as its
+relative client path. A legacy authored row that already carries an absolute
+client and no install root derives the same two values during preparation. A
+missing or ambiguous client, a relative client with no install root, path escape,
+missing file, or non-file is a configuration error. Direct execution creates
+that exact child without a command shell and does not inspect it or retain a
+second process observer. ETW and socket-table attribution remain authoritative
+for the process and its descendants.
 
 ### 16.5 Environment Inheritance
 
@@ -2865,6 +2868,12 @@ before starting the proxy, creating session CA material, or changing current-use
 trust. For a direct launch, it adds the selected loopback proxy variables to that
 exact child configuration. The run consumes the prepared path, working directory,
 arguments, and environment rather than resolving them again afterward.
+
+The no-handle startup snapshot exposes executable image names, not full paths.
+When any process already has the selected direct client's image name, preflight
+therefore refuses because it cannot prove cold ownership. It does not claim that
+the same-named process is the selected target. Exact path disambiguation would
+require the target-process handle the project deliberately does not open.
 
 The initial backend boundary is named by `--proxy-backend mitmdump`. The backend
 is replaceable by design: the CLI contract, bundle contract, status event stream,

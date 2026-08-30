@@ -9,7 +9,7 @@
 ## Preparation Boundary
 
 - [x] Exact stored target remains authoritative
-- [x] One direct client and one install root are required
+- [x] One direct client and one stored or safely derived install root are required
 - [x] Missing, ambiguous, stale, and escaping paths have named refusals
 - [x] Prepared path, working directory, and arguments cannot be re-resolved after effects
 

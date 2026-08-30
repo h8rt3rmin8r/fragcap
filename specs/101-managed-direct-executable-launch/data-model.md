@@ -16,7 +16,7 @@ Only one variant can exist for a session.
 Fields:
 
 - `executable`: canonical absolute path to an existing file beneath the stored install root.
-- `working_directory`: canonical absolute stored install root.
+- `working_directory`: canonical absolute stored install root, or the parent of a legacy authored absolute executable.
 - `arguments`: ordered operating-system argument values.
 - `environment`: ordered explicit environment additions for this child only.
 
@@ -33,7 +33,7 @@ Invariants:
 The existing `TargetEntry` remains authoritative for:
 
 - stable identity and selector
-- install root
+- install root, derived from an authored absolute executable when needed
 - resolved client launch entries
 - compatibility facts
 

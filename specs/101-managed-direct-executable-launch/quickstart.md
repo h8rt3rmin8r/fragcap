@@ -13,4 +13,4 @@ For a target whose current `direct-exe-cold` compatibility evidence supports sco
 fragcap deep-capture example --launch --trust-ca --bundle example-session
 ```
 
-The direct executable is resolved and validated during preparation. Capture starts it only after the watcher and packet path are armed. Deep Capture applies proxy variables only to that child and its descendants. Warm direct targets, ambiguous launch entries, missing files, and paths outside the stored install root are refused.
+The direct executable is resolved and validated during preparation. An absolute executable authored through `targets add --exe` contributes its parent as the install root. Capture starts it only after the watcher and packet path are armed. Deep Capture applies proxy variables only to that child and its descendants. Warm direct targets, ambiguous launch entries, missing files, and paths outside the stored install root are refused.

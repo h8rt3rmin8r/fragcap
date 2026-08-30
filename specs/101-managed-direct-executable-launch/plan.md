@@ -6,7 +6,7 @@
 
 ## Summary
 
-Add a public `fragcap` managed-launch model that represents Steam protocol and direct-executable launches as immutable variants. Resolve a stored target's direct executable beneath its install root during Capture preparation, retain that exact value through Deep Capture preflight, and execute it after the existing watcher and packet pipeline are armed. Direct execution uses an explicit program, working directory, ordered arguments, and target-scoped environment additions with no command shell. Deep Capture accepts only cold direct launch, applies its loopback proxy environment to the retained launch, and preserves partial cleanup truth if child creation fails.
+Add a public `fragcap` managed-launch model that represents Steam protocol and direct-executable launches as immutable variants. Resolve a stored target's direct executable beneath its install root during Capture preparation, deriving that root from a legacy authored absolute executable when necessary, retain that exact value through Deep Capture preflight, and execute it after the existing watcher and packet pipeline are armed. Direct execution uses an explicit program, working directory, ordered arguments, and target-scoped environment additions with no command shell. Deep Capture accepts only cold direct launch, applies its loopback proxy environment to the retained launch, and preserves partial cleanup truth if child creation fails.
 
 ## Technical Context
 
@@ -41,7 +41,7 @@ Add a public `fragcap` managed-launch model that represents Steam protocol and d
 - **P-7 Wrappers stay thin**: Pass. No wrapper logic is added.
 - **P-8 House standards apply**: Pass. Encoding, formatting, lint, test, license, documentation, MSRV, and full gates remain required.
 - **P-9 The instrument does not lie**: Pass. Ambiguous, missing, escaping, or changed executables are refused. Arguments remain explicit values, and cleanup is reported rather than inferred.
-- **P-10 One path to a target**: Pass. The selected `TargetEntry` remains the only identity and fact owner. Preparation derives from its existing install root and launch entries once.
+- **P-10 One path to a target**: Pass. The selected `TargetEntry` remains the only identity and fact owner. Preparation derives from its launch entries and stored or authored-path-derived install root once.
 - **P-11 The specification describes what shipped**: Pass. Master specification, outline, glossary, security guidance, CLI reference, and changelog change with implementation.
 
 Post-design re-check: passed. The immutable launch enum removes the current CLI-only Steam type from Capture configuration without introducing another target resolver or storage model. No constitution exception or complexity waiver is required.

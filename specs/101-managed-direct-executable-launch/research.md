@@ -14,7 +14,7 @@
 
 ## Decision 2: Resolve beneath the stored install root
 
-**Decision**: Build the direct executable path by joining the single resolved Windows client from `launch_entries` to the stored install root, then normalize and verify that it remains beneath the canonical install root and names a file.
+**Decision**: Build the direct executable path by joining the single resolved Windows client from `launch_entries` to the stored install root, then normalize and verify that it remains beneath the canonical install root and names a file. When `targets add --exe` receives an absolute executable, store its parent as the install root and its file name as the relative client. Existing authored rows that already contain an absolute executable and no root derive the same values during preparation.
 
 **Rationale**: The target entry already owns both facts. This preserves P-10 and refuses traversal or stale paths before capture, proxy, or trust effects.
 
@@ -22,7 +22,7 @@
 
 - Use `executable_hint`. Rejected because it is explicitly a findability hint, not a client identity.
 - Search the machine for the executable. Rejected because it would create a second resolution path and could launch the wrong install.
-- Store a new absolute launch path. Rejected because it duplicates existing identity facts and requires a migration.
+- Add a second absolute launch-path field. Rejected because it duplicates existing identity facts and requires a migration.
 
 ## Decision 3: Explicit process creation, no shell
 
@@ -49,7 +49,7 @@
 
 ## Decision 5: Cold direct launch only for Deep Capture
 
-**Decision**: Classify a non-Steam stored target selected with `--launch` as `direct-exe-cold` only when its resolved client image is absent from the process snapshot, and continue to refuse `direct-exe-warm`.
+**Decision**: Classify a non-Steam stored target selected with `--launch` as `direct-exe-cold` only when its resolved client image is absent from the process snapshot, and continue to refuse `direct-exe-warm`. When the image is already present, issue a named uncertainty refusal rather than claiming that the same-named process is the selected target: the no-handle snapshot cannot compare full paths.
 
 **Rationale**: A child created by the session can inherit its environment. An already-running target cannot be changed retroactively, and claiming otherwise would fabricate routing certainty.
 

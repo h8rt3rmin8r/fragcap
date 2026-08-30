@@ -58,13 +58,13 @@ As an operator or reviewer, I receive explicit launch failures, cleanup results,
 
 ### Edge Cases
 
-- The selected target has no install root, no resolved Windows client, or more than one distinct Windows client.
-- The stored executable is absolute, escapes the install root, names a directory, is missing, or changes after preparation.
+- The selected target has no resolved Windows client, more than one distinct Windows client, or a relative client with no install root.
+- The stored executable escapes the install root, names a directory, is missing, or changes after preparation.
 - The executable or working directory contains spaces, Unicode, or characters meaningful to a command shell.
 - An argument is empty or contains quotes, backslashes, whitespace, or shell metacharacters.
 - The child exits immediately, spawns the final socket owner, or remains running after the bounded observation period.
 - Proxy or trust succeeds but process creation fails.
-- A caller attempts to apply proxy variables to a Steam protocol launch or a warm direct-executable case.
+- A caller attempts to apply proxy variables to a Steam protocol launch, a warm direct-executable case, or a same-named process whose exact path cannot be established by the no-handle process snapshot.
 - The environment already contains proxy variables with different values.
 
 ## Requirements
@@ -74,12 +74,12 @@ As an operator or reviewer, I receive explicit launch failures, cleanup results,
 - **FR-001**: The public `fragcap` library MUST expose one managed-launch preparation and execution surface consumed by Capture and Deep Capture.
 - **FR-002**: Managed launch for a stored direct target MUST resolve exactly one Windows client executable from the existing target entry and MUST NOT create a second target or launch storage shape.
 - **FR-003**: A prepared direct launch MUST carry an exact executable path, explicit working directory, and ordered argument vector as distinct typed values, never as a raw shell command.
-- **FR-004**: The direct executable MUST resolve beneath the stored install root, and preparation MUST reject a missing install root, missing or ambiguous client, absolute stored client, path escape, missing file, or non-file before capture, proxy, trust, or launch effects begin.
+- **FR-004**: The direct executable MUST resolve beneath the stored install root. An authored absolute executable MUST supply its parent as that root, including for an existing legacy row with no stored root. Preparation MUST reject a relative client with no install root, missing or ambiguous client, path escape, missing file, or non-file before capture, proxy, trust, or launch effects begin.
 - **FR-005**: Capture MUST consume the prepared launch only after its existing process watcher and packet capture resources are armed.
 - **FR-006**: Direct launch MUST use operating-system process creation with explicit arguments and MUST NOT invoke a command shell, association handler, script host, or command evaluator.
 - **FR-007**: Launch arguments MUST reach the child in their original order and value, including empty, Unicode, quoted, whitespace-containing, and shell-metacharacter values; logs and reports MUST NOT silently normalize or redact them.
 - **FR-008**: Deep Capture MUST apply its target-scoped proxy environment to the same prepared direct launch retained during preflight and MUST NOT resolve the target, executable, working directory, or arguments again after effects begin.
-- **FR-009**: Direct-executable Deep Capture MUST support only a cold launch owned by the session. A warm direct process MUST be refused before effects because its environment cannot be changed retroactively.
+- **FR-009**: Direct-executable Deep Capture MUST support only a cold launch owned by the session. A warm direct process MUST be refused before effects because its environment cannot be changed retroactively. When the no-handle process snapshot finds only a matching image name, fragcap MUST report that it cannot prove a cold launch rather than claim that the running process is the selected executable.
 - **FR-010**: Direct launch MUST NOT mutate system-wide proxy settings, inject into the target, read target memory, or open a target process for inspection. Existing watcher and attribution mechanisms MUST bind the launched process and descendants.
 - **FR-011**: The selected stored target MUST remain the sole identity and compatibility-fact owner across Capture, Deep Capture, process observation, and fact persistence.
 - **FR-012**: Failures discoverable during launch preparation MUST be reported before mutable effects. A process-creation failure after proxy or trust acquisition MUST preserve a partial session and bounded cleanup truth for every acquired resource.
@@ -110,7 +110,7 @@ As an operator or reviewer, I receive explicit launch failures, cleanup results,
 ## Assumptions
 
 - The direct launch is cold and session-owned; attaching Deep Capture to an already-running direct target remains unsupported because environment changes would not propagate.
-- The install root is the executable's working directory unless the stored launch record later gains an explicitly governed working-directory field.
+- The stored install root is the executable's working directory. For a legacy authored absolute executable with no stored root, its parent is the working directory.
 - Existing launch entries are the source of the client executable. This slice does not reinterpret `executable_hint` as an executable identity or migrate target storage.
 - Existing launch-entry `arguments`, when present in governed target data, are parsed into an explicit argument vector during side-effect-free preparation. No shell syntax is supported.
 - The process returned by operating-system creation is not queried or instrumented. Process lifecycle and descendants remain observed through the existing process watcher.

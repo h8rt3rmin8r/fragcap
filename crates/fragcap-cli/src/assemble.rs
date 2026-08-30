@@ -181,6 +181,7 @@ fn build_launch(
     #[cfg(not(windows))]
     {
         let _ = profile;
+        let _ = stored_target;
         Err(CliError::usage(
             "managed launch (--launch) is only supported on Windows",
         ))

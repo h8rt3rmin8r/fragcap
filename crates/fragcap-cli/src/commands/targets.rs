@@ -1053,6 +1053,25 @@ fn steam_add_metadata(
     )
 }
 
+/// Preserve an authored executable's parent as its install root and store only
+/// the relative file name used for process identity and managed launch.
+///
+/// A bare executable remains a name-only observation. An absolute path carries
+/// enough information to become a managed direct target without adding another
+/// authoring flag or storage shape (P-10).
+fn authored_executable_metadata(executable: &str) -> (Option<String>, String) {
+    let path = Path::new(executable);
+    if path.is_absolute() {
+        if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
+            return (
+                Some(parent.display().to_string()),
+                file_name.to_string_lossy().into_owned(),
+            );
+        }
+    }
+    (None, executable.to_string())
+}
+
 fn add(
     args: &TargetsAddArgs,
     out: &mut dyn Write,
@@ -1165,7 +1184,12 @@ fn add(
     // tool never claims a socket holder the user did not (P-9). To register the exe
     // as the client, answer `--socket-holder yes`.
     let answer = resolve_socket_holder(args, out)?;
-    let launch_entries = match (&args.exe, answer) {
+    let (authored_install_root, authored_executable) = args
+        .exe
+        .as_deref()
+        .map(authored_executable_metadata)
+        .map_or((None, None), |(root, executable)| (root, Some(executable)));
+    let launch_entries = match (authored_executable.as_deref(), answer) {
         (Some(exe), Some(a)) => Some(fragcap::targets::launch_entries_for(a, exe)),
         (Some(exe), None) => Some(fragcap::targets::launch_entries_for(
             SocketHolderAnswer::Unsure,
@@ -1188,7 +1212,7 @@ fn add(
         // `--steam` already observed these; a bare, non-Steam authoring has
         // nothing of the kind distinct from what the user supplied via
         // --name/--exe.
-        install_root: steam_install_root,
+        install_root: steam_install_root.or(authored_install_root),
         evidence,
         detection_scan,
         folder_name: steam_folder_name,

@@ -2275,7 +2275,14 @@ fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError
                 )));
             }
         };
-        Ok(direct_launch_case(process_image_is_running(client)?))
+        if process_image_is_running(client)? {
+            return Err(CliError::usage(format!(
+                "cannot prove a cold direct launch while a process named {client} is already \
+                 running; the no-handle process snapshot cannot distinguish same-named \
+                 executables by path, so close that process and retry"
+            )));
+        }
+        Ok(CompatibilityLaunchCase::DirectExeCold)
     }
 }
 
@@ -2295,14 +2302,6 @@ fn steam_launch_case(steam_running: bool) -> CompatibilityLaunchCase {
         CompatibilityLaunchCase::SteamProtocolWarm
     } else {
         CompatibilityLaunchCase::SteamProtocolCold
-    }
-}
-
-fn direct_launch_case(client_running: bool) -> CompatibilityLaunchCase {
-    if client_running {
-        CompatibilityLaunchCase::DirectExeWarm
-    } else {
-        CompatibilityLaunchCase::DirectExeCold
     }
 }
 
@@ -3916,18 +3915,6 @@ mod tests {
         assert_eq!(
             steam_launch_case(true),
             CompatibilityLaunchCase::SteamProtocolWarm
-        );
-    }
-
-    #[test]
-    fn direct_launch_state_selects_the_exact_compatibility_case() {
-        assert_eq!(
-            direct_launch_case(false),
-            CompatibilityLaunchCase::DirectExeCold
-        );
-        assert_eq!(
-            direct_launch_case(true),
-            CompatibilityLaunchCase::DirectExeWarm
         );
     }
 

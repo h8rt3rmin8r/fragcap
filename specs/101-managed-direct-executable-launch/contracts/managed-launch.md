@@ -4,7 +4,7 @@
 
 `prepare_target_launch(target)` is side-effect-free except for filesystem metadata reads. It returns exactly one prepared launch or a typed refusal. It never starts a process, opens Capture, starts a proxy, changes trust, writes target data, or changes ambient environment.
 
-Steam targets retain the existing Steam protocol request. Direct targets require one resolved Windows client and an install root. The executable must exist as a file beneath that root.
+Steam targets retain the existing Steam protocol request. Direct targets require one resolved Windows client and either an install root or an authored absolute executable whose parent supplies that root. The executable must exist as a file beneath that root.
 
 ## Environment Overlay
 

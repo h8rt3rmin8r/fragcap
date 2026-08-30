@@ -138,10 +138,6 @@ impl DirectExecutableLaunch {
 
 /// Prepare one direct launch from the existing stored target facts.
 pub fn prepare_direct_launch(target: &TargetEntry) -> Result<ManagedLaunch, LaunchConfigError> {
-    let root = target
-        .install_root
-        .as_deref()
-        .ok_or(LaunchConfigError::MissingInstallRoot)?;
     let launches = entry_windows_launch_entries(target);
     let launch = match launches.as_slice() {
         [] => return Err(LaunchConfigError::MissingClient),
@@ -156,18 +152,23 @@ pub fn prepare_direct_launch(target: &TargetEntry) -> Result<ManagedLaunch, Laun
         }
     };
     let client = launch.executable();
-    let relative = Path::new(client);
-    if relative.is_absolute() {
-        return Err(LaunchConfigError::AbsoluteClient(relative.to_path_buf()));
-    }
-    let canonical_root =
-        Path::new(root)
-            .canonicalize()
-            .map_err(|source| LaunchConfigError::Path {
-                path: PathBuf::from(root),
-                source,
-            })?;
-    let candidate = canonical_root.join(relative);
+    let stored_client = Path::new(client);
+    let root = match target.install_root.as_deref() {
+        Some(root) => PathBuf::from(root),
+        None if stored_client.is_absolute() => stored_client
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or(LaunchConfigError::MissingInstallRoot)?,
+        None => return Err(LaunchConfigError::MissingInstallRoot),
+    };
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|source| LaunchConfigError::Path { path: root, source })?;
+    let candidate = if stored_client.is_absolute() {
+        stored_client.to_path_buf()
+    } else {
+        canonical_root.join(stored_client)
+    };
     let executable = candidate
         .canonicalize()
         .map_err(|source| LaunchConfigError::Path {
@@ -276,7 +277,6 @@ pub enum LaunchConfigError {
     MissingInstallRoot,
     MissingClient,
     AmbiguousClient(Vec<String>),
-    AbsoluteClient(PathBuf),
     Path {
         path: PathBuf,
         source: std::io::Error,
@@ -303,11 +303,6 @@ impl fmt::Display for LaunchConfigError {
                 f,
                 "direct managed launch found multiple Windows client executables: {}",
                 clients.join(", ")
-            ),
-            Self::AbsoluteClient(path) => write!(
-                f,
-                "stored client executable must be relative to the install root: {}",
-                path.display()
             ),
             Self::Path { path, source } => write!(
                 f,
@@ -422,6 +417,7 @@ mod tests {
         ))
     }
 
+    #[cfg(windows)]
     #[test]
     fn stored_target_resolves_one_client_beneath_install_root() {
         let root = unique_dir("prepare");
@@ -453,6 +449,27 @@ mod tests {
                 OsString::from("snowman-☃")
             ]
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authored_absolute_client_supplies_its_legacy_install_root() {
+        let root = unique_dir("authored-absolute");
+        fs::create_dir_all(&root).unwrap();
+        let executable = root.join("game.exe");
+        fs::write(&executable, b"fixture").unwrap();
+        let mut entry = target(
+            &root,
+            json!([{ "executable": executable, "role": "client" }]),
+        );
+        entry.install_root = None;
+
+        let launch = prepare_direct_launch(&entry).unwrap();
+        let ManagedLaunch::Direct(direct) = launch else {
+            panic!("expected direct launch");
+        };
+        assert_eq!(direct.working_directory(), root.canonicalize().unwrap());
+        assert_eq!(direct.executable(), executable.canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 
