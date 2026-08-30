@@ -309,6 +309,7 @@ fn deep_capture_requires_explicit_trust_confirmation() {
 }
 
 #[test]
+#[cfg(windows)]
 fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
@@ -333,6 +334,7 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
 }
 
 #[test]
+#[cfg(windows)]
 fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
