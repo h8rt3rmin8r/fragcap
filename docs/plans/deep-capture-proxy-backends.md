@@ -1,12 +1,35 @@
 # Deep Capture proxy backend research
 
-**Status:** research record for issue #214.\
-**Date:** 2026-08-24.\
+**Status:** research record for issues #214 and #253.\
+**Date:** 2026-08-29.\
 **Audience:** maintainers, reviewers, future Deep Capture slice authors.
 
 This document evaluates proxy backend options for Deep Capture. It does not add a dependency, ship a proxy, or define the final feature specification. Its job is to keep the backend decision from being made by convenience alone.
 
 ## Recommendation
+
+### S099 measured decision
+
+The 2026-08-29 Windows spike selected **evaluate the smaller native
+fallback**. The shipped backend remains external `mitmdump`; S099 does not
+add a product dependency.
+
+`hudsucker 0.23.0` passed the controlled HTTP/1.1, HTTPS CONNECT,
+client-facing HTTP/2, WebSocket, HAR-source, CA separation, bounded cache,
+public-API key-log, and ten-run graceful shutdown proofs. Functionality is not
+the blocker. The exact native-tls graph contains 209 registry packages, needs
+multiple transitive compatibility constraints, and has no measured resolution
+that is both advisory-clean and parseable by Rust 1.82's Cargo. The secure
+`time 0.3.47` resolution requires edition-2024 support; the compatible
+`time 0.3.36` resolution carries RUSTSEC-2026-0009. The latest
+`hudsucker 0.25.0` also declares Rust 1.86.
+
+A maintained patch or fork is disproportionate before measuring the already
+identified smaller candidate. The only backend follow-up is
+[#274](https://github.com/h8rt3rmin8r/fragcap/issues/274), an isolated
+`http-mitm-proxy 0.18.0` spike using S099's same traffic and audit contract.
+The full criterion table and reproducible commands are in
+`specs/099-native-proxy-spike/evidence.md`.
 
 Use a staged strategy.
 
@@ -160,6 +183,12 @@ Measurements were taken on 2026-08-24 with `rustc 1.96.0` and `cargo 1.96.0`, us
 | `slinger-mitm = "0.0.5"` | Not measured as graph | GPL-3.0-only | Unknown | Rejected before graph analysis. |
 
 ## Open proof points
+
+S099 closed the proof points below for `hudsucker 0.23.0`. They remain as the
+historical acceptance contract and become the comparison contract for the
+smaller fallback. The Rust 1.82 proof failed for an advisory-clean graph, and
+certificate cache enumeration or explicit invalidation remained unavailable
+through the candidate's public API.
 
 These should become acceptance criteria for the follow-up spike PR:
 

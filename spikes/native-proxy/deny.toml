@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[[licenses.exceptions]]
+allow = ["Apache-2.0"]
+name = "fragcap-native-proxy-spike"
+
+[[licenses.exceptions]]
+allow = ["Apache-2.0"]
+name = "fragcap-native-proxy-audit"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[[bans.deny]]
+name = "windivert"
+
+[[bans.deny]]
+name = "windivert-sys"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
