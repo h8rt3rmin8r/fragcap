@@ -81,9 +81,10 @@ pub mod steam {
 pub mod targets {
     pub use fragcap_targets::readiness::SCANNED_CLEAN_MARKER;
     pub use fragcap_targets::{
-        capture_readiness, engine_summary, entry_windows_clients, export, export_targets, import,
-        import_targets, install_presence, is_row_index, launch_entries_for, launch_is_unresolved,
-        name_divergence, observed_executable, register_candidate, register_candidates, resolve_id,
+        capture_readiness, engine_summary, entry_windows_clients, entry_windows_launch_entries,
+        entry_windows_launch_paths, export, export_targets, import, import_targets,
+        install_presence, is_row_index, launch_entries_for, launch_is_unresolved, name_divergence,
+        observed_executable, register_candidate, register_candidates, resolve_id,
         resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
         sensitivities_summary, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource,
         Classification, ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact,
@@ -179,6 +180,10 @@ pub mod capture {
 /// which lets controlled consumers verify the complete state machine offline.
 #[cfg(feature = "deep-capture")]
 pub mod deep_capture;
+
+/// Managed launch preparation and execution shared by Capture and Deep Capture.
+#[cfg(feature = "targets")]
+pub mod managed_launch;
 
 /// Flow attribution.
 pub mod attr {

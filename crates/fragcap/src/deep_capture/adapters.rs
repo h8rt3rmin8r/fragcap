@@ -92,6 +92,7 @@ pub trait CaptureRunner {
         &mut self,
         config: &SessionConfig,
         target: &PreparedTarget,
+        endpoint: LoopbackEndpoint,
     ) -> Result<PreparedCapture, PreflightRefusal>;
 
     fn run(

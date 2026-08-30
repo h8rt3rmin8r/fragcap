@@ -31,8 +31,8 @@ impl DeepCapture {
         }
         adapters.targets.validate_compatibility(&target, &config)?;
         adapters.artifacts.validate_destination(&config.bundle)?;
-        let capture = adapters.capture.prepare(&config, &target)?;
         let endpoint = adapters.endpoints.select()?;
+        let capture = adapters.capture.prepare(&config, &target, endpoint)?;
         let session_id = adapters.identifiers.next_id("session")?;
         let plan_id = PlanId::new(adapters.identifiers.next_id("plan")?);
         config.deadlines = cap_deadlines(config.deadlines);

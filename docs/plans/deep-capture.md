@@ -138,9 +138,9 @@ The compatibility matrix should be generated from these facts. It belongs in the
 
 Facts should not be refreshed silently if refreshing requires a launch or a trust change. Read-only observations can update opportunistically. Anything that alters launch behavior or trust state requires the same explicit Deep Capture consent as the session itself.
 
-## Managed launch unknowns
+## Managed launch compatibility
 
-Deep Capture depends on whether proxy configuration reaches the process that owns the sockets. That is still not fully understood for Steam-distributed titles.
+Deep Capture depends on whether proxy configuration reaches the process that owns the sockets. Cold direct-executable launch is now the deterministic managed case: fragcap creates the exact stored executable with child-only proxy variables and retains the prepared path, working directory, and arguments across session effects. Steam and publisher handoffs remain compatibility-dependent.
 
 Observed and suspected behavior to measure:
 
@@ -151,7 +151,7 @@ Observed and suspected behavior to measure:
 - A launcher can be the invoked process while a descendant is the socket owner.
 - A handoff can preserve process ancestry but lose environment inheritance, or preserve neither.
 
-This gets its own discovery workstream before Deep Capture depends on managed launch inheritance. The discovery should use locally installed titles that exercise the cases above and should record process events, socket ownership, environment propagation where allowed by the existing posture, and proxy reachability.
+Compatibility calibration records process events, socket ownership, environment propagation where the existing posture permits it, and proxy reachability for the exact launch case.
 
 If a launch path escapes environment scope, fragcap should report that fact and store it. It should not silently promote to system-wide proxy configuration as a workaround.
 

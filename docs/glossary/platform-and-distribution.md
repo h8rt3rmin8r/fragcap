@@ -149,16 +149,18 @@ the client, and emits a profile that passes section 15.4 validation unedited.
 
 ## Managed launch
 
-Starting a title through Steam's protocol handler after fragcap is already
-watching and its capture handle is open, so every process in the launch chain
-produces a start event fragcap observes.
+Starting a stored title after fragcap is already watching and its capture handle
+is open, so every process in the launch chain produces a start event fragcap
+observes. A Steam-anchored target uses the existing protocol handler. A direct
+target uses one exact client path beneath its stored install root, an explicit
+working directory, and an argument vector without a command shell.
 
 {: .matters }
 > Managed launch eliminates the acquisition race: a launcher whose whole lifetime
 > is shorter than any poll interval is still observed, because the watcher is
-> armed before the launch is issued. It requires `game.platform` and
-> `game.app_id` in the profile, and it opens no process handle (constitution
-> P-1).
+> armed before the launch is issued. Direct launch creates the selected child
+> but does not inspect it or retain a second process observer; ETW and the socket
+> table remain authoritative (constitution P-1).
 
 **See also:** [Launcher chain](process-and-attribution.md#launcher-chain),
 [Acquisition timeout](process-and-attribution.md#acquisition-timeout), [Game profile](platform-and-distribution.md#game-profile)

@@ -594,8 +594,16 @@ fn capture_live(
     // whole lifetime is shorter than any poll interval. This is the tier-2 path and
     // is never asserted as run in CI.
     if let Some(request) = &config.launch {
-        emitter.progress(&format!("launching {} through Steam", request.url));
-        if let Err(e) = fragcap::steam::launch(request) {
+        let description = match request {
+            fragcap::managed_launch::ManagedLaunch::Steam(request) => {
+                format!("{} through Steam", request.url)
+            }
+            fragcap::managed_launch::ManagedLaunch::Direct(request) => {
+                request.executable().display().to_string()
+            }
+        };
+        emitter.progress(&format!("launching {description}"));
+        if let Err(e) = request.execute() {
             // The pipeline is already running from arm. Stop and join it so the
             // sinks finalize and no output file is left unclosed, drop the watcher
             // to end the live receiver, and surface the run's loss accounting,

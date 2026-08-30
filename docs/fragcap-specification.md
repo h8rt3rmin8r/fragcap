@@ -1,11 +1,11 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.21-draft \
+**Version:** 0.1.25-draft \
 **Applies-To:** 0.7.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
-**Date:** 2026-08-28 \
+**Date:** 2026-08-30 \
 **Repository:** `github.com/h8rt3rmin8r/fragcap` \
 **License:** Apache-2.0 \
 **Supersedes:** `fragcap-v0.1.0-Spec-Outline.md`
@@ -116,6 +116,7 @@ enforcement.
 | 0.1.22-draft | 2026-08-29 | W. Thompson | **Makes Deep Capture a library-first session capability (issue #252).** Updates sections 8, 13.7, 17.2.1, 25, and 29. The `fragcap` facade now owns side-effect-free preparation, plan-bound authorization, typed lifecycle ordering, evidence classification, append-only fact selection, bounded resource cleanup, immutable terminal reports, and adapter contracts. The CLI maps arguments, supplies the shipped production effect bridges, presents plans and events, and maps terminal status while the same controlled API remains usable without a driver, elevation, game, remote service, or trust mutation. |
 | 0.1.23-draft | 2026-08-29 | W. Thompson | **Records the native proxy backend spike decision (issue #253).** Updates section 29 after an isolated Windows comparison. `hudsucker 0.23.0` passed the controlled protocol, lifecycle, HAR-source, CA-separation, bounded-cache, and client-facing key-log proofs, but its advisory-clean resolved graph is not parseable by Rust 1.82's Cargo and the latest line requires Rust 1.86. The shipped `mitmdump` backend remains unchanged while one smaller native fallback is evaluated. |
 | 0.1.24-draft | 2026-08-30 | W. Thompson | **Closes the native proxy backend comparison (issue #274).** Updates section 29 after the isolated `http-mitm-proxy 0.18.0` fallback spike. The smaller candidate passes HTTP/1.1, client-facing HTTPS and HTTP/2, bounded-cache, CA-separation, and HAR-source proofs, but its exact graph is not parseable by Rust 1.82's Cargo and its public API provides neither client-facing TLS key logging nor bounded ownership of spawned connection tasks. Deep Capture retains the shipped external `mitmdump` backend and opens no further speculative backend path. |
+| 0.1.25-draft | 2026-08-30 | W. Thompson | **Adds managed direct-executable launch (issue #254).** Updates sections 7.1, 16.4, 17.2.1, 19.2, 19.4, and 29. Capture and Deep Capture consume one immutable launch prepared from the selected stored target. A cold direct target uses an exact executable beneath its install root, an explicit working directory and argument vector, and child-only proxy environment additions without a command shell or post-effect re-resolution. Warm direct targets remain refused. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2656,10 +2657,11 @@ operator can find the app id to register.
 
 ### 16.4 Managed Launch
 
-`fragcap capture --target <selector> --launch` starts the title through Steam's
-protocol handler after the process watcher is attached and the capture
-handle is open. The selected target must carry a `steam:<app_id>` anchor; a
-`--process` capture cannot be launched (section 17.2).
+`fragcap capture --target <selector> --launch` starts the stored title after the
+process watcher is attached and the capture handle is open. A target carrying a
+`steam:<app_id>` anchor uses Steam's protocol handler unchanged. A target with no
+platform anchor may instead launch one exact resolved Windows client beneath its
+stored install root. A `--process` capture cannot be launched (section 17.2).
 
 This eliminates the acquisition race entirely. Because fragcap is
 already in the `Watching` state when the launch is issued, every
@@ -2667,8 +2669,14 @@ process in the chain generates a start event that fragcap observes,
 including a launcher whose entire lifetime is shorter than any
 practical poll interval.
 
-Managed launch requires `game.platform` and `game.app_id` in the
-profile. Without them, `--launch` is a configuration error.
+Direct launch is prepared before capture resources open. The immutable value
+carries a canonical absolute executable path, canonical install-root working
+directory, and ordered argument vector as separate fields. An absent install
+root, missing or ambiguous client, absolute stored client, path escape, missing
+file, or non-file is a configuration error. Direct execution creates that exact
+child without a command shell and does not inspect it or retain a second process
+observer. ETW and socket-table attribution remain authoritative for the process
+and its descendants.
 
 ### 16.5 Environment Inheritance
 
@@ -2841,20 +2849,22 @@ fragcap deep-capture <SELECTOR> --launch --calibrate reachability --launch-case 
 fragcap deep-capture <SELECTOR> --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
 ```
 
-The two calibration flags are a pair and are absent from an ordinary Deep Capture invocation. Real calibration initially supports only a cold Steam protocol launch; warm Steam, direct executable, publisher launcher, a declared-versus-observed case mismatch, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
+The two calibration flags are a pair and are absent from an ordinary Deep Capture invocation. Real calibration supports cold Steam protocol and cold direct-executable launches. Warm Steam, warm direct executable, publisher launcher, a declared-versus-observed case mismatch, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
 
 After side-effect-free resolution, launch-state validation, bundle validation, and Capture preparation, calibration emits the complete plan in human or structured form. It then requires an interactive affirmative answer or `--yes`. Preconfirmation never suppresses the plan. JSON and noninteractive runs without `--yes` refuse before mutation. Reachability refuses trust, HAR, and key-log options and never constructs a trust manager. TLS requires current same-case final-client routing and explicit trust intent.
 
 Each phase has finite launch, observation, proxy-shutdown, and cleanup deadlines. A shorter operator-supplied `--wait` or `--duration` becomes the effective bound; a longer value is capped at the calibration maximum. The plan and bundle report those effective values, proxy shutdown and cleanup enforce their displayed bounds, and no advertised deadline is merely descriptive. Structured events include `deep_capture.calibration_plan` before confirmation and `deep_capture.calibration_phase` for transitions and the terminal phase outcome. Existing proxy, trust, launch, application, bundle, cleanup, and completion events remain authoritative for their resources. Outcomes distinguish reached client, launcher only, escaped tree, proxy not reached, no relevant traffic, inconclusive, local CA accepted, explicitly observed certificate pinning, unknown trust, metadata only, unsupported protocol, interruption, and failure. Silence alone never proves a negative routing or pinning fact. Local CA acceptance additionally requires a full HTTPS observation correlated to the final client; launcher traffic cannot establish the selected target's trust behavior.
 
-The first real-target managed path is a Steam protocol launch from a cold Steam
-state. A running Steam process cannot inherit environment changes made in
-fragcap, so a warm Steam protocol launch is refused even when older facts exist
-for that case. Direct-executable launches are also refused because Capture's
-managed-launch surface does not execute them. Deep Capture resolves and retains
-the effective Capture launch configuration during preflight, before starting the
-proxy, creating session CA material, or changing current-user trust; the run
-consumes that prepared configuration rather than resolving it again afterward.
+The supported real-target managed paths are a Steam protocol launch from a cold
+Steam state and a cold direct-executable launch. A running Steam process cannot
+inherit environment changes made in fragcap, so a warm Steam protocol launch is
+refused even when older facts exist for that case. A warm direct target is also
+refused because fragcap cannot retroactively change its environment. Deep Capture
+resolves and retains the effective Capture launch configuration during preflight,
+before starting the proxy, creating session CA material, or changing current-user
+trust. For a direct launch, it adds the selected loopback proxy variables to that
+exact child configuration. The run consumes the prepared path, working directory,
+arguments, and environment rather than resolving them again afterward.
 
 The initial backend boundary is named by `--proxy-backend mitmdump`. The backend
 is replaceable by design: the CLI contract, bundle contract, status event stream,
@@ -3184,6 +3194,7 @@ The following techniques are permitted and used.
 | IP Helper socket tables | Attribution | Read-only system query, no target handle |
 | Process enumeration | Startup snapshot | Query-only access rights, no memory rights |
 | Platform protocol handler | Managed launch | Ordinary application launch |
+| Explicit direct child creation | Managed launch | Operator-selected stored executable, explicit argv and working directory, child-only environment, no shell or target inspection |
 | Local inspection proxy | Deep Capture | Operator-selected local process, scoped to the target session |
 | Target-scoped proxy configuration | Deep Capture routing | Launch-time environment or equivalent explicit configuration, not silent system-wide interception |
 | Local development certificate authority lifecycle | Deep Capture TLS inspection | User-confirmed trust changes with cleanup and audit trail |
@@ -3250,6 +3261,12 @@ operator-visible, reversible through `doctor` cleanup, and logged as structured
 process traces. A Deep Capture implementation that silently changes system-wide
 proxy settings, silently trusts a certificate authority, or leaves residue
 without a cleanup path fails this section even if the packet output is correct.
+
+Managed direct launch is subject to the same gate. Path and identity validation
+finish before mutable effects, proxy variables are passed only to the exact child,
+and the child is not opened for inspection after creation. A process-creation
+failure after proxy or trust acquisition produces a non-complete session and
+bounded cleanup attempts for every acquired resource.
 
 Compatibility calibration is subject to the same gate. Its target, phase, launch case, bounded effects, possible fact writes, and cleanup obligations are displayed before confirmation. Reachability performs no trust mutation, TLS requires prior same-case final-client routing, and neither phase publishes local evidence or changes system proxy settings.
 
@@ -4367,7 +4384,7 @@ to section 6.2.
 | Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | **Resolved 2026-08-24.** Findings are recorded in the proxy-inheritance reports and feed `deep_capture_facts`. |
 | Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | **Resolved 2026-08-25.** A required manifest indexes `.fcapng`, application JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, omissions, sensitivity, and correlation anchors. |
 | Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
-| Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219 | **Resolved 2026-08-26.** `fragcap deep-capture` is the first command path. Its real-target path is a fact-backed cold Steam protocol launch; warm Steam and direct-executable cases are preflight refusals. It validates and retains the effective Capture launch before proxy or trust side effects, refuses unknown compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
+| Q-14 | What is the first functional Deep Capture command path? | Build a narrow MVP over one stored target, known scoped proxy compatibility, explicit trust confirmation, a replaceable `mitmdump` backend boundary, session bundle output, compatibility fact updates, and controlled local verification | #219, #254 | **Resolved 2026-08-30.** `fragcap deep-capture` supports fact-backed cold Steam protocol and cold direct-executable launches. Warm Steam and warm direct cases are preflight refusals. It validates and retains the effective Capture launch before proxy or trust side effects, applies child-only proxy variables to a direct launch, refuses unknown compatibility and system-wide proxy fallback, writes the session bundle and local facts, and verifies with a controlled target path rather than game accounts. |
 | Q-15 | How are supported traffic types and target compatibility presented without guessing? | Publish an exact traffic-family reference and project the selected target's local facts through a read-only detail view | #220 | **Resolved 2026-08-26.** The public reference distinguishes Capture and Deep Capture outcomes for HTTP, HTTPS, WebSocket, non-HTTP TLS, QUIC, UDP, and plaintext traffic. `targets show` renders every local fact with launch case, source, and freshness, preserves conflicts, and reports unknown rather than inferring a title verdict. |
 | Q-16 | How can an unknown target produce the first Deep Capture compatibility evidence without weakening the ordinary safety gate? | Add an explicit, confirmed, bounded measurement workflow with separate reachability and TLS phases | #251 | **Resolved 2026-08-28.** `deep-capture --calibrate` measures one declared launch case, keeps reachability trust-free, gates TLS on current final-client routing, appends only direct observations to the existing store, and records phase and cleanup outcomes in the local bundle. Routing is no longer treated as proof of environment propagation. |
 

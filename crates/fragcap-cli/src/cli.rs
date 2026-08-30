@@ -202,9 +202,9 @@ pub enum ModeArg {
 ///
 /// The optional path anchors (`--path`, `--path-regex`) disambiguate two
 /// processes sharing an image name (the capability the retired `watch` carried).
-/// `--launch` requires the resolved `--target` to carry a launchable platform
-/// anchor; a `--process` capture, or a target with no anchor, cannot be launched
-/// and is refused (exit 2) rather than ignored.
+/// `--launch` requires a stored target with either a Steam anchor or one exact
+/// direct Windows client beneath its install root. A `--process` capture cannot
+/// be launched and is refused (exit 2) rather than ignored.
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target_input").required(true).args(["selector", "target", "id", "process"])))]
 pub struct CaptureArgs {
@@ -354,11 +354,11 @@ pub struct CaptureArgs {
     #[arg(long, value_parser = parse_ring)]
     pub ring: Option<RingWindow>,
 
-    /// Start the target through its platform launcher, then capture it.
+    /// Start the stored target after Capture is armed.
     ///
-    /// Windows only. The target must be Steam anchored; register one with
-    /// `targets add --steam <app_id>`. This describes the stored target, not the
-    /// value given to `--target`, which never accepts a platform app id.
+    /// Windows only. A Steam target uses its protocol handler. A direct target
+    /// uses its exact stored client beneath the install root, with no command
+    /// shell. Raw `--process` targets cannot be launched.
     #[arg(long)]
     pub launch: bool,
 
@@ -401,6 +401,9 @@ pub struct DeepCaptureArgs {
     pub local_db: Option<PathBuf>,
 
     /// Start the target under scoped proxy configuration.
+    ///
+    /// Supports cold Steam protocol and cold direct-executable launches when
+    /// current same-case compatibility evidence reaches the final client.
     #[arg(long)]
     pub launch: bool,
 

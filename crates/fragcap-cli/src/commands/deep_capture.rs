@@ -28,8 +28,9 @@ use fragcap::deep_capture::{
     CompatibilityObservation as Observation, Inspectability,
 };
 use fragcap::targets::{
-    resolve_id, resolve_positional, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store, TargetEntry,
+    entry_windows_clients, resolve_id, resolve_positional, CompatibilityEvidenceSource,
+    CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store,
+    TargetEntry,
 };
 use fragcap::{
     CaptureStats, CapturedPacket, Fidelity, FlowId, FlowKey, FlowRegistry, InterfaceDeclaration,
@@ -267,6 +268,7 @@ struct LibraryTargetAdapter<'a> {
     args: &'a DeepCaptureArgs,
     store: Rc<RefCell<Store>>,
     selected: Rc<RefCell<Option<TargetEntry>>>,
+    selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
 }
 
 impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
@@ -283,8 +285,9 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
                 "resolved target has no local row id",
             )
         })?;
-        let launch_case =
-            launch_case(&target).map_err(|error| library_refusal("launch-case", error))?;
+        let launch_case = effective_launch_case(&target, self.args.controlled_target)
+            .map_err(|error| library_refusal("launch-case", error))?;
+        *self.selected_launch_case.borrow_mut() = Some(launch_case);
         let prepared = fragcap::deep_capture::PreparedTarget {
             id,
             handle: target.handle.clone(),
@@ -637,7 +640,8 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
     fn prepare(
         &mut self,
         config: &fragcap::deep_capture::SessionConfig,
-        _target: &fragcap::deep_capture::PreparedTarget,
+        target: &fragcap::deep_capture::PreparedTarget,
+        endpoint: fragcap::deep_capture::LoopbackEndpoint,
     ) -> Result<fragcap::deep_capture::PreparedCapture, fragcap::deep_capture::PreflightRefusal>
     {
         self.mode = config.mode;
@@ -649,8 +653,19 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 cleanup: config.deadlines.cleanup,
             };
             let capture_args = real_capture_args(self.args, &config.bundle, deadlines);
-            let prepared = capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
+            let mut prepared = capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
                 .map_err(|error| library_refusal("capture-prepare", error))?;
+            if target.launch_case == fragcap::deep_capture::LaunchCase::DirectExeCold {
+                let proxy_url = format!("http://127.0.0.1:{}", endpoint.port);
+                prepared
+                    .with_launch_environment([
+                        ("HTTP_PROXY", proxy_url.as_str()),
+                        ("HTTPS_PROXY", proxy_url.as_str()),
+                        ("ALL_PROXY", proxy_url.as_str()),
+                        ("NO_PROXY", ""),
+                    ])
+                    .map_err(|error| library_refusal("direct-launch-environment", error))?;
+            }
             self.prepared = Some((capture_args, prepared));
         }
         Ok(fragcap::deep_capture::PreparedCapture {
@@ -731,7 +746,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
 
 struct LibraryFactAdapter {
     store: Rc<RefCell<Store>>,
-    selected: Rc<RefCell<Option<TargetEntry>>>,
+    selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     controlled: bool,
 }
@@ -751,11 +766,7 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
                 }
             }
         };
-        let selected = self.selected.borrow();
-        let launch_case = match selected
-            .as_ref()
-            .and_then(|target| launch_case(target).ok())
-        {
+        let launch_case = match *self.selected_launch_case.borrow() {
             Some(value) => value,
             None => {
                 return fragcap::deep_capture::FactWriteStatus::Failed {
@@ -803,6 +814,7 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
 struct LibraryArtifactAdapter<'e, 'w> {
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     selected: Rc<RefCell<Option<TargetEntry>>>,
+    selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     deadlines: CalibrationDeadlines,
 }
@@ -832,8 +844,10 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             version: "unavailable".to_string(),
             executable: None,
         });
-        let launch_case =
-            launch_case(&target).unwrap_or(CompatibilityLaunchCase::SteamProtocolCold);
+        let launch_case = self
+            .selected_launch_case
+            .borrow()
+            .unwrap_or(CompatibilityLaunchCase::SteamProtocolCold);
         let session = DeepCaptureSession {
             session_id: snapshot.session_id.clone(),
             bundle: bundle.to_path_buf(),
@@ -1014,6 +1028,7 @@ struct LibraryEventAdapter<'a, 'e, 'w> {
     args: &'a DeepCaptureArgs,
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     selected: Rc<RefCell<Option<TargetEntry>>>,
+    selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     bundle: PathBuf,
 }
@@ -1091,9 +1106,11 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     .clone();
                 emitter.event(&Event::DeepCaptureLaunch {
                     session_id: session_id.clone(),
-                    launch_case: launch_case(&target)
+                    launch_case: self
+                        .selected_launch_case
+                        .borrow()
                         .map(|value| value.as_str().to_string())
-                        .unwrap_or_else(|_| "unknown".to_string()),
+                        .unwrap_or_else(|| "unknown".to_string()),
                     scoped_proxy: true,
                     target: target.handle,
                 });
@@ -1245,6 +1262,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
 
     let store = Rc::new(RefCell::new(open_local_store(args.local_db.as_deref())?));
     let selected = Rc::new(RefCell::new(None));
+    let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = fragcap::deep_capture::AdapterSet {
@@ -1252,6 +1270,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             args,
             store: Rc::clone(&store),
             selected: Rc::clone(&selected),
+            selected_launch_case: Rc::clone(&selected_launch_case),
         }),
         endpoints: Box::new(LibraryEndpointAdapter),
         clock: Box::new(LibraryClockAdapter {
@@ -1276,13 +1295,14 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         }),
         facts: Box::new(LibraryFactAdapter {
             store: Rc::clone(&store),
-            selected: Rc::clone(&selected),
+            selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             controlled: args.controlled_target,
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
             emitter: Rc::clone(&emitter),
             selected: Rc::clone(&selected),
+            selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             deadlines,
         }),
@@ -1290,6 +1310,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             args,
             emitter: Rc::clone(&emitter),
             selected: Rc::clone(&selected),
+            selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             bundle: bundle.clone(),
         }),
@@ -1303,7 +1324,9 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             .as_ref()
             .expect("preflight retained target")
             .clone();
-        let observed_launch_case = launch_case(&target)?;
+        let observed_launch_case = selected_launch_case
+            .borrow()
+            .expect("preflight retained launch case");
         let plan = CalibrationPlan {
             target: target.handle,
             phase,
@@ -1348,6 +1371,7 @@ fn cli_error_from_library_refusal(refusal: fragcap::deep_capture::PreflightRefus
         | "controlled-target"
         | "compatibility"
         | "routing-prerequisite"
+        | "capture-prepare"
         | "bundle-destination"
         | "reachability-tls-options"
         | "trust-not-authorized" => CliError::usage(refusal.detail),
@@ -2236,7 +2260,33 @@ fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError
     {
         Ok(steam_launch_case(steam_is_running()?))
     } else {
+        let clients = entry_windows_clients(target);
+        let client = match clients.as_slice() {
+            [] => {
+                return Err(CliError::usage(
+                    "direct Deep Capture requires one resolved Windows client executable",
+                ));
+            }
+            [client] => client,
+            _ => {
+                return Err(CliError::usage(format!(
+                    "direct Deep Capture found multiple Windows client executables: {}",
+                    clients.join(", ")
+                )));
+            }
+        };
+        Ok(direct_launch_case(process_image_is_running(client)?))
+    }
+}
+
+fn effective_launch_case(
+    target: &TargetEntry,
+    controlled: bool,
+) -> Result<CompatibilityLaunchCase, CliError> {
+    if controlled {
         Ok(CompatibilityLaunchCase::DirectExeWarm)
+    } else {
+        launch_case(target)
     }
 }
 
@@ -2248,8 +2298,21 @@ fn steam_launch_case(steam_running: bool) -> CompatibilityLaunchCase {
     }
 }
 
+fn direct_launch_case(client_running: bool) -> CompatibilityLaunchCase {
+    if client_running {
+        CompatibilityLaunchCase::DirectExeWarm
+    } else {
+        CompatibilityLaunchCase::DirectExeCold
+    }
+}
+
 #[cfg(windows)]
 fn steam_is_running() -> Result<bool, CliError> {
+    process_image_is_running("steam.exe")
+}
+
+#[cfg(windows)]
+fn process_image_is_running(image: &str) -> Result<bool, CliError> {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
     };
@@ -2264,7 +2327,7 @@ fn steam_is_running() -> Result<bool, CliError> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE || snapshot == 0 {
         return Err(CliError::failure(format!(
-            "cannot determine whether Steam is already running: {}",
+            "cannot determine whether {image} is already running: {}",
             std::io::Error::last_os_error()
         )));
     }
@@ -2277,7 +2340,7 @@ fn steam_is_running() -> Result<bool, CliError> {
         // SAFETY: the snapshot handle is closed exactly once before returning.
         unsafe { CloseHandle(snapshot) };
         return Err(CliError::failure(format!(
-            "cannot enumerate processes while checking Steam state: {error}"
+            "cannot enumerate processes while checking {image}: {error}"
         )));
     }
 
@@ -2287,7 +2350,7 @@ fn steam_is_running() -> Result<bool, CliError> {
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
-        if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case("steam.exe") {
+        if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case(image) {
             // SAFETY: the snapshot handle is closed exactly once before returning.
             unsafe { CloseHandle(snapshot) };
             return Ok(true);
@@ -2302,7 +2365,7 @@ fn steam_is_running() -> Result<bool, CliError> {
                 return Ok(false);
             }
             return Err(CliError::failure(format!(
-                "cannot finish enumerating processes while checking Steam state: {}",
+                "cannot finish enumerating processes while checking {image}: {}",
                 std::io::Error::from_raw_os_error(code as i32)
             )));
         }
@@ -2313,6 +2376,13 @@ fn steam_is_running() -> Result<bool, CliError> {
 fn steam_is_running() -> Result<bool, CliError> {
     Err(CliError::usage(
         "Deep Capture managed Steam launch is only supported on Windows",
+    ))
+}
+
+#[cfg(not(windows))]
+fn process_image_is_running(_image: &str) -> Result<bool, CliError> {
+    Err(CliError::usage(
+        "Deep Capture managed direct launch is only supported on Windows",
     ))
 }
 
@@ -3850,7 +3920,19 @@ mod tests {
     }
 
     #[test]
-    fn real_mvp_accepts_only_a_cold_steam_protocol_launch() {
+    fn direct_launch_state_selects_the_exact_compatibility_case() {
+        assert_eq!(
+            direct_launch_case(false),
+            CompatibilityLaunchCase::DirectExeCold
+        );
+        assert_eq!(
+            direct_launch_case(true),
+            CompatibilityLaunchCase::DirectExeWarm
+        );
+    }
+
+    #[test]
+    fn real_capture_accepts_cold_steam_and_direct_launches() {
         let validate = |launch_case| {
             fragcap::deep_capture::validate_compatibility_prerequisites(
                 fragcap::deep_capture::SessionMode::Capture,
@@ -3860,10 +3942,10 @@ mod tests {
             )
         };
         assert!(validate(CompatibilityLaunchCase::SteamProtocolCold).is_ok());
+        assert!(validate(CompatibilityLaunchCase::DirectExeCold).is_ok());
         for unsupported in [
             CompatibilityLaunchCase::SteamProtocolWarm,
             CompatibilityLaunchCase::DirectExeWarm,
-            CompatibilityLaunchCase::DirectExeCold,
             CompatibilityLaunchCase::PublisherLauncherCold,
         ] {
             assert!(
@@ -3875,7 +3957,7 @@ mod tests {
     }
 
     #[test]
-    fn real_calibration_refuses_unsupported_launch_cases() {
+    fn real_calibration_accepts_a_cold_direct_executable() {
         for mode in [
             fragcap::deep_capture::SessionMode::ReachabilityCalibration,
             fragcap::deep_capture::SessionMode::TlsCalibration,
@@ -3886,7 +3968,10 @@ mod tests {
                 &routing_facts(CompatibilityLaunchCase::DirectExeCold, false),
                 fragcap::deep_capture::LaunchCase::DirectExeCold,
             );
-            assert!(result.is_err(), "{mode:?} must refuse a direct executable");
+            assert!(
+                result.is_ok(),
+                "{mode:?} must accept a cold direct executable"
+            );
         }
     }
 

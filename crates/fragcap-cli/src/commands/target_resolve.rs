@@ -59,6 +59,8 @@ pub(crate) enum StoredRef<'a> {
 pub(crate) struct ResolvedTarget {
     /// The validated one- or two-stage capture profile.
     pub profile: Profile,
+    /// The exact stored row that produced the profile and any managed launch.
+    pub entry: TargetEntry,
     /// Present only when an unresolved target (a `no`/`unsure` authoring answer)
     /// was resolved in observe mode. `None` for a resolved client, a
     /// Steam-anchored target, or a `--process` synthesis.
@@ -204,6 +206,7 @@ pub(crate) fn resolve_stored(
             resolve_from_install(&resolver, &install_root, Some(&app_id), &search, &bundled)?;
         return Ok(ResolvedTarget {
             profile,
+            entry: *entry,
             promotion: None,
         });
     }
@@ -232,7 +235,11 @@ pub(crate) fn resolve_stored(
                 target_id,
                 local_db: local_path.clone(),
             });
-            return Ok(ResolvedTarget { profile, promotion });
+            return Ok(ResolvedTarget {
+                profile,
+                entry: *entry,
+                promotion,
+            });
         }
     }
 
@@ -248,6 +255,7 @@ pub(crate) fn resolve_stored(
             synthesize_named_profile(exe, inputs.path_contains, inputs.path_regex).map(|profile| {
                 ResolvedTarget {
                     profile,
+                    entry: *entry,
                     promotion: None,
                 }
             })

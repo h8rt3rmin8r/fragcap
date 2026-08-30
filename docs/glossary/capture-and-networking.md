@@ -228,7 +228,7 @@ The Deep Capture routing choice that applies proxy settings to the selected
 target session rather than silently changing proxy behavior for the whole
 machine.
 
-The current mechanism applies proxy environment variables only to a managed launch owned by fragcap. If a game is launched under Deep Capture, proxy routing should follow that launched target where the platform permits it. fragcap does not silently widen the configuration to the machine.
+The current mechanism applies proxy environment variables only to a managed launch owned by fragcap. A cold direct-executable launch receives them as explicit child-only environment values on the launch prepared before proxy or trust effects. A Steam or publisher handoff may not inherit them. fragcap does not silently widen the configuration to the machine.
 
 {: .matters }
 > Steam and publisher launchers can re-launch child processes in ways that may

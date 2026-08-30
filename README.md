@@ -122,7 +122,7 @@ roles that separate launcher, client, and platform-service traffic.
 
 - Runs explicit Deep Capture sessions for stored targets with current compatibility evidence, correlating packet and application observations in one session bundle and reporting proxy, trust, omission, and cleanup state.
 
-The command-line tool exposes `capture` and `deep-capture` alongside `targets`, `technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. Most capabilities are also exposed through the public Rust facade. Deep Capture session orchestration is the current exception, tracked for library-first extraction in issue #252.
+The command-line tool exposes `capture` and `deep-capture` alongside `targets`, `technologies`, `steam`, `catalog`, `schema`, `doctor`, and `extcap`. The public Rust facade also exposes Deep Capture session orchestration and managed launch preparation for Steam and stored direct executables.
 
 Start with `fragcap targets`: it lists the capturable titles on your machine and
 ends by naming the next command.
