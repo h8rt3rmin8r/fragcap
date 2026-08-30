@@ -358,7 +358,7 @@ pub async fn run() -> BackendRun {
         Ok(proxy) => proxy,
         Err(error) => return BackendRun::failed("hudsucker", "0.23.0", error),
     };
-    let mut observations = scenario::exercise(proxy.addr, &origins).await;
+    let mut observations = scenario::exercise(proxy.addr, &origins, &ca).await;
     let (first_shutdown, mut proxy_observations) = stop_proxy(proxy).await;
     observations.append(&mut proxy_observations);
     let mut shutdown_trials = vec![first_shutdown];

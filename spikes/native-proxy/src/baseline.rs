@@ -200,6 +200,7 @@ pub async fn run() -> BackendRun {
     let mut observations = scenario::exercise(
         SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
         &origins,
+        &ca,
     )
     .await;
     tokio::time::sleep(Duration::from_millis(250)).await;

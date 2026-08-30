@@ -45,6 +45,11 @@ impl CaMaterial {
         &self.cert_pem
     }
 
+    fn reqwest_certificate(&self) -> reqwest::Certificate {
+        reqwest::Certificate::from_pem(self.cert_pem.as_bytes())
+            .expect("generated CA certificate must remain valid PEM")
+    }
+
     pub fn authority(
         &self,
         cache_size: u64,
@@ -172,7 +177,7 @@ async fn start_https(
     Ok((addr, stop_tx, task))
 }
 
-pub async fn exercise(proxy: SocketAddr, origins: &Origins) -> Vec<Observation> {
+pub async fn exercise(proxy: SocketAddr, origins: &Origins, ca: &CaMaterial) -> Vec<Observation> {
     let mut results = Vec::new();
     let proxy_url = format!("http://{proxy}");
 
@@ -189,7 +194,7 @@ pub async fn exercise(proxy: SocketAddr, origins: &Origins) -> Vec<Observation> 
         request(
             reqwest::Client::builder()
                 .http1_only()
-                .danger_accept_invalid_certs(true),
+                .add_root_certificate(ca.reqwest_certificate()),
             &proxy_url,
             format!("https://localhost:{}/https-http1", origins.https.port()),
             "https-http1",
@@ -200,7 +205,7 @@ pub async fn exercise(proxy: SocketAddr, origins: &Origins) -> Vec<Observation> 
         request(
             reqwest::Client::builder()
                 .http2_prior_knowledge()
-                .danger_accept_invalid_certs(true),
+                .add_root_certificate(ca.reqwest_certificate()),
             &proxy_url,
             format!("https://localhost:{}/https-http2", origins.https.port()),
             "https-http2",
