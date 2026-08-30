@@ -3,10 +3,9 @@ title: Command line
 description: "The checked fragcap command surface: commands, options, values, defaults, sinks, and output routing."
 ---
 
-<Callout title="Current external path">
-This is the v0.8 CLI. Deep Capture remains functional through external
-mitmdump, while trust effects use native Windows APIs and production proxy replacement is tracked by
-[#290](https://github.com/h8rt3rmin8r/fragcap/issues/290) under the complete
+<Callout title="Current native path">
+Deep Capture uses the library-owned native HTTP/1.1, CONNECT, and HTTPS proxy.
+Trust effects use native Windows APIs. Broader completion remains tracked by the
 [#278 roadmap](https://github.com/h8rt3rmin8r/fragcap/issues/278).
 </Callout>
 
@@ -129,7 +128,7 @@ fragcap capture 1 --sink "tcp://127.0.0.1:9000,format=jsonl,payload=false,queue=
 Run Capture with explicit, target-scoped local proxy inspection. Exactly one
 stored-target input is required: positional `SELECTOR`, `--target`, or `--id`.
 The current implementation requires a managed launch, explicit CA trust
-confirmation, an installed `mitmdump`, and compatible cold Steam launch facts.
+confirmation, and compatible launch facts.
 
 ```powershell
 fragcap deep-capture sample-target --launch --trust-ca --har --key-log
@@ -151,7 +150,6 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes. |
-| `--proxy-backend` | `mitmdump` | `mitmdump` | all | Select the local inspection proxy backend. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
 | `--trust-ca` | open | `false` | all | Confirm the fragcap-owned CA trust change needed for HTTPS inspection. |
 | `--wait` | open | none | all | Set the target acquisition timeout. |

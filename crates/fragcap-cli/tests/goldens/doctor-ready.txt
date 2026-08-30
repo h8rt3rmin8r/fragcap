@@ -29,7 +29,7 @@ Integration
                                C:\Users\gamer\AppData\Roaming\Wireshark\extcap
 
 Deep Capture
-  proxy backend          ok    mitmdump Mitmproxy: 12.1.0
+  proxy backend          ok    fragcap-native 0.8.0
   local CA trust         ok    no fragcap Deep Capture CA trust found
   analyzer key log       ok    TLS key-log path is visible to this session
   proxy ports            ok    no stale Deep Capture proxy ports found

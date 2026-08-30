@@ -86,7 +86,6 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--launch-case",
         "--har",
         "--key-log",
-        "--proxy-backend",
     ] {
         assert!(
             out.contains(required),
@@ -94,6 +93,7 @@ fn deep_capture_help_exposes_the_operator_contract() {
         );
     }
     assert!(!out.contains("--controlled-target"));
+    assert!(!out.contains("--proxy-backend"));
 }
 
 #[test]
@@ -492,11 +492,11 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         application_records.last().unwrap()["type"],
         "application.trailer"
     );
-    assert_eq!(application_records.last().unwrap()["records"], 4);
+    assert_eq!(application_records.last().unwrap()["records"], 5);
     assert!(app.contains("\"protocol\":\"http\""));
     assert!(app.contains("\"protocol\":\"https\""));
     assert!(app.contains("\"inspectability\":\"metadata-only\""));
-    assert!(app.contains("\"inspectability\":\"unsupported\""));
+    assert!(app.contains("\"inspectability\":\"full\""));
     assert!(application_records[1..application_records.len() - 1]
         .iter()
         .all(|record| record["process_id"].as_u64().is_some_and(|pid| pid > 0)));
@@ -520,7 +520,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         .unwrap()
         .iter()
         .any(|resource| {
-            resource["resource"] == "proxy-port" && resource["status"] == "succeeded"
+            resource["resource"] == "native-proxy-listener" && resource["status"] == "succeeded"
         }));
     assert!(cleanup["resources"]
         .as_array()
@@ -533,7 +533,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     let pcap = std::fs::read(bundle.join("capture.fcapng")).unwrap();
     assert_eq!(&pcap[0..4], &0x0A0D_0D0Au32.to_le_bytes());
     let pcap_text = String::from_utf8_lossy(&pcap);
-    for ordinal in 1..=4 {
+    for ordinal in 1..=2 {
         assert!(
             pcap_text.contains(&format!("flow_id=flow-{ordinal:08}")),
             "controlled packet truth must carry flow-{ordinal:08}"
@@ -614,7 +614,7 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
     assert!(bundle.join("capture.fcapng").is_file());
     let app = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
     let trailer: serde_json::Value = serde_json::from_str(app.lines().last().unwrap()).unwrap();
-    assert_eq!(trailer["records"], 2);
+    assert_eq!(trailer["records"], 5);
     assert_eq!(trailer["writer_status"], "partial");
 
     let store = Store::open(&local).unwrap();

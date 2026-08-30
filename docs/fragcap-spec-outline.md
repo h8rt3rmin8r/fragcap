@@ -314,7 +314,8 @@ Explicitly deferred capability and the native Deep Capture completion
 contract. Issue #278 owns four ordered milestones. S102 establishes the owned
 `fragcap-proxy` leaf and bounded runtime. S103 completes authenticated admission,
 upstream policy, certificate and trust ownership, raw observations, and the
-controlled protocol lab. HTTP/TLS fidelity, launch/transport
+controlled protocol lab. S104 adds native HTTP/1.1, CONNECT, and HTTPS and
+removes the production external proxy path. Broader protocol and launch/transport
 coverage, recovery, packaging, independent review, and the final #334 gate
 remain open. Additional platforms, richer attribution backends, dissector
 plugins, platform integrations, and analysis tooling remain deferred.
@@ -325,8 +326,7 @@ Tracked unknowns with owners and resolution methods. S100's two turnkey
 candidate results remain historical evidence, but S102 supersedes their external
 end state after native completion became an explicit requirement. The owned
 Tokio/Hyper/rustls/rcgen path uses a measured Rust 1.88 floor, bounded task
-ownership, and the S103 secure foundation;
-external `mitmdump` remains the current CLI path only until #290.
+ownership, the S103 secure foundation, and S104's native production cutover.
 The section also retains the crate-naming reservation and reconnaissance
 findings.
 

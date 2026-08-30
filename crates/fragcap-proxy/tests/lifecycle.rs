@@ -56,16 +56,16 @@ fn start_refuses_an_exhausted_budget_and_an_occupied_endpoint() {
 }
 
 #[test]
-fn identity_is_stable_and_claims_no_inspection() {
+fn identity_is_stable_and_claims_native_http_tls() {
     let backend = NativeProxyBackend::new(config(0, 1));
     let identity = backend.identity();
     assert_eq!(identity.kind, BackendKind::NativeRust);
     assert_eq!(identity.name, "fragcap-native");
     assert_eq!(identity.version, env!("CARGO_PKG_VERSION"));
     assert!(identity.capabilities.foundation_listener);
-    assert!(!identity.capabilities.forwards_upstream);
-    assert!(!identity.capabilities.observes_http);
-    assert!(!identity.capabilities.inspects_tls);
+    assert!(identity.capabilities.forwards_upstream);
+    assert!(identity.capabilities.observes_http);
+    assert!(identity.capabilities.inspects_tls);
 }
 
 #[test]

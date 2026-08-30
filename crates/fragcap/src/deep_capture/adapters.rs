@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use zeroize::Zeroizing;
+
 use super::{
     ArtifactResult, BackendDescriptor, Budget, CleanupResult, CompatibilityFact,
     CompatibilityObservation, DeepCaptureEvent, FactWriteStatus, LaunchCase, LoopbackEndpoint,
@@ -38,6 +40,9 @@ pub trait IdentifierSource {
 
 /// Running proxy resource owned by one coordinator.
 pub trait ProxyLease {
+    /// Child-only route and trust material produced by this exact proxy session.
+    fn route(&self) -> Result<ProxyRoute, StageFailure>;
+
     fn observations(
         &mut self,
         budget: Budget,
@@ -66,6 +71,7 @@ pub trait TrustManager {
     fn acquire(
         &mut self,
         plan: &super::SessionPlan,
+        route: &ProxyRoute,
         budget: Budget,
     ) -> Result<Box<dyn TrustLease>, StageFailure>;
 }
@@ -81,7 +87,7 @@ pub trait LaunchAdapter {
         &mut self,
         target: &PreparedTarget,
         launch_case: LaunchCase,
-        endpoint: LoopbackEndpoint,
+        route: &ProxyRoute,
         budget: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure>;
 }
@@ -98,11 +104,87 @@ pub trait CaptureRunner {
     fn run(
         &mut self,
         prepared: &PreparedCapture,
-        endpoint: LoopbackEndpoint,
+        route: &ProxyRoute,
         budget: Budget,
     ) -> Result<super::CaptureRunResult, StageFailure>;
 
     fn stop(&mut self, budget: Budget) -> CleanupResult;
+}
+
+/// Secret-bearing, session-scoped route passed only to effect adapters.
+pub struct ProxyRoute {
+    endpoint: LoopbackEndpoint,
+    proxy_url: Zeroizing<String>,
+    proxy_authorization: Zeroizing<String>,
+    ca_der: Vec<u8>,
+    ca_sha1_thumbprint: String,
+    authority_generation: u64,
+    controlled_origins: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
+}
+
+impl ProxyRoute {
+    pub fn new(
+        endpoint: LoopbackEndpoint,
+        proxy_url: impl Into<Zeroizing<String>>,
+        proxy_authorization: impl Into<Zeroizing<String>>,
+        ca_der: Vec<u8>,
+        ca_sha1_thumbprint: String,
+        authority_generation: u64,
+        controlled_origins: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
+    ) -> Self {
+        Self {
+            endpoint,
+            proxy_url: proxy_url.into(),
+            proxy_authorization: proxy_authorization.into(),
+            ca_der,
+            ca_sha1_thumbprint,
+            authority_generation,
+            controlled_origins,
+        }
+    }
+
+    pub fn endpoint(&self) -> LoopbackEndpoint {
+        self.endpoint
+    }
+
+    pub fn proxy_url(&self) -> &str {
+        self.proxy_url.as_str()
+    }
+
+    pub fn proxy_authorization(&self) -> &str {
+        self.proxy_authorization.as_str()
+    }
+
+    pub fn ca_der(&self) -> &[u8] {
+        &self.ca_der
+    }
+
+    pub fn ca_sha1_thumbprint(&self) -> &str {
+        &self.ca_sha1_thumbprint
+    }
+
+    pub fn authority_generation(&self) -> u64 {
+        self.authority_generation
+    }
+
+    #[doc(hidden)]
+    pub fn controlled_origins(&self) -> Option<(std::net::SocketAddr, std::net::SocketAddr)> {
+        self.controlled_origins
+    }
+}
+
+impl std::fmt::Debug for ProxyRoute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProxyRoute")
+            .field("endpoint", &self.endpoint)
+            .field("proxy_url", &"[REDACTED]")
+            .field("proxy_authorization", &"[REDACTED]")
+            .field("ca_der_bytes", &self.ca_der.len())
+            .field("ca_sha1_thumbprint", &self.ca_sha1_thumbprint)
+            .field("authority_generation", &self.authority_generation)
+            .finish()
+    }
 }
 
 /// Append-only target-owned compatibility persistence.

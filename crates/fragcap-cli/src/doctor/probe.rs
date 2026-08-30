@@ -11,7 +11,6 @@
 //! A non-Windows build returns a minimal [`Inputs`] so the command still runs
 //! and classifies, which is what keeps `doctor` exercised on any target.
 
-use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -523,22 +522,7 @@ fn manifest_ca_identities(manifests: &[PathBuf]) -> Result<Vec<OwnedCaIdentity>,
         };
         let recorded = normalize_thumbprint(raw)
             .ok_or_else(|| format!("{} contains an invalid CA thumbprint", manifest.display()))?;
-        let material_path = manifest
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(""))
-            .join("mitmproxy")
-            .join("mitmproxy-ca-cert.cer");
-        #[cfg(windows)]
-        let material = if material_path.is_file() {
-            Some(crate::windows_cert::file_thumbprint(&material_path)?)
-        } else {
-            None
-        };
-        #[cfg(not(windows))]
-        let material = {
-            let _ = material_path;
-            None
-        };
+        let material = None;
         let identity = OwnedCaIdentity { recorded, material };
         if let Some(existing) = identities
             .iter_mut()
@@ -802,92 +786,13 @@ pub(crate) fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn proxy_backend_status() -> (Option<ProxyBackendInfo>, Option<String>) {
-    let Some(path) = find_on_path("mitmdump") else {
-        return (None, None);
-    };
-    match command_stdout_with_timeout(
-        std::process::Command::new(&path)
-            .arg("--version")
-            .stderr(std::process::Stdio::null()),
-        std::time::Duration::from_secs(2),
-    ) {
-        Ok((status, stdout)) if status.success() => {
-            let text = String::from_utf8_lossy(&stdout);
-            let first = text
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("version undetermined")
-                .trim()
-                .to_string();
-            (
-                Some(ProxyBackendInfo {
-                    name: "mitmdump".to_string(),
-                    version: Some(first),
-                }),
-                None,
-            )
-        }
-        Ok((status, _stdout)) => (
-            None,
-            Some(format!(
-                "mitmdump found at {} but `mitmdump --version` exited {}",
-                path.display(),
-                status
-            )),
-        ),
-        Err(err) => (
-            None,
-            Some(format!(
-                "mitmdump found at {} but version probing failed: {err}",
-                path.display()
-            )),
-        ),
-    }
-}
-
-fn command_stdout_with_timeout(
-    command: &mut std::process::Command,
-    timeout: std::time::Duration,
-) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
-    let mut child = command
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| err.to_string())?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    pipe.read_to_end(&mut stdout)
-                        .map_err(|err| err.to_string())?;
-                }
-                return Ok((status, stdout));
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("timed out after {} ms", timeout.as_millis()));
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            Err(err) => return Err(err.to_string()),
-        }
-    }
-}
-
-fn find_on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let candidates = std::env::split_paths(&path).flat_map(|dir| {
-        #[cfg(windows)]
-        {
-            vec![dir.join(format!("{program}.exe")), dir.join(program)]
-        }
-        #[cfg(not(windows))]
-        {
-            vec![dir.join(program)]
-        }
-    });
-    candidates.into_iter().find(|path| path.is_file())
+    (
+        Some(ProxyBackendInfo {
+            name: "fragcap-native".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }),
+        None,
+    )
 }
 
 /// Gather the environment facts for `doctor`.

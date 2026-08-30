@@ -13,7 +13,7 @@
 {"section":"Tracing","name":"process events","detail":"process-event session available","status":"ok"}
 {"section":"Interfaces","name":"adapter","detail":"Ethernet  192.0.2.10","status":"ok"}
 {"section":"Integration","name":"analyzer extcap","detail":"installed for the current user in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok"}
-{"section":"Deep Capture","name":"proxy backend","detail":"mitmdump Mitmproxy: 12.1.0","status":"ok"}
+{"section":"Deep Capture","name":"proxy backend","detail":"fragcap-native 0.8.0","status":"ok"}
 {"section":"Deep Capture","name":"local CA trust","detail":"no fragcap Deep Capture CA trust found","status":"ok"}
 {"section":"Deep Capture","name":"analyzer key log","detail":"TLS key-log path is visible to this session","status":"ok"}
 {"section":"Deep Capture","name":"proxy ports","detail":"no stale Deep Capture proxy ports found","status":"ok"}

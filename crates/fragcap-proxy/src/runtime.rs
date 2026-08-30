@@ -2,18 +2,28 @@
 
 use std::cmp::min;
 use std::net::TcpListener as StdTcpListener;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant as StdInstant};
 
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder;
-use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::{timeout, Instant};
 
-use crate::{CapabilityProof, SessionCapability, CAPABILITY_BYTES};
+use crate::http1::{
+    read_authenticated_request, read_request, serve_http, HttpRun, ObservationContext,
+};
+use crate::tls::{accept_client_tls, client_server_config_for, connect_verified_tls};
+use crate::{connect_upstream, ProtocolError};
+use crate::{
+    CapabilityProof, DestinationPolicy, LeafCache, SessionCapability, SessionCertificateAuthority,
+};
+
+static NEXT_AUTHORITY_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 use crate::{
     BackendCapabilities, BackendIdentity, BackendKind, LifecycleState, NativeProxyConfig,
@@ -22,11 +32,27 @@ use crate::{
 
 pub struct NativeProxyBackend {
     config: NativeProxyConfig,
+    destination_policy: Option<DestinationPolicy>,
+    tls_client_config: Option<Arc<rustls::ClientConfig>>,
 }
 
 impl NativeProxyBackend {
     pub fn new(config: NativeProxyConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            destination_policy: None,
+            tls_client_config: None,
+        }
+    }
+
+    pub fn with_destination_policy(mut self, policy: DestinationPolicy) -> Self {
+        self.destination_policy = Some(policy);
+        self
+    }
+
+    pub fn with_tls_client_config(mut self, config: Arc<rustls::ClientConfig>) -> Self {
+        self.tls_client_config = Some(config);
+        self
     }
 
     pub fn identity(&self) -> BackendIdentity {
@@ -36,9 +62,9 @@ impl NativeProxyBackend {
             version: env!("CARGO_PKG_VERSION"),
             capabilities: BackendCapabilities {
                 foundation_listener: true,
-                forwards_upstream: false,
-                observes_http: false,
-                inspects_tls: false,
+                forwards_upstream: true,
+                observes_http: true,
+                inspects_tls: true,
             },
         }
     }
@@ -104,14 +130,52 @@ impl NativeProxyBackend {
         let capability = SessionCapability::generate()
             .map_err(|error| StartError::new("capability-generation-failed", error.to_string()))?;
         let capability_proof = capability.proof();
+        let generation = NEXT_AUTHORITY_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let certificate_authority = Arc::new(
+            SessionCertificateAuthority::generate(
+                generation,
+                std::time::SystemTime::now(),
+                Duration::from_secs(24 * 60 * 60),
+            )
+            .map_err(|error| StartError::new(error.code, error.detail))?,
+        );
+        let ca_der = certificate_authority.der().to_vec();
+        let ca_sha1_thumbprint = certificate_authority.sha1_thumbprint().to_string();
+        let ca_sha256_fingerprint = certificate_authority.sha256_fingerprint().to_string();
+        let leaf_cache = Arc::new(Mutex::new(
+            LeafCache::new(
+                self.config.protocol.leaf_cache_entries,
+                self.config.protocol.leaf_cache_bytes,
+                self.config.protocol.leaf_lifetime,
+                generation,
+            )
+            .map_err(|error| StartError::new(error.code, error.detail))?,
+        ));
+        let tls_client_config = match self.tls_client_config.clone() {
+            Some(config) => config,
+            None => crate::native_tls_client_config()
+                .map_err(|error| StartError::new(error.code, error.detail))?,
+        };
         let (commands, receiver) = mpsc::channel(1);
         let (completion_send, completion) = std_mpsc::sync_channel(1);
         let config = self.config.clone();
+        let destination_policy = self
+            .destination_policy
+            .clone()
+            .unwrap_or_else(|| DestinationPolicy::new(endpoint));
+        let services = RuntimeServices {
+            endpoint,
+            config,
+            capability,
+            destination_policy,
+            certificate_authority,
+            leaf_cache,
+            tls_client_config,
+        };
         let worker = thread::Builder::new()
             .name("fragcap-native-proxy".to_string())
             .spawn(move || {
-                let report =
-                    runtime.block_on(run(listener, endpoint, config, capability, receiver));
+                let report = runtime.block_on(run(listener, services, receiver));
                 drop(runtime);
                 let _ = completion_send.send(report.clone());
                 report
@@ -131,6 +195,10 @@ impl NativeProxyBackend {
             pending_report: None,
             last_observation: RuntimeObservation::running(endpoint),
             capability_proof,
+            ca_der,
+            ca_sha1_thumbprint,
+            ca_sha256_fingerprint,
+            authority_generation: generation,
         })
     }
 }
@@ -148,11 +216,40 @@ pub struct NativeProxyLease {
     pending_report: Option<ShutdownReport>,
     last_observation: RuntimeObservation,
     capability_proof: CapabilityProof,
+    ca_der: Vec<u8>,
+    ca_sha1_thumbprint: String,
+    ca_sha256_fingerprint: String,
+    authority_generation: u64,
 }
 
 impl NativeProxyLease {
+    pub fn endpoint(&self) -> std::net::SocketAddr {
+        self.last_observation.endpoint
+    }
+
     pub fn capability_proof(&self) -> CapabilityProof {
         self.capability_proof.clone()
+    }
+
+    pub fn ca_der(&self) -> &[u8] {
+        &self.ca_der
+    }
+
+    pub fn ca_sha1_thumbprint(&self) -> &str {
+        &self.ca_sha1_thumbprint
+    }
+
+    pub fn ca_sha256_fingerprint(&self) -> &str {
+        &self.ca_sha256_fingerprint
+    }
+
+    pub fn authority_generation(&self) -> u64 {
+        self.authority_generation
+    }
+
+    pub fn proxy_url(&self) -> zeroize::Zeroizing<String> {
+        self.capability_proof
+            .proxy_url(self.last_observation.endpoint)
     }
 
     pub fn observation(&mut self, budget: Duration) -> Result<RuntimeObservation, ObserveError> {
@@ -239,55 +336,424 @@ impl Drop for NativeProxyLease {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum ConnectionOutcome {
-    Completed,
-    Failed,
-    AuthenticationRefused,
+    Completed(HttpRun),
+    Failed(HttpRun),
+    AuthenticationRefused(ProtocolError),
+}
+
+#[derive(Clone)]
+struct RuntimeServices {
+    endpoint: std::net::SocketAddr,
+    config: NativeProxyConfig,
+    capability: SessionCapability,
+    destination_policy: DestinationPolicy,
+    certificate_authority: Arc<SessionCertificateAuthority>,
+    leaf_cache: Arc<Mutex<LeafCache>>,
+    tls_client_config: Arc<rustls::ClientConfig>,
+}
+
+#[derive(Clone, Copy)]
+struct ConnectionIdentity {
+    id: u64,
+    peer: std::net::SocketAddr,
+    local: std::net::SocketAddr,
 }
 
 async fn connection_task(
     mut stream: TcpStream,
     mut shutdown: watch::Receiver<bool>,
-    buffer_bytes: usize,
-    capability: SessionCapability,
+    services: RuntimeServices,
+    identity: ConnectionIdentity,
     _permit: OwnedSemaphorePermit,
 ) -> ConnectionOutcome {
-    let mut proof = [0_u8; CAPABILITY_BYTES];
-    let authenticated = tokio::select! {
-        _ = shutdown.changed() => false,
-        result = timeout(Duration::from_secs(1), stream.read_exact(&mut proof)) => {
-            matches!(result, Ok(Ok(_))) && capability.authenticates(&proof)
+    let config = &services.config;
+    let capability = &services.capability;
+    let policy = &services.destination_policy;
+    let connection_id = identity.id;
+    let peer = identity.peer;
+    let local = identity.local;
+    let first = tokio::select! {
+        _ = shutdown.changed() => {
+            return ConnectionOutcome::Failed(HttpRun {
+                observations: Vec::new(),
+                accounting: Default::default(),
+                failure: Some(ProtocolError::new("connection-cancelled", "runtime is stopping")),
+            });
+        }
+        result = read_authenticated_request(&mut stream, capability, config.protocol_limits()) => result,
+    };
+    let first = match first {
+        Ok(Some(first)) => first,
+        Ok(None) => {
+            return ConnectionOutcome::AuthenticationRefused(ProtocolError::new(
+                "proxy-auth-required",
+                "client closed before proxy authorization",
+            ))
+        }
+        Err(error) if error.authentication_refused => {
+            return ConnectionOutcome::AuthenticationRefused(error)
+        }
+        Err(error) => {
+            return ConnectionOutcome::Failed(HttpRun {
+                observations: Vec::new(),
+                accounting: Default::default(),
+                failure: Some(error),
+            })
         }
     };
-    if !authenticated {
-        return ConnectionOutcome::AuthenticationRefused;
+    if first.is_connect() {
+        let authority = first.authority().clone();
+        let upstream = match connect_verified_tls(
+            authority.clone(),
+            policy.clone(),
+            config.protocol.clone(),
+            Arc::clone(&services.tls_client_config),
+        )
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                let protocol = error;
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: vec![connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        Some(protocol.code),
+                    )],
+                    accounting: crate::ProtocolAccounting {
+                        requests: 1,
+                        connect_requests: 1,
+                        policy_refused: u64::from(protocol.policy_refused),
+                        ..Default::default()
+                    },
+                    failure: Some(protocol),
+                });
+            }
+        };
+        let upstream_tls = tls_negotiation(
+            crate::TlsBoundary::Upstream,
+            &authority,
+            upstream.protocol_version(),
+            upstream.alpn_protocol(),
+        );
+        if let Err(error) = stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+        {
+            return ConnectionOutcome::Failed(HttpRun {
+                observations: Vec::new(),
+                accounting: Default::default(),
+                failure: Some(ProtocolError::new(
+                    "connect-response-failed",
+                    error.to_string(),
+                )),
+            });
+        }
+        let server_config = {
+            let mut cache = services.leaf_cache.lock().await;
+            match client_server_config_for(&authority, &services.certificate_authority, &mut cache)
+            {
+                Ok(config) => config,
+                Err(error) => {
+                    return ConnectionOutcome::Failed(HttpRun {
+                        observations: vec![connect_observation(
+                            &config.session_id,
+                            connection_id,
+                            peer,
+                            local,
+                            &first,
+                            Some(error.code),
+                        )],
+                        accounting: crate::ProtocolAccounting {
+                            requests: 1,
+                            connect_requests: 1,
+                            upstream_tls_completed: 1,
+                            ..Default::default()
+                        },
+                        failure: Some(error),
+                    });
+                }
+            }
+        };
+        let mut client_tls =
+            match accept_client_tls(stream, &authority, server_config, config.protocol_limits())
+                .await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    return ConnectionOutcome::Failed(HttpRun {
+                        observations: vec![
+                            connect_observation(
+                                &config.session_id,
+                                connection_id,
+                                peer,
+                                local,
+                                &first,
+                                None,
+                            ),
+                            tls_observation(
+                                &config.session_id,
+                                connection_id,
+                                peer,
+                                local,
+                                tls_negotiation(crate::TlsBoundary::Client, &authority, None, None),
+                                Some(error.code),
+                            ),
+                        ],
+                        accounting: crate::ProtocolAccounting {
+                            requests: 1,
+                            responses: 1,
+                            connect_requests: 1,
+                            upstream_tls_completed: 1,
+                            timed_out: u64::from(error.timed_out),
+                            ..Default::default()
+                        },
+                        failure: Some(error),
+                    });
+                }
+            };
+        let client_tls_facts = tls_negotiation(
+            crate::TlsBoundary::Client,
+            &authority,
+            client_tls.get_ref().1.protocol_version(),
+            client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec),
+        );
+        let inner = match read_request(&mut client_tls, config.protocol_limits()).await {
+            Ok(Some(request)) if !request.is_connect() => request,
+            Ok(Some(_)) => {
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: Vec::new(),
+                    accounting: Default::default(),
+                    failure: Some(ProtocolError::new(
+                        "nested-connect-refused",
+                        "nested CONNECT is not supported",
+                    )),
+                })
+            }
+            Ok(None) => {
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: Vec::new(),
+                    accounting: Default::default(),
+                    failure: Some(ProtocolError::new(
+                        "client-tls-no-http",
+                        "client TLS ended before an HTTP request",
+                    )),
+                })
+            }
+            Err(error) => {
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: Vec::new(),
+                    accounting: Default::default(),
+                    failure: Some(error),
+                })
+            }
+        };
+        let tunnel_authority = authority.clone();
+        let mut first_upstream = Some(upstream);
+        let limits = config.protocol.clone();
+        let session_id = config.session_id.clone();
+        let mut run = serve_http(
+            client_tls,
+            inner,
+            capability,
+            &limits,
+            ObservationContext {
+                session_id: &session_id,
+                connection_id,
+                client_peer: peer,
+                proxy_local: local,
+                protocol: "https",
+            },
+            false,
+            |requested| {
+                let existing = first_upstream.take();
+                let expected = tunnel_authority.clone();
+                let policy = policy.clone();
+                let limits = limits.clone();
+                let tls_client_config = Arc::clone(&services.tls_client_config);
+                async move {
+                    if requested != expected {
+                        return Err(ProtocolError::new(
+                            "tls-tunnel-authority-mismatch",
+                            "inner HTTP authority differs from CONNECT authority",
+                        ));
+                    }
+                    match existing {
+                        Some(stream) => Ok(stream),
+                        None => {
+                            connect_verified_tls(requested, policy, limits, tls_client_config).await
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+        run.accounting.connect_requests = run.accounting.connect_requests.saturating_add(1);
+        run.accounting.client_tls_completed = run.accounting.client_tls_completed.saturating_add(1);
+        run.accounting.upstream_tls_completed =
+            run.accounting.upstream_tls_completed.saturating_add(1);
+        run.observations.splice(
+            0..0,
+            [
+                connect_observation(&config.session_id, connection_id, peer, local, &first, None),
+                tls_observation(
+                    &config.session_id,
+                    connection_id,
+                    peer,
+                    local,
+                    client_tls_facts,
+                    None,
+                ),
+                tls_observation(
+                    &config.session_id,
+                    connection_id,
+                    peer,
+                    local,
+                    upstream_tls,
+                    None,
+                ),
+            ],
+        );
+        return if run.failure.is_some() {
+            ConnectionOutcome::Failed(run)
+        } else {
+            ConnectionOutcome::Completed(run)
+        };
     }
-    let mut buffer = vec![0_u8; buffer_bytes];
-    tokio::select! {
-        changed = shutdown.changed() => {
-            if changed.is_err() {
-                ConnectionOutcome::Failed
-            } else {
-                ConnectionOutcome::Completed
+    let session_id = config.session_id.clone();
+    let limits = config.protocol.clone();
+    let upstream_budgets = limits.upstream;
+    let run = serve_http(
+        stream,
+        first,
+        capability,
+        &limits,
+        ObservationContext {
+            session_id: &session_id,
+            connection_id,
+            client_peer: peer,
+            proxy_local: local,
+            protocol: "http",
+        },
+        true,
+        |authority| {
+            let policy = policy.clone();
+            async move {
+                connect_upstream(&authority, &policy, upstream_budgets)
+                    .await
+                    .map_err(|error| {
+                        let mut protocol = ProtocolError::new(error.code, error.detail);
+                        protocol.policy_refused =
+                            matches!(error.stage, crate::UpstreamStage::Policy);
+                        protocol
+                    })
             }
-        }
-        result = stream.read(&mut buffer) => {
-            match result {
-                Ok(_) => ConnectionOutcome::Completed,
-                Err(_) => ConnectionOutcome::Failed,
-            }
-        }
+        },
+    )
+    .await;
+    if run.failure.is_some() {
+        ConnectionOutcome::Failed(run)
+    } else {
+        ConnectionOutcome::Completed(run)
+    }
+}
+
+fn connect_observation(
+    session_id: &str,
+    connection_id: u64,
+    peer: std::net::SocketAddr,
+    local: std::net::SocketAddr,
+    request: &crate::http1::RequestHead,
+    reason: Option<&str>,
+) -> crate::ProxyObservation {
+    crate::ProxyObservation {
+        session_id: session_id.to_string(),
+        connection_id,
+        request_ordinal: 1,
+        client_peer: peer,
+        proxy_local: local,
+        timestamp_ns: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        protocol: "connect".to_string(),
+        method: Some(request.method().to_string()),
+        url: Some(request.url().to_string()),
+        status: reason.is_none().then_some(200),
+        inspectability: "metadata-only",
+        reason: reason.map(ToOwned::to_owned),
+        tls: None,
+        transformations: vec!["proxy-authorization-removed"],
+    }
+}
+
+fn tls_observation(
+    session_id: &str,
+    connection_id: u64,
+    peer: std::net::SocketAddr,
+    local: std::net::SocketAddr,
+    tls: crate::TlsNegotiation,
+    reason: Option<&str>,
+) -> crate::ProxyObservation {
+    crate::ProxyObservation {
+        session_id: session_id.to_string(),
+        connection_id,
+        request_ordinal: 1,
+        client_peer: peer,
+        proxy_local: local,
+        timestamp_ns: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        protocol: "tls".to_string(),
+        method: None,
+        url: None,
+        status: None,
+        inspectability: if reason.is_none() {
+            "metadata-only"
+        } else {
+            "inconclusive"
+        },
+        reason: reason.map(ToOwned::to_owned),
+        tls: Some(tls),
+        transformations: Vec::new(),
+    }
+}
+
+fn tls_negotiation(
+    boundary: crate::TlsBoundary,
+    authority: &crate::DestinationAuthority,
+    version: Option<rustls::ProtocolVersion>,
+    alpn: Option<Vec<u8>>,
+) -> crate::TlsNegotiation {
+    crate::TlsNegotiation {
+        boundary,
+        requested_identity: authority.lookup_host(),
+        version: version.map(|value| match value {
+            rustls::ProtocolVersion::TLSv1_2 => "TLS1.2".to_string(),
+            rustls::ProtocolVersion::TLSv1_3 => "TLS1.3".to_string(),
+            other => format!("{other:?}"),
+        }),
+        alpn,
     }
 }
 
 async fn run(
     listener: TcpListener,
-    endpoint: std::net::SocketAddr,
-    config: NativeProxyConfig,
-    capability: SessionCapability,
+    services: RuntimeServices,
     mut commands: mpsc::Receiver<Command>,
 ) -> ShutdownReport {
+    let endpoint = services.endpoint;
+    let config = &services.config;
     let permits = Arc::new(Semaphore::new(config.max_connections()));
     let (shutdown_send, shutdown_receive) = watch::channel(false);
     let mut tasks = JoinSet::new();
@@ -295,7 +761,11 @@ async fn run(
     let mut next_connection_id = 1_u64;
     let stop_budget = loop {
         while let Some(result) = tasks.try_join_next() {
-            account_join(&mut observation, result);
+            account_join(
+                &mut observation,
+                result,
+                config.protocol_limits().max_observations,
+            );
         }
         observation.live_connections = config
             .max_connections()
@@ -320,7 +790,11 @@ async fn run(
             }
             joined = tasks.join_next(), if !tasks.is_empty() => {
                 if let Some(result) = joined {
-                    account_join(&mut observation, result);
+                    account_join(
+                        &mut observation,
+                        result,
+                        config.protocol_limits().max_observations,
+                    );
                     observation.live_connections = config
                         .max_connections()
                         .saturating_sub(permits.available_permits());
@@ -328,13 +802,13 @@ async fn run(
             }
             accepted = listener.accept() => {
                 match accepted {
-                    Ok((stream, _peer)) => {
+                    Ok((stream, peer)) => {
                         match Arc::clone(&permits).try_acquire_owned() {
                             Ok(permit) => {
                                 let connection_id = next_connection_id;
                                 let connection_shutdown = shutdown_receive.clone();
-                                let buffer_bytes = config.per_connection_buffer_bytes();
-                                let connection_capability = capability.clone();
+                                let connection_services = services.clone();
+                                let local = stream.local_addr().unwrap_or(endpoint);
                                 next_connection_id = next_connection_id.saturating_add(1);
                                 observation.accepted_connections = observation.accepted_connections.saturating_add(1);
                                 observation.live_connections = config
@@ -347,8 +821,8 @@ async fn run(
                                     let outcome = connection_task(
                                         stream,
                                         connection_shutdown,
-                                        buffer_bytes,
-                                        connection_capability,
+                                        connection_services,
+                                        ConnectionIdentity { id: connection_id, peer, local },
                                         permit,
                                     ).await;
                                     (connection_id, outcome)
@@ -376,7 +850,13 @@ async fn run(
     drop(listener);
     let _ = shutdown_send.send(true);
     let drain_budget = min(stop_budget, config.shutdown_timeout());
-    drain_tasks(&mut tasks, &mut observation, drain_budget).await;
+    drain_tasks(
+        &mut tasks,
+        &mut observation,
+        drain_budget,
+        config.protocol_limits().max_observations,
+    )
+    .await;
     observation.live_connections = 0;
     observation.state = LifecycleState::Stopped;
 
@@ -404,6 +884,7 @@ async fn drain_tasks(
     tasks: &mut JoinSet<(u64, ConnectionOutcome)>,
     observation: &mut RuntimeObservation,
     budget: Duration,
+    max_observations: usize,
 ) {
     let deadline = Instant::now() + budget;
     while !tasks.is_empty() {
@@ -412,7 +893,7 @@ async fn drain_tasks(
             break;
         }
         match timeout(remaining, tasks.join_next()).await {
-            Ok(Some(result)) => account_join(observation, result),
+            Ok(Some(result)) => account_join(observation, result, max_observations),
             Ok(None) => break,
             Err(_) => break,
         }
@@ -435,24 +916,39 @@ async fn drain_tasks(
 fn account_join(
     observation: &mut RuntimeObservation,
     result: Result<(u64, ConnectionOutcome), JoinError>,
+    max_observations: usize,
 ) {
     observation.live_connections = observation.live_connections.saturating_sub(1);
     match result {
-        Ok((_id, ConnectionOutcome::Completed)) => {
+        Ok((_id, ConnectionOutcome::Completed(run))) => {
             observation.authenticated_connections =
                 observation.authenticated_connections.saturating_add(1);
             observation.completed_connections = observation.completed_connections.saturating_add(1);
+            merge_protocol(observation, run, max_observations);
         }
-        Ok((_id, ConnectionOutcome::AuthenticationRefused)) => {
+        Ok((_id, ConnectionOutcome::AuthenticationRefused(error))) => {
             observation.authentication_refused =
                 observation.authentication_refused.saturating_add(1);
             observation.completed_connections = observation.completed_connections.saturating_add(1);
-        }
-        Ok((id, ConnectionOutcome::Failed)) => {
-            observation.failed_connections = observation.failed_connections.saturating_add(1);
+            observation.protocol.parse_refused =
+                observation.protocol.parse_refused.saturating_add(1);
             observation.failures.push(RuntimeFailure {
-                code: "connection-io-failed",
-                detail: "connection closed after an I/O failure".to_string(),
+                code: error.code,
+                detail: error.detail,
+                connection_id: None,
+            });
+        }
+        Ok((id, ConnectionOutcome::Failed(run))) => {
+            observation.authenticated_connections =
+                observation.authenticated_connections.saturating_add(1);
+            observation.failed_connections = observation.failed_connections.saturating_add(1);
+            let failure = run.failure.clone();
+            merge_protocol(observation, run, max_observations);
+            let failure = failure
+                .unwrap_or_else(|| ProtocolError::new("connection-io-failed", "connection failed"));
+            observation.failures.push(RuntimeFailure {
+                code: failure.code,
+                detail: failure.detail,
                 connection_id: Some(id),
             });
         }
@@ -460,6 +956,62 @@ fn account_join(
             observation.failed_connections = observation.failed_connections.saturating_add(1);
             observation.failures.push(join_failure(error, None));
         }
+    }
+}
+
+fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observations: usize) {
+    let source = run.accounting;
+    observation.protocol.requests = observation
+        .protocol
+        .requests
+        .saturating_add(source.requests);
+    observation.protocol.responses = observation
+        .protocol
+        .responses
+        .saturating_add(source.responses);
+    observation.protocol.informational_responses = observation
+        .protocol
+        .informational_responses
+        .saturating_add(source.informational_responses);
+    observation.protocol.connect_requests = observation
+        .protocol
+        .connect_requests
+        .saturating_add(source.connect_requests);
+    observation.protocol.client_tls_completed = observation
+        .protocol
+        .client_tls_completed
+        .saturating_add(source.client_tls_completed);
+    observation.protocol.upstream_tls_completed = observation
+        .protocol
+        .upstream_tls_completed
+        .saturating_add(source.upstream_tls_completed);
+    observation.protocol.parse_refused = observation
+        .protocol
+        .parse_refused
+        .saturating_add(source.parse_refused);
+    observation.protocol.policy_refused = observation
+        .protocol
+        .policy_refused
+        .saturating_add(source.policy_refused);
+    observation.protocol.timed_out = observation
+        .protocol
+        .timed_out
+        .saturating_add(source.timed_out);
+    observation.protocol.observations_dropped_oldest = observation
+        .protocol
+        .observations_dropped_oldest
+        .saturating_add(source.observations_dropped_oldest);
+    observation.application.extend(run.observations);
+    let excess = observation
+        .application
+        .len()
+        .saturating_sub(max_observations);
+    if excess > 0 {
+        observation.application.drain(..excess);
+        observation.protocol.observations_dropped_oldest = observation
+            .protocol
+            .observations_dropped_oldest
+            .saturating_add(excess as u64);
     }
 }
 
@@ -539,10 +1091,10 @@ mod tests {
             let mut tasks = JoinSet::new();
             tasks.spawn(async {
                 std::future::pending::<()>().await;
-                (1, ConnectionOutcome::Completed)
+                (1, completed_run())
             });
             let mut observed = observation();
-            drain_tasks(&mut tasks, &mut observed, Duration::ZERO).await;
+            drain_tasks(&mut tasks, &mut observed, Duration::ZERO, 4_096).await;
             assert!(tasks.is_empty());
             assert_eq!(observed.forced_connections, 1);
             assert!(observed.failures.is_empty());
@@ -557,14 +1109,61 @@ mod tests {
             tasks.spawn(async {
                 panic!("controlled connection panic");
                 #[allow(unreachable_code)]
-                (1, ConnectionOutcome::Completed)
+                (1, completed_run())
             });
             let mut observed = observation();
-            drain_tasks(&mut tasks, &mut observed, Duration::from_secs(1)).await;
+            drain_tasks(&mut tasks, &mut observed, Duration::from_secs(1), 4_096).await;
             assert!(tasks.is_empty());
             assert_eq!(observed.failed_connections, 1);
             assert_eq!(observed.failures[0].code, "connection-task-panicked");
         });
+    }
+
+    fn completed_run() -> ConnectionOutcome {
+        ConnectionOutcome::Completed(HttpRun {
+            observations: Vec::new(),
+            accounting: Default::default(),
+            failure: None,
+        })
+    }
+
+    #[test]
+    fn application_observations_drop_oldest_and_count_every_eviction() {
+        let mut observed = RuntimeObservation::running("127.0.0.1:40002".parse().unwrap());
+        let make = |connection_id| crate::ProxyObservation {
+            session_id: "bounded".to_string(),
+            connection_id,
+            request_ordinal: 1,
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:40002".parse().unwrap(),
+            timestamp_ns: connection_id,
+            protocol: "http".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("http://example.test/".to_string()),
+            status: Some(200),
+            inspectability: "full",
+            reason: None,
+            tls: None,
+            transformations: Vec::new(),
+        };
+        merge_protocol(
+            &mut observed,
+            HttpRun {
+                observations: vec![make(1), make(2), make(3)],
+                accounting: Default::default(),
+                failure: None,
+            },
+            2,
+        );
+        assert_eq!(
+            observed
+                .application
+                .iter()
+                .map(|item| item.connection_id)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(observed.protocol.observations_dropped_oldest, 1);
     }
 
     #[test]
@@ -597,6 +1196,10 @@ mod tests {
             pending_report: None,
             last_observation: running,
             capability_proof: SessionCapability::generate().unwrap().proof(),
+            ca_der: Vec::new(),
+            ca_sha1_thumbprint: String::new(),
+            ca_sha256_fingerprint: String::new(),
+            authority_generation: 0,
         };
 
         let started_at = StdInstant::now();

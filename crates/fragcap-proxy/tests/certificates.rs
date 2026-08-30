@@ -16,7 +16,7 @@ fn ca_is_synthetic_bounded_and_fingerprinted() {
     assert_eq!(ca.sha256_fingerprint().len(), 64);
     let (_, parsed) = parse_x509_certificate(ca.der().as_ref()).unwrap();
     assert!(parsed.tbs_certificate.is_ca());
-    assert!(parsed.subject().to_string().contains("TEST ONLY"));
+    assert!(parsed.subject().to_string().contains("Deep Capture"));
 }
 
 #[test]

@@ -50,6 +50,9 @@ fragcap-sink.workspace = true
 fragcap-steam.workspace = true
 fragcap-targets = { workspace = true, optional = true }
 fragcap-proxy = { workspace = true, optional = true }
+zeroize.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
 
 # The Windows volume inventory adapter (slice S052) enumerates fixed volumes for
 # the known-roots walk through GetLogicalDrives/GetDriveTypeW and reads each

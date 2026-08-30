@@ -1,92 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Narrow Windows certificate helpers shared by Deep Capture and doctor.
-
-use std::path::Path;
+//! Narrow Windows certificate helpers used by doctor.
 
 use windows_sys::Win32::Foundation::{GetLastError, SetLastError, CRYPT_E_NOT_FOUND};
 use windows_sys::Win32::Security::Cryptography::{
-    CertCloseStore, CertCreateCertificateContext, CertEnumCertificatesInStore,
-    CertFreeCertificateContext, CertGetCertificateContextProperty, CertOpenStore,
-    CryptStringToBinaryA, CERT_CONTEXT, CERT_SHA1_HASH_PROP_ID, CERT_STORE_OPEN_EXISTING_FLAG,
-    CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG, CRYPT_STRING_BASE64HEADER,
-    PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    CertCloseStore, CertEnumCertificatesInStore, CertFreeCertificateContext,
+    CertGetCertificateContextProperty, CertOpenStore, CERT_CONTEXT, CERT_SHA1_HASH_PROP_ID,
+    CERT_STORE_OPEN_EXISTING_FLAG, CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG,
 };
 
 pub(crate) const CURRENT_USER_ROOT: &str = "CurrentUser/Root";
 pub(crate) const LOCAL_MACHINE_ROOT: &str = "LocalMachine/Root";
-
-pub(crate) fn file_thumbprint(path: &Path) -> Result<String, String> {
-    file_der_and_thumbprint(path).map(|(_, thumbprint)| thumbprint)
-}
-
-pub(crate) fn file_der_and_thumbprint(path: &Path) -> Result<(Vec<u8>, String), String> {
-    let encoded = std::fs::read(path)
-        .map_err(|error| format!("could not read certificate {}: {error}", path.display()))?;
-    let der = if encoded.starts_with(b"-----BEGIN CERTIFICATE-----") {
-        decode_pem(&encoded).map_err(|error| format!("{}: {error}", path.display()))?
-    } else {
-        encoded
-    };
-    // SAFETY: `der` remains live for the call and supplies exactly the byte count
-    // passed. CryptoAPI validates the encoding and returns an owned context.
-    let certificate = unsafe {
-        CertCreateCertificateContext(
-            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-            der.as_ptr(),
-            der.len() as u32,
-        )
-    };
-    if certificate.is_null() {
-        return Err(format!(
-            "Windows could not parse certificate {}",
-            path.display()
-        ));
-    }
-    let result = context_thumbprint(certificate).map(|thumbprint| (der, thumbprint));
-    // SAFETY: this function owns the context returned by CertCreateCertificateContext.
-    unsafe { CertFreeCertificateContext(certificate) };
-    result
-}
-
-fn decode_pem(encoded: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let length = u32::try_from(encoded.len()).map_err(|_| "certificate file is too large")?;
-    let mut decoded_len = 0_u32;
-    // SAFETY: `encoded` is live for the call; a null destination requests the
-    // required output size and every optional out pointer is intentionally null.
-    let measured = unsafe {
-        CryptStringToBinaryA(
-            encoded.as_ptr(),
-            length,
-            CRYPT_STRING_BASE64HEADER,
-            core::ptr::null_mut(),
-            &mut decoded_len,
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        )
-    };
-    if measured == 0 || decoded_len == 0 {
-        return Err("Windows could not decode the PEM certificate");
-    }
-    let mut der = vec![0_u8; decoded_len as usize];
-    // SAFETY: `der` has the exact writable capacity reported by the first call.
-    let decoded = unsafe {
-        CryptStringToBinaryA(
-            encoded.as_ptr(),
-            length,
-            CRYPT_STRING_BASE64HEADER,
-            der.as_mut_ptr(),
-            &mut decoded_len,
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        )
-    };
-    if decoded == 0 {
-        return Err("Windows could not decode the PEM certificate");
-    }
-    der.truncate(decoded_len as usize);
-    Ok(der)
-}
 
 pub(crate) fn store_thumbprints(location: &str) -> Result<Vec<String>, String> {
     use windows_sys::Win32::Security::Cryptography::{

@@ -16,7 +16,7 @@ subsequently required complete native Rust Deep Capture and created #278 as
 the completion authority. S102 raises the workspace MSRV to the measured Rust
 1.88 floor and selects an owned, exact-pinned Tokio/Hyper/rustls/rcgen stack so
 fragcap can enforce bounded lifecycle ownership directly. The functional v0.8
-CLI continues to use mitmdump until #290; this record remains the evidence for
+CLI used mitmdump until S104 closed #290; this record remains the evidence for
 rejecting the two turnkey candidates.
 
 ### S100 final decision

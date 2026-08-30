@@ -88,6 +88,10 @@ impl ProxyBackend for Proxy {
 
 struct ProxyRun(Ledger);
 impl ProxyLease for ProxyRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+
     fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
         self.0.borrow_mut().push("proxy.observe".into());
         Ok(vec![CompatibilityObservation {
@@ -133,6 +137,10 @@ impl ProxyBackend for BudgetProxy {
 
 struct BudgetProxyRun(Rc<RefCell<Option<Duration>>>);
 impl ProxyLease for BudgetProxyRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+
     fn observations(
         &mut self,
         budget: Budget,
@@ -173,7 +181,7 @@ impl CaptureRunner for TimedCapture {
     fn run(
         &mut self,
         _: &PreparedCapture,
-        _: LoopbackEndpoint,
+        _: &ProxyRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         *self.0.borrow_mut() = Duration::from_secs(8);
@@ -190,7 +198,12 @@ impl CaptureRunner for TimedCapture {
 
 struct Trust(Ledger);
 impl TrustManager for Trust {
-    fn acquire(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn TrustLease>, StageFailure> {
+    fn acquire(
+        &mut self,
+        _: &SessionPlan,
+        _: &ProxyRoute,
+        _: Budget,
+    ) -> Result<Box<dyn TrustLease>, StageFailure> {
         self.0.borrow_mut().push("trust.acquire".into());
         Ok(Box::new(TrustRun(self.0.clone())))
     }
@@ -209,10 +222,10 @@ impl LaunchAdapter for Launch {
         &mut self,
         _: &PreparedTarget,
         _: LaunchCase,
-        endpoint: LoopbackEndpoint,
+        route: &ProxyRoute,
         _: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure> {
-        assert_eq!(endpoint.port, 31_337);
+        assert_eq!(route.endpoint().port, 31_337);
         self.0.borrow_mut().push("launch.start".into());
         Ok(Box::new(LaunchRun(self.0.clone())))
     }
@@ -241,7 +254,7 @@ impl CaptureRunner for Capture {
     fn run(
         &mut self,
         prepared: &PreparedCapture,
-        _: LoopbackEndpoint,
+        _: &ProxyRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         assert_eq!(prepared.token, "prepared");
@@ -344,7 +357,12 @@ impl ProxyBackend for FailingProxy {
 
 struct FailingTrust(Ledger);
 impl TrustManager for FailingTrust {
-    fn acquire(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn TrustLease>, StageFailure> {
+    fn acquire(
+        &mut self,
+        _: &SessionPlan,
+        _: &ProxyRoute,
+        _: Budget,
+    ) -> Result<Box<dyn TrustLease>, StageFailure> {
         self.0.borrow_mut().push("trust.acquire.failed".into());
         Err(StageFailure::new(
             Stage::Trust,
@@ -360,7 +378,7 @@ impl LaunchAdapter for FailingLaunch {
         &mut self,
         _: &PreparedTarget,
         _: LaunchCase,
-        _: LoopbackEndpoint,
+        _: &ProxyRoute,
         _: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure> {
         self.0.borrow_mut().push("launch.start.failed".into());
@@ -387,7 +405,7 @@ impl CaptureRunner for FailingCapture {
     fn run(
         &mut self,
         _: &PreparedCapture,
-        _: LoopbackEndpoint,
+        _: &ProxyRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         self.0.borrow_mut().push("capture.run.failed".into());
@@ -418,7 +436,7 @@ impl CaptureRunner for InterruptedCapture {
     fn run(
         &mut self,
         _: &PreparedCapture,
-        _: LoopbackEndpoint,
+        _: &ProxyRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         self.0.borrow_mut().push("capture.interrupted".into());
@@ -465,7 +483,12 @@ impl ArtifactSink for FailingArtifacts {
 
 struct FailingCleanupTrust(Ledger);
 impl TrustManager for FailingCleanupTrust {
-    fn acquire(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn TrustLease>, StageFailure> {
+    fn acquire(
+        &mut self,
+        _: &SessionPlan,
+        _: &ProxyRoute,
+        _: Budget,
+    ) -> Result<Box<dyn TrustLease>, StageFailure> {
         Ok(Box::new(FailingCleanupTrustRun(self.0.clone())))
     }
 }
@@ -487,6 +510,18 @@ fn released(resource: &str) -> CleanupResult {
         status: CleanupStatus::Released,
         reason: "released".into(),
     }
+}
+
+fn test_route() -> ProxyRoute {
+    ProxyRoute::new(
+        LoopbackEndpoint { port: 31_337 },
+        "http://fragcap:test@127.0.0.1:31337".to_string(),
+        "Basic test".to_string(),
+        vec![1, 2, 3],
+        "test-thumbprint".to_string(),
+        1,
+        None,
+    )
 }
 
 fn config() -> SessionConfig {

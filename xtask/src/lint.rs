@@ -436,6 +436,32 @@ const FORBIDDEN_ARTIFACTS: &[&str] = &[
     "npcap-sdk",
 ];
 
+fn is_production_proxy_surface(path: &str) -> bool {
+    matches!(
+        path,
+        "crates/fragcap-cli/src/cli.rs"
+            | "crates/fragcap-cli/src/commands/deep_capture.rs"
+            | "crates/fragcap-cli/src/doctor/mod.rs"
+            | "crates/fragcap-cli/src/doctor/probe.rs"
+            | "crates/fragcap-cli/src/doctor/checks.rs"
+    ) || path.starts_with(".github/workflows/")
+        || path == "Cargo.toml"
+}
+
+fn external_proxy_violation(path: &str, text: &str) -> Option<&'static str> {
+    if !is_production_proxy_surface(path) {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("mitmdump") || lower.contains("mitmproxy") {
+        return Some("external proxy implementation name");
+    }
+    if path.ends_with(".py") || lower.contains("python.exe") || lower.contains("python3") {
+        return Some("Python proxy runtime");
+    }
+    None
+}
+
 pub fn run(root: &Path) -> std::io::Result<usize> {
     let mut files = Vec::new();
     collect(root, root, &mut files)?;
@@ -481,6 +507,15 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
         for f in check_bytes(&bytes, is_source) {
             println!("{}:{}: {}: {}", shown, f.line, f.rule, f.detail);
             total += 1;
+        }
+
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            if let Some(detail) = external_proxy_violation(&shown, text) {
+                println!(
+                    "{shown}: native-proxy-cutover: production and release inputs contain {detail}"
+                );
+                total += 1;
+            }
         }
 
         // The command surface's doc comments are user-facing help (issues #176,
@@ -635,6 +670,21 @@ mod tests {
     fn binary_content_is_recognized() {
         assert!(is_binary(&[0x00, 0x01, 0x02]));
         assert!(!is_binary(b"plain text\n"));
+    }
+
+    #[test]
+    fn native_proxy_gate_rejects_external_runtime_only_on_production_surfaces() {
+        assert_eq!(
+            external_proxy_violation(
+                "crates/fragcap-cli/src/commands/deep_capture.rs",
+                "Command::new(\"mitmdump\")",
+            ),
+            Some("external proxy implementation name")
+        );
+        assert_eq!(
+            external_proxy_violation("docs/history.md", "mitmdump was the former backend"),
+            None
+        );
     }
 
     #[test]
