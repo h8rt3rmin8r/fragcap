@@ -1,0 +1,2 @@
+<!-- spec-impact: 2.1, 8.3.1, 12.4, 13.7, 17.2.1, 19, 24, 25, 26, 28.1 -->
+Completes the secure native Deep Capture foundation with authenticated loopback admission, bounded upstream policy, session-owned certificate and trust state, loss-accounted raw observations, and an offline protocol lab covering every required family and failure class. Production protocol inspection remains on the external backend until the tracked cutover.

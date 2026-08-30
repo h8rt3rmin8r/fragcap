@@ -416,6 +416,10 @@ const FORBIDDEN_CALLS: &[(&str, &str)] = &[
         "process_all_access",
         "includes memory rights; name the narrowest right the call needs (P-1)",
     ),
+    (
+        "certutil",
+        "spawns an external certificate utility; native Deep Capture owns exact trust effects (P-1)",
+    ),
 ];
 
 /// Files that must never appear in the repository.

@@ -202,6 +202,37 @@ Reachability calibration runs without a certificate trust change. TLS calibratio
 
 **See also:** [Deep Capture](capture-and-networking.md#deep-capture), [Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration), [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event)
 
+## Deep Capture session capability
+
+An opaque, random value created for one native Deep Capture listener generation.
+A supported client protocol carries it through that protocol's normal proxy
+authentication field, and the listener compares it before allocating upstream
+or payload work. Cleanup invalidates it, and a replacement listener always has
+a different value.
+
+{: .matters }
+> The capability scopes an explicit loopback listener to the selected session.
+> Loopback binding alone does not distinguish the selected client from unrelated
+> software on the same machine.
+
+**See also:** [Deep Capture](capture-and-networking.md#deep-capture),
+[Local inspection proxy](capture-and-networking.md#local-inspection-proxy)
+
+## Raw proxy observation
+
+One versioned, ordered native Deep Capture record carrying session and connection
+correlation, provenance, payload presence or truncation, and a typed lifecycle,
+network, security, application, refusal, error, or loss family. It remains the
+source record when a HAR, key log, or another projection cannot represent the
+event.
+
+{: .matters }
+> Queue eviction, payload truncation, refusal, unparsed input, and projection
+> gaps are named counters. Any such gap prevents a complete-inspection claim.
+
+**See also:** [Session bundle](file-and-wire-formats.md#session-bundle),
+[Lifecycle event](command-line-and-diagnostics.md#lifecycle-event)
+
 ## Local inspection proxy
 
 A proxy process started by fragcap on the local machine to receive selected

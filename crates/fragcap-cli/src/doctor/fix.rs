@@ -367,35 +367,15 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
 
 #[cfg(windows)]
 fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
-    let mut command = std::process::Command::new("certutil");
-    match store {
-        "CurrentUser/Root" => {
-            command.args(["-user", "-delstore", "Root", thumbprint]);
-        }
-        "LocalMachine/Root" => {
-            command.args(["-delstore", "Root", thumbprint]);
-        }
-        _ => return Err(format!("refused unsupported certificate store {store}")),
+    if store != "CurrentUser/Root" {
+        return Err(format!(
+            "refused native trust mutation outside CurrentUser/Root: {store}"
+        ));
     }
-    let status = command
-        .status()
-        .map_err(|err| format!("could not remove {thumbprint} from {store}: {err}"))?;
-    if status.success() {
-        let remaining = crate::windows_cert::store_thumbprints(store).map_err(|err| {
-            format!("removed {thumbprint} from {store}, but verification failed: {err}")
-        })?;
-        if remaining.iter().any(|item| item == thumbprint) {
-            Err(format!(
-                "{thumbprint} remains in {store} after certutil reported success"
-            ))
-        } else {
-            Ok(())
-        }
-    } else {
-        Err(format!(
-            "certutil could not remove {thumbprint} from {store} (exit {status})"
-        ))
-    }
+    fragcap::deep_capture::NativeCertificateStore
+        .remove_current_user_thumbprint(thumbprint)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(not(windows))]

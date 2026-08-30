@@ -18,6 +18,10 @@ pub(crate) const CURRENT_USER_ROOT: &str = "CurrentUser/Root";
 pub(crate) const LOCAL_MACHINE_ROOT: &str = "LocalMachine/Root";
 
 pub(crate) fn file_thumbprint(path: &Path) -> Result<String, String> {
+    file_der_and_thumbprint(path).map(|(_, thumbprint)| thumbprint)
+}
+
+pub(crate) fn file_der_and_thumbprint(path: &Path) -> Result<(Vec<u8>, String), String> {
     let path: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -48,7 +52,16 @@ pub(crate) fn file_thumbprint(path: &Path) -> Result<String, String> {
         ));
     }
     let certificate = context.cast::<CERT_CONTEXT>();
-    let result = context_thumbprint(certificate);
+    // SAFETY: the returned context remains live until it is freed below, and
+    // its encoded certificate buffer has `cbCertEncoded` readable bytes.
+    let der = unsafe {
+        std::slice::from_raw_parts(
+            (*certificate).pbCertEncoded,
+            (*certificate).cbCertEncoded as usize,
+        )
+        .to_vec()
+    };
+    let result = context_thumbprint(certificate).map(|thumbprint| (der, thumbprint));
     // SAFETY: this function owns the live context returned by CryptQueryObject.
     unsafe { CertFreeCertificateContext(certificate) };
     result

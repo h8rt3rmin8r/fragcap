@@ -27,6 +27,8 @@ use fragcap::deep_capture::{
     calibration_outcome_reason, terminal_calibration_outcome, CalibrationOutcome, CalibrationPhase,
     CompatibilityObservation as Observation, Inspectability,
 };
+#[cfg(windows)]
+use fragcap::deep_capture::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
 use fragcap::targets::{
     entry_windows_clients, resolve_id, resolve_positional, CompatibilityEvidenceSource,
     CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store,
@@ -1691,9 +1693,12 @@ impl TrustManager for ControlledTrustManager {
 
 #[cfg(windows)]
 fn platform_trust_manager(ca_cert_path: PathBuf) -> Result<Box<dyn TrustManager>, CliError> {
+    let (der, thumbprint) =
+        crate::windows_cert::file_der_and_thumbprint(&ca_cert_path).map_err(CliError::failure)?;
     Ok(Box::new(WindowsCurrentUserTrustManager {
-        ca_cert_path,
-        thumbprint: None,
+        der,
+        thumbprint,
+        store: NativeCertificateStore,
         installed_this_session: false,
     }))
 }
@@ -1707,69 +1712,10 @@ fn platform_trust_manager(_ca_cert_path: PathBuf) -> Result<Box<dyn TrustManager
 
 #[cfg(windows)]
 struct WindowsCurrentUserTrustManager {
-    ca_cert_path: PathBuf,
-    thumbprint: Option<String>,
+    der: Vec<u8>,
+    thumbprint: String,
+    store: NativeCertificateStore,
     installed_this_session: bool,
-}
-
-#[cfg(windows)]
-impl WindowsCurrentUserTrustManager {
-    fn thumbprint(&self) -> Result<String, CliError> {
-        crate::windows_cert::file_thumbprint(&self.ca_cert_path).map_err(CliError::failure)
-    }
-
-    fn certutil(&self, args: impl IntoIterator<Item = OsString>) -> Result<bool, String> {
-        self.certutil_with_timeout(args, CALIBRATION_CLEANUP_TIMEOUT)
-    }
-
-    fn certutil_with_timeout(
-        &self,
-        args: impl IntoIterator<Item = OsString>,
-        timeout: Duration,
-    ) -> Result<bool, String> {
-        if timeout.is_zero() {
-            return Err("cleanup deadline expired before certutil could run".to_string());
-        }
-        let certutil = find_on_path("certutil")
-            .ok_or_else(|| "certutil.exe is required for current-user CA trust".to_string())?;
-        let mut command = std::process::Command::new(certutil);
-        command.args(args).stderr(Stdio::null());
-        command_stdout_with_timeout(&mut command, timeout).map(|(status, _)| status.success())
-    }
-
-    fn is_trusted(&self, thumbprint: &str) -> Result<bool, String> {
-        self.certutil(
-            ["-user", "-verifystore", "Root", thumbprint]
-                .into_iter()
-                .map(OsString::from),
-        )
-    }
-
-    fn remove(&self, thumbprint: &str) -> Result<bool, String> {
-        self.certutil(
-            ["-user", "-delstore", "Root", thumbprint]
-                .into_iter()
-                .map(OsString::from),
-        )
-    }
-
-    fn is_trusted_with_timeout(&self, thumbprint: &str, timeout: Duration) -> Result<bool, String> {
-        self.certutil_with_timeout(
-            ["-user", "-verifystore", "Root", thumbprint]
-                .into_iter()
-                .map(OsString::from),
-            timeout,
-        )
-    }
-
-    fn remove_with_timeout(&self, thumbprint: &str, timeout: Duration) -> Result<bool, String> {
-        self.certutil_with_timeout(
-            ["-user", "-delstore", "Root", thumbprint]
-                .into_iter()
-                .map(OsString::from),
-            timeout,
-        )
-    }
 }
 
 #[cfg(windows)]
@@ -1780,47 +1726,40 @@ impl TrustManager for WindowsCurrentUserTrustManager {
                 "Deep Capture CA trust mutation requires explicit confirmation",
             ));
         }
-        let thumbprint = self.thumbprint()?;
-        self.thumbprint = Some(thumbprint.clone());
-        if self
-            .is_trusted(&thumbprint)
-            .map_err(|e| CliError::failure(format!("cannot query current-user CA trust: {e}")))?
-        {
+        let thumbprint = self.thumbprint.clone();
+        let before = self
+            .store
+            .observe(&self.der, &thumbprint)
+            .map_err(|error| {
+                CliError::failure(format!("cannot query current-user CA trust: {error}"))
+            })?;
+        if before == TrustState::PresentExact {
             return Ok(TrustOutcome {
                 state: "current-user-trusted".to_string(),
                 action: "already-trusted".to_string(),
                 thumbprint: Some(thumbprint),
             });
         }
-
-        let installed = self
-            .certutil([
-                OsString::from("-user"),
-                OsString::from("-addstore"),
-                OsString::from("-f"),
-                OsString::from("Root"),
-                self.ca_cert_path.as_os_str().to_owned(),
-            ])
-            .map_err(|e| CliError::failure(format!("cannot install current-user CA trust: {e}")))?;
-        if !installed {
+        if before == TrustState::Mismatch {
             return Err(CliError::failure(
-                "certutil could not install the Deep Capture CA in the current-user Root store",
+                "the authorized CA thumbprint resolves to different certificate bytes",
             ));
         }
-        self.installed_this_session = true;
-        if !self
-            .is_trusted(&thumbprint)
-            .map_err(|e| CliError::failure(format!("cannot verify current-user CA trust: {e}")))?
-        {
-            let _ = self.remove(&thumbprint);
-            self.installed_this_session = false;
-            return Err(CliError::failure(
-                "Deep Capture CA installation could not be verified in the current-user Root store",
-            ));
-        }
+        let mutation = self
+            .store
+            .add_exact(&self.der, &thumbprint)
+            .map_err(|error| {
+                CliError::failure(format!("cannot install current-user CA trust: {error}"))
+            })?;
+        self.installed_this_session = mutation == TrustMutation::Added;
         Ok(TrustOutcome {
             state: "current-user-trusted".to_string(),
-            action: "installed-for-session".to_string(),
+            action: if self.installed_this_session {
+                "installed-for-session"
+            } else {
+                "already-trusted"
+            }
+            .to_string(),
             thumbprint: Some(thumbprint),
         })
     }
@@ -1834,42 +1773,28 @@ impl TrustManager for WindowsCurrentUserTrustManager {
                 "the session did not install a current-user trust entry",
             );
         }
-        let Some(thumbprint) = self.thumbprint.as_deref() else {
-            return CleanupResource::new(
+        if remaining_timeout(started, timeout).is_zero() {
+            return CleanupResource::new("trust-entry", "failed", "cleanup deadline expired");
+        }
+        match self.store.remove_exact(&self.der, &self.thumbprint) {
+            Ok(TrustMutation::Removed | TrustMutation::AlreadyAbsent) => {
+                self.installed_this_session = false;
+                CleanupResource::new(
+                    "trust-entry",
+                    "succeeded",
+                    "session CA removed from the current-user Root store",
+                )
+            }
+            Ok(_) => CleanupResource::new(
                 "trust-entry",
                 "failed",
-                "the installed trust entry has no recorded thumbprint",
-            );
-        };
-        match self.remove_with_timeout(thumbprint, remaining_timeout(started, timeout)) {
-            Ok(true) => match self
-                .is_trusted_with_timeout(thumbprint, remaining_timeout(started, timeout))
-            {
-                Ok(false) => {
-                    self.installed_this_session = false;
-                    CleanupResource::new(
-                        "trust-entry",
-                        "succeeded",
-                        "session CA removed from the current-user Root store",
-                    )
-                }
-                Ok(true) => CleanupResource::new(
-                    "trust-entry",
-                    "failed",
-                    "session CA remains in the current-user Root store after removal",
-                ),
-                Err(err) => CleanupResource::new(
-                    "trust-entry",
-                    "failed",
-                    &format!("cannot verify trust cleanup: {err}"),
-                ),
-            },
-            Ok(false) => CleanupResource::new(
-                "trust-entry",
-                "failed",
-                "certutil could not remove the session CA from the current-user Root store",
+                "native trust cleanup returned an unexpected mutation",
             ),
-            Err(err) => CleanupResource::new("trust-entry", "failed", &err),
+            Err(error) => CleanupResource::new(
+                "trust-entry",
+                "failed",
+                &format!("cannot remove current-user CA trust: {error}"),
+            ),
         }
     }
 }
@@ -4012,12 +3937,16 @@ mod tests {
             .is_some_and(|path| path.is_file()));
         #[cfg(windows)]
         {
+            let (der, thumbprint) =
+                crate::windows_cert::file_der_and_thumbprint(proxy.ca_cert_path.as_ref().unwrap())
+                    .unwrap();
             let manager = WindowsCurrentUserTrustManager {
-                ca_cert_path: proxy.ca_cert_path.clone().unwrap(),
-                thumbprint: None,
+                der,
+                thumbprint,
+                store: NativeCertificateStore,
                 installed_this_session: false,
             };
-            assert_eq!(manager.thumbprint().unwrap().len(), 40);
+            assert_eq!(manager.thumbprint.len(), 40);
         }
         proxy.stop().unwrap();
         let process = proxy.cleanup_process();

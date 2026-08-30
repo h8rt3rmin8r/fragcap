@@ -312,8 +312,9 @@ what turns the specification into executable work.
 
 Explicitly deferred capability and the native Deep Capture completion
 contract. Issue #278 owns four ordered milestones. S102 establishes the owned
-`fragcap-proxy` leaf, Rust 1.88 dependency policy, bounded listener/runtime,
-and public incomplete-status contract. HTTP/TLS fidelity, launch/transport
+`fragcap-proxy` leaf and bounded runtime. S103 completes authenticated admission,
+upstream policy, certificate and trust ownership, raw observations, and the
+controlled protocol lab. HTTP/TLS fidelity, launch/transport
 coverage, recovery, packaging, independent review, and the final #334 gate
 remain open. Additional platforms, richer attribution backends, dissector
 plugins, platform integrations, and analysis tooling remain deferred.
@@ -321,10 +322,11 @@ plugins, platform integrations, and analysis tooling remain deferred.
 ## 29. Open Questions
 
 Tracked unknowns with owners and resolution methods. S100's two turnkey
-candidate results remain historical evidence, but S102 supersedes its external
+candidate results remain historical evidence, but S102 supersedes their external
 end state after native completion became an explicit requirement. The owned
-Tokio/Hyper/rustls/rcgen path uses a measured Rust 1.88 floor and bounded task
-ownership; external `mitmdump` remains the current CLI path only until #290.
+Tokio/Hyper/rustls/rcgen path uses a measured Rust 1.88 floor, bounded task
+ownership, and the S103 secure foundation;
+external `mitmdump` remains the current CLI path only until #290.
 The section also retains the crate-naming reservation and reconnaissance
 findings.
 

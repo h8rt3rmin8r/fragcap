@@ -5,8 +5,9 @@ description: How passive Capture and explicit Deep Capture produce distinct, aud
 
 <Callout title="Native completion status">
 Deep Capture is functional but incomplete. The v0.8 diagram and execution path
-below use external mitmdump and certutil. S102 establishes the native Rust
-proxy crate and bounded lifecycle foundation only. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+below use external mitmdump, with trust effects provided by native Windows APIs.
+S103 completes the native Rust security and protocol-lab foundation without
+switching production inspection. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
 owns the four milestone completion contract; #334 is the only completion gate.
 </Callout>
 
@@ -17,9 +18,9 @@ Both modes are library capabilities. Deep Capture is exposed through the public 
 The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md) is the architecture of record. This page explains the execution and trust boundaries a user or reviewer needs to understand.
 
 The native target architecture adds a `fragcap-proxy` leaf beneath the facade.
-S102 gives that crate bounded loopback listener and task ownership. DNS and
-upstream policy (#284), certificate and trust work (#285 through #287), raw
-event accounting (#288), protocol fidelity (#292 through #305), launch and
+S103 gives that crate authenticated loopback admission, bounded upstream policy,
+per-session certificate and exact trust ownership, raw event accounting, and a
+controlled lab for every required protocol family. Protocol fidelity (#292 through #305), launch and
 transport coverage (#306 through #318), and production cutover (#290) remain
 open. Current diagrams continue to show the shipped v0.8 external path until
 that cutover actually lands.

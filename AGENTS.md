@@ -278,6 +278,8 @@ load-bearing rather than bookkeeping.
 | `getrandom` | runtime | S051 | OS entropy for the unanchored 63-bit identifier (already in the graph; a direct edge only) |
 | `terminal_size` | runtime, transitive | S062 | Terminal dimensions for clap's `wrap_help`; not a direct dependency, it arrives with the feature (issue #177) |
 | `tokio`, `hyper`, `hyper-util`, `http-body-util`, `rustls`, `tokio-rustls`, `rcgen`, `rustls-native-certs` | runtime | S102 | Exact-pinned native Deep Capture runtime and future HTTP/TLS/certificate stack in `fragcap-proxy`; default features off, ring is the sole crypto provider, Windows roots come from Schannel |
+| `ring`, `subtle`, `zeroize` | runtime, direct | S103 | Capability entropy and constant-time comparison plus explicit private-material zeroization; all were already transitive, so no lock packages were added |
+| `quinn`, `x509-parser` | dev | S103 | Real loopback QUIC coverage and independent certificate semantic inspection in the controlled protocol lab; never linked into the product path |
 
 S102 raises the workspace MSRV from 1.82 to 1.88 and adds the ninth product
 crate, `fragcap-proxy`. This deliberately supersedes S100's external-backend
@@ -288,6 +290,14 @@ and task ownership, typed observation, and bounded idempotent cleanup. It does
 not forward, decrypt, parse protocols, or claim inspectability, and the shipped
 CLI continues to select mitmdump until #290. The exact dependency and provider
 arguments are in the S102 decisions fragment and research document.
+
+S103 completes the native foundation beneath that unchanged production boundary.
+It adds session capability admission, bounded and policy-checked upstream work,
+per-session certificate authority and leaf ownership, direct current-user
+CryptoAPI trust effects, a loss-accounted raw observation stream, and an offline
+protocol matrix. Quinn is dev-only and supplies the real QUIC endpoint in that
+matrix. The CLI still selects mitmdump until #290, so S103 is not a production
+protocol or feature-completion claim.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

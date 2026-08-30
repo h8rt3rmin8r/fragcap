@@ -20,7 +20,10 @@ mod session;
 
 pub use adapters::*;
 pub use model::*;
-pub use native::{NativeProxyAdapter, NativeProxyLimits};
+pub use native::{
+    CertificateStore, NativeCertificateStore, NativeProxyAdapter, NativeProxyLimits,
+    TrustController, TrustError, TrustMutation, TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
+};
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,
     compatibility_owner_role, observation_is_correlated_to_final_client,
