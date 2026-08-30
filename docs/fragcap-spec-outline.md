@@ -316,9 +316,12 @@ analysis tooling that consumes fragcap output.
 
 ## 29. Open Questions
 
-Tracked unknowns with owners and resolution methods, including the
-reconnaissance findings still outstanding on the focal titles, the
-crate-naming reservations, and any brand decisions pending.
+Tracked unknowns with owners and resolution methods. The native Deep Capture
+backend question is narrowed by S099: `hudsucker 0.23.0` passed its functional
+spike but failed the advisory-clean Rust 1.82 dependency boundary, so one
+smaller native fallback remains to be measured while `mitmdump` stays
+shipped. The section also retains the crate-naming reservation and the
+reconnaissance findings.
 
 ## 30. Appendices
 
