@@ -3,6 +3,12 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
+<Callout title="Functional, not feature-complete">
+This matrix describes v0.8's external mitmdump path. The native S102
+foundation does not yet inspect protocols. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+owns the remaining protocol, launch, artifact, recovery, and packaging work.
+</Callout>
+
 <Callout title="The short version">
 **Capture** passively records packets and process attribution. **Deep Capture**
 runs Capture alongside an explicit, target-scoped local proxy. Deep Capture can
@@ -22,19 +28,19 @@ does not bypass certificate pinning, downgrade TLS, extract keys from a target
 process, or silently change system-wide proxy settings. Packet truth remains
 available through Capture even when application inspection is unavailable.
 
-See [Output formats and session bundles](/docs/reference/output-formats) for the complete artifact authority, sensitivity, omission, correlation, retention, and cleanup contract.
+See [Output formats and session bundles](/docs/reference/output-formats) for the current v0.8 artifact authority, sensitivity, omission, correlation, retention, and cleanup contract. Native manifest, application stream, HAR, TLS key-log, and proxy/cleanup sidecar completion is owned by [#335](https://github.com/h8rt3rmin8r/fragcap/issues/335), [#301](https://github.com/h8rt3rmin8r/fragcap/issues/301), [#302](https://github.com/h8rt3rmin8r/fragcap/issues/302), [#300](https://github.com/h8rt3rmin8r/fragcap/issues/300), and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336).
 
 ## Traffic support
 
 | Traffic | Capture | Deep Capture | Outputs and limits |
 | --- | --- | --- | --- |
-| HTTP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Observes the HTTP method, URL, and response status when the request reaches the proxy. | Application JSONL records those fields. `--har` can project them into HAR. Current application records do not retain request or response headers or bodies. |
-| HTTPS | Records encrypted packets and attribution. | Observes the same HTTP fields only when the connection reaches the proxy and accepts the fragcap-owned local CA. | Application JSONL and optional HAR are available for observed HTTP semantics. `--key-log` exposes proxy-owned TLS secrets to an analyzer in real time and in the final bundle. Certificate-pinned traffic is not decrypted. |
-| WebSocket | Records packets and attribution. | Can observe the HTTP upgrade handshake when it reaches the HTTP proxy. | WebSocket frame records and frame payload retention are not implemented. An observed handshake is not full WebSocket support. |
-| Non-HTTP TLS | Records encrypted packets and attribution. | Records proxy connection metadata when the flow reaches the proxy, without interpreting the application protocol. | Metadata-only application records. No custom TLS protocol dissector currently ships. |
-| QUIC | Records the underlying UDP packets and attribution. | Unsupported by the current HTTP proxy path. | No QUIC routing or decryption claim. Analyze the packet capture as encrypted UDP traffic. |
-| UDP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Unsupported by the current proxy path. | No generic UDP proxy inspection. The packet capture remains available. |
-| Plaintext | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Plaintext HTTP follows the HTTP row. Other plaintext protocols have no generic application dissector. | Inspect packet payloads in the capture. Custom application records require a future protocol-specific dissector. |
+| HTTP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Observes the HTTP method, URL, and response status when the request reaches the proxy. | Native HTTP/1.1 and CONNECT are [#292](https://github.com/h8rt3rmin8r/fragcap/issues/292); complete metadata and bodies are [#296](https://github.com/h8rt3rmin8r/fragcap/issues/296) and [#297](https://github.com/h8rt3rmin8r/fragcap/issues/297). |
+| HTTPS | Records encrypted packets and attribution. | Observes HTTP fields only when the connection reaches the proxy and accepts the local CA. | Native TLS is [#293](https://github.com/h8rt3rmin8r/fragcap/issues/293); pinning and client-certificate boundaries are [#304](https://github.com/h8rt3rmin8r/fragcap/issues/304). |
+| WebSocket | Records packets and attribution. | Can observe the HTTP upgrade handshake when it reaches the HTTP proxy. | Complete frame and message support is [#295](https://github.com/h8rt3rmin8r/fragcap/issues/295). An observed handshake is not full support. |
+| Non-HTTP TLS | Records encrypted packets and attribution. | Records proxy connection metadata when the flow reaches the proxy, without interpreting the application protocol. | Generic native stream observations are [#312](https://github.com/h8rt3rmin8r/fragcap/issues/312); protocol-specific interpretation remains an explicit dissector or omission. |
+| QUIC | Records the underlying UDP packets and attribution. | Unsupported by the current HTTP proxy path. | Scoped QUIC and HTTP/3 are [#314](https://github.com/h8rt3rmin8r/fragcap/issues/314). No current routing or decryption claim. |
+| UDP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Unsupported by the current proxy path. | Generic native UDP relay is [#313](https://github.com/h8rt3rmin8r/fragcap/issues/313). Packet truth remains available. |
+| Plaintext | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Plaintext HTTP follows the HTTP row. Other plaintext protocols have no generic application dissector. | Generic stream records are [#312](https://github.com/h8rt3rmin8r/fragcap/issues/312); exhaustive omissions are [#316](https://github.com/h8rt3rmin8r/fragcap/issues/316). |
 
 In compatibility facts, `full` means the proxy observed HTTP semantics for that
 run. It does not mean that every header, body, WebSocket frame, or custom

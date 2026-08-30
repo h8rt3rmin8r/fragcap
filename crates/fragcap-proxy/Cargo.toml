@@ -1,0 +1,27 @@
+[package]
+name = "fragcap-proxy"
+description = "Native loopback proxy runtime for fragcap Deep Capture."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+tokio.workspace = true
+
+# Selected and compiled as one reviewed protocol stack in S102. Protocol use is
+# deliberately deferred: this slice proves bounded runtime ownership without
+# parsing, forwarding, decrypting, or claiming inspectability.
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+rustls-native-certs.workspace = true

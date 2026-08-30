@@ -142,7 +142,8 @@ have different platform requirements, different failure modes, and
 different upgrade paths. A Mermaid diagram of the pipeline belongs here.
 
 Covers the facade crate, the dependency direction rule (core depends on
-nothing platform-specific), the public Deep Capture prepared-plan and session
+nothing platform-specific), the leaf `fragcap-proxy` crate and its bounded
+native runtime, the public Deep Capture prepared-plan and session
 coordinator, its narrow effect adapters, and the plugin seam for dissectors.
 
 ## 9. Platform Strategy
@@ -307,23 +308,25 @@ requirement) and which become numbered feature slices, with a proposed
 slice ordering and the dependency edges between slices. This section is
 what turns the specification into executable work.
 
-## 28. Roadmap Beyond v0.2.0
+## 28. Roadmap Beyond the Current Release
 
-Explicitly deferred capability, recorded so that scope pressure during
-the roadmap has somewhere to go: additional platforms,
-richer attribution
-backends, dissector plugins, additional platform integrations, and the
-analysis tooling that consumes fragcap output.
+Explicitly deferred capability and the native Deep Capture completion
+contract. Issue #278 owns four ordered milestones. S102 establishes the owned
+`fragcap-proxy` leaf, Rust 1.88 dependency policy, bounded listener/runtime,
+and public incomplete-status contract. HTTP/TLS fidelity, launch/transport
+coverage, recovery, packaging, independent review, and the final #334 gate
+remain open. Additional platforms, richer attribution backends, dissector
+plugins, platform integrations, and analysis tooling remain deferred.
 
 ## 29. Open Questions
 
-Tracked unknowns with owners and resolution methods. S100 resolves the Deep
-Capture backend question: retain external `mitmdump`. `hudsucker 0.23.0`
-passed the stronger native functional set but failed the advisory-clean Rust
-1.82 graph boundary; `http-mitm-proxy 0.18.0` is smaller but fails the same
-Cargo boundary and lacks public key-log and connection-task ownership hooks.
-No further speculative backend path remains open. The section also retains
-the crate-naming reservation and the reconnaissance findings.
+Tracked unknowns with owners and resolution methods. S100's two turnkey
+candidate results remain historical evidence, but S102 supersedes its external
+end state after native completion became an explicit requirement. The owned
+Tokio/Hyper/rustls/rcgen path uses a measured Rust 1.88 floor and bounded task
+ownership; external `mitmdump` remains the current CLI path only until #290.
+The section also retains the crate-naming reservation and reconnaissance
+findings.
 
 ## 30. Appendices
 

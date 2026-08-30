@@ -16,7 +16,7 @@
   <a href="https://github.com/h8rt3rmin8r/fragcap/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/h8rt3rmin8r/fragcap/ci.yml?branch=main&label=CI&logo=github"></a>
   <a href="https://github.com/h8rt3rmin8r/fragcap/releases"><img alt="Release" src="https://img.shields.io/github/v/release/h8rt3rmin8r/fragcap?label=release&color=27C7E7&sort=semver"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <a href="rust-toolchain.toml"><img alt="Rust 1.82+" src="https://img.shields.io/badge/rust-1.82%2B-dea584?logo=rust&logoColor=white"></a>
+  <a href="rust-toolchain.toml"><img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-dea584?logo=rust&logoColor=white"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white">
   <a href="https://fragcap.com"><img alt="Docs: fragcap.com" src="https://img.shields.io/badge/docs-fragcap.com-27C7E7"></a>
 </p>
@@ -57,6 +57,15 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 ## Status
 
 **v0.8.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. The public library API and CLI can orchestrate eligible cold Steam and direct-executable launches. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
+
+> **Deep Capture is functional but incomplete.** v0.8.0 still delegates proxy
+> serving, certificate generation, HTTP/TLS observation, and TLS key logging to
+> external `mitmdump`, and uses `certutil` for confirmed current-user trust
+> changes. S102 adds a native Rust library foundation with bounded loopback
+> listener and task ownership, but it does not yet forward or inspect traffic
+> and the CLI does not select it. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+> owns the complete four-milestone roadmap. Do not treat Deep Capture as native,
+> self-contained, or feature-complete until the final gate, #334, closes.
 
 v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 

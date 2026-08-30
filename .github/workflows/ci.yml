@@ -107,13 +107,13 @@ jobs:
   msrv:
     # Verifies the minimum supported version declared in Cargo.toml.
     #
-    # NOTE: currently vacuous. The workspace has no external dependencies, so
-    # any declared minimum passes. Retained because it becomes meaningful the
-    # moment dependencies enter the graph at S02.
+    # The complete default workspace includes the native proxy dependency graph
+    # through fragcap-cli, so this proves both published metadata readability
+    # and the selected S102 stack at the declared floor.
     name: minimum supported toolchain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - name: Build at the declared minimum
         run: cargo build --workspace --locked

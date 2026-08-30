@@ -33,7 +33,7 @@ pub fn walk(bytes: &[u8]) -> Vec<Block> {
         let block_type = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
         let len = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()) as usize;
         assert!(
-            len >= 12 && len % 4 == 0 && off + len <= bytes.len(),
+            len >= 12 && len.is_multiple_of(4) && off + len <= bytes.len(),
             "block length {len} at offset {off} is out of range (total {})",
             bytes.len()
         );

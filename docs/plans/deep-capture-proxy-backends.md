@@ -1,12 +1,23 @@
 # Deep Capture proxy backend research
 
-**Status:** resolved research record for issues #214, #253, and #274.\
+**Status:** historical candidate record, superseded for product direction by #278 and S102.\
 **Date:** 2026-08-30.\
 **Audience:** maintainers, reviewers, future Deep Capture slice authors.
 
 This document evaluates proxy backend options for Deep Capture. It does not add a dependency, ship a proxy, or define the final feature specification. Its job is to keep the backend decision from being made by convenience alone.
 
 ## Recommendation
+
+### S102 supersession
+
+The S099 and S100 measurements remain valid, but their conclusion that
+external `mitmdump` was the final alpha backend is superseded. The operator
+subsequently required complete native Rust Deep Capture and created #278 as
+the completion authority. S102 raises the workspace MSRV to the measured Rust
+1.88 floor and selects an owned, exact-pinned Tokio/Hyper/rustls/rcgen stack so
+fragcap can enforce bounded lifecycle ownership directly. The functional v0.8
+CLI continues to use mitmdump until #290; this record remains the evidence for
+rejecting the two turnkey candidates.
 
 ### S100 final decision
 
@@ -24,9 +35,9 @@ available only as raw upgraded streams requiring application-owned framing.
 advisory-clean graph also fails the Rust 1.82 boundary. A maintained fork,
 transitive compatibility stack, or third candidate is disproportionate to
 the alpha path. The full three-way criterion table and commands are in
-`specs/100-http-mitm-proxy-spike/evidence.md`. Future backend work hardens the
-defined external adapter; it does not reopen candidate selection without a
-new product requirement or repository policy change.
+`specs/100-http-mitm-proxy-spike/evidence.md`. That last condition has now
+occurred through #278 and the Rust 1.88 policy in #280. Future native work
+follows the owned stack rather than reopening turnkey-candidate selection.
 
 ### S099 measured decision
 

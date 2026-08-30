@@ -3,6 +3,12 @@ title: Getting started
 description: Verify fragcap, run a first Capture, and continue into a known-compatible Deep Capture session.
 ---
 
+<Callout title="Deep Capture is incomplete">
+These instructions describe the current v0.8 external-backend path. S102 adds
+a native bounded-runtime foundation, but native protocol inspection and CLI
+cutover remain tracked under [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278).
+</Callout>
+
 fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.8.0 requires.
 
 <Callout title="Start with Capture">

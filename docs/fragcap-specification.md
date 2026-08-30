@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.26-draft \
+**Version:** 0.1.27-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -118,6 +118,7 @@ enforcement.
 | 0.1.24-draft | 2026-08-30 | W. Thompson | **Closes the native proxy backend comparison (issue #274).** Updates section 29 after the isolated `http-mitm-proxy 0.18.0` fallback spike. The smaller candidate passes HTTP/1.1, client-facing HTTPS and HTTP/2, bounded-cache, CA-separation, and HAR-source proofs, but its exact graph is not parseable by Rust 1.82's Cargo and its public API provides neither client-facing TLS key logging nor bounded ownership of spawned connection tasks. Deep Capture retains the shipped external `mitmdump` backend and opens no further speculative backend path. |
 | 0.1.25-draft | 2026-08-30 | W. Thompson | **Adds managed direct-executable launch (issue #254).** Updates sections 7.1, 16.4, 17.2.1, 19.2, 19.4, and 29. Capture and Deep Capture consume one immutable launch prepared from the selected stored target. A cold direct target uses an exact executable beneath its install root, an explicit working directory and argument vector, and child-only proxy environment additions without a command shell or post-effect re-resolution. Warm direct targets remain refused. |
 | 0.1.26-draft | 2026-08-30 | W. Thompson | **Reconciles the specification and public documentation with v0.8.0.** Updates sections 1, 2.1, and 27.3 so current-status prose and release history include compatibility calibration, the public library-first session API, and managed direct-executable launch. Corrects public current-version examples and the assembled Decisions hierarchy. |
+| 0.1.27-draft | 2026-08-30 | W. Thompson | **Makes complete native Rust Deep Capture the required product end state (issues #279, #280, #281, #282, and #291).** Adds the native proxy leaf crate and bounded runtime foundation, raises the workspace MSRV to 1.88 for the selected exact protocol graph, and publishes the #278 ownership, support, refusal, and milestone gates. Explicitly supersedes S100's external-backend end state while retaining mitmdump as the v0.8 functional CLI backend until #290. |
 
 ## 2. Purpose and Problem Statement
 
@@ -140,6 +141,14 @@ The library is the product. The command line tool is one consumer of it, and
 the shell wrappers are consumers of the command line tool. Deep Capture's
 session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
+
+Deep Capture is functional but incomplete. v0.8.0 delegates proxy serving, CA
+creation, HTTP/TLS observation, and TLS key logging to external `mitmdump`, and
+uses `certutil` for current-user trust changes. The native Rust foundation in
+S102 owns a bounded loopback listener and lifecycle only; it does not yet
+forward or inspect traffic and is not selected by the CLI. Issue #278 is the
+completion authority. Deep Capture MUST NOT be described as native,
+self-contained, or feature-complete until issue #334 closes.
 
 ### 2.2 The Problem
 
@@ -883,6 +892,8 @@ fragcap-capture     PacketSource backends: live capture and replay.
 fragcap-attr        FlowAttributor and ProcessWatcher backends.
 fragcap-sink        Sink implementations and transports.
 fragcap-steam       Steam library parsing and profile scaffolding.
+fragcap-targets     Target discovery, compatibility facts, and local stores.
+fragcap-proxy       Native Deep Capture listener, protocol, TLS, and task ownership.
 fragcap             Facade. Assembles and orchestrates the public product API.
 fragcap-cli         Binary. Arguments, production effect bridges, presentation, exit mapping.
 ```
@@ -898,11 +909,14 @@ graph TD
     FACADE --> ATTR[fragcap-attr]
     FACADE --> SINK[fragcap-sink]
     FACADE --> STEAM[fragcap-steam]
+    FACADE --> TARGETS[fragcap-targets]
+    FACADE --> PROXY[fragcap-proxy]
     FACADE --> PROFILE[fragcap-profile]
     CAPTURE --> CORE[fragcap-core]
     ATTR --> CORE
     SINK --> CORE
     STEAM --> PROFILE
+    TARGETS --> PROFILE
     PROFILE --> CORE
 ```
 
@@ -942,6 +956,15 @@ selection, outcome, and finalization timing. Blocking adapters receive finite bu
 and must cooperatively honor them. Event-delivery failure after effects begin is
 reported but never prevents bounded cleanup. Controlled adapters exercise the
 whole public API without platform or privileged effects.
+
+The production native proxy implementation belongs to the leaf
+`fragcap-proxy` crate and is adapted to these facade traits without a binary
+dependency. Its S102 foundation owns an explicit loopback listener, finite
+connection permits and buffers, runtime tasks, cancellation, bounded drain,
+forced termination, and terminal accounting. It reports a stable backend
+identity and zero protocol-inspection capabilities. The CLI MUST continue to
+use its current external adapter until #290 deliberately switches production;
+mere availability of the native foundation is not a cutover.
 
 ### 8.4 Core Types
 
@@ -3539,7 +3562,7 @@ an `xtask` binary, which is a Cargo convention rather than an external
 tool and requires nothing installed beyond the Rust toolchain.
 
 A dedicated monorepo orchestrator is not adopted. At two ecosystems and
-eight crates, the coordination such tools provide costs more in
+nine product crates, the coordination such tools provide costs more in
 configuration and contributor onboarding than it saves, and adopting
 one later is straightforward if the web side grows.
 
@@ -3553,7 +3576,7 @@ resolver = "2"
 [workspace.package]
 version      = "0.1.0"
 edition      = "2021"
-rust-version = "1.82"
+rust-version = "1.88"
 license      = "Apache-2.0"
 repository   = "https://github.com/h8rt3rmin8r/fragcap"
 authors      = ["William Thompson"]
@@ -3783,10 +3806,12 @@ relationship is resolved in the brand session.
 
 ### 24.1 Toolchain
 
-The Rust toolchain is pinned by a `rust-toolchain.toml` declaring a
-minimum supported version of 1.82, the `x86_64-pc-windows-msvc` target,
-and the `rustfmt` and `clippy` components. Pinning ensures local and
-continuous integration builds are identical.
+The development Rust toolchain is pinned by `rust-toolchain.toml` to 1.96.0
+with the `x86_64-pc-windows-msvc` target and the `rustfmt` and `clippy`
+components. The separately declared and mechanically built minimum supported
+version is 1.88. Pinning ensures local and continuous integration builds are
+identical while the MSRV gate proves published metadata and the complete
+workspace graph remain usable at the claimed floor.
 
 Windows builds require the npcap Software Development Kit, acquired at
 build time per section 20.2 rather than vendored.
@@ -4338,6 +4363,98 @@ during implementation is recorded in the slice and promoted to section
 Recorded so that scope pressure has a destination. The following work has not
 shipped as of the release this document applies to.
 
+### 28.1 Native Deep Capture completion contract
+
+Issue #278 is the sole completion authority for native Rust Deep Capture. The
+functional v0.8 path remains external until #290, and the Python prerequisite
+remains until #329. S102 establishes a library-owned, loopback-only,
+finite-capacity runtime foundation. It closes accepted sockets without parsing,
+forwarding, decrypting, or reporting application observations.
+
+The required dependency direction is:
+
+```text
+fragcap-cli -> fragcap -> fragcap-proxy -> external Rust crates
+```
+
+`fragcap-proxy` is a leaf among the platform/effect crates. It depends on no
+fragcap crate. It owns proxy configuration, identity, listener, connections,
+tasks, protocol engines, TLS, certificate issuance, upstream policy, raw proxy
+events, and terminal runtime accounting. The facade owns session policy,
+authorization, launch coordination, Capture composition, compatibility facts,
+artifact assembly, and the stable public API. The CLI owns presentation and
+interactive consent only.
+
+Every existing or planned output has one owner:
+
+| Contract | Native owner |
+| --- | --- |
+| `capture.fcapng` packet truth | Existing Capture pipeline |
+| Versioned bundle manifest and authority | #335 |
+| Complete `application.jsonl` | #301 |
+| Truthful HAR 1.2 projection | #302 |
+| Proxy-owned TLS key log | #300 |
+| Proxy and cleanup sidecars | #336 |
+| Process lifecycle evidence | #319 |
+| Compatibility facts and sidecar | #317 |
+| Crash journal and recovery | #320 |
+| Doctor readiness and residue | #321 |
+| Sensitivity, retention, and deletion | #322 |
+| Consent, progress, and recovery UX | #332 |
+| Stable Rust API | #330 |
+| Final documentation and completion language | #331 and #334 |
+
+The protocol and launch matrix is normative:
+
+| Case | v0.8 shipped state | Native owner or boundary |
+| --- | --- | --- |
+| HTTP/1.1 and CONNECT | External mitmdump, partial records | #292, metadata completeness #296, bodies #297 |
+| HTTPS | External mitmdump with confirmed local trust | #293, client certificates/pinning classification #304 |
+| HTTP/2 | External backend behavior | #294 |
+| WebSocket | Upgrade handshake only in current records | #295 |
+| SSE and gRPC | Not implemented | #298 and #299 |
+| Generic TCP and non-HTTP TLS | Metadata-only current claim | #312 |
+| SOCKS5 TCP and UDP | Not implemented | #310 and #311 |
+| Generic UDP | Packet truth only | #313 |
+| QUIC and HTTP/3 | Packet truth only, no decryption | #314 |
+| IPv6 | No complete native parity claim | #315 |
+| Cold direct executable | Shipped managed path | Native routing strategy #306 and calibration #317 |
+| Cold Steam protocol | Shipped when local facts prove reachability | Platform-client ownership #308 and calibration #317 |
+| Publisher launcher chain | Compatibility-dependent | #307 |
+| Warm client | Refused | Explicit warm-to-cold workflow #309 |
+| Target process hooks, memory reads, key extraction, interception drivers, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
+
+Protocol classification and omission reasons become exhaustive under #316;
+proxy bypass and local-destination correctness belong to #318. A protocol not
+named as implemented is omitted explicitly rather than inferred as supported.
+
+The four milestone exit gates are:
+
+1. **Native Deep Capture 1, foundation**: #279 through #291 are closed; the
+   loopback runtime, authentication/isolation, DNS/upstream policy, CA/trust,
+   event accounting, deterministic lab, native integration, and truthful
+   roadmap pass their tests. Deep Capture remains incomplete after this gate.
+2. **Native Deep Capture 2, HTTP and TLS fidelity**: #292 through #305 plus
+   #335 and #336 are closed; the native path has complete versioned HTTP/TLS,
+   streaming, key-log, artifact, correlation, and conformance contracts. It
+   remains incomplete for the launch and transport matrix.
+3. **Native Deep Capture 3, launch and transport coverage**: #306 through #318
+   are closed; required launch, SOCKS, TCP, UDP, QUIC/HTTP3, IPv6, omission,
+   calibration, and bypass cases are implemented or constitutionally refused.
+4. **Native Deep Capture 4, completion gate**: #319 through #334 are closed;
+   recovery, doctor, artifact security, threat review, fuzz/failure/performance
+   and Windows matrices, supply chain, packaging, API, documentation, and UX
+   pass. Only #334 may authorize the words native, self-contained, and
+   feature-complete for Deep Capture.
+
+S100's candidate measurements remain valid historical evidence. Its conclusion
+that the external backend was the final alpha path is superseded because the
+operator made native completion a product requirement and accepted the measured
+Rust 1.88 floor. The owned stack is exact-pinned Tokio, Hyper, rustls with the
+single ring provider, Tokio Rustls, rcgen, and Windows roots loaded through
+rustls-native-certs. It requires no Python, mitmdump, OpenSSL command or DLL,
+`certutil`, or hidden routing mutation in the native path.
+
 **Linux backend.** libpcap or AF_PACKET acquisition, procfs and netlink
 attribution, eBPF process watching. Includes the network namespace
 strategy from section 9.4, which provides exact attribution without a
@@ -4390,7 +4507,7 @@ to section 6.2.
 | Q-7 | Monospace face selection for brand | Brand session | S18 | **Resolved 2026-08-10.** Geist Mono (see `brand/`). |
 | Q-8 | Parent brand visual relationship | Brand session | S18 | **Resolved 2026-08-10.** ShruggieTech sub-brand; "A ShruggieTech project" endorsement, no combined logo (see `brand/`). |
 | Q-9 | Crate name reservation on the registry | Reserve before first release | S01 | Open |
-| Q-10 | Which native Rust proxy backend should Deep Capture use? | Build candidate spikes and compare protocol coverage, Windows behavior, licenses, dependency graph, MSRV impact, maintenance posture, and integration cost | #214, #253, #274 | **Resolved 2026-08-30.** Retain external `mitmdump`. `hudsucker 0.23.0` is the stronger native functional fit but fails the advisory-clean Rust 1.82 graph boundary. The smaller `http-mitm-proxy 0.18.0` graph also fails Cargo 1.82 parsing and lacks public client-facing key logging and bounded connection-task ownership. No further speculative backend path is open. |
+| Q-10 | Which native Rust proxy backend should Deep Capture use? | Build candidate spikes, then define an owned stack after native completion became required | #214, #253, #274, #278, #280 | **Resolved 2026-08-30, superseded later the same day.** The turnkey spikes remain rejected. S102 raises the measured MSRV to 1.88 and selects an owned Tokio/Hyper/rustls/rcgen stack with bounded lifecycle control. External `mitmdump` remains only the functional v0.8 path until #290. |
 | Q-11 | Which Steam and publisher-launcher handoffs inherit target-scoped proxy configuration? | Launch local installed titles through Steam and bundled third-party launchers while tracing process ancestry, environment, sockets, and proxy reachability | #215 | **Resolved 2026-08-24.** Findings are recorded in the proxy-inheritance reports and feed `deep_capture_facts`. |
 | Q-12 | What is the durable Deep Capture session bundle shape? | Specify pcapng, JSON, HAR, key-log, proxy log, process trace, and compatibility metadata correlation before implementation | #216 | **Resolved 2026-08-25.** A required manifest indexes `.fcapng`, application JSONL, HAR, TLS key log, proxy log, process trace, compatibility updates, cleanup report, omissions, sensitivity, and correlation anchors. |
 | Q-13 | Which target compatibility facts should be cached locally? | Define SQLite records for launcher behavior, proxy inheritance, supported traffic types, pinning observations, and refresh semantics | #217 | **Resolved 2026-08-25.** `deep_capture_facts` stores typed facts per target with launch case, proxy provenance, final-owner details, evidence source, freshness, and stale state. |
@@ -4437,6 +4554,7 @@ measurement that replaced it found no credential in either title.
 | `fragcap-attr` | Attribution and process watching | `netstat2`, `ferrisetw`, `sysinfo` |
 | `fragcap-sink` | Sinks and transports | `pcap-file`, `serde_json`, `interprocess` |
 | `fragcap-steam` | Steam integration | `winreg` |
+| `fragcap-proxy` | Native Deep Capture proxy runtime and protocol stack | `tokio`, `hyper`, `rustls`, `rcgen` |
 | `fragcap` | Facade | workspace crates |
 | `fragcap-cli` | Binary | `clap`, `tracing-subscriber` |
 

@@ -28,10 +28,10 @@ Distinct from the toolchain a project builds with. The first is a compatibility
 promise to consumers; the second is a reproducibility control for the project.
 
 {: .matters }
-> fragcap declares 1.82 while pinning its build toolchain at 1.96.0. A
+> fragcap declares 1.88 while pinning its build toolchain at 1.96.0. A
 > declared minimum that is never exercised is an unverified claim, so a
-> dedicated check builds at the minimum. That check is currently vacuous, since
-> the workspace has no external dependencies, and it says so in its own output.
+> dedicated check builds the complete workspace at the minimum. S102 makes that
+> check cover the exact native proxy protocol graph as well as existing crates.
 
 **See also:** [xtask](rust-and-tooling.md#xtask)
 
