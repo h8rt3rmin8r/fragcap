@@ -3,7 +3,7 @@ title: Getting started
 description: Verify fragcap, run a first Capture, and continue into a known-compatible Deep Capture session.
 ---
 
-fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.7.0 requires.
+fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.8.0 requires.
 
 <Callout title="Start with Capture">
 Capture remains useful when Deep Capture is unavailable. The `.fcapng` file is packet truth in both paths, and an unmodified pcapng analyzer can open it.
@@ -64,7 +64,7 @@ fragcap doctor
 
 ```text
 Identity
-  version                ok    0.7.0
+  version                ok    0.8.0
   binary                 ok    C:\Program Files\fragcap\fragcap.exe
   catalog db             ok    C:\Users\you\AppData\Roaming\fragcap\catalog.db
                                (present)
@@ -163,17 +163,17 @@ Replace the synthetic handle with the handle from your own target listing:
 fragcap targets show sample-target
 ```
 
-`targets show` is read-only. It does not start a proxy or target, change trust, contact a catalog, or refresh evidence. Ordinary Deep Capture requires current facts proving that scoped proxy routing reached the final client through a cold Steam protocol launch:
+`targets show` is read-only. It does not start a proxy or target, change trust, contact a catalog, or refresh evidence. Ordinary Deep Capture requires current facts proving that scoped proxy routing reached the final client through the exact cold managed launch case. This example uses Steam:
 
 ```text
 compatibility:
   proxy-routing = reached-client | launch=steam-protocol-cold | source=observed-run | freshness=current
 ```
 
-Proceed only when the routing fact is current for `steam-protocol-cold`. Propagation, protocol behavior, CA acceptance, and inspectability describe separate observations without replacing that routing requirement.
+Proceed only when the routing fact is current for the selected target's exact `steam-protocol-cold` or `direct-exe-cold` launch case. Propagation, protocol behavior, CA acceptance, and inspectability describe separate observations without replacing that routing requirement.
 
 <Callout type="warn" title="Unknown requires an explicit measurement">
-If the detail view reports `unknown`, stale or conflicting routing facts, or evidence for another launch case, do not run ordinary Deep Capture. Close Steam and run reachability calibration for the exact target and `steam-protocol-cold` launch case. Do not infer compatibility from the title, engine, launcher, executable, or another target. See the [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility).
+If the detail view reports `unknown`, stale or conflicting routing facts, or evidence for another launch case, do not run ordinary Deep Capture. Close any warm target process and run reachability calibration for the exact target and cold launch case. Use `steam-protocol-cold` for a Steam-managed target or `direct-exe-cold` for an eligible direct target. Do not infer compatibility from the title, engine, launcher, executable, or another target. See the [Deep Capture compatibility reference](/docs/reference/deep-capture-compatibility).
 </Callout>
 
 Reachability calibration displays its complete plan before confirmation and never changes certificate trust:
@@ -190,7 +190,7 @@ fragcap deep-capture sample-target --launch --calibrate tls --launch-case steam-
 
 Review the target again before ordinary Deep Capture. Calibration outcomes and fact rows preserve uncertainty; they do not create an aggregate compatibility verdict.
 
-The supported real-target launch case also requires Steam to be closed before the session begins. An already-running Steam process is a warm launch that fragcap does not own, so Deep Capture refuses it. Direct-executable managed launch is also not implemented in v0.7.0.
+For a Steam target, Steam must be closed before the session begins. An already-running Steam process is a warm launch that fragcap does not own, so Deep Capture refuses it. v0.8.0 also supports an eligible cold direct-executable launch from the target's prevalidated executable path; an already-running direct target remains a side-effect-free refusal.
 
 ## 7. Run a known-compatible Deep Capture
 
@@ -208,7 +208,7 @@ Run `fragcap deep-capture --help` to review the current launch, duration, trust,
 
 Deep Capture support remains traffic-specific:
 
-| Traffic | What v0.7.0 can add beyond Capture |
+| Traffic | What v0.8.0 can add beyond Capture |
 | --- | --- |
 | HTTP | Method, URL, and response status when traffic reaches the proxy. Headers and bodies are not retained. |
 | HTTPS | The same HTTP fields when traffic reaches the proxy and accepts the fragcap-owned CA. Certificate-pinned traffic remains encrypted. |
@@ -233,7 +233,7 @@ Bundle artifacts have different authority:
 | --- | --- |
 | `capture.fcapng` | Packet truth and process attribution, readable by unmodified pcapng analyzers. |
 | `application.jsonl` | Sensitive HTTP or connection observations emitted by the proxy. Records may be partial or metadata-only. |
-| `http.har` | Optional [HAR](/docs/glossary/file-and-wire-formats#har) projection of observed HTTP semantics. It cannot contain headers or bodies that v0.7.0 never retained. |
+| `http.har` | Optional [HAR](/docs/glossary/file-and-wire-formats#har) projection of observed HTTP semantics. It cannot contain headers or bodies that v0.8.0 never retained. |
 | `tls-keylog.log` | Optional, highly sensitive [proxy-owned TLS key-log export](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export). It is not extracted from the target process. |
 | `proxy.jsonl` and `process-trace.jsonl` | Sensitive diagnostic evidence about proxy and process activity. |
 | `compatibility.json` | Facts actually observed during this session, with launch and backend provenance. |

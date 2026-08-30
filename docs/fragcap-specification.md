@@ -1,8 +1,8 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.25-draft \
-**Applies-To:** 0.7.0 \
+**Version:** 0.1.26-draft \
+**Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
 **Date:** 2026-08-30 \
@@ -56,7 +56,7 @@ package version and is bound to it by `cargo xtask spec`, so the specification
 and the shipped artifact cannot drift (constitution P-11). **Version** is this
 document's own revision, recorded in the history below. As of this revision the
 released software runs from v0.1.0, the crates.io namespace-reservation stub
-carrying no functionality, through v0.7.0. The per-release scope is in section
+carrying no functionality, through v0.8.0. The per-release scope is in section
 27.3.
 
 ### 1.1 Relationship to Spec Kit
@@ -117,6 +117,7 @@ enforcement.
 | 0.1.23-draft | 2026-08-29 | W. Thompson | **Records the native proxy backend spike decision (issue #253).** Updates section 29 after an isolated Windows comparison. `hudsucker 0.23.0` passed the controlled protocol, lifecycle, HAR-source, CA-separation, bounded-cache, and client-facing key-log proofs, but its advisory-clean resolved graph is not parseable by Rust 1.82's Cargo and the latest line requires Rust 1.86. The shipped `mitmdump` backend remains unchanged while one smaller native fallback is evaluated. |
 | 0.1.24-draft | 2026-08-30 | W. Thompson | **Closes the native proxy backend comparison (issue #274).** Updates section 29 after the isolated `http-mitm-proxy 0.18.0` fallback spike. The smaller candidate passes HTTP/1.1, client-facing HTTPS and HTTP/2, bounded-cache, CA-separation, and HAR-source proofs, but its exact graph is not parseable by Rust 1.82's Cargo and its public API provides neither client-facing TLS key logging nor bounded ownership of spawned connection tasks. Deep Capture retains the shipped external `mitmdump` backend and opens no further speculative backend path. |
 | 0.1.25-draft | 2026-08-30 | W. Thompson | **Adds managed direct-executable launch (issue #254).** Updates sections 7.1, 16.4, 17.2.1, 19.2, 19.4, and 29. Capture and Deep Capture consume one immutable launch prepared from the selected stored target. A cold direct target uses an exact executable beneath its install root, an explicit working directory and argument vector, and child-only proxy environment additions without a command shell or post-effect re-resolution. Warm direct targets remain refused. |
+| 0.1.26-draft | 2026-08-30 | W. Thompson | **Reconciles the specification and public documentation with v0.8.0.** Updates sections 1, 2.1, and 27.3 so current-status prose and release history include compatibility calibration, the public library-first session API, and managed direct-executable launch. Corrects public current-version examples and the assembled Decisions hierarchy. |
 
 ## 2. Purpose and Problem Statement
 
@@ -137,9 +138,8 @@ packet interception drivers, or target TLS key extraction.
 
 The library is the product. The command line tool is one consumer of it, and
 the shell wrappers are consumers of the command line tool. Deep Capture's
-v0.7.0 session orchestration is the current exception: it ships through the CLI
-but is not yet exposed through the public facade API. Issue #252 tracks the
-required library-first extraction.
+session orchestration is exposed through the public facade API; the CLI maps
+arguments and supplies the shipped production effect bridges.
 
 ### 2.2 The Problem
 
@@ -4299,6 +4299,7 @@ restated here. The scope of each release is:
 | v0.5.1 | 2026-08-19 | First-run catalog seeding correction for target discovery | follow-on slice |
 | v0.6.0 | 2026-08-22 | Truthful live status, target-scoped output, loss accounting, and evidence-based target discovery corrections | follow-on slices |
 | v0.7.0 | 2026-08-27 | Deep Capture architecture and MVP, compatibility facts, session bundles, readiness and cleanup, and target-discovery corrections | follow-on slices |
+| v0.8.0 | 2026-08-30 | Deep Capture compatibility calibration, public library-first session orchestration, managed direct-executable launch, and documentation accessibility and recovery corrections | S095 through S101 |
 
 ### 27.4 Critical Path
 

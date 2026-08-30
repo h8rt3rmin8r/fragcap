@@ -56,7 +56,7 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 ## Status
 
-**v0.7.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
+**v0.8.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. The public library API and CLI can orchestrate eligible cold Steam and direct-executable launches. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
 
 v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 

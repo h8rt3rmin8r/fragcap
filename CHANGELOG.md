@@ -16,6 +16,99 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-30
+
+### Added
+
+Deep Capture can now calibrate an unknown stored target in separate reachability and TLS phases, displaying and confirming every bounded effect before it starts and preserving observed facts, local bundle evidence, and cleanup outcomes.
+
+Deep Capture now has a public library-first session API with side-effect-free preparation, exact-plan authorization, typed lifecycle events and reports, injectable effect adapters, bounded cleanup, and direct controlled verification; the command delegates lifecycle policy to that coordinator.
+
+Capture and Deep Capture can now start an eligible stored direct executable from one prevalidated path, working directory, and argument vector. Deep Capture applies proxy variables only to that child, while warm direct targets and unsafe or stale paths remain side-effect-free refusals.
+
+### Fixed
+
+Corrected the repository and documentation entry points to describe v0.7.0 accurately: Capture and Deep Capture are shipped first-class modes, contributor guidance reflects the current workspace, and issue forms use current commands, Npcap requirements, security boundaries, and planning pointers.
+
+The getting-started guide now provides verified v0.7.0 paths for a first Capture and a known-compatible Deep Capture session, including current readiness output, honest compatibility refusals, bundle states, sensitive artifacts, and cleanup.
+
+The public command-line reference now covers the complete v0.7.0 command,
+option, sink, default, and output-routing surface, with a hermetic documentation
+gate that catches future drift against the runtime parser.
+
+The architecture guide now separates passive Capture from explicit Deep Capture, documents the shipped execution and trust boundaries, distinguishes packet truth from proxy-owned evidence, and matches current Npcap acquisition behavior.
+
+The output reference now distinguishes ordinary Capture streams from the Deep Capture session bundle and documents every shipped artifact's authority, sensitivity, lifetime, omission conditions, and correlation limits.
+
+Audited every production documentation route across desktop and narrow layouts,
+recorded accessibility and navigation evidence, and filed each material
+correction as a narrow follow-up issue.
+
+`fragcap doctor` now reads manifest-backed Deep Capture CA trust from Windows current-user and local-machine Root stores, reports exact observed thumbprints and mismatches, and offers cleanup only for an exact owned trust entry.
+
+Deep Capture no longer reports proxy environment propagation as confirmed merely because traffic reached the final client. Routing and propagation remain separate observations, ordinary eligibility uses current final-client routing evidence, TLS acceptance requires a correlated final-client flow, and silence remains inconclusive.
+
+Corrected production documentation landmarks, keyboard bypass, generated
+heading hierarchy, light-theme text contrast, and architecture diagram names.
+
+Corrected documentation search so retired `fragcap run` and `fragcap tap`
+queries lead to current command guidance while preserving release history, and
+added an accessible branded recovery page for missing URLs that retains HTTP
+status 404.
+
+### Decisions
+
+**2026-08-28 - Gate hydrated production accessibility in Chromium**
+
+The documentation workflow now exact-pins `@playwright/test` 1.62.1, installs
+Chromium after building the static export, and blocks on the generated-heading
+unit tests and production accessibility browser suite. Static inspection cannot
+establish Mermaid's hydrated SVG semantics, computed contrast, or keyboard
+focus transfer.
+
+The development-only lockfile delta is four package records:
+`@playwright/test`, `playwright`, and `playwright-core` under Apache-2.0, plus
+Playwright's optional macOS `fsevents` record under MIT. None enters the
+production bundle. The existing workflow pins Node.js 24, above Playwright's
+Node.js 20 minimum, and the Chromium binary remains a CI test artifact rather
+than a repository dependency.
+
+**2026-08-28 - Pin exact retired-command searches to current guidance**
+
+The static search index now promotes the stable current command-reference page
+for the exact retired queries `fragcap run` and `fragcap tap`. ZBSearch's `is`
+condition already normalizes case and outer whitespace, so two narrow rules
+cover the required variants without changing ranking for current terminology.
+Historical results stay in the index and follow the promoted guidance.
+
+`zbsearch` 3.3.4 is now a direct site dependency because first-party route code
+imports its public pinning API. The package was already present at that exact
+version through Fumadocs, so the lockfile gains no package or version. It is
+Apache-2.0 licensed, requires Node.js 20 or newer, and is built under the site's
+pinned Node.js 24 workflow.
+
+**2026-08-28** Kept compatibility calibration inside the existing Deep Capture command and target-owned fact store, with separate reachability and TLS phases. Final-client routing is the eligibility fact; environment propagation is recorded as confirmed only when independent non-invasive evidence supports it.
+
+**2026-08-29** Placed Deep Capture orchestration in the existing `fragcap` facade rather than adding a ninth crate. Authorization binds to one prepared plan, ordinary Capture remains the packet path, and facts and cleanup precede one immutable terminal snapshot. The facade owns lifecycle and evidence policy; the binary retains effect-only bridges to the existing proxy, trust, Capture, target-store, and v0.7 bundle implementations because moving those implementations would either invert dependencies or duplicate the ordinary Capture pipeline. The facade feature implies targets but does not imply live capture, socket-table attribution, or ETW.
+
+- [#253](https://github.com/shruggietech/fragcap/issues/253) records the
+  isolated native proxy spike: `hudsucker 0.23.0` passed the controlled
+  protocol, lifecycle, HAR-source, CA-separation, bounded-cache, and
+  client-facing key-log proofs, but no measured dependency resolution was both
+  advisory-clean and parseable by Rust 1.82's Cargo. The shipped
+  `mitmdump` backend remains unchanged while one smaller native fallback is
+  evaluated.
+
+- [#274](https://github.com/shruggietech/fragcap/issues/274) closes the Deep
+  Capture proxy backend research
+  after an isolated `http-mitm-proxy 0.18.0` Windows spike. The smaller
+  fallback passed controlled HTTP/1.1, client-facing HTTPS and HTTP/2,
+  handshake, HAR-source, CA-separation, bounded-cache, and ten-run listener
+  shutdown proofs. Its exact graph is not parseable by Cargo 1.82, and its
+  public API provides neither client-facing TLS key logging nor bounded
+  ownership of spawned connection tasks. Deep Capture retains external
+  `mitmdump`; no further speculative backend path is opened.
+
 ## [0.7.0] - 2026-08-27
 
 ### Highlights
@@ -7017,6 +7110,7 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.8.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.8.0
 [0.7.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.7.0
 [0.6.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.6.0
 [0.5.1]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.5.1

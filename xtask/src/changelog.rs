@@ -89,8 +89,8 @@ fn split_sections(body: &str) -> Vec<(String, String)> {
 /// body that repeats it as its first heading would otherwise emit a second
 /// `### Added` under the one this assembler writes. A body that leads with its
 /// own title heading (`### Profile schema ...`) is left untouched, so that
-/// heading survives as a titled sub-block, and a decisions body full of
-/// `### <date>: ...` sub-headings is opaque content and is never re-sectioned.
+/// heading survives as a titled sub-block. Decision fragments are separately
+/// required to use a bold dated lead and contain no Markdown heading.
 fn strip_leading_section_header(content: &str, section: &str) -> String {
     let want = format!("### {section}").to_lowercase();
     let mut lines = content.lines().peekable();
@@ -127,6 +127,12 @@ fn strip_leading_spec_impact(content: &str) -> String {
     rest.collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
+fn is_markdown_heading(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    hashes > 0 && trimmed.as_bytes().get(hashes) == Some(&b' ')
+}
+
 /// Merge an `[Unreleased]` body and a set of fragments into one changelog body
 /// in canonical section order.
 ///
@@ -152,6 +158,12 @@ pub fn assemble(unreleased_body: &str, fragments: &[(String, String)]) -> Result
         // Drop the machine-readable spec-impact line first, then a redundant
         // leading section header, so neither reaches the changelog.
         let body = strip_leading_section_header(&strip_leading_spec_impact(content), &key);
+        if key == "decisions" && body.lines().any(is_markdown_heading) {
+            return Err(
+                "decision changelog fragments must use a bold dated lead, not a Markdown heading"
+                    .to_string(),
+            );
+        }
         chunks.push((key, body));
     }
 
@@ -586,6 +598,16 @@ mod tests {
         let add = body.find("### Added").unwrap();
         let dec = body.find("### Decisions").unwrap();
         assert!(hi < add && add < dec);
+    }
+
+    #[test]
+    fn refuses_a_heading_inside_a_decision_fragment() {
+        let frags = vec![(
+            "decisions".into(),
+            "<!-- spec-impact: none -->\n\n## 2026-08-30 - A decision\n\nReasoning.\n".into(),
+        )];
+        let error = assemble("", &frags).unwrap_err();
+        assert!(error.contains("bold dated lead"));
     }
 
     #[test]
