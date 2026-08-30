@@ -4,7 +4,9 @@ use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-use fragcap_proxy::{NativeProxyBackend, NativeProxyConfig, SessionCapability};
+use fragcap_proxy::{
+    NativeProxyBackend, NativeProxyConfig, ProxyAuthorizationError, SessionCapability,
+};
 
 #[test]
 fn capability_is_random_redacted_and_exact() {
@@ -14,6 +16,39 @@ fn capability_is_random_redacted_and_exact() {
     assert!(first.authenticates(first.proof().as_bytes()));
     assert!(!first.authenticates(second.proof().as_bytes()));
     assert!(!format!("{first:?}").contains(&format!("{:?}", first.proof().as_bytes())));
+}
+
+#[test]
+fn capability_uses_strict_standard_proxy_authorization() {
+    let capability = SessionCapability::generate().unwrap();
+    let proof = capability.proof();
+    let authorization = proof.proxy_authorization();
+    assert!(authorization.starts_with("Basic "));
+    assert_eq!(
+        capability.authenticates_proxy_authorization(Some(authorization.as_bytes())),
+        Ok(())
+    );
+    assert_eq!(
+        capability.authenticates_proxy_authorization(None),
+        Err(ProxyAuthorizationError::Missing)
+    );
+    assert_eq!(
+        capability.authenticates_proxy_authorization(Some(b"Bearer nope")),
+        Err(ProxyAuthorizationError::Malformed)
+    );
+    assert_eq!(
+        capability.authenticates_proxy_authorization(Some(b"Basic bm9wZQ==")),
+        Err(ProxyAuthorizationError::Malformed)
+    );
+    let other = SessionCapability::generate()
+        .unwrap()
+        .proof()
+        .proxy_authorization();
+    assert_eq!(
+        capability.authenticates_proxy_authorization(Some(other.as_bytes())),
+        Err(ProxyAuthorizationError::Refused)
+    );
+    assert!(!format!("{proof:?}").contains(proof.proxy_password().as_str()));
 }
 
 #[test]
@@ -29,14 +64,20 @@ fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
     let mut lease = backend.start(Duration::from_secs(1)).unwrap();
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let mut wrong = TcpStream::connect(endpoint).unwrap();
-    wrong.write_all(&[0_u8; 32]).unwrap();
-    wrong.write_all(b"SECRET THAT MUST NOT BE READ").unwrap();
+    wrong
+        .write_all(
+            b"POST http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nProxy-Authorization: Basic ZnJhZ2NhcDp3cm9uZw==\r\nContent-Length: 28\r\n\r\nSECRET THAT MUST NOT BE READ",
+        )
+        .unwrap();
     drop(wrong);
     let mut right = TcpStream::connect(endpoint).unwrap();
-    right
-        .write_all(lease.capability_proof().as_bytes())
-        .unwrap();
-    right.write_all(b"synthetic").unwrap();
+    let authorization = lease.capability_proof().proxy_authorization();
+    write!(
+        right,
+        "GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nProxy-Authorization: {}\r\nConnection: close\r\n\r\n",
+        authorization.as_str()
+    )
+    .unwrap();
     drop(right);
     std::thread::sleep(Duration::from_millis(50));
     let report = lease.cleanup(Duration::from_secs(1));

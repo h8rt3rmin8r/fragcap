@@ -6,28 +6,29 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fragcap::deep_capture::{
-    ArtifactRequests, BackendDescriptor, Budget, Deadlines, LaunchCase, LoopbackEndpoint,
-    NativeProxyAdapter, PlanId, PreparedTarget, ProxyBackend, SessionMode, SessionPlan,
+    run_controlled_native_requests, ArtifactRequests, BackendDescriptor, Budget, CleanupStatus,
+    Deadlines, LaunchCase, LoopbackEndpoint, NativeProxyAdapter, PlanId, PreparedTarget,
+    ProxyBackend, SessionMode, SessionPlan,
 };
 
-fn plan(port: u16) -> SessionPlan {
+fn plan(session: &str) -> SessionPlan {
     SessionPlan {
-        id: PlanId::new("plan-native-foundation"),
-        session_id: "session-native-foundation".to_string(),
+        id: PlanId::new(format!("plan-{session}")),
+        session_id: session.to_string(),
         target: PreparedTarget {
             id: 1,
             handle: "controlled".to_string(),
             launch_case: LaunchCase::Controlled,
         },
-        mode: SessionMode::Capture,
+        mode: SessionMode::TlsCalibration,
         controlled: true,
         proxy_backend: BackendDescriptor {
             name: "fragcap-native".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
-        endpoint: LoopbackEndpoint { port },
-        bundle: PathBuf::from("controlled-native-bundle"),
-        trust_ca: false,
+        endpoint: LoopbackEndpoint { port: 0 },
+        bundle: PathBuf::from("unused-controlled-bundle"),
+        trust_ca: true,
         artifacts: ArtifactRequests {
             har: false,
             key_log: false,
@@ -37,28 +38,39 @@ fn plan(port: u16) -> SessionPlan {
 }
 
 #[test]
-fn rust_consumer_starts_and_cleans_native_backend_without_cli() {
-    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = reserved.local_addr().unwrap().port();
-    drop(reserved);
+fn public_native_adapter_runs_real_controlled_http_and_tls_without_leaking_route_secrets() {
+    let mut adapter = NativeProxyAdapter::default();
+    let mut lease = adapter
+        .start(&plan("s104-facade"), Budget::new(Duration::from_secs(2)))
+        .unwrap();
+    let route = lease.route().unwrap();
+    let debug = format!("{route:?}");
+    assert!(!debug.contains(route.proxy_authorization()));
+    assert!(!debug.contains(route.proxy_url()));
+    let (http, https) = route.controlled_origins().unwrap();
+    run_controlled_native_requests(
+        format!("127.0.0.1:{}", route.endpoint().port)
+            .parse()
+            .unwrap(),
+        route.proxy_authorization(),
+        http,
+        https,
+        route.ca_der().to_vec(),
+        true,
+    )
+    .unwrap();
 
-    let mut backend = NativeProxyAdapter::default();
-    assert_eq!(backend.descriptor().name, "fragcap-native");
-    let mut lease = backend
-        .start(&plan(port), Budget::new(Duration::from_secs(1)))
-        .expect("native backend starts");
-    assert!(lease
+    let observations = lease
         .observations(Budget::new(Duration::from_secs(1)))
-        .expect("native observation succeeds")
-        .is_empty());
-    let stopped = lease.stop(Budget::new(Duration::from_secs(1)));
-    let cleanup = lease.cleanup(Budget::new(Duration::from_secs(1)));
-    assert!(matches!(
-        stopped.status,
-        fragcap::deep_capture::CleanupStatus::Released
-    ));
-    assert!(cleanup.iter().all(|result| matches!(
-        result.status,
-        fragcap::deep_capture::CleanupStatus::Released
-    )));
+        .unwrap();
+    assert!(observations.iter().any(|item| item.protocol == "http"));
+    assert!(observations.iter().any(|item| item.protocol == "https"));
+    assert_eq!(
+        lease.stop(Budget::new(Duration::from_secs(2))).status,
+        CleanupStatus::Released
+    );
+    assert!(lease
+        .cleanup(Budget::new(Duration::from_secs(2)))
+        .iter()
+        .all(|result| result.status == CleanupStatus::Released));
 }

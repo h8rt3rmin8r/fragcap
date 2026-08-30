@@ -120,6 +120,7 @@ enforcement.
 | 0.1.26-draft | 2026-08-30 | W. Thompson | **Reconciles the specification and public documentation with v0.8.0.** Updates sections 1, 2.1, and 27.3 so current-status prose and release history include compatibility calibration, the public library-first session API, and managed direct-executable launch. Corrects public current-version examples and the assembled Decisions hierarchy. |
 | 0.1.27-draft | 2026-08-30 | W. Thompson | **Makes complete native Rust Deep Capture the required product end state (issues #279, #280, #281, #282, and #291).** Adds the native proxy leaf crate and bounded runtime foundation, raises the workspace MSRV to 1.88 for the selected exact protocol graph, and publishes the #278 ownership, support, refusal, and milestone gates. Explicitly supersedes S100's external-backend end state while retaining mitmdump as the v0.8 functional CLI backend until #290. |
 | 0.1.28-draft | 2026-08-30 | W. Thompson | **Completes the secure native proxy foundation (issues #283 through #289).** Adds authenticated loopback admission, bounded upstream policy and native roots, per-session certificate and exact current-user trust ownership, a loss-accounted raw observation contract, and the deterministic local protocol lab. Production forwarding and inspection remain external until #290. |
+| 0.1.29-draft | 2026-08-30 | W. Thompson | **Cuts Deep Capture over to native HTTP and TLS (issues #290, #292, and #293).** Removes the production Python and mitmdump path, adds session-authenticated bounded HTTP/1.1 and CONNECT forwarding, terminates approved client TLS with the session authority, establishes a separately verified upstream TLS boundary, maps truthful coarse observations through the facade, and verifies the public CLI with real controlled loopback traffic. Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -143,13 +144,11 @@ the shell wrappers are consumers of the command line tool. Deep Capture's
 session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
 
-Deep Capture is functional but incomplete. v0.8.0 delegates proxy serving, CA
-creation, HTTP/TLS observation, and TLS key logging to external `mitmdump`.
-S103 completes the native authenticated-listener, upstream-policy,
-certificate/trust, raw-observation, and controlled-protocol-lab foundation. It
-does not yet forward or inspect production traffic and is not selected by the CLI. Issue #278 is the
-completion authority. Deep Capture MUST NOT be described as native,
-self-contained, or feature-complete until issue #334 closes.
+Deep Capture is functional but incomplete. S104 makes the native Rust proxy the
+sole production path for bounded authenticated HTTP/1.1, CONNECT, and HTTPS
+inspection. Client-facing TLS uses the exact session authority and upstream TLS
+is verified independently. Issue #278 is the completion authority. Deep Capture
+MUST NOT be described as self-contained or feature-complete until issue #334 closes.
 
 ### 2.2 The Problem
 
@@ -964,10 +963,9 @@ dependency. Its S102 foundation owns an explicit loopback listener, finite
 connection permits and buffers, runtime tasks, cancellation, bounded drain,
 forced termination, and terminal accounting. It reports a stable backend
 identity, authenticated admission, bounded upstream policy, session certificate
-ownership, exact native trust effects, raw observations, and zero production
-protocol-inspection capabilities. The CLI MUST continue to
-use its current external adapter until #290 deliberately switches production;
-mere availability of the native foundation is not a cutover.
+ownership, exact native trust effects, and raw observations. S104 deliberately
+switches the CLI to that native path and adds authenticated HTTP/1.1, CONNECT,
+and separately verified HTTPS inspection. No production external adapter remains.
 
 ### 8.4 Core Types
 
@@ -2843,7 +2841,6 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --launch-case <CASE>   Declare the launch case being measured
       --har                  Write HAR when HTTP semantics are observable
       --key-log              Write a proxy-owned analyzer key log
-      --proxy-backend <NAME> Local inspection proxy backend [default: mitmdump]
       --quiet                Suppress progress output
       --silent               Suppress all non-error output
       --json                 Emit structured events on stderr
@@ -2901,14 +2898,12 @@ therefore refuses because it cannot prove cold ownership. It does not claim that
 the same-named process is the selected target. Exact path disambiguation would
 require the target-process handle the project deliberately does not open.
 
-The initial backend boundary is named by `--proxy-backend mitmdump`. The backend
-is replaceable by design: the CLI contract, bundle contract, status event stream,
-and compatibility facts do not depend on Python-specific implementation details.
-Continuous verification launches a placeholder child process through the same
-scoped proxy environment used by a real session. A deterministic loopback proxy
-adapter receives its HTTP-like, CONNECT/HTTPS, metadata-only, and unsupported
-requests, then feeds those observations through the production ingestion,
-bundle, compatibility, and cleanup paths. This requires no third-party account,
+S104 removes the backend selector and makes the library-owned native proxy the
+sole production path. Continuous verification launches a controlled child process
+through the same authenticated scoped proxy environment used by a real session.
+Deterministic plain and TLS loopback origins exercise real HTTP/1.1, CONNECT,
+client-facing session-CA TLS, separately verified upstream TLS, observations,
+bundles, compatibility facts, and cleanup. This requires no third-party account,
 external service, locally installed game, capture driver, or trust-store change.
 The controlled packet artifact is synthetic test truth because continuous
 integration has no capture driver; real sessions reuse the ordinary Capture
@@ -4368,13 +4363,13 @@ shipped as of the release this document applies to.
 
 ### 28.1 Native Deep Capture completion contract
 
-Issue #278 is the sole completion authority for native Rust Deep Capture. The
-functional v0.8 path remains external until #290, and the Python prerequisite
-remains until #329. S102 establishes a library-owned, loopback-only,
+Issue #278 is the sole completion authority for native Rust Deep Capture. S104
+closes #290 and removes the production Python and external proxy prerequisite.
+S102 establishes a library-owned, loopback-only,
 finite-capacity runtime foundation. S103 completes authenticated admission,
 bounded upstream policy, session certificate and trust ownership, raw event
-accounting, and the controlled protocol lab. It still does not claim production
-forwarding, decryption, or application observation.
+accounting, and the controlled protocol lab. S104 adds the production native
+HTTP/1.1, CONNECT, and separately verified HTTPS path.
 
 The required dependency direction is:
 
@@ -4413,8 +4408,8 @@ The protocol and launch matrix is normative:
 
 | Case | v0.8 shipped state | Native owner or boundary |
 | --- | --- | --- |
-| HTTP/1.1 and CONNECT | External mitmdump, partial records | #292, metadata completeness #296, bodies #297 |
-| HTTPS | External mitmdump with confirmed local trust | #293, client certificates/pinning classification #304 |
+| HTTP/1.1 and CONNECT | Native bounded forwarding and coarse records | Metadata completeness #296, bodies #297 |
+| HTTPS | Native session-CA inspection with verified upstream TLS | Client certificates/pinning classification #304 |
 | HTTP/2 | External backend behavior | #294 |
 | WebSocket | Upgrade handshake only in current records | #295 |
 | SSE and gRPC | Not implemented | #298 and #299 |

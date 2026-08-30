@@ -4,11 +4,11 @@ description: Process-attributed Capture and explicit, target-scoped Deep Capture
 ---
 
 <Callout title="Deep Capture status">
-Deep Capture is functional but incomplete. v0.8 uses external mitmdump. S103
-completes the native security, upstream, certificate/trust, event, and protocol-lab
-foundation without production protocol inspection or CLI cutover. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
-owns the completion roadmap. It is not yet native, self-contained, or
-feature-complete.
+Deep Capture is functional but incomplete. S104 makes native authenticated
+HTTP/1.1, CONNECT, and HTTPS inspection the sole production proxy path. Python
+and mitmdump are no longer prerequisites. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+owns the remaining completion roadmap. Deep Capture is not yet self-contained
+or feature-complete.
 </Callout>
 
 fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.

@@ -58,19 +58,18 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 **v0.8.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. The public library API and CLI can orchestrate eligible cold Steam and direct-executable launches. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
 
-> **Deep Capture is functional but incomplete.** v0.8.0 still delegates proxy
-> serving, HTTP/TLS observation, and TLS key logging to external `mitmdump`.
-> S103 completes the native foundation for authenticated loopback admission,
-> bounded upstream policy, session certificate issuance, direct current-user
-> trust-store effects, loss-accounted raw events, and the controlled protocol
-> lab. It does not yet forward or inspect production traffic and the CLI does
-> not select it. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+> **Deep Capture is functional but incomplete.** S104 makes the native Rust
+> proxy the sole production path and provides bounded authenticated HTTP/1.1,
+> CONNECT, and separately verified HTTPS inspection. Python and mitmdump are no
+> longer runtime prerequisites. Protocol, launch, transport, recovery, artifact,
+> and completion coverage continues through the remaining Deep Capture milestones.
+> [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
 > owns the complete four-milestone roadmap. Do not treat Deep Capture as native,
 > self-contained, or feature-complete until the final gate, #334, closes.
 
 v0.2.0 remains the first functional release and the completion point of the original S01 through S18 roadmap. Later releases added the Windows installer, target discovery and storage, capture usability and fidelity corrections, and Deep Capture. See [Releases](https://github.com/h8rt3rmin8r/fragcap/releases) and [`CHANGELOG.md`](CHANGELOG.md) for the chronological record.
 
-Live Capture and Deep Capture packet recording require Npcap and administrative privilege. Socket-table attribution, target management, and offline replay support do not require the capture driver. Deep Capture additionally requires a supported proxy backend and current compatibility evidence for the selected launch case. Compatibility calibration displays and confirms its bounded effects, and TLS calibration separately confirms any current-user CA trust change. The [compatibility reference](https://fragcap.com/docs/reference/deep-capture-compatibility) states the shipped traffic limits.
+Live Capture and Deep Capture packet recording require Npcap and administrative privilege. Socket-table attribution, target management, offline replay, and the native controlled Deep Capture protocol lab do not require the capture driver. Deep Capture additionally requires current compatibility evidence for the selected launch case. Compatibility calibration displays and confirms its bounded effects, and TLS calibration separately confirms any current-user CA trust change. The [compatibility reference](https://fragcap.com/docs/reference/deep-capture-compatibility) states the shipped traffic limits.
 
 ## The problem
 

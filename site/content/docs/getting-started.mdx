@@ -4,10 +4,9 @@ description: Verify fragcap, run a first Capture, and continue into a known-comp
 ---
 
 <Callout title="Deep Capture is incomplete">
-These instructions describe the current v0.8 external-backend path. S103 completes
-the native security, upstream, certificate, event, and protocol-lab foundation,
-but native production protocol inspection and CLI
-cutover remain tracked under [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278).
+These instructions describe the S104 native HTTP/1.1, CONNECT, and HTTPS path.
+Broader protocol, launch, transport, artifact, recovery, and completion work
+remains tracked under [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278).
 </Callout>
 
 fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.8.0 requires.
@@ -18,21 +17,21 @@ Capture remains useful when Deep Capture is unavailable. The `.fcapng` file is p
 
 ## Before you begin
 
-Live Capture and Deep Capture packet recording require Windows, an elevated terminal, and the separately installed Npcap driver in WinPcap API-compatible mode. [Wireshark](https://www.wireshark.org/download.html) is the recommended analyzer and its Windows installer can install Npcap. Deep Capture additionally requires the `mitmdump` command from [mitmproxy](https://docs.mitmproxy.org/stable/overview/installation/). These tools follow fragcap's documented [dependency model](/docs/glossary/platform-and-distribution#dependency-model).
+Live Capture and Deep Capture packet recording require Windows, an elevated terminal, and the separately installed Npcap driver in WinPcap API-compatible mode. [Wireshark](https://www.wireshark.org/download.html) is the recommended analyzer and its Windows installer can install Npcap. The Deep Capture proxy is included in fragcap. These tools follow fragcap's documented [dependency model](/docs/glossary/platform-and-distribution#dependency-model).
 
 ```mermaid
 flowchart TD
   fragcap["fragcap"]
   npcap["Npcap: live packet capture"]
   wireshark["Wireshark: packet analysis"]
-  mitmdump["mitmdump: Deep Capture proxy backend"]
+  proxy["fragcap-proxy: native Deep Capture proxy"]
   capture["Capture: packet truth and process attribution"]
   deep["Deep Capture: Capture plus compatible proxy observations"]
   fragcap --> capture
   fragcap --> deep
   npcap --> capture
   npcap --> deep
-  mitmdump --> deep
+  proxy --> deep
   capture --> wireshark
   deep --> wireshark
 ```
@@ -41,7 +40,7 @@ These tools have distinct jobs:
 
 - **Npcap is required for live packets.** fragcap never bundles, hosts, caches as its own, or redistributes Npcap. The published `doctor --fix` opens the official acquisition page after confirmation; a source build with the optional `net` feature may instead fetch and launch the vendor's signed installer after confirmation.
 - **Wireshark is recommended for analysis.** It opens `.fcapng` directly. The optional fragcap extcap integration adds a live fragcap source inside Wireshark.
-- **mitmdump is required only for Deep Capture.** Install the Windows mitmproxy package so `mitmdump` is on `PATH`. Do not configure a system-wide proxy or install mitmproxy's CA for this guide; fragcap prepares its target-scoped proxy session and manages its own purpose-specific CA only when the command explicitly includes `--trust-ca`.
+- **The Deep Capture proxy ships with fragcap.** Do not configure a system-wide proxy; fragcap prepares its target-scoped native proxy session and manages its own purpose-specific CA only when the command explicitly includes `--trust-ca`.
 
 Capture records the payload bytes it observes unless you select `--no-payload`. fragcap does not guess whether those bytes are encrypted. Deep Capture can add HTTP semantics only for traffic that follows the scoped proxy route and, for HTTPS, accepts the fragcap-owned local CA. It does not bypass certificate pinning or extract keys from a target process.
 
@@ -56,8 +55,6 @@ If Npcap is not installed, install Wireshark and leave **Install Npcap** selecte
 ![Wireshark Packet Capture screen with Install Npcap checked](/screenshots/03_wireshark_packet-capture_install-npcap.png)
 
 ![Npcap Installation Options with WinPcap API-compatible Mode checked](/screenshots/05_wireshark_npcap-setup_options.png)
-
-For Deep Capture, also install mitmproxy using its [official Windows instructions](https://docs.mitmproxy.org/stable/overview/installation/). The installer places `mitmdump` on `PATH`.
 
 ## 2. Verify the environment
 
@@ -101,7 +98,7 @@ Integration
                                C:\Users\you\AppData\Roaming\Wireshark\extcap
 
 Deep Capture
-  proxy backend          ok    mitmdump Mitmproxy: 12.1.0
+  proxy backend          ok    fragcap-native 0.8.0
   local CA trust         ok    no fragcap Deep Capture CA trust found
   analyzer key log       ok    TLS key-log path is visible to this session
   proxy ports            ok    no stale Deep Capture proxy ports found
@@ -201,12 +198,12 @@ For a Steam target, Steam must be closed before the session begins. An already-r
 
 ## 7. Run a known-compatible Deep Capture
 
-Review the planned side effects before continuing: fragcap starts a loopback mitmdump child, starts ordinary packet Capture, prepares target-scoped proxy environment for the managed launch, may trust a purpose-specific CA in the current-user Root store when you authorize it with `--trust-ca`, writes a session bundle, and attempts to remove session-owned trust and processes during cleanup. It never falls back to a system-wide proxy.
+Review the planned side effects before continuing: fragcap starts its native loopback proxy, starts ordinary packet Capture, prepares target-scoped proxy environment for the managed launch, may trust a purpose-specific CA in the current-user Root store when you authorize it with `--trust-ca`, writes a session bundle, and attempts to remove session-owned trust and tasks during cleanup. It never falls back to a system-wide proxy.
 
 For a target that passed the eligibility check, run:
 
 ```powershell
-fragcap deep-capture sample-target --launch --duration 5m --trust-ca --har --key-log
+fragcap deep-capture sample-target --launch --duration 5m --trust-ca --har
 ```
 
 `--trust-ca` is the trust confirmation. Adding it authorizes this run to make the stated current-user trust change when HTTPS inspection needs it; there is no second interactive trust prompt. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Do not substitute `--yes` on a first run because that broader flag pre-confirms Deep Capture prompts for unattended use.

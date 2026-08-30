@@ -3,9 +3,11 @@
 `fragcap-proxy` owns the native loopback runtime for fragcap Deep Capture.
 
 S102 provides the library boundary and bounded listener, connection, task, and
-shutdown ownership. It intentionally does not forward, decrypt, parse, or claim
-inspectability for traffic. The functional v0.8 command-line path continues to
-use external mitmdump until the native integration issue is complete.
+shutdown ownership. S103 adds authenticated admission, upstream policy,
+certificate and trust ownership, and loss-accounted raw events. S104 adds the
+bounded HTTP/1.1, CONNECT, and two-boundary TLS engines and makes this crate the
+sole production Deep Capture proxy path. Later milestones own broader protocols,
+transports, launch coverage, richer artifacts, and final completion.
 
 This crate never configures an ambient system proxy and never reaches inside a
 target process.

@@ -663,8 +663,8 @@ mod tests {
                 )),
                 session_dir_present: false,
                 proxy_backend: Some(ProxyBackendInfo {
-                    name: "mitmdump".to_string(),
-                    version: Some("Mitmproxy: 12.1.0".to_string()),
+                    name: "fragcap-native".to_string(),
+                    version: Some("0.8.0".to_string()),
                 }),
                 proxy_backend_error: None,
                 analyzer_keylog_configured: true,

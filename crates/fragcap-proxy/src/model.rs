@@ -12,6 +12,8 @@ pub struct NativeProxyConfig {
     pub(crate) max_connections: NonZeroUsize,
     pub(crate) per_connection_buffer_bytes: NonZeroUsize,
     pub(crate) shutdown_timeout: Duration,
+    pub(crate) protocol: ProtocolLimits,
+    pub(crate) session_id: String,
 }
 
 impl NativeProxyConfig {
@@ -45,6 +47,8 @@ impl NativeProxyConfig {
             max_connections,
             per_connection_buffer_bytes,
             shutdown_timeout,
+            protocol: ProtocolLimits::default(),
+            session_id: "native-session".to_string(),
         })
     }
 
@@ -62,6 +66,67 @@ impl NativeProxyConfig {
 
     pub fn shutdown_timeout(&self) -> Duration {
         self.shutdown_timeout
+    }
+
+    pub fn with_protocol_limits(mut self, protocol: ProtocolLimits) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Result<Self, ConfigError> {
+        let session_id = session_id.into();
+        if session_id.trim().is_empty() {
+            return Err(ConfigError::new(
+                "empty-session-id",
+                "native proxy session id must not be empty",
+            ));
+        }
+        self.session_id = session_id;
+        Ok(self)
+    }
+
+    pub fn protocol_limits(&self) -> &ProtocolLimits {
+        &self.protocol
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolLimits {
+    pub max_header_bytes: usize,
+    pub max_headers: usize,
+    pub max_body_bytes: u64,
+    pub max_requests_per_connection: usize,
+    pub max_observations: usize,
+    pub header_timeout: Duration,
+    pub idle_timeout: Duration,
+    pub tls_handshake_timeout: Duration,
+    pub upstream: crate::UpstreamBudgets,
+    pub leaf_cache_entries: NonZeroUsize,
+    pub leaf_cache_bytes: NonZeroUsize,
+    pub leaf_lifetime: Duration,
+}
+
+impl Default for ProtocolLimits {
+    fn default() -> Self {
+        Self {
+            max_header_bytes: 64 * 1024,
+            max_headers: 128,
+            max_body_bytes: 16 * 1024 * 1024,
+            max_requests_per_connection: 1_024,
+            max_observations: 4_096,
+            header_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_secs(60),
+            tls_handshake_timeout: Duration::from_secs(10),
+            upstream: crate::UpstreamBudgets {
+                dns: Duration::from_secs(5),
+                connect: Duration::from_secs(10),
+                read: Duration::from_secs(60),
+                write: Duration::from_secs(60),
+            },
+            leaf_cache_entries: NonZeroUsize::new(256).expect("constant is non-zero"),
+            leaf_cache_bytes: NonZeroUsize::new(8 * 1024 * 1024).expect("constant is non-zero"),
+            leaf_lifetime: Duration::from_secs(24 * 60 * 60),
+        }
     }
 }
 
@@ -139,6 +204,8 @@ pub struct RuntimeObservation {
     pub live_connections: usize,
     pub peak_live_connections: usize,
     pub failures: Vec<RuntimeFailure>,
+    pub protocol: ProtocolAccounting,
+    pub application: Vec<ProxyObservation>,
 }
 
 impl RuntimeObservation {
@@ -156,8 +223,56 @@ impl RuntimeObservation {
             live_connections: 0,
             peak_live_connections: 0,
             failures: Vec::new(),
+            protocol: ProtocolAccounting::default(),
+            application: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProtocolAccounting {
+    pub requests: u64,
+    pub responses: u64,
+    pub informational_responses: u64,
+    pub connect_requests: u64,
+    pub client_tls_completed: u64,
+    pub upstream_tls_completed: u64,
+    pub parse_refused: u64,
+    pub policy_refused: u64,
+    pub timed_out: u64,
+    pub observations_dropped_oldest: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlsBoundary {
+    Client,
+    Upstream,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlsNegotiation {
+    pub boundary: TlsBoundary,
+    pub requested_identity: String,
+    pub version: Option<String>,
+    pub alpn: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyObservation {
+    pub session_id: String,
+    pub connection_id: u64,
+    pub request_ordinal: u64,
+    pub client_peer: SocketAddr,
+    pub proxy_local: SocketAddr,
+    pub timestamp_ns: u64,
+    pub protocol: String,
+    pub method: Option<String>,
+    pub url: Option<String>,
+    pub status: Option<u16>,
+    pub inspectability: &'static str,
+    pub reason: Option<String>,
+    pub tls: Option<TlsNegotiation>,
+    pub transformations: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,7 +291,6 @@ impl ShutdownReport {
             && self.observation.live_connections == 0
             && self.incomplete_tasks == 0
             && !self.residue
-            && self.observation.failures.is_empty()
     }
 }
 

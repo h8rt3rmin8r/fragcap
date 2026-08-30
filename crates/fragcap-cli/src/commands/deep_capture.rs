@@ -2,23 +2,18 @@
 
 //! `deep-capture`: explicit scoped local proxy inspection for one stored target.
 //!
-//! This first vertical slice is intentionally narrow. It exercises the product
-//! shape and artifact contracts with a controlled target path, refuses unsafe or
-//! unknown real-target paths before side effects, and keeps the proxy backend
-//! behind a replaceable boundary so a native backend can replace `mitmdump`
-//! later without changing the CLI contract.
+//! The command maps arguments and presentation onto the library-owned native
+//! session. Proxy protocol, trust identity, and lifecycle policy stay below this
+//! boundary.
 
 use std::cell::RefCell;
-use std::ffi::OsString;
 use std::fs;
-use std::io::{IsTerminal, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::io::IsTerminal;
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -34,16 +29,18 @@ use fragcap::targets::{
     CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store,
     TargetEntry,
 };
+#[cfg(test)]
+use fragcap::FlowId;
 use fragcap::{
-    CaptureStats, CapturedPacket, Fidelity, FlowId, FlowKey, FlowRegistry, InterfaceDeclaration,
-    InterfaceId, LinkType, Payload, PcapngWriter, Proto, RawPacket, Sink, StopReason, Timestamp,
+    CaptureStats, CapturedPacket, FlowKey, FlowRegistry, InterfaceDeclaration, InterfaceId,
+    LinkType, Payload, PcapngWriter, Proto, RawPacket, Sink, StopReason, Timestamp,
 };
 use serde_json::json;
 
 use crate::args::Direction;
 use crate::cli::{
     CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureCalibrationArg,
-    DeepCaptureLaunchCaseArg, DeepCaptureProxyArg, OfflineArgs, ScopeArg,
+    DeepCaptureLaunchCaseArg, OfflineArgs, ScopeArg,
 };
 use crate::commands::{capture, target_resolve};
 use crate::emit::Emitter;
@@ -51,65 +48,6 @@ use crate::events::{rfc3339_utc, Event};
 use crate::exit::{CliError, Exit};
 use crate::paths;
 
-const MITMDUMP_ADDON: &str = r#"
-from mitmproxy import http, tcp
-import json
-import os
-import time
-
-EVENTS = os.environ.get("FRAGCAP_DEEP_CAPTURE_EVENTS")
-
-def write_record(record):
-    if not EVENTS:
-        return
-    record.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-    with open(EVENTS, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-
-def address(value):
-    if not value:
-        return None
-    return {"host": value[0], "port": value[1]}
-
-def response(flow: http.HTTPFlow):
-    write_record({
-        "proxy_connection_id": flow.id,
-        "client_peer": address(flow.client_conn.peername),
-        "proxy_local": address(flow.client_conn.sockname),
-        "protocol": flow.request.scheme,
-        "inspectability": "full",
-        "method": flow.request.method,
-        "url": flow.request.pretty_url,
-        "status": flow.response.status_code if flow.response else None,
-        "reason": None,
-    })
-
-def error(flow: http.HTTPFlow):
-    write_record({
-        "proxy_connection_id": flow.id,
-        "client_peer": address(flow.client_conn.peername),
-        "proxy_local": address(flow.client_conn.sockname),
-        "protocol": flow.request.scheme if flow.request else "http",
-        "inspectability": "metadata-only",
-        "method": flow.request.method if flow.request else None,
-        "url": flow.request.pretty_url if flow.request else None,
-        "status": None,
-        "reason": str(flow.error) if flow.error else "http flow error",
-    })
-
-def tcp_message(flow: tcp.TCPFlow):
-    write_record({
-        "proxy_connection_id": flow.id,
-        "client_peer": address(flow.client_conn.peername),
-        "proxy_local": address(flow.client_conn.sockname),
-        "protocol": "non-http-tls",
-        "inspectability": "metadata-only",
-        "method": None,
-        "url": None,
-        "status": None,
-        "reason": "no HTTP semantics observed",
-    })
-"#;
 const CONTROLLED_TARGET_HANDLE: &str = "sample-target";
 const CONTROLLED_TARGET_STABLE_ID: i64 = 75_000;
 const CALIBRATION_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -210,7 +148,7 @@ impl CalibrationPlan {
             phase: self.phase.as_str().to_string(),
             declared_launch_case: self.declared_launch_case.as_str().to_string(),
             observed_launch_case: self.observed_launch_case.as_str().to_string(),
-            proxy_backend: "mitmdump".to_string(),
+            proxy_backend: "fragcap-native".to_string(),
             bundle: self.bundle.display().to_string(),
             trust_action: if self.phase == CalibrationPhase::Tls {
                 "session-owned current-user CA trust"
@@ -322,6 +260,15 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
                     .expect("resolved target retained"),
             )
             .map_err(|error| library_refusal("controlled-target", error))?;
+        } else if matches!(
+            target.launch_case,
+            fragcap::deep_capture::LaunchCase::SteamProtocolCold
+                | fragcap::deep_capture::LaunchCase::SteamProtocolWarm
+        ) {
+            return Err(fragcap::deep_capture::PreflightRefusal::new(
+                "native-steam-routing-unsupported",
+                "the native proxy cannot guarantee child-scoped environment inheritance through Steam protocol dispatch; direct-executable launches are supported until platform-client ownership lands under issue #308",
+            ));
         }
         fragcap::deep_capture::validate_compatibility_prerequisites(
             config.mode,
@@ -381,134 +328,14 @@ impl fragcap::deep_capture::SessionClock for LibraryClockAdapter {
 
 #[derive(Default)]
 struct LibraryRuntime {
-    flow_registry: Option<Arc<FlowRegistry>>,
     controlled_process_id: Option<u32>,
     process_events: Vec<String>,
     interrupted: bool,
     backend: Option<ProxyBackend>,
-    ca_cert_path: Option<PathBuf>,
     trust: Option<TrustOutcome>,
     observations: Vec<Observation>,
     listen_port: Option<u16>,
-    key_log_path: Option<PathBuf>,
     started_at: Option<SystemTime>,
-}
-
-struct LibraryProxyAdapter<'a> {
-    args: &'a DeepCaptureArgs,
-    runtime: Rc<RefCell<LibraryRuntime>>,
-}
-
-impl fragcap::deep_capture::ProxyBackend for LibraryProxyAdapter<'_> {
-    fn descriptor(&self) -> fragcap::deep_capture::BackendDescriptor {
-        fragcap::deep_capture::BackendDescriptor {
-            name: if self.args.controlled_target {
-                "controlled"
-            } else {
-                "mitmdump"
-            }
-            .to_string(),
-            version: "resolved-at-start".to_string(),
-        }
-    }
-
-    fn start(
-        &mut self,
-        plan: &fragcap::deep_capture::SessionPlan,
-        _budget: fragcap::deep_capture::Budget,
-    ) -> Result<Box<dyn fragcap::deep_capture::ProxyLease>, fragcap::deep_capture::StageFailure>
-    {
-        fs::create_dir_all(&plan.bundle).map_err(|error| {
-            fragcap::deep_capture::StageFailure::new(
-                fragcap::deep_capture::Stage::ProxyStart,
-                "bundle-create",
-                format!(
-                    "cannot create Deep Capture bundle {}: {error}",
-                    plan.bundle.display()
-                ),
-            )
-        })?;
-        let backend = resolve_backend(self.args).map_err(|error| {
-            library_stage_failure(fragcap::deep_capture::Stage::ProxyStart, "backend", error)
-        })?;
-        let descriptor = backend.descriptor().clone();
-        let proxy = backend
-            .start(self.args, &plan.bundle, plan.endpoint.port)
-            .map_err(|error| {
-                library_stage_failure(fragcap::deep_capture::Stage::ProxyStart, "start", error)
-            })?;
-        {
-            let mut runtime = self.runtime.borrow_mut();
-            runtime.backend = Some(descriptor);
-            runtime.ca_cert_path = proxy.ca_cert_path.clone();
-            runtime.listen_port = Some(plan.endpoint.port);
-            runtime.key_log_path = proxy.key_log_path.clone();
-            runtime.started_at = Some(SystemTime::now());
-        }
-        Ok(Box::new(LibraryProxyLease {
-            proxy,
-            controlled: self.args.controlled_target,
-            retain_key_log: self.args.key_log,
-            runtime: Rc::clone(&self.runtime),
-        }))
-    }
-}
-
-struct LibraryProxyLease {
-    proxy: RunningProxy,
-    controlled: bool,
-    retain_key_log: bool,
-    runtime: Rc<RefCell<LibraryRuntime>>,
-}
-
-impl fragcap::deep_capture::ProxyLease for LibraryProxyLease {
-    fn observations(
-        &mut self,
-        _budget: fragcap::deep_capture::Budget,
-    ) -> Result<Vec<Observation>, fragcap::deep_capture::StageFailure> {
-        let mut observations =
-            read_proxy_observations(&self.proxy.events_path).map_err(|error| {
-                library_stage_failure(fragcap::deep_capture::Stage::Observe, "proxy-events", error)
-            })?;
-        let runtime = self.runtime.borrow();
-        if self.controlled {
-            assign_controlled_flow_ids(&mut observations, runtime.controlled_process_id);
-        } else if let Some(registry) = &runtime.flow_registry {
-            correlate_observations(&mut observations, registry);
-        }
-        drop(runtime);
-        self.runtime.borrow_mut().observations = observations.clone();
-        Ok(observations)
-    }
-
-    fn stop(
-        &mut self,
-        budget: fragcap::deep_capture::Budget,
-    ) -> fragcap::deep_capture::CleanupResult {
-        let result = self.proxy.stop_with_timeout(budget.remaining());
-        library_cleanup(
-            "proxy-shutdown",
-            result.map(|()| ("succeeded", "proxy stopped within its deadline")),
-        )
-    }
-
-    fn cleanup(
-        &mut self,
-        budget: fragcap::deep_capture::Budget,
-    ) -> Vec<fragcap::deep_capture::CleanupResult> {
-        if self.retain_key_log {
-            self.proxy.retain_key_log();
-        }
-        [
-            self.proxy.cleanup_process_with_timeout(budget.remaining()),
-            self.proxy.cleanup_port(),
-            self.proxy
-                .cleanup_ephemeral_with_timeout(budget.remaining()),
-        ]
-        .into_iter()
-        .map(library_cleanup_resource)
-        .collect()
-    }
 }
 
 fn library_stage_failure(
@@ -517,28 +344,6 @@ fn library_stage_failure(
     error: CliError,
 ) -> fragcap::deep_capture::StageFailure {
     fragcap::deep_capture::StageFailure::new(stage, code, error.to_string())
-}
-
-fn library_cleanup(
-    resource: &str,
-    result: Result<(&str, &str), String>,
-) -> fragcap::deep_capture::CleanupResult {
-    match result {
-        Ok((status, reason)) => fragcap::deep_capture::CleanupResult {
-            resource: resource.to_string(),
-            status: if status == "succeeded" {
-                fragcap::deep_capture::CleanupStatus::Released
-            } else {
-                fragcap::deep_capture::CleanupStatus::NotNeeded
-            },
-            reason: reason.to_string(),
-        },
-        Err(reason) => fragcap::deep_capture::CleanupResult {
-            resource: resource.to_string(),
-            status: fragcap::deep_capture::CleanupStatus::Failed,
-            reason,
-        },
-    }
 }
 
 fn library_cleanup_resource(value: CleanupResource) -> fragcap::deep_capture::CleanupResult {
@@ -562,20 +367,25 @@ impl fragcap::deep_capture::TrustManager for LibraryTrustAdapter {
     fn acquire(
         &mut self,
         _plan: &fragcap::deep_capture::SessionPlan,
+        route: &fragcap::deep_capture::ProxyRoute,
         _budget: fragcap::deep_capture::Budget,
     ) -> Result<Box<dyn fragcap::deep_capture::TrustLease>, fragcap::deep_capture::StageFailure>
     {
         let mut manager: Box<dyn TrustManager> = if self.controlled {
             Box::new(ControlledTrustManager)
         } else {
-            let ca_cert_path = self.runtime.borrow().ca_cert_path.clone().ok_or_else(|| {
-                fragcap::deep_capture::StageFailure::new(
+            if route.ca_der().is_empty() || route.ca_sha1_thumbprint().is_empty() {
+                return Err(fragcap::deep_capture::StageFailure::new(
                     fragcap::deep_capture::Stage::Trust,
                     "ca-material-missing",
                     "the proxy did not expose session CA material",
-                )
-            })?;
-            platform_trust_manager(ca_cert_path).map_err(|error| {
+                ));
+            }
+            platform_trust_manager(
+                route.ca_der().to_vec(),
+                route.ca_sha1_thumbprint().to_string(),
+            )
+            .map_err(|error| {
                 library_stage_failure(fragcap::deep_capture::Stage::Trust, "manager", error)
             })?
         };
@@ -607,7 +417,7 @@ impl fragcap::deep_capture::LaunchAdapter for LibraryLaunchAdapter {
         &mut self,
         _target: &fragcap::deep_capture::PreparedTarget,
         _launch_case: fragcap::deep_capture::LaunchCase,
-        _endpoint: fragcap::deep_capture::LoopbackEndpoint,
+        _route: &fragcap::deep_capture::ProxyRoute,
         _budget: fragcap::deep_capture::Budget,
     ) -> Result<Box<dyn fragcap::deep_capture::LaunchLease>, fragcap::deep_capture::StageFailure>
     {
@@ -635,6 +445,7 @@ struct LibraryCaptureAdapter<'a, 'e, 'w> {
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     prepared: Option<(CaptureArgs, capture::PreparedCapture)>,
     runtime: Rc<RefCell<LibraryRuntime>>,
+    observation_context: fragcap::deep_capture::NativeObservationContext,
     mode: fragcap::deep_capture::SessionMode,
 }
 
@@ -642,8 +453,8 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
     fn prepare(
         &mut self,
         config: &fragcap::deep_capture::SessionConfig,
-        target: &fragcap::deep_capture::PreparedTarget,
-        endpoint: fragcap::deep_capture::LoopbackEndpoint,
+        _target: &fragcap::deep_capture::PreparedTarget,
+        _endpoint: fragcap::deep_capture::LoopbackEndpoint,
     ) -> Result<fragcap::deep_capture::PreparedCapture, fragcap::deep_capture::PreflightRefusal>
     {
         self.mode = config.mode;
@@ -655,19 +466,8 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 cleanup: config.deadlines.cleanup,
             };
             let capture_args = real_capture_args(self.args, &config.bundle, deadlines);
-            let mut prepared = capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
+            let prepared = capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
                 .map_err(|error| library_refusal("capture-prepare", error))?;
-            if target.launch_case == fragcap::deep_capture::LaunchCase::DirectExeCold {
-                let proxy_url = format!("http://127.0.0.1:{}", endpoint.port);
-                prepared
-                    .with_launch_environment([
-                        ("HTTP_PROXY", proxy_url.as_str()),
-                        ("HTTPS_PROXY", proxy_url.as_str()),
-                        ("ALL_PROXY", proxy_url.as_str()),
-                        ("NO_PROXY", ""),
-                    ])
-                    .map_err(|error| library_refusal("direct-launch-environment", error))?;
-            }
             self.prepared = Some((capture_args, prepared));
         }
         Ok(fragcap::deep_capture::PreparedCapture {
@@ -678,7 +478,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
     fn run(
         &mut self,
         _prepared: &fragcap::deep_capture::PreparedCapture,
-        endpoint: fragcap::deep_capture::LoopbackEndpoint,
+        route: &fragcap::deep_capture::ProxyRoute,
         budget: fragcap::deep_capture::Budget,
     ) -> Result<fragcap::deep_capture::CaptureRunResult, fragcap::deep_capture::StageFailure> {
         if self.args.controlled_target {
@@ -690,38 +490,51 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 fragcap::deep_capture::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
                 _ => None,
             };
-            let process_id =
-                run_controlled_target_harness(endpoint.port, phase, budget.remaining()).map_err(
-                    |error| {
-                        library_stage_failure(
-                            fragcap::deep_capture::Stage::Capture,
-                            "controlled-target",
-                            error,
-                        )
-                    },
-                )?;
+            let process_id = run_controlled_target_harness(route, phase, budget.remaining())
+                .map_err(|error| {
+                    library_stage_failure(
+                        fragcap::deep_capture::Stage::Capture,
+                        "controlled-target",
+                        error,
+                    )
+                })?;
             self.runtime.borrow_mut().controlled_process_id = Some(process_id);
+            self.observation_context
+                .record_controlled_process_id(process_id);
             return Ok(fragcap::deep_capture::CaptureRunResult {
                 observations: Vec::new(),
                 interrupted: false,
             });
         }
-        let (capture_args, prepared) = self.prepared.take().ok_or_else(|| {
+        let (capture_args, mut prepared) = self.prepared.take().ok_or_else(|| {
             fragcap::deep_capture::StageFailure::new(
                 fragcap::deep_capture::Stage::Capture,
                 "capture-not-prepared",
                 "ordinary Capture preparation was not retained",
             )
         })?;
-        let (registry, result, process_events, interrupted) = run_real_capture(
+        prepared
+            .with_launch_environment([
+                ("HTTP_PROXY", route.proxy_url()),
+                ("HTTPS_PROXY", route.proxy_url()),
+                ("ALL_PROXY", route.proxy_url()),
+                ("NO_PROXY", ""),
+            ])
+            .map_err(|error| {
+                library_stage_failure(
+                    fragcap::deep_capture::Stage::Launch,
+                    "launch-route-environment",
+                    error,
+                )
+            })?;
+        let (result, process_events, interrupted) = run_real_capture(
             &capture_args,
             prepared,
-            endpoint.port,
+            self.observation_context.flow_registry(),
             &mut self.emitter.borrow_mut(),
         );
         {
             let mut runtime = self.runtime.borrow_mut();
-            runtime.flow_registry = Some(registry);
             runtime.process_events = process_events;
             runtime.interrupted = interrupted;
         }
@@ -834,6 +647,18 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         bundle: &Path,
         snapshot: &fragcap::deep_capture::TerminalSnapshot,
     ) -> Vec<fragcap::deep_capture::ArtifactResult> {
+        if let Err(error) = fs::create_dir_all(bundle) {
+            return vec![fragcap::deep_capture::ArtifactResult {
+                role: "bundle-finalization".to_string(),
+                path: bundle.to_path_buf(),
+                sensitivity: fragcap::deep_capture::Sensitivity::Metadata,
+                required: true,
+                status: fragcap::deep_capture::ArtifactStatus::Failed {
+                    code: "bundle-create".to_string(),
+                    detail: error.to_string(),
+                },
+            }];
+        }
         let runtime = self.runtime.borrow();
         let target = self
             .selected
@@ -844,7 +669,6 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         let backend = runtime.backend.clone().unwrap_or_else(|| ProxyBackend {
             name: "unavailable".to_string(),
             version: "unavailable".to_string(),
-            executable: None,
         });
         let launch_case = self
             .selected_launch_case
@@ -1043,6 +867,15 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
         let mut emitter = self.emitter.borrow_mut();
         match event {
             fragcap::deep_capture::DeepCaptureEvent::Plan { plan, .. } => {
+                {
+                    let mut runtime = self.runtime.borrow_mut();
+                    runtime.backend = Some(ProxyBackend {
+                        name: plan.proxy_backend.name.clone(),
+                        version: plan.proxy_backend.version.clone(),
+                    });
+                    runtime.listen_port = Some(plan.endpoint.port);
+                    runtime.started_at = Some(SystemTime::now());
+                }
                 let target = self
                     .selected
                     .borrow()
@@ -1081,9 +914,6 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     listen_addr: "127.0.0.1".to_string(),
                     listen_port: runtime.listen_port.unwrap_or_default(),
                 });
-                if let Some(path) = &runtime.key_log_path {
-                    announce_key_log(session_id, path, &mut emitter);
-                }
             }
             fragcap::deep_capture::DeepCaptureEvent::TrustAcquired { session_id, .. } => {
                 let runtime = self.runtime.borrow();
@@ -1266,6 +1096,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let selected = Rc::new(RefCell::new(None));
     let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
+    let observation_context = fragcap::deep_capture::NativeObservationContext::default();
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = fragcap::deep_capture::AdapterSet {
         targets: Box::new(LibraryTargetAdapter {
@@ -1279,10 +1110,10 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             started: Instant::now(),
         }),
         identifiers: Box::new(LibraryIdentifierAdapter),
-        proxy: Box::new(LibraryProxyAdapter {
-            args,
-            runtime: Rc::clone(&runtime),
-        }),
+        proxy: Box::new(
+            fragcap::deep_capture::NativeProxyAdapter::default()
+                .with_observation_context(observation_context.clone()),
+        ),
         trust: Box::new(LibraryTrustAdapter {
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
@@ -1293,6 +1124,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             emitter: Rc::clone(&emitter),
             prepared: None,
             runtime: Rc::clone(&runtime),
+            observation_context,
             mode,
         }),
         facts: Box::new(LibraryFactAdapter {
@@ -1396,223 +1228,6 @@ struct DeepCaptureSession {
 struct ProxyBackend {
     name: String,
     version: String,
-    executable: Option<PathBuf>,
-}
-
-trait ProxyBackendAdapter {
-    fn descriptor(&self) -> &ProxyBackend;
-    fn start(
-        &self,
-        args: &DeepCaptureArgs,
-        bundle: &Path,
-        listen_port: u16,
-    ) -> Result<RunningProxy, CliError>;
-}
-
-struct ControlledProxyBackend {
-    descriptor: ProxyBackend,
-}
-
-impl ProxyBackendAdapter for ControlledProxyBackend {
-    fn descriptor(&self) -> &ProxyBackend {
-        &self.descriptor
-    }
-
-    fn start(
-        &self,
-        _args: &DeepCaptureArgs,
-        bundle: &Path,
-        listen_port: u16,
-    ) -> Result<RunningProxy, CliError> {
-        start_controlled_proxy(bundle, listen_port)
-    }
-}
-
-struct MitmdumpProxyBackend {
-    descriptor: ProxyBackend,
-}
-
-impl ProxyBackendAdapter for MitmdumpProxyBackend {
-    fn descriptor(&self) -> &ProxyBackend {
-        &self.descriptor
-    }
-
-    fn start(
-        &self,
-        args: &DeepCaptureArgs,
-        bundle: &Path,
-        listen_port: u16,
-    ) -> Result<RunningProxy, CliError> {
-        start_mitmdump_proxy(args, &self.descriptor, bundle, listen_port)
-    }
-}
-
-struct RunningProxy {
-    events_path: PathBuf,
-    ca_cert_path: Option<PathBuf>,
-    key_log_path: Option<PathBuf>,
-    child: Option<Child>,
-    started_child: bool,
-    controlled_thread: Option<JoinHandle<Result<(), String>>>,
-    controlled_shutdown: Option<Arc<AtomicBool>>,
-    started_controlled: bool,
-    listen_port: u16,
-    ephemeral_paths: Vec<PathBuf>,
-    stop_result: Option<Result<(), String>>,
-}
-
-impl RunningProxy {
-    fn stop(&mut self) -> Result<(), String> {
-        self.stop_with_timeout(CALIBRATION_SHUTDOWN_TIMEOUT)
-    }
-
-    fn stop_with_timeout(&mut self, timeout: Duration) -> Result<(), String> {
-        if let Some(result) = &self.stop_result {
-            return result.clone();
-        }
-        let result = self.stop_once(timeout);
-        self.stop_result = Some(result.clone());
-        result
-    }
-
-    fn stop_once(&mut self, timeout: Duration) -> Result<(), String> {
-        let started = Instant::now();
-        if let Some(shutdown) = &self.controlled_shutdown {
-            shutdown.store(true, Ordering::Release);
-        }
-        if let Some(mut child) = self.child.take() {
-            match child.try_wait() {
-                Ok(Some(_)) => return Ok(()),
-                Ok(None) => {}
-                Err(err) => return Err(err.to_string()),
-            }
-            child.kill().map_err(|err| err.to_string())?;
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) if started.elapsed() >= timeout => {
-                        return Err(format!(
-                            "proxy process did not stop within {} seconds",
-                            CalibrationDeadlines::seconds(timeout)
-                        ));
-                    }
-                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                    Err(err) => return Err(err.to_string()),
-                }
-            }
-        }
-        if let Some(thread) = self.controlled_thread.take() {
-            while !thread.is_finished() {
-                if started.elapsed() >= timeout {
-                    return Err(format!(
-                        "controlled proxy did not stop within {} seconds",
-                        CalibrationDeadlines::seconds(timeout)
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            thread
-                .join()
-                .map_err(|_| "controlled proxy thread panicked".to_string())??;
-        }
-        Ok(())
-    }
-
-    fn cleanup_process(&mut self) -> CleanupResource {
-        self.cleanup_process_with_timeout(CALIBRATION_CLEANUP_TIMEOUT)
-    }
-
-    fn cleanup_process_with_timeout(&mut self, timeout: Duration) -> CleanupResource {
-        match self.stop_with_timeout(timeout) {
-            Ok(()) if self.started_child => {
-                CleanupResource::new("proxy-process", "succeeded", "owned proxy child stopped")
-            }
-            Ok(()) if self.started_controlled => CleanupResource::new(
-                "proxy-process",
-                "succeeded",
-                "controlled proxy adapter stopped",
-            ),
-            Err(err) => CleanupResource::new("proxy-process", "failed", &err),
-            Ok(()) => CleanupResource::new("proxy-process", "not-needed", "no child was started"),
-        }
-    }
-
-    fn cleanup_port(&self) -> CleanupResource {
-        if !(self.started_child || self.started_controlled) {
-            return CleanupResource::new(
-                "proxy-port",
-                "not-needed",
-                "the controlled backend did not bind a loopback port",
-            );
-        }
-        if loopback_port_is_open(self.listen_port) {
-            CleanupResource::new(
-                "proxy-port",
-                "failed",
-                "the session loopback port still accepts connections",
-            )
-        } else {
-            CleanupResource::new(
-                "proxy-port",
-                "succeeded",
-                "the session loopback port was released",
-            )
-        }
-    }
-
-    fn cleanup_ephemeral(&self) -> CleanupResource {
-        self.cleanup_ephemeral_with_timeout(CALIBRATION_CLEANUP_TIMEOUT)
-    }
-
-    fn cleanup_ephemeral_with_timeout(&self, timeout: Duration) -> CleanupResource {
-        let started = Instant::now();
-        let mut failures = Vec::new();
-        for path in &self.ephemeral_paths {
-            if started.elapsed() >= timeout {
-                failures.push(format!(
-                    "cleanup deadline of {} seconds expired before {}",
-                    CalibrationDeadlines::seconds(timeout),
-                    path.display()
-                ));
-                break;
-            }
-            let result = if path.is_dir() {
-                fs::remove_dir_all(path)
-            } else if path.exists() {
-                fs::remove_file(path)
-            } else {
-                Ok(())
-            };
-            if let Err(err) = result {
-                failures.push(format!("{}: {err}", path.display()));
-            }
-        }
-        if failures.is_empty() {
-            CleanupResource::new(
-                "proxy-private-material",
-                if self.ephemeral_paths.is_empty() {
-                    "not-needed"
-                } else {
-                    "succeeded"
-                },
-                "session proxy internals removed",
-            )
-        } else {
-            CleanupResource::new("proxy-private-material", "failed", &failures.join("; "))
-        }
-    }
-
-    fn retain_key_log(&mut self) {
-        if let Some(key_log_path) = &self.key_log_path {
-            self.ephemeral_paths.retain(|path| path != key_log_path);
-        }
-    }
-}
-
-impl Drop for RunningProxy {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
 }
 
 #[derive(Clone)]
@@ -1692,9 +1307,10 @@ impl TrustManager for ControlledTrustManager {
 }
 
 #[cfg(windows)]
-fn platform_trust_manager(ca_cert_path: PathBuf) -> Result<Box<dyn TrustManager>, CliError> {
-    let (der, thumbprint) =
-        crate::windows_cert::file_der_and_thumbprint(&ca_cert_path).map_err(CliError::failure)?;
+fn platform_trust_manager(
+    der: Vec<u8>,
+    thumbprint: String,
+) -> Result<Box<dyn TrustManager>, CliError> {
     Ok(Box::new(WindowsCurrentUserTrustManager {
         der,
         thumbprint,
@@ -1704,7 +1320,10 @@ fn platform_trust_manager(ca_cert_path: PathBuf) -> Result<Box<dyn TrustManager>
 }
 
 #[cfg(not(windows))]
-fn platform_trust_manager(_ca_cert_path: PathBuf) -> Result<Box<dyn TrustManager>, CliError> {
+fn platform_trust_manager(
+    _der: Vec<u8>,
+    _thumbprint: String,
+) -> Result<Box<dyn TrustManager>, CliError> {
     Err(CliError::failure(
         "Deep Capture current-user CA trust is implemented only on Windows",
     ))
@@ -1868,269 +1487,6 @@ fn resolve_target(store: &Store, args: &DeepCaptureArgs) -> Result<TargetEntry, 
     }
 }
 
-fn resolve_backend(args: &DeepCaptureArgs) -> Result<Box<dyn ProxyBackendAdapter>, CliError> {
-    match args.proxy_backend {
-        DeepCaptureProxyArg::Mitmdump if args.controlled_target => {
-            Ok(Box::new(ControlledProxyBackend {
-                descriptor: ProxyBackend {
-                    name: "controlled".to_string(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                    executable: None,
-                },
-            }))
-        }
-        DeepCaptureProxyArg::Mitmdump => {
-            let descriptor = mitmdump_backend()?;
-            Ok(Box::new(MitmdumpProxyBackend { descriptor }))
-        }
-    }
-}
-
-fn mitmdump_backend() -> Result<ProxyBackend, CliError> {
-    mitmdump_backend_from_path(find_on_path("mitmdump"))
-}
-
-fn mitmdump_backend_from_path(path: Option<PathBuf>) -> Result<ProxyBackend, CliError> {
-    let path = path.ok_or_else(|| {
-        CliError::failure(
-            "Deep Capture proxy backend `mitmdump` is unavailable; install it or run `fragcap \
-             doctor` for readiness details",
-        )
-    })?;
-    let version = command_stdout_with_timeout(
-        std::process::Command::new(&path)
-            .arg("--version")
-            .stderr(std::process::Stdio::null()),
-        std::time::Duration::from_secs(2),
-    )
-    .ok()
-    .and_then(|(status, stdout)| {
-        if status.success() {
-            Some(
-                String::from_utf8_lossy(&stdout)
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or("version undetermined")
-                    .trim()
-                    .to_string(),
-            )
-        } else {
-            None
-        }
-    })
-    .unwrap_or_else(|| "version undetermined".to_string());
-    Ok(ProxyBackend {
-        name: "mitmdump".to_string(),
-        version,
-        executable: Some(path),
-    })
-}
-
-fn start_controlled_proxy(bundle: &Path, listen_port: u16) -> Result<RunningProxy, CliError> {
-    let events_path = bundle.join("proxy-observations.jsonl");
-    let listener = TcpListener::bind(("127.0.0.1", listen_port)).map_err(|e| {
-        CliError::failure(format!("cannot bind controlled proxy loopback port: {e}"))
-    })?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| CliError::failure(format!("cannot configure controlled proxy: {e}")))?;
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let thread_shutdown = Arc::clone(&shutdown);
-    let thread_events = events_path.clone();
-    let controlled_thread = std::thread::spawn(move || {
-        serve_controlled_proxy(listener, &thread_events, &thread_shutdown)
-    });
-    Ok(RunningProxy {
-        events_path: events_path.clone(),
-        ca_cert_path: None,
-        key_log_path: None,
-        child: None,
-        started_child: false,
-        controlled_thread: Some(controlled_thread),
-        controlled_shutdown: Some(shutdown),
-        started_controlled: true,
-        listen_port,
-        ephemeral_paths: vec![events_path],
-        stop_result: None,
-    })
-}
-
-fn start_mitmdump_proxy(
-    args: &DeepCaptureArgs,
-    backend: &ProxyBackend,
-    bundle: &Path,
-    listen_port: u16,
-) -> Result<RunningProxy, CliError> {
-    let events_path = bundle.join("proxy-observations.jsonl");
-    let executable = backend
-        .executable
-        .as_ref()
-        .ok_or_else(|| CliError::failure("Deep Capture proxy backend has no executable path"))?;
-    let confdir = bundle.join("mitmproxy");
-    fs::create_dir_all(&confdir).map_err(|e| {
-        CliError::failure(format!(
-            "cannot create mitmdump confdir {}: {e}",
-            confdir.display()
-        ))
-    })?;
-    let addon = bundle.join("fragcap-mitmproxy-addon.py");
-    write_file(addon.clone(), MITMDUMP_ADDON.as_bytes())?;
-    let stdout = fs::File::create(bundle.join("mitmdump.stdout.log"))
-        .map_err(|e| CliError::failure(format!("cannot create mitmdump stdout log: {e}")))?;
-    let stderr = fs::File::create(bundle.join("mitmdump.stderr.log"))
-        .map_err(|e| CliError::failure(format!("cannot create mitmdump stderr log: {e}")))?;
-
-    let key_log_path = if args.key_log {
-        Some(prepare_key_log(bundle)?)
-    } else {
-        None
-    };
-    let mut command = std::process::Command::new(executable);
-    command
-        .arg("--listen-host")
-        .arg("127.0.0.1")
-        .arg("--listen-port")
-        .arg(listen_port.to_string())
-        .arg("--set")
-        .arg(format!("confdir={}", confdir.display()))
-        .arg("--set")
-        .arg("termlog_verbosity=error")
-        .arg("--set")
-        .arg("flow_detail=0")
-        .arg("-s")
-        .arg(&addon)
-        .env("FRAGCAP_DEEP_CAPTURE_EVENTS", &events_path)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    configure_key_log(&mut command, key_log_path.as_deref());
-    let ca_cert = confdir.join("mitmproxy-ca-cert.cer");
-    let mut ephemeral_paths = vec![
-        confdir,
-        addon,
-        bundle.join("mitmdump.stdout.log"),
-        bundle.join("mitmdump.stderr.log"),
-        bundle.join("proxy-observations.jsonl"),
-    ];
-    if let Some(path) = &key_log_path {
-        ephemeral_paths.push(path.clone());
-    }
-    let child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            let proxy = RunningProxy {
-                events_path,
-                ca_cert_path: Some(ca_cert),
-                key_log_path,
-                child: None,
-                started_child: false,
-                controlled_thread: None,
-                controlled_shutdown: None,
-                started_controlled: false,
-                listen_port,
-                ephemeral_paths,
-                stop_result: None,
-            };
-            let _ = proxy.cleanup_ephemeral();
-            return Err(CliError::failure(format!(
-                "cannot start mitmdump backend {}: {err}",
-                executable.display()
-            )));
-        }
-    };
-    let mut proxy = RunningProxy {
-        events_path,
-        ca_cert_path: Some(ca_cert.clone()),
-        key_log_path,
-        child: Some(child),
-        started_child: true,
-        controlled_thread: None,
-        controlled_shutdown: None,
-        started_controlled: false,
-        listen_port,
-        ephemeral_paths,
-        stop_result: None,
-    };
-    if let Err(err) = wait_for_proxy_ready(listen_port, Duration::from_secs(5)) {
-        let _ = proxy.cleanup_process();
-        let _ = proxy.cleanup_ephemeral();
-        return Err(err);
-    }
-    if let Err(err) = wait_for_file(&ca_cert, Duration::from_secs(5)) {
-        let _ = proxy.cleanup_process();
-        let _ = proxy.cleanup_ephemeral();
-        return Err(err);
-    }
-    Ok(proxy)
-}
-
-fn prepare_key_log(bundle: &Path) -> Result<PathBuf, CliError> {
-    let bundle = if bundle.is_absolute() {
-        bundle.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| CliError::failure(format!("cannot resolve the key-log directory: {e}")))?
-            .join(bundle)
-    };
-    let path = bundle.join("tls-keylog.log");
-    fs::File::create(&path).map_err(|e| {
-        CliError::failure(format!(
-            "cannot create live TLS key log {}: {e}",
-            path.display()
-        ))
-    })?;
-    Ok(path)
-}
-
-fn announce_key_log(session_id: &str, path: &Path, emitter: &mut Emitter) {
-    let path = path.display().to_string();
-    emitter.event(&Event::DeepCaptureKeyLogReady {
-        session_id: session_id.to_string(),
-        path: path.clone(),
-    });
-    emitter.progress(&format!("TLS key log ready for live analyzers: {path}"));
-}
-
-fn configure_key_log(command: &mut std::process::Command, key_log_path: Option<&Path>) {
-    command
-        .env_remove("SSLKEYLOGFILE")
-        .env_remove("MITMPROXY_SSLKEYLOGFILE");
-    if let Some(path) = key_log_path {
-        command.env("MITMPROXY_SSLKEYLOGFILE", path);
-    }
-}
-
-fn wait_for_proxy_ready(port: u16, timeout: Duration) -> Result<(), CliError> {
-    let addr = ("127.0.0.1", port)
-        .to_socket_addrs()
-        .map_err(|e| CliError::failure(format!("cannot resolve proxy listen address: {e}")))?
-        .next()
-        .ok_or_else(|| CliError::failure("cannot resolve proxy listen address"))?;
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Err(CliError::failure(
-        "mitmdump did not become ready on 127.0.0.1 before the startup timeout",
-    ))
-}
-
-fn wait_for_file(path: &Path, timeout: Duration) -> Result<(), CliError> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if path.is_file() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Err(CliError::failure(format!(
-        "mitmdump did not create its session CA certificate {} before the startup timeout",
-        path.display()
-    )))
-}
-
 fn select_loopback_port() -> Result<u16, CliError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| CliError::failure(format!("cannot reserve a Deep Capture port: {e}")))?;
@@ -2138,14 +1494,6 @@ fn select_loopback_port() -> Result<u16, CliError> {
         .local_addr()
         .map(|addr| addr.port())
         .map_err(|e| CliError::failure(format!("cannot read the reserved proxy port: {e}")))
-}
-
-fn loopback_port_is_open(port: u16) -> bool {
-    let Ok(addr) = ("127.0.0.1", port).to_socket_addrs() else {
-        return false;
-    };
-    addr.into_iter()
-        .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok())
 }
 
 fn require_controlled_target(target: &TargetEntry) -> Result<(), CliError> {
@@ -2354,12 +1702,9 @@ fn real_capture_args(
 fn run_real_capture(
     capture_args: &CaptureArgs,
     prepared: capture::PreparedCapture,
-    listen_port: u16,
+    flow_registry: Arc<FlowRegistry>,
     emitter: &mut Emitter,
-) -> (Arc<FlowRegistry>, Result<(), CliError>, Vec<String>, bool) {
-    let proxy_url = format!("http://127.0.0.1:{listen_port}");
-    let _env = ScopedProxyEnv::set(&proxy_url);
-    let flow_registry = Arc::new(FlowRegistry::default());
+) -> (Result<(), CliError>, Vec<String>, bool) {
     emitter.begin_event_capture();
     let result = capture::run_prepared_with_flow_registry(
         capture_args,
@@ -2381,256 +1726,40 @@ fn run_real_capture(
         }
     });
     let process_events = emitter.take_captured_events();
-    (flow_registry, result, process_events, interrupted)
-}
-
-struct ScopedProxyEnv {
-    saved: Vec<(&'static str, Option<OsString>)>,
-}
-
-impl ScopedProxyEnv {
-    fn set(proxy_url: &str) -> Self {
-        let keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
-        let saved = keys
-            .into_iter()
-            .map(|key| (key, std::env::var_os(key)))
-            .collect::<Vec<_>>();
-        std::env::set_var("HTTP_PROXY", proxy_url);
-        std::env::set_var("HTTPS_PROXY", proxy_url);
-        std::env::set_var("ALL_PROXY", proxy_url);
-        std::env::set_var("NO_PROXY", "");
-        Self { saved }
-    }
-}
-
-impl Drop for ScopedProxyEnv {
-    fn drop(&mut self) {
-        for (key, value) in self.saved.drain(..) {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
-
-fn read_proxy_observations(path: &Path) -> Result<Vec<Observation>, CliError> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = fs::read_to_string(path).map_err(|e| {
-        CliError::failure(format!(
-            "cannot read proxy observations {}: {e}",
-            path.display()
-        ))
-    })?;
-    let mut observations = Vec::new();
-    for (index, line) in content.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let value: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-            CliError::failure(format!(
-                "invalid proxy observation in {} on line {}: {e}",
-                path.display(),
-                index + 1
-            ))
-        })?;
-        observations.push(observation_from_value(index, &value));
-    }
-    Ok(observations)
-}
-
-fn observation_from_value(index: usize, value: &serde_json::Value) -> Observation {
-    Observation {
-        flow_id: None,
-        proxy_connection_id: string_field(value, "proxy_connection_id")
-            .unwrap_or_else(|| format!("proxy-{:08}", index + 1)),
-        client_peer: socket_addr_field(value, "client_peer"),
-        proxy_local: socket_addr_field(value, "proxy_local"),
-        observed_at: string_field(value, "ts").unwrap_or_else(|| rfc3339_utc(SystemTime::now())),
-        process_id: None,
-        process_image: None,
-        role: None,
-        attribution: None,
-        protocol: string_field(value, "protocol").unwrap_or_else(|| "unknown".to_string()),
-        inspectability: Inspectability::from_label(
-            string_field(value, "inspectability")
-                .as_deref()
-                .unwrap_or("unknown"),
-        ),
-        method: string_field(value, "method"),
-        url: string_field(value, "url"),
-        status: value
-            .get("status")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u16::try_from(v).ok()),
-        reason: string_field(value, "reason"),
-    }
-}
-
-fn socket_addr_field(value: &serde_json::Value, key: &str) -> Option<SocketAddr> {
-    let endpoint = value.get(key)?;
-    let host = endpoint.get("host")?.as_str()?;
-    let port = endpoint
-        .get("port")?
-        .as_u64()
-        .and_then(|port| u16::try_from(port).ok())?;
-    format!("{host}:{port}")
-        .parse()
-        .ok()
-        .or_else(|| host.parse().ok().map(|ip| SocketAddr::new(ip, port)))
-}
-
-fn correlate_observations(observations: &mut [Observation], registry: &FlowRegistry) {
-    for observation in observations {
-        let (Some(client_peer), Some(proxy_local)) =
-            (observation.client_peer, observation.proxy_local)
-        else {
-            continue;
-        };
-        let (local, remote) = if client_peer <= proxy_local {
-            (client_peer, proxy_local)
-        } else {
-            (proxy_local, client_peer)
-        };
-        let key = FlowKey::new(Proto::Tcp, local, remote);
-        observation.flow_id = registry.lookup(&key);
-        if let Some(attribution) = registry.attribution(&key) {
-            observation.process_id = Some(attribution.pid);
-            observation.process_image = Some(attribution.process.to_string());
-            observation.role = attribution.role.map(|role| role.to_string());
-            observation.attribution = Some(
-                match attribution.fidelity {
-                    Fidelity::Live => "live",
-                    Fidelity::Retained => "retained",
-                    Fidelity::None => "none",
-                }
-                .to_string(),
-            );
-        }
-    }
-}
-
-fn assign_controlled_flow_ids(observations: &mut [Observation], process_id: Option<u32>) {
-    for (index, observation) in observations.iter_mut().enumerate() {
-        observation.flow_id = FlowId::new((index + 1) as u64);
-        observation.process_id = process_id;
-        observation.process_image = Some("client.exe".to_string());
-        observation.role = Some("client".to_string());
-        observation.attribution = Some("controlled-harness".to_string());
-    }
-}
-
-fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn serve_controlled_proxy(
-    listener: TcpListener,
-    path: &Path,
-    shutdown: &AtomicBool,
-) -> Result<(), String> {
-    fs::write(path, []).map_err(|e| e.to_string())?;
-    let mut ordinal = 0u64;
-    while ordinal < 4 && !shutdown.load(Ordering::Acquire) {
-        let (mut stream, peer) = match listener.accept() {
-            Ok(connection) => connection,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(10));
-                continue;
-            }
-            Err(err) => return Err(err.to_string()),
-        };
-        ordinal += 1;
-        stream.set_nonblocking(false).map_err(|e| e.to_string())?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|e| e.to_string())?;
-        let mut request = [0u8; 2048];
-        let read = stream.read(&mut request).map_err(|e| e.to_string())?;
-        let request = String::from_utf8_lossy(&request[..read]);
-        let first_line = request.lines().next().unwrap_or_default();
-        let mut parts = first_line.split_whitespace();
-        let method = parts.next().unwrap_or_default();
-        let target = parts.next().unwrap_or_default();
-        let local = stream.local_addr().ok();
-        let (protocol, inspectability, method, url, status, reason) = match method {
-            "GET" => ("http", "full", Some("GET"), Some(target), Some(200), None),
-            "CONNECT" => (
-                "https",
-                "full",
-                Some("CONNECT"),
-                Some("https://127.0.0.1/fragcap-controlled/https"),
-                Some(200),
-                None,
-            ),
-            "FRAGCAP-METADATA" => (
-                "non-http-tls",
-                "metadata-only",
-                None,
-                None,
-                None,
-                Some("no HTTP semantics observed"),
-            ),
-            _ => (
-                "udp",
-                "unsupported",
-                None,
-                None,
-                None,
-                Some("protocol is outside MVP inspection scope"),
-            ),
-        };
-        let record = json!({
-            "proxy_connection_id": format!("proxy-{ordinal:04}"),
-            "client_peer": {"host": peer.ip().to_string(), "port": peer.port()},
-            "proxy_local": local.map(|address| json!({
-                "host": address.ip().to_string(),
-                "port": address.port(),
-            })),
-            "ts": rfc3339_utc(SystemTime::now()),
-            "protocol": protocol,
-            "inspectability": inspectability,
-            "method": method,
-            "url": url,
-            "status": status,
-            "reason": reason,
-        });
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .map_err(|e| e.to_string())?;
-        writeln!(file, "{record}").map_err(|e| e.to_string())?;
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    (result, process_events, interrupted)
 }
 
 fn run_controlled_target_harness(
-    listen_port: u16,
+    route: &fragcap::deep_capture::ProxyRoute,
     calibration: Option<CalibrationPhase>,
     execution_timeout: Duration,
 ) -> Result<u32, CliError> {
-    let proxy_url = format!("http://127.0.0.1:{listen_port}");
+    let proxy_url = route.proxy_url();
     let executable = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .ok_or_else(|| CliError::failure("cannot locate the controlled target executable"))?;
     let mut command = std::process::Command::new(executable);
+    let (http_origin, https_origin) = route
+        .controlled_origins()
+        .ok_or_else(|| CliError::failure("native controlled protocol lab is unavailable"))?;
     command
         .arg("__controlled-target")
-        .env("HTTP_PROXY", &proxy_url)
-        .env("HTTPS_PROXY", &proxy_url)
-        .env("ALL_PROXY", &proxy_url)
+        .env("HTTP_PROXY", proxy_url)
+        .env("HTTPS_PROXY", proxy_url)
+        .env("ALL_PROXY", proxy_url)
         .env("NO_PROXY", "")
+        .env(
+            "FRAGCAP_NATIVE_PROXY_ENDPOINT",
+            format!("127.0.0.1:{}", route.endpoint().port),
+        )
+        .env(
+            "FRAGCAP_NATIVE_PROXY_AUTHORIZATION",
+            route.proxy_authorization(),
+        )
+        .env("FRAGCAP_CONTROLLED_HTTP_ORIGIN", http_origin.to_string())
+        .env("FRAGCAP_CONTROLLED_HTTPS_ORIGIN", https_origin.to_string())
+        .env("FRAGCAP_CONTROLLED_CA_DER", encode_hex(route.ca_der()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -2687,58 +1816,72 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
             "controlled target did not inherit the session NO_PROXY value",
         ));
     }
-    let address = proxy
-        .strip_prefix("http://")
-        .ok_or_else(|| CliError::failure("controlled target received an invalid proxy URL"))?;
-    let address: SocketAddr = address
-        .parse()
-        .map_err(|_| CliError::failure("controlled target received an invalid proxy endpoint"))?;
+    let address = controlled_env_address("FRAGCAP_NATIVE_PROXY_ENDPOINT")?;
     if !address.ip().is_loopback() {
         return Err(CliError::failure(
             "controlled target proxy endpoint is not loopback",
         ));
     }
-    let fail_after = std::env::var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok());
     let request_limit = std::env::var("FRAGCAP_CONTROLLED_REQUEST_LIMIT")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    for (index, request) in [
-        "GET http://127.0.0.1/fragcap-controlled/http HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
-        "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n",
-        "FRAGCAP-METADATA 127.0.0.1:443 HTTP/1.1\r\n\r\n",
-        "FRAGCAP-UNSUPPORTED 127.0.0.1:443 HTTP/1.1\r\n\r\n",
-    ]
-    .into_iter()
-    .take(request_limit)
-    .enumerate()
+        .unwrap_or(2);
+    let authorization = std::env::var("FRAGCAP_NATIVE_PROXY_AUTHORIZATION")
+        .map_err(|_| CliError::failure("controlled target did not inherit proxy authorization"))?;
+    let http_origin = controlled_env_address("FRAGCAP_CONTROLLED_HTTP_ORIGIN")?;
+    let https_origin = controlled_env_address("FRAGCAP_CONTROLLED_HTTPS_ORIGIN")?;
+    let ca_der = decode_hex(
+        &std::env::var("FRAGCAP_CONTROLLED_CA_DER")
+            .map_err(|_| CliError::failure("controlled target did not inherit the session CA"))?,
+    )?;
+    fragcap::deep_capture::run_controlled_native_requests(
+        address,
+        &authorization,
+        http_origin,
+        https_origin,
+        ca_der,
+        request_limit > 1,
+    )
+    .map_err(|error| CliError::failure(format!("controlled native request failed: {error}")))?;
+    if std::env::var("FRAGCAP_CONTROLLED_TARGET_FAIL_AFTER")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|checkpoint| checkpoint <= request_limit)
     {
-        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
-            .map_err(|e| CliError::failure(format!("controlled target cannot reach proxy: {e}")))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|e| CliError::failure(e.to_string()))?;
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| CliError::failure(format!("controlled target request failed: {e}")))?;
-        let mut response = [0u8; 128];
-        let read = stream
-            .read(&mut response)
-            .map_err(|e| CliError::failure(format!("controlled proxy response failed: {e}")))?;
-        if !response[..read].starts_with(b"HTTP/1.1 200") {
-            return Err(CliError::failure(
-                "controlled proxy returned an unexpected response",
-            ));
-        }
-        if fail_after == Some(index + 1) {
-            return Err(CliError::failure(
-                "controlled target stopped at the requested test checkpoint",
-            ));
-        }
+        return Err(CliError::failure(
+            "controlled target stopped at the requested test checkpoint",
+        ));
     }
     Ok(Exit::SUCCESS)
+}
+
+fn controlled_env_address(key: &str) -> Result<SocketAddr, CliError> {
+    std::env::var(key)
+        .map_err(|_| CliError::failure(format!("controlled target did not inherit {key}")))?
+        .parse()
+        .map_err(|_| CliError::failure(format!("controlled target received invalid {key}")))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, CliError> {
+    if value.len() & 1 == 1 {
+        return Err(CliError::failure(
+            "controlled target received invalid CA material",
+        ));
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|text| u8::from_str_radix(text, 16).ok())
+                .ok_or_else(|| CliError::failure("controlled target received invalid CA material"))
+        })
+        .collect()
 }
 
 struct BundleContext<'a> {
@@ -3440,54 +2583,9 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
         .map_err(|e| CliError::failure(format!("cannot finish controlled pcapng: {e}")))
 }
 
-fn find_on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let candidates = std::env::split_paths(&path).flat_map(|dir| {
-        #[cfg(windows)]
-        {
-            vec![dir.join(format!("{program}.exe")), dir.join(program)]
-        }
-        #[cfg(not(windows))]
-        {
-            vec![dir.join(program)]
-        }
-    });
-    candidates.into_iter().find(|path| path.is_file())
-}
-
-fn command_stdout_with_timeout(
-    command: &mut std::process::Command,
-    timeout: std::time::Duration,
-) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
-    let mut child = command
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| err.to_string())?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    pipe.read_to_end(&mut stdout)
-                        .map_err(|err| err.to_string())?;
-                }
-                return Ok((status, stdout));
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                return Err(format!("timed out after {} ms", timeout.as_millis()));
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            Err(err) => return Err(err.to_string()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::emit::{Format, Verbosity};
 
     fn observation() -> Observation {
         Observation {
@@ -3692,97 +2790,6 @@ mod tests {
         assert_eq!(cleanup.status, "not-needed");
     }
 
-    #[test]
-    fn proxy_shutdown_returns_when_its_deadline_expires() {
-        let thread = std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_millis(100));
-            Ok(())
-        });
-        let mut proxy = RunningProxy {
-            events_path: PathBuf::new(),
-            ca_cert_path: None,
-            key_log_path: None,
-            child: None,
-            started_child: false,
-            controlled_thread: Some(thread),
-            controlled_shutdown: Some(Arc::new(AtomicBool::new(false))),
-            started_controlled: true,
-            listen_port: 0,
-            ephemeral_paths: Vec::new(),
-            stop_result: None,
-        };
-        let started = Instant::now();
-        let error = proxy
-            .stop_with_timeout(Duration::from_millis(1))
-            .unwrap_err();
-        assert!(started.elapsed() < Duration::from_millis(50));
-        assert!(error.contains("did not stop within"));
-        assert_eq!(proxy.stop(), Err(error));
-    }
-
-    #[test]
-    fn missing_proxy_backend_has_a_distinct_readiness_error() {
-        let error = mitmdump_backend_from_path(None).unwrap_err();
-        assert!(error.to_string().contains("mitmdump"));
-        assert!(error.to_string().contains("unavailable"));
-    }
-
-    #[test]
-    fn proxy_key_logging_is_explicitly_opt_in() {
-        let mut disabled = std::process::Command::new("mitmdump");
-        configure_key_log(&mut disabled, None);
-        let disabled: std::collections::BTreeMap<_, _> = disabled
-            .get_envs()
-            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
-            .collect();
-        assert_eq!(
-            disabled.get(std::ffi::OsStr::new("SSLKEYLOGFILE")),
-            Some(&None)
-        );
-        assert_eq!(
-            disabled.get(std::ffi::OsStr::new("MITMPROXY_SSLKEYLOGFILE")),
-            Some(&None)
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let bundle = dir.path().join("bundle");
-        fs::create_dir(&bundle).unwrap();
-        let key_log_path = prepare_key_log(&bundle).unwrap();
-        assert!(key_log_path.is_absolute());
-        assert_eq!(fs::metadata(&key_log_path).unwrap().len(), 0);
-
-        let mut enabled = std::process::Command::new("mitmdump");
-        configure_key_log(&mut enabled, Some(&key_log_path));
-        let enabled: std::collections::BTreeMap<_, _> = enabled
-            .get_envs()
-            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
-            .collect();
-        assert_eq!(
-            enabled
-                .get(std::ffi::OsStr::new("MITMPROXY_SSLKEYLOGFILE"))
-                .and_then(|value| value.as_deref()),
-            Some(key_log_path.as_os_str())
-        );
-    }
-
-    #[test]
-    fn live_key_log_path_is_announced_before_session_completion() {
-        let dir = tempfile::tempdir().unwrap();
-        let bundle = dir.path().join("bundle");
-        fs::create_dir(&bundle).unwrap();
-        let key_log_path = prepare_key_log(&bundle).unwrap();
-        let mut output = Vec::new();
-        let mut emitter = Emitter::new(&mut output, Format::Human, Verbosity::Normal);
-
-        announce_key_log("session-1", &key_log_path, &mut emitter);
-        drop(emitter);
-
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("TLS key log ready for live analyzers"));
-        assert!(output.contains(&key_log_path.display().to_string()));
-        assert_eq!(fs::metadata(key_log_path).unwrap().len(), 0);
-    }
-
     fn routing_facts(launch_case: CompatibilityLaunchCase, stale: bool) -> Vec<CompatibilityFact> {
         [
             (CompatibilityFactKey::ProxyRouting, "reached-client"),
@@ -3845,7 +2852,7 @@ mod tests {
     }
 
     #[test]
-    fn real_capture_accepts_cold_steam_and_direct_launches() {
+    fn compatibility_policy_accepts_cold_steam_but_the_native_cli_only_routes_direct_launches() {
         let validate = |launch_case| {
             fragcap::deep_capture::validate_compatibility_prerequisites(
                 fragcap::deep_capture::SessionMode::Capture,
@@ -3886,72 +2893,5 @@ mod tests {
                 "{mode:?} must accept a cold direct executable"
             );
         }
-    }
-
-    #[test]
-    #[ignore = "local mitmdump demonstration; run explicitly when the backend is installed"]
-    fn deep_capture_mitmdump_demo() {
-        if find_on_path("mitmdump").is_none() {
-            eprintln!("mitmdump is unavailable; demonstration skipped");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let bundle = dir.path().join("bundle");
-        fs::create_dir_all(&bundle).unwrap();
-        let args = DeepCaptureArgs {
-            selector: Some("sample-target".to_string()),
-            target: None,
-            id: None,
-            catalog_db: None,
-            local_db: None,
-            launch: true,
-            bundle: Some(bundle.clone()),
-            duration: None,
-            wait: None,
-            max_packets: None,
-            max_bytes: None,
-            interface: Vec::new(),
-            no_payload: false,
-            trust_ca: true,
-            yes: false,
-            calibrate: None,
-            launch_case: None,
-            har: false,
-            key_log: true,
-            proxy_backend: DeepCaptureProxyArg::Mitmdump,
-            controlled_target: false,
-        };
-        let backend = MitmdumpProxyBackend {
-            descriptor: mitmdump_backend().unwrap(),
-        };
-        let port = select_loopback_port().unwrap();
-        let mut proxy = backend.start(&args, &bundle, port).unwrap();
-        assert!(loopback_port_is_open(port));
-        assert!(proxy
-            .key_log_path
-            .as_ref()
-            .is_some_and(|path| path.is_file()));
-        assert!(proxy
-            .ca_cert_path
-            .as_ref()
-            .is_some_and(|path| path.is_file()));
-        #[cfg(windows)]
-        {
-            let (der, thumbprint) =
-                crate::windows_cert::file_der_and_thumbprint(proxy.ca_cert_path.as_ref().unwrap())
-                    .unwrap();
-            let manager = WindowsCurrentUserTrustManager {
-                der,
-                thumbprint,
-                store: NativeCertificateStore,
-                installed_this_session: false,
-            };
-            assert_eq!(manager.thumbprint.len(), 40);
-        }
-        proxy.stop().unwrap();
-        let process = proxy.cleanup_process();
-        assert_eq!(process.status, "succeeded");
-        let material = proxy.cleanup_ephemeral();
-        assert_eq!(material.status, "succeeded");
     }
 }

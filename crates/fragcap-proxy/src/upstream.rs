@@ -3,14 +3,16 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::Notify;
 use tokio::time::{timeout, Instant};
@@ -265,7 +267,43 @@ pub struct BoundedTlsUpstreamStream {
     write_budget: Duration,
 }
 
+impl AsyncRead for BoundedTlsUpstreamStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buffer)
+    }
+}
+
+impl AsyncWrite for BoundedTlsUpstreamStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
 impl BoundedTlsUpstreamStream {
+    pub(crate) fn protocol_version(&self) -> Option<rustls::ProtocolVersion> {
+        self.stream.get_ref().1.protocol_version()
+    }
+
+    pub(crate) fn alpn_protocol(&self) -> Option<Vec<u8>> {
+        self.stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec)
+    }
+
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, UpstreamError> {
         timeout(self.read_budget, self.stream.read(buffer))
             .await
@@ -302,6 +340,34 @@ impl BoundedUpstreamStream {
             .map_err(|error| {
                 UpstreamError::with_detail(UpstreamStage::Write, "write-failed", error.to_string())
             })
+    }
+}
+
+impl AsyncRead for BoundedUpstreamStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buffer)
+    }
+}
+
+impl AsyncWrite for BoundedUpstreamStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 
@@ -397,13 +463,14 @@ pub fn native_tls_client_config() -> Result<Arc<ClientConfig>, UpstreamError> {
         ));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = ClientConfig::builder_with_provider(provider)
+    let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| {
             UpstreamError::with_detail(UpstreamStage::Tls, "tls-config-failed", error.to_string())
         })?
         .with_root_certificates(roots)
         .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
 
@@ -467,12 +534,13 @@ pub fn tls_client_config_with_roots(
         return Err(UpstreamError::new(UpstreamStage::Tls, "empty-root-store"));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = ClientConfig::builder_with_provider(provider)
+    let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| {
             UpstreamError::with_detail(UpstreamStage::Tls, "tls-config-failed", error.to_string())
         })?
         .with_root_certificates(roots)
         .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }

@@ -461,20 +461,9 @@ pub struct DeepCaptureArgs {
     #[arg(long)]
     pub key_log: bool,
 
-    /// The local inspection proxy backend.
-    #[arg(long, value_enum, default_value_t = DeepCaptureProxyArg::Mitmdump)]
-    pub proxy_backend: DeepCaptureProxyArg,
-
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
     pub controlled_target: bool,
-}
-
-/// The Deep Capture proxy backend selector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum DeepCaptureProxyArg {
-    /// External `mitmdump` child process.
-    Mitmdump,
 }
 
 /// A compatibility calibration phase.

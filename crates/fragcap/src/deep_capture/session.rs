@@ -77,6 +77,7 @@ impl PreparedSession {
             adapters,
             state: LifecycleState::Prepared,
             proxy: None,
+            route: None,
             trust: None,
             launch: None,
             observations: Vec::new(),
@@ -100,6 +101,7 @@ pub struct DeepCaptureSession<'a> {
     adapters: AdapterSet<'a>,
     state: LifecycleState,
     proxy: Option<Box<dyn ProxyLease>>,
+    route: Option<ProxyRoute>,
     trust: Option<Box<dyn TrustLease>>,
     launch: Option<Box<dyn LaunchLease>>,
     observations: Vec<CompatibilityObservation>,
@@ -153,6 +155,15 @@ impl DeepCaptureSession<'_> {
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
         match self.adapters.proxy.start(&self.plan, budget) {
             Ok(lease) => {
+                match lease.route() {
+                    Ok(route) => self.route = Some(route),
+                    Err(error) => {
+                        self.failures.push(error);
+                        self.proxy = Some(lease);
+                        self.state = LifecycleState::Stopped;
+                        return Ok(());
+                    }
+                }
                 self.proxy = Some(lease);
                 self.emit(DeepCaptureEvent::ProxyStarted {
                     sequence: 0,
@@ -177,7 +188,8 @@ impl DeepCaptureSession<'_> {
 
         if self.plan.trust_ca {
             let budget = self.remaining_budget(started, self.plan.deadlines.launch);
-            match self.adapters.trust.acquire(&self.plan, budget) {
+            let route = self.route.as_ref().expect("started proxy produced a route");
+            match self.adapters.trust.acquire(&self.plan, route, budget) {
                 Ok(lease) => {
                     self.trust = Some(lease);
                     self.emit(DeepCaptureEvent::TrustAcquired {
@@ -206,7 +218,7 @@ impl DeepCaptureSession<'_> {
         match self.adapters.launch.launch(
             &self.plan.target,
             self.plan.target.launch_case,
-            self.plan.endpoint,
+            self.route.as_ref().expect("started proxy produced a route"),
             budget,
         ) {
             Ok(lease) => {
@@ -245,11 +257,11 @@ impl DeepCaptureSession<'_> {
         let started = self.adapters.clock.monotonic_elapsed();
         self.observation_started = Some(started);
         let budget = self.remaining_budget(started, self.plan.deadlines.observation);
-        match self
-            .adapters
-            .capture
-            .run(&self.capture, self.plan.endpoint, budget)
-        {
+        match self.adapters.capture.run(
+            &self.capture,
+            self.route.as_ref().expect("started proxy produced a route"),
+            budget,
+        ) {
             Ok(result) => {
                 self.interrupted |= result.interrupted;
                 self.extend_observations(result.observations);

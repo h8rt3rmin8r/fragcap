@@ -6,12 +6,12 @@
 
 This document records the product and architecture decision to add Deep Capture to fragcap. It is not a feature slice and it is not an implementation specification. It is the source record that later constitution amendments, specification revisions, feature slices, documentation updates, and GitHub issues should cite.
 
-Deep Capture is now functional but incomplete. v0.8 delegates its proxy and
-certificate operations to external tools. Issue #278 requires a complete
-native Rust product. S102 establishes the bounded runtime, and S103 completes
-the authenticated listener, upstream policy, certificate/trust, raw-event, and
-protocol-lab foundation. The shipped external path remains accurate history until #290;
-only #334 may authorize a feature-complete claim.
+Deep Capture is now functional but incomplete. Issue #278 requires a complete
+native Rust product. S102 establishes the bounded runtime, S103 completes the
+authenticated listener, upstream policy, certificate/trust, raw-event, and
+protocol-lab foundation, and S104 cuts production over to bounded native
+HTTP/1.1, CONNECT, and HTTPS inspection. Only #334 may authorize a
+feature-complete claim.
 
 ## Decision
 
@@ -189,9 +189,9 @@ The backend decision remains open and needs a dedicated discovery spike.
 
 The required end state is the owned native Rust implementation governed by
 issue #278. S102 establishes its bounded runtime and Rust 1.88 dependency
-policy. S103 completes the secure native foundation without switching the
-production protocol path. External mitmdump remains the functional v0.8 bridge only until #290;
-it is not a completion fallback and must not be frozen into the final installer.
+policy. S103 completes the secure native foundation. S104 switches the
+production protocol path and removes the former mitmdump bridge. The historical
+external backend is not a completion fallback and must not return to the installer.
 
 The discovery must evaluate:
 

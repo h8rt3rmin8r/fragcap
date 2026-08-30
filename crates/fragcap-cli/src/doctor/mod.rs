@@ -70,7 +70,7 @@ pub struct IfaceInfo {
 /// Deep Capture proxy backend availability.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyBackendInfo {
-    /// Backend name, for example `mitmdump`.
+    /// Backend name, currently `fragcap-native`.
     pub name: String,
     /// Version string, when the backend reported one.
     pub version: Option<String>,

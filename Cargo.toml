@@ -63,6 +63,8 @@ rustls-native-certs = { version = "=0.8.4", default-features = false }
 ring = { version = "=0.17.14", default-features = false, features = ["alloc"] }
 subtle = { version = "=2.6.1", default-features = false }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+httparse = { version = "=1.10.1", default-features = false, features = ["std"] }
 quinn = { version = "=0.11.11", default-features = false, features = [
     "runtime-tokio",
     "rustls-ring",

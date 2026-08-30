@@ -56,7 +56,7 @@ impl SessionCertificateAuthority {
         let mut name = DistinguishedName::new();
         name.push(
             DnType::CommonName,
-            format!("fragcap TEST ONLY session CA {generation}"),
+            format!("fragcap Deep Capture session CA {generation}"),
         );
         name.push(
             DnType::OrganizationName,
