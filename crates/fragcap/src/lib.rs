@@ -172,6 +172,14 @@ pub mod capture {
     pub use fragcap_capture::live::{detect_driver, enumerate, LiveOptions, LiveSource};
 }
 
+/// Library-first Deep Capture session orchestration (issue #252).
+///
+/// This module owns lifecycle policy while external effects remain behind
+/// narrow injectable adapters. It is independent of the live capture feature,
+/// which lets controlled consumers verify the complete state machine offline.
+#[cfg(feature = "deep-capture")]
+pub mod deep_capture;
+
 /// Flow attribution.
 pub mod attr {
     pub use fragcap_attr::index::{

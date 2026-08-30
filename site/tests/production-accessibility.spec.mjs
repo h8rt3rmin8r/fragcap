@@ -109,9 +109,6 @@ test.describe('production accessibility contract', () => {
       const routes = publicRoutes();
       expect(routes, 'public route population').toHaveLength(54);
       await page.setViewportSize({ width, height: 900 });
-      const skipRequests = [];
-      page.on('request', (request) => skipRequests.push(request.url()));
-
       for (const route of routes) {
         const response = await page.goto(route);
         expect(response?.status(), `${route} response`).toBe(200);
@@ -129,8 +126,10 @@ test.describe('production accessibility contract', () => {
         expect(skipBox.y, `${route} focused skip top`).toBeGreaterThanOrEqual(0);
         expect(skipBox.x + skipBox.width, `${route} focused skip right`).toBeLessThanOrEqual(width);
 
-        await page.waitForTimeout(50);
-        skipRequests.length = 0;
+        await page.waitForLoadState('networkidle');
+        const skipRequests = [];
+        const recordSkipRequest = (request) => skipRequests.push(request.url());
+        page.on('request', recordSkipRequest);
         await page.locator('.fc-skip-link').press('Enter');
         await expect.poll(
           () => page.evaluate(() => ({
@@ -139,6 +138,7 @@ test.describe('production accessibility contract', () => {
           })),
           { message: `${route} skip activation` },
         ).toEqual({ hash: '#main-content', activeId: 'main-content' });
+        page.off('request', recordSkipRequest);
         expect(skipRequests, `${route} skip activation requests`).toEqual([]);
       }
     });

@@ -46,7 +46,7 @@ path = "src/main.rs"
 # store needs no capture driver and no elevation, only the C toolchain at build
 # time, so it is on by default here while staying off at the facade for library
 # consumers that do not want the embedded database.
-fragcap              = { workspace = true, features = ["targets"] }
+fragcap              = { workspace = true, features = ["deep-capture"] }
 clap.workspace       = true
 ctrlc.workspace      = true
 serde_json.workspace = true
