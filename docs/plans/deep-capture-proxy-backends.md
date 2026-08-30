@@ -1,12 +1,32 @@
 # Deep Capture proxy backend research
 
-**Status:** research record for issues #214 and #253.\
-**Date:** 2026-08-29.\
+**Status:** resolved research record for issues #214, #253, and #274.\
+**Date:** 2026-08-30.\
 **Audience:** maintainers, reviewers, future Deep Capture slice authors.
 
 This document evaluates proxy backend options for Deep Capture. It does not add a dependency, ship a proxy, or define the final feature specification. Its job is to keep the backend decision from being made by convenience alone.
 
 ## Recommendation
+
+### S100 final decision
+
+Retain the shipped external `mitmdump` backend and close the speculative
+native-backend search. The 2026-08-30 Windows fallback spike found that
+`http-mitm-proxy 0.18.0` is smaller and passes controlled HTTP/1.1, HTTPS
+CONNECT, client-facing HTTP/2, handshake, HAR-source, CA-separation, and
+bounded-cache proofs. It does not meet the complete product boundary: its
+exact graph is not parseable by Cargo 1.82, its private client-facing rustls
+configuration has no key-log hook, and its internally spawned connection
+tasks have no public bounded drain or join handle. WebSocket messages are
+available only as raw upgraded streams requiring application-owned framing.
+
+`hudsucker 0.23.0` remains the stronger native functional fit, but its larger
+advisory-clean graph also fails the Rust 1.82 boundary. A maintained fork,
+transitive compatibility stack, or third candidate is disproportionate to
+the alpha path. The full three-way criterion table and commands are in
+`specs/100-http-mitm-proxy-spike/evidence.md`. Future backend work hardens the
+defined external adapter; it does not reopen candidate selection without a
+new product requirement or repository policy change.
 
 ### S099 measured decision
 
