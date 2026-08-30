@@ -316,12 +316,13 @@ analysis tooling that consumes fragcap output.
 
 ## 29. Open Questions
 
-Tracked unknowns with owners and resolution methods. The native Deep Capture
-backend question is narrowed by S099: `hudsucker 0.23.0` passed its functional
-spike but failed the advisory-clean Rust 1.82 dependency boundary, so one
-smaller native fallback remains to be measured while `mitmdump` stays
-shipped. The section also retains the crate-naming reservation and the
-reconnaissance findings.
+Tracked unknowns with owners and resolution methods. S100 resolves the Deep
+Capture backend question: retain external `mitmdump`. `hudsucker 0.23.0`
+passed the stronger native functional set but failed the advisory-clean Rust
+1.82 graph boundary; `http-mitm-proxy 0.18.0` is smaller but fails the same
+Cargo boundary and lacks public key-log and connection-task ownership hooks.
+No further speculative backend path remains open. The section also retains
+the crate-naming reservation and the reconnaissance findings.
 
 ## 30. Appendices
 
