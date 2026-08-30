@@ -28,4 +28,4 @@ configured -> running -> stopping -> stopped
                  +----------+----------+-> observe
 ```
 
-Start failure returns no lease. Repeated stop and cleanup return the cached terminal result.
+Start failure returns no lease. A stop deadline returns named residue while the lease retains ownership for a later cleanup retry. After the owner thread joins, repeated stop and cleanup return the cached terminal result.

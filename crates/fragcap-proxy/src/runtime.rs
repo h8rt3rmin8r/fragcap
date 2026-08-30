@@ -98,13 +98,18 @@ impl NativeProxyBackend {
             ));
         }
 
-        // The sender is private and every command waits synchronously for its response, so safe
-        // callers can have at most one queued command despite the channel's unbounded primitive.
-        let (commands, receiver) = mpsc::unbounded_channel();
+        // The lease is the only sender and the one-slot channel keeps timed-out commands finite.
+        let (commands, receiver) = mpsc::channel(1);
+        let (completion_send, completion) = std_mpsc::sync_channel(1);
         let config = self.config.clone();
         let worker = thread::Builder::new()
             .name("fragcap-native-proxy".to_string())
-            .spawn(move || runtime.block_on(run(listener, endpoint, config, receiver)))
+            .spawn(move || {
+                let report = runtime.block_on(run(listener, endpoint, config, receiver));
+                drop(runtime);
+                let _ = completion_send.send(report.clone());
+                report
+            })
             .map_err(|error| {
                 StartError::new(
                     "runtime-thread-failed",
@@ -114,24 +119,27 @@ impl NativeProxyBackend {
 
         Ok(NativeProxyLease {
             commands,
+            completion,
             worker: Some(worker),
             cached: None,
+            pending_report: None,
+            last_observation: RuntimeObservation::running(endpoint),
         })
     }
 }
 
 enum Command {
     Observe(std_mpsc::SyncSender<RuntimeObservation>),
-    Stop {
-        budget: Duration,
-        response: std_mpsc::SyncSender<ShutdownReport>,
-    },
+    Stop { budget: Duration },
 }
 
 pub struct NativeProxyLease {
-    commands: mpsc::UnboundedSender<Command>,
+    commands: mpsc::Sender<Command>,
+    completion: std_mpsc::Receiver<ShutdownReport>,
     worker: Option<JoinHandle<ShutdownReport>>,
     cached: Option<ShutdownReport>,
+    pending_report: Option<ShutdownReport>,
+    last_observation: RuntimeObservation,
 }
 
 impl NativeProxyLease {
@@ -146,18 +154,26 @@ impl NativeProxyLease {
             ));
         }
         let (send, receive) = std_mpsc::sync_channel(1);
-        self.commands.send(Command::Observe(send)).map_err(|_| {
-            ObserveError::new(
-                "runtime-unavailable",
-                "native proxy runtime stopped before observation",
-            )
-        })?;
-        receive.recv_timeout(budget).map_err(|error| {
+        self.commands
+            .try_send(Command::Observe(send))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => ObserveError::new(
+                    "runtime-busy",
+                    "native proxy runtime still owns an earlier command",
+                ),
+                mpsc::error::TrySendError::Closed(_) => ObserveError::new(
+                    "runtime-unavailable",
+                    "native proxy runtime stopped before observation",
+                ),
+            })?;
+        let observation = receive.recv_timeout(budget).map_err(|error| {
             ObserveError::new(
                 "observe-timeout",
                 format!("native proxy observation did not complete: {error}"),
             )
-        })
+        })?;
+        self.last_observation = observation.clone();
+        Ok(observation)
     }
 
     pub fn stop(&mut self, budget: Duration) -> ShutdownReport {
@@ -165,29 +181,37 @@ impl NativeProxyLease {
             return report.clone();
         }
 
-        let (send, receive) = std_mpsc::sync_channel(1);
-        let command_sent = self
-            .commands
-            .send(Command::Stop {
-                budget,
-                response: send,
-            })
-            .is_ok();
+        let started_at = StdInstant::now();
+        if self.pending_report.is_none() {
+            let _ = self.commands.try_send(Command::Stop { budget });
+            let remaining = budget.saturating_sub(started_at.elapsed());
+            if let Ok(report) = self.completion.recv_timeout(remaining) {
+                self.last_observation = report.observation.clone();
+                self.pending_report = Some(report);
+            }
+        }
 
-        let wait = if budget.is_zero() {
-            Duration::from_millis(1)
-        } else {
-            budget
-        };
-        let reported = command_sent
-            .then(|| receive.recv_timeout(wait).ok())
-            .flatten();
-        let joined = self.worker.take().and_then(|worker| worker.join().ok());
-        let report = reported
-            .or(joined)
-            .unwrap_or_else(runtime_thread_failure_report);
-        self.cached = Some(report.clone());
-        report
+        while self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+            && started_at.elapsed() < budget
+        {
+            thread::yield_now();
+        }
+
+        if self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
+            let joined = self.worker.take().expect("checked owner thread").join();
+            let report = match joined {
+                Ok(report) => report,
+                Err(_) => runtime_thread_failure_report(self.last_observation.clone()),
+            };
+            self.pending_report = None;
+            self.cached = Some(report.clone());
+            return report;
+        }
+
+        owner_thread_timeout_report(self.pending_report.as_ref(), self.last_observation.clone())
     }
 
     pub fn cleanup(&mut self, budget: Duration) -> ShutdownReport {
@@ -237,14 +261,21 @@ async fn run(
     listener: TcpListener,
     endpoint: std::net::SocketAddr,
     config: NativeProxyConfig,
-    mut commands: mpsc::UnboundedReceiver<Command>,
+    mut commands: mpsc::Receiver<Command>,
 ) -> ShutdownReport {
     let permits = Arc::new(Semaphore::new(config.max_connections()));
     let (shutdown_send, shutdown_receive) = watch::channel(false);
     let mut tasks = JoinSet::new();
     let mut observation = RuntimeObservation::running(endpoint);
     let mut next_connection_id = 1_u64;
-    let (stop_budget, stop_response) = loop {
+    let stop_budget = loop {
+        while let Some(result) = tasks.try_join_next() {
+            account_join(&mut observation, result);
+        }
+        observation.live_connections = config
+            .max_connections()
+            .saturating_sub(permits.available_permits());
+
         tokio::select! {
             biased;
             command = commands.recv() => {
@@ -252,14 +283,22 @@ async fn run(
                     Some(Command::Observe(response)) => {
                         let _ = response.send(observation.clone());
                     }
-                    Some(Command::Stop { budget, response }) => {
+                    Some(Command::Stop { budget }) => {
                         observation.state = LifecycleState::Stopping;
-                        break (budget, Some(response));
+                        break budget;
                     }
                     None => {
                         observation.state = LifecycleState::Stopping;
-                        break (config.shutdown_timeout(), None);
+                        break config.shutdown_timeout();
                     }
+                }
+            }
+            joined = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(result) = joined {
+                    account_join(&mut observation, result);
+                    observation.live_connections = config
+                        .max_connections()
+                        .saturating_sub(permits.available_permits());
                 }
             }
             accepted = listener.accept() => {
@@ -272,7 +311,9 @@ async fn run(
                                 let buffer_bytes = config.per_connection_buffer_bytes();
                                 next_connection_id = next_connection_id.saturating_add(1);
                                 observation.accepted_connections = observation.accepted_connections.saturating_add(1);
-                                observation.live_connections += 1;
+                                observation.live_connections = config
+                                    .max_connections()
+                                    .saturating_sub(permits.available_permits());
                                 observation.peak_live_connections = observation
                                     .peak_live_connections
                                     .max(observation.live_connections);
@@ -302,11 +343,6 @@ async fn run(
                     }
                 }
             }
-            joined = tasks.join_next(), if !tasks.is_empty() => {
-                if let Some(result) = joined {
-                    account_join(&mut observation, result);
-                }
-            }
         }
     };
 
@@ -328,17 +364,13 @@ async fn run(
             connection_id: None,
         });
     }
-    let report = ShutdownReport {
+    ShutdownReport {
         joined_tasks: observation.accepted_connections.saturating_sub(incomplete),
         incomplete_tasks: incomplete,
         residue: incomplete > 0,
         listener_released: true,
         observation,
-    };
-    if let Some(response) = stop_response {
-        let _ = response.send(report.clone());
     }
-    report
 }
 
 async fn drain_tasks(
@@ -409,9 +441,7 @@ fn join_failure(error: JoinError, connection_id: Option<u64>) -> RuntimeFailure 
     }
 }
 
-fn runtime_thread_failure_report() -> ShutdownReport {
-    let endpoint = "127.0.0.1:0".parse().expect("literal loopback endpoint");
-    let mut observation = RuntimeObservation::running(endpoint);
+fn runtime_thread_failure_report(mut observation: RuntimeObservation) -> ShutdownReport {
     observation.state = LifecycleState::Stopped;
     observation.failures.push(RuntimeFailure {
         code: "runtime-thread-failed",
@@ -423,6 +453,34 @@ fn runtime_thread_failure_report() -> ShutdownReport {
         listener_released: false,
         joined_tasks: 0,
         incomplete_tasks: 0,
+        residue: true,
+    }
+}
+
+fn owner_thread_timeout_report(
+    pending: Option<&ShutdownReport>,
+    mut observation: RuntimeObservation,
+) -> ShutdownReport {
+    let (listener_released, joined_tasks, incomplete_tasks) = pending
+        .map(|report| {
+            (
+                report.listener_released,
+                report.joined_tasks,
+                report.incomplete_tasks,
+            )
+        })
+        .unwrap_or((false, 0, observation.live_connections as u64));
+    observation.state = LifecycleState::Stopping;
+    observation.failures.push(RuntimeFailure {
+        code: "owner-thread-join-timeout",
+        detail: "native proxy owner thread did not finish within the cleanup budget".to_string(),
+        connection_id: None,
+    });
+    ShutdownReport {
+        observation,
+        listener_released,
+        joined_tasks,
+        incomplete_tasks,
         residue: true,
     }
 }
@@ -473,5 +531,51 @@ mod tests {
             assert_eq!(observed.failed_connections, 1);
             assert_eq!(observed.failures[0].code, "connection-task-panicked");
         });
+    }
+
+    #[test]
+    fn stop_returns_at_its_budget_and_a_later_cleanup_joins_the_owner() {
+        let endpoint = "127.0.0.1:40001".parse().unwrap();
+        let running = RuntimeObservation::running(endpoint);
+        let (commands, receiver) = mpsc::channel(1);
+        let (completion_send, completion) = std_mpsc::sync_channel(1);
+        let worker_running = running.clone();
+        let worker = thread::spawn(move || {
+            let _receiver = receiver;
+            thread::sleep(Duration::from_millis(100));
+            let mut observation = worker_running;
+            observation.state = LifecycleState::Stopped;
+            let report = ShutdownReport {
+                observation,
+                listener_released: true,
+                joined_tasks: 0,
+                incomplete_tasks: 0,
+                residue: false,
+            };
+            let _ = completion_send.send(report.clone());
+            report
+        });
+        let mut lease = NativeProxyLease {
+            commands,
+            completion,
+            worker: Some(worker),
+            cached: None,
+            pending_report: None,
+            last_observation: running,
+        };
+
+        let started_at = StdInstant::now();
+        let timed_out = lease.stop(Duration::from_millis(1));
+        assert!(started_at.elapsed() < Duration::from_millis(50));
+        assert!(timed_out.residue);
+        assert_eq!(
+            timed_out.observation.failures.last().unwrap().code,
+            "owner-thread-join-timeout"
+        );
+
+        thread::sleep(Duration::from_millis(125));
+        let cleaned = lease.cleanup(Duration::from_secs(1));
+        assert!(cleaned.is_clean(), "{cleaned:?}");
+        assert!(lease.worker.is_none());
     }
 }

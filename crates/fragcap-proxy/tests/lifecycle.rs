@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
@@ -102,6 +103,30 @@ fn saturation_is_bounded_and_conserved() {
 
     let report = lease.cleanup(Duration::from_secs(1));
     assert!(report.is_clean(), "{report:?}");
+    assert_eq!(
+        report.observation.accepted_connections,
+        report.observation.completed_connections
+            + report.observation.failed_connections
+            + report.observation.forced_connections
+    );
+}
+
+#[test]
+fn completed_tasks_are_reaped_before_more_connections_are_admitted() {
+    let mut backend = NativeProxyBackend::new(config(0, 2));
+    let mut lease = backend.start(Duration::from_secs(1)).expect("start");
+    let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
+
+    for _ in 0..256 {
+        let mut client = TcpStream::connect(endpoint).expect("connect queued client");
+        let _ = client.write_all(&[1]);
+    }
+    std::thread::sleep(Duration::from_millis(100));
+
+    let report = lease.cleanup(Duration::from_secs(1));
+    assert!(report.is_clean(), "{report:?}");
+    assert!(report.observation.accepted_connections > 2);
+    assert!(report.observation.peak_live_connections <= 2);
     assert_eq!(
         report.observation.accepted_connections,
         report.observation.completed_connections

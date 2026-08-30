@@ -12,7 +12,7 @@ The publishable `fragcap-proxy` crate owns native effects and depends on no frag
 
 ## Stop and cleanup
 
-`stop(budget)` closes the listener, signals all connection tasks, drains within the smaller configured/caller timeout, forces remaining tasks down, joins the runtime thread, and returns a complete `ShutdownReport`. `cleanup(budget)` is idempotent and returns the cached terminal result after stop.
+`stop(budget)` closes the listener, signals all connection tasks, drains within the smaller configured/caller timeout, and joins the runtime thread within the caller budget. If the owner thread does not finish by that deadline, the report names the residue and the lease retains the join handle so a later `cleanup(budget)` can retry. A successfully joined terminal result is cached, making repeated stop and cleanup calls idempotent.
 
 ## Refusals
 
