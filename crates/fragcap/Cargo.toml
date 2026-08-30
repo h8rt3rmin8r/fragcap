@@ -58,12 +58,16 @@ fragcap-targets = { workspace = true, optional = true }
 # package. The adapter is `cfg(windows)` and only compiled behind the `targets`
 # feature; a non-windows or non-targets build never touches it.
 #
-# Win32_System_Registry backs the machine-wide anti-cheat probe (slice S068):
-# a registry-key-existence read, the same feature `fragcap-steam` and
-# `fragcap-cli` already enable for the Steam install-path lookup, additive on
-# the same already-resolved 0.36 pin (no `Cargo.lock` package added).
+# Win32_System_Registry backs the machine-wide anti-cheat probe (slice S068).
+# Win32_UI_Shell and Win32_System_Memory back S101's side-effect-free conversion
+# of a stored Windows argument fragment into an explicit argv. All are additive
+# on the same already-resolved 0.36 pin (no `Cargo.lock` package added).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Registry"] }
+windows-sys = { workspace = true, features = [
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+] }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -51,15 +51,19 @@ pub fn validate_compatibility_prerequisites(
 
 fn require_supported_launch_case(launch_case: LaunchCase) -> Result<(), PreflightRefusal> {
     match launch_case {
-        LaunchCase::SteamProtocolCold => Ok(()),
+        LaunchCase::SteamProtocolCold | LaunchCase::DirectExeCold => Ok(()),
         LaunchCase::SteamProtocolWarm => Err(PreflightRefusal::new(
             "launch-case",
             "Deep Capture cannot apply scoped proxy settings through an already-running Steam process; close Steam and retry so fragcap can own the cold launch",
         )),
+        LaunchCase::DirectExeWarm => Err(PreflightRefusal::new(
+            "launch-case",
+            "Deep Capture cannot apply scoped proxy settings to an already-running direct executable; close it and retry so fragcap can own the cold launch",
+        )),
         _ => Err(PreflightRefusal::new(
             "launch-case",
             format!(
-                "Deep Capture does not support managed launch case {}; this MVP supports only a cold Steam protocol launch whose compatibility facts prove client routing",
+                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol and cold direct-executable launches whose compatibility facts prove client routing",
                 launch_case.as_str()
             ),
         )),

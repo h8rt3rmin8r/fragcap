@@ -217,9 +217,10 @@ The single local target store, source and fidelity model, resolution order, disc
 
 Scoped to its own crate so core stays platform-neutral. Covers library
 folder and app manifest parsing, installed-title enumeration, profile
-scaffolding from an installed game, and managed launch via the Steam
-protocol handler. Notes the Steam environment-variable inheritance
-technique and why it is used only on non-protected processes.
+scaffolding from an installed game, and managed launch via either the Steam
+protocol handler or one exact stored direct executable. Direct launch retains
+its path, working directory, argument vector, and child-only environment before
+effects; Steam environment handoff remains compatibility-dependent.
 
 ## 17. Command Line Interface
 
@@ -239,7 +240,7 @@ binary and translates paths across the boundary.
 
 ## 19. Security Posture and Anti-Cheat Interaction
 
-Framed as engineering constraint rather than policy. Documents the mode-specific allowlist and absolute denylist. Capture remains passive. Deep Capture and compatibility calibration are explicit, target-scoped, plan-visible, confirmed, reversible, and audited local proxy inspection with no system-proxy fallback or pinning bypass.
+Framed as engineering constraint rather than policy. Documents the mode-specific allowlist and absolute denylist. Capture remains passive. Deep Capture and compatibility calibration are explicit, target-scoped, plan-visible, confirmed, reversible, and audited local proxy inspection with no system-proxy fallback or pinning bypass. Managed direct launch creates an explicit child with scoped environment but performs no target inspection or memory access.
 
 ## 20. Licensing and Third-Party Obligations
 

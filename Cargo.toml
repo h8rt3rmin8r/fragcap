@@ -120,8 +120,10 @@ windows-sys     = { version = "0.36", default-features = false, features = [
     "Win32_System_Diagnostics_Etw",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Time",
+    "Win32_UI_Shell",
 ] }
 
 # External. Slice S14, research D-a: the command line argument grammar of

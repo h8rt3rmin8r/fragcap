@@ -12,13 +12,15 @@
 
 mod common;
 
+use std::fs;
 use std::path::Path;
 
 use common::run;
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
-    ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
-    CompatibilityLaunchCase, Store, TargetClassification, TargetEntry,
+    entry_windows_launch_paths, ClassificationSource, CompatibilityEvidenceSource,
+    CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase, Store, TargetClassification,
+    TargetEntry,
 };
 use tempfile::TempDir;
 
@@ -646,6 +648,41 @@ fn socket_holder_answer_decides_the_launch_chain() {
         no_line.contains("needs a target"),
         "no needs a target: {no_line}"
     );
+}
+
+#[test]
+fn authored_absolute_executable_records_a_managed_launch_root() {
+    let dir = TempDir::new().expect("tempdir");
+    let store_path = db(&dir);
+    let install_root = dir.path().join("Authored Game");
+    fs::create_dir(&install_root).expect("install root");
+    let executable = install_root.join("game.exe");
+    fs::write(&executable, b"fixture").expect("executable fixture");
+    let executable_text = executable.to_string_lossy();
+
+    let (code, out, err) = run(&[
+        "targets",
+        "add",
+        "Authored Game",
+        "--db",
+        &store_path,
+        "--exe",
+        &executable_text,
+        "--socket-holder",
+        "yes",
+    ]);
+    assert_eq!(code, 0, "stdout:\n{out}\nstderr:\n{err}");
+
+    let store = Store::open(&store_path).expect("store");
+    let target = store
+        .target_by_handle("authored_game")
+        .expect("read target")
+        .expect("authored target");
+    assert_eq!(
+        target.install_root.as_deref(),
+        Some(install_root.to_string_lossy().as_ref())
+    );
+    assert_eq!(entry_windows_launch_paths(&target), ["game.exe"]);
 }
 
 #[test]

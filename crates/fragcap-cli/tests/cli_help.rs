@@ -242,7 +242,9 @@ fn launch_help_describes_the_stored_target_not_the_flag_argument() {
     let out = render(&["capture".to_string()]);
     let normalized = normalize(&out);
     assert!(
-        normalized.contains("launcher"),
+        normalized.contains("protocol handler")
+            && normalized.contains("direct target")
+            && normalized.contains("no command shell"),
         "the --launch help describes the real managed launch: {out}"
     );
     assert!(

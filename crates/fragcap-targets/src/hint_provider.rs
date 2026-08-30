@@ -275,6 +275,46 @@ pub fn entry_windows_clients(entry: &TargetEntry) -> Vec<String> {
     windows_executables(&entry_launch_entries(entry))
 }
 
+/// The distinct exact Windows launch paths a stored row names.
+///
+/// Unlike [`entry_windows_clients`], this preserves every relative directory
+/// component. Process matching needs only the image name; managed launch needs
+/// the exact path beneath the stored install root. Both functions share the
+/// same parsed launch entries, Windows filter, case folding, and first-seen
+/// ordering so they cannot disagree about eligibility.
+pub fn entry_windows_launch_paths(entry: &TargetEntry) -> Vec<String> {
+    entry_windows_launch_entries(entry)
+        .into_iter()
+        .map(|launch| launch.executable().to_string())
+        .collect()
+}
+
+/// The distinct complete Windows launch entries a stored row names.
+///
+/// Managed launch needs the arguments paired with the exact executable rather
+/// than a second lookup after effects begin. Entries that differ by arguments
+/// remain distinct and therefore ambiguous; byte-for-byte duplicates collapse.
+pub fn entry_windows_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
+    let mut seen_folded = Vec::new();
+    let mut out = Vec::new();
+    for launch in entry_launch_entries(entry) {
+        if !is_windows_entry(&launch) {
+            continue;
+        }
+        let executable = launch.executable();
+        if executable.is_empty() {
+            continue;
+        }
+        let folded = (executable.to_lowercase(), launch.arguments.clone());
+        if seen_folded.contains(&folded) {
+            continue;
+        }
+        seen_folded.push(folded);
+        out.push(launch);
+    }
+    out
+}
+
 /// The distinct client executables a row names for the capture platform.
 ///
 /// Keeps only launch entries applicable to Windows (an `os` filter that is unset
@@ -341,6 +381,10 @@ fn entry_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
                 continue;
             };
             le.os = item.get("os").and_then(|v| v.as_str()).map(str::to_string);
+            le.arguments = item
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             out.push(le);
         }
     }
@@ -366,6 +410,7 @@ fn file_name(executable: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entry::{ClassificationSource, TargetClassification};
     use crate::model::{Engine, EngineConfidence, EngineSource, Game};
 
     fn store_with(game: Game) -> Store {
@@ -443,6 +488,54 @@ mod tests {
             TargetOrigin::HintDatabase(t) => assert_eq!(t.image_name(), "Game.exe"),
             other => panic!("expected a hint origin, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn managed_launch_keeps_arguments_paired_with_the_exact_path() {
+        let mut first = launch("bin/game.exe", Some("windows"));
+        first.arguments = Some("--mode one".to_string());
+        let mut duplicate = first.clone();
+        duplicate.os = Some("Windows".to_string());
+        let mut distinct = launch("BIN/GAME.EXE", Some("windows"));
+        distinct.arguments = Some("--mode two".to_string());
+        let entry = TargetEntry {
+            id: None,
+            stable_id: 1,
+            handle: "managed".to_string(),
+            name: "Managed".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                {
+                    "executable": first.executable(),
+                    "os": first.os,
+                    "arguments": first.arguments,
+                },
+                {
+                    "executable": duplicate.executable(),
+                    "os": duplicate.os,
+                    "arguments": duplicate.arguments,
+                },
+                {
+                    "executable": distinct.executable(),
+                    "os": distinct.os,
+                    "arguments": distinct.arguments,
+                }
+            ])),
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+
+        let launches = entry_windows_launch_entries(&entry);
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[0].arguments.as_deref(), Some("--mode one"));
+        assert_eq!(launches[1].arguments.as_deref(), Some("--mode two"));
     }
 
     #[test]

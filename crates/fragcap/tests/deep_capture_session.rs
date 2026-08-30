@@ -164,6 +164,7 @@ impl CaptureRunner for TimedCapture {
         &mut self,
         _: &SessionConfig,
         _: &PreparedTarget,
+        _: LoopbackEndpoint,
     ) -> Result<PreparedCapture, PreflightRefusal> {
         Ok(PreparedCapture {
             token: "timed".into(),
@@ -230,6 +231,7 @@ impl CaptureRunner for Capture {
         &mut self,
         _: &SessionConfig,
         _: &PreparedTarget,
+        _: LoopbackEndpoint,
     ) -> Result<PreparedCapture, PreflightRefusal> {
         self.0.borrow_mut().push("capture.prepare".into());
         Ok(PreparedCapture {
@@ -376,6 +378,7 @@ impl CaptureRunner for FailingCapture {
         &mut self,
         _: &SessionConfig,
         _: &PreparedTarget,
+        _: LoopbackEndpoint,
     ) -> Result<PreparedCapture, PreflightRefusal> {
         Ok(PreparedCapture {
             token: "failed-capture".into(),
@@ -406,6 +409,7 @@ impl CaptureRunner for InterruptedCapture {
         &mut self,
         _: &SessionConfig,
         _: &PreparedTarget,
+        _: LoopbackEndpoint,
     ) -> Result<PreparedCapture, PreflightRefusal> {
         Ok(PreparedCapture {
             token: "interrupted-capture".into(),

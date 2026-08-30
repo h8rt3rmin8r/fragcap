@@ -53,6 +53,26 @@ pub(crate) struct PreparedCapture {
     config: assemble::EffectiveConfig,
 }
 
+impl PreparedCapture {
+    /// Add child-only environment values to a retained direct launch.
+    pub(crate) fn with_launch_environment<I, K, V>(&mut self, entries: I) -> Result<(), CliError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<std::ffi::OsString>,
+        V: Into<std::ffi::OsString>,
+    {
+        let launch = self.config.launch.take().ok_or_else(|| {
+            CliError::usage("the prepared Capture configuration has no managed launch")
+        })?;
+        self.config.launch = Some(
+            launch
+                .with_environment(entries)
+                .map_err(|error| CliError::usage(error.to_string()))?,
+        );
+        Ok(())
+    }
+}
+
 /// Resolve the target and validate every effective Capture option, including the
 /// managed launch request, without opening capture resources or launching anything.
 pub(crate) fn prepare(
@@ -76,15 +96,15 @@ pub(crate) fn prepare(
     // authoring answer) captured in observe mode is promoted after the run once it
     // observes the real socket holder (slice S059). A `--process` synthesis and a
     // resolved target carry none.
-    let (profile, promotion) = match (selector, args.id, &args.process) {
+    let (profile, promotion, stored_entry) = match (selector, args.id, &args.process) {
         (Some(selector), None, None) => {
             let resolved =
                 target_resolve::resolve_stored(StoredRef::Selector(selector), &inputs, emitter)?;
-            (resolved.profile, resolved.promotion)
+            (resolved.profile, resolved.promotion, Some(resolved.entry))
         }
         (None, Some(id), None) => {
             let resolved = target_resolve::resolve_stored(StoredRef::Id(id), &inputs, emitter)?;
-            (resolved.profile, resolved.promotion)
+            (resolved.profile, resolved.promotion, Some(resolved.entry))
         }
         (None, None, Some(process)) => {
             let profile = target_resolve::synthesize_named_profile(
@@ -92,7 +112,7 @@ pub(crate) fn prepare(
                 args.path.as_deref(),
                 args.path_regex.as_deref(),
             )?;
-            (profile, None)
+            (profile, None, None)
         }
         // The clap group guarantees exactly one target input; this documents it.
         _ => {
@@ -102,7 +122,7 @@ pub(crate) fn prepare(
         }
     };
 
-    let config = assemble::effective_config(args, &profile)?;
+    let config = assemble::effective_config_with_target(args, &profile, stored_entry.as_ref())?;
     Ok(PreparedCapture {
         profile,
         promotion,

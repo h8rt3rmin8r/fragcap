@@ -77,7 +77,7 @@ pub struct EffectiveConfig {
     /// The managed launch to issue once watching, when `--launch` was given and
     /// the profile declares a Steam platform and app_id (specification 16.4).
     #[allow(dead_code)]
-    pub launch: Option<fragcap::steam::LaunchRequest>,
+    pub launch: Option<fragcap::managed_launch::ManagedLaunch>,
 }
 
 impl EffectiveConfig {
@@ -108,9 +108,20 @@ impl EffectiveConfig {
 
 /// Build the effective configuration from `capture` arguments and a resolved or
 /// synthesized profile, refusing the options this slice does not yet support.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn effective_config(
     args: &CaptureArgs,
     profile: &Profile,
+) -> Result<EffectiveConfig, CliError> {
+    effective_config_with_target(args, profile, None)
+}
+
+/// Build effective Capture configuration while retaining the selected stored
+/// target as the sole source for a direct managed launch.
+pub fn effective_config_with_target(
+    args: &CaptureArgs,
+    profile: &Profile,
+    stored_target: Option<&fragcap::targets::TargetEntry>,
 ) -> Result<EffectiveConfig, CliError> {
     reject_unsupported(args, profile)?;
 
@@ -132,7 +143,7 @@ pub fn effective_config(
     let duration = args.duration.or_else(|| defaults.duration());
     let mode = resolve_mode(args, profile);
     let ring = args.ring.map(map_ring_window);
-    let launch = build_launch(args, profile)?;
+    let launch = build_launch(args, profile, stored_target)?;
 
     Ok(EffectiveConfig {
         mode,
@@ -162,22 +173,32 @@ pub fn effective_config(
 fn build_launch(
     args: &CaptureArgs,
     profile: &Profile,
-) -> Result<Option<fragcap::steam::LaunchRequest>, CliError> {
+    stored_target: Option<&fragcap::targets::TargetEntry>,
+) -> Result<Option<fragcap::managed_launch::ManagedLaunch>, CliError> {
     if !args.launch {
         return Ok(None);
     }
     #[cfg(not(windows))]
     {
         let _ = profile;
+        let _ = stored_target;
         Err(CliError::usage(
             "managed launch (--launch) is only supported on Windows",
         ))
     }
     #[cfg(windows)]
     {
-        fragcap::steam::launch_request(profile)
+        if profile.game().platform() == Some("steam") {
+            return fragcap::steam::launch_request(profile)
+                .map(fragcap::managed_launch::ManagedLaunch::Steam)
+                .map(Some)
+                .map_err(|e| CliError::usage(e.to_string()));
+        }
+        let target = stored_target
+            .ok_or_else(|| CliError::usage("managed direct launch requires a stored target"))?;
+        fragcap::managed_launch::prepare_direct_launch(target)
             .map(Some)
-            .map_err(|e| CliError::usage(e.to_string()))
+            .map_err(|error| CliError::usage(error.to_string()))
     }
 }
 
@@ -1173,6 +1194,9 @@ mod tests {
         let args = run_args(&["--launch"]);
         let cfg = effective_config(&args, &steam_profile()).unwrap();
         let req = cfg.launch.expect("a launch request");
+        let fragcap::managed_launch::ManagedLaunch::Steam(req) = req else {
+            panic!("expected Steam launch");
+        };
         assert_eq!(req.url, "steam://run/900883");
     }
 
