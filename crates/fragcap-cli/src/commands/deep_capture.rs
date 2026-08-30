@@ -191,6 +191,7 @@ fn bounded_timeout(provided: Option<Duration>, maximum: Duration) -> Duration {
     provided.unwrap_or(maximum).min(maximum)
 }
 
+#[cfg(windows)]
 fn remaining_timeout(started: Instant, total: Duration) -> Duration {
     total.saturating_sub(started.elapsed())
 }
@@ -799,15 +800,14 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
     }
 }
 
-struct LibraryArtifactAdapter<'a, 'e, 'w> {
-    args: &'a DeepCaptureArgs,
+struct LibraryArtifactAdapter<'e, 'w> {
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     selected: Rc<RefCell<Option<TargetEntry>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     deadlines: CalibrationDeadlines,
 }
 
-impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_, '_> {
+impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
     fn validate_destination(
         &mut self,
         path: &Path,
@@ -892,7 +892,14 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_, '_> 
                 },
             })
             .collect();
-        let calibration = self.args.calibrate.map(calibration_phase);
+        let calibration = match snapshot.mode {
+            fragcap::deep_capture::SessionMode::ReachabilityCalibration => {
+                Some(CalibrationPhase::Reachability)
+            }
+            fragcap::deep_capture::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
+            fragcap::deep_capture::SessionMode::Capture => None,
+            _ => None,
+        };
         let outcome = calibration.map(|phase| {
             terminal_calibration_outcome(
                 phase,
@@ -910,7 +917,9 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_, '_> 
         };
         let context = BundleContext {
             session: &session,
-            args: self.args,
+            controlled: snapshot.controlled,
+            har_requested: snapshot.artifacts.har,
+            key_log_requested: snapshot.artifacts.key_log,
             observations: &snapshot.observations,
             trust: &trust,
             cleanup: &cleanup,
@@ -1016,37 +1025,38 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
     ) -> Result<(), fragcap::deep_capture::StageFailure> {
         let mut emitter = self.emitter.borrow_mut();
         match event {
-            fragcap::deep_capture::DeepCaptureEvent::Plan { .. } => {}
-            fragcap::deep_capture::DeepCaptureEvent::Started { session_id, .. } => {
-                let runtime = self.runtime.borrow();
+            fragcap::deep_capture::DeepCaptureEvent::Plan { plan, .. } => {
                 let target = self
                     .selected
                     .borrow()
                     .as_ref()
                     .expect("preflight retained target")
                     .clone();
-                let backend = runtime
-                    .backend
-                    .as_ref()
-                    .expect("proxy start retained backend");
                 emitter.event(&Event::DeepCapturePreflight {
                     status: "ready".to_string(),
                     blockers: 0,
                     warnings: 0,
                     target: target.handle.clone(),
-                    proxy_backend: backend.name.clone(),
+                    proxy_backend: plan.proxy_backend.name.clone(),
                     trust_state: "confirmation-present".to_string(),
                 });
                 emitter.progress("Deep Capture preflight passed");
                 if let Some(phase) = self.args.calibrate.map(calibration_phase) {
                     emitter.event(&Event::DeepCaptureCalibrationPhase {
-                        session_id: Some(session_id.clone()),
+                        session_id: Some(plan.session_id.clone()),
                         phase: phase.as_str().to_string(),
                         stage: "confirmed".to_string(),
                         status: "started".to_string(),
                         reason: "operator confirmed the displayed calibration plan".to_string(),
                     });
                 }
+            }
+            fragcap::deep_capture::DeepCaptureEvent::ProxyStarted { session_id, .. } => {
+                let runtime = self.runtime.borrow();
+                let backend = runtime
+                    .backend
+                    .as_ref()
+                    .expect("proxy start retained backend");
                 emitter.event(&Event::DeepCaptureProxyStarted {
                     session_id: session_id.clone(),
                     backend: backend.name.clone(),
@@ -1057,21 +1067,28 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 if let Some(path) = &runtime.key_log_path {
                     announce_key_log(session_id, path, &mut emitter);
                 }
+            }
+            fragcap::deep_capture::DeepCaptureEvent::TrustAcquired { session_id, .. } => {
+                let runtime = self.runtime.borrow();
                 let trust = runtime.trust.clone().unwrap_or(TrustOutcome {
                     state: "not-requested".to_string(),
                     action: "none".to_string(),
                     thumbprint: None,
                 });
-                if self.args.calibrate.map(calibration_phase)
-                    != Some(CalibrationPhase::Reachability)
-                {
-                    emitter.event(&Event::DeepCaptureTrust {
-                        session_id: session_id.clone(),
-                        state: trust.state,
-                        action: trust.action,
-                        thumbprint: trust.thumbprint,
-                    });
-                }
+                emitter.event(&Event::DeepCaptureTrust {
+                    session_id: session_id.clone(),
+                    state: trust.state,
+                    action: trust.action,
+                    thumbprint: trust.thumbprint,
+                });
+            }
+            fragcap::deep_capture::DeepCaptureEvent::LaunchStarted { session_id, .. } => {
+                let target = self
+                    .selected
+                    .borrow()
+                    .as_ref()
+                    .expect("preflight retained target")
+                    .clone();
                 emitter.event(&Event::DeepCaptureLaunch {
                     session_id: session_id.clone(),
                     launch_case: launch_case(&target)
@@ -1081,6 +1098,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     target: target.handle,
                 });
             }
+            fragcap::deep_capture::DeepCaptureEvent::Started { .. } => {}
             fragcap::deep_capture::DeepCaptureEvent::Observation {
                 session_id,
                 observation,
@@ -1148,10 +1166,18 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                         .filter(|value| value.inspectability == Inspectability::Unsupported)
                         .count() as u64,
                 });
-                emitter.progress(&format!(
-                    "Deep Capture bundle written to {}",
-                    self.bundle.join("manifest.json").display()
-                ));
+                if report
+                    .failures
+                    .iter()
+                    .any(|failure| failure.stage == fragcap::deep_capture::Stage::Bundle)
+                {
+                    emitter.progress("Deep Capture bundle finalization failed");
+                } else {
+                    emitter.progress(&format!(
+                        "Deep Capture bundle written to {}",
+                        self.bundle.join("manifest.json").display()
+                    ));
+                }
             }
             _ => {}
         }
@@ -1255,7 +1281,6 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             controlled: args.controlled_target,
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
-            args,
             emitter: Rc::clone(&emitter),
             selected: Rc::clone(&selected),
             runtime: Rc::clone(&runtime),
@@ -2723,7 +2748,9 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
 
 struct BundleContext<'a> {
     session: &'a DeepCaptureSession,
-    args: &'a DeepCaptureArgs,
+    controlled: bool,
+    har_requested: bool,
+    key_log_requested: bool,
     observations: &'a [Observation],
     trust: &'a TrustOutcome,
     cleanup: &'a CleanupReport,
@@ -2738,7 +2765,7 @@ struct BundleContext<'a> {
 
 fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), CliError> {
     let packet_truth = ctx.session.bundle.join("capture.fcapng");
-    if ctx.args.controlled_target {
+    if ctx.controlled {
         write_controlled_pcapng(&packet_truth, ctx.observations)?;
     } else if !packet_truth.is_file() && ctx.session_state == "complete" {
         return Err(CliError::failure(format!(
@@ -2757,7 +2784,7 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         )
         .as_bytes(),
     )?;
-    let har_produced = ctx.args.har
+    let har_produced = ctx.har_requested
         && ctx
             .observations
             .iter()
@@ -2816,14 +2843,14 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         "tls-key-log",
         if key_log_produced {
             "retained"
-        } else if ctx.args.key_log {
+        } else if ctx.key_log_requested {
             "not-produced"
         } else {
             "not-requested"
         },
         if key_log_produced {
             "requested analyzer key log retained in the session bundle"
-        } else if ctx.args.key_log {
+        } else if ctx.key_log_requested {
             "the proxy backend did not produce an analyzer key log"
         } else {
             "analyzer key logging was not requested"
@@ -3236,12 +3263,12 @@ fn manifest_json(
             "application/json",
             false,
         ));
-    } else if ctx.args.har {
+    } else if ctx.har_requested {
         omissions.push(json!({"role":"har","reason":"no-http-semantics","severity":"info"}));
     } else {
         omissions.push(json!({"role":"har","reason":"not-requested","severity":"info"}));
     }
-    if ctx.args.key_log && key_log_produced {
+    if ctx.key_log_requested && key_log_produced {
         artifacts.push(artifact(
             "tls-key-log",
             "tls-keylog.log",
@@ -3250,7 +3277,7 @@ fn manifest_json(
             "text/plain",
             false,
         ));
-    } else if ctx.args.key_log {
+    } else if ctx.key_log_requested {
         omissions.push(json!({"role":"tls-key-log","reason":"not-produced","severity":"warn"}));
     } else {
         omissions.push(json!({"role":"tls-key-log","reason":"not-requested","severity":"info"}));
@@ -3290,7 +3317,7 @@ fn manifest_json(
                 .iter()
                 .filter_map(|observation| observation.flow_id.map(|flow_id| flow_id.to_string()))
                 .collect::<Vec<_>>(),
-            "process_roles": if ctx.args.controlled_target { json!(["client"]) } else { json!([]) },
+            "process_roles": if ctx.controlled { json!(["client"]) } else { json!([]) },
         },
         "cleanup": {
             "status": cleanup.status(),
@@ -3780,7 +3807,7 @@ mod tests {
 
     #[test]
     fn compatibility_preflight_requires_the_exact_current_launch_case() {
-        let selected = CompatibilityLaunchCase::DirectExeWarm;
+        let selected = CompatibilityLaunchCase::SteamProtocolCold;
         let validate = |facts: &[CompatibilityFact]| {
             fragcap::deep_capture::validate_compatibility_prerequisites(
                 fragcap::deep_capture::SessionMode::TlsCalibration,
@@ -3844,6 +3871,22 @@ mod tests {
                 "{} must be refused before side effects",
                 unsupported.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn real_calibration_refuses_unsupported_launch_cases() {
+        for mode in [
+            fragcap::deep_capture::SessionMode::ReachabilityCalibration,
+            fragcap::deep_capture::SessionMode::TlsCalibration,
+        ] {
+            let result = fragcap::deep_capture::validate_compatibility_prerequisites(
+                mode,
+                false,
+                &routing_facts(CompatibilityLaunchCase::DirectExeCold, false),
+                fragcap::deep_capture::LaunchCase::DirectExeCold,
+            );
+            assert!(result.is_err(), "{mode:?} must refuse a direct executable");
         }
     }
 

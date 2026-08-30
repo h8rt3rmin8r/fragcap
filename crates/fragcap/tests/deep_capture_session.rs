@@ -118,6 +118,75 @@ impl ProxyLease for ProxyRun {
     }
 }
 
+struct BudgetProxy(Rc<RefCell<Option<Duration>>>);
+impl ProxyBackend for BudgetProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "budget-proxy".into(),
+            version: "1".into(),
+        }
+    }
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(BudgetProxyRun(self.0.clone())))
+    }
+}
+
+struct BudgetProxyRun(Rc<RefCell<Option<Duration>>>);
+impl ProxyLease for BudgetProxyRun {
+    fn observations(
+        &mut self,
+        budget: Budget,
+    ) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        *self.0.borrow_mut() = Some(budget.remaining());
+        Ok(Vec::new())
+    }
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        released("proxy-process")
+    }
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        vec![released("proxy-material")]
+    }
+}
+
+struct SharedClock(Rc<RefCell<Duration>>);
+impl SessionClock for SharedClock {
+    fn wall_now(&mut self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(42)
+    }
+    fn monotonic_elapsed(&mut self) -> Duration {
+        *self.0.borrow()
+    }
+}
+
+struct TimedCapture(Rc<RefCell<Duration>>);
+impl CaptureRunner for TimedCapture {
+    fn prepare(
+        &mut self,
+        _: &SessionConfig,
+        _: &PreparedTarget,
+    ) -> Result<PreparedCapture, PreflightRefusal> {
+        Ok(PreparedCapture {
+            token: "timed".into(),
+        })
+    }
+    fn run(
+        &mut self,
+        _: &PreparedCapture,
+        _: LoopbackEndpoint,
+        _: Budget,
+    ) -> Result<CaptureRunResult, StageFailure> {
+        *self.0.borrow_mut() = Duration::from_secs(8);
+        Ok(CaptureRunResult {
+            observations: Vec::new(),
+            interrupted: false,
+        })
+    }
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        *self.0.borrow_mut() = Duration::from_secs(9);
+        released("capture")
+    }
+}
+
 struct Trust(Ledger);
 impl TrustManager for Trust {
     fn acquire(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn TrustLease>, StageFailure> {
@@ -222,6 +291,9 @@ impl EventSink for Events {
     fn emit(&mut self, event: &DeepCaptureEvent) -> Result<(), StageFailure> {
         let kind = match event {
             DeepCaptureEvent::Plan { .. } => "plan",
+            DeepCaptureEvent::ProxyStarted { .. } => "proxy-started",
+            DeepCaptureEvent::TrustAcquired { .. } => "trust-acquired",
+            DeepCaptureEvent::LaunchStarted { .. } => "launch-started",
             DeepCaptureEvent::Started { .. } => "started",
             DeepCaptureEvent::Observation { .. } => "observation",
             DeepCaptureEvent::Cleanup { .. } => "cleanup",
@@ -448,6 +520,13 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
     let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    assert_eq!(
+        prepared.plan().artifacts,
+        ArtifactRequests {
+            har: true,
+            key_log: false,
+        }
+    );
     let authorization = Authorization::approved(prepared.plan().id.clone());
     let report = prepared
         .into_session(environment)
@@ -457,6 +536,7 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
     assert_eq!(report.snapshot.observations.len(), 1);
     assert_eq!(report.snapshot.fact_writes.len(), 5);
     assert_eq!(report.snapshot.cleanup.len(), 5);
+    assert_eq!(report.snapshot.artifacts, prepared_artifact_requests());
     assert_eq!(report.artifacts.last().expect("manifest").role, "manifest");
     let calls = ledger.borrow();
     assert!(
@@ -469,6 +549,21 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
                 .iter()
                 .position(|call| call == "artifact.compatibility")
     );
+    assert!(
+        calls.iter().position(|call| call == "event.proxy-started")
+            < calls.iter().position(|call| call == "trust.acquire")
+    );
+    assert!(
+        calls.iter().position(|call| call == "event.trust-acquired")
+            < calls.iter().position(|call| call == "launch.start")
+    );
+}
+
+fn prepared_artifact_requests() -> ArtifactRequests {
+    ArtifactRequests {
+        har: true,
+        key_log: false,
+    }
 }
 
 #[test]
@@ -574,6 +669,28 @@ fn a_late_success_is_a_failure_and_its_resource_is_still_cleaned() {
         .any(|failure| failure.code == "launch-deadline-exceeded"));
     assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
     assert!(!ledger.borrow().iter().any(|call| call == "trust.acquire"));
+}
+
+#[test]
+fn proxy_observation_uses_only_the_original_observation_budget_remaining() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let elapsed = Rc::new(RefCell::new(Duration::ZERO));
+    let proxy_budget = Rc::new(RefCell::new(None));
+    let mut environment = adapters(&ledger);
+    environment.clock = Box::new(SharedClock(elapsed.clone()));
+    environment.capture = Box::new(TimedCapture(elapsed));
+    environment.proxy = Box::new(BudgetProxy(proxy_budget.clone()));
+    let mut bounded = config();
+    bounded.deadlines.observation = Duration::from_secs(10);
+
+    let prepared = DeepCapture::preflight(bounded, &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session(environment)
+        .run_to_completion(authorization);
+
+    assert_eq!(*proxy_budget.borrow(), Some(Duration::from_secs(1)));
+    assert!(report.snapshot.failures.is_empty());
 }
 
 #[test]

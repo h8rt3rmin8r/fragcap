@@ -46,6 +46,10 @@ impl DeepCapture {
             endpoint,
             bundle: config.bundle.clone(),
             trust_ca: config.trust_ca,
+            artifacts: ArtifactRequests {
+                har: config.har,
+                key_log: config.key_log,
+            },
             deadlines: config.deadlines,
         };
         Ok(PreparedSession { capture, plan })
@@ -84,6 +88,7 @@ impl PreparedSession {
             sequence: 0,
             interrupted: false,
             facts_persisted: false,
+            observation_started: None,
         }
     }
 }
@@ -106,6 +111,7 @@ pub struct DeepCaptureSession<'a> {
     sequence: u64,
     interrupted: bool,
     facts_persisted: bool,
+    observation_started: Option<Duration>,
 }
 
 impl DeepCaptureSession<'_> {
@@ -146,7 +152,13 @@ impl DeepCaptureSession<'_> {
         let started = self.adapters.clock.monotonic_elapsed();
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
         match self.adapters.proxy.start(&self.plan, budget) {
-            Ok(lease) => self.proxy = Some(lease),
+            Ok(lease) => {
+                self.proxy = Some(lease);
+                self.emit(DeepCaptureEvent::ProxyStarted {
+                    sequence: 0,
+                    session_id: self.plan.session_id.clone(),
+                });
+            }
             Err(error) => {
                 self.failures.push(error);
                 self.state = LifecycleState::Stopped;
@@ -166,7 +178,13 @@ impl DeepCaptureSession<'_> {
         if self.plan.trust_ca {
             let budget = self.remaining_budget(started, self.plan.deadlines.launch);
             match self.adapters.trust.acquire(&self.plan, budget) {
-                Ok(lease) => self.trust = Some(lease),
+                Ok(lease) => {
+                    self.trust = Some(lease);
+                    self.emit(DeepCaptureEvent::TrustAcquired {
+                        sequence: 0,
+                        session_id: self.plan.session_id.clone(),
+                    });
+                }
                 Err(error) => {
                     self.failures.push(error);
                     self.state = LifecycleState::Stopped;
@@ -191,7 +209,13 @@ impl DeepCaptureSession<'_> {
             self.plan.endpoint,
             budget,
         ) {
-            Ok(lease) => self.launch = Some(lease),
+            Ok(lease) => {
+                self.launch = Some(lease);
+                self.emit(DeepCaptureEvent::LaunchStarted {
+                    sequence: 0,
+                    session_id: self.plan.session_id.clone(),
+                });
+            }
             Err(error) => {
                 self.failures.push(error);
                 self.state = LifecycleState::Stopped;
@@ -219,6 +243,7 @@ impl DeepCaptureSession<'_> {
     pub fn observe(&mut self) -> Result<(), InvalidTransition> {
         self.require(Operation::Observe, &[LifecycleState::Running])?;
         let started = self.adapters.clock.monotonic_elapsed();
+        self.observation_started = Some(started);
         let budget = self.remaining_budget(started, self.plan.deadlines.observation);
         match self
             .adapters
@@ -282,9 +307,29 @@ impl DeepCaptureSession<'_> {
             );
         }
         if let Some(proxy) = self.proxy.as_mut() {
-            match proxy.observations(Budget::new(self.plan.deadlines.observation)) {
+            let observation_started = self.observation_started.unwrap_or(started);
+            let elapsed = self.adapters.clock.monotonic_elapsed();
+            let budget = Budget::new(
+                self.plan
+                    .deadlines
+                    .observation
+                    .saturating_sub(elapsed.saturating_sub(observation_started)),
+            );
+            match proxy.observations(budget) {
                 Ok(observations) => self.extend_observations(observations),
                 Err(error) => self.failures.push(error),
+            }
+            if self.deadline_expired(observation_started, self.plan.deadlines.observation)
+                && !self
+                    .failures
+                    .iter()
+                    .any(|failure| failure.code == "observation-deadline-exceeded")
+            {
+                self.fail(
+                    Stage::Observe,
+                    "observation-deadline-exceeded",
+                    "proxy observations returned after the shared observation deadline",
+                );
             }
         }
         self.state = LifecycleState::Stopped;
@@ -469,6 +514,9 @@ impl DeepCaptureSession<'_> {
             session_id: self.plan.session_id.clone(),
             plan_id: self.plan.id.clone(),
             target: self.plan.target.clone(),
+            mode: self.plan.mode,
+            controlled: self.plan.controlled,
+            artifacts: self.plan.artifacts,
             outcome,
             observations: self.observations.clone(),
             failures: self.failures.clone(),
@@ -612,6 +660,18 @@ fn facts_from_observations(
 fn with_sequence(event: DeepCaptureEvent, sequence: u64) -> DeepCaptureEvent {
     match event {
         DeepCaptureEvent::Plan { plan, .. } => DeepCaptureEvent::Plan { sequence, plan },
+        DeepCaptureEvent::ProxyStarted { session_id, .. } => DeepCaptureEvent::ProxyStarted {
+            sequence,
+            session_id,
+        },
+        DeepCaptureEvent::TrustAcquired { session_id, .. } => DeepCaptureEvent::TrustAcquired {
+            sequence,
+            session_id,
+        },
+        DeepCaptureEvent::LaunchStarted { session_id, .. } => DeepCaptureEvent::LaunchStarted {
+            sequence,
+            session_id,
+        },
         DeepCaptureEvent::Started { session_id, .. } => DeepCaptureEvent::Started {
             sequence,
             session_id,

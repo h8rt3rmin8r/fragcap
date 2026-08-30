@@ -16,6 +16,9 @@ pub fn validate_compatibility_prerequisites(
     facts: &[CompatibilityFact],
     launch_case: LaunchCase,
 ) -> Result<(), PreflightRefusal> {
+    if !controlled && mode != SessionMode::Capture {
+        require_supported_launch_case(launch_case)?;
+    }
     if mode == SessionMode::ReachabilityCalibration {
         return Ok(());
     }
@@ -43,6 +46,10 @@ pub fn validate_compatibility_prerequisites(
     if mode == SessionMode::TlsCalibration {
         return Ok(());
     }
+    require_supported_launch_case(launch_case)
+}
+
+fn require_supported_launch_case(launch_case: LaunchCase) -> Result<(), PreflightRefusal> {
     match launch_case {
         LaunchCase::SteamProtocolCold => Ok(()),
         LaunchCase::SteamProtocolWarm => Err(PreflightRefusal::new(

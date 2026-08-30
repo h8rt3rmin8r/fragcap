@@ -152,6 +152,15 @@ pub struct SessionConfig {
     pub deadlines: Deadlines,
 }
 
+/// Optional sensitive artifacts explicitly authorized for one session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArtifactRequests {
+    /// Whether HAR output is requested.
+    pub har: bool,
+    /// Whether TLS key logging is requested.
+    pub key_log: bool,
+}
+
 /// Finite lifecycle deadlines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Deadlines {
@@ -247,6 +256,8 @@ pub struct SessionPlan {
     pub bundle: PathBuf,
     /// Whether trust will be acquired.
     pub trust_ca: bool,
+    /// Optional sensitive artifacts authorized with this exact plan.
+    pub artifacts: ArtifactRequests,
     /// Effective bounded deadlines.
     pub deadlines: Deadlines,
 }
@@ -528,6 +539,9 @@ pub struct TerminalSnapshot {
     pub session_id: String,
     pub plan_id: PlanId,
     pub target: PreparedTarget,
+    pub mode: SessionMode,
+    pub controlled: bool,
+    pub artifacts: ArtifactRequests,
     pub outcome: SessionOutcome,
     pub observations: Vec<CompatibilityObservation>,
     pub failures: Vec<StageFailure>,
@@ -563,6 +577,18 @@ pub enum DeepCaptureEvent {
     Plan {
         sequence: u64,
         plan: SessionPlan,
+    },
+    ProxyStarted {
+        sequence: u64,
+        session_id: String,
+    },
+    TrustAcquired {
+        sequence: u64,
+        session_id: String,
+    },
+    LaunchStarted {
+        sequence: u64,
+        session_id: String,
     },
     Started {
         sequence: u64,
