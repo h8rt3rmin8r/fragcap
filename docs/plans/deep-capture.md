@@ -6,6 +6,12 @@
 
 This document records the product and architecture decision to add Deep Capture to fragcap. It is not a feature slice and it is not an implementation specification. It is the source record that later constitution amendments, specification revisions, feature slices, documentation updates, and GitHub issues should cite.
 
+Deep Capture is now functional but incomplete. v0.8 delegates its proxy and
+certificate operations to external tools. Issue #278 requires a complete
+native Rust product, and S102 establishes the library-owned bounded runtime
+foundation. The shipped external path remains accurate history until #290;
+only #334 may authorize a feature-complete claim.
+
 ## Decision
 
 fragcap will present two user-facing capture experiences.
@@ -180,7 +186,10 @@ Cleanup actions should be explicit. `doctor --fix` can remove stale state under 
 
 The backend decision remains open and needs a dedicated discovery spike.
 
-The long-term preference is a native Rust implementation if one can satisfy the product and repository constraints. The fallback is orchestrating a mature external proxy in a controlled way. The project should not freeze a Python proxy into the installer without first documenting why native Rust is not viable.
+The required end state is the owned native Rust implementation governed by
+issue #278. S102 establishes its bounded runtime and Rust 1.88 dependency
+policy. External mitmdump remains the functional v0.8 bridge only until #290;
+it is not a completion fallback and must not be frozen into the final installer.
 
 The discovery must evaluate:
 

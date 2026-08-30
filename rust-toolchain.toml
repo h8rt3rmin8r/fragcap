@@ -2,9 +2,9 @@
 # automated build are identical.
 #
 # This is NOT the minimum supported version. That is workspace.package
-# rust-version in Cargo.toml, currently 1.82, and it is checked separately by
+# rust-version in Cargo.toml, currently 1.88, and it is checked separately by
 # `cargo xtask msrv`. Pinning this channel at the minimum instead would hold
-# every later slice's dependencies back to a 2024 toolchain in exchange for a
+# every later slice's dependencies back to an older toolchain in exchange for a
 # claim obtainable more cheaply. See specs/001-workspace-scaffold/research.md.
 [toolchain]
 channel    = "1.96.0"

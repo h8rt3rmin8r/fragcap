@@ -14,11 +14,13 @@
 
 mod adapters;
 mod model;
+mod native;
 mod policy;
 mod session;
 
 pub use adapters::*;
 pub use model::*;
+pub use native::{NativeProxyAdapter, NativeProxyLimits};
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,
     compatibility_owner_role, observation_is_correlated_to_final_client,

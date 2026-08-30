@@ -3,6 +3,15 @@ title: Output formats and session bundles
 description: Packet outputs, Deep Capture bundle artifacts, their authority, sensitivity, omissions, and correlation.
 ---
 
+<Callout title="Current v0.8 contract">
+Deep Capture's current bundle is functional but provisional. Native manifest
+and sidecar authority is tracked by [#335](https://github.com/h8rt3rmin8r/fragcap/issues/335)
+and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336); application JSONL,
+HAR, TLS key logs, and correlation are owned by
+[#301](https://github.com/h8rt3rmin8r/fragcap/issues/301) through
+[#303](https://github.com/h8rt3rmin8r/fragcap/issues/303).
+</Callout>
+
 fragcap has two output families. **Capture** writes packet streams as pcapng or packet JSON Lines. **Deep Capture** writes a [session bundle](/docs/glossary/file-and-wire-formats#session-bundle) containing packet truth alongside separate proxy observations, projections, diagnostic sidecars, compatibility evidence, and cleanup evidence. These files do not carry equivalent facts, so begin with the artifact that owns the question you are asking.
 
 ## Capture outputs

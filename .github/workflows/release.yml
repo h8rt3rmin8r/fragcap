@@ -60,6 +60,9 @@ jobs:
         # trace process events (etw). A bare `cargo build --release` produced an
         # inert binary that failed every capture (issue #62); the decision to
         # ship these features is recorded in changelog.d/release-features.decisions.md.
+        # fragcap-cli's unconditional facade dependency enables deep-capture, so
+        # this release build also compiles and links the selected native proxy
+        # graph even though the v0.8 command path still selects mitmdump.
         run: cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
 
       - name: Assert the featured binary starts without npcap

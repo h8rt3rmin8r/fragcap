@@ -3,11 +3,26 @@ title: Architecture
 description: How passive Capture and explicit Deep Capture produce distinct, auditable evidence.
 ---
 
+<Callout title="Native completion status">
+Deep Capture is functional but incomplete. The v0.8 diagram and execution path
+below use external mitmdump and certutil. S102 establishes the native Rust
+proxy crate and bounded lifecycle foundation only. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+owns the four milestone completion contract; #334 is the only completion gate.
+</Callout>
+
 fragcap has two shipped modes. [Capture](/docs/glossary/capture-and-networking#capture-mode) passively records packets and attributes flows to processes from evidence outside those processes. [Deep Capture](/docs/glossary/capture-and-networking#deep-capture) runs that same Capture path beside explicit, target-scoped local proxy inspection for one compatible stored target. Deep Capture is active by design, and it adds observations only for traffic that reaches its proxy.
 
 Both modes are library capabilities. Deep Capture is exposed through the public `fragcap::deep_capture` session API: side-effect-free preparation returns an immutable plan, caller authorization binds to that exact plan, and a checked coordinator owns start, observation, stop, fact attempts, cleanup, bundle finalization timing, and the terminal report. The CLI maps arguments, supplies the shipped effect bridges, and presents those typed results rather than defining a second lifecycle.
 
 The [master specification](https://github.com/h8rt3rmin8r/fragcap/blob/main/docs/fragcap-specification.md) is the architecture of record. This page explains the execution and trust boundaries a user or reviewer needs to understand.
+
+The native target architecture adds a `fragcap-proxy` leaf beneath the facade.
+S102 gives that crate bounded loopback listener and task ownership. DNS and
+upstream policy (#284), certificate and trust work (#285 through #287), raw
+event accounting (#288), protocol fidelity (#292 through #305), launch and
+transport coverage (#306 through #318), and production cutover (#290) remain
+open. Current diagrams continue to show the shipped v0.8 external path until
+that cutover actually lands.
 
 ## Capture: passive packet truth
 

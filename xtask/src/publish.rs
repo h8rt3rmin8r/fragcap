@@ -3,7 +3,7 @@
 //! Registry publication in dependency order.
 //!
 //! crates.io rejects a crate whose dependencies are not already in the
-//! registry, so the eight crates go up in a fixed order. That order is
+//! registry, so the ten crates go up in a fixed order. That order is
 //! written here and asserted against the dependency graph in `deps`, so it
 //! cannot drift away from the architecture it is derived from. A reordering
 //! that breaks publication fails a unit test rather than a release.
@@ -13,7 +13,7 @@
 //! but never replaced, so it is not something a caller should be able to do
 //! by accident.
 //!
-//! A run is resumable. Uploading eight crates is eight separate network
+//! A run is resumable. Uploading ten crates is ten separate network
 //! operations, and any of them can be interrupted by a failure, a cancelled
 //! job, or a dropped connection. A crate whose version is already on the
 //! registry is skipped rather than treated as an error, so rerunning after a
@@ -34,6 +34,7 @@ pub const ORDER: &[&str] = &[
     "fragcap-sink",
     "fragcap-steam",
     "fragcap-targets",
+    "fragcap-proxy",
     "fragcap",
     "fragcap-cli",
 ];

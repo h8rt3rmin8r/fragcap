@@ -3,6 +3,14 @@ title: Documentation
 description: Process-attributed Capture and explicit, target-scoped Deep Capture for Windows game traffic.
 ---
 
+<Callout title="Deep Capture status">
+Deep Capture is functional but incomplete. v0.8 uses external mitmdump and
+certutil; S102 adds a native bounded-runtime foundation without protocol
+inspection or CLI cutover. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+owns the completion roadmap. It is not yet native, self-contained, or
+feature-complete.
+</Callout>
+
 fragcap has two shipped modes for Windows game traffic. **Capture** passively records packets and correlates flows with the processes that produced them, including clients started indirectly through platform and publisher launchers. **Deep Capture** runs that same packet capture alongside explicit, target-scoped local proxy inspection for authorized sessions and compatible traffic.
 
 Ordinary packet records do not preserve process ownership. fragcap correlates them with separate Windows socket and process-lifecycle observations and records the result without reaching inside the processes it names. Deep Capture adds application observations only when the selected target reaches the local proxy and accepts its trust path; unsupported and unobserved traffic remains explicit.

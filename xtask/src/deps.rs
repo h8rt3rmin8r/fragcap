@@ -31,6 +31,7 @@ pub const EXPECTED: &[(&str, &str)] = &[
     ("fragcap", "fragcap-sink"),
     ("fragcap", "fragcap-steam"),
     ("fragcap", "fragcap-targets"),
+    ("fragcap", "fragcap-proxy"),
     ("fragcap-capture", "fragcap-core"),
     ("fragcap-attr", "fragcap-core"),
     ("fragcap-sink", "fragcap-core"),
@@ -46,6 +47,7 @@ const SIBLINGS: &[&str] = &[
     "fragcap-sink",
     "fragcap-steam",
     "fragcap-targets",
+    "fragcap-proxy",
 ];
 
 /// Extract every dependency name from one manifest's text, workspace-internal

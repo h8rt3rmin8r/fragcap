@@ -8,7 +8,7 @@ edition      = "2021"
 # The minimum version a consumer needs. Distinct from the toolchain this
 # repository builds with, which rust-toolchain.toml pins. Verified by
 # `cargo xtask msrv`; see specs/001-workspace-scaffold/research.md R-1.
-rust-version = "1.82"
+rust-version = "1.88"
 license      = "Apache-2.0"
 repository   = "https://github.com/h8rt3rmin8r/fragcap"
 homepage     = "https://github.com/h8rt3rmin8r/fragcap"
@@ -21,12 +21,48 @@ categories   = ["network-programming"]
 # declares a 1.57 minimum, and pulls in no transitive dependencies.
 bytes           = "1.12"
 
+# External. Slice S102, issue #280: the owned native Deep Capture proxy stack.
+# Every direct package is exact-pinned and default features are disabled so an
+# upgrade, crypto-provider change, or new native build input is always a visible
+# review event. Rust 1.88 is the measured floor because rcgen 0.14.10 and the
+# selected time graph declare it. See the S102 research and decisions fragment.
+tokio = { version = "=1.53.1", default-features = false, features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+hyper = { version = "=1.11.1", default-features = false, features = [
+    "client",
+    "http1",
+    "http2",
+    "server",
+] }
+hyper-util = { version = "=0.1.20", default-features = false, features = [
+    "server-auto",
+    "tokio",
+] }
+http-body-util = { version = "=0.1.5", default-features = false }
+rustls = { version = "=0.23.43", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = [
+    "ring",
+    "tls12",
+] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
+rustls-native-certs = { version = "=0.8.4", default-features = false }
+
 # External. Slice S05, research R-1: TOML parsing for game profiles, with byte
 # spans on every value so a diagnostic can point an author at their own line.
-# Chosen over `toml` because that crate's 1.1 line declares Rust 1.85 against
-# this workspace's 1.82 minimum, and pinning it to 1.0 does not help: its own
-# `toml_parser` dependency resolves to 1.1.3 and declares 1.85 too. Two crates
-# in the graph, no serde, MIT or Apache-2.0.
+# Chosen over `toml` under the former Rust 1.82 policy because that crate's 1.1
+# line declared Rust 1.85 and pinning it to 1.0 did not help. Retained because
+# changing the parser is unrelated to the S102 MSRV increase. Two crates in the
+# graph, no serde, MIT or Apache-2.0.
 toml-span       = "0.7"
 
 # External. Slice S05, research R-3: compiles the `path_regex` match predicate
@@ -52,10 +88,10 @@ regex           = { version = "1.13", default-features = false, features = [
 # the header. A wrong offset in the packet header yields plausible timestamps
 # that are wrong, which is the P-9 failure no test over synthetic data catches.
 #
-# MIT or Apache-2.0, and so is every crate it pulls. Declares Rust 1.64 against
-# this workspace's 1.82 floor. Note that its build dependency on `libloading`
-# is pinned to the 0.8 line: `libloading` 0.9 declares Rust 1.88 and would take
-# the workspace below its own minimum.
+# MIT or Apache-2.0, and so is every crate it pulls. Declares Rust 1.64. Its
+# build dependency remains on the 0.8 `libloading` line selected by pcap; S102
+# does not rewrite an unrelated capture binding after raising the workspace
+# floor.
 pcap            = "2.4"
 
 # External. Slice S10, research R-3: the attribution snapshot publication of
@@ -133,13 +169,10 @@ windows-sys     = { version = "0.36", default-features = false, features = [
 # sits on `fragcap-cli` alone, at the top of the dependency graph where nothing
 # reaches it, which `cargo xtask deps` enforces. MIT or Apache-2.0.
 #
-# Pinned exactly to 4.5.32. clap 4.6 declares edition 2024 and rust-version
-# 1.85, and later 4.5 patches (4.5.61) pull `clap_lex` 1.0, which also declares
-# edition 2024 and 1.85, both above this workspace's 1.82 minimum. Either breaks
-# `cargo xtask msrv` in a check most contributors cannot run locally. 4.5.32 is
-# edition 2021, rust-version 1.74, on `clap_lex` 0.7. An exact pin because the
-# incompatibility is in a transitive patch, which a range cannot exclude. Slice
-# S14; raise the pin only alongside a workspace MSRV bump.
+# Pinned exactly to 4.5.32 by S14 because later releases crossed the former
+# Rust 1.82 floor. S102 raises the workspace floor for the native proxy graph
+# but deliberately avoids combining that feature change with CLI parser and
+# generated-help churn. Review this pin in a dedicated dependency update.
 clap            = { version = "=4.5.32", features = ["derive", "wrap_help"] }
 
 # External. Slice S14, research D-b: a portable console-interrupt hook so an
@@ -171,8 +204,8 @@ ctrlc           = "3.4"
 #
 # MIT or Apache-2.0 across the delta; the bundled SQLite amalgamation is
 # public-domain C compiled by the MIT `libsqlite3-sys` crate. None of the six
-# declares a `rust-version`; all compile under Rust 1.82, verified by building
-# through `rustup run 1.82` (research R-3). Taken as a compatible-range 0.40 pin
+# declares a `rust-version`; all compiled under the former Rust 1.82 floor,
+# verified by S034. Taken as a compatible-range 0.40 pin
 # rather than exact, with `cargo xtask msrv` as the standing gate should a future
 # lock update raise the floor. See the S034 decisions fragment.
 rusqlite        = { version = "0.40", default-features = false, features = [
@@ -194,11 +227,9 @@ rusqlite        = { version = "0.40", default-features = false, features = [
 # with native-tls it adds 18 packages, no ICU4X and no `ring`, all MIT or
 # Apache-2.0.
 #
-# MSRV is not a binding constraint here: `net` is off by default and
-# `cargo xtask msrv` builds the default-feature workspace, so `http_req` (and a
-# transitive `zeroize` that declares edition 2024) is never compiled under 1.82,
-# exactly as `pcap` behind `live` is not. Verified by building net-off under 1.82
-# and net-on under the pinned toolchain. `http_req` is smaller and less widely used
+# `net` is off by default, so `http_req` is not part of the ordinary MSRV build.
+# The former 1.82 policy was verified with net off and the pinned toolchain with
+# net on. `http_req` is smaller and less widely used
 # than `ureq`; the risk is bounded because it sits behind the `CatalogSource` trait
 # (swapping it is a one-module change) and is compiled but never run in CI. See the
 # S035 decisions fragment.
@@ -259,6 +290,7 @@ fragcap-attr    = { version = "0.8.0", path = "crates/fragcap-attr" }
 fragcap-sink    = { version = "0.8.0", path = "crates/fragcap-sink" }
 fragcap-steam   = { version = "0.8.0", path = "crates/fragcap-steam" }
 fragcap-targets = { version = "0.8.0", path = "crates/fragcap-targets" }
+fragcap-proxy   = { version = "0.8.0", path = "crates/fragcap-proxy" }
 fragcap         = { version = "0.8.0", path = "crates/fragcap" }
 
 [profile.release]

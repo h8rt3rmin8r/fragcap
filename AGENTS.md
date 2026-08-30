@@ -277,6 +277,17 @@ load-bearing rather than bookkeeping.
 | `unicode-properties` | runtime | S051 | The `So`/`Sk`/`Cf`/`Mn` general-category tests of handle normalization |
 | `getrandom` | runtime | S051 | OS entropy for the unanchored 63-bit identifier (already in the graph; a direct edge only) |
 | `terminal_size` | runtime, transitive | S062 | Terminal dimensions for clap's `wrap_help`; not a direct dependency, it arrives with the feature (issue #177) |
+| `tokio`, `hyper`, `hyper-util`, `http-body-util`, `rustls`, `tokio-rustls`, `rcgen`, `rustls-native-certs` | runtime | S102 | Exact-pinned native Deep Capture runtime and future HTTP/TLS/certificate stack in `fragcap-proxy`; default features off, ring is the sole crypto provider, Windows roots come from Schannel |
+
+S102 raises the workspace MSRV from 1.82 to 1.88 and adds the ninth product
+crate, `fragcap-proxy`. This deliberately supersedes S100's external-backend
+end state after native completion became an explicit product requirement under
+issue #278. The two turnkey-candidate measurements remain valid: fragcap owns
+the stack instead. S102 implements only loopback listener, finite connection
+and task ownership, typed observation, and bounded idempotent cleanup. It does
+not forward, decrypt, parse protocols, or claim inspectability, and the shipped
+CLI continues to select mitmdump until #290. The exact dependency and provider
+arguments are in the S102 decisions fragment and research document.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
@@ -534,7 +545,8 @@ Discharged:
   mean its Tier 2 steps executed, for the reason in the outstanding item below.
 - **The minimum-toolchain check runs for real.** Until S02 it built with the
   pinned toolchain and reported success, which said nothing about the declared
-  minimum. It now builds through `rustup run 1.82` and exits 2 when that
+  minimum. It now builds through the workspace's declared minimum (1.88 as of
+  S102) and exits 2 when that
   toolchain is absent, so a check that did not run can no longer look like one
   that passed. This is the clearest illustration of the rule above.
 - **The npcap SDK acquisition step has run, and the live source links.** Both

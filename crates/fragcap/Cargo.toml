@@ -36,7 +36,7 @@ targets      = ["dep:fragcap-targets"]
 # Library-first Deep Capture orchestration (slice S098). This implies only the
 # target store. Live packet capture, socket-table attribution, and ETW remain
 # independent capabilities so controlled consumers need no driver or elevation.
-deep-capture = ["targets"]
+deep-capture = ["targets", "dep:fragcap-proxy"]
 # The live catalog seeder's HTTP source (issue #78, slice S035). Off by default;
 # implies `targets`. A library consumer that wants to seed from the wire opts in.
 net          = ["targets", "fragcap-targets/net"]
@@ -49,6 +49,7 @@ fragcap-attr.workspace = true
 fragcap-sink.workspace = true
 fragcap-steam.workspace = true
 fragcap-targets = { workspace = true, optional = true }
+fragcap-proxy = { workspace = true, optional = true }
 
 # The Windows volume inventory adapter (slice S052) enumerates fixed volumes for
 # the known-roots walk through GetLogicalDrives/GetDriveTypeW and reads each

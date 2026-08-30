@@ -84,8 +84,8 @@ terminal_size = "0.4"
 # Windows only, at build time: stamps the exe's PE VERSIONINFO (FileVersion and
 # ProductVersion) from CARGO_PKG_VERSION so `Get-Command fragcap` no longer reports
 # 0.0.0.0 (issue #104). `default-features = false` drops winresource's optional
-# `toml` dependency (which declares Rust 1.85 and would break the 1.82 MSRV gate,
-# the trap slice S05 documented); we set every field through the API instead. This
+# `toml` dependency that crossed the former 1.82 MSRV gate and remains unused;
+# we set every field through the API instead. This
 # is the workspace's first build-dependency; it adds only `winresource` and
 # `version_check` to Cargo.lock, both MIT/Apache-2.0.
 [target.'cfg(windows)'.build-dependencies]
