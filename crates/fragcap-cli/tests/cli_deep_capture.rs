@@ -504,7 +504,12 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     let process_trace = std::fs::read_to_string(bundle.join("process-trace.jsonl")).unwrap();
     assert!(process_trace.contains("controlled-harness.exited"));
     let process_event: serde_json::Value = serde_json::from_str(process_trace.trim()).unwrap();
-    assert!(process_event["pid"].as_u64().is_some_and(|pid| pid > 0));
+    let child_pid = process_event["pid"].as_u64().expect("controlled child PID");
+    assert!(child_pid > 0);
+    assert_ne!(child_pid, u64::from(std::process::id()));
+    assert!(application_records[1..application_records.len() - 1]
+        .iter()
+        .all(|record| record["process_id"] == child_pid));
 
     let cleanup: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("cleanup.json")).unwrap()).unwrap();

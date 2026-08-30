@@ -15,3 +15,5 @@
 
 - Session bundle directory creation is now an explicit artifact-owner operation instead of an accidental side effect of starting the former external proxy.
 - Steam protocol launches are refused before effects while native child-scoped routing cannot be guaranteed; issue #308 owns the platform-client routing strategy.
+- Native observations again join the packet-side flow registry for real targets, while controlled observations carry the exact spawned child process identifier rather than the parent CLI identifier.
+- HTTP/1.1 clients using `Expect: 100-continue` no longer deadlock behind a withheld request body, and every parsed request retains metadata evidence when later forwarding or response handling fails.

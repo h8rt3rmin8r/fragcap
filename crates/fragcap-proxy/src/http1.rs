@@ -6,7 +6,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
 use crate::{
@@ -61,6 +61,12 @@ enum Framing {
     CloseDelimited,
 }
 
+impl Framing {
+    fn has_body(self) -> bool {
+        !matches!(self, Self::None | Self::Fixed(0))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RequestHead {
     method: String,
@@ -72,6 +78,7 @@ pub(crate) struct RequestHead {
     url: String,
     close: bool,
     upgrade: bool,
+    expects_continue: bool,
     transformations: Vec<&'static str>,
 }
 
@@ -168,7 +175,7 @@ where
 }
 
 pub(crate) async fn serve_http<S, C, F, U>(
-    mut client: S,
+    client: S,
     first: RequestHead,
     capability: &SessionCapability,
     limits: &ProtocolLimits,
@@ -182,6 +189,7 @@ where
     C: FnMut(DestinationAuthority) -> F,
     F: Future<Output = Result<U, ProtocolError>>,
 {
+    let mut client = BufReader::new(client);
     let mut observations = Vec::new();
     let mut accounting = ProtocolAccounting::default();
     let mut next = Some(first);
@@ -214,73 +222,107 @@ where
         }
         accounting.requests = accounting.requests.saturating_add(1);
         let mut observation = request_observation(&context, ordinal, &request);
-        let mut upstream = match connect(request.authority.clone()).await {
-            Ok(stream) => stream,
+        let exchange = async {
+            let mut upstream = BufReader::new(connect(request.authority.clone()).await?);
+            let head = encode_request(&request);
+            write_bounded(&mut upstream, &head, limits.idle_timeout).await?;
+
+            let mut early_final = None;
+            let mut force_close = false;
+            if request.expects_continue && request.framing.has_body() {
+                loop {
+                    let ready = timeout(limits.idle_timeout, async {
+                        tokio::select! {
+                            biased;
+                            value = upstream.fill_buf() => value.map(|_| false),
+                            value = client.fill_buf() => value.map(|_| true),
+                        }
+                    })
+                    .await
+                    .map_err(|_| ProtocolError::timeout("http-expect-idle-timeout"))?
+                    .map_err(|error| {
+                        ProtocolError::new("http-expect-read-failed", error.to_string())
+                    })?;
+                    if ready {
+                        relay_body(&mut client, &mut upstream, request.framing, limits).await?;
+                        break;
+                    }
+                    let response =
+                        read_forward_response(&mut upstream, &mut client, limits, &request.method)
+                            .await?;
+                    if (100..200).contains(&response.status) && response.status != 101 {
+                        accounting.informational_responses =
+                            accounting.informational_responses.saturating_add(1);
+                        if response.status == 100 {
+                            relay_body(&mut client, &mut upstream, request.framing, limits).await?;
+                            break;
+                        }
+                        continue;
+                    }
+                    force_close = true;
+                    early_final = Some(response);
+                    break;
+                }
+            } else {
+                relay_body(&mut client, &mut upstream, request.framing, limits).await?;
+            }
+
+            let response = match early_final {
+                Some(response) => response,
+                None => loop {
+                    let response =
+                        read_forward_response(&mut upstream, &mut client, limits, &request.method)
+                            .await?;
+                    if (100..200).contains(&response.status) && response.status != 101 {
+                        accounting.informational_responses =
+                            accounting.informational_responses.saturating_add(1);
+                        continue;
+                    }
+                    break response;
+                },
+            };
+            Ok::<_, ProtocolError>((upstream, response, force_close))
+        }
+        .await;
+        let (mut upstream, response, force_close) = match exchange {
+            Ok(value) => value,
             Err(error) => {
                 observation.reason = Some(error.code.to_string());
                 observations.push(observation);
                 break Some(error);
             }
         };
-        let head = encode_request(&request);
-        if let Err(error) = write_bounded(&mut upstream, &head, limits.idle_timeout).await {
-            break Some(error);
-        }
-        if let Err(error) = relay_body(&mut client, &mut upstream, request.framing, limits).await {
-            break Some(error);
-        }
-        let response = loop {
-            let raw = match read_head(&mut upstream, limits.max_header_bytes, limits.idle_timeout)
-                .await
-            {
-                Ok(Some(raw)) => raw,
-                Ok(None) => {
-                    break Err(ProtocolError::new(
-                        "upstream-response-eof",
-                        "upstream closed before a response head",
-                    ))
-                }
-                Err(error) => break Err(error),
-            };
-            let response = match parse_response(&raw, limits, &request.method) {
-                Ok(response) => response,
-                Err(error) => break Err(error),
-            };
-            if let Err(error) = write_bounded(&mut client, &response.raw, limits.idle_timeout).await
-            {
-                break Err(error);
-            }
-            if (100..200).contains(&response.status) && response.status != 101 {
-                accounting.informational_responses =
-                    accounting.informational_responses.saturating_add(1);
-                continue;
-            }
-            break Ok(response);
-        };
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => break Some(error),
-        };
         accounting.responses = accounting.responses.saturating_add(1);
         observation.status = Some(response.status);
         observation.inspectability = "full";
-        observations.push(observation);
         if response.upgrade && request.upgrade {
             let result = timeout(
                 limits.idle_timeout,
                 tokio::io::copy_bidirectional(&mut client, &mut upstream),
             )
             .await;
-            break match result {
+            let result = match result {
                 Ok(Ok(_)) => None,
                 Ok(Err(error)) => Some(ProtocolError::new("upgrade-io-failed", error.to_string())),
                 Err(_) => Some(ProtocolError::timeout("upgrade-idle-timeout")),
             };
+            if let Some(error) = &result {
+                observation.reason = Some(error.code.to_string());
+            }
+            observations.push(observation);
+            break result;
         }
         if let Err(error) = relay_body(&mut upstream, &mut client, response.framing, limits).await {
+            observation.reason = Some(error.code.to_string());
+            observations.push(observation);
             break Some(error);
         }
-        if request.close || response.close || response.framing == Framing::CloseDelimited {
+        observations.push(observation);
+        if force_close
+            || request.close
+            || response.close
+            || response.framing == Framing::CloseDelimited
+        {
             break None;
         }
     };
@@ -344,6 +386,7 @@ fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, Pro
     let framing = framing(&headers, false, None, limits.max_body_bytes)?;
     let close = connection_token(&headers, "close");
     let upgrade = connection_token(&headers, "upgrade") && header(&headers, "upgrade").is_some();
+    let expects_continue = header_token(&headers, "expect", "100-continue");
     let mut transformations = vec!["proxy-authorization-removed"];
     if origin_target != target {
         transformations.push("absolute-to-origin-form");
@@ -361,6 +404,7 @@ fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, Pro
         url,
         close,
         upgrade,
+        expects_continue,
         transformations,
     })
 }
@@ -581,9 +625,13 @@ fn header<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8]> 
 }
 
 fn connection_token(headers: &[(String, Vec<u8>)], token: &str) -> bool {
+    header_token(headers, "connection", token)
+}
+
+fn header_token(headers: &[(String, Vec<u8>)], name: &str, token: &str) -> bool {
     headers
         .iter()
-        .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        .filter(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
         .flat_map(|(_, value)| value.split(|byte| *byte == b','))
         .filter_map(|value| std::str::from_utf8(value).ok())
         .any(|value| value.trim().eq_ignore_ascii_case(token))
@@ -650,6 +698,29 @@ where
     })
     .await
     .map_err(|_| ProtocolError::timeout("http-header-timeout"))?
+}
+
+async fn read_forward_response<R, W>(
+    upstream: &mut R,
+    client: &mut W,
+    limits: &ProtocolLimits,
+    request_method: &str,
+) -> Result<ResponseHead, ProtocolError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let raw = read_head(upstream, limits.max_header_bytes, limits.idle_timeout)
+        .await?
+        .ok_or_else(|| {
+            ProtocolError::new(
+                "upstream-response-eof",
+                "upstream closed before a response head",
+            )
+        })?;
+    let response = parse_response(&raw, limits, request_method)?;
+    write_bounded(client, &response.raw, limits.idle_timeout).await?;
+    Ok(response)
 }
 
 async fn relay_body<R, W>(

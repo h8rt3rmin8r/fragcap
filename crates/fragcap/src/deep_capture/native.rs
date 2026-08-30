@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -12,6 +12,8 @@ use fragcap_proxy::{
     NativeProxyConfig, ShutdownReport,
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+
+use fragcap_core::{Fidelity, FlowKey, FlowRegistry, Proto};
 
 pub use fragcap_proxy::{
     CertificateStore, NativeCertificateStore, TrustController, TrustError, TrustMutation,
@@ -47,15 +49,52 @@ impl Default for NativeProxyLimits {
 /// Production native implementation of the Deep Capture proxy seam.
 pub struct NativeProxyAdapter {
     limits: NativeProxyLimits,
+    observation_context: NativeObservationContext,
+}
+
+/// Session-owned bridge between packet truth and native proxy observations.
+#[derive(Clone, Debug, Default)]
+pub struct NativeObservationContext {
+    flow_registry: Arc<FlowRegistry>,
+    controlled_process_id: Arc<AtomicU32>,
+}
+
+impl NativeObservationContext {
+    /// The registry ordinary Capture must populate for this session.
+    pub fn flow_registry(&self) -> Arc<FlowRegistry> {
+        Arc::clone(&self.flow_registry)
+    }
+
+    /// Record the exact controlled child process after it has launched.
+    pub fn record_controlled_process_id(&self, process_id: u32) {
+        self.controlled_process_id
+            .store(process_id, Ordering::Release);
+    }
+
+    fn controlled_process_id(&self) -> Option<u32> {
+        match self.controlled_process_id.load(Ordering::Acquire) {
+            0 => None,
+            process_id => Some(process_id),
+        }
+    }
 }
 
 impl NativeProxyAdapter {
     pub fn new(limits: NativeProxyLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            observation_context: NativeObservationContext::default(),
+        }
     }
 
     pub fn limits(&self) -> NativeProxyLimits {
         self.limits
+    }
+
+    /// Use packet and process truth shared with this session's capture runner.
+    pub fn with_observation_context(mut self, context: NativeObservationContext) -> Self {
+        self.observation_context = context;
+        self
     }
 }
 
@@ -121,6 +160,7 @@ impl ProxyBackend for NativeProxyAdapter {
             lease,
             controlled: plan.controlled,
             controlled_lab,
+            observation_context: self.observation_context.clone(),
         }))
     }
 }
@@ -129,6 +169,7 @@ struct NativeProxyLease {
     lease: fragcap_proxy::NativeProxyLease,
     controlled: bool,
     controlled_lab: Option<ControlledLab>,
+    observation_context: NativeObservationContext,
 }
 
 impl ProxyLease for NativeProxyLease {
@@ -160,28 +201,42 @@ impl ProxyLease for NativeProxyLease {
         Ok(observation
             .application
             .into_iter()
-            .map(|value| CompatibilityObservation {
-                flow_id: self
-                    .controlled
-                    .then(|| fragcap_core::FlowId::new(value.connection_id))
-                    .flatten(),
-                proxy_connection_id: value.connection_id.to_string(),
-                client_peer: Some(value.client_peer),
-                proxy_local: Some(value.proxy_local),
-                observed_at: value.timestamp_ns.to_string(),
-                process_id: self.controlled.then_some(std::process::id()),
-                process_image: self.controlled.then(|| "fragcap-controlled".to_string()),
-                role: self.controlled.then(|| "client".to_string()),
-                attribution: self.controlled.then(|| "controlled".to_string()),
-                protocol: match value.protocol.as_str() {
-                    "connect" | "tls" => "https".to_string(),
-                    _ => value.protocol,
-                },
-                inspectability: Inspectability::from_label(value.inspectability),
-                method: value.method,
-                url: value.url,
-                status: value.status,
-                reason: value.reason,
+            .map(|value| {
+                let (flow_id, process_id, process_image, role, attribution) = if self.controlled {
+                    (
+                        fragcap_core::FlowId::new(value.connection_id),
+                        self.observation_context.controlled_process_id(),
+                        Some("client.exe".to_string()),
+                        Some("client".to_string()),
+                        Some("controlled-harness".to_string()),
+                    )
+                } else {
+                    correlate_native_observation(
+                        &self.observation_context.flow_registry,
+                        value.client_peer,
+                        value.proxy_local,
+                    )
+                };
+                CompatibilityObservation {
+                    flow_id,
+                    proxy_connection_id: value.connection_id.to_string(),
+                    client_peer: Some(value.client_peer),
+                    proxy_local: Some(value.proxy_local),
+                    observed_at: value.timestamp_ns.to_string(),
+                    process_id,
+                    process_image,
+                    role,
+                    attribution,
+                    protocol: match value.protocol.as_str() {
+                        "connect" | "tls" => "https".to_string(),
+                        _ => value.protocol,
+                    },
+                    inspectability: Inspectability::from_label(value.inspectability),
+                    method: value.method,
+                    url: value.url,
+                    status: value.status,
+                    reason: value.reason,
+                }
             })
             .collect())
     }
@@ -199,6 +254,45 @@ impl ProxyLease for NativeProxyLease {
         }
         results
     }
+}
+
+type NativeCorrelation = (
+    Option<fragcap_core::FlowId>,
+    Option<u32>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn correlate_native_observation(
+    registry: &FlowRegistry,
+    client_peer: SocketAddr,
+    proxy_local: SocketAddr,
+) -> NativeCorrelation {
+    let (local, remote) = if client_peer <= proxy_local {
+        (client_peer, proxy_local)
+    } else {
+        (proxy_local, client_peer)
+    };
+    let key = FlowKey::new(Proto::Tcp, local, remote);
+    let flow_id = registry.lookup(&key);
+    let Some(attribution) = registry.attribution(&key) else {
+        return (flow_id, None, None, None, None);
+    };
+    (
+        flow_id,
+        Some(attribution.pid),
+        Some(attribution.process.to_string()),
+        attribution.role.map(|role| role.to_string()),
+        Some(
+            match attribution.fidelity {
+                Fidelity::Live => "live",
+                Fidelity::Retained => "retained",
+                Fidelity::None => "none",
+            }
+            .to_string(),
+        ),
+    )
 }
 
 struct ControlledLab {
@@ -435,5 +529,49 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
             report.incomplete_tasks,
             report.observation.failures.len()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fragcap_core::Attribution;
+
+    #[test]
+    fn native_observation_correlation_restores_packet_and_process_truth() {
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        registry.observe(
+            key,
+            Some(&Attribution::new(77, "game.exe", Fidelity::Live).with_role("client")),
+        );
+
+        let correlated = correlate_native_observation(&registry, client, proxy);
+        assert_eq!(correlated.0, registry.lookup(&key));
+        assert_eq!(correlated.1, Some(77));
+        assert_eq!(correlated.2.as_deref(), Some("game.exe"));
+        assert_eq!(correlated.3.as_deref(), Some("client"));
+        assert_eq!(correlated.4.as_deref(), Some("live"));
+    }
+
+    #[test]
+    fn unmatched_native_observation_does_not_invent_identity() {
+        let registry = FlowRegistry::default();
+        let correlated = correlate_native_observation(
+            &registry,
+            "127.0.0.1:41000".parse().unwrap(),
+            "127.0.0.1:42000".parse().unwrap(),
+        );
+        assert_eq!(correlated, (None, None, None, None, None));
+    }
+
+    #[test]
+    fn controlled_process_identity_is_the_explicit_child() {
+        let context = NativeObservationContext::default();
+        assert_eq!(context.controlled_process_id(), None);
+        context.record_controlled_process_id(4242);
+        assert_eq!(context.controlled_process_id(), Some(4242));
     }
 }

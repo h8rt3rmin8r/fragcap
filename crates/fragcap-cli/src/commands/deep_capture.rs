@@ -328,7 +328,6 @@ impl fragcap::deep_capture::SessionClock for LibraryClockAdapter {
 
 #[derive(Default)]
 struct LibraryRuntime {
-    flow_registry: Option<Arc<FlowRegistry>>,
     controlled_process_id: Option<u32>,
     process_events: Vec<String>,
     interrupted: bool,
@@ -446,6 +445,7 @@ struct LibraryCaptureAdapter<'a, 'e, 'w> {
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     prepared: Option<(CaptureArgs, capture::PreparedCapture)>,
     runtime: Rc<RefCell<LibraryRuntime>>,
+    observation_context: fragcap::deep_capture::NativeObservationContext,
     mode: fragcap::deep_capture::SessionMode,
 }
 
@@ -499,6 +499,8 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                     )
                 })?;
             self.runtime.borrow_mut().controlled_process_id = Some(process_id);
+            self.observation_context
+                .record_controlled_process_id(process_id);
             return Ok(fragcap::deep_capture::CaptureRunResult {
                 observations: Vec::new(),
                 interrupted: false,
@@ -525,15 +527,14 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                     error,
                 )
             })?;
-        let (registry, result, process_events, interrupted) = run_real_capture(
+        let (result, process_events, interrupted) = run_real_capture(
             &capture_args,
             prepared,
-            route,
+            self.observation_context.flow_registry(),
             &mut self.emitter.borrow_mut(),
         );
         {
             let mut runtime = self.runtime.borrow_mut();
-            runtime.flow_registry = Some(registry);
             runtime.process_events = process_events;
             runtime.interrupted = interrupted;
         }
@@ -1095,6 +1096,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let selected = Rc::new(RefCell::new(None));
     let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
+    let observation_context = fragcap::deep_capture::NativeObservationContext::default();
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = fragcap::deep_capture::AdapterSet {
         targets: Box::new(LibraryTargetAdapter {
@@ -1108,7 +1110,10 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             started: Instant::now(),
         }),
         identifiers: Box::new(LibraryIdentifierAdapter),
-        proxy: Box::new(fragcap::deep_capture::NativeProxyAdapter::default()),
+        proxy: Box::new(
+            fragcap::deep_capture::NativeProxyAdapter::default()
+                .with_observation_context(observation_context.clone()),
+        ),
         trust: Box::new(LibraryTrustAdapter {
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
@@ -1119,6 +1124,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             emitter: Rc::clone(&emitter),
             prepared: None,
             runtime: Rc::clone(&runtime),
+            observation_context,
             mode,
         }),
         facts: Box::new(LibraryFactAdapter {
@@ -1696,10 +1702,9 @@ fn real_capture_args(
 fn run_real_capture(
     capture_args: &CaptureArgs,
     prepared: capture::PreparedCapture,
-    _route: &fragcap::deep_capture::ProxyRoute,
+    flow_registry: Arc<FlowRegistry>,
     emitter: &mut Emitter,
-) -> (Arc<FlowRegistry>, Result<(), CliError>, Vec<String>, bool) {
-    let flow_registry = Arc::new(FlowRegistry::default());
+) -> (Result<(), CliError>, Vec<String>, bool) {
     emitter.begin_event_capture();
     let result = capture::run_prepared_with_flow_registry(
         capture_args,
@@ -1721,7 +1726,7 @@ fn run_real_capture(
         }
     });
     let process_events = emitter.take_captured_events();
-    (flow_registry, result, process_events, interrupted)
+    (result, process_events, interrupted)
 }
 
 fn run_controlled_target_harness(

@@ -91,6 +91,132 @@ fn forwards_absolute_form_and_preserves_informational_response() {
 }
 
 #[test]
+fn forwards_early_hints_and_continue_before_waiting_for_the_request_body() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = String::from_utf8(read_head(&mut stream)).unwrap();
+        assert!(request.contains("Expect: 100-continue\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 100 Continue\r\n\r\n")
+            .unwrap();
+        let mut body = [0_u8; 5];
+        stream.read_exact(&mut body).unwrap();
+        assert_eq!(&body, b"hello");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+            .unwrap();
+    });
+
+    let mut lease = start_proxy(address);
+    let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
+    let auth = lease.capability_proof().proxy_authorization();
+    let mut client = TcpStream::connect(endpoint).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write!(client, "POST http://{address}/upload HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nExpect: 100-continue\r\nContent-Length: 5\r\nConnection: close\r\n\r\n", auth.as_str()).unwrap();
+    assert!(read_head(&mut client).starts_with(b"HTTP/1.1 103"));
+    assert!(read_head(&mut client).starts_with(b"HTTP/1.1 100"));
+    client.write_all(b"hello").unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"));
+    assert!(response.ends_with("OK"));
+    server.join().unwrap();
+
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.requests, 1);
+    assert_eq!(report.observation.protocol.responses, 1);
+    assert_eq!(report.observation.protocol.informational_responses, 2);
+    assert_eq!(report.observation.application.len(), 1);
+    assert_eq!(report.observation.application[0].status, Some(200));
+}
+
+#[test]
+fn retains_request_evidence_when_the_origin_closes_before_responding() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let request = String::from_utf8(read_head(&mut stream)).unwrap();
+        assert!(request.starts_with("GET /lost HTTP/1.1\r\n"));
+    });
+
+    let mut lease = start_proxy(address);
+    let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
+    let auth = lease.capability_proof().proxy_authorization();
+    let mut client = TcpStream::connect(endpoint).unwrap();
+    write!(client, "GET http://{address}/lost HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nConnection: close\r\n\r\n", auth.as_str()).unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert!(response.is_empty());
+    server.join().unwrap();
+
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.requests, 1);
+    assert_eq!(report.observation.application.len(), 1);
+    assert_eq!(
+        report.observation.application[0].method.as_deref(),
+        Some("GET")
+    );
+    assert!(report.observation.application[0]
+        .url
+        .as_deref()
+        .is_some_and(|url| url.ends_with("/lost")));
+    assert_eq!(report.observation.application[0].status, None);
+    assert_eq!(
+        report.observation.application[0].inspectability,
+        "metadata-only"
+    );
+    assert_eq!(
+        report.observation.application[0].reason.as_deref(),
+        Some("upstream-response-eof")
+    );
+    assert_eq!(report.observation.protocol.observations_dropped_oldest, 0);
+}
+
+#[test]
+fn forwards_a_final_expectation_rejection_without_waiting_for_a_body() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let request = String::from_utf8(read_head(&mut stream)).unwrap();
+        assert!(request.contains("Expect: 100-continue\r\n"));
+        stream
+            .write_all(
+                b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        let mut body = Vec::new();
+        stream.read_to_end(&mut body).unwrap();
+        assert!(body.is_empty());
+    });
+
+    let mut lease = start_proxy(address);
+    let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
+    let auth = lease.capability_proof().proxy_authorization();
+    let mut client = TcpStream::connect(endpoint).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write!(client, "POST http://{address}/upload HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n", auth.as_str()).unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 417"));
+    server.join().unwrap();
+
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.responses, 1);
+    assert_eq!(report.observation.application[0].status, Some(417));
+}
+
+#[test]
 fn refuses_ambiguous_framing_before_connecting() {
     let unused = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = unused.local_addr().unwrap();

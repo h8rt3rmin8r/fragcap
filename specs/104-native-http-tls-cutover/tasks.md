@@ -117,3 +117,10 @@ Deliver the complete three-issue slice before the pre-push halt. The minimum rev
 - [x] T051 Expand malformed, oversized, persistent, chunked, trailer, upgrade, cancellation, and half-close runtime coverage per FR-006, FR-007, and SC-002 (partial)
 - [x] T052 Add full CONNECT-path invalid-name and untrusted-upstream failure assertions with no decrypted success per FR-010, FR-012, and SC-003 (partial)
 - [x] T053 Preserve truthful pre-effect Steam routing refusal and explicit bundle-directory ownership in tests and current documentation per FR-003, FR-005, and FR-017 (partial)
+
+## Phase 9: Third-party review hardening
+
+- [x] T054 Restore packet-side flow and attribution correlation for real native observations without claiming the broader #302 cross-artifact contract
+- [x] T055 Carry the exact controlled child process identifier into native observations instead of substituting the parent process
+- [x] T056 Relay `Expect: 100-continue` informational responses before awaiting the request body, including early final-response handling
+- [x] T057 Retain one metadata observation and failure reason for every parsed request that fails after admission
