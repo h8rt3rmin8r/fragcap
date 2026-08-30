@@ -92,9 +92,23 @@ impl NativeProxyConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolLimits {
+    pub capture_payloads: bool,
     pub max_header_bytes: usize,
     pub max_headers: usize,
     pub max_body_bytes: u64,
+    pub max_session_body_bytes: u64,
+    pub max_event_queue: usize,
+    pub max_event_chunk_bytes: usize,
+    pub max_decoded_body_bytes: usize,
+    pub max_decode_ratio: usize,
+    pub max_concurrent_decoders: usize,
+    pub decode_timeout: Duration,
+    pub max_concurrent_streams: usize,
+    pub max_reset_streams: usize,
+    pub max_pending_reset_streams: usize,
+    pub http2_stream_window_bytes: usize,
+    pub http2_connection_window_bytes: usize,
+    pub http2_send_buffer_bytes: usize,
     pub max_requests_per_connection: usize,
     pub max_observations: usize,
     pub header_timeout: Duration,
@@ -109,9 +123,23 @@ pub struct ProtocolLimits {
 impl Default for ProtocolLimits {
     fn default() -> Self {
         Self {
+            capture_payloads: true,
             max_header_bytes: 64 * 1024,
             max_headers: 128,
             max_body_bytes: 16 * 1024 * 1024,
+            max_session_body_bytes: 256 * 1024 * 1024,
+            max_event_queue: 4_096,
+            max_event_chunk_bytes: 16 * 1024,
+            max_decoded_body_bytes: 32 * 1024 * 1024,
+            max_decode_ratio: 64,
+            max_concurrent_decoders: 4,
+            decode_timeout: Duration::from_secs(10),
+            max_concurrent_streams: 128,
+            max_reset_streams: 128,
+            max_pending_reset_streams: 128,
+            http2_stream_window_bytes: 1024 * 1024,
+            http2_connection_window_bytes: 4 * 1024 * 1024,
+            http2_send_buffer_bytes: 1024 * 1024,
             max_requests_per_connection: 1_024,
             max_observations: 4_096,
             header_timeout: Duration::from_secs(10),
@@ -127,6 +155,70 @@ impl Default for ProtocolLimits {
             leaf_cache_bytes: NonZeroUsize::new(8 * 1024 * 1024).expect("constant is non-zero"),
             leaf_lifetime: Duration::from_secs(24 * 60 * 60),
         }
+    }
+}
+
+impl ProtocolLimits {
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+        let nonzero = [
+            ("max-header-bytes", self.max_header_bytes),
+            ("max-headers", self.max_headers),
+            ("max-event-queue", self.max_event_queue),
+            ("max-event-chunk-bytes", self.max_event_chunk_bytes),
+            ("max-decoded-body-bytes", self.max_decoded_body_bytes),
+            ("max-decode-ratio", self.max_decode_ratio),
+            ("max-concurrent-decoders", self.max_concurrent_decoders),
+            ("max-concurrent-streams", self.max_concurrent_streams),
+            ("max-reset-streams", self.max_reset_streams),
+            ("max-pending-reset-streams", self.max_pending_reset_streams),
+            ("http2-stream-window-bytes", self.http2_stream_window_bytes),
+            (
+                "http2-connection-window-bytes",
+                self.http2_connection_window_bytes,
+            ),
+            ("http2-send-buffer-bytes", self.http2_send_buffer_bytes),
+        ];
+        if let Some((name, _)) = nonzero.into_iter().find(|(_, value)| *value == 0) {
+            return Err(ConfigError::new(
+                "zero-protocol-limit",
+                format!("{name} must be non-zero"),
+            ));
+        }
+        if self.max_body_bytes == 0 || self.max_session_body_bytes == 0 {
+            return Err(ConfigError::new(
+                "zero-protocol-limit",
+                "body retention limits must be non-zero",
+            ));
+        }
+        if self.max_concurrent_streams > u32::MAX as usize
+            || self.max_header_bytes > u32::MAX as usize
+            || self.http2_stream_window_bytes > (i32::MAX as usize)
+            || self.http2_connection_window_bytes > (i32::MAX as usize)
+        {
+            return Err(ConfigError::new(
+                "protocol-limit-out-of-range",
+                "HTTP/2 settings exceed their protocol representation",
+            ));
+        }
+        if [
+            self.header_timeout,
+            self.idle_timeout,
+            self.tls_handshake_timeout,
+            self.decode_timeout,
+            self.upstream.dns,
+            self.upstream.connect,
+            self.upstream.read,
+            self.upstream.write,
+        ]
+        .into_iter()
+        .any(|value| value.is_zero())
+        {
+            return Err(ConfigError::new(
+                "zero-protocol-timeout",
+                "protocol timeouts must be non-zero",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -241,6 +333,17 @@ pub struct ProtocolAccounting {
     pub policy_refused: u64,
     pub timed_out: u64,
     pub observations_dropped_oldest: u64,
+    pub http2_streams: u64,
+    pub http2_streams_completed: u64,
+    pub http2_streams_reset: u64,
+    pub metadata_blocks: u64,
+    pub body_bytes_observed: u64,
+    pub body_bytes_retained: u64,
+    pub body_bytes_omitted: u64,
+    pub body_bytes_truncated: u64,
+    pub body_bytes_queue_dropped: u64,
+    pub application_events_accepted: u64,
+    pub application_events_dropped: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

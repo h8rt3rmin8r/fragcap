@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -50,6 +51,8 @@ impl Default for NativeProxyLimits {
 pub struct NativeProxyAdapter {
     limits: NativeProxyLimits,
     observation_context: NativeObservationContext,
+    application_artifact: Option<PathBuf>,
+    capture_payloads: bool,
 }
 
 /// Session-owned bridge between packet truth and native proxy observations.
@@ -71,7 +74,7 @@ impl NativeObservationContext {
             .store(process_id, Ordering::Release);
     }
 
-    fn controlled_process_id(&self) -> Option<u32> {
+    pub(crate) fn controlled_process_id(&self) -> Option<u32> {
         match self.controlled_process_id.load(Ordering::Acquire) {
             0 => None,
             process_id => Some(process_id),
@@ -84,6 +87,8 @@ impl NativeProxyAdapter {
         Self {
             limits,
             observation_context: NativeObservationContext::default(),
+            application_artifact: None,
+            capture_payloads: true,
         }
     }
 
@@ -94,6 +99,18 @@ impl NativeProxyAdapter {
     /// Use packet and process truth shared with this session's capture runner.
     pub fn with_observation_context(mut self, context: NativeObservationContext) -> Self {
         self.observation_context = context;
+        self
+    }
+
+    /// Stream native application observations to this approved artifact path.
+    pub fn with_application_artifact(mut self, path: impl Into<PathBuf>) -> Self {
+        self.application_artifact = Some(path.into());
+        self
+    }
+
+    /// Select whether application body bytes may be retained.
+    pub fn with_payload_capture(mut self, capture_payloads: bool) -> Self {
+        self.capture_payloads = capture_payloads;
         self
     }
 }
@@ -118,6 +135,10 @@ impl ProxyBackend for NativeProxyAdapter {
         budget: Budget,
     ) -> Result<Box<dyn ProxyLease>, StageFailure> {
         let endpoint = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), plan.endpoint.port);
+        let protocol = fragcap_proxy::ProtocolLimits {
+            capture_payloads: self.capture_payloads,
+            ..fragcap_proxy::ProtocolLimits::default()
+        };
         let config = NativeProxyConfig::new(
             endpoint,
             self.limits.max_connections,
@@ -125,6 +146,7 @@ impl ProxyBackend for NativeProxyAdapter {
             self.limits.shutdown_timeout,
         )
         .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?
+        .with_protocol_limits(protocol)
         .with_session_id(plan.session_id.clone())
         .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?;
         let controlled_lab = plan
@@ -134,7 +156,38 @@ impl ProxyBackend for NativeProxyAdapter {
             .map_err(|error| {
                 StageFailure::new(Stage::ProxyStart, "controlled-lab-failed", error)
             })?;
+        let correlation_context = self.observation_context.clone();
+        let controlled = plan.controlled;
+        let target_id = plan.target.id;
+        let mut application_artifact = self
+            .application_artifact
+            .as_ref()
+            .map(|path| {
+                super::ApplicationArtifactLease::open_correlated(
+                    path,
+                    &plan.session_id,
+                    4_096,
+                    Arc::new(move || super::ApplicationCorrelation {
+                        target_id: Some(target_id),
+                        process_id: correlation_context.controlled_process_id(),
+                        process_image: controlled.then(|| "client.exe".to_string()),
+                        role: controlled.then(|| "client".to_string()),
+                        attribution: controlled.then(|| "controlled-harness".to_string()),
+                    }),
+                )
+                .map_err(|error| {
+                    StageFailure::new(
+                        Stage::ProxyStart,
+                        "application-writer-open-failed",
+                        error.to_string(),
+                    )
+                })
+            })
+            .transpose()?;
         let mut backend = RuntimeBackend::new(config);
+        if let Some(artifact) = &application_artifact {
+            backend = backend.with_application_event_sink(artifact.sink());
+        }
         if let Some(lab) = &controlled_lab {
             let mut policy = DestinationPolicy::new(endpoint);
             policy.grant_for_test(lab.http_origin);
@@ -161,6 +214,7 @@ impl ProxyBackend for NativeProxyAdapter {
             controlled: plan.controlled,
             controlled_lab,
             observation_context: self.observation_context.clone(),
+            application_artifact: application_artifact.take(),
         }))
     }
 }
@@ -170,6 +224,7 @@ struct NativeProxyLease {
     controlled: bool,
     controlled_lab: Option<ControlledLab>,
     observation_context: NativeObservationContext,
+    application_artifact: Option<super::ApplicationArtifactLease>,
 }
 
 impl ProxyLease for NativeProxyLease {
@@ -243,12 +298,36 @@ impl ProxyLease for NativeProxyLease {
 
     fn stop(&mut self, budget: Budget) -> CleanupResult {
         let report = self.lease.stop(budget.remaining());
-        cleanup_result("native-proxy-listener", &report)
+        let mut result = cleanup_result("native-proxy-listener", &report);
+        if report.is_clean() {
+            if let Some(artifact) = self.application_artifact.as_mut() {
+                if let Err(error) = artifact.finish() {
+                    result.status = CleanupStatus::Failed;
+                    result.reason = format!("application writer failed: {error}");
+                }
+            }
+        }
+        result
     }
 
     fn cleanup(&mut self, budget: Budget) -> Vec<CleanupResult> {
         let report = self.lease.cleanup(budget.remaining());
         let mut results = vec![cleanup_result("native-proxy-runtime", &report)];
+        if let Some(mut artifact) = self.application_artifact.take() {
+            let status = artifact.finish();
+            results.push(CleanupResult {
+                resource: "application-writer".to_string(),
+                status: if status.is_ok() {
+                    CleanupStatus::Released
+                } else {
+                    CleanupStatus::Failed
+                },
+                reason: status.err().map_or_else(
+                    || "application stream finalized".to_string(),
+                    |error| error.to_string(),
+                ),
+            });
+        }
         if let Some(mut lab) = self.controlled_lab.take() {
             results.push(lab.cleanup());
         }

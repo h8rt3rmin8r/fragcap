@@ -13,12 +13,14 @@
 //! return is still classified as a deadline failure by the coordinator.
 
 mod adapters;
+mod application;
 mod model;
 mod native;
 mod policy;
 mod session;
 
 pub use adapters::*;
+pub use application::*;
 pub use model::*;
 pub use native::{
     run_controlled_native_requests, CertificateStore, NativeCertificateStore,

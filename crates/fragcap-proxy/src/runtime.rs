@@ -17,7 +17,7 @@ use tokio::time::{timeout, Instant};
 use crate::http1::{
     read_authenticated_request, read_request, serve_http, HttpRun, ObservationContext,
 };
-use crate::tls::{accept_client_tls, client_server_config_for, connect_verified_tls};
+use crate::tls::{accept_client_tls, client_server_config_for_alpn, connect_verified_tls};
 use crate::{connect_upstream, ProtocolError};
 use crate::{
     CapabilityProof, DestinationPolicy, LeafCache, SessionCapability, SessionCertificateAuthority,
@@ -34,6 +34,7 @@ pub struct NativeProxyBackend {
     config: NativeProxyConfig,
     destination_policy: Option<DestinationPolicy>,
     tls_client_config: Option<Arc<rustls::ClientConfig>>,
+    application_sink: crate::application::SharedEventSink,
 }
 
 impl NativeProxyBackend {
@@ -42,6 +43,7 @@ impl NativeProxyBackend {
             config,
             destination_policy: None,
             tls_client_config: None,
+            application_sink: None,
         }
     }
 
@@ -52,6 +54,14 @@ impl NativeProxyBackend {
 
     pub fn with_tls_client_config(mut self, config: Arc<rustls::ClientConfig>) -> Self {
         self.tls_client_config = Some(config);
+        self
+    }
+
+    pub fn with_application_event_sink(
+        mut self,
+        sink: Arc<dyn crate::ApplicationEventSink>,
+    ) -> Self {
+        self.application_sink = Some(sink);
         self
     }
 
@@ -71,6 +81,10 @@ impl NativeProxyBackend {
 
     pub fn start(&mut self, budget: Duration) -> Result<NativeProxyLease, StartError> {
         let started_at = StdInstant::now();
+        self.config
+            .protocol
+            .validate()
+            .map_err(|error| StartError::new(error.code, error.detail))?;
         if budget.is_zero() {
             return Err(StartError::new(
                 "start-budget-exhausted",
@@ -171,6 +185,7 @@ impl NativeProxyBackend {
             certificate_authority,
             leaf_cache,
             tls_client_config,
+            application_sink: self.application_sink.clone(),
         };
         let worker = thread::Builder::new()
             .name("fragcap-native-proxy".to_string())
@@ -352,6 +367,7 @@ struct RuntimeServices {
     certificate_authority: Arc<SessionCertificateAuthority>,
     leaf_cache: Arc<Mutex<LeafCache>>,
     tls_client_config: Arc<rustls::ClientConfig>,
+    application_sink: crate::application::SharedEventSink,
 }
 
 #[derive(Clone, Copy)]
@@ -374,6 +390,37 @@ async fn connection_task(
     let connection_id = identity.id;
     let peer = identity.peer;
     let local = identity.local;
+    let cleartext_http2 = tokio::select! {
+        _ = shutdown.changed() => false,
+        value = has_http2_preface(&stream, config.protocol.header_timeout) => value,
+    };
+    if cleartext_http2 {
+        let run = crate::http2::serve_cleartext_http2(
+            stream,
+            capability.clone(),
+            policy.clone(),
+            config.protocol.clone(),
+            config.session_id.clone(),
+            connection_id,
+            services.application_sink.clone(),
+        )
+        .await;
+        if let Some(error) = run.failure.as_ref() {
+            if error.authentication_refused {
+                return ConnectionOutcome::AuthenticationRefused(error.clone());
+            }
+            return ConnectionOutcome::Failed(HttpRun {
+                observations: Vec::new(),
+                accounting: run.accounting,
+                failure: run.failure,
+            });
+        }
+        return ConnectionOutcome::Completed(HttpRun {
+            observations: Vec::new(),
+            accounting: run.accounting,
+            failure: None,
+        });
+    }
     let first = tokio::select! {
         _ = shutdown.changed() => {
             return ConnectionOutcome::Failed(HttpRun {
@@ -403,19 +450,24 @@ async fn connection_task(
             })
         }
     };
+    crate::application::emit(
+        &services.application_sink,
+        crate::ApplicationEvent::now(
+            &config.session_id,
+            connection_id,
+            None,
+            None,
+            crate::ApplicationEventKind::ConnectionOpen,
+        ),
+    );
     if first.is_connect() {
         let authority = first.authority().clone();
-        let upstream = match connect_verified_tls(
-            authority.clone(),
-            policy.clone(),
-            config.protocol.clone(),
-            Arc::clone(&services.tls_client_config),
-        )
-        .await
-        {
+        let upstream = match connect_upstream(&authority, policy, config.protocol.upstream).await {
             Ok(upstream) => upstream,
             Err(error) => {
-                let protocol = error;
+                let policy_refused = matches!(error.stage, crate::UpstreamStage::Policy);
+                let mut protocol = ProtocolError::new(error.code, error.detail);
+                protocol.policy_refused = policy_refused;
                 return ConnectionOutcome::Failed(HttpRun {
                     observations: vec![connect_observation(
                         &config.session_id,
@@ -432,6 +484,63 @@ async fn connection_task(
                         ..Default::default()
                     },
                     failure: Some(protocol),
+                });
+            }
+        };
+        let upstream = match crate::upstream::connect_tls_over_upstream(
+            &authority,
+            upstream,
+            config.protocol.upstream,
+            Arc::clone(&services.tls_client_config),
+        )
+        .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                let protocol = ProtocolError::new(error.code, error.detail);
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: vec![connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        Some(protocol.code),
+                    )],
+                    accounting: crate::ProtocolAccounting {
+                        requests: 1,
+                        connect_requests: 1,
+                        ..Default::default()
+                    },
+                    failure: Some(protocol),
+                });
+            }
+        };
+        let selected_alpn = upstream
+            .alpn_protocol()
+            .unwrap_or_else(|| b"http/1.1".to_vec());
+        let selected_protocol = match crate::protocol::negotiated_protocol(Some(&selected_alpn)) {
+            Ok(protocol) => protocol,
+            Err(code) => {
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: vec![connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        Some(code),
+                    )],
+                    accounting: crate::ProtocolAccounting {
+                        requests: 1,
+                        connect_requests: 1,
+                        upstream_tls_completed: 1,
+                        ..Default::default()
+                    },
+                    failure: Some(ProtocolError::new(
+                        code,
+                        "origin selected an unsupported application protocol",
+                    )),
                 });
             }
         };
@@ -456,8 +565,12 @@ async fn connection_task(
         }
         let server_config = {
             let mut cache = services.leaf_cache.lock().await;
-            match client_server_config_for(&authority, &services.certificate_authority, &mut cache)
-            {
+            match client_server_config_for_alpn(
+                &authority,
+                &services.certificate_authority,
+                &mut cache,
+                selected_alpn.clone(),
+            ) {
                 Ok(config) => config,
                 Err(error) => {
                     return ConnectionOutcome::Failed(HttpRun {
@@ -523,6 +636,106 @@ async fn connection_task(
             client_tls.get_ref().1.protocol_version(),
             client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec),
         );
+        crate::application::emit(
+            &services.application_sink,
+            crate::ApplicationEvent::now(
+                &config.session_id,
+                connection_id,
+                None,
+                None,
+                crate::ApplicationEventKind::TlsNegotiation(upstream_tls.clone()),
+            ),
+        );
+        crate::application::emit(
+            &services.application_sink,
+            crate::ApplicationEvent::now(
+                &config.session_id,
+                connection_id,
+                None,
+                None,
+                crate::ApplicationEventKind::TlsNegotiation(client_tls_facts.clone()),
+            ),
+        );
+        let client_alpn = client_tls
+            .get_ref()
+            .1
+            .alpn_protocol()
+            .unwrap_or(b"http/1.1")
+            .to_vec();
+        if client_alpn != selected_alpn {
+            return ConnectionOutcome::Failed(HttpRun {
+                observations: vec![connect_observation(
+                    &config.session_id,
+                    connection_id,
+                    peer,
+                    local,
+                    &first,
+                    Some("tls-alpn-mismatch"),
+                )],
+                accounting: crate::ProtocolAccounting {
+                    requests: 1,
+                    connect_requests: 1,
+                    client_tls_completed: 1,
+                    upstream_tls_completed: 1,
+                    ..Default::default()
+                },
+                failure: Some(ProtocolError::new(
+                    "tls-alpn-mismatch",
+                    "client and origin selected different application protocols",
+                )),
+            });
+        }
+        if selected_protocol == crate::ProtocolVersion::Http2 {
+            let h2 = crate::http2::serve_http2(
+                client_tls,
+                upstream,
+                config.protocol.clone(),
+                config.session_id.clone(),
+                connection_id,
+                services.application_sink.clone(),
+            )
+            .await;
+            let mut run = HttpRun {
+                observations: vec![
+                    connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        None,
+                    ),
+                    tls_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        client_tls_facts,
+                        None,
+                    ),
+                    tls_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        upstream_tls,
+                        None,
+                    ),
+                ],
+                accounting: h2.accounting,
+                failure: h2.failure,
+            };
+            run.accounting.connect_requests = run.accounting.connect_requests.saturating_add(1);
+            run.accounting.client_tls_completed =
+                run.accounting.client_tls_completed.saturating_add(1);
+            run.accounting.upstream_tls_completed =
+                run.accounting.upstream_tls_completed.saturating_add(1);
+            return if run.failure.is_some() {
+                ConnectionOutcome::Failed(run)
+            } else {
+                ConnectionOutcome::Completed(run)
+            };
+        }
         let inner = match read_request(&mut client_tls, config.protocol_limits()).await {
             Ok(Some(request)) if !request.is_connect() => request,
             Ok(Some(_)) => {
@@ -568,6 +781,7 @@ async fn connection_task(
                 client_peer: peer,
                 proxy_local: local,
                 protocol: "https",
+                application_sink: services.application_sink.clone(),
             },
             false,
             |requested| {
@@ -639,6 +853,7 @@ async fn connection_task(
             client_peer: peer,
             proxy_local: local,
             protocol: "http",
+            application_sink: services.application_sink.clone(),
         },
         true,
         |authority| {
@@ -660,6 +875,29 @@ async fn connection_task(
         ConnectionOutcome::Failed(run)
     } else {
         ConnectionOutcome::Completed(run)
+    }
+}
+
+async fn has_http2_preface(stream: &TcpStream, budget: Duration) -> bool {
+    const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    let deadline = Instant::now() + budget;
+    let mut observed = [0_u8; 24];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let read = match timeout(remaining, stream.peek(&mut observed)).await {
+            Ok(Ok(read)) => read,
+            Ok(Err(_)) | Err(_) => return false,
+        };
+        if read == 0 || observed[..read] != PREFACE[..read] {
+            return false;
+        }
+        if read == PREFACE.len() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -818,6 +1056,8 @@ async fn run(
                                     .peak_live_connections
                                     .max(observation.live_connections);
                                 tasks.spawn(async move {
+                                    let terminal_sink = connection_services.application_sink.clone();
+                                    let terminal_session = connection_services.config.session_id.clone();
                                     let outcome = connection_task(
                                         stream,
                                         connection_shutdown,
@@ -825,6 +1065,22 @@ async fn run(
                                         ConnectionIdentity { id: connection_id, peer, local },
                                         permit,
                                     ).await;
+                                    let terminal = match &outcome {
+                                        ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
+                                        ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
+                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
+                                        ConnectionOutcome::Failed(_) => crate::StreamTerminal::ProtocolError,
+                                    };
+                                    crate::application::emit(
+                                        &terminal_sink,
+                                        crate::ApplicationEvent::now(
+                                            terminal_session,
+                                            connection_id,
+                                            None,
+                                            None,
+                                            crate::ApplicationEventKind::ConnectionTerminal(terminal),
+                                        ),
+                                    );
                                     (connection_id, outcome)
                                 });
                             }
@@ -1001,6 +1257,50 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .observations_dropped_oldest
         .saturating_add(source.observations_dropped_oldest);
+    observation.protocol.http2_streams = observation
+        .protocol
+        .http2_streams
+        .saturating_add(source.http2_streams);
+    observation.protocol.http2_streams_completed = observation
+        .protocol
+        .http2_streams_completed
+        .saturating_add(source.http2_streams_completed);
+    observation.protocol.http2_streams_reset = observation
+        .protocol
+        .http2_streams_reset
+        .saturating_add(source.http2_streams_reset);
+    observation.protocol.metadata_blocks = observation
+        .protocol
+        .metadata_blocks
+        .saturating_add(source.metadata_blocks);
+    observation.protocol.body_bytes_observed = observation
+        .protocol
+        .body_bytes_observed
+        .saturating_add(source.body_bytes_observed);
+    observation.protocol.body_bytes_retained = observation
+        .protocol
+        .body_bytes_retained
+        .saturating_add(source.body_bytes_retained);
+    observation.protocol.body_bytes_omitted = observation
+        .protocol
+        .body_bytes_omitted
+        .saturating_add(source.body_bytes_omitted);
+    observation.protocol.body_bytes_truncated = observation
+        .protocol
+        .body_bytes_truncated
+        .saturating_add(source.body_bytes_truncated);
+    observation.protocol.body_bytes_queue_dropped = observation
+        .protocol
+        .body_bytes_queue_dropped
+        .saturating_add(source.body_bytes_queue_dropped);
+    observation.protocol.application_events_accepted = observation
+        .protocol
+        .application_events_accepted
+        .saturating_add(source.application_events_accepted);
+    observation.protocol.application_events_dropped = observation
+        .protocol
+        .application_events_dropped
+        .saturating_add(source.application_events_dropped);
     observation.application.extend(run.observations);
     let excess = observation
         .application

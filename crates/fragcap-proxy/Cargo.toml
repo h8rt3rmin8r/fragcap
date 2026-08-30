@@ -14,6 +14,9 @@ readme = "README.md"
 
 [dependencies]
 tokio.workspace = true
+bytes.workspace = true
+h2.workspace = true
+async-compression.workspace = true
 
 # Selected and compiled as one reviewed protocol stack in S102. Protocol use is
 # deliberately deferred: this slice proves bounded runtime ownership without
@@ -42,7 +45,6 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-h2.workspace = true
 quinn.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

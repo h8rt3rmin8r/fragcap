@@ -53,6 +53,8 @@ fragcap-proxy = { workspace = true, optional = true }
 zeroize.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+serde_json.workspace = true
+base64.workspace = true
 
 # The Windows volume inventory adapter (slice S052) enumerates fixed volumes for
 # the known-roots walk through GetLogicalDrives/GetDriveTypeW and reads each
@@ -75,6 +77,8 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 serde_json.workspace = true
+bytes.workspace = true
+tempfile.workspace = true
 # Enables fragcap-steam's synthetic appinfo.vdf generator for this crate's own
 # tests (tests/steam_source.rs), the same way fragcap-cli's dev-dependencies
 # already do for its launch-accumulation tests.

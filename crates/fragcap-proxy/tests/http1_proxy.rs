@@ -2,9 +2,23 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fragcap_proxy::{DestinationPolicy, NativeProxyBackend, NativeProxyConfig};
+use fragcap_proxy::{
+    ApplicationEvent, ApplicationEventKind, ApplicationEventSink, BodyRepresentation,
+    DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig,
+};
+
+#[derive(Default)]
+struct Collector(Mutex<Vec<ApplicationEvent>>);
+
+impl ApplicationEventSink for Collector {
+    fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        self.0.lock().unwrap().push(event);
+        EventDisposition::Accepted
+    }
+}
 
 fn read_head(stream: &mut impl Read) -> Vec<u8> {
     let mut head = Vec::new();
@@ -17,6 +31,13 @@ fn read_head(stream: &mut impl Read) -> Vec<u8> {
 }
 
 fn start_proxy(origin: SocketAddr) -> fragcap_proxy::NativeProxyLease {
+    start_proxy_with_sink(origin, None)
+}
+
+fn start_proxy_with_sink(
+    origin: SocketAddr,
+    sink: Option<Arc<Collector>>,
+) -> fragcap_proxy::NativeProxyLease {
     let config = NativeProxyConfig::new(
         "127.0.0.1:0".parse().unwrap(),
         8,
@@ -28,10 +49,12 @@ fn start_proxy(origin: SocketAddr) -> fragcap_proxy::NativeProxyLease {
     .unwrap();
     let mut policy = DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin);
-    NativeProxyBackend::new(config)
-        .with_destination_policy(policy)
-        .start(Duration::from_secs(2))
-        .unwrap()
+    let backend = NativeProxyBackend::new(config).with_destination_policy(policy);
+    let mut backend = match sink {
+        Some(sink) => backend.with_application_event_sink(sink),
+        None => backend,
+    };
+    backend.start(Duration::from_secs(2)).unwrap()
 }
 
 #[test]
@@ -276,7 +299,8 @@ fn relays_chunked_trailers_and_reuses_a_persistent_client_connection() {
             .unwrap();
     });
 
-    let mut lease = start_proxy(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with_sink(address, Some(Arc::clone(&collector)));
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let auth = lease.capability_proof().proxy_authorization();
     let mut client = TcpStream::connect(endpoint).unwrap();
@@ -303,6 +327,23 @@ fn relays_chunked_trailers_and_reuses_a_persistent_client_connection() {
     assert_eq!(report.observation.protocol.requests, 2);
     assert_eq!(report.observation.protocol.responses, 2);
     assert_eq!(report.observation.protocol.informational_responses, 1);
+    let events = collector.0.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            ApplicationEventKind::Body(segment)
+                if segment.representation == BodyRepresentation::Raw
+                    && segment.bytes.as_ref() == b"5\r\n"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            ApplicationEventKind::Body(segment)
+                if segment.representation == BodyRepresentation::TransferDecoded
+                    && segment.bytes.as_ref() == b"hello"
+        )
+    }));
 }
 
 #[test]

@@ -1,0 +1,327 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use bytes::Bytes;
+use fragcap_proxy::{
+    tls_client_config_with_roots, ApplicationEvent, ApplicationEventKind, ApplicationEventSink,
+    DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig,
+};
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[derive(Default)]
+struct Collector(Mutex<Vec<ApplicationEvent>>);
+
+impl ApplicationEventSink for Collector {
+    fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        self.0.lock().unwrap().push(event);
+        EventDisposition::Accepted
+    }
+}
+
+async fn read_head(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut head = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    head
+}
+
+fn h2_origin_config() -> (Arc<rustls::ServerConfig>, CertificateDer<'static>) {
+    let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let certificate = CertificateDer::from(generated.cert);
+    let private = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate.clone()], private.into())
+        .unwrap();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    (Arc::new(config), certificate)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = listener.local_addr().unwrap();
+    let (origin_config, origin_certificate) = h2_origin_config();
+    let origin_task = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let tls = tokio_rustls::TlsAcceptor::from(origin_config)
+            .accept(tcp)
+            .await
+            .unwrap();
+        let mut connection = h2::server::handshake(tls).await.unwrap();
+        let mut served = 0;
+        let mut responses = tokio::task::JoinSet::new();
+        while let Some(stream) = connection.accept().await {
+            let (request, mut response) = stream.unwrap();
+            let index: u64 = request
+                .uri()
+                .path()
+                .trim_start_matches('/')
+                .parse()
+                .unwrap();
+            responses.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(32 - index)).await;
+                if index == 7 {
+                    response.send_reset(h2::Reason::CANCEL);
+                    return;
+                }
+                let mut body = response
+                    .send_response(
+                        hyper::Response::builder()
+                            .status(200)
+                            .header("x-fragcap-stream", index.to_string())
+                            .body(())
+                            .unwrap(),
+                        false,
+                    )
+                    .unwrap();
+                body.send_data(Bytes::from(index.to_string()), false)
+                    .unwrap();
+                let mut trailers = hyper::HeaderMap::new();
+                trailers.insert("x-finished", index.to_string().parse().unwrap());
+                body.send_trailers(trailers).unwrap();
+            });
+            served += 1;
+            if served == 32 {
+                break;
+            }
+        }
+        while let Some(result) = responses.join_next().await {
+            result.unwrap();
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(100), connection.accept()).await;
+        connection.graceful_shutdown();
+        served
+    });
+
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        4,
+        16 * 1024,
+        Duration::from_secs(3),
+    )
+    .unwrap()
+    .with_session_id("s105-http2")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(origin);
+    let mut origin_roots = rustls::RootCertStore::empty();
+    origin_roots.add(origin_certificate).unwrap();
+    let collector = Arc::new(Collector::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_tls_client_config(tls_client_config_with_roots(origin_roots).unwrap())
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+
+    let mut tcp = tokio::net::TcpStream::connect(lease.endpoint())
+        .await
+        .unwrap();
+    let authorization = lease.capability_proof().proxy_authorization();
+    tcp.write_all(
+        format!(
+            "CONNECT localhost:{} HTTP/1.1\r\nHost: localhost:{}\r\nProxy-Authorization: {}\r\n\r\n",
+            origin.port(),
+            origin.port(),
+            authorization.as_str()
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        read_head(&mut tcp).await,
+        b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    );
+
+    let mut client_roots = rustls::RootCertStore::empty();
+    client_roots
+        .add(CertificateDer::from(lease.ca_der().to_vec()))
+        .unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(client_roots)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec()];
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+        .connect(ServerName::try_from("localhost").unwrap().to_owned(), tcp)
+        .await
+        .unwrap();
+    let (sender, connection) = h2::client::handshake(tls).await.unwrap();
+    let driver = tokio::spawn(connection);
+    let mut responses = Vec::new();
+    for index in 0..32 {
+        let mut ready = sender.clone().ready().await.unwrap();
+        let request = hyper::Request::builder()
+            .method("GET")
+            .uri(format!("https://localhost:{}/{index}", origin.port()))
+            .body(())
+            .unwrap();
+        let (response, _) = ready.send_request(request, true).unwrap();
+        responses.push((index, response));
+    }
+    for (index, response) in responses {
+        let response = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("response deadline");
+        if index == 7 {
+            assert!(response.unwrap_err().is_reset());
+            continue;
+        }
+        let response = response.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["x-fragcap-stream"], index.to_string());
+        let mut body = response.into_body();
+        let data = body.data().await.unwrap().unwrap();
+        assert_eq!(data, Bytes::from(index.to_string()));
+        body.flow_control().release_capacity(data.len()).unwrap();
+        let trailers = body.trailers().await.unwrap().unwrap();
+        assert_eq!(trailers["x-finished"], index.to_string());
+    }
+    drop(sender);
+    driver.abort();
+    let _ = driver.await;
+    let report = lease.cleanup(Duration::from_secs(3));
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(origin_task.await.unwrap(), 32);
+    assert_eq!(report.observation.protocol.requests, 32);
+    assert_eq!(report.observation.protocol.responses, 31);
+    assert_eq!(report.observation.protocol.http2_streams_reset, 1);
+    let events = collector.0.lock().unwrap();
+    let opened = events
+        .iter()
+        .filter(|event| matches!(event.kind, ApplicationEventKind::HttpStreamOpen))
+        .count();
+    let completed = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                ApplicationEventKind::HttpStreamTerminal(fragcap_proxy::StreamTerminal::Complete)
+            )
+        })
+        .count();
+    let reset = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                ApplicationEventKind::HttpStreamTerminal(fragcap_proxy::StreamTerminal::Reset)
+            )
+        })
+        .count();
+    let trailers = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                ApplicationEventKind::Metadata(block)
+                    if block.kind == fragcap_proxy::MetadataKind::Trailers
+            )
+        })
+        .count();
+    assert_eq!((opened, completed, reset, trailers), (32, 31, 1, 31));
+    let stream_ids: std::collections::BTreeSet<_> =
+        events.iter().filter_map(|event| event.stream_id).collect();
+    assert_eq!(stream_ids.len(), 32);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicitly_routed_cleartext_http2_is_authenticated_and_authority_bound() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut connection = h2::server::handshake(tcp).await.unwrap();
+        let (request, mut response) = connection.accept().await.unwrap().unwrap();
+        assert_eq!(request.uri().path(), "/h2c");
+        assert!(request
+            .headers()
+            .get(hyper::header::PROXY_AUTHORIZATION)
+            .is_none());
+        response
+            .send_response(
+                hyper::Response::builder().status(204).body(()).unwrap(),
+                true,
+            )
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_millis(100), connection.accept()).await;
+        assert!(!matches!(second, Ok(Some(Ok(_)))));
+        connection.graceful_shutdown();
+    });
+
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        2,
+        16 * 1024,
+        Duration::from_secs(3),
+    )
+    .unwrap()
+    .with_session_id("s105-h2c")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(origin);
+    let collector = Arc::new(Collector::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let tcp = tokio::net::TcpStream::connect(lease.endpoint())
+        .await
+        .unwrap();
+    let (sender, connection) = h2::client::handshake(tcp).await.unwrap();
+    let driver = tokio::spawn(connection);
+    let mut sender = sender.ready().await.unwrap();
+    let request = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://{origin}/h2c"))
+        .header(
+            hyper::header::PROXY_AUTHORIZATION,
+            lease.capability_proof().proxy_authorization().as_str(),
+        )
+        .body(())
+        .unwrap();
+    let (response, _) = sender.send_request(request, true).unwrap();
+    let mut sender = sender.ready().await.unwrap();
+    let mismatched = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://127.0.0.1:{}/outside", origin.port() + 1))
+        .body(())
+        .unwrap();
+    let (mismatched, _) = sender.send_request(mismatched, true).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), response)
+            .await
+            .unwrap()
+            .unwrap()
+            .status(),
+        204
+    );
+    let mismatch = tokio::time::timeout(Duration::from_secs(3), mismatched)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(mismatch.is_reset());
+    assert_eq!(mismatch.reason(), Some(h2::Reason::REFUSED_STREAM));
+    drop(sender);
+    driver.abort();
+    let _ = driver.await;
+    origin_task.await.unwrap();
+    let report = lease.cleanup(Duration::from_secs(3));
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.observation.protocol.http2_streams, 1);
+    assert_eq!(report.observation.protocol.http2_streams_completed, 1);
+}

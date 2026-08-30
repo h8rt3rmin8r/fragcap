@@ -4,9 +4,10 @@ description: How passive Capture and explicit Deep Capture produce distinct, aud
 ---
 
 <Callout title="Native completion status">
-Deep Capture is functional but incomplete. S104 makes native HTTP/1.1, CONNECT,
-and HTTPS inspection the sole production proxy path, with trust effects provided
-by native Windows APIs. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+Deep Capture is functional but incomplete. S105 adds native HTTP/2,
+protocol-faithful metadata, bounded body observations, and a live versioned
+application stream to the HTTP/1.1, CONNECT, and HTTPS path. Trust effects use
+native Windows APIs. [Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
 owns the four milestone completion contract; #334 is the only completion gate.
 </Callout>
 
@@ -20,8 +21,10 @@ The native target architecture adds a `fragcap-proxy` leaf beneath the facade.
 S103 gives that crate authenticated loopback admission, bounded upstream policy,
 per-session certificate and exact trust ownership, raw event accounting, and a
 controlled lab for every required protocol family. S104 adds bounded HTTP/1.1,
-CONNECT, and separately verified HTTPS. Broader protocol fidelity (#294 through
-#305), launch and transport coverage (#306 through #318), and final completion remain open.
+CONNECT, and separately verified HTTPS. S105 adds multiplexed HTTP/2, complete
+available HTTP metadata, bounded streaming body evidence, and the live version
+2 application stream. WebSocket, SSE, gRPC, TLS key logs, client certificates,
+HAR, correlation, launch and transport coverage, and final completion remain open.
 
 ## Capture: passive packet truth
 

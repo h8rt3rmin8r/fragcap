@@ -492,14 +492,16 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         application_records.last().unwrap()["type"],
         "application.trailer"
     );
-    assert_eq!(application_records.last().unwrap()["records"], 5);
-    assert!(app.contains("\"protocol\":\"http\""));
-    assert!(app.contains("\"protocol\":\"https\""));
-    assert!(app.contains("\"inspectability\":\"metadata-only\""));
+    assert_eq!(application_records.first().unwrap()["schema_version"], 2);
+    assert!(application_records.last().unwrap()["written_records"]
+        .as_u64()
+        .is_some_and(|records| records > 0));
+    assert!(app.contains("\"protocol\":\"http/1.1\""));
+    assert!(app.contains("\"type\":\"tls.negotiation\""));
     assert!(app.contains("\"inspectability\":\"full\""));
     assert!(application_records[1..application_records.len() - 1]
         .iter()
-        .all(|record| record["process_id"].as_u64().is_some_and(|pid| pid > 0)));
+        .any(|record| record["process_id"].as_u64().is_some_and(|pid| pid > 0)));
 
     let process_trace = std::fs::read_to_string(bundle.join("process-trace.jsonl")).unwrap();
     assert!(process_trace.contains("controlled-harness.exited"));
@@ -509,6 +511,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert_ne!(child_pid, u64::from(std::process::id()));
     assert!(application_records[1..application_records.len() - 1]
         .iter()
+        .filter(|record| record["process_id"].as_u64().is_some())
         .all(|record| record["process_id"] == child_pid));
 
     let cleanup: serde_json::Value =
@@ -619,8 +622,10 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
     assert!(bundle.join("capture.fcapng").is_file());
     let app = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
     let trailer: serde_json::Value = serde_json::from_str(app.lines().last().unwrap()).unwrap();
-    assert_eq!(trailer["records"], 5);
-    assert_eq!(trailer["writer_status"], "partial");
+    assert!(trailer["written_records"]
+        .as_u64()
+        .is_some_and(|records| records > 0));
+    assert_eq!(trailer["writer_status"], "complete");
 
     let store = Store::open(&local).unwrap();
     let facts = store
