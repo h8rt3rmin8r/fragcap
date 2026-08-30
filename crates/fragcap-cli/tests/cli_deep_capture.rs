@@ -228,7 +228,6 @@ fn reachability_calibration_rejects_trust_and_tls_outputs_before_mutation() {
     let local = dir.path().join("local.db");
     let bundle = dir.path().join("bundle");
     seed_target(&local, false);
-    let bundle = dir.path().join("bundle");
     let (code, _out, err) = run(&[
         "deep-capture",
         "sample-target",
@@ -313,6 +312,7 @@ fn deep_capture_requires_explicit_trust_confirmation() {
 fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
     seed_target(&local, false);
 
     let (code, _out, err) = run(&[
