@@ -4,8 +4,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use fragcap_proxy::{
-    connect_tls_upstream, connect_upstream, tls_client_config_with_roots, AuthorityHost,
-    DestinationAuthority, DestinationPolicy, UpstreamBudgets, UpstreamStage,
+    connect_tls_upstream, connect_upstream, connect_upstream_cancellable,
+    tls_client_config_with_roots, AuthorityHost, DestinationAuthority, DestinationPolicy,
+    UpstreamBudgets, UpstreamCancellation, UpstreamStage,
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::net::TcpListener;
@@ -25,6 +26,40 @@ fn authority_parser_preserves_names_and_rejects_ambiguity() {
     ] {
         assert!(DestinationAuthority::parse(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn policy_normalizes_ipv4_mapped_ipv6_before_listener_and_scope_checks() {
+    let listener: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let mapped_listener: SocketAddr = "[::ffff:127.0.0.1]:8080".parse().unwrap();
+    let mapped_private: SocketAddr = "[::ffff:10.0.0.1]:443".parse().unwrap();
+    let mut policy = DestinationPolicy::new(listener);
+    assert!(!policy.evaluate(mapped_listener).allowed);
+    assert!(!policy.evaluate(mapped_private).allowed);
+    policy.grant_for_test("10.0.0.1:443".parse().unwrap());
+    assert!(policy.evaluate(mapped_private).allowed);
+}
+
+#[tokio::test]
+async fn connector_reports_cancellation_as_a_reachable_terminal_stage() {
+    let cancellation = UpstreamCancellation::default();
+    cancellation.cancel();
+    let short = Duration::from_millis(50);
+    let error = connect_upstream_cancellable(
+        &DestinationAuthority::parse("127.0.0.1:9").unwrap(),
+        &DestinationPolicy::new("127.0.0.1:8".parse().unwrap()),
+        UpstreamBudgets {
+            dns: short,
+            connect: short,
+            read: short,
+            write: short,
+        },
+        &cancellation,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.stage, UpstreamStage::Cancelled);
+    assert_eq!(error.code, "cancelled");
 }
 
 #[test]

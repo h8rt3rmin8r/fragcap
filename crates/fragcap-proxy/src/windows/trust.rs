@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ptr;
-use std::slice;
 
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Security::Cryptography::{
     CertAddEncodedCertificateToStore, CertCloseStore, CertDeleteCertificateFromStore,
-    CertFindCertificateInStore, CertFreeCertificateContext, CertOpenStore, CERT_CONTEXT,
-    CERT_FIND_SHA1_HASH, CERT_STORE_ADD_NEW, CERT_STORE_OPEN_EXISTING_FLAG,
-    CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_CURRENT_USER_ID,
+    CertFindCertificateInStore, CertFreeCertificateContext, CertGetCertificateContextProperty,
+    CertOpenStore, CERT_CONTEXT, CERT_FIND_SHA1_HASH, CERT_SHA256_HASH_PROP_ID, CERT_STORE_ADD_NEW,
+    CERT_STORE_OPEN_EXISTING_FLAG, CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_CURRENT_USER_ID,
     CERT_SYSTEM_STORE_LOCAL_MACHINE_ID, CERT_SYSTEM_STORE_LOCATION_SHIFT, CRYPTOAPI_BLOB,
     PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
 };
@@ -92,7 +91,7 @@ pub(crate) fn remove(der: &[u8], thumbprint: &str) -> Result<TrustMutation, Trus
         unsafe { CertCloseStore(store, 0) };
         return Ok(TrustMutation::AlreadyAbsent);
     }
-    if !exact_der(context, der) {
+    if !exact_certificate(context, der) {
         unsafe {
             CertFreeCertificateContext(context);
             CertCloseStore(store, 0);
@@ -183,7 +182,7 @@ fn find(store_name: &'static str, hash: &[u8; 20], der: &[u8]) -> Result<Found, 
     let context = find_context(store, hash);
     let found = if context.is_null() {
         Found::Absent
-    } else if exact_der(context, der) {
+    } else if exact_certificate(context, der) {
         Found::Exact
     } else {
         Found::Mismatch
@@ -212,14 +211,25 @@ fn find_context(store: *mut core::ffi::c_void, hash: &[u8; 20]) -> *mut CERT_CON
     }
 }
 
-fn exact_der(context: *const CERT_CONTEXT, der: &[u8]) -> bool {
+fn exact_certificate(context: *const CERT_CONTEXT, der: &[u8]) -> bool {
     if context.is_null() {
         return false;
     }
-    let context = unsafe { &*context };
-    context.cbCertEncoded as usize == der.len()
-        && unsafe { slice::from_raw_parts(context.pbCertEncoded, context.cbCertEncoded as usize) }
-            == der
+    let mut actual = [0_u8; 32];
+    let mut actual_len = actual.len() as u32;
+    // SAFETY: `context` is live for this call and `actual` has the exact writable
+    // capacity supplied through `actual_len`. No context-owned pointer is exposed.
+    let read = unsafe {
+        CertGetCertificateContextProperty(
+            context,
+            CERT_SHA256_HASH_PROP_ID,
+            actual.as_mut_ptr().cast(),
+            &mut actual_len,
+        )
+    };
+    read != 0
+        && actual_len == actual.len() as u32
+        && actual.as_slice() == ring::digest::digest(&ring::digest::SHA256, der).as_ref()
 }
 
 fn open(

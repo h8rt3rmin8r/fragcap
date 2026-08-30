@@ -326,12 +326,14 @@ impl CertificateError {
     fn with_detail(code: &'static str, detail: String) -> Self {
         Self { code, detail }
     }
+    #[cfg(windows)]
     pub(crate) fn platform(code: &'static str, os_error: u32) -> Self {
         Self {
             code,
             detail: format!("Windows error 0x{os_error:08X}"),
         }
     }
+    #[cfg(windows)]
     pub(crate) fn io(code: &'static str, error: std::io::Error) -> Self {
         Self {
             code,

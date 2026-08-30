@@ -5,12 +5,12 @@ mod protocol_lab_support;
 use std::collections::BTreeSet;
 
 use protocol_lab_support::{
-    fixture_is_synthetic, matrix, quic_round_trip, tcp_round_trip, udp_round_trip, CaseKind,
-    OutputExpectation, ProtocolFamily, TruthLedger, CASES, PROTOCOLS,
+    execute_scenario, fixture_is_synthetic, matrix, outcome_code, protocol_round_trip, CaseKind,
+    OutputExpectation, CASES, PROTOCOLS,
 };
 
-#[test]
-fn complete_protocol_failure_matrix_is_deterministic_and_conserved() {
+#[tokio::test]
+async fn complete_protocol_failure_matrix_is_deterministic_and_conserved() {
     let first = matrix();
     let second = matrix();
     assert_eq!(first, second);
@@ -19,7 +19,9 @@ fn complete_protocol_failure_matrix_is_deterministic_and_conserved() {
     assert_eq!(covered.len(), PROTOCOLS.len());
     for scenario in &first {
         assert!(fixture_is_synthetic(scenario.payload));
-        assert!(TruthLedger::from_scenario(scenario).conserves());
+        let ledger = execute_scenario(scenario).await;
+        assert!(ledger.conserves());
+        assert_eq!(ledger.terminal, outcome_code(scenario.case));
         assert_eq!(scenario.packet_truth, OutputExpectation::Unavailable);
         assert_eq!(scenario.projection, OutputExpectation::Unavailable);
         assert_eq!(scenario.key_log, OutputExpectation::Unavailable);
@@ -34,11 +36,7 @@ fn complete_protocol_failure_matrix_is_deterministic_and_conserved() {
 async fn positive_transport_families_use_real_bounded_loopback_endpoints() {
     let payload = b"fragcap.test/s103/transport";
     for protocol in PROTOCOLS {
-        let echoed = match protocol {
-            ProtocolFamily::Udp => udp_round_trip(payload),
-            ProtocolFamily::Quic => quic_round_trip(payload).await,
-            _ => tcp_round_trip(payload),
-        };
+        let echoed = protocol_round_trip(protocol, payload).await;
         assert_eq!(echoed, payload, "{protocol:?}");
     }
 }

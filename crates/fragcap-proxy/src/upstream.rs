@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +12,8 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+use tokio::sync::Notify;
+use tokio::time::{timeout, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum AuthorityHost {
@@ -94,20 +96,22 @@ pub struct DestinationPolicy {
 impl DestinationPolicy {
     pub fn new(listener: SocketAddr) -> Self {
         Self {
-            listener,
+            listener: normalize_address(listener),
             exact_grants: BTreeSet::new(),
         }
     }
 
     pub fn grant_for_test(&mut self, address: SocketAddr) {
+        let address = normalize_address(address);
         if address != self.listener {
             self.exact_grants.insert(address);
         }
     }
 
     pub fn evaluate(&self, address: SocketAddr) -> DestinationDecision {
-        let allowed = address != self.listener
-            && (self.exact_grants.contains(&address) || public_address(address.ip()));
+        let normalized = normalize_address(address);
+        let allowed = normalized != self.listener
+            && (self.exact_grants.contains(&normalized) || public_address(normalized.ip()));
         DestinationDecision {
             address,
             allowed,
@@ -117,6 +121,17 @@ impl DestinationPolicy {
                 "destination-refused"
             },
         }
+    }
+}
+
+fn normalize_address(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V6(address) => address
+            .ip()
+            .to_ipv4_mapped()
+            .map(|ip| SocketAddr::new(IpAddr::V4(ip), address.port()))
+            .unwrap_or(SocketAddr::V6(address)),
+        address => address,
     }
 }
 
@@ -154,6 +169,41 @@ pub struct UpstreamBudgets {
     pub connect: Duration,
     pub read: Duration,
     pub write: Duration,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UpstreamCancellation {
+    inner: Arc<CancellationState>,
+}
+
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    changed: Notify,
+}
+
+impl UpstreamCancellation {
+    pub fn cancel(&self) {
+        if !self.inner.cancelled.swap(true, Ordering::AcqRel) {
+            self.inner.changed.notify_waiters();
+        }
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let changed = self.inner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.inner.cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,11 +310,24 @@ pub async fn connect_upstream(
     policy: &DestinationPolicy,
     budgets: UpstreamBudgets,
 ) -> Result<BoundedUpstreamStream, UpstreamError> {
-    let resolved = timeout(
-        budgets.dns,
-        tokio::net::lookup_host(authority.lookup_host()),
-    )
-    .await
+    connect_upstream_cancellable(authority, policy, budgets, &UpstreamCancellation::default()).await
+}
+
+pub async fn connect_upstream_cancellable(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budgets: UpstreamBudgets,
+    cancellation: &UpstreamCancellation,
+) -> Result<BoundedUpstreamStream, UpstreamError> {
+    if cancellation.is_cancelled() {
+        return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
+    }
+    let resolved = tokio::select! {
+        () = cancellation.cancelled() => {
+            return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
+        }
+        result = timeout(budgets.dns, tokio::net::lookup_host(authority.lookup_host())) => result,
+    }
     .map_err(|_| UpstreamError::new(UpstreamStage::Dns, "dns-timeout"))?
     .map_err(|error| {
         UpstreamError::with_detail(UpstreamStage::Dns, "dns-failed", error.to_string())
@@ -274,13 +337,26 @@ pub async fn connect_upstream(
         return Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"));
     }
     let mut last = None;
+    let deadline = Instant::now() + budgets.connect;
     for address in addresses {
+        if cancellation.is_cancelled() {
+            return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
+        }
         let decision = policy.evaluate(address);
         if !decision.allowed {
             last = Some(UpstreamError::new(UpstreamStage::Policy, decision.reason));
             continue;
         }
-        match timeout(budgets.connect, TcpStream::connect(address)).await {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err(UpstreamError::new(UpstreamStage::Tcp, "connect-timeout"));
+        };
+        let attempt = tokio::select! {
+            () = cancellation.cancelled() => {
+                return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
+            }
+            result = timeout(remaining, TcpStream::connect(address)) => result,
+        };
+        match attempt {
             Ok(Ok(stream)) => {
                 return Ok(BoundedUpstreamStream {
                     stream,
@@ -337,7 +413,24 @@ pub async fn connect_tls_upstream(
     budgets: UpstreamBudgets,
     config: Arc<ClientConfig>,
 ) -> Result<BoundedTlsUpstreamStream, UpstreamError> {
-    let stream = connect_upstream(authority, policy, budgets).await?;
+    connect_tls_upstream_cancellable(
+        authority,
+        policy,
+        budgets,
+        config,
+        &UpstreamCancellation::default(),
+    )
+    .await
+}
+
+pub async fn connect_tls_upstream_cancellable(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budgets: UpstreamBudgets,
+    config: Arc<ClientConfig>,
+    cancellation: &UpstreamCancellation,
+) -> Result<BoundedTlsUpstreamStream, UpstreamError> {
+    let stream = connect_upstream_cancellable(authority, policy, budgets, cancellation).await?;
     let server_name = match authority.host() {
         AuthorityHost::Dns(name) => ServerName::try_from(name.clone()),
         AuthorityHost::Ip(ip) => Ok(ServerName::IpAddress((*ip).into())),
@@ -346,11 +439,12 @@ pub async fn connect_tls_upstream(
         UpstreamError::with_detail(UpstreamStage::Tls, "invalid-server-name", error.to_string())
     })?;
     let connector = tokio_rustls::TlsConnector::from(config);
-    let tls = timeout(
-        budgets.connect,
-        connector.connect(server_name, stream.stream),
-    )
-    .await
+    let tls = tokio::select! {
+        () = cancellation.cancelled() => {
+            return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
+        }
+        result = timeout(budgets.connect, connector.connect(server_name, stream.stream)) => result,
+    }
     .map_err(|_| UpstreamError::new(UpstreamStage::Tls, "tls-timeout"))?
     .map_err(|error| {
         UpstreamError::with_detail(

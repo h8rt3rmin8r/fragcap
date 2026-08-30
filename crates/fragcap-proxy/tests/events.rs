@@ -59,6 +59,25 @@ fn payload_truncation_retains_original_length_and_conserves_counts() {
 }
 
 #[test]
+fn already_truncated_payload_is_rebounded_without_losing_original_length() {
+    let mut stream = ObservationStream::new(NonZeroUsize::new(1).unwrap(), 4);
+    let mut record = event(b"");
+    record.payload = PayloadState::Truncated {
+        retained: b"123456".to_vec(),
+        original_len: 10,
+    };
+    stream.push(record);
+    assert_eq!(
+        stream.pop().unwrap().payload,
+        PayloadState::Truncated {
+            retained: b"1234".to_vec(),
+            original_len: 10,
+        }
+    );
+    assert_eq!(stream.snapshot().accounting.truncated, 1);
+}
+
+#[test]
 fn refused_unparsed_and_projection_gaps_are_distinct() {
     let mut stream = ObservationStream::new(NonZeroUsize::new(1).unwrap(), 0);
     stream.record_refusal();

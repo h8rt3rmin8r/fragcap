@@ -98,14 +98,25 @@ impl ObservationStream {
         observation.version = OBSERVATION_VERSION;
         observation.sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        if let PayloadState::Complete(payload) = &observation.payload {
-            if payload.len() > self.max_payload_bytes {
-                observation.payload = PayloadState::Truncated {
-                    retained: payload[..self.max_payload_bytes].to_vec(),
-                    original_len: payload.len(),
-                };
-                self.accounting.truncated = self.accounting.truncated.saturating_add(1);
+        let replacement = match &observation.payload {
+            PayloadState::Complete(payload) if payload.len() > self.max_payload_bytes => {
+                Some((payload[..self.max_payload_bytes].to_vec(), payload.len()))
             }
+            PayloadState::Truncated {
+                retained,
+                original_len,
+            } if retained.len() > self.max_payload_bytes => Some((
+                retained[..self.max_payload_bytes].to_vec(),
+                (*original_len).max(retained.len()),
+            )),
+            _ => None,
+        };
+        if let Some((retained, original_len)) = replacement {
+            observation.payload = PayloadState::Truncated {
+                retained,
+                original_len,
+            };
+            self.accounting.truncated = self.accounting.truncated.saturating_add(1);
         }
         if self.queue.len() == self.capacity.get() {
             self.queue.pop_front();

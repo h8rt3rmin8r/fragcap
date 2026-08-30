@@ -279,7 +279,7 @@ load-bearing rather than bookkeeping.
 | `terminal_size` | runtime, transitive | S062 | Terminal dimensions for clap's `wrap_help`; not a direct dependency, it arrives with the feature (issue #177) |
 | `tokio`, `hyper`, `hyper-util`, `http-body-util`, `rustls`, `tokio-rustls`, `rcgen`, `rustls-native-certs` | runtime | S102 | Exact-pinned native Deep Capture runtime and future HTTP/TLS/certificate stack in `fragcap-proxy`; default features off, ring is the sole crypto provider, Windows roots come from Schannel |
 | `ring`, `subtle`, `zeroize` | runtime, direct | S103 | Capability entropy and constant-time comparison plus explicit private-material zeroization; all were already transitive, so no lock packages were added |
-| `quinn`, `x509-parser` | dev | S103 | Real loopback QUIC coverage and independent certificate semantic inspection in the controlled protocol lab; never linked into the product path |
+| `h2`, `quinn`, `x509-parser` | dev | S103 | Real loopback HTTP/2, gRPC, and QUIC coverage plus independent certificate semantic inspection in the controlled protocol lab; never linked into the product path |
 
 S102 raises the workspace MSRV from 1.82 to 1.88 and adds the ninth product
 crate, `fragcap-proxy`. This deliberately supersedes S100's external-backend

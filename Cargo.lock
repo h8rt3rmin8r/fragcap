@@ -518,6 +518,7 @@ dependencies = [
 name = "fragcap-proxy"
 version = "0.8.0"
 dependencies = [
+ "h2",
  "http-body-util",
  "hyper",
  "hyper-util",
