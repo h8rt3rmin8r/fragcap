@@ -10,8 +10,9 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::time::timeout;
 
 use crate::{
-    DestinationAuthority, ProtocolAccounting, ProtocolLimits, ProxyAuthorizationError,
-    ProxyObservation, SessionCapability,
+    ApplicationEvent, ApplicationEventKind, BodyDirection, BodyOutcome, BodyRepresentation,
+    BodySegment, DestinationAuthority, MetadataBlock, MetadataKind, ProtocolAccounting,
+    ProtocolLimits, ProtocolVersion, ProxyAuthorizationError, ProxyObservation, SessionCapability,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +105,8 @@ impl RequestHead {
 struct ResponseHead {
     raw: Vec<u8>,
     status: u16,
+    reason: Option<String>,
+    headers: Vec<(String, Vec<u8>)>,
     framing: Framing,
     close: bool,
     upgrade: bool,
@@ -122,6 +125,241 @@ pub(crate) struct ObservationContext<'a> {
     pub client_peer: SocketAddr,
     pub proxy_local: SocketAddr,
     pub protocol: &'static str,
+    pub application_sink: crate::application::SharedEventSink,
+    pub body_resources: crate::body::SessionBodyResources,
+}
+
+struct BodyEmitter {
+    sink: crate::application::SharedEventSink,
+    session_id: String,
+    connection_id: u64,
+    stream_id: u64,
+    direction: BodyDirection,
+    offset: u64,
+    retained: u64,
+    transfer_offset: u64,
+    transfer_retained: u64,
+    limit: u64,
+    content_input: Vec<u8>,
+    content_encoding: Option<String>,
+    capture_payloads: bool,
+    body_resources: crate::body::SessionBodyResources,
+    session_retention_limit: u64,
+}
+
+impl BodyEmitter {
+    fn emit_content(&mut self, bytes: &[u8], transfer_decoded: bool) {
+        let raw_retained = self.emit_raw(bytes);
+        if !self.capture_payloads {
+            return;
+        }
+        if transfer_decoded {
+            let remaining = self.limit.saturating_sub(self.transfer_retained);
+            let requested = (bytes.len() as u64).min(remaining) as usize;
+            let retained_len = crate::body::claim_retention(
+                &self.body_resources.retained,
+                self.session_retention_limit,
+                requested,
+            );
+            let offset = self.transfer_offset;
+            self.content_input.extend_from_slice(&bytes[..retained_len]);
+            crate::application::emit(
+                &self.sink,
+                ApplicationEvent::now(
+                    &self.session_id,
+                    self.connection_id,
+                    Some(self.stream_id),
+                    Some(ProtocolVersion::Http11),
+                    ApplicationEventKind::Body(BodySegment {
+                        direction: self.direction,
+                        representation: BodyRepresentation::TransferDecoded,
+                        offset,
+                        observed_len: bytes.len() as u64,
+                        bytes: bytes::Bytes::copy_from_slice(&bytes[..retained_len]),
+                        outcome: if retained_len == bytes.len() {
+                            BodyOutcome::Complete
+                        } else {
+                            BodyOutcome::RetentionLimit
+                        },
+                    }),
+                ),
+            );
+            self.transfer_offset = self.transfer_offset.saturating_add(bytes.len() as u64);
+            self.transfer_retained = self.transfer_retained.saturating_add(retained_len as u64);
+        } else {
+            self.content_input.extend_from_slice(&bytes[..raw_retained]);
+        }
+    }
+
+    fn emit_raw(&mut self, bytes: &[u8]) -> usize {
+        let observed_len = bytes.len() as u64;
+        let remaining = self.limit.saturating_sub(self.retained);
+        let retained_len = if self.capture_payloads {
+            crate::body::claim_retention(
+                &self.body_resources.retained,
+                self.session_retention_limit,
+                observed_len.min(remaining) as usize,
+            )
+        } else {
+            0
+        };
+        let outcome = if !self.capture_payloads {
+            BodyOutcome::IntentionallyOmitted
+        } else if retained_len == bytes.len() {
+            BodyOutcome::Complete
+        } else {
+            BodyOutcome::RetentionLimit
+        };
+        let event = ApplicationEvent::now(
+            &self.session_id,
+            self.connection_id,
+            Some(self.stream_id),
+            Some(ProtocolVersion::Http11),
+            ApplicationEventKind::Body(BodySegment {
+                direction: self.direction,
+                representation: BodyRepresentation::Raw,
+                offset: self.offset,
+                observed_len,
+                bytes: bytes::Bytes::copy_from_slice(&bytes[..retained_len]),
+                outcome,
+            }),
+        );
+        crate::application::emit(&self.sink, event);
+        self.offset = self.offset.saturating_add(observed_len);
+        self.retained = self.retained.saturating_add(retained_len as u64);
+        retained_len
+    }
+
+    async fn finish(&self, limits: &ProtocolLimits) {
+        let Some(encoding) = &self.content_encoding else {
+            return;
+        };
+        if !self.capture_payloads {
+            return;
+        }
+        let (decoded, transformation) = match timeout(
+            limits.decode_timeout,
+            self.body_resources.decoder_slots.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => {
+                let result = crate::decode_content(
+                    encoding,
+                    &self.content_input,
+                    limits.max_decoded_body_bytes,
+                    limits.max_decode_ratio,
+                    limits.decode_timeout,
+                )
+                .await;
+                drop(permit);
+                result
+            }
+            Ok(Err(_)) | Err(_) => (
+                Vec::new(),
+                crate::Transformation {
+                    encoding: encoding.clone(),
+                    input_bytes: self.content_input.len() as u64,
+                    output_bytes: 0,
+                    outcome: BodyOutcome::TimeLimit,
+                },
+            ),
+        };
+        let outcome = transformation.outcome;
+        crate::application::emit(
+            &self.sink,
+            ApplicationEvent::now(
+                &self.session_id,
+                self.connection_id,
+                Some(self.stream_id),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Transformation(transformation),
+            ),
+        );
+        if !decoded.is_empty() {
+            let retained_len = crate::body::claim_retention(
+                &self.body_resources.retained,
+                self.session_retention_limit,
+                decoded.len(),
+            );
+            crate::application::emit(
+                &self.sink,
+                ApplicationEvent::now(
+                    &self.session_id,
+                    self.connection_id,
+                    Some(self.stream_id),
+                    Some(ProtocolVersion::Http11),
+                    ApplicationEventKind::Body(BodySegment {
+                        direction: self.direction,
+                        representation: BodyRepresentation::ContentDecoded,
+                        offset: 0,
+                        observed_len: decoded.len() as u64,
+                        bytes: bytes::Bytes::copy_from_slice(&decoded[..retained_len]),
+                        outcome: if retained_len == decoded.len() {
+                            outcome
+                        } else {
+                            BodyOutcome::RetentionLimit
+                        },
+                    }),
+                ),
+            );
+        }
+    }
+
+    fn emit_failure(&self, error: &ProtocolError) {
+        let outcome = if error.timed_out {
+            BodyOutcome::TimeLimit
+        } else if error.code.contains("cancel") {
+            BodyOutcome::Cancelled
+        } else {
+            BodyOutcome::Partial
+        };
+        crate::application::emit(
+            &self.sink,
+            ApplicationEvent::now(
+                &self.session_id,
+                self.connection_id,
+                Some(self.stream_id),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Body(BodySegment {
+                    direction: self.direction,
+                    representation: BodyRepresentation::Raw,
+                    offset: self.offset,
+                    observed_len: 0,
+                    bytes: bytes::Bytes::new(),
+                    outcome,
+                }),
+            ),
+        );
+    }
+
+    fn emit_trailer(&self, line: &[u8]) {
+        let line = line.strip_suffix(b"\r\n").unwrap_or(line);
+        let Some(split) = line.iter().position(|byte| *byte == b':') else {
+            return;
+        };
+        let field = (
+            String::from_utf8_lossy(&line[..split]).to_string(),
+            line[split + 1..]
+                .iter()
+                .copied()
+                .skip_while(u8::is_ascii_whitespace)
+                .collect(),
+        );
+        crate::application::emit(
+            &self.sink,
+            ApplicationEvent::now(
+                &self.session_id,
+                self.connection_id,
+                Some(self.stream_id),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Metadata(MetadataBlock::http1(
+                    MetadataKind::Trailers,
+                    &[field],
+                )),
+            ),
+        );
+    }
 }
 
 pub(crate) async fn read_authenticated_request<S>(
@@ -221,7 +459,49 @@ where
             ));
         }
         accounting.requests = accounting.requests.saturating_add(1);
+        crate::application::emit(
+            &context.application_sink,
+            ApplicationEvent::now(
+                context.session_id,
+                context.connection_id,
+                Some(ordinal),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::HttpStreamOpen,
+            ),
+        );
+        crate::application::emit(
+            &context.application_sink,
+            ApplicationEvent::now(
+                context.session_id,
+                context.connection_id,
+                Some(ordinal),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Metadata(
+                    MetadataBlock::http1(MetadataKind::Request, &request.headers)
+                        .with_http1_request(&request.method, &request.origin_target),
+                ),
+            ),
+        );
         let mut observation = request_observation(&context, ordinal, &request);
+        let mut request_body = BodyEmitter {
+            sink: context.application_sink.clone(),
+            session_id: context.session_id.to_string(),
+            connection_id: context.connection_id,
+            stream_id: ordinal,
+            direction: BodyDirection::Request,
+            offset: 0,
+            retained: 0,
+            transfer_offset: 0,
+            transfer_retained: 0,
+            limit: limits.max_body_bytes,
+            content_input: Vec::new(),
+            content_encoding: header(&request.headers, "content-encoding")
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .map(ToOwned::to_owned),
+            capture_payloads: limits.capture_payloads,
+            body_resources: context.body_resources.clone(),
+            session_retention_limit: limits.max_session_body_bytes,
+        };
         let exchange = async {
             let mut upstream = BufReader::new(connect(request.authority.clone()).await?);
             let head = encode_request(&request);
@@ -244,17 +524,37 @@ where
                         ProtocolError::new("http-expect-read-failed", error.to_string())
                     })?;
                     if ready {
-                        relay_body(&mut client, &mut upstream, request.framing, limits).await?;
+                        relay_body(
+                            &mut client,
+                            &mut upstream,
+                            request.framing,
+                            limits,
+                            &mut request_body,
+                        )
+                        .await?;
                         break;
                     }
                     let response =
                         read_forward_response(&mut upstream, &mut client, limits, &request.method)
                             .await?;
                     if (100..200).contains(&response.status) && response.status != 101 {
+                        emit_response_metadata(
+                            &context,
+                            ordinal,
+                            &response,
+                            MetadataKind::InformationalResponse,
+                        );
                         accounting.informational_responses =
                             accounting.informational_responses.saturating_add(1);
                         if response.status == 100 {
-                            relay_body(&mut client, &mut upstream, request.framing, limits).await?;
+                            relay_body(
+                                &mut client,
+                                &mut upstream,
+                                request.framing,
+                                limits,
+                                &mut request_body,
+                            )
+                            .await?;
                             break;
                         }
                         continue;
@@ -264,7 +564,14 @@ where
                     break;
                 }
             } else {
-                relay_body(&mut client, &mut upstream, request.framing, limits).await?;
+                relay_body(
+                    &mut client,
+                    &mut upstream,
+                    request.framing,
+                    limits,
+                    &mut request_body,
+                )
+                .await?;
             }
 
             let response = match early_final {
@@ -274,6 +581,12 @@ where
                         read_forward_response(&mut upstream, &mut client, limits, &request.method)
                             .await?;
                     if (100..200).contains(&response.status) && response.status != 101 {
+                        emit_response_metadata(
+                            &context,
+                            ordinal,
+                            &response,
+                            MetadataKind::InformationalResponse,
+                        );
                         accounting.informational_responses =
                             accounting.informational_responses.saturating_add(1);
                         continue;
@@ -284,15 +597,31 @@ where
             Ok::<_, ProtocolError>((upstream, response, force_close))
         }
         .await;
+        request_body.finish(limits).await;
         let (mut upstream, response, force_close) = match exchange {
             Ok(value) => value,
             Err(error) => {
+                request_body.emit_failure(&error);
+                emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
                 observation.reason = Some(error.code.to_string());
                 observations.push(observation);
                 break Some(error);
             }
         };
         accounting.responses = accounting.responses.saturating_add(1);
+        crate::application::emit(
+            &context.application_sink,
+            ApplicationEvent::now(
+                context.session_id,
+                context.connection_id,
+                Some(ordinal),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Metadata(
+                    MetadataBlock::http1(MetadataKind::Response, &response.headers)
+                        .with_http1_response(response.status, response.reason.as_deref()),
+                ),
+            ),
+        );
         observation.status = Some(response.status);
         observation.inspectability = "full";
         if response.upgrade && request.upgrade {
@@ -310,14 +639,52 @@ where
                 observation.reason = Some(error.code.to_string());
             }
             observations.push(observation);
+            emit_http1_terminal(
+                &context,
+                ordinal,
+                result
+                    .as_ref()
+                    .map_or(crate::StreamTerminal::Complete, terminal_for_error),
+            );
             break result;
         }
-        if let Err(error) = relay_body(&mut upstream, &mut client, response.framing, limits).await {
+        let mut response_body = BodyEmitter {
+            sink: context.application_sink.clone(),
+            session_id: context.session_id.to_string(),
+            connection_id: context.connection_id,
+            stream_id: ordinal,
+            direction: BodyDirection::Response,
+            offset: 0,
+            retained: 0,
+            transfer_offset: 0,
+            transfer_retained: 0,
+            limit: limits.max_body_bytes,
+            content_input: Vec::new(),
+            content_encoding: header(&response.headers, "content-encoding")
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .map(ToOwned::to_owned),
+            capture_payloads: limits.capture_payloads,
+            body_resources: context.body_resources.clone(),
+            session_retention_limit: limits.max_session_body_bytes,
+        };
+        let body_result = relay_body(
+            &mut upstream,
+            &mut client,
+            response.framing,
+            limits,
+            &mut response_body,
+        )
+        .await;
+        response_body.finish(limits).await;
+        if let Err(error) = body_result {
+            response_body.emit_failure(&error);
+            emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
             observation.reason = Some(error.code.to_string());
             observations.push(observation);
             break Some(error);
         }
         observations.push(observation);
+        emit_http1_terminal(&context, ordinal, crate::StreamTerminal::Complete);
         if force_close
             || request.close
             || response.close
@@ -343,6 +710,38 @@ where
         accounting,
         failure,
     }
+}
+
+fn terminal_for_error(error: &ProtocolError) -> crate::StreamTerminal {
+    if error.timed_out {
+        crate::StreamTerminal::IdleTimeout
+    } else if error.code.contains("cancel") {
+        crate::StreamTerminal::Cancelled
+    } else if ["read", "write", "eof", "closed", "io"]
+        .into_iter()
+        .any(|part| error.code.contains(part))
+    {
+        crate::StreamTerminal::TransportError
+    } else {
+        crate::StreamTerminal::ProtocolError
+    }
+}
+
+fn emit_http1_terminal(
+    context: &ObservationContext<'_>,
+    ordinal: u64,
+    terminal: crate::StreamTerminal,
+) {
+    crate::application::emit(
+        &context.application_sink,
+        ApplicationEvent::now(
+            context.session_id,
+            context.connection_id,
+            Some(ordinal),
+            Some(ProtocolVersion::Http11),
+            ApplicationEventKind::HttpStreamTerminal(terminal),
+        ),
+    );
 }
 
 fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, ProtocolError> {
@@ -383,7 +782,7 @@ fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, Pro
         ));
     }
     let (authority, origin_target, url) = request_destination(&method, &target, &headers)?;
-    let framing = framing(&headers, false, None, limits.max_body_bytes)?;
+    let framing = framing(&headers, false, None)?;
     let close = connection_token(&headers, "close");
     let upgrade = connection_token(&headers, "upgrade") && header(&headers, "upgrade").is_some();
     let expects_continue = header_token(&headers, "expect", "100-continue");
@@ -428,6 +827,7 @@ fn parse_response(
     let code = response
         .code
         .ok_or_else(|| ProtocolError::new("http-status-missing", "response status is missing"))?;
+    let reason = response.reason.map(ToOwned::to_owned);
     let headers: Vec<_> = response
         .headers
         .iter()
@@ -438,16 +838,20 @@ fn parse_response(
     let framing = if no_body {
         Framing::None
     } else {
-        framing(&headers, true, Some(code), limits.max_body_bytes)?
+        framing(&headers, true, Some(code))?
     };
+    let close = connection_token(&headers, "close");
+    let upgrade = code == 101
+        && connection_token(&headers, "upgrade")
+        && header(&headers, "upgrade").is_some();
     Ok(ResponseHead {
         raw: raw.to_vec(),
         status: code,
+        reason,
+        headers,
         framing,
-        close: connection_token(&headers, "close"),
-        upgrade: code == 101
-            && connection_token(&headers, "upgrade")
-            && header(&headers, "upgrade").is_some(),
+        close,
+        upgrade,
     })
 }
 
@@ -544,7 +948,6 @@ fn framing(
     headers: &[(String, Vec<u8>)],
     response: bool,
     _status: Option<u16>,
-    max_body_bytes: u64,
 ) -> Result<Framing, ProtocolError> {
     let transfer: Vec<_> = headers
         .iter()
@@ -598,12 +1001,6 @@ fn framing(
             ));
         }
         let length = values[0];
-        if length > max_body_bytes {
-            return Err(ProtocolError::new(
-                "http-body-limit-exceeded",
-                "declared message body exceeds the configured limit",
-            ));
-        }
         return Ok(if length == 0 {
             Framing::None
         } else {
@@ -728,6 +1125,7 @@ async fn relay_body<R, W>(
     writer: &mut W,
     framing: Framing,
     limits: &ProtocolLimits,
+    observer: &mut BodyEmitter,
 ) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
@@ -735,10 +1133,11 @@ where
 {
     match framing {
         Framing::None => Ok(()),
-        Framing::Fixed(length) => relay_exact(reader, writer, length, limits.idle_timeout).await,
-        Framing::Chunked => relay_chunked(reader, writer, limits).await,
+        Framing::Fixed(length) => {
+            relay_exact(reader, writer, length, limits.idle_timeout, observer, false).await
+        }
+        Framing::Chunked => relay_chunked(reader, writer, limits, observer).await,
         Framing::CloseDelimited => {
-            let mut total = 0_u64;
             let mut buffer = vec![0_u8; 16 * 1024];
             loop {
                 let read = timeout(limits.idle_timeout, reader.read(&mut buffer))
@@ -750,13 +1149,7 @@ where
                 if read == 0 {
                     return Ok(());
                 }
-                total = total.saturating_add(read as u64);
-                if total > limits.max_body_bytes {
-                    return Err(ProtocolError::new(
-                        "http-body-limit-exceeded",
-                        "close-delimited body exceeds the configured limit",
-                    ));
-                }
+                observer.emit_content(&buffer[..read], false);
                 write_bounded(writer, &buffer[..read], limits.idle_timeout).await?;
             }
         }
@@ -768,6 +1161,8 @@ async fn relay_exact<R, W>(
     writer: &mut W,
     mut remaining: u64,
     budget: std::time::Duration,
+    observer: &mut BodyEmitter,
+    transfer_decoded: bool,
 ) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
@@ -787,6 +1182,7 @@ where
             ));
         }
         write_bounded(writer, &buffer[..read], budget).await?;
+        observer.emit_content(&buffer[..read], transfer_decoded);
         remaining -= read as u64;
     }
     Ok(())
@@ -796,38 +1192,34 @@ async fn relay_chunked<R, W>(
     reader: &mut R,
     writer: &mut W,
     limits: &ProtocolLimits,
+    observer: &mut BodyEmitter,
 ) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut total = 0_u64;
     loop {
         let line = read_line(reader, 8 * 1024, limits.idle_timeout).await?;
         write_bounded(writer, &line, limits.idle_timeout).await?;
+        let _ = observer.emit_raw(&line);
         let text = std::str::from_utf8(&line[..line.len().saturating_sub(2)]).map_err(|_| {
             ProtocolError::new("http-chunk-size-invalid", "chunk size is not ASCII")
         })?;
         let length = u64::from_str_radix(text.split(';').next().unwrap_or_default().trim(), 16)
             .map_err(|_| ProtocolError::new("http-chunk-size-invalid", "chunk size is invalid"))?;
-        total = total.saturating_add(length);
-        if total > limits.max_body_bytes {
-            return Err(ProtocolError::new(
-                "http-body-limit-exceeded",
-                "chunked body exceeds the configured limit",
-            ));
-        }
         if length == 0 {
             loop {
                 let trailer =
                     read_line(reader, limits.max_header_bytes, limits.idle_timeout).await?;
                 write_bounded(writer, &trailer, limits.idle_timeout).await?;
+                let _ = observer.emit_raw(&trailer);
                 if trailer == b"\r\n" {
                     return Ok(());
                 }
+                observer.emit_trailer(&trailer);
             }
         }
-        relay_exact(reader, writer, length, limits.idle_timeout).await?;
+        relay_exact(reader, writer, length, limits.idle_timeout, observer, true).await?;
         let end = read_line(reader, 2, limits.idle_timeout).await?;
         if end != b"\r\n" {
             return Err(ProtocolError::new(
@@ -836,6 +1228,7 @@ where
             ));
         }
         write_bounded(writer, &end, limits.idle_timeout).await?;
+        let _ = observer.emit_raw(&end);
     }
 }
 
@@ -921,4 +1314,25 @@ fn request_observation(
         tls: None,
         transformations: request.transformations.clone(),
     }
+}
+
+fn emit_response_metadata(
+    context: &ObservationContext<'_>,
+    ordinal: u64,
+    response: &ResponseHead,
+    kind: MetadataKind,
+) {
+    crate::application::emit(
+        &context.application_sink,
+        ApplicationEvent::now(
+            context.session_id,
+            context.connection_id,
+            Some(ordinal),
+            Some(ProtocolVersion::Http11),
+            ApplicationEventKind::Metadata(
+                MetadataBlock::http1(kind, &response.headers)
+                    .with_http1_response(response.status, response.reason.as_deref()),
+            ),
+        ),
+    );
 }

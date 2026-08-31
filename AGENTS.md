@@ -279,8 +279,10 @@ load-bearing rather than bookkeeping.
 | `terminal_size` | runtime, transitive | S062 | Terminal dimensions for clap's `wrap_help`; not a direct dependency, it arrives with the feature (issue #177) |
 | `tokio`, `hyper`, `hyper-util`, `http-body-util`, `rustls`, `tokio-rustls`, `rcgen`, `rustls-native-certs` | runtime | S102 | Exact-pinned native Deep Capture runtime and future HTTP/TLS/certificate stack in `fragcap-proxy`; default features off, ring is the sole crypto provider, Windows roots come from Schannel |
 | `ring`, `subtle`, `zeroize` | runtime, direct | S103 | Capability entropy and constant-time comparison plus explicit private-material zeroization; all were already transitive, so no lock packages were added |
-| `h2`, `quinn`, `x509-parser` | dev | S103 | Real loopback HTTP/2, gRPC, and QUIC coverage plus independent certificate semantic inspection in the controlled protocol lab; never linked into the product path |
+| `quinn`, `x509-parser` | dev | S103 | Real loopback QUIC coverage plus independent certificate semantic inspection in the controlled protocol lab; never linked into the product path |
 | `base64`, `httparse` | runtime, direct | S104 | Standard Basic proxy authentication and bounded HTTP/1.1 head parsing; both were already transitive, so no lock packages were added |
+| `h2`, `bytes` | runtime, direct | S105 | Native bounded HTTP/2 stream and flow-control ownership; both were already lock-resolved |
+| `async-compression` | runtime, direct | S105 | Exact-pinned pure-Rust gzip, zlib-deflate, and Brotli body derivations with only the selected Tokio codecs enabled |
 
 S102 raises the workspace MSRV from 1.82 to 1.88 and adds the ninth product
 crate, `fragcap-proxy`. This deliberately supersedes S100's external-backend
@@ -307,6 +309,16 @@ authority, and a separately verified upstream TLS connection. The facade owns
 secret-bearing child routing and exact CA sharing. The CLI owns presentation and
 child launch only. This is an HTTP/TLS production cutover, not the Deep Capture
 feature-completion gate; #294 through #334 still own the remaining work.
+
+S105 closes #294, #296, #297, and #301 as one coherent evidence boundary. The
+native proxy now multiplexes HTTP/2 with distinct connection and stream
+identity, retains protocol-faithful HTTP/1.1 and decoded HTTP/2 metadata,
+streams raw body evidence under bounds independent from forwarding, records
+bounded content-decoding derivations, and writes application JSON Lines version
+2 during the session. Original HTTP/2 HPACK bytes and compressed cross-name
+order remain explicitly unavailable. WebSocket, SSE, gRPC semantics, HAR
+completion, client certificates, generic transports, recovery, packaging, and
+the final #334 gate remain open.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

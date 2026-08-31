@@ -490,17 +490,19 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 fragcap::deep_capture::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
                 _ => None,
             };
-            let process_id = run_controlled_target_harness(route, phase, budget.remaining())
-                .map_err(|error| {
-                    library_stage_failure(
-                        fragcap::deep_capture::Stage::Capture,
-                        "controlled-target",
-                        error,
-                    )
-                })?;
-            self.runtime.borrow_mut().controlled_process_id = Some(process_id);
-            self.observation_context
-                .record_controlled_process_id(process_id);
+            let runtime = Rc::clone(&self.runtime);
+            let context = self.observation_context.clone();
+            run_controlled_target_harness(route, phase, budget.remaining(), move |process_id| {
+                runtime.borrow_mut().controlled_process_id = Some(process_id);
+                context.record_controlled_process_id(process_id);
+            })
+            .map_err(|error| {
+                library_stage_failure(
+                    fragcap::deep_capture::Stage::Capture,
+                    "controlled-target",
+                    error,
+                )
+            })?;
             return Ok(fragcap::deep_capture::CaptureRunResult {
                 observations: Vec::new(),
                 interrupted: false,
@@ -1112,7 +1114,9 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         identifiers: Box::new(LibraryIdentifierAdapter),
         proxy: Box::new(
             fragcap::deep_capture::NativeProxyAdapter::default()
-                .with_observation_context(observation_context.clone()),
+                .with_observation_context(observation_context.clone())
+                .with_application_artifact(bundle.join("application.jsonl"))
+                .with_payload_capture(!args.no_payload),
         ),
         trust: Box::new(LibraryTrustAdapter {
             controlled: args.controlled_target,
@@ -1733,6 +1737,7 @@ fn run_controlled_target_harness(
     route: &fragcap::deep_capture::ProxyRoute,
     calibration: Option<CalibrationPhase>,
     execution_timeout: Duration,
+    on_started: impl FnOnce(u32),
 ) -> Result<u32, CliError> {
     let proxy_url = route.proxy_url();
     let executable = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE")
@@ -1770,6 +1775,7 @@ fn run_controlled_target_harness(
         .spawn()
         .map_err(|e| CliError::failure(format!("cannot start controlled target: {e}")))?;
     let process_id = child.id();
+    on_started(process_id);
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -1912,16 +1918,19 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         )));
     }
     let packet_truth_produced = packet_truth.is_file();
-    write_file(
-        ctx.session.bundle.join("application.jsonl"),
-        application_jsonl(
-            &ctx.session.session_id,
-            ctx.session.target_id,
-            ctx.observations,
-            ctx.session_state,
-        )
-        .as_bytes(),
-    )?;
+    let application = ctx.session.bundle.join("application.jsonl");
+    if !application.is_file() {
+        write_file(
+            application,
+            application_jsonl(
+                &ctx.session.session_id,
+                ctx.session.target_id,
+                ctx.observations,
+                ctx.session_state,
+            )
+            .as_bytes(),
+        )?;
+    }
     let har_produced = ctx.har_requested
         && ctx
             .observations

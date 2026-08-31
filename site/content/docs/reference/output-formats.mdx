@@ -6,9 +6,9 @@ description: Packet outputs, Deep Capture bundle artifacts, their authority, sen
 <Callout title="Current v0.8 contract">
 Deep Capture's current bundle is functional but provisional. Native manifest
 and sidecar authority is tracked by [#335](https://github.com/h8rt3rmin8r/fragcap/issues/335)
-and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336); application JSONL,
-HAR, TLS key logs, and correlation are owned by
-[#301](https://github.com/h8rt3rmin8r/fragcap/issues/301) through
+and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336); HAR, TLS key logs,
+and cross-artifact correlation remain owned by [#302](https://github.com/h8rt3rmin8r/fragcap/issues/302),
+[#300](https://github.com/h8rt3rmin8r/fragcap/issues/300), and
 [#303](https://github.com/h8rt3rmin8r/fragcap/issues/303).
 </Callout>
 
@@ -85,7 +85,7 @@ The `authority` and `sensitivity` columns below reproduce the values written int
 | --- | --- | --- | --- | --- |
 | `manifest`, `manifest.json` | `bundle-index` | `ordinary` | yes | Written after resource cleanup when finalization succeeds. A completed manifest remains until the operator removes it; an unfinished manifest can be removed by confirmed residue cleanup. |
 | `pcapng`, `capture.fcapng` | `packet-truth` | `ordinary` | yes | Declared when packet truth exists. Retained as evidence; omitted with `writer-failed` rather than fabricated when absent. |
-| `application-jsonl`, `application.jsonl` | `application-events` | `sensitive` | yes | Written at finalization, including header and trailer even when there are no observation records. Retained until operator removal or confirmed residue cleanup. |
+| `application-jsonl`, `application.jsonl` | `application-events` | `sensitive` | yes | Opened before proxy traffic, appended and flushed during the session, and completed by one reconciling trailer on orderly finalization. A surviving prefix without that trailer is explicitly incomplete. |
 | `har`, `http.har` | `http-projection` | `sensitive` | no | Written only when `--har` was requested and an observation has both HTTP method and URL. Retained like other sensitive sidecars. |
 | `tls-key-log`, `tls-keylog.log` | `analyzer-aid` | `secret-adjacent` | no | Requested explicitly and declared only when the proxy leaves a nonempty file. Retained for analyzer use until operator removal or confirmed residue cleanup. |
 | `proxy-log`, `proxy.jsonl` | `proxy-events` | `sensitive` | yes | Written at finalization with proxy start and stop context. Retained like other sensitive sidecars. |
@@ -97,9 +97,9 @@ The `authority` and `sensitivity` columns below reproduce the values written int
 
 ### Application JSON Lines
 
-`application.jsonl` is the canonical machine-readable stream for observations emitted by the Deep Capture proxy path. It does not contain packet records. Its first record is `application.header`, followed by zero or more `application.http`, `application.metadata`, or `application.unsupported` records, and one `application.trailer` with the record count and writer status.
+`application.jsonl` is the canonical machine-readable stream for observations emitted by the Deep Capture proxy path. It does not contain packet records. Schema version 2 starts with `application.header`, appends connection, TLS, HTTP stream, metadata, body segment, transformation, error, and gap records as traffic runs, and ends with one reconciling `application.trailer` after orderly shutdown. Metadata names, values, ALPN, and payload bytes use explicit base64 fields. A readable prefix without exactly one final trailer is incomplete, never successful.
 
-An observation can carry `session_id`, target id, `flow_id`, proxy connection id, start and end time, direction, protocol, inspectability, process id and image, role, attribution state, an HTTP object, and explanatory reason. Fields are null or absent when the observation does not support them. A metadata-only or unsupported record still describes what reached the proxy; it does not claim that the corresponding packet traffic was absent.
+An observation carries the available session, target, proxy connection, HTTP stream, process, role, attribution, timing, protocol, scope, truncation, and loss anchors without inventing unavailable values. HTTP/1.1 metadata retains wire order and casing. HTTP/2 retains pseudo-fields and the semantic order exposed by the protocol engine while declaring compressed cross-name order and HPACK bytes unavailable. Raw body bytes are authoritative; bounded decoded representations carry separate transformation outcomes. `--no-payload` records intentional body omission without retaining payload bytes.
 
 ### HAR
 

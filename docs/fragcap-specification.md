@@ -121,6 +121,7 @@ enforcement.
 | 0.1.27-draft | 2026-08-30 | W. Thompson | **Makes complete native Rust Deep Capture the required product end state (issues #279, #280, #281, #282, and #291).** Adds the native proxy leaf crate and bounded runtime foundation, raises the workspace MSRV to 1.88 for the selected exact protocol graph, and publishes the #278 ownership, support, refusal, and milestone gates. Explicitly supersedes S100's external-backend end state while retaining mitmdump as the v0.8 functional CLI backend until #290. |
 | 0.1.28-draft | 2026-08-30 | W. Thompson | **Completes the secure native proxy foundation (issues #283 through #289).** Adds authenticated loopback admission, bounded upstream policy and native roots, per-session certificate and exact current-user trust ownership, a loss-accounted raw observation contract, and the deterministic local protocol lab. Production forwarding and inspection remain external until #290. |
 | 0.1.29-draft | 2026-08-30 | W. Thompson | **Cuts Deep Capture over to native HTTP and TLS (issues #290, #292, and #293).** Removes the production Python and mitmdump path, adds session-authenticated bounded HTTP/1.1 and CONNECT forwarding, terminates approved client TLS with the session authority, establishes a separately verified upstream TLS boundary, maps truthful coarse observations through the facade, and verifies the public CLI with real controlled loopback traffic. Deep Capture remains incomplete until #334. |
+| 0.1.30-draft | 2026-08-30 | W. Thompson | **Adds native HTTP/2, complete protocol metadata, bounded streaming bodies, and application JSON Lines version 2 (issues #294, #296, #297, and #301).** Extends sections 13.7, 19.6, 25, and 28.1. HTTP/2 multiplexing retains distinct stream identity and bounded flow control, HTTP metadata preserves the evidence available at each protocol boundary, raw bodies stream independently from bounded retention and derived decoding, and the application artifact is append-only and crash-readable during the session. Deferred protocol families and unavailable HTTP/2 wire representations remain explicit. |
 
 ## 2. Purpose and Problem Statement
 
@@ -144,10 +145,12 @@ the shell wrappers are consumers of the command line tool. Deep Capture's
 session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
 
-Deep Capture is functional but incomplete. S104 makes the native Rust proxy the
-sole production path for bounded authenticated HTTP/1.1, CONNECT, and HTTPS
-inspection. Client-facing TLS uses the exact session authority and upstream TLS
-is verified independently. Issue #278 is the completion authority. Deep Capture
+Deep Capture is functional but incomplete. S105 extends the native Rust sole
+production path with bounded HTTP/2 multiplexing, protocol-faithful HTTP
+metadata, incrementally retained bodies, bounded gzip, deflate, and Brotli
+decoding, and a live application JSON Lines version 2 stream. Client-facing TLS
+uses the exact session authority and upstream TLS is verified independently.
+Issue #278 is the completion authority. Deep Capture
 MUST NOT be described as self-contained or feature-complete until issue #334 closes.
 
 ### 2.2 The Problem
@@ -1823,7 +1826,9 @@ Deep Capture writes a session bundle rather than one overloaded output file. A b
 
 The `.fcapng` file remains packet truth. It owns packet bytes, packet timestamps, interfaces, attribution comments, and loss accounting. It does not carry full decrypted application objects. Application-layer records live in sidecars so unmodified packet analyzers can continue to read the pcapng artifact as ordinary packet capture.
 
-Application JSON Lines is the canonical machine-readable application event stream for proxy observations. Each application record carries structured correlation anchors: `session_id`, target id or stable target handle, `flow_id`, proxy connection id where applicable, process id when known, role when known, attribution state, and event time bounds. Those anchors let consumers join application records to packet flows and process context without parsing human text. The packet side of the join is the `flow_id` annotation in section 13.3.
+Application JSON Lines version 2 is the canonical machine-readable application event stream for proxy observations. It is opened before proxy traffic, appended and flushed during the session through a bounded nonblocking queue, and begins with a schema header distinct from the product version. Complete newline-framed records remain a readable prefix after interruption. Exactly one reconciling trailer marks orderly writer completion; its absence cannot be interpreted as success. Each application record carries every available structured correlation anchor: `session_id`, target id or stable target handle, `flow_id`, proxy connection id, HTTP stream id where applicable, process id when known, role when known, attribution state, protocol, scope, loss state, and event time. Unknown values are not invented. The packet side of the join remains the `flow_id` annotation in section 13.3.
+
+HTTP metadata records retain HTTP/1.1 field order, name casing, duplicates, empty values, informational blocks, and trailers. HTTP/2 records retain typed pseudo-fields, binary-safe regular values, duplicate value order exposed by the protocol engine, and explicit provenance that original HPACK bytes and compressed cross-name order are unavailable. Body records are bounded ordered segments. Raw observed bytes are authoritative; transfer and gzip, zlib-wrapped deflate, or Brotli decoding are separate derived transformations with exact completion or failure outcomes. Forwarding capacity is independent from evidence-retention capacity, so a valid large or indefinite stream is not refused merely because its artifact is truncated.
 
 HAR is an HTTP-oriented projection, not the only application truth and not exclusive to Deep Capture. Capture may produce HAR when HTTP semantics are actually observable, such as plaintext HTTP or an already-decrypted stream. Deep Capture is the expected mode for useful HTTPS HAR output because the proxy can observe HTTP semantics only when the selected target routes through it and accepts the configured local certificate authority.
 
@@ -3329,17 +3334,18 @@ support is exact:
 
 | Traffic | Capture | Deep Capture |
 | --- | --- | --- |
-| HTTP | Packets, attribution, and payload bytes unless payload capture is disabled | HTTP method, URL, and response status when the flow reaches the proxy; optional HAR from those fields; current application records retain no request or response headers or bodies |
-| HTTPS | Encrypted packets and attribution | The same HTTP semantics only when proxy-routed and accepted by the fragcap-owned local CA; optional proxy-owned live key log; no certificate-pinning bypass or target key extraction |
+| HTTP | Packets, attribution, and payload bytes unless payload capture is disabled | Native HTTP/1.1 and explicitly routed authenticated HTTP/2 retain boundary-faithful request, response, informational, and trailer metadata plus bounded raw and decoded body evidence in the live application stream |
+| HTTPS | Encrypted packets and attribution | Native HTTP/1.1 or HTTP/2 semantics when proxy-routed and accepted by the fragcap-owned local CA; no certificate-pinning bypass, client-certificate forwarding, or target key extraction |
 | WebSocket | Packets and attribution | HTTP upgrade handshake semantics can be observed; WebSocket frame records and payload retention are not implemented |
 | Non-HTTP TLS | Encrypted packets and attribution | Metadata-only proxy observation; no custom application dissection |
 | QUIC | UDP packets and attribution | Unsupported by the current HTTP proxy path; no QUIC routing or decryption claim |
 | UDP | Packets, attribution, and payload bytes unless disabled | Unsupported by the current proxy path; no generic UDP proxy inspection |
 | Plaintext | Packets, attribution, and payload bytes unless disabled | Plaintext HTTP follows the HTTP row; arbitrary plaintext protocols have no generic application dissector |
 
-The `full` inspectability fact means that the proxy observed HTTP semantics for
-that run. It does not claim complete retention of headers, bodies, WebSocket
-frames, or custom payloads. A proxy-owned TLS key log is an analyzer aid, not
+The `full` inspectability fact means that the proxy observed supported HTTP
+semantics for that run. Metadata fidelity and body retention outcomes are
+explicit in `application.jsonl`; the fact does not claim unbounded body
+retention, WebSocket frames, or custom payloads. A proxy-owned TLS key log is an analyzer aid, not
 decrypted output and not material extracted from a target process.
 
 What remains observable under encryption is substantial: endpoint
@@ -4369,7 +4375,9 @@ S102 establishes a library-owned, loopback-only,
 finite-capacity runtime foundation. S103 completes authenticated admission,
 bounded upstream policy, session certificate and trust ownership, raw event
 accounting, and the controlled protocol lab. S104 adds the production native
-HTTP/1.1, CONNECT, and separately verified HTTPS path.
+HTTP/1.1, CONNECT, and separately verified HTTPS path. S105 adds native HTTP/2,
+complete boundary-faithful HTTP metadata, bounded streaming body evidence and
+decoding, and live application JSON Lines version 2.
 
 The required dependency direction is:
 
@@ -4391,7 +4399,7 @@ Every existing or planned output has one owner:
 | --- | --- |
 | `capture.fcapng` packet truth | Existing Capture pipeline |
 | Versioned bundle manifest and authority | #335 |
-| Complete `application.jsonl` | #301 |
+| Complete `application.jsonl` | S105, #301 |
 | Truthful HAR 1.2 projection | #302 |
 | Proxy-owned TLS key log | #300 |
 | Proxy and cleanup sidecars | #336 |
@@ -4408,9 +4416,9 @@ The protocol and launch matrix is normative:
 
 | Case | v0.8 shipped state | Native owner or boundary |
 | --- | --- | --- |
-| HTTP/1.1 and CONNECT | Native bounded forwarding and coarse records | Metadata completeness #296, bodies #297 |
+| HTTP/1.1 and CONNECT | Native bounded forwarding, complete metadata, and bounded body evidence | S105, #296 and #297 |
 | HTTPS | Native session-CA inspection with verified upstream TLS | Client certificates/pinning classification #304 |
-| HTTP/2 | External backend behavior | #294 |
+| HTTP/2 | Native bounded multiplexing with stream evidence | S105, #294 |
 | WebSocket | Upgrade handshake only in current records | #295 |
 | SSE and gRPC | Not implemented | #298 and #299 |
 | Generic TCP and non-HTTP TLS | Metadata-only current claim | #312 |

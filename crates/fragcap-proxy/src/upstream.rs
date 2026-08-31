@@ -470,7 +470,7 @@ pub fn native_tls_client_config() -> Result<Arc<ClientConfig>, UpstreamError> {
         })?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
 
@@ -498,6 +498,32 @@ pub async fn connect_tls_upstream_cancellable(
     cancellation: &UpstreamCancellation,
 ) -> Result<BoundedTlsUpstreamStream, UpstreamError> {
     let stream = connect_upstream_cancellable(authority, policy, budgets, cancellation).await?;
+    connect_tls_over_upstream_cancellable(authority, stream, budgets, config, cancellation).await
+}
+
+pub(crate) async fn connect_tls_over_upstream(
+    authority: &DestinationAuthority,
+    stream: BoundedUpstreamStream,
+    budgets: UpstreamBudgets,
+    config: Arc<ClientConfig>,
+) -> Result<BoundedTlsUpstreamStream, UpstreamError> {
+    connect_tls_over_upstream_cancellable(
+        authority,
+        stream,
+        budgets,
+        config,
+        &UpstreamCancellation::default(),
+    )
+    .await
+}
+
+async fn connect_tls_over_upstream_cancellable(
+    authority: &DestinationAuthority,
+    stream: BoundedUpstreamStream,
+    budgets: UpstreamBudgets,
+    config: Arc<ClientConfig>,
+    cancellation: &UpstreamCancellation,
+) -> Result<BoundedTlsUpstreamStream, UpstreamError> {
     let server_name = match authority.host() {
         AuthorityHost::Dns(name) => ServerName::try_from(name.clone()),
         AuthorityHost::Ip(ip) => Ok(ServerName::IpAddress((*ip).into())),
@@ -541,6 +567,6 @@ pub fn tls_client_config_with_roots(
         })?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }

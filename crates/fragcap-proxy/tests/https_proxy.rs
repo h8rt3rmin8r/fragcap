@@ -37,7 +37,7 @@ fn tls_origin(
         .with_no_client_auth()
         .with_single_cert(vec![certificate.clone()], private.into())
         .unwrap();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let task = std::thread::spawn(move || {
@@ -226,8 +226,32 @@ fn connect_fails_closed_for_wrong_name_and_untrusted_upstream() {
             auth.as_str()
         )
         .unwrap();
+        assert_eq!(
+            read_head(&mut client),
+            b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        );
+        let mut client_roots = rustls::RootCertStore::empty();
+        client_roots
+            .add(CertificateDer::from(lease.ca_der().to_vec()))
+            .unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(client_roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let server_name = if wrong_name {
+            ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into())
+        } else {
+            ServerName::try_from("localhost").unwrap().to_owned()
+        };
+        let connection =
+            rustls::ClientConnection::new(Arc::new(client_config), server_name).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, client);
+        let _ = tls.write_all(b"GET / HTTP/1.1\r\nHost: refused\r\n\r\n");
         let mut response = Vec::new();
-        client.read_to_end(&mut response).unwrap();
+        let _ = tls.read_to_end(&mut response);
         assert!(response.is_empty());
         server.join().unwrap();
         let report = lease.cleanup(Duration::from_secs(2));
