@@ -122,6 +122,7 @@ fn version_two_serializes_reserved_streaming_protocol_families() {
                 declared_len: 3,
                 payload: b"abc".to_vec(),
                 encoding: None,
+                payload_omitted: false,
                 outcome: StreamingOutcome::Complete,
             })),
         )),
@@ -170,6 +171,7 @@ fn streaming_queue_loss_is_counted_without_blocking_the_producer() {
                 declared_len: 8,
                 payload: b"retained".to_vec(),
                 encoding: None,
+                payload_omitted: false,
                 outcome: StreamingOutcome::Complete,
             })),
         ));
@@ -215,6 +217,7 @@ fn streaming_scope_omission_is_explicit_and_retains_no_payload() {
                 declared_len: 8,
                 payload: Vec::new(),
                 encoding: None,
+                payload_omitted: true,
                 outcome: StreamingOutcome::IntentionallyOmitted,
             })),
         )),
@@ -241,6 +244,44 @@ fn streaming_scope_omission_is_explicit_and_retains_no_payload() {
         trailer["streaming_records_by_outcome"]["intentionally-omitted"],
         1
     );
+}
+
+#[test]
+fn streaming_parse_failure_survives_payload_omission() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("streaming-malformed-omitted.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-malformed-omitted", 2).unwrap();
+    let sink = lease.sink();
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
+            "session-malformed-omitted",
+            4,
+            Some(8),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::Streaming(StreamingEvent::GrpcMessage(GrpcMessage {
+                direction: BodyDirection::Response,
+                sequence: 1,
+                compressed: false,
+                declared_len: 3,
+                payload: Vec::new(),
+                encoding: None,
+                payload_omitted: true,
+                outcome: StreamingOutcome::Malformed,
+            })),
+        )),
+        fragcap_proxy::EventDisposition::Accepted
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    let message = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "grpc.message")
+        .unwrap();
+    assert_eq!(message["outcome"], "malformed");
+    assert_eq!(message["payload_omitted"], true);
+    assert!(message.get("payload").is_none());
 }
 
 #[test]

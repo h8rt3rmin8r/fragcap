@@ -242,11 +242,15 @@ impl BodyEmitter {
         retained_len
     }
 
-    async fn finish(&mut self, limits: &ProtocolLimits) {
+    async fn finish(
+        &mut self,
+        limits: &ProtocolLimits,
+        streaming_outcome: crate::StreamingOutcome,
+    ) {
         if let Some(events) = self
             .sse
             .as_mut()
-            .map(|observer| observer.finish(crate::StreamingOutcome::Complete))
+            .map(|observer| observer.finish(streaming_outcome))
         {
             self.emit_streaming(events);
         }
@@ -332,13 +336,19 @@ impl BodyEmitter {
                     crate::StreamingEvent::SseField(value) => {
                         value.name.clear();
                         value.value.clear();
-                        value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                        value.payload_omitted = true;
+                        if value.outcome == crate::StreamingOutcome::Complete {
+                            value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                        }
                     }
                     crate::StreamingEvent::SseEvent(value) => {
                         value.event_type.clear();
                         value.data.clear();
                         value.last_event_id.clear();
-                        value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                        value.payload_omitted = true;
+                        if value.outcome == crate::StreamingOutcome::Complete {
+                            value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                        }
                     }
                     _ => {}
                 }
@@ -650,7 +660,9 @@ where
             Ok::<_, ProtocolError>((upstream, response, force_close))
         }
         .await;
-        request_body.finish(limits).await;
+        request_body
+            .finish(limits, crate::StreamingOutcome::Complete)
+            .await;
         let (mut upstream, response, force_close) = match exchange {
             Ok(value) => value,
             Err(error) => {
@@ -763,7 +775,12 @@ where
             &mut response_body,
         )
         .await;
-        response_body.finish(limits).await;
+        let streaming_outcome = body_result
+            .as_ref()
+            .map_or_else(streaming_outcome_for_error, |_| {
+                crate::StreamingOutcome::Complete
+            });
+        response_body.finish(limits, streaming_outcome).await;
         if let Err(error) = body_result {
             response_body.emit_failure(&error);
             emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
@@ -812,6 +829,14 @@ fn terminal_for_error(error: &ProtocolError) -> crate::StreamTerminal {
         crate::StreamTerminal::TransportError
     } else {
         crate::StreamTerminal::ProtocolError
+    }
+}
+
+fn streaming_outcome_for_error(error: &ProtocolError) -> crate::StreamingOutcome {
+    if error.code.contains("cancel") {
+        crate::StreamingOutcome::Cancelled
+    } else {
+        crate::StreamingOutcome::Partial
     }
 }
 
@@ -878,25 +903,24 @@ fn websocket_mode(
             "origin WebSocket accept proof does not match the client key",
         ));
     }
-    let offered = header_values(&request.headers, "sec-websocket-extensions")
-        .into_iter()
-        .any(extension_has_permessage_deflate);
+    let offered = crate::streaming::permessage_deflate(header_values(
+        &request.headers,
+        "sec-websocket-extensions",
+    ));
     let selected_values = header_values(&response.headers, "sec-websocket-extensions");
-    let selected = selected_values
-        .iter()
-        .copied()
-        .find(|value| extension_has_permessage_deflate(value));
-    if selected.is_some() && !offered {
+    let selected = crate::streaming::permessage_deflate(selected_values);
+    if selected.is_some() && offered.is_none() {
         return Err(ProtocolError::new(
             "websocket-extension-invalid",
             "origin selected permessage-deflate without a client offer",
         ));
     }
+    let compression = selected.is_some();
     let selected = selected.unwrap_or_default();
     Ok(Some(WebSocketMode {
-        compression: !selected.is_empty(),
-        client_no_context_takeover: extension_parameter(selected, b"client_no_context_takeover"),
-        server_no_context_takeover: extension_parameter(selected, b"server_no_context_takeover"),
+        compression,
+        client_no_context_takeover: selected.client_no_context_takeover,
+        server_no_context_takeover: selected.server_no_context_takeover,
     }))
 }
 
@@ -906,24 +930,6 @@ fn header_values<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Vec<&'a [u
         .filter(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
         .map(|(_, value)| value.as_slice())
         .collect()
-}
-
-fn extension_has_permessage_deflate(value: &[u8]) -> bool {
-    value.split(|byte| *byte == b',').any(|extension| {
-        extension
-            .split(|byte| *byte == b';')
-            .next()
-            .is_some_and(|name| {
-                name.trim_ascii()
-                    .eq_ignore_ascii_case(b"permessage-deflate")
-            })
-    })
-}
-
-fn extension_parameter(value: &[u8], expected: &[u8]) -> bool {
-    value
-        .split(|byte| matches!(byte, b';' | b','))
-        .any(|part| part.trim_ascii().eq_ignore_ascii_case(expected))
 }
 
 async fn relay_websocket<C, U>(
@@ -958,65 +964,74 @@ where
     let mut upstream_open = true;
     let mut client_buffer = vec![0; limits.max_event_chunk_bytes];
     let mut upstream_buffer = vec![0; limits.max_event_chunk_bytes];
-    while client_open || upstream_open {
-        let step = timeout(limits.idle_timeout, async {
-            tokio::select! {
-                value = client.read(&mut client_buffer), if client_open => (true, value),
-                value = upstream.read(&mut upstream_buffer), if upstream_open => (false, value),
+    let result = async {
+        while client_open || upstream_open {
+            let step = timeout(limits.idle_timeout, async {
+                tokio::select! {
+                    value = client.read(&mut client_buffer), if client_open => (true, value),
+                    value = upstream.read(&mut upstream_buffer), if upstream_open => (false, value),
+                }
+            })
+            .await
+            .map_err(|_| ProtocolError::timeout("websocket-idle-timeout"))?;
+            let (from_client, read) = step;
+            let read = read
+                .map_err(|error| ProtocolError::new("websocket-read-failed", error.to_string()))?;
+            if read == 0 {
+                if from_client {
+                    client_open = false;
+                    upstream.shutdown().await.map_err(|error| {
+                        ProtocolError::new("websocket-shutdown-failed", error.to_string())
+                    })?;
+                } else {
+                    upstream_open = false;
+                    client.shutdown().await.map_err(|error| {
+                        ProtocolError::new("websocket-shutdown-failed", error.to_string())
+                    })?;
+                }
+                continue;
             }
-        })
-        .await
-        .map_err(|_| ProtocolError::timeout("websocket-idle-timeout"))?;
-        let (from_client, read) = step;
-        let read =
-            read.map_err(|error| ProtocolError::new("websocket-read-failed", error.to_string()))?;
-        if read == 0 {
             if from_client {
-                client_open = false;
-                upstream.shutdown().await.map_err(|error| {
-                    ProtocolError::new("websocket-shutdown-failed", error.to_string())
-                })?;
+                let bytes = &client_buffer[..read];
+                write_bounded(&mut *upstream, bytes, limits.idle_timeout).await?;
+                emit_http1_streaming(
+                    context,
+                    stream_id,
+                    request.feed(bytes),
+                    limits.capture_payloads,
+                );
             } else {
-                upstream_open = false;
-                client.shutdown().await.map_err(|error| {
-                    ProtocolError::new("websocket-shutdown-failed", error.to_string())
-                })?;
+                let bytes = &upstream_buffer[..read];
+                write_bounded(&mut *client, bytes, limits.idle_timeout).await?;
+                emit_http1_streaming(
+                    context,
+                    stream_id,
+                    response.feed(bytes),
+                    limits.capture_payloads,
+                );
             }
-            continue;
         }
-        if from_client {
-            let bytes = &client_buffer[..read];
-            write_bounded(&mut *upstream, bytes, limits.idle_timeout).await?;
-            emit_http1_streaming(
-                context,
-                stream_id,
-                request.feed(bytes),
-                limits.capture_payloads,
-            );
-        } else {
-            let bytes = &upstream_buffer[..read];
-            write_bounded(&mut *client, bytes, limits.idle_timeout).await?;
-            emit_http1_streaming(
-                context,
-                stream_id,
-                response.feed(bytes),
-                limits.capture_payloads,
-            );
-        }
+        Ok::<(), ProtocolError>(())
     }
+    .await;
+    let outcome = result
+        .as_ref()
+        .map_or_else(streaming_outcome_for_error, |_| {
+            crate::StreamingOutcome::Complete
+        });
     emit_http1_streaming(
         context,
         stream_id,
-        vec![request.finish(crate::StreamingOutcome::Complete)],
+        vec![request.finish(outcome)],
         limits.capture_payloads,
     );
     emit_http1_streaming(
         context,
         stream_id,
-        vec![response.finish(crate::StreamingOutcome::Complete)],
+        vec![response.finish(outcome)],
         limits.capture_payloads,
     );
-    Ok(())
+    result
 }
 
 fn emit_http1_streaming(
@@ -1031,11 +1046,17 @@ fn emit_http1_streaming(
                 crate::StreamingEvent::WebSocketFrame(value) => {
                     value.wire_payload.clear();
                     value.close_reason.clear();
-                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                    value.payload_omitted = true;
+                    if value.outcome == crate::StreamingOutcome::Complete {
+                        value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                    }
                 }
                 crate::StreamingEvent::WebSocketMessage(value) => {
                     value.payload.clear();
-                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                    value.payload_omitted = true;
+                    if value.outcome == crate::StreamingOutcome::Complete {
+                        value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                    }
                 }
                 _ => {}
             }

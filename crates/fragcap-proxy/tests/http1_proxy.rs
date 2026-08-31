@@ -444,6 +444,66 @@ fn verified_websocket_upgrade_preserves_frames_and_messages() {
 }
 
 #[test]
+fn failed_websocket_relay_finishes_both_directional_observers() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let _ = read_head(&mut stream);
+        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    });
+    let limits = ProtocolLimits {
+        idle_timeout: Duration::from_millis(50),
+        ..ProtocolLimits::default()
+    };
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s106-websocket-failure")
+    .unwrap()
+    .with_protocol_limits(limits);
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(client, "GET http://{address}/socket HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", auth.as_str()).unwrap();
+    assert!(read_head(&mut client).starts_with(b"HTTP/1.1 101"));
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.failed_connections, 1);
+    let events = collector.0.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                ApplicationEventKind::Streaming(fragcap_proxy::StreamingEvent::WebSocketTerminal {
+                    outcome: fragcap_proxy::StreamingOutcome::Partial,
+                    ..
+                })
+            ))
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn session_body_retention_is_shared_across_http1_connections() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = origin.local_addr().unwrap();
@@ -532,7 +592,7 @@ fn failed_http1_response_body_emits_body_and_stream_terminals() {
         let (mut stream, _) = origin.accept().unwrap();
         let _ = read_head(&mut stream);
         stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabc")
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 12\r\nConnection: close\r\n\r\ndata: abc")
             .unwrap();
     });
     let collector = Arc::new(Collector::default());
@@ -557,5 +617,11 @@ fn failed_http1_response_body_emits_body_and_stream_terminals() {
     assert!(events.iter().any(|event| matches!(
         event.kind,
         ApplicationEventKind::HttpStreamTerminal(StreamTerminal::TransportError)
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        ApplicationEventKind::Streaming(fragcap_proxy::StreamingEvent::SseTerminal {
+            outcome: fragcap_proxy::StreamingOutcome::Partial,
+        })
     )));
 }

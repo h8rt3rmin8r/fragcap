@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use flate2::{Compress, Compression, FlushCompress};
 use fragcap_proxy::{
     tls_client_config_with_roots, ApplicationEvent, ApplicationEventKind, ApplicationEventSink,
     DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig, ProtocolLimits,
@@ -29,6 +30,32 @@ async fn read_head(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
         head.push(byte[0]);
     }
     head
+}
+
+fn compressed_websocket_frame(payload: &[u8], masking_key: Option<[u8; 4]>) -> Bytes {
+    let mut compressor = Compress::new(Compression::fast(), false);
+    let mut compressed = Vec::with_capacity(128);
+    compressor
+        .compress_vec(payload, &mut compressed, FlushCompress::Sync)
+        .unwrap();
+    assert!(compressed.ends_with(&[0, 0, 0xff, 0xff]));
+    compressed.truncate(compressed.len() - 4);
+    let mut frame = vec![
+        0xc1,
+        compressed.len() as u8 | if masking_key.is_some() { 0x80 } else { 0 },
+    ];
+    if let Some(key) = masking_key {
+        frame.extend_from_slice(&key);
+        frame.extend(
+            compressed
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ key[index % 4]),
+        );
+    } else {
+        frame.extend_from_slice(&compressed);
+    }
+    Bytes::from(frame)
 }
 
 fn h2_origin_config() -> (Arc<rustls::ServerConfig>, CertificateDer<'static>) {
@@ -390,25 +417,34 @@ async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
                 .as_str(),
             "websocket"
         );
-        let mut request_body = request.into_body();
-        let frame = request_body.data().await.unwrap().unwrap();
-        request_body
-            .flow_control()
-            .release_capacity(frame.len())
-            .unwrap();
-        assert_eq!(
-            frame,
-            Bytes::from_static(&[0x81, 0x82, 1, 2, 3, 4, b'h' ^ 1, b'i' ^ 2])
-        );
-        let mut body = respond
-            .send_response(
-                hyper::Response::builder().status(200).body(()).unwrap(),
-                false,
-            )
-            .unwrap();
-        body.send_data(Bytes::from_static(b"\x81\x02ok"), true)
-            .unwrap();
-        let _ = tokio::time::timeout(Duration::from_millis(100), connection.accept()).await;
+        let handler = tokio::spawn(async move {
+            let mut body = respond
+                .send_response(
+                    hyper::Response::builder()
+                        .status(200)
+                        .header(
+                            "sec-websocket-extensions",
+                            "permessage-deflate; client_no_context_takeover; server_no_context_takeover",
+                        )
+                        .body(())
+                        .unwrap(),
+                    false,
+                )
+                .unwrap();
+            let mut request_body = request.into_body();
+            let frame = request_body.data().await.unwrap().unwrap();
+            request_body
+                .flow_control()
+                .release_capacity(frame.len())
+                .unwrap();
+            assert_eq!(frame, compressed_websocket_frame(b"hi", Some([1, 2, 3, 4])));
+            body.send_data(compressed_websocket_frame(b"ok", None), true)
+                .unwrap();
+        });
+        if let Some(stream) = connection.accept().await {
+            assert!(stream.is_err(), "a second stream was not expected");
+        }
+        handler.await.unwrap();
         connection.graceful_shutdown();
     });
 
@@ -434,13 +470,23 @@ async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
         .unwrap();
     let (sender, connection) = h2::client::handshake(tcp).await.unwrap();
     let driver = tokio::spawn(connection);
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !sender.is_extended_connect_protocol_enabled() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let mut request = hyper::Request::builder()
         .method("CONNECT")
         .uri(format!("http://{origin}/socket"))
         .header(
             hyper::header::PROXY_AUTHORIZATION,
             lease.capability_proof().proxy_authorization().as_str(),
+        )
+        .header(
+            "sec-websocket-extensions",
+            "permessage-deflate; client_no_context_takeover; server_no_context_takeover",
         )
         .body(())
         .unwrap();
@@ -449,21 +495,24 @@ async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
         .insert(h2::ext::Protocol::from_static("websocket"));
     let mut ready = sender.ready().await.unwrap();
     let (response, mut body) = ready.send_request(request, false).unwrap();
-    body.send_data(
-        Bytes::from_static(&[0x81, 0x82, 1, 2, 3, 4, b'h' ^ 1, b'i' ^ 2]),
-        true,
-    )
-    .unwrap();
     let response = response.await.unwrap_or_else(|error| {
         let events = collector.0.lock().unwrap();
         panic!("extended CONNECT reset: {error:?}; events={events:?}");
     });
     assert_eq!(response.status(), 200);
+    body.send_data(compressed_websocket_frame(b"hi", Some([1, 2, 3, 4])), true)
+        .unwrap();
     let mut response_body = response.into_body();
-    assert_eq!(
-        response_body.data().await.unwrap().unwrap(),
-        Bytes::from_static(b"\x81\x02ok")
-    );
+    let response_frame = match response_body.data().await {
+        Some(Ok(bytes)) => bytes,
+        value => {
+            let events = collector.0.lock().unwrap();
+            panic!("extended CONNECT body failed: {value:?}; events={events:?}");
+        }
+    };
+    assert_eq!(response_frame, compressed_websocket_frame(b"ok", None));
+    drop(response_body);
+    drop(body);
     drop(ready);
     driver.abort();
     let _ = driver.await;
@@ -477,6 +526,18 @@ async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
             .filter(|event| matches!(
                 event.kind,
                 ApplicationEventKind::Streaming(fragcap_proxy::StreamingEvent::WebSocketFrame(_))
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.kind,
+                ApplicationEventKind::Streaming(
+                    fragcap_proxy::StreamingEvent::WebSocketMessage(message)
+                ) if message.compressed && matches!(message.payload.as_slice(), b"hi" | b"ok")
             ))
             .count(),
         2

@@ -18,6 +18,36 @@ pub enum StreamingOutcome {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PerMessageDeflate {
+    pub client_no_context_takeover: bool,
+    pub server_no_context_takeover: bool,
+}
+
+pub(crate) fn permessage_deflate<'a>(
+    values: impl IntoIterator<Item = &'a [u8]>,
+) -> Option<PerMessageDeflate> {
+    values.into_iter().find_map(|value| {
+        value.split(|byte| *byte == b',').find_map(|extension| {
+            let mut parts = extension.split(|byte| *byte == b';');
+            if !parts.next().is_some_and(|name| {
+                name.trim_ascii()
+                    .eq_ignore_ascii_case(b"permessage-deflate")
+            }) {
+                return None;
+            }
+            let mut result = PerMessageDeflate::default();
+            for parameter in parts.map(<[u8]>::trim_ascii) {
+                result.client_no_context_takeover |=
+                    parameter.eq_ignore_ascii_case(b"client_no_context_takeover");
+                result.server_no_context_takeover |=
+                    parameter.eq_ignore_ascii_case(b"server_no_context_takeover");
+            }
+            Some(result)
+        })
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebSocketMessageKind {
     Text,
@@ -38,6 +68,7 @@ pub struct WebSocketFrame {
     pub close_code: Option<u16>,
     pub close_reason: Vec<u8>,
     pub close_reason_utf8: Option<bool>,
+    pub payload_omitted: bool,
     pub outcome: StreamingOutcome,
 }
 
@@ -51,6 +82,7 @@ pub struct WebSocketMessage {
     pub compressed: bool,
     pub observed_len: u64,
     pub payload: Vec<u8>,
+    pub payload_omitted: bool,
     pub outcome: StreamingOutcome,
 }
 
@@ -62,6 +94,7 @@ pub struct SseField {
     pub value: Vec<u8>,
     pub comment: bool,
     pub observed_len: u64,
+    pub payload_omitted: bool,
     pub outcome: StreamingOutcome,
 }
 
@@ -75,6 +108,7 @@ pub struct SseEvent {
     pub last_event_id: Vec<u8>,
     pub retry_ms: Option<u64>,
     pub observed_len: u64,
+    pub payload_omitted: bool,
     pub outcome: StreamingOutcome,
 }
 
@@ -86,6 +120,7 @@ pub struct GrpcMessage {
     pub declared_len: u32,
     pub payload: Vec<u8>,
     pub encoding: Option<Vec<u8>>,
+    pub payload_omitted: bool,
     pub outcome: StreamingOutcome,
 }
 
@@ -251,6 +286,7 @@ impl WebSocketObserver {
                     close_code: None,
                     close_reason: Vec::new(),
                     close_reason_utf8: None,
+                    payload_omitted: false,
                     outcome,
                 }));
                 self.buffer.drain(..header_len);
@@ -294,6 +330,7 @@ impl WebSocketObserver {
                 close_code,
                 close_reason,
                 close_reason_utf8,
+                payload_omitted: false,
                 outcome: frame_outcome,
             }));
             if opcode < 8 {
@@ -408,6 +445,7 @@ impl WebSocketObserver {
             compressed: message.compressed,
             observed_len: message.observed,
             payload: message.bytes,
+            payload_omitted: false,
             outcome,
         }));
     }
@@ -441,9 +479,10 @@ fn inflate_message(
     source.extend_from_slice(input);
     source.extend_from_slice(&[0, 0, 0xff, 0xff]);
     let mut output = vec![0; limit.saturating_add(1)];
+    let output_before = decompressor.total_out();
     match decompressor.decompress(&source, &mut output, FlushDecompress::Sync) {
         Ok(Status::Ok | Status::StreamEnd | Status::BufError) => {
-            let written = decompressor.total_out() as usize;
+            let written = decompressor.total_out().saturating_sub(output_before) as usize;
             if written > limit {
                 Err(StreamingOutcome::Limit)
             } else {
@@ -556,6 +595,7 @@ impl SseObserver {
                 value: Vec::new(),
                 comment: false,
                 observed_len: 0,
+                payload_omitted: false,
                 outcome: StreamingOutcome::Limit,
             }));
             self.event_limited = true;
@@ -588,6 +628,7 @@ impl SseObserver {
             value: value.clone(),
             comment,
             observed_len: value.len() as u64,
+            payload_omitted: false,
             outcome: if valid {
                 StreamingOutcome::Complete
             } else {
@@ -642,6 +683,7 @@ impl SseObserver {
             last_event_id: self.last_event_id.clone(),
             retry_ms: self.retry_ms,
             observed_len,
+            payload_omitted: false,
             outcome: if std::mem::take(&mut self.event_limited) {
                 StreamingOutcome::Limit
             } else {
@@ -740,6 +782,7 @@ impl GrpcObserver {
                     declared_len: length,
                     payload: Vec::new(),
                     encoding: self.encoding.clone(),
+                    payload_omitted: false,
                     outcome,
                 }));
                 self.buffer.drain(..5);
@@ -762,6 +805,7 @@ impl GrpcObserver {
                 declared_len: length,
                 payload,
                 encoding: self.encoding.clone(),
+                payload_omitted: false,
                 outcome: if flag == 1 && self.encoding.is_none() {
                     StreamingOutcome::Malformed
                 } else {
@@ -878,6 +922,45 @@ mod tests {
         let mut observer = WebSocketObserver::new(BodyDirection::Request, true, true, 1024, 1024);
         let events = observer.feed(&frame);
         assert!(events.iter().any(|event| matches!(event, StreamingEvent::WebSocketMessage(message) if message.payload == b"compressed text" && message.compressed)));
+    }
+
+    #[test]
+    fn websocket_context_takeover_uses_each_messages_output_delta() {
+        let mut compressor = Compress::new(Compression::fast(), false);
+        let mut observer = WebSocketObserver::new(BodyDirection::Response, false, true, 1024, 1024);
+        for expected in [
+            b"first compressed message".as_slice(),
+            b"second message".as_slice(),
+        ] {
+            let mut compressed = Vec::with_capacity(128);
+            compressor
+                .compress_vec(expected, &mut compressed, FlushCompress::Sync)
+                .expect("compress message");
+            assert!(compressed.ends_with(&[0, 0, 0xff, 0xff]));
+            compressed.truncate(compressed.len() - 4);
+            let mut frame = vec![0xc1, compressed.len() as u8];
+            frame.extend_from_slice(&compressed);
+            let events = observer.feed(&frame);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                StreamingEvent::WebSocketMessage(message) if message.payload == expected
+            )));
+        }
+    }
+
+    #[test]
+    fn permessage_deflate_requires_an_exact_extension_name() {
+        assert!(permessage_deflate([b"not-permessage-deflate".as_slice()]).is_none());
+        assert_eq!(
+            permessage_deflate([
+                b"other; client_no_context_takeover, permessage-deflate; server_no_context_takeover"
+                    .as_slice()
+            ]),
+            Some(PerMessageDeflate {
+                client_no_context_takeover: false,
+                server_no_context_takeover: true,
+            })
+        );
     }
 
     #[test]

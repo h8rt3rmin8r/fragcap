@@ -540,12 +540,13 @@ fn streaming_json(value: fragcap_proxy::StreamingEvent) -> (&'static str, Value)
     use fragcap_proxy::StreamingEvent::*;
     match value {
         WebSocketFrame(frame) => {
-            let omitted = frame.outcome == fragcap_proxy::StreamingOutcome::IntentionallyOmitted;
+            let omitted = frame.payload_omitted;
             let mut body = json!({
                 "direction": direction(frame.direction), "frame_sequence": frame.sequence,
                 "fin": frame.fin, "rsv1": frame.rsv1, "opcode": frame.opcode,
                 "masked": frame.masked, "masking_key": frame.masking_key.map(|value| base64::engine::general_purpose::STANDARD.encode(value)),
                 "declared_len": frame.declared_len, "retained_len": frame.wire_payload.len(),
+            "payload_omitted": frame.payload_omitted,
             "payload_encoding": "base64", "payload": base64::engine::general_purpose::STANDARD.encode(frame.wire_payload),
             "close_code": frame.close_code, "close_reason": binary_json(frame.close_reason),
             "close_reason_utf8": frame.close_reason_utf8,
@@ -561,12 +562,13 @@ fn streaming_json(value: fragcap_proxy::StreamingEvent) -> (&'static str, Value)
             ("websocket.frame", body)
         }
         WebSocketMessage(message) => {
-            let omitted = message.outcome == fragcap_proxy::StreamingOutcome::IntentionallyOmitted;
+            let omitted = message.payload_omitted;
             let mut body = json!({
                 "direction": direction(message.direction), "message_sequence": message.sequence,
                 "first_frame": message.first_frame, "frame_count": message.frame_count,
                 "kind": format!("{:?}", message.kind).to_ascii_lowercase(), "compressed": message.compressed,
                 "observed_len": message.observed_len, "retained_len": message.payload.len(),
+                "payload_omitted": message.payload_omitted,
                 "payload_encoding": "base64", "payload": base64::engine::general_purpose::STANDARD.encode(message.payload),
                 "outcome": streaming_outcome(message.outcome),
             });
@@ -585,12 +587,13 @@ fn streaming_json(value: fragcap_proxy::StreamingEvent) -> (&'static str, Value)
             json!({"direction": direction(value), "outcome": streaming_outcome(outcome)}),
         ),
         SseField(field) => {
-            let omitted = field.outcome == fragcap_proxy::StreamingOutcome::IntentionallyOmitted;
+            let omitted = field.payload_omitted;
             let retained_len = field.value.len();
             let mut body = json!({
                 "field_sequence": field.sequence, "line": field.line, "comment": field.comment,
                 "name": binary_json(field.name), "value": binary_json(field.value),
                 "observed_len": field.observed_len, "retained_len": retained_len,
+                "payload_omitted": field.payload_omitted,
                 "outcome": streaming_outcome(field.outcome),
             });
             if omitted {
@@ -601,13 +604,14 @@ fn streaming_json(value: fragcap_proxy::StreamingEvent) -> (&'static str, Value)
             ("sse.field", body)
         }
         SseEvent(event) => {
-            let omitted = event.outcome == fragcap_proxy::StreamingOutcome::IntentionallyOmitted;
+            let omitted = event.payload_omitted;
             let retained_len = event.data.len();
             let mut body = json!({
                 "event_sequence": event.sequence, "first_line": event.first_line, "last_line": event.last_line,
                 "event_type": binary_json(event.event_type), "data": binary_json(event.data),
                 "last_event_id": binary_json(event.last_event_id), "retry_ms": event.retry_ms,
                 "observed_len": event.observed_len, "retained_len": retained_len,
+                "payload_omitted": event.payload_omitted,
                 "outcome": streaming_outcome(event.outcome),
             });
             if omitted {
@@ -635,12 +639,13 @@ fn streaming_json(value: fragcap_proxy::StreamingEvent) -> (&'static str, Value)
             }),
         ),
         GrpcMessage(message) => {
-            let omitted = message.outcome == fragcap_proxy::StreamingOutcome::IntentionallyOmitted;
+            let omitted = message.payload_omitted;
             let mut body = json!({
                 "direction": direction(message.direction), "message_sequence": message.sequence,
             "compressed": message.compressed, "declared_len": message.declared_len,
             "encoding": message.encoding.map(binary_json),
                 "retained_len": message.payload.len(), "payload_encoding": "base64",
+                "payload_omitted": message.payload_omitted,
                 "payload": base64::engine::general_purpose::STANDARD.encode(message.payload),
                 "outcome": streaming_outcome(message.outcome),
             });

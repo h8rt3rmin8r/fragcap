@@ -73,6 +73,13 @@ struct BodyPumpContext {
     streaming: Option<ProtocolObserver>,
 }
 
+#[derive(Clone, Copy)]
+struct WebSocketMode {
+    compression: bool,
+    client_no_context_takeover: bool,
+    server_no_context_takeover: bool,
+}
+
 enum ProtocolObserver {
     WebSocket(crate::WebSocketObserver),
     Sse(crate::SseObserver),
@@ -652,6 +659,32 @@ async fn bridge_stream(
     result
 }
 
+fn request_pump_context(
+    limits: &ProtocolLimits,
+    context: &StreamContext,
+    content_encoding: Option<String>,
+    streaming: Option<ProtocolObserver>,
+) -> BodyPumpContext {
+    BodyPumpContext {
+        budget: limits.idle_timeout,
+        sink: context.sink.clone(),
+        session_id: context.session_id.clone(),
+        connection_id: context.connection_id,
+        stream_id: context.stream_id,
+        direction: BodyDirection::Request,
+        retention_limit: limits.max_body_bytes,
+        content_encoding,
+        max_decoded_body_bytes: limits.max_decoded_body_bytes,
+        max_decode_ratio: limits.max_decode_ratio,
+        decode_timeout: limits.decode_timeout,
+        capture_payloads: limits.capture_payloads,
+        session_retained: Arc::clone(&context.session_retained),
+        session_retention_limit: limits.max_session_body_bytes,
+        decoder_slots: Arc::clone(&context.decoder_slots),
+        streaming,
+    }
+}
+
 async fn bridge_stream_inner(
     request: hyper::Request<RecvStream>,
     mut respond: h2::server::SendResponse<Bytes>,
@@ -681,6 +714,15 @@ async fn bridge_stream_inner(
     let (parts, request_body) = request.into_parts();
     let pseudo = request_pseudo_fields(&parts);
     let request_encoding = content_encoding(&parts.headers);
+    let websocket_offer = websocket.then(|| {
+        crate::streaming::permessage_deflate(
+            parts
+                .headers
+                .get_all("sec-websocket-extensions")
+                .iter()
+                .map(|value| value.as_bytes()),
+        )
+    });
     let grpc = grpc_content_type(&parts.headers);
     let request_method = parts.uri.path().as_bytes().to_vec();
     let grpc_encoding = parts
@@ -726,35 +768,19 @@ async fn bridge_stream_inner(
     let (response_future, origin_body) = origin
         .send_request(outbound, end_stream)
         .map_err(|error| ProtocolError::new("http2-request-send-failed", error.to_string()))?;
-    let mut request_pump = AbortOnDrop(tokio::spawn(pump_body(
-        request_body,
-        origin_body,
-        end_stream,
-        BodyPumpContext {
-            budget: limits.idle_timeout,
-            sink: sink.clone(),
-            session_id: session_id.clone(),
-            connection_id,
-            stream_id,
-            direction: BodyDirection::Request,
-            retention_limit: limits.max_body_bytes,
-            content_encoding: request_encoding,
-            max_decoded_body_bytes: limits.max_decoded_body_bytes,
-            max_decode_ratio: limits.max_decode_ratio,
-            decode_timeout: limits.decode_timeout,
-            capture_payloads: limits.capture_payloads,
-            session_retained: Arc::clone(&context.session_retained),
-            session_retention_limit: limits.max_session_body_bytes,
-            decoder_slots: Arc::clone(&context.decoder_slots),
-            streaming: if websocket {
-                Some(ProtocolObserver::WebSocket(crate::WebSocketObserver::new(
-                    BodyDirection::Request,
-                    true,
-                    false,
-                    limits.max_websocket_frame_bytes,
-                    limits.max_websocket_message_bytes,
-                )))
-            } else {
+    let mut deferred_request = Some((request_body, origin_body));
+    let mut request_pump = if websocket {
+        None
+    } else {
+        let (request_body, origin_body) = deferred_request.take().expect("request streams exist");
+        Some(AbortOnDrop(tokio::spawn(pump_body(
+            request_body,
+            origin_body,
+            end_stream,
+            request_pump_context(
+                limits,
+                &context,
+                request_encoding.clone(),
                 grpc.as_ref().map(|_| {
                     ProtocolObserver::Grpc(
                         crate::GrpcObserver::new(
@@ -763,16 +789,62 @@ async fn bridge_stream_inner(
                         )
                         .with_encoding(grpc_encoding.clone()),
                     )
-                })
-            },
-        },
-    )));
+                }),
+            ),
+        ))))
+    };
     let response = timeout(limits.idle_timeout, response_future)
         .await
         .map_err(|_| ProtocolError::timeout("http2-response-timeout"))?
         .map_err(|error| h2_error("http2-response-failed", error))?;
     let (parts, response_body) = response.into_parts();
     let status = parts.status;
+    let websocket_mode = if websocket && status.is_success() {
+        let selected = crate::streaming::permessage_deflate(
+            parts
+                .headers
+                .get_all("sec-websocket-extensions")
+                .iter()
+                .map(|value| value.as_bytes()),
+        );
+        if selected.is_some() && websocket_offer.flatten().is_none() {
+            return Err(ProtocolError::new(
+                "websocket-extension-invalid",
+                "origin selected permessage-deflate without a client offer",
+            ));
+        }
+        let compression = selected.is_some();
+        let selected = selected.unwrap_or_default();
+        Some(WebSocketMode {
+            compression,
+            client_no_context_takeover: selected.client_no_context_takeover,
+            server_no_context_takeover: selected.server_no_context_takeover,
+        })
+    } else {
+        None
+    };
+    if request_pump.is_none() {
+        let (request_body, origin_body) = deferred_request.take().expect("request streams exist");
+        let streaming = websocket_mode.map(|mode| {
+            ProtocolObserver::WebSocket(
+                crate::WebSocketObserver::new(
+                    BodyDirection::Request,
+                    true,
+                    mode.compression,
+                    limits.max_websocket_frame_bytes,
+                    limits.max_websocket_message_bytes,
+                )
+                .with_no_context_takeover(mode.client_no_context_takeover),
+            )
+        });
+        request_pump = Some(AbortOnDrop(tokio::spawn(pump_body(
+            request_body,
+            origin_body,
+            end_stream,
+            request_pump_context(limits, &context, request_encoding.clone(), streaming),
+        ))));
+    }
+    let mut request_pump = request_pump.expect("request pump is started");
     let response_encoding = content_encoding(&parts.headers);
     let response_grpc_encoding = parts
         .headers
@@ -849,14 +921,17 @@ async fn bridge_stream_inner(
             session_retained: Arc::clone(&context.session_retained),
             session_retention_limit: limits.max_session_body_bytes,
             decoder_slots: Arc::clone(&context.decoder_slots),
-            streaming: if websocket && status.is_success() {
-                Some(ProtocolObserver::WebSocket(crate::WebSocketObserver::new(
-                    BodyDirection::Response,
-                    false,
-                    false,
-                    limits.max_websocket_frame_bytes,
-                    limits.max_websocket_message_bytes,
-                )))
+            streaming: if let Some(mode) = websocket_mode {
+                Some(ProtocolObserver::WebSocket(
+                    crate::WebSocketObserver::new(
+                        BodyDirection::Response,
+                        false,
+                        mode.compression,
+                        limits.max_websocket_frame_bytes,
+                        limits.max_websocket_message_bytes,
+                    )
+                    .with_no_context_takeover(mode.server_no_context_takeover),
+                ))
             } else if response_grpc {
                 Some(ProtocolObserver::Grpc(
                     crate::GrpcObserver::new(
@@ -1102,10 +1177,11 @@ fn content_encoding(headers: &hyper::HeaderMap) -> Option<String> {
 
 fn grpc_content_type(headers: &hyper::HeaderMap) -> Option<Vec<u8>> {
     let value = headers.get(hyper::header::CONTENT_TYPE)?.as_bytes();
-    value
-        .to_ascii_lowercase()
-        .starts_with(b"application/grpc")
-        .then(|| value.to_vec())
+    let prefix = b"application/grpc";
+    let (kind, boundary) = value.split_at_checked(prefix.len())?;
+    (kind.eq_ignore_ascii_case(prefix)
+        && (boundary.is_empty() || matches!(boundary.first(), Some(b'+') | Some(b';'))))
+    .then(|| value.to_vec())
 }
 
 fn sse_content_type(headers: &hyper::HeaderMap) -> bool {
@@ -1134,26 +1210,41 @@ fn emit_streaming(
             crate::StreamingEvent::WebSocketFrame(value) => {
                 value.wire_payload.clear();
                 value.close_reason.clear();
-                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                value.payload_omitted = true;
+                if value.outcome == crate::StreamingOutcome::Complete {
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
             }
             crate::StreamingEvent::WebSocketMessage(value) => {
                 value.payload.clear();
-                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                value.payload_omitted = true;
+                if value.outcome == crate::StreamingOutcome::Complete {
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
             }
             crate::StreamingEvent::SseField(value) => {
                 value.name.clear();
                 value.value.clear();
-                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                value.payload_omitted = true;
+                if value.outcome == crate::StreamingOutcome::Complete {
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
             }
             crate::StreamingEvent::SseEvent(value) => {
                 value.event_type.clear();
                 value.data.clear();
                 value.last_event_id.clear();
-                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                value.payload_omitted = true;
+                if value.outcome == crate::StreamingOutcome::Complete {
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
             }
             crate::StreamingEvent::GrpcMessage(value) => {
                 value.payload.clear();
-                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                value.payload_omitted = true;
+                if value.outcome == crate::StreamingOutcome::Complete {
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
             }
             _ => {}
         }
@@ -1253,6 +1344,30 @@ fn account_stream_result(
         }
         Ok(Err(_)) | Err(_) => {
             accounting.parse_refused = accounting.parse_refused.saturating_add(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grpc_content_type_requires_a_native_media_type_boundary() {
+        for accepted in [
+            "application/grpc",
+            "application/grpc+proto",
+            "application/grpc; charset=utf-8",
+            "Application/Grpc+Json",
+        ] {
+            let mut headers = hyper::HeaderMap::new();
+            headers.insert(hyper::header::CONTENT_TYPE, accepted.parse().unwrap());
+            assert!(grpc_content_type(&headers).is_some(), "{accepted}");
+        }
+        for rejected in ["application/grpc-web+proto", "application/grpcanything"] {
+            let mut headers = hyper::HeaderMap::new();
+            headers.insert(hyper::header::CONTENT_TYPE, rejected.parse().unwrap());
+            assert!(grpc_content_type(&headers).is_none(), "{rejected}");
         }
     }
 }
