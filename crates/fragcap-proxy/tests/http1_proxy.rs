@@ -386,6 +386,64 @@ fn accepted_upgrade_relays_bidirectionally_and_observes_half_close() {
 }
 
 #[test]
+fn verified_websocket_upgrade_preserves_frames_and_messages() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let request = String::from_utf8(read_head(&mut stream)).unwrap();
+        assert!(request.contains("Upgrade: websocket\r\n"));
+        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n").unwrap();
+        let mut frame = [0_u8; 8];
+        stream.read_exact(&mut frame).unwrap();
+        assert_eq!(frame, [0x81, 0x82, 1, 2, 3, 4, b'h' ^ 1, b'i' ^ 2]);
+        stream.write_all(b"\x81\x02ok").unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+    });
+
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with_sink(address, Some(collector.clone()));
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(client, "GET http://{address}/socket HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", auth.as_str()).unwrap();
+    assert!(read_head(&mut client).starts_with(b"HTTP/1.1 101"));
+    client
+        .write_all(&[0x81, 0x82, 1, 2, 3, 4, b'h' ^ 1, b'i' ^ 2])
+        .unwrap();
+    client.shutdown(Shutdown::Write).unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert_eq!(response, b"\x81\x02ok");
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean(), "{report:?}");
+    let events = collector.0.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                ApplicationEventKind::Streaming(fragcap_proxy::StreamingEvent::WebSocketFrame(_))
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                ApplicationEventKind::Streaming(fragcap_proxy::StreamingEvent::WebSocketMessage(_))
+            ))
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn session_body_retention_is_shared_across_http1_connections() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = origin.local_addr().unwrap();

@@ -111,6 +111,11 @@ pub struct ProtocolLimits {
     pub http2_send_buffer_bytes: usize,
     pub max_requests_per_connection: usize,
     pub max_observations: usize,
+    pub max_websocket_frame_bytes: usize,
+    pub max_websocket_message_bytes: usize,
+    pub max_sse_line_bytes: usize,
+    pub max_sse_event_bytes: usize,
+    pub max_grpc_message_bytes: usize,
     pub header_timeout: Duration,
     pub idle_timeout: Duration,
     pub tls_handshake_timeout: Duration,
@@ -142,6 +147,11 @@ impl Default for ProtocolLimits {
             http2_send_buffer_bytes: 1024 * 1024,
             max_requests_per_connection: 1_024,
             max_observations: 4_096,
+            max_websocket_frame_bytes: 16 * 1024 * 1024,
+            max_websocket_message_bytes: 32 * 1024 * 1024,
+            max_sse_line_bytes: 64 * 1024,
+            max_sse_event_bytes: 1024 * 1024,
+            max_grpc_message_bytes: 32 * 1024 * 1024,
             header_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(60),
             tls_handshake_timeout: Duration::from_secs(10),
@@ -177,6 +187,14 @@ impl ProtocolLimits {
                 self.http2_connection_window_bytes,
             ),
             ("http2-send-buffer-bytes", self.http2_send_buffer_bytes),
+            ("max-websocket-frame-bytes", self.max_websocket_frame_bytes),
+            (
+                "max-websocket-message-bytes",
+                self.max_websocket_message_bytes,
+            ),
+            ("max-sse-line-bytes", self.max_sse_line_bytes),
+            ("max-sse-event-bytes", self.max_sse_event_bytes),
+            ("max-grpc-message-bytes", self.max_grpc_message_bytes),
         ];
         if let Some((name, _)) = nonzero.into_iter().find(|(_, value)| *value == 0) {
             return Err(ConfigError::new(
@@ -344,6 +362,7 @@ pub struct ProtocolAccounting {
     pub body_bytes_queue_dropped: u64,
     pub application_events_accepted: u64,
     pub application_events_dropped: u64,
+    pub streaming_bytes_queue_dropped: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

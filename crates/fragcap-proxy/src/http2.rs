@@ -70,6 +70,123 @@ struct BodyPumpContext {
     session_retained: Arc<AtomicU64>,
     session_retention_limit: u64,
     decoder_slots: Arc<Semaphore>,
+    streaming: Option<ProtocolObserver>,
+}
+
+enum ProtocolObserver {
+    WebSocket(crate::WebSocketObserver),
+    Sse(crate::SseObserver),
+    Grpc(crate::GrpcObserver),
+}
+
+impl ProtocolObserver {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<crate::StreamingEvent> {
+        match self {
+            Self::WebSocket(value) => value.feed(bytes),
+            Self::Sse(value) => value.feed(bytes),
+            Self::Grpc(value) => value.feed(bytes),
+        }
+    }
+
+    fn finish(&mut self, trailers: Option<&hyper::HeaderMap>) -> Vec<crate::StreamingEvent> {
+        self.finish_with_outcome(trailers, crate::StreamingOutcome::Complete)
+    }
+
+    fn finish_with_outcome(
+        &mut self,
+        trailers: Option<&hyper::HeaderMap>,
+        outcome: crate::StreamingOutcome,
+    ) -> Vec<crate::StreamingEvent> {
+        match self {
+            Self::WebSocket(value) => vec![value.finish(outcome)],
+            Self::Sse(value) => value.finish(outcome),
+            Self::Grpc(value) => vec![value.finish(
+                trailers
+                    .and_then(|map| map.get("grpc-status"))
+                    .map(|value| value.as_bytes().to_vec()),
+                trailers
+                    .and_then(|map| map.get("grpc-message"))
+                    .map(|value| value.as_bytes().to_vec()),
+                trailers
+                    .and_then(|map| map.get("grpc-status-details-bin"))
+                    .map(|value| value.as_bytes().to_vec()),
+                outcome,
+            )],
+        }
+    }
+}
+
+struct StreamingPumpObserver {
+    observer: Option<ProtocolObserver>,
+    sink: SharedEventSink,
+    session_id: String,
+    connection_id: u64,
+    stream_id: u64,
+    capture_payloads: bool,
+}
+
+impl StreamingPumpObserver {
+    fn feed(&mut self, bytes: &[u8]) {
+        let Some(observer) = &mut self.observer else {
+            return;
+        };
+        let events = observer.feed(bytes);
+        let terminal = events.iter().any(|event| {
+            matches!(
+                event,
+                crate::StreamingEvent::WebSocketTerminal { .. }
+                    | crate::StreamingEvent::SseTerminal { .. }
+                    | crate::StreamingEvent::GrpcTerminal { .. }
+            )
+        });
+        for event in events {
+            emit_streaming(
+                &self.sink,
+                &self.session_id,
+                self.connection_id,
+                self.stream_id,
+                event,
+                self.capture_payloads,
+            );
+        }
+        if terminal {
+            self.observer = None;
+        }
+    }
+
+    fn finish(&mut self, trailers: Option<&hyper::HeaderMap>) {
+        let Some(mut observer) = self.observer.take() else {
+            return;
+        };
+        for event in observer.finish(trailers) {
+            emit_streaming(
+                &self.sink,
+                &self.session_id,
+                self.connection_id,
+                self.stream_id,
+                event,
+                self.capture_payloads,
+            );
+        }
+    }
+}
+
+impl Drop for StreamingPumpObserver {
+    fn drop(&mut self) {
+        let Some(mut observer) = self.observer.take() else {
+            return;
+        };
+        for event in observer.finish_with_outcome(None, crate::StreamingOutcome::Cancelled) {
+            emit_streaming(
+                &self.sink,
+                &self.session_id,
+                self.connection_id,
+                self.stream_id,
+                event,
+                self.capture_payloads,
+            );
+        }
+    }
 }
 
 pub(crate) async fn serve_http2<C, U>(
@@ -93,6 +210,7 @@ where
     let decoder_slots = body_resources.decoder_slots;
     let mut server_builder = h2::server::Builder::new();
     server_builder
+        .enable_connect_protocol()
         .max_concurrent_streams(limits.max_concurrent_streams as u32)
         .max_header_list_size(limits.max_header_bytes as u32)
         .initial_window_size(limits.http2_stream_window_bytes as u32)
@@ -484,6 +602,7 @@ fn authenticate_cleartext_request(
 
 fn configure_server(builder: &mut h2::server::Builder, limits: &ProtocolLimits) {
     builder
+        .enable_connect_protocol()
         .max_concurrent_streams(limits.max_concurrent_streams as u32)
         .max_header_list_size(limits.max_header_bytes as u32)
         .initial_window_size(limits.http2_stream_window_bytes as u32)
@@ -554,9 +673,20 @@ async fn bridge_stream_inner(
             ApplicationEventKind::HttpStreamOpen,
         ),
     );
+    let websocket = request.method() == hyper::Method::CONNECT
+        && request
+            .extensions()
+            .get::<h2::ext::Protocol>()
+            .is_some_and(|value| value.as_str().eq_ignore_ascii_case("websocket"));
     let (parts, request_body) = request.into_parts();
     let pseudo = request_pseudo_fields(&parts);
     let request_encoding = content_encoding(&parts.headers);
+    let grpc = grpc_content_type(&parts.headers);
+    let request_method = parts.uri.path().as_bytes().to_vec();
+    let grpc_encoding = parts
+        .headers
+        .get("grpc-encoding")
+        .map(|value| value.as_bytes().to_vec());
     emit(
         sink,
         ApplicationEvent::now(
@@ -571,6 +701,22 @@ async fn bridge_stream_inner(
             )),
         ),
     );
+    if let Some(content_type) = &grpc {
+        emit(
+            sink,
+            ApplicationEvent::now(
+                session_id.as_str(),
+                connection_id,
+                Some(stream_id),
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::Streaming(crate::StreamingEvent::GrpcCall {
+                    method: request_method,
+                    content_type: content_type.clone(),
+                    encoding: grpc_encoding.clone(),
+                }),
+            ),
+        );
+    }
     let outbound = hyper::Request::from_parts(parts, ());
     let mut origin = origin
         .ready()
@@ -600,6 +746,25 @@ async fn bridge_stream_inner(
             session_retained: Arc::clone(&context.session_retained),
             session_retention_limit: limits.max_session_body_bytes,
             decoder_slots: Arc::clone(&context.decoder_slots),
+            streaming: if websocket {
+                Some(ProtocolObserver::WebSocket(crate::WebSocketObserver::new(
+                    BodyDirection::Request,
+                    true,
+                    false,
+                    limits.max_websocket_frame_bytes,
+                    limits.max_websocket_message_bytes,
+                )))
+            } else {
+                grpc.as_ref().map(|_| {
+                    ProtocolObserver::Grpc(
+                        crate::GrpcObserver::new(
+                            BodyDirection::Request,
+                            limits.max_grpc_message_bytes,
+                        )
+                        .with_encoding(grpc_encoding.clone()),
+                    )
+                })
+            },
         },
     )));
     let response = timeout(limits.idle_timeout, response_future)
@@ -609,6 +774,24 @@ async fn bridge_stream_inner(
     let (parts, response_body) = response.into_parts();
     let status = parts.status;
     let response_encoding = content_encoding(&parts.headers);
+    let response_grpc_encoding = parts
+        .headers
+        .get("grpc-encoding")
+        .map(|value| value.as_bytes().to_vec());
+    let response_grpc_status = parts
+        .headers
+        .get("grpc-status")
+        .map(|value| value.as_bytes().to_vec());
+    let response_grpc_message = parts
+        .headers
+        .get("grpc-message")
+        .map(|value| value.as_bytes().to_vec());
+    let response_grpc_status_details = parts
+        .headers
+        .get("grpc-status-details-bin")
+        .map(|value| value.as_bytes().to_vec());
+    let response_grpc = grpc.is_some() || grpc_content_type(&parts.headers).is_some();
+    let response_sse = !response_grpc && sse_content_type(&parts.headers);
     emit(
         sink,
         ApplicationEvent::now(
@@ -628,6 +811,20 @@ async fn bridge_stream_inner(
             )),
         ),
     );
+    if response_sse && response_encoding.is_some() {
+        emit(
+            sink,
+            ApplicationEvent::now(
+                session_id.as_str(),
+                connection_id,
+                Some(stream_id),
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::Streaming(crate::StreamingEvent::SseTerminal {
+                    outcome: crate::StreamingOutcome::UnsupportedCompression,
+                }),
+            ),
+        );
+    }
     let response_end_stream = response_body.is_end_stream();
     let downstream = respond
         .send_response(hyper::Response::from_parts(parts, ()), response_end_stream)
@@ -644,7 +841,7 @@ async fn bridge_stream_inner(
             stream_id,
             direction: BodyDirection::Response,
             retention_limit: limits.max_body_bytes,
-            content_encoding: response_encoding,
+            content_encoding: response_encoding.clone(),
             max_decoded_body_bytes: limits.max_decoded_body_bytes,
             max_decode_ratio: limits.max_decode_ratio,
             decode_timeout: limits.decode_timeout,
@@ -652,6 +849,35 @@ async fn bridge_stream_inner(
             session_retained: Arc::clone(&context.session_retained),
             session_retention_limit: limits.max_session_body_bytes,
             decoder_slots: Arc::clone(&context.decoder_slots),
+            streaming: if websocket && status.is_success() {
+                Some(ProtocolObserver::WebSocket(crate::WebSocketObserver::new(
+                    BodyDirection::Response,
+                    false,
+                    false,
+                    limits.max_websocket_frame_bytes,
+                    limits.max_websocket_message_bytes,
+                )))
+            } else if response_grpc {
+                Some(ProtocolObserver::Grpc(
+                    crate::GrpcObserver::new(
+                        BodyDirection::Response,
+                        limits.max_grpc_message_bytes,
+                    )
+                    .with_encoding(response_grpc_encoding)
+                    .with_terminal_metadata(
+                        response_grpc_status,
+                        response_grpc_message,
+                        response_grpc_status_details,
+                    ),
+                ))
+            } else if response_sse && response_encoding.is_none() {
+                Some(ProtocolObserver::Sse(crate::SseObserver::new(
+                    limits.max_sse_line_bytes,
+                    limits.max_sse_event_bytes,
+                )))
+            } else {
+                None
+            },
         },
     );
     let (request_result, response_result) = tokio::join!(&mut request_pump.0, response_pump);
@@ -684,7 +910,16 @@ async fn pump_body(
         session_retained,
         session_retention_limit,
         decoder_slots,
+        streaming,
     } = context;
+    let mut streaming = StreamingPumpObserver {
+        observer: streaming,
+        sink: sink.clone(),
+        session_id: session_id.clone(),
+        connection_id,
+        stream_id,
+        capture_payloads,
+    };
     let mut offset = 0_u64;
     let mut retained = 0_u64;
     let mut retained_bytes = Vec::new();
@@ -729,6 +964,7 @@ async fn pump_body(
         offset = offset.saturating_add(chunk.len() as u64);
         retained = retained.saturating_add(keep as u64);
         retained_bytes.extend_from_slice(&chunk[..keep]);
+        streaming.feed(&chunk);
         let mut start = 0;
         while start < chunk.len() {
             send.reserve_capacity(chunk.len() - start);
@@ -763,11 +999,12 @@ async fn pump_body(
             start += sent;
         }
     }
-    if let Some(trailers) = receive
+    let trailers = receive
         .trailers()
         .await
-        .map_err(|error| h2_error("http2-trailers-failed", error))?
-    {
+        .map_err(|error| h2_error("http2-trailers-failed", error))?;
+    streaming.finish(trailers.as_ref());
+    if let Some(trailers) = trailers {
         emit(
             &sink,
             ApplicationEvent::now(
@@ -863,6 +1100,76 @@ fn content_encoding(headers: &hyper::HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn grpc_content_type(headers: &hyper::HeaderMap) -> Option<Vec<u8>> {
+    let value = headers.get(hyper::header::CONTENT_TYPE)?.as_bytes();
+    value
+        .to_ascii_lowercase()
+        .starts_with(b"application/grpc")
+        .then(|| value.to_vec())
+}
+
+fn sse_content_type(headers: &hyper::HeaderMap) -> bool {
+    headers
+        .get(hyper::header::CONTENT_TYPE)
+        .map(|value| {
+            value
+                .as_bytes()
+                .split(|byte| *byte == b';')
+                .next()
+                .is_some_and(|kind| kind.trim_ascii().eq_ignore_ascii_case(b"text/event-stream"))
+        })
+        .unwrap_or(false)
+}
+
+fn emit_streaming(
+    sink: &SharedEventSink,
+    session_id: &str,
+    connection_id: u64,
+    stream_id: u64,
+    mut event: crate::StreamingEvent,
+    capture_payloads: bool,
+) {
+    if !capture_payloads {
+        match &mut event {
+            crate::StreamingEvent::WebSocketFrame(value) => {
+                value.wire_payload.clear();
+                value.close_reason.clear();
+                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+            }
+            crate::StreamingEvent::WebSocketMessage(value) => {
+                value.payload.clear();
+                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+            }
+            crate::StreamingEvent::SseField(value) => {
+                value.name.clear();
+                value.value.clear();
+                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+            }
+            crate::StreamingEvent::SseEvent(value) => {
+                value.event_type.clear();
+                value.data.clear();
+                value.last_event_id.clear();
+                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+            }
+            crate::StreamingEvent::GrpcMessage(value) => {
+                value.payload.clear();
+                value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+            }
+            _ => {}
+        }
+    }
+    emit(
+        sink,
+        ApplicationEvent::now(
+            session_id,
+            connection_id,
+            Some(stream_id),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::Streaming(event),
+        ),
+    );
+}
+
 fn request_pseudo_fields(parts: &hyper::http::request::Parts) -> Vec<MetadataField> {
     let values = [
         (b":method".as_slice(), parts.method.as_str().as_bytes()),
@@ -889,7 +1196,7 @@ fn request_pseudo_fields(parts: &hyper::http::request::Parts) -> Vec<MetadataFie
                 .as_bytes(),
         ),
     ];
-    values
+    let mut fields: Vec<_> = values
         .into_iter()
         .enumerate()
         .map(|(index, (name, value))| MetadataField {
@@ -898,7 +1205,16 @@ fn request_pseudo_fields(parts: &hyper::http::request::Parts) -> Vec<MetadataFie
             original_index: index as u32,
             sensitive: false,
         })
-        .collect()
+        .collect();
+    if let Some(protocol) = parts.extensions.get::<h2::ext::Protocol>() {
+        fields.push(MetadataField {
+            name: b":protocol".to_vec(),
+            value: protocol.as_ref().to_vec(),
+            original_index: fields.len() as u32,
+            sensitive: false,
+        });
+    }
+    fields
 }
 
 fn failed(code: &'static str, detail: impl Into<String>) -> Http2Run {

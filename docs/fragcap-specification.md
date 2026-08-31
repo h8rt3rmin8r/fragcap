@@ -122,6 +122,7 @@ enforcement.
 | 0.1.28-draft | 2026-08-30 | W. Thompson | **Completes the secure native proxy foundation (issues #283 through #289).** Adds authenticated loopback admission, bounded upstream policy and native roots, per-session certificate and exact current-user trust ownership, a loss-accounted raw observation contract, and the deterministic local protocol lab. Production forwarding and inspection remain external until #290. |
 | 0.1.29-draft | 2026-08-30 | W. Thompson | **Cuts Deep Capture over to native HTTP and TLS (issues #290, #292, and #293).** Removes the production Python and mitmdump path, adds session-authenticated bounded HTTP/1.1 and CONNECT forwarding, terminates approved client TLS with the session authority, establishes a separately verified upstream TLS boundary, maps truthful coarse observations through the facade, and verifies the public CLI with real controlled loopback traffic. Deep Capture remains incomplete until #334. |
 | 0.1.30-draft | 2026-08-30 | W. Thompson | **Adds native HTTP/2, complete protocol metadata, bounded streaming bodies, and application JSON Lines version 2 (issues #294, #296, #297, and #301).** Extends sections 13.7, 19.6, 25, and 28.1. HTTP/2 multiplexing retains distinct stream identity and bounded flow control, HTTP metadata preserves the evidence available at each protocol boundary, raw bodies stream independently from bounded retention and derived decoding, and the application artifact is append-only and crash-readable during the session. Deferred protocol families and unavailable HTTP/2 wire representations remain explicit. |
+| 0.1.31-draft | 2026-08-30 | W. Thompson | **Adds streaming application protocols (issues #295, #298, and #299).** Extends sections 13.7, 19.6, 25, and 28.1. Verified HTTP/1.1 upgrades and RFC 8441 carry bounded WebSocket frame and message evidence, identity event streams produce incremental SSE fields and events, and HTTP/2 gRPC streams retain method, metadata, opaque envelopes, compression flags, and terminal status without protobuf inference. Observation remains independent from transparent forwarding. |
 
 ## 2. Purpose and Problem Statement
 
@@ -145,10 +146,11 @@ the shell wrappers are consumers of the command line tool. Deep Capture's
 session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
 
-Deep Capture is functional but incomplete. S105 extends the native Rust sole
+Deep Capture is functional but incomplete. S106 extends the native Rust sole
 production path with bounded HTTP/2 multiplexing, protocol-faithful HTTP
 metadata, incrementally retained bodies, bounded gzip, deflate, and Brotli
-decoding, and a live application JSON Lines version 2 stream. Client-facing TLS
+decoding, a live application JSON Lines version 2 stream, WebSocket frame and
+message inspection, incremental SSE, and schema-free gRPC envelopes. Client-facing TLS
 uses the exact session authority and upstream TLS is verified independently.
 Issue #278 is the completion authority. Deep Capture
 MUST NOT be described as self-contained or feature-complete until issue #334 closes.
@@ -3336,7 +3338,9 @@ support is exact:
 | --- | --- | --- |
 | HTTP | Packets, attribution, and payload bytes unless payload capture is disabled | Native HTTP/1.1 and explicitly routed authenticated HTTP/2 retain boundary-faithful request, response, informational, and trailer metadata plus bounded raw and decoded body evidence in the live application stream |
 | HTTPS | Encrypted packets and attribution | Native HTTP/1.1 or HTTP/2 semantics when proxy-routed and accepted by the fragcap-owned local CA; no certificate-pinning bypass, client-certificate forwarding, or target key extraction |
-| WebSocket | Packets and attribution | HTTP upgrade handshake semantics can be observed; WebSocket frame records and payload retention are not implemented |
+| WebSocket | Packets and attribution | Verified HTTP/1.1 upgrades and RFC 8441 streams retain bounded raw frames, masking and fragmentation facts, derived messages, and negotiated per-message compression outcomes |
+| Server-Sent Events | Packets and attribution | Identity `text/event-stream` responses retain bounded incremental fields, comments, events, and reconnect metadata while raw body bytes remain authoritative |
+| gRPC | Packets and attribution | HTTP/2 gRPC calls retain method and metadata plus bounded opaque message envelopes, compression flags, and terminal status; protobuf fields are not inferred without schemas |
 | Non-HTTP TLS | Encrypted packets and attribution | Metadata-only proxy observation; no custom application dissection |
 | QUIC | UDP packets and attribution | Unsupported by the current HTTP proxy path; no QUIC routing or decryption claim |
 | UDP | Packets, attribution, and payload bytes unless disabled | Unsupported by the current proxy path; no generic UDP proxy inspection |
@@ -3345,7 +3349,7 @@ support is exact:
 The `full` inspectability fact means that the proxy observed supported HTTP
 semantics for that run. Metadata fidelity and body retention outcomes are
 explicit in `application.jsonl`; the fact does not claim unbounded body
-retention, WebSocket frames, or custom payloads. A proxy-owned TLS key log is an analyzer aid, not
+retention or custom payload dissection. A proxy-owned TLS key log is an analyzer aid, not
 decrypted output and not material extracted from a target process.
 
 What remains observable under encryption is substantial: endpoint
@@ -4378,6 +4382,8 @@ accounting, and the controlled protocol lab. S104 adds the production native
 HTTP/1.1, CONNECT, and separately verified HTTPS path. S105 adds native HTTP/2,
 complete boundary-faithful HTTP metadata, bounded streaming body evidence and
 decoding, and live application JSON Lines version 2.
+S106 adds bounded WebSocket frame and message inspection, incremental SSE, and
+opaque gRPC envelope and status records without protobuf schema inference.
 
 The required dependency direction is:
 
@@ -4419,8 +4425,9 @@ The protocol and launch matrix is normative:
 | HTTP/1.1 and CONNECT | Native bounded forwarding, complete metadata, and bounded body evidence | S105, #296 and #297 |
 | HTTPS | Native session-CA inspection with verified upstream TLS | Client certificates/pinning classification #304 |
 | HTTP/2 | Native bounded multiplexing with stream evidence | S105, #294 |
-| WebSocket | Upgrade handshake only in current records | #295 |
-| SSE and gRPC | Not implemented | #298 and #299 |
+| WebSocket | Native HTTP/1.1 and RFC 8441 frame and message evidence | S106, #295 |
+| SSE | Native incremental identity event-stream fields and events | S106, #298 |
+| gRPC | Native HTTP/2 opaque envelopes, compression flags, and status | S106, #299 |
 | Generic TCP and non-HTTP TLS | Metadata-only current claim | #312 |
 | SOCKS5 TCP and UDP | Not implemented | #310 and #311 |
 | Generic UDP | Packet truth only | #313 |

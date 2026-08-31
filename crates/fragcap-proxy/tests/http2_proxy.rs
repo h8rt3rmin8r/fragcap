@@ -370,3 +370,115 @@ async fn explicitly_routed_cleartext_http2_is_authenticated_and_authority_bound(
     assert_eq!(report.observation.protocol.http2_streams, 1);
     assert_eq!(report.observation.protocol.http2_streams_completed, 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut builder = h2::server::Builder::new();
+        builder.enable_connect_protocol();
+        let mut connection = builder.handshake(tcp).await.unwrap();
+        let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+        assert_eq!(request.method(), hyper::Method::CONNECT);
+        assert_eq!(
+            request
+                .extensions()
+                .get::<h2::ext::Protocol>()
+                .unwrap()
+                .as_str(),
+            "websocket"
+        );
+        let mut request_body = request.into_body();
+        let frame = request_body.data().await.unwrap().unwrap();
+        request_body
+            .flow_control()
+            .release_capacity(frame.len())
+            .unwrap();
+        assert_eq!(
+            frame,
+            Bytes::from_static(&[0x81, 0x82, 1, 2, 3, 4, b'h' ^ 1, b'i' ^ 2])
+        );
+        let mut body = respond
+            .send_response(
+                hyper::Response::builder().status(200).body(()).unwrap(),
+                false,
+            )
+            .unwrap();
+        body.send_data(Bytes::from_static(b"\x81\x02ok"), true)
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_millis(100), connection.accept()).await;
+        connection.graceful_shutdown();
+    });
+
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        2,
+        16 * 1024,
+        Duration::from_secs(3),
+    )
+    .unwrap()
+    .with_session_id("s106-rfc8441")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(origin);
+    let collector = Arc::new(Collector::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let tcp = tokio::net::TcpStream::connect(lease.endpoint())
+        .await
+        .unwrap();
+    let (sender, connection) = h2::client::handshake(tcp).await.unwrap();
+    let driver = tokio::spawn(connection);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let mut request = hyper::Request::builder()
+        .method("CONNECT")
+        .uri(format!("http://{origin}/socket"))
+        .header(
+            hyper::header::PROXY_AUTHORIZATION,
+            lease.capability_proof().proxy_authorization().as_str(),
+        )
+        .body(())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(h2::ext::Protocol::from_static("websocket"));
+    let mut ready = sender.ready().await.unwrap();
+    let (response, mut body) = ready.send_request(request, false).unwrap();
+    body.send_data(
+        Bytes::from_static(&[0x81, 0x82, 1, 2, 3, 4, b'h' ^ 1, b'i' ^ 2]),
+        true,
+    )
+    .unwrap();
+    let response = response.await.unwrap_or_else(|error| {
+        let events = collector.0.lock().unwrap();
+        panic!("extended CONNECT reset: {error:?}; events={events:?}");
+    });
+    assert_eq!(response.status(), 200);
+    let mut response_body = response.into_body();
+    assert_eq!(
+        response_body.data().await.unwrap().unwrap(),
+        Bytes::from_static(b"\x81\x02ok")
+    );
+    drop(ready);
+    driver.abort();
+    let _ = driver.await;
+    origin_task.await.unwrap();
+    let report = lease.cleanup(Duration::from_secs(3));
+    assert!(report.is_clean(), "{report:?}");
+    let events = collector.0.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                ApplicationEventKind::Streaming(fragcap_proxy::StreamingEvent::WebSocketFrame(_))
+            ))
+            .count(),
+        2
+    );
+}

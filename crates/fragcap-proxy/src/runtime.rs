@@ -1161,6 +1161,7 @@ fn sync_application_accounting(
     observation.protocol.application_events_accepted = accounting.accepted_events;
     observation.protocol.application_events_dropped = accounting.dropped_events;
     observation.protocol.body_bytes_queue_dropped = accounting.body_bytes_queue_dropped;
+    observation.protocol.streaming_bytes_queue_dropped = accounting.streaming_bytes_queue_dropped;
 }
 
 async fn drain_tasks(
@@ -1320,6 +1321,10 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .body_bytes_queue_dropped
         .saturating_add(source.body_bytes_queue_dropped);
+    observation.protocol.streaming_bytes_queue_dropped = observation
+        .protocol
+        .streaming_bytes_queue_dropped
+        .saturating_add(source.streaming_bytes_queue_dropped);
     observation.protocol.application_events_accepted = observation
         .protocol
         .application_events_accepted

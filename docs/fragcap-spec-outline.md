@@ -317,7 +317,8 @@ upstream policy, certificate and trust ownership, raw observations, and the
 controlled protocol lab. S104 adds native HTTP/1.1, CONNECT, and HTTPS and
 removes the production external proxy path. S105 adds native HTTP/2,
 protocol-faithful metadata, bounded streaming bodies and decoding, and the live
-version 2 application stream. Broader protocol and launch/transport
+version 2 application stream. S106 adds WebSocket frame and message evidence,
+incremental Server-Sent Events, and schema-free gRPC envelope evidence. Broader launch/transport
 coverage, recovery, packaging, independent review, and the final #334 gate
 remain open. Additional platforms, richer attribution backends, dissector
 plugins, platform integrations, and analysis tooling remain deferred.

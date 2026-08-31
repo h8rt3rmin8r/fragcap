@@ -283,6 +283,7 @@ load-bearing rather than bookkeeping.
 | `base64`, `httparse` | runtime, direct | S104 | Standard Basic proxy authentication and bounded HTTP/1.1 head parsing; both were already transitive, so no lock packages were added |
 | `h2`, `bytes` | runtime, direct | S105 | Native bounded HTTP/2 stream and flow-control ownership; both were already lock-resolved |
 | `async-compression` | runtime, direct | S105 | Exact-pinned pure-Rust gzip, zlib-deflate, and Brotli body derivations with only the selected Tokio codecs enabled |
+| `flate2` | runtime, direct | S106 | Stateful raw DEFLATE for negotiated WebSocket per-message compression; exact-resolved and already present in the lock graph |
 
 S102 raises the workspace MSRV from 1.82 to 1.88 and adds the ninth product
 crate, `fragcap-proxy`. This deliberately supersedes S100's external-backend
@@ -319,6 +320,14 @@ bounded content-decoding derivations, and writes application JSON Lines version
 order remain explicitly unavailable. WebSocket, SSE, gRPC semantics, HAR
 completion, client certificates, generic transports, recovery, packaging, and
 the final #334 gate remain open.
+
+S106 closes #295, #298, and #299 together at the streaming application-protocol
+boundary. The proxy verifies HTTP/1.1 WebSocket upgrades, enables RFC 8441
+extended CONNECT, preserves WebSocket frames and derived messages, incrementally
+parses identity Server-Sent Events, and records bounded gRPC envelopes and
+status without inventing protobuf meaning. All observers are bounded sidecars
+to byte-transparent forwarding. `flate2` is promoted from the existing lock
+graph for stateful RFC 7692 raw DEFLATE, so the slice adds no lock package.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

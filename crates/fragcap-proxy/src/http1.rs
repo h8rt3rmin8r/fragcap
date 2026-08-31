@@ -6,6 +6,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
@@ -112,6 +113,13 @@ struct ResponseHead {
     upgrade: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WebSocketMode {
+    compression: bool,
+    client_no_context_takeover: bool,
+    server_no_context_takeover: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct HttpRun {
     pub observations: Vec<ProxyObservation>,
@@ -145,11 +153,15 @@ struct BodyEmitter {
     capture_payloads: bool,
     body_resources: crate::body::SessionBodyResources,
     session_retention_limit: u64,
+    sse: Option<crate::SseObserver>,
 }
 
 impl BodyEmitter {
     fn emit_content(&mut self, bytes: &[u8], transfer_decoded: bool) {
         let raw_retained = self.emit_raw(bytes);
+        if let Some(events) = self.sse.as_mut().map(|observer| observer.feed(bytes)) {
+            self.emit_streaming(events);
+        }
         if !self.capture_payloads {
             return;
         }
@@ -230,7 +242,14 @@ impl BodyEmitter {
         retained_len
     }
 
-    async fn finish(&self, limits: &ProtocolLimits) {
+    async fn finish(&mut self, limits: &ProtocolLimits) {
+        if let Some(events) = self
+            .sse
+            .as_mut()
+            .map(|observer| observer.finish(crate::StreamingOutcome::Complete))
+        {
+            self.emit_streaming(events);
+        }
         let Some(encoding) = &self.content_encoding else {
             return;
         };
@@ -301,6 +320,39 @@ impl BodyEmitter {
                             BodyOutcome::RetentionLimit
                         },
                     }),
+                ),
+            );
+        }
+    }
+
+    fn emit_streaming(&self, mut events: Vec<crate::StreamingEvent>) {
+        for event in &mut events {
+            if !self.capture_payloads {
+                match event {
+                    crate::StreamingEvent::SseField(value) => {
+                        value.name.clear();
+                        value.value.clear();
+                        value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                    }
+                    crate::StreamingEvent::SseEvent(value) => {
+                        value.event_type.clear();
+                        value.data.clear();
+                        value.last_event_id.clear();
+                        value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for event in events {
+            crate::application::emit(
+                &self.sink,
+                ApplicationEvent::now(
+                    &self.session_id,
+                    self.connection_id,
+                    Some(self.stream_id),
+                    Some(ProtocolVersion::Http11),
+                    ApplicationEventKind::Streaming(event),
                 ),
             );
         }
@@ -501,6 +553,7 @@ where
             capture_payloads: limits.capture_payloads,
             body_resources: context.body_resources.clone(),
             session_retention_limit: limits.max_session_body_bytes,
+            sse: None,
         };
         let exchange = async {
             let mut upstream = BufReader::new(connect(request.authority.clone()).await?);
@@ -625,15 +678,26 @@ where
         observation.status = Some(response.status);
         observation.inspectability = "full";
         if response.upgrade && request.upgrade {
-            let result = timeout(
-                limits.idle_timeout,
-                tokio::io::copy_bidirectional(&mut client, &mut upstream),
-            )
-            .await;
-            let result = match result {
-                Ok(Ok(_)) => None,
-                Ok(Err(error)) => Some(ProtocolError::new("upgrade-io-failed", error.to_string())),
-                Err(_) => Some(ProtocolError::timeout("upgrade-idle-timeout")),
+            let websocket = websocket_mode(&request, &response);
+            let result = match websocket {
+                Ok(Some(mode)) => {
+                    relay_websocket(&mut client, &mut upstream, limits, &context, ordinal, mode)
+                        .await
+                        .err()
+                }
+                Ok(None) => match timeout(
+                    limits.idle_timeout,
+                    tokio::io::copy_bidirectional(&mut client, &mut upstream),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => None,
+                    Ok(Err(error)) => {
+                        Some(ProtocolError::new("upgrade-io-failed", error.to_string()))
+                    }
+                    Err(_) => Some(ProtocolError::timeout("upgrade-idle-timeout")),
+                },
+                Err(error) => Some(error),
             };
             if let Some(error) = &result {
                 observation.reason = Some(error.code.to_string());
@@ -647,6 +711,22 @@ where
                     .map_or(crate::StreamTerminal::Complete, terminal_for_error),
             );
             break result;
+        }
+        let response_is_sse = is_sse(&response.headers);
+        let response_is_encoded = header(&response.headers, "content-encoding").is_some();
+        if response_is_sse && response_is_encoded {
+            crate::application::emit(
+                &context.application_sink,
+                ApplicationEvent::now(
+                    context.session_id,
+                    context.connection_id,
+                    Some(ordinal),
+                    Some(ProtocolVersion::Http11),
+                    ApplicationEventKind::Streaming(crate::StreamingEvent::SseTerminal {
+                        outcome: crate::StreamingOutcome::UnsupportedCompression,
+                    }),
+                ),
+            );
         }
         let mut response_body = BodyEmitter {
             sink: context.application_sink.clone(),
@@ -666,6 +746,14 @@ where
             capture_payloads: limits.capture_payloads,
             body_resources: context.body_resources.clone(),
             session_retention_limit: limits.max_session_body_bytes,
+            sse: if !response_is_encoded && response_is_sse {
+                Some(crate::SseObserver::new(
+                    limits.max_sse_line_bytes,
+                    limits.max_sse_event_bytes,
+                ))
+            } else {
+                None
+            },
         };
         let body_result = relay_body(
             &mut upstream,
@@ -724,6 +812,246 @@ fn terminal_for_error(error: &ProtocolError) -> crate::StreamTerminal {
         crate::StreamTerminal::TransportError
     } else {
         crate::StreamTerminal::ProtocolError
+    }
+}
+
+fn is_sse(headers: &[(String, Vec<u8>)]) -> bool {
+    header(headers, "content-type")
+        .and_then(|value| value.split(|byte| *byte == b';').next())
+        .is_some_and(|value| {
+            value
+                .trim_ascii()
+                .eq_ignore_ascii_case(b"text/event-stream")
+        })
+}
+
+fn websocket_mode(
+    request: &RequestHead,
+    response: &ResponseHead,
+) -> Result<Option<WebSocketMode>, ProtocolError> {
+    if !header(request.headers.as_slice(), "upgrade")
+        .is_some_and(|value| value.eq_ignore_ascii_case(b"websocket"))
+    {
+        return Ok(None);
+    }
+    if request.method != "GET" || request.version != 1 {
+        return Err(ProtocolError::new(
+            "websocket-handshake-invalid",
+            "WebSocket upgrade requires GET over HTTP/1.1",
+        ));
+    }
+    let versions = header_values(&request.headers, "sec-websocket-version");
+    let keys = header_values(&request.headers, "sec-websocket-key");
+    let accepts = header_values(&response.headers, "sec-websocket-accept");
+    if versions.as_slice() != [b"13".as_slice()] || keys.len() != 1 || accepts.len() != 1 {
+        return Err(ProtocolError::new(
+            "websocket-handshake-invalid",
+            "WebSocket version, key, and accept fields must be singular and valid",
+        ));
+    }
+    if !header(&response.headers, "upgrade")
+        .is_some_and(|value| value.eq_ignore_ascii_case(b"websocket"))
+    {
+        return Err(ProtocolError::new(
+            "websocket-handshake-invalid",
+            "origin did not select the WebSocket upgrade",
+        ));
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(keys[0])
+        .map_err(|_| ProtocolError::new("websocket-key-invalid", "WebSocket key is not base64"))?;
+    if decoded.len() != 16 {
+        return Err(ProtocolError::new(
+            "websocket-key-invalid",
+            "WebSocket key must decode to sixteen bytes",
+        ));
+    }
+    let mut challenge = keys[0].to_vec();
+    challenge.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let expected = base64::engine::general_purpose::STANDARD.encode(ring::digest::digest(
+        &ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
+        &challenge,
+    ));
+    if accepts[0] != expected.as_bytes() {
+        return Err(ProtocolError::new(
+            "websocket-accept-invalid",
+            "origin WebSocket accept proof does not match the client key",
+        ));
+    }
+    let offered = header_values(&request.headers, "sec-websocket-extensions")
+        .into_iter()
+        .any(extension_has_permessage_deflate);
+    let selected_values = header_values(&response.headers, "sec-websocket-extensions");
+    let selected = selected_values
+        .iter()
+        .copied()
+        .find(|value| extension_has_permessage_deflate(value));
+    if selected.is_some() && !offered {
+        return Err(ProtocolError::new(
+            "websocket-extension-invalid",
+            "origin selected permessage-deflate without a client offer",
+        ));
+    }
+    let selected = selected.unwrap_or_default();
+    Ok(Some(WebSocketMode {
+        compression: !selected.is_empty(),
+        client_no_context_takeover: extension_parameter(selected, b"client_no_context_takeover"),
+        server_no_context_takeover: extension_parameter(selected, b"server_no_context_takeover"),
+    }))
+}
+
+fn header_values<'a>(headers: &'a [(String, Vec<u8>)], name: &str) -> Vec<&'a [u8]> {
+    headers
+        .iter()
+        .filter(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_slice())
+        .collect()
+}
+
+fn extension_has_permessage_deflate(value: &[u8]) -> bool {
+    value.split(|byte| *byte == b',').any(|extension| {
+        extension
+            .split(|byte| *byte == b';')
+            .next()
+            .is_some_and(|name| {
+                name.trim_ascii()
+                    .eq_ignore_ascii_case(b"permessage-deflate")
+            })
+    })
+}
+
+fn extension_parameter(value: &[u8], expected: &[u8]) -> bool {
+    value
+        .split(|byte| matches!(byte, b';' | b','))
+        .any(|part| part.trim_ascii().eq_ignore_ascii_case(expected))
+}
+
+async fn relay_websocket<C, U>(
+    client: &mut C,
+    upstream: &mut U,
+    limits: &ProtocolLimits,
+    context: &ObservationContext<'_>,
+    stream_id: u64,
+    mode: WebSocketMode,
+) -> Result<(), ProtocolError>
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut request = crate::WebSocketObserver::new(
+        BodyDirection::Request,
+        true,
+        mode.compression,
+        limits.max_websocket_frame_bytes,
+        limits.max_websocket_message_bytes,
+    )
+    .with_no_context_takeover(mode.client_no_context_takeover);
+    let mut response = crate::WebSocketObserver::new(
+        BodyDirection::Response,
+        false,
+        mode.compression,
+        limits.max_websocket_frame_bytes,
+        limits.max_websocket_message_bytes,
+    )
+    .with_no_context_takeover(mode.server_no_context_takeover);
+    let mut client_open = true;
+    let mut upstream_open = true;
+    let mut client_buffer = vec![0; limits.max_event_chunk_bytes];
+    let mut upstream_buffer = vec![0; limits.max_event_chunk_bytes];
+    while client_open || upstream_open {
+        let step = timeout(limits.idle_timeout, async {
+            tokio::select! {
+                value = client.read(&mut client_buffer), if client_open => (true, value),
+                value = upstream.read(&mut upstream_buffer), if upstream_open => (false, value),
+            }
+        })
+        .await
+        .map_err(|_| ProtocolError::timeout("websocket-idle-timeout"))?;
+        let (from_client, read) = step;
+        let read =
+            read.map_err(|error| ProtocolError::new("websocket-read-failed", error.to_string()))?;
+        if read == 0 {
+            if from_client {
+                client_open = false;
+                upstream.shutdown().await.map_err(|error| {
+                    ProtocolError::new("websocket-shutdown-failed", error.to_string())
+                })?;
+            } else {
+                upstream_open = false;
+                client.shutdown().await.map_err(|error| {
+                    ProtocolError::new("websocket-shutdown-failed", error.to_string())
+                })?;
+            }
+            continue;
+        }
+        if from_client {
+            let bytes = &client_buffer[..read];
+            write_bounded(&mut *upstream, bytes, limits.idle_timeout).await?;
+            emit_http1_streaming(
+                context,
+                stream_id,
+                request.feed(bytes),
+                limits.capture_payloads,
+            );
+        } else {
+            let bytes = &upstream_buffer[..read];
+            write_bounded(&mut *client, bytes, limits.idle_timeout).await?;
+            emit_http1_streaming(
+                context,
+                stream_id,
+                response.feed(bytes),
+                limits.capture_payloads,
+            );
+        }
+    }
+    emit_http1_streaming(
+        context,
+        stream_id,
+        vec![request.finish(crate::StreamingOutcome::Complete)],
+        limits.capture_payloads,
+    );
+    emit_http1_streaming(
+        context,
+        stream_id,
+        vec![response.finish(crate::StreamingOutcome::Complete)],
+        limits.capture_payloads,
+    );
+    Ok(())
+}
+
+fn emit_http1_streaming(
+    context: &ObservationContext<'_>,
+    stream_id: u64,
+    mut events: Vec<crate::StreamingEvent>,
+    capture_payloads: bool,
+) {
+    if !capture_payloads {
+        for event in &mut events {
+            match event {
+                crate::StreamingEvent::WebSocketFrame(value) => {
+                    value.wire_payload.clear();
+                    value.close_reason.clear();
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
+                crate::StreamingEvent::WebSocketMessage(value) => {
+                    value.payload.clear();
+                    value.outcome = crate::StreamingOutcome::IntentionallyOmitted;
+                }
+                _ => {}
+            }
+        }
+    }
+    for event in events {
+        crate::application::emit(
+            &context.application_sink,
+            ApplicationEvent::now(
+                context.session_id,
+                context.connection_id,
+                Some(stream_id),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Streaming(event),
+            ),
+        );
     }
 }
 
@@ -1335,4 +1663,52 @@ fn emit_response_metadata(
             ),
         ),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_handshake_requires_matching_accept_proof() {
+        let limits = ProtocolLimits::default();
+        let request = parse_request(
+            b"GET http://example.test/chat HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover\r\n\r\n",
+            &limits,
+        )
+        .expect("valid request");
+        let response = parse_response(
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover\r\n\r\n",
+            &limits,
+            "GET",
+        )
+        .expect("valid response");
+        let mode = websocket_mode(&request, &response)
+            .expect("verified handshake")
+            .expect("websocket selected");
+        assert!(mode.compression);
+        assert!(mode.client_no_context_takeover);
+    }
+
+    #[test]
+    fn websocket_handshake_rejects_wrong_accept_proof() {
+        let limits = ProtocolLimits::default();
+        let request = parse_request(
+            b"GET http://example.test/chat HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            &limits,
+        )
+        .expect("valid request");
+        let response = parse_response(
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: wrong\r\n\r\n",
+            &limits,
+            "GET",
+        )
+        .expect("parse response");
+        assert_eq!(
+            websocket_mode(&request, &response)
+                .expect_err("accept proof must fail")
+                .code,
+            "websocket-accept-invalid"
+        );
+    }
 }

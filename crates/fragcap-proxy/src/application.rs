@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{BodySegment, MetadataBlock, ProtocolVersion, TlsNegotiation, Transformation};
+use crate::{
+    BodySegment, MetadataBlock, ProtocolVersion, StreamingEvent, TlsNegotiation, Transformation,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamTerminal {
@@ -31,6 +33,7 @@ pub enum ApplicationEventKind {
     Metadata(MetadataBlock),
     Body(BodySegment),
     Transformation(Transformation),
+    Streaming(StreamingEvent),
     Error { code: &'static str },
 }
 
@@ -80,6 +83,7 @@ pub struct ApplicationSinkAccounting {
     pub accepted_events: u64,
     pub dropped_events: u64,
     pub body_bytes_queue_dropped: u64,
+    pub streaming_bytes_queue_dropped: u64,
 }
 
 pub trait ApplicationEventSink: Send + Sync {

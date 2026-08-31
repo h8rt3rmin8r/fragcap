@@ -17,6 +17,7 @@ tokio.workspace = true
 bytes.workspace = true
 h2.workspace = true
 async-compression.workspace = true
+flate2.workspace = true
 
 # Selected and compiled as one reviewed protocol stack in S102. Protocol use is
 # deliberately deferred: this slice proves bounded runtime ownership without
