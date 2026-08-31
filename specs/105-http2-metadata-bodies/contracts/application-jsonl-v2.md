@@ -30,7 +30,7 @@ Binary field names, values, and payload bytes use standard Base64 with an explic
 
 ## Trailer reconciliation
 
-The trailer contains record counts by family, total observed, retained, and retention-truncated body bytes, accepted and written records, serialized event bytes, queue or retirement drops, writer failures, and writer status. A preceding `application.gap` carries any dropped-record count. Per-body omission, decoding, cancellation, and storage outcomes remain on their typed evidence records. Readers classify the stream complete only when the trailer, gap, sequence, session, and recomputed record counts agree.
+The trailer contains record counts by family, total observed, retained, retention-truncated, queue-dropped observed, and queue-dropped retained body bytes, accepted and written records, serialized event bytes, queue or retirement drops, writer failures, and writer status. A preceding `application.gap` carries the dropped-record count plus per-connection, per-stream, direction, and representation summaries for body records lost to queue pressure. Per-body omission, decoding, cancellation, and storage outcomes remain on their typed evidence records. Readers classify the stream complete only when the trailer, gap, sequence, session, and recomputed record counts agree.
 
 ## Compatibility
 

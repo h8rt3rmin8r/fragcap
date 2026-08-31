@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fragcap_proxy::{
-    ApplicationEvent, ApplicationEventKind, ApplicationEventSink, BodyRepresentation,
-    DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig,
+    ApplicationEvent, ApplicationEventKind, ApplicationEventSink, BodyDirection, BodyOutcome,
+    BodyRepresentation, DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig,
+    ProtocolLimits, StreamTerminal,
 };
 
 #[derive(Default)]
@@ -382,4 +383,121 @@ fn accepted_upgrade_relays_bidirectionally_and_observes_half_close() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.failed_connections, 0);
     assert_eq!(report.observation.protocol.responses, 1);
+}
+
+#[test]
+fn session_body_retention_is_shared_across_http1_connections() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = origin.accept().unwrap();
+            let _ = read_head(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n12345678",
+                )
+                .unwrap();
+        }
+    });
+    let limits = ProtocolLimits {
+        max_body_bytes: 8,
+        max_session_body_bytes: 10,
+        ..ProtocolLimits::default()
+    };
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s105-session-retention")
+    .unwrap()
+    .with_protocol_limits(limits);
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    for path in ["one", "two"] {
+        let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+        let auth = lease.capability_proof().proxy_authorization();
+        write!(client, "GET http://{address}/{path} HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nConnection: close\r\n\r\n", auth.as_str()).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        assert!(response.ends_with(b"12345678"));
+    }
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean(), "{report:?}");
+    let events = collector.0.lock().unwrap();
+    let response_bodies: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ApplicationEventKind::Body(segment)
+                if segment.direction == BodyDirection::Response
+                    && segment.representation == BodyRepresentation::Raw
+                    && segment.observed_len > 0 =>
+            {
+                Some(segment)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(response_bodies.len(), 2);
+    assert_eq!(
+        response_bodies
+            .iter()
+            .map(|body| body.observed_len)
+            .sum::<u64>(),
+        16
+    );
+    assert_eq!(
+        response_bodies
+            .iter()
+            .map(|body| body.bytes.len())
+            .sum::<usize>(),
+        10
+    );
+    assert_eq!(response_bodies[1].outcome, BodyOutcome::RetentionLimit);
+}
+
+#[test]
+fn failed_http1_response_body_emits_body_and_stream_terminals() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let _ = read_head(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabc")
+            .unwrap();
+    });
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with_sink(address, Some(collector.clone()));
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    let auth = lease.capability_proof().proxy_authorization();
+    write!(client, "GET http://{address}/partial HTTP/1.1\r\nHost: {address}\r\nProxy-Authorization: {}\r\nConnection: close\r\n\r\n", auth.as_str()).unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    assert!(response.ends_with(b"abc"));
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.failed_connections, 1);
+    let events = collector.0.lock().unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        ApplicationEventKind::Body(segment)
+            if segment.direction == BodyDirection::Response
+                && segment.outcome == BodyOutcome::Partial
+                && segment.observed_len == 0
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        ApplicationEventKind::HttpStreamTerminal(StreamTerminal::TransportError)
+    )));
 }

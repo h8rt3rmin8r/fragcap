@@ -75,8 +75,19 @@ pub enum EventDisposition {
     Retired,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ApplicationSinkAccounting {
+    pub accepted_events: u64,
+    pub dropped_events: u64,
+    pub body_bytes_queue_dropped: u64,
+}
+
 pub trait ApplicationEventSink: Send + Sync {
     fn try_emit(&self, event: ApplicationEvent) -> EventDisposition;
+
+    fn accounting(&self) -> ApplicationSinkAccounting {
+        ApplicationSinkAccounting::default()
+    }
 }
 
 pub(crate) type SharedEventSink = Option<Arc<dyn ApplicationEventSink>>;

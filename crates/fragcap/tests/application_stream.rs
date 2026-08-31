@@ -141,9 +141,8 @@ fn queue_pressure_is_a_gap_and_scope_omission_retains_no_payload() {
     let path = temp.path().join("application.jsonl");
     let mut lease = ApplicationArtifactLease::open(&path, "session-pressure", 1).unwrap();
     let sink = lease.sink();
-    let mut queue_full = 0_u64;
-    for _ in 0..10_000 {
-        let disposition = sink.try_emit(ApplicationEvent::now(
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
             "session-pressure",
             1,
             Some(1),
@@ -156,12 +155,33 @@ fn queue_pressure_is_a_gap_and_scope_omission_retains_no_payload() {
                 bytes: Bytes::new(),
                 outcome: BodyOutcome::IntentionallyOmitted,
             }),
+        )),
+        fragcap_proxy::EventDisposition::Accepted
+    );
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut queue_full = 0_u64;
+    for _ in 0..10_000 {
+        let disposition = sink.try_emit(ApplicationEvent::now(
+            "session-pressure",
+            1,
+            Some(1),
+            Some(ProtocolVersion::Http11),
+            ApplicationEventKind::Body(BodySegment {
+                direction: BodyDirection::Response,
+                representation: BodyRepresentation::Raw,
+                offset: 0,
+                observed_len: 8,
+                bytes: Bytes::from_static(b"retained"),
+                outcome: BodyOutcome::Complete,
+            }),
         ));
         if disposition == fragcap_proxy::EventDisposition::QueueFull {
             queue_full += 1;
         }
     }
     assert!(queue_full > 0);
+    let sink_accounting = sink.accounting();
+    assert_eq!(sink_accounting.body_bytes_queue_dropped, queue_full * 8);
     drop(sink);
     lease.finish().unwrap();
     let complete = read_application_prefix(&path).unwrap();
@@ -172,11 +192,35 @@ fn queue_pressure_is_a_gap_and_scope_omission_retains_no_payload() {
         .find(|record| record["type"] == "application.gap")
         .unwrap();
     assert_eq!(gap["dropped_records"].as_u64(), Some(queue_full));
-    for body in complete
+    assert_eq!(
+        gap["body_bytes_queue_dropped"].as_u64(),
+        Some(queue_full * 8)
+    );
+    assert_eq!(
+        gap["body_retained_bytes_queue_dropped"].as_u64(),
+        Some(queue_full * 8)
+    );
+    let body_loss = &gap["body_losses"][0];
+    assert_eq!(body_loss["proxy_connection_id"], 1);
+    assert_eq!(body_loss["http_stream_id"], 1);
+    assert_eq!(body_loss["direction"], "response");
+    assert_eq!(body_loss["representation"], "raw");
+    assert_eq!(body_loss["outcome"], "queue-dropped");
+    assert_eq!(body_loss["dropped_records"].as_u64(), Some(queue_full));
+    let trailer = complete.records.last().unwrap();
+    assert_eq!(
+        trailer["body_bytes_queue_dropped"].as_u64(),
+        Some(queue_full * 8)
+    );
+    let omitted: Vec<_> = complete
         .records
         .iter()
-        .filter(|record| record["type"] == "http.body_segment")
-    {
+        .filter(|record| {
+            record["type"] == "http.body_segment" && record["outcome"] == "intentionally-omitted"
+        })
+        .collect();
+    assert_eq!(omitted.len(), 1);
+    for body in omitted {
         assert_eq!(body["outcome"], "intentionally-omitted");
         assert!(body.get("payload").is_none());
     }

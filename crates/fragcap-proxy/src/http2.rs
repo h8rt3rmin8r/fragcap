@@ -2,7 +2,7 @@
 
 //! Bounded HTTP/2 bridge.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -25,6 +25,14 @@ use crate::{
 pub(crate) struct Http2Run {
     pub accounting: ProtocolAccounting,
     pub failure: Option<ProtocolError>,
+}
+
+pub(crate) struct Http2ConnectionContext {
+    pub limits: ProtocolLimits,
+    pub session_id: String,
+    pub connection_id: u64,
+    pub sink: SharedEventSink,
+    pub body_resources: crate::body::SessionBodyResources,
 }
 
 struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
@@ -67,15 +75,22 @@ struct BodyPumpContext {
 pub(crate) async fn serve_http2<C, U>(
     client: C,
     upstream: U,
-    limits: ProtocolLimits,
-    session_id: String,
-    connection_id: u64,
-    sink: SharedEventSink,
+    authority: DestinationAuthority,
+    context: Http2ConnectionContext,
 ) -> Http2Run
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let Http2ConnectionContext {
+        limits,
+        session_id,
+        connection_id,
+        sink,
+        body_resources,
+    } = context;
+    let session_retained = body_resources.retained;
+    let decoder_slots = body_resources.decoder_slots;
     let mut server_builder = h2::server::Builder::new();
     server_builder
         .max_concurrent_streams(limits.max_concurrent_streams as u32)
@@ -123,19 +138,31 @@ where
     let origin_driver = AbortOnDrop(tokio::spawn(origin_connection));
     let mut tasks = JoinSet::new();
     let mut accounting = ProtocolAccounting::default();
-    let session_retained = Arc::new(AtomicU64::new(0));
-    let decoder_slots = Arc::new(Semaphore::new(limits.max_concurrent_decoders));
-    while let Some(accepted) = match timeout(limits.idle_timeout, client_connection.accept()).await
-    {
-        Ok(value) => value,
-        Err(_) => {
-            return Http2Run {
-                accounting,
-                failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
+    loop {
+        let accepted = if tasks.is_empty() {
+            match timeout(limits.idle_timeout, client_connection.accept()).await {
+                Ok(value) => value,
+                Err(_) => {
+                    return Http2Run {
+                        accounting,
+                        failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
+                    }
+                }
             }
-        }
-    } {
-        let (request, respond) = match accepted {
+        } else {
+            tokio::select! {
+                biased;
+                joined = tasks.join_next() => {
+                    if let Some(joined) = joined {
+                        account_stream_result(&mut accounting, joined);
+                    }
+                    continue;
+                }
+                accepted = client_connection.accept() => accepted,
+            }
+        };
+        let Some(accepted) = accepted else { break };
+        let (request, mut respond) = match accepted {
             Ok(value) => value,
             Err(error) => {
                 return Http2Run {
@@ -144,9 +171,34 @@ where
                 }
             }
         };
+        let stream_id = request.body().stream_id().as_u32() as u64;
+        if let Err(error) = validate_tunnel_authority(&request, &authority) {
+            respond.send_reset(h2::Reason::REFUSED_STREAM);
+            accounting.parse_refused = accounting.parse_refused.saturating_add(1);
+            emit(
+                &sink,
+                ApplicationEvent::now(
+                    &session_id,
+                    connection_id,
+                    Some(stream_id),
+                    Some(ProtocolVersion::Http2),
+                    ApplicationEventKind::Error { code: error.code },
+                ),
+            );
+            emit(
+                &sink,
+                ApplicationEvent::now(
+                    &session_id,
+                    connection_id,
+                    Some(stream_id),
+                    Some(ProtocolVersion::Http2),
+                    ApplicationEventKind::HttpStreamTerminal(StreamTerminal::Refused),
+                ),
+            );
+            continue;
+        }
         accounting.requests = accounting.requests.saturating_add(1);
         accounting.http2_streams = accounting.http2_streams.saturating_add(1);
-        let stream_id = request.body().stream_id().as_u32() as u64;
         let sender = origin_sender.clone();
         let task_limits = limits.clone();
         let task_sink = sink.clone();
@@ -188,14 +240,20 @@ pub(crate) async fn serve_cleartext_http2<C>(
     client: C,
     capability: SessionCapability,
     policy: DestinationPolicy,
-    limits: ProtocolLimits,
-    session_id: String,
-    connection_id: u64,
-    sink: SharedEventSink,
+    context: Http2ConnectionContext,
 ) -> Http2Run
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let Http2ConnectionContext {
+        limits,
+        session_id,
+        connection_id,
+        sink,
+        body_resources,
+    } = context;
+    let session_retained = body_resources.retained;
+    let decoder_slots = body_resources.decoder_slots;
     let mut server_builder = h2::server::Builder::new();
     configure_server(&mut server_builder, &limits);
     let mut client_connection =
@@ -265,23 +323,35 @@ where
         ),
     );
     let origin_driver = AbortOnDrop(tokio::spawn(origin_connection));
-    let session_retained = Arc::new(AtomicU64::new(0));
-    let decoder_slots = Arc::new(Semaphore::new(limits.max_concurrent_decoders));
     let mut tasks = JoinSet::new();
     let mut accounting = ProtocolAccounting::default();
     let mut accepted = Some((first, first_response));
     loop {
         let next = match accepted.take() {
             Some(value) => Some(Ok(value)),
-            None => match timeout(limits.idle_timeout, client_connection.accept()).await {
-                Ok(value) => value,
-                Err(_) => {
-                    return Http2Run {
-                        accounting,
-                        failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
-                    };
+            None if tasks.is_empty() => {
+                match timeout(limits.idle_timeout, client_connection.accept()).await {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return Http2Run {
+                            accounting,
+                            failure: Some(ProtocolError::timeout("http2-connection-idle-timeout")),
+                        };
+                    }
                 }
-            },
+            }
+            None => {
+                tokio::select! {
+                    biased;
+                    joined = tasks.join_next() => {
+                        if let Some(joined) = joined {
+                            account_stream_result(&mut accounting, joined);
+                        }
+                        continue;
+                    }
+                    accepted = client_connection.accept() => accepted,
+                }
+            }
         };
         let Some(next) = next else { break };
         let (request, mut respond) = match next {
@@ -338,6 +408,27 @@ where
         accounting,
         failure: None,
     }
+}
+
+fn validate_tunnel_authority(
+    request: &hyper::Request<RecvStream>,
+    expected: &DestinationAuthority,
+) -> Result<(), ProtocolError> {
+    let raw = request.uri().authority().ok_or_else(|| {
+        ProtocolError::new(
+            "http2-authority-required",
+            "tunneled HTTP/2 request has no authority",
+        )
+    })?;
+    let observed = DestinationAuthority::parse(raw.as_str())
+        .map_err(|error| ProtocolError::new(error.code, error.detail))?;
+    if &observed != expected {
+        return Err(ProtocolError::new(
+            "http2-tunnel-authority-mismatch",
+            "HTTP/2 request authority differs from CONNECT authority",
+        ));
+    }
+    Ok(())
 }
 
 fn authenticate_cleartext_request(
@@ -604,7 +695,7 @@ async fn pump_body(
         let chunk = chunk.map_err(|error| h2_error("http2-body-read-failed", error))?;
         let remaining = retention_limit.saturating_sub(retained);
         let keep = if capture_payloads {
-            claim_retention(
+            crate::body::claim_retention(
                 &session_retained,
                 session_retention_limit,
                 (chunk.len() as u64).min(remaining) as usize,
@@ -734,6 +825,11 @@ async fn pump_body(
             ),
         );
         if !decoded.is_empty() {
+            let keep = crate::body::claim_retention(
+                &session_retained,
+                session_retention_limit,
+                decoded.len(),
+            );
             emit(
                 &sink,
                 ApplicationEvent::now(
@@ -746,30 +842,18 @@ async fn pump_body(
                         representation: BodyRepresentation::ContentDecoded,
                         offset: 0,
                         observed_len: decoded.len() as u64,
-                        bytes: Bytes::from(decoded),
-                        outcome,
+                        bytes: Bytes::copy_from_slice(&decoded[..keep]),
+                        outcome: if keep == decoded.len() {
+                            outcome
+                        } else {
+                            BodyOutcome::RetentionLimit
+                        },
                     }),
                 ),
             );
         }
     }
     Ok(())
-}
-
-fn claim_retention(counter: &AtomicU64, limit: u64, requested: usize) -> usize {
-    let mut current = counter.load(Ordering::Relaxed);
-    loop {
-        let granted = requested.min(limit.saturating_sub(current) as usize);
-        match counter.compare_exchange_weak(
-            current,
-            current.saturating_add(granted as u64),
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return granted,
-            Err(observed) => current = observed,
-        }
-    }
 }
 
 fn content_encoding(headers: &hyper::HeaderMap) -> Option<String> {

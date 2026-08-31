@@ -3,10 +3,13 @@
 //! Bounded body evidence and derived content decoding.
 
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder, ZlibDecoder};
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +56,37 @@ pub struct Transformation {
     pub input_bytes: u64,
     pub output_bytes: u64,
     pub outcome: BodyOutcome,
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionBodyResources {
+    pub retained: Arc<AtomicU64>,
+    pub decoder_slots: Arc<Semaphore>,
+}
+
+impl SessionBodyResources {
+    pub fn new(max_concurrent_decoders: usize) -> Self {
+        Self {
+            retained: Arc::new(AtomicU64::new(0)),
+            decoder_slots: Arc::new(Semaphore::new(max_concurrent_decoders)),
+        }
+    }
+}
+
+pub(crate) fn claim_retention(counter: &AtomicU64, limit: u64, requested: usize) -> usize {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let granted = requested.min(limit.saturating_sub(current) as usize);
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_add(granted as u64),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return granted,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 pub async fn decode_content(

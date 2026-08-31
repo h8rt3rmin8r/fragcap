@@ -126,6 +126,7 @@ pub(crate) struct ObservationContext<'a> {
     pub proxy_local: SocketAddr,
     pub protocol: &'static str,
     pub application_sink: crate::application::SharedEventSink,
+    pub body_resources: crate::body::SessionBodyResources,
 }
 
 struct BodyEmitter {
@@ -136,23 +137,32 @@ struct BodyEmitter {
     direction: BodyDirection,
     offset: u64,
     retained: u64,
+    transfer_offset: u64,
+    transfer_retained: u64,
     limit: u64,
     content_input: Vec<u8>,
     content_encoding: Option<String>,
     capture_payloads: bool,
+    body_resources: crate::body::SessionBodyResources,
+    session_retention_limit: u64,
 }
 
 impl BodyEmitter {
     fn emit_content(&mut self, bytes: &[u8], transfer_decoded: bool) {
-        self.emit_raw(bytes);
+        let raw_retained = self.emit_raw(bytes);
         if !self.capture_payloads {
             return;
         }
-        let remaining = self.limit.saturating_sub(self.content_input.len() as u64);
-        let retained_len = (bytes.len() as u64).min(remaining) as usize;
-        let offset = self.content_input.len() as u64;
-        self.content_input.extend_from_slice(&bytes[..retained_len]);
         if transfer_decoded {
+            let remaining = self.limit.saturating_sub(self.transfer_retained);
+            let requested = (bytes.len() as u64).min(remaining) as usize;
+            let retained_len = crate::body::claim_retention(
+                &self.body_resources.retained,
+                self.session_retention_limit,
+                requested,
+            );
+            let offset = self.transfer_offset;
+            self.content_input.extend_from_slice(&bytes[..retained_len]);
             crate::application::emit(
                 &self.sink,
                 ApplicationEvent::now(
@@ -174,14 +184,22 @@ impl BodyEmitter {
                     }),
                 ),
             );
+            self.transfer_offset = self.transfer_offset.saturating_add(bytes.len() as u64);
+            self.transfer_retained = self.transfer_retained.saturating_add(retained_len as u64);
+        } else {
+            self.content_input.extend_from_slice(&bytes[..raw_retained]);
         }
     }
 
-    fn emit_raw(&mut self, bytes: &[u8]) {
+    fn emit_raw(&mut self, bytes: &[u8]) -> usize {
         let observed_len = bytes.len() as u64;
         let remaining = self.limit.saturating_sub(self.retained);
         let retained_len = if self.capture_payloads {
-            observed_len.min(remaining) as usize
+            crate::body::claim_retention(
+                &self.body_resources.retained,
+                self.session_retention_limit,
+                observed_len.min(remaining) as usize,
+            )
         } else {
             0
         };
@@ -209,6 +227,7 @@ impl BodyEmitter {
         crate::application::emit(&self.sink, event);
         self.offset = self.offset.saturating_add(observed_len);
         self.retained = self.retained.saturating_add(retained_len as u64);
+        retained_len
     }
 
     async fn finish(&self, limits: &ProtocolLimits) {
@@ -218,14 +237,34 @@ impl BodyEmitter {
         if !self.capture_payloads {
             return;
         }
-        let (decoded, transformation) = crate::decode_content(
-            encoding,
-            &self.content_input,
-            limits.max_decoded_body_bytes,
-            limits.max_decode_ratio,
+        let (decoded, transformation) = match timeout(
             limits.decode_timeout,
+            self.body_resources.decoder_slots.clone().acquire_owned(),
         )
-        .await;
+        .await
+        {
+            Ok(Ok(permit)) => {
+                let result = crate::decode_content(
+                    encoding,
+                    &self.content_input,
+                    limits.max_decoded_body_bytes,
+                    limits.max_decode_ratio,
+                    limits.decode_timeout,
+                )
+                .await;
+                drop(permit);
+                result
+            }
+            Ok(Err(_)) | Err(_) => (
+                Vec::new(),
+                crate::Transformation {
+                    encoding: encoding.clone(),
+                    input_bytes: self.content_input.len() as u64,
+                    output_bytes: 0,
+                    outcome: BodyOutcome::TimeLimit,
+                },
+            ),
+        };
         let outcome = transformation.outcome;
         crate::application::emit(
             &self.sink,
@@ -238,6 +277,11 @@ impl BodyEmitter {
             ),
         );
         if !decoded.is_empty() {
+            let retained_len = crate::body::claim_retention(
+                &self.body_resources.retained,
+                self.session_retention_limit,
+                decoded.len(),
+            );
             crate::application::emit(
                 &self.sink,
                 ApplicationEvent::now(
@@ -250,12 +294,43 @@ impl BodyEmitter {
                         representation: BodyRepresentation::ContentDecoded,
                         offset: 0,
                         observed_len: decoded.len() as u64,
-                        bytes: bytes::Bytes::from(decoded),
-                        outcome,
+                        bytes: bytes::Bytes::copy_from_slice(&decoded[..retained_len]),
+                        outcome: if retained_len == decoded.len() {
+                            outcome
+                        } else {
+                            BodyOutcome::RetentionLimit
+                        },
                     }),
                 ),
             );
         }
+    }
+
+    fn emit_failure(&self, error: &ProtocolError) {
+        let outcome = if error.timed_out {
+            BodyOutcome::TimeLimit
+        } else if error.code.contains("cancel") {
+            BodyOutcome::Cancelled
+        } else {
+            BodyOutcome::Partial
+        };
+        crate::application::emit(
+            &self.sink,
+            ApplicationEvent::now(
+                &self.session_id,
+                self.connection_id,
+                Some(self.stream_id),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Body(BodySegment {
+                    direction: self.direction,
+                    representation: BodyRepresentation::Raw,
+                    offset: self.offset,
+                    observed_len: 0,
+                    bytes: bytes::Bytes::new(),
+                    outcome,
+                }),
+            ),
+        );
     }
 
     fn emit_trailer(&self, line: &[u8]) {
@@ -416,12 +491,16 @@ where
             direction: BodyDirection::Request,
             offset: 0,
             retained: 0,
+            transfer_offset: 0,
+            transfer_retained: 0,
             limit: limits.max_body_bytes,
             content_input: Vec::new(),
             content_encoding: header(&request.headers, "content-encoding")
                 .and_then(|value| std::str::from_utf8(value).ok())
                 .map(ToOwned::to_owned),
             capture_payloads: limits.capture_payloads,
+            body_resources: context.body_resources.clone(),
+            session_retention_limit: limits.max_session_body_bytes,
         };
         let exchange = async {
             let mut upstream = BufReader::new(connect(request.authority.clone()).await?);
@@ -522,6 +601,8 @@ where
         let (mut upstream, response, force_close) = match exchange {
             Ok(value) => value,
             Err(error) => {
+                request_body.emit_failure(&error);
+                emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
                 observation.reason = Some(error.code.to_string());
                 observations.push(observation);
                 break Some(error);
@@ -558,6 +639,13 @@ where
                 observation.reason = Some(error.code.to_string());
             }
             observations.push(observation);
+            emit_http1_terminal(
+                &context,
+                ordinal,
+                result
+                    .as_ref()
+                    .map_or(crate::StreamTerminal::Complete, terminal_for_error),
+            );
             break result;
         }
         let mut response_body = BodyEmitter {
@@ -568,12 +656,16 @@ where
             direction: BodyDirection::Response,
             offset: 0,
             retained: 0,
+            transfer_offset: 0,
+            transfer_retained: 0,
             limit: limits.max_body_bytes,
             content_input: Vec::new(),
             content_encoding: header(&response.headers, "content-encoding")
                 .and_then(|value| std::str::from_utf8(value).ok())
                 .map(ToOwned::to_owned),
             capture_payloads: limits.capture_payloads,
+            body_resources: context.body_resources.clone(),
+            session_retention_limit: limits.max_session_body_bytes,
         };
         let body_result = relay_body(
             &mut upstream,
@@ -585,21 +677,14 @@ where
         .await;
         response_body.finish(limits).await;
         if let Err(error) = body_result {
+            response_body.emit_failure(&error);
+            emit_http1_terminal(&context, ordinal, terminal_for_error(&error));
             observation.reason = Some(error.code.to_string());
             observations.push(observation);
             break Some(error);
         }
         observations.push(observation);
-        crate::application::emit(
-            &context.application_sink,
-            ApplicationEvent::now(
-                context.session_id,
-                context.connection_id,
-                Some(ordinal),
-                Some(ProtocolVersion::Http11),
-                ApplicationEventKind::HttpStreamTerminal(crate::StreamTerminal::Complete),
-            ),
-        );
+        emit_http1_terminal(&context, ordinal, crate::StreamTerminal::Complete);
         if force_close
             || request.close
             || response.close
@@ -625,6 +710,38 @@ where
         accounting,
         failure,
     }
+}
+
+fn terminal_for_error(error: &ProtocolError) -> crate::StreamTerminal {
+    if error.timed_out {
+        crate::StreamTerminal::IdleTimeout
+    } else if error.code.contains("cancel") {
+        crate::StreamTerminal::Cancelled
+    } else if ["read", "write", "eof", "closed", "io"]
+        .into_iter()
+        .any(|part| error.code.contains(part))
+    {
+        crate::StreamTerminal::TransportError
+    } else {
+        crate::StreamTerminal::ProtocolError
+    }
+}
+
+fn emit_http1_terminal(
+    context: &ObservationContext<'_>,
+    ordinal: u64,
+    terminal: crate::StreamTerminal,
+) {
+    crate::application::emit(
+        &context.application_sink,
+        ApplicationEvent::now(
+            context.session_id,
+            context.connection_id,
+            Some(ordinal),
+            Some(ProtocolVersion::Http11),
+            ApplicationEventKind::HttpStreamTerminal(terminal),
+        ),
+    );
 }
 
 fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, ProtocolError> {
@@ -1084,7 +1201,7 @@ where
     loop {
         let line = read_line(reader, 8 * 1024, limits.idle_timeout).await?;
         write_bounded(writer, &line, limits.idle_timeout).await?;
-        observer.emit_raw(&line);
+        let _ = observer.emit_raw(&line);
         let text = std::str::from_utf8(&line[..line.len().saturating_sub(2)]).map_err(|_| {
             ProtocolError::new("http-chunk-size-invalid", "chunk size is not ASCII")
         })?;
@@ -1095,7 +1212,7 @@ where
                 let trailer =
                     read_line(reader, limits.max_header_bytes, limits.idle_timeout).await?;
                 write_bounded(writer, &trailer, limits.idle_timeout).await?;
-                observer.emit_raw(&trailer);
+                let _ = observer.emit_raw(&trailer);
                 if trailer == b"\r\n" {
                     return Ok(());
                 }
@@ -1111,7 +1228,7 @@ where
             ));
         }
         write_bounded(writer, &end, limits.idle_timeout).await?;
-        observer.emit_raw(&end);
+        let _ = observer.emit_raw(&end);
     }
 }
 

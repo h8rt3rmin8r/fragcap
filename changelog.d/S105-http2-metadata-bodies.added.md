@@ -14,4 +14,8 @@
 ### Fixed
 
 - HTTP/2 connection-driver tasks abort with their owning connection rather than detaching during forced shutdown.
-- Origin TLS verification still completes before CONNECT success while the client-facing handshake advertises only the exact application protocol selected by the verified origin.
+- CONNECT tunnels negotiate the client protocol first and offer exactly that ALPN to the verified origin, preserving HTTP/1.1-only clients against dual-protocol origins.
+- Tunneled HTTP/2 requests cannot address an authority other than the authenticated CONNECT destination.
+- Active HTTP/2 streams prevent the new-stream accept timer from terminating their connection, while each stream retains its own progress timeout.
+- HTTP/1.1 body failures now emit partial body evidence and an error-specific stream terminal.
+- Body retention and decoder limits are shared across the entire session, including HTTP/1.1, and queue-dropped body evidence retains byte and stream-level loss accounting.

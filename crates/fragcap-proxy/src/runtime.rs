@@ -17,7 +17,9 @@ use tokio::time::{timeout, Instant};
 use crate::http1::{
     read_authenticated_request, read_request, serve_http, HttpRun, ObservationContext,
 };
-use crate::tls::{accept_client_tls, client_server_config_for_alpn, connect_verified_tls};
+use crate::tls::{
+    accept_client_tls, client_server_config, connect_verified_tls, upstream_client_config_for_alpn,
+};
 use crate::{connect_upstream, ProtocolError};
 use crate::{
     CapabilityProof, DestinationPolicy, LeafCache, SessionCapability, SessionCertificateAuthority,
@@ -186,6 +188,9 @@ impl NativeProxyBackend {
             leaf_cache,
             tls_client_config,
             application_sink: self.application_sink.clone(),
+            body_resources: crate::body::SessionBodyResources::new(
+                self.config.protocol.max_concurrent_decoders,
+            ),
         };
         let worker = thread::Builder::new()
             .name("fragcap-native-proxy".to_string())
@@ -368,6 +373,7 @@ struct RuntimeServices {
     leaf_cache: Arc<Mutex<LeafCache>>,
     tls_client_config: Arc<rustls::ClientConfig>,
     application_sink: crate::application::SharedEventSink,
+    body_resources: crate::body::SessionBodyResources,
 }
 
 #[derive(Clone, Copy)]
@@ -399,10 +405,13 @@ async fn connection_task(
             stream,
             capability.clone(),
             policy.clone(),
-            config.protocol.clone(),
-            config.session_id.clone(),
-            connection_id,
-            services.application_sink.clone(),
+            crate::http2::Http2ConnectionContext {
+                limits: config.protocol.clone(),
+                session_id: config.session_id.clone(),
+                connection_id,
+                sink: services.application_sink.clone(),
+                body_resources: services.body_resources.clone(),
+            },
         )
         .await;
         if let Some(error) = run.failure.as_ref() {
@@ -487,69 +496,6 @@ async fn connection_task(
                 });
             }
         };
-        let upstream = match crate::upstream::connect_tls_over_upstream(
-            &authority,
-            upstream,
-            config.protocol.upstream,
-            Arc::clone(&services.tls_client_config),
-        )
-        .await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                let protocol = ProtocolError::new(error.code, error.detail);
-                return ConnectionOutcome::Failed(HttpRun {
-                    observations: vec![connect_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        &first,
-                        Some(protocol.code),
-                    )],
-                    accounting: crate::ProtocolAccounting {
-                        requests: 1,
-                        connect_requests: 1,
-                        ..Default::default()
-                    },
-                    failure: Some(protocol),
-                });
-            }
-        };
-        let selected_alpn = upstream
-            .alpn_protocol()
-            .unwrap_or_else(|| b"http/1.1".to_vec());
-        let selected_protocol = match crate::protocol::negotiated_protocol(Some(&selected_alpn)) {
-            Ok(protocol) => protocol,
-            Err(code) => {
-                return ConnectionOutcome::Failed(HttpRun {
-                    observations: vec![connect_observation(
-                        &config.session_id,
-                        connection_id,
-                        peer,
-                        local,
-                        &first,
-                        Some(code),
-                    )],
-                    accounting: crate::ProtocolAccounting {
-                        requests: 1,
-                        connect_requests: 1,
-                        upstream_tls_completed: 1,
-                        ..Default::default()
-                    },
-                    failure: Some(ProtocolError::new(
-                        code,
-                        "origin selected an unsupported application protocol",
-                    )),
-                });
-            }
-        };
-        let upstream_tls = tls_negotiation(
-            crate::TlsBoundary::Upstream,
-            &authority,
-            upstream.protocol_version(),
-            upstream.alpn_protocol(),
-        );
         if let Err(error) = stream
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
@@ -565,12 +511,7 @@ async fn connection_task(
         }
         let server_config = {
             let mut cache = services.leaf_cache.lock().await;
-            match client_server_config_for_alpn(
-                &authority,
-                &services.certificate_authority,
-                &mut cache,
-                selected_alpn.clone(),
-            ) {
+            match client_server_config(&authority, &services.certificate_authority, &mut cache) {
                 Ok(config) => config,
                 Err(error) => {
                     return ConnectionOutcome::Failed(HttpRun {
@@ -585,7 +526,6 @@ async fn connection_task(
                         accounting: crate::ProtocolAccounting {
                             requests: 1,
                             connect_requests: 1,
-                            upstream_tls_completed: 1,
                             ..Default::default()
                         },
                         failure: Some(error),
@@ -622,7 +562,6 @@ async fn connection_task(
                             requests: 1,
                             responses: 1,
                             connect_requests: 1,
-                            upstream_tls_completed: 1,
                             timed_out: u64::from(error.timed_out),
                             ..Default::default()
                         },
@@ -636,33 +575,73 @@ async fn connection_task(
             client_tls.get_ref().1.protocol_version(),
             client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec),
         );
-        crate::application::emit(
-            &services.application_sink,
-            crate::ApplicationEvent::now(
-                &config.session_id,
-                connection_id,
-                None,
-                None,
-                crate::ApplicationEventKind::TlsNegotiation(upstream_tls.clone()),
-            ),
-        );
-        crate::application::emit(
-            &services.application_sink,
-            crate::ApplicationEvent::now(
-                &config.session_id,
-                connection_id,
-                None,
-                None,
-                crate::ApplicationEventKind::TlsNegotiation(client_tls_facts.clone()),
-            ),
-        );
         let client_alpn = client_tls
             .get_ref()
             .1
             .alpn_protocol()
             .unwrap_or(b"http/1.1")
             .to_vec();
-        if client_alpn != selected_alpn {
+        let selected_protocol = match crate::protocol::negotiated_protocol(Some(&client_alpn)) {
+            Ok(protocol) => protocol,
+            Err(code) => {
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: vec![connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        Some(code),
+                    )],
+                    accounting: crate::ProtocolAccounting {
+                        requests: 1,
+                        connect_requests: 1,
+                        client_tls_completed: 1,
+                        ..Default::default()
+                    },
+                    failure: Some(ProtocolError::new(
+                        code,
+                        "client selected an unsupported application protocol",
+                    )),
+                });
+            }
+        };
+        let upstream_config =
+            upstream_client_config_for_alpn(&services.tls_client_config, client_alpn.clone());
+        let upstream = match crate::upstream::connect_tls_over_upstream(
+            &authority,
+            upstream,
+            config.protocol.upstream,
+            upstream_config,
+        )
+        .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                let protocol = ProtocolError::new(error.code, error.detail);
+                return ConnectionOutcome::Failed(HttpRun {
+                    observations: vec![connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        Some(protocol.code),
+                    )],
+                    accounting: crate::ProtocolAccounting {
+                        requests: 1,
+                        connect_requests: 1,
+                        client_tls_completed: 1,
+                        ..Default::default()
+                    },
+                    failure: Some(protocol),
+                });
+            }
+        };
+        let upstream_alpn = upstream
+            .alpn_protocol()
+            .unwrap_or_else(|| b"http/1.1".to_vec());
+        if client_alpn != upstream_alpn {
             return ConnectionOutcome::Failed(HttpRun {
                 observations: vec![connect_observation(
                     &config.session_id,
@@ -685,14 +664,44 @@ async fn connection_task(
                 )),
             });
         }
+        let upstream_tls = tls_negotiation(
+            crate::TlsBoundary::Upstream,
+            &authority,
+            upstream.protocol_version(),
+            upstream.alpn_protocol(),
+        );
+        crate::application::emit(
+            &services.application_sink,
+            crate::ApplicationEvent::now(
+                &config.session_id,
+                connection_id,
+                None,
+                None,
+                crate::ApplicationEventKind::TlsNegotiation(client_tls_facts.clone()),
+            ),
+        );
+        crate::application::emit(
+            &services.application_sink,
+            crate::ApplicationEvent::now(
+                &config.session_id,
+                connection_id,
+                None,
+                None,
+                crate::ApplicationEventKind::TlsNegotiation(upstream_tls.clone()),
+            ),
+        );
         if selected_protocol == crate::ProtocolVersion::Http2 {
             let h2 = crate::http2::serve_http2(
                 client_tls,
                 upstream,
-                config.protocol.clone(),
-                config.session_id.clone(),
-                connection_id,
-                services.application_sink.clone(),
+                authority.clone(),
+                crate::http2::Http2ConnectionContext {
+                    limits: config.protocol.clone(),
+                    session_id: config.session_id.clone(),
+                    connection_id,
+                    sink: services.application_sink.clone(),
+                    body_resources: services.body_resources.clone(),
+                },
             )
             .await;
             let mut run = HttpRun {
@@ -770,6 +779,8 @@ async fn connection_task(
         let mut first_upstream = Some(upstream);
         let limits = config.protocol.clone();
         let session_id = config.session_id.clone();
+        let tunnel_tls_client_config =
+            upstream_client_config_for_alpn(&services.tls_client_config, client_alpn);
         let mut run = serve_http(
             client_tls,
             inner,
@@ -782,6 +793,7 @@ async fn connection_task(
                 proxy_local: local,
                 protocol: "https",
                 application_sink: services.application_sink.clone(),
+                body_resources: services.body_resources.clone(),
             },
             false,
             |requested| {
@@ -789,7 +801,7 @@ async fn connection_task(
                 let expected = tunnel_authority.clone();
                 let policy = policy.clone();
                 let limits = limits.clone();
-                let tls_client_config = Arc::clone(&services.tls_client_config);
+                let tls_client_config = Arc::clone(&tunnel_tls_client_config);
                 async move {
                     if requested != expected {
                         return Err(ProtocolError::new(
@@ -854,6 +866,7 @@ async fn connection_task(
             proxy_local: local,
             protocol: "http",
             application_sink: services.application_sink.clone(),
+            body_resources: services.body_resources.clone(),
         },
         true,
         |authority| {
@@ -1014,6 +1027,7 @@ async fn run(
             command = commands.recv() => {
                 match command {
                     Some(Command::Observe(response)) => {
+                        sync_application_accounting(&mut observation, &services.application_sink);
                         let _ = response.send(observation.clone());
                     }
                     Some(Command::Stop { budget }) => {
@@ -1115,6 +1129,7 @@ async fn run(
     .await;
     observation.live_connections = 0;
     observation.state = LifecycleState::Stopped;
+    sync_application_accounting(&mut observation, &services.application_sink);
 
     let accounted = observation.completed_connections
         + observation.failed_connections
@@ -1134,6 +1149,18 @@ async fn run(
         listener_released: true,
         observation,
     }
+}
+
+fn sync_application_accounting(
+    observation: &mut RuntimeObservation,
+    sink: &crate::application::SharedEventSink,
+) {
+    let accounting = sink
+        .as_ref()
+        .map_or_else(Default::default, |sink| sink.accounting());
+    observation.protocol.application_events_accepted = accounting.accepted_events;
+    observation.protocol.application_events_dropped = accounting.dropped_events;
+    observation.protocol.body_bytes_queue_dropped = accounting.body_bytes_queue_dropped;
 }
 
 async fn drain_tasks(

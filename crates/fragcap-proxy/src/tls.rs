@@ -39,11 +39,10 @@ fn client_server_config_with_alpn(
     Ok(Arc::new(config))
 }
 
-pub(crate) fn client_server_config_for_alpn(
+pub(crate) fn client_server_config(
     authority: &DestinationAuthority,
     certificate_authority: &SessionCertificateAuthority,
     leaf_cache: &mut LeafCache,
-    alpn: Vec<u8>,
 ) -> Result<Arc<ServerConfig>, ProtocolError> {
     let identity = match authority.host() {
         AuthorityHost::Dns(name) => CertificateIdentity::Dns(name.clone()),
@@ -52,7 +51,19 @@ pub(crate) fn client_server_config_for_alpn(
     let leaf = leaf_cache
         .certificate_for(certificate_authority, identity, SystemTime::now())
         .map_err(|error| ProtocolError::new(error.code, error.detail))?;
-    client_server_config_with_alpn(Arc::clone(&leaf.certified_key), vec![alpn])
+    client_server_config_with_alpn(
+        Arc::clone(&leaf.certified_key),
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+    )
+}
+
+pub(crate) fn upstream_client_config_for_alpn(
+    base: &Arc<ClientConfig>,
+    alpn: Vec<u8>,
+) -> Arc<ClientConfig> {
+    let mut config = (**base).clone();
+    config.alpn_protocols = vec![alpn];
+    Arc::new(config)
 }
 
 pub(crate) async fn accept_client_tls(

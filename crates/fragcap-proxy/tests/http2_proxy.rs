@@ -6,7 +6,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use fragcap_proxy::{
     tls_client_config_with_roots, ApplicationEvent, ApplicationEventKind, ApplicationEventSink,
-    DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig,
+    DestinationPolicy, EventDisposition, NativeProxyBackend, NativeProxyConfig, ProtocolLimits,
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -84,8 +84,15 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
                         false,
                     )
                     .unwrap();
-                body.send_data(Bytes::from(index.to_string()), false)
-                    .unwrap();
+                if index == 10 {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    body.send_data(Bytes::from_static(b"1"), false).unwrap();
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    body.send_data(Bytes::from_static(b"0"), false).unwrap();
+                } else {
+                    body.send_data(Bytes::from(index.to_string()), false)
+                        .unwrap();
+                }
                 let mut trailers = hyper::HeaderMap::new();
                 trailers.insert("x-finished", index.to_string().parse().unwrap());
                 body.send_trailers(trailers).unwrap();
@@ -95,14 +102,23 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
                 break;
             }
         }
-        while let Some(result) = responses.join_next().await {
-            result.unwrap();
+        while !responses.is_empty() {
+            tokio::select! {
+                result = responses.join_next() => result.unwrap().unwrap(),
+                extra = connection.accept() => {
+                    assert!(extra.is_none(), "origin received an unexpected stream");
+                }
+            }
         }
         let _ = tokio::time::timeout(Duration::from_millis(100), connection.accept()).await;
         connection.graceful_shutdown();
         served
     });
 
+    let limits = ProtocolLimits {
+        idle_timeout: Duration::from_millis(200),
+        ..ProtocolLimits::default()
+    };
     let config = NativeProxyConfig::new(
         "127.0.0.1:0".parse().unwrap(),
         4,
@@ -111,7 +127,8 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
     )
     .unwrap()
     .with_session_id("s105-http2")
-    .unwrap();
+    .unwrap()
+    .with_protocol_limits(limits);
     let mut policy = DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin);
     let mut origin_roots = rustls::RootCertStore::empty();
@@ -162,6 +179,19 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
     let (sender, connection) = h2::client::handshake(tls).await.unwrap();
     let driver = tokio::spawn(connection);
     let mut responses = Vec::new();
+    let mut ready = sender.clone().ready().await.unwrap();
+    let mismatched = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("https://localhost:{}/outside", origin.port() + 1))
+        .body(())
+        .unwrap();
+    let (mismatched, _) = ready.send_request(mismatched, true).unwrap();
+    let mismatch = tokio::time::timeout(Duration::from_secs(3), mismatched)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(mismatch.is_reset());
+    assert_eq!(mismatch.reason(), Some(h2::Reason::REFUSED_STREAM));
     for index in 0..32 {
         let mut ready = sender.clone().ready().await.unwrap();
         let request = hyper::Request::builder()
@@ -184,9 +214,13 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()["x-fragcap-stream"], index.to_string());
         let mut body = response.into_body();
-        let data = body.data().await.unwrap().unwrap();
-        assert_eq!(data, Bytes::from(index.to_string()));
-        body.flow_control().release_capacity(data.len()).unwrap();
+        let mut data = Vec::new();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            body.flow_control().release_capacity(chunk.len()).unwrap();
+            data.extend_from_slice(&chunk);
+        }
+        assert_eq!(data, index.to_string().as_bytes());
         let trailers = body.trailers().await.unwrap().unwrap();
         assert_eq!(trailers["x-finished"], index.to_string());
     }
@@ -199,6 +233,7 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
     assert_eq!(report.observation.protocol.requests, 32);
     assert_eq!(report.observation.protocol.responses, 31);
     assert_eq!(report.observation.protocol.http2_streams_reset, 1);
+    assert_eq!(report.observation.protocol.parse_refused, 1);
     let events = collector.0.lock().unwrap();
     let opened = events
         .iter()
@@ -232,10 +267,20 @@ async fn multiplexes_thirty_two_streams_with_distinct_terminal_evidence() {
             )
         })
         .count();
+    let refused = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                ApplicationEventKind::HttpStreamTerminal(fragcap_proxy::StreamTerminal::Refused)
+            )
+        })
+        .count();
     assert_eq!((opened, completed, reset, trailers), (32, 31, 1, 31));
+    assert_eq!(refused, 1);
     let stream_ids: std::collections::BTreeSet<_> =
         events.iter().filter_map(|event| event.stream_id).collect();
-    assert_eq!(stream_ids.len(), 32);
+    assert_eq!(stream_ids.len(), 33);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

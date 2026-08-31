@@ -12,8 +12,8 @@ use std::thread::JoinHandle;
 
 use base64::Engine;
 use fragcap_proxy::{
-    ApplicationEvent, ApplicationEventKind, ApplicationEventSink, BodyOutcome, BodyRepresentation,
-    EventDisposition, MetadataOrdering, ProtocolVersion,
+    ApplicationEvent, ApplicationEventKind, ApplicationEventSink, ApplicationSinkAccounting,
+    BodyOutcome, BodyRepresentation, EventDisposition, MetadataOrdering, ProtocolVersion,
 };
 use serde_json::{json, Value};
 
@@ -40,6 +40,56 @@ struct WriterAccount {
     written: AtomicU64,
     serialized_bytes: AtomicU64,
     failures: AtomicU64,
+    body_bytes_queue_dropped: AtomicU64,
+    body_retained_bytes_queue_dropped: AtomicU64,
+    body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct BodyDropKey {
+    connection_id: u64,
+    stream_id: Option<u64>,
+    direction: &'static str,
+    representation: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BodyDropTotals {
+    records: u64,
+    observed_bytes: u64,
+    retained_bytes: u64,
+}
+
+impl WriterAccount {
+    fn record_queue_drop(&self, event: &ApplicationEvent) {
+        let ApplicationEventKind::Body(segment) = &event.kind else {
+            return;
+        };
+        self.body_bytes_queue_dropped
+            .fetch_add(segment.observed_len, Ordering::Relaxed);
+        self.body_retained_bytes_queue_dropped
+            .fetch_add(segment.bytes.len() as u64, Ordering::Relaxed);
+        let key = BodyDropKey {
+            connection_id: event.connection_id,
+            stream_id: event.stream_id,
+            direction: match segment.direction {
+                fragcap_proxy::BodyDirection::Request => "request",
+                fragcap_proxy::BodyDirection::Response => "response",
+            },
+            representation: match segment.representation {
+                BodyRepresentation::Raw => "raw",
+                BodyRepresentation::TransferDecoded => "transfer-decoded",
+                BodyRepresentation::ContentDecoded => "content-decoded",
+            },
+        };
+        let mut losses = self.body_queue_losses.lock().expect("body queue loss lock");
+        let totals = losses.entry(key).or_default();
+        totals.records = totals.records.saturating_add(1);
+        totals.observed_bytes = totals.observed_bytes.saturating_add(segment.observed_len);
+        totals.retained_bytes = totals
+            .retained_bytes
+            .saturating_add(segment.bytes.len() as u64);
+    }
 }
 
 struct ChannelSink {
@@ -64,7 +114,8 @@ impl ApplicationEventSink for ChannelSink {
                 self.account.accepted.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::Accepted
             }
-            Err(mpsc::TrySendError::Full(_)) => {
+            Err(mpsc::TrySendError::Full(event)) => {
+                self.account.record_queue_drop(&event);
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::QueueFull
             }
@@ -73,6 +124,17 @@ impl ApplicationEventSink for ChannelSink {
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::Retired
             }
+        }
+    }
+
+    fn accounting(&self) -> ApplicationSinkAccounting {
+        ApplicationSinkAccounting {
+            accepted_events: self.account.accepted.load(Ordering::Acquire),
+            dropped_events: self.account.dropped.load(Ordering::Acquire),
+            body_bytes_queue_dropped: self
+                .account
+                .body_bytes_queue_dropped
+                .load(Ordering::Acquire),
         }
     }
 }
@@ -228,6 +290,28 @@ fn writer_loop(
         }
     }
     let dropped = account.dropped.load(Ordering::Acquire);
+    let body_bytes_queue_dropped = account.body_bytes_queue_dropped.load(Ordering::Acquire);
+    let body_retained_bytes_queue_dropped = account
+        .body_retained_bytes_queue_dropped
+        .load(Ordering::Acquire);
+    let body_queue_losses = account
+        .body_queue_losses
+        .lock()
+        .expect("body queue loss lock")
+        .iter()
+        .map(|(key, totals)| {
+            json!({
+                "proxy_connection_id": key.connection_id,
+                "http_stream_id": key.stream_id,
+                "direction": key.direction,
+                "representation": key.representation,
+                "outcome": "queue-dropped",
+                "dropped_records": totals.records,
+                "observed_bytes": totals.observed_bytes,
+                "retained_bytes": totals.retained_bytes,
+            })
+        })
+        .collect::<Vec<_>>();
     if dropped > 0 {
         sequence = sequence.saturating_add(1);
         write_record(
@@ -239,7 +323,10 @@ fn writer_loop(
                 "sequence": sequence,
                 "event_time_ns": 0,
                 "dropped_records": dropped,
-                "reason": "event-queue-or-retired-writer"
+                "reason": "event-queue-or-retired-writer",
+                "body_bytes_queue_dropped": body_bytes_queue_dropped,
+                "body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped,
+                "body_losses": body_queue_losses,
             }),
         )?;
     }
@@ -262,6 +349,8 @@ fn writer_loop(
             ,"body_bytes_observed": body_observed
             ,"body_bytes_retained": body_retained
             ,"body_bytes_truncated": body_truncated
+            ,"body_bytes_queue_dropped": body_bytes_queue_dropped
+            ,"body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped
         }),
     )
 }
@@ -531,6 +620,8 @@ fn trailer_reconciles(records: &[Value]) -> bool {
     let mut body_observed = 0_u64;
     let mut body_retained = 0_u64;
     let mut body_truncated = 0_u64;
+    let mut body_queue_dropped = 0_u64;
+    let mut body_retained_queue_dropped = 0_u64;
     for record in records.iter().skip(1).take(records.len().saturating_sub(2)) {
         let Some(kind) = record.get("type").and_then(Value::as_str) else {
             return false;
@@ -539,6 +630,18 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             dropped = dropped.saturating_add(
                 record
                     .get("dropped_records")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            body_queue_dropped = body_queue_dropped.saturating_add(
+                record
+                    .get("body_bytes_queue_dropped")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            body_retained_queue_dropped = body_retained_queue_dropped.saturating_add(
+                record
+                    .get("body_retained_bytes_queue_dropped")
                     .and_then(Value::as_u64)
                     .unwrap_or(0),
             );
@@ -573,4 +676,12 @@ fn trailer_reconciles(records: &[Value]) -> bool {
         && trailer.get("body_bytes_observed").and_then(Value::as_u64) == Some(body_observed)
         && trailer.get("body_bytes_retained").and_then(Value::as_u64) == Some(body_retained)
         && trailer.get("body_bytes_truncated").and_then(Value::as_u64) == Some(body_truncated)
+        && trailer
+            .get("body_bytes_queue_dropped")
+            .and_then(Value::as_u64)
+            == Some(body_queue_dropped)
+        && trailer
+            .get("body_retained_bytes_queue_dropped")
+            .and_then(Value::as_u64)
+            == Some(body_retained_queue_dropped)
 }
