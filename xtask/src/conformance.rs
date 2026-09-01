@@ -274,7 +274,7 @@ fn parse_source_number(value: Option<&str>, index: usize, field: &str) -> Result
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("analyzer source contains odd-length packet hex".to_string());
     }
     value
