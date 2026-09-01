@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
@@ -32,21 +33,35 @@ pub struct ArtifactActionResult {
 }
 
 pub fn prepare_bundle(path: &Path) -> io::Result<()> {
+    prepare_protected_directory(path)?;
+    let journal = contained(path, Path::new(JOURNAL))?;
+    match journal.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_file() => protect_path(&journal, false)?,
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sensitive action journal is not a regular file",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut file = open_sensitive_file(&journal)?;
+            file.write_all(b"{\"version\":1,\"type\":\"header\"}\n")?;
+            file.sync_all()?;
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+fn prepare_protected_directory(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     protect_path(path, true)?;
-    let journal = path.join(JOURNAL);
-    if !journal.exists() {
-        let mut file = open_sensitive_file(&journal)?;
-        file.write_all(b"{\"version\":1,\"type\":\"header\"}\n")?;
-        file.sync_all()?;
-    }
     Ok(())
 }
 
 pub fn open_sensitive_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .read(true)
         .write(true)
         .open(path)?;
@@ -60,17 +75,19 @@ pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>>
     let paths = sensitive_paths(&manifest)?;
     let mut results = Vec::new();
     for relative in paths {
+        contained(bundle, &relative)?;
         append_journal(bundle, "delete", &relative, "intent", "pending")?;
         let full = contained(bundle, &relative)?;
-        let (status, reason) = if !full.exists() {
-            ("already-absent", "sensitive artifact was already absent")
-        } else if full.symlink_metadata()?.file_type().is_symlink() {
-            (
+        let (status, reason) = match full.symlink_metadata() {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ("already-absent", "sensitive artifact was already absent")
+            }
+            Err(error) => return Err(error),
+            Ok(metadata) if !metadata.file_type().is_file() => (
                 "failed",
-                "symbolic links are not eligible for sensitive cleanup",
-            )
-        } else {
-            match fs::remove_file(&full) {
+                "only regular files are eligible for sensitive cleanup",
+            ),
+            Ok(_) => match fs::remove_file(&full) {
                 Ok(()) => ("removed", "sensitive artifact removed"),
                 Err(error) => {
                     results.push(ArtifactActionResult {
@@ -81,7 +98,7 @@ pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>>
                     append_journal(bundle, "delete", &relative, "result", "failed")?;
                     continue;
                 }
-            }
+            },
         };
         append_journal(bundle, "delete", &relative, "result", status)?;
         results.push(ArtifactActionResult {
@@ -94,11 +111,23 @@ pub fn cleanup_sensitive(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>>
 }
 
 pub fn recover_sensitive_actions(bundle: &Path) -> io::Result<Vec<ArtifactActionResult>> {
-    let journal = bundle.join(JOURNAL);
-    if !journal.exists() {
-        return Ok(Vec::new());
-    }
-    if journal.metadata()?.len() > MAX_JOURNAL_BYTES {
+    let journal = match contained(bundle, Path::new(JOURNAL)) {
+        Ok(journal) => journal,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let metadata = match journal.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_file() => metadata,
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sensitive action journal is not a regular file",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if metadata.len() > MAX_JOURNAL_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "sensitive action journal exceeds limit",
@@ -133,21 +162,20 @@ pub fn recover_sensitive_actions(bundle: &Path) -> io::Result<Vec<ArtifactAction
     let mut results = Vec::new();
     for relative in pending {
         let full = contained(bundle, &relative)?;
-        let (status, reason) = if !full.exists() {
-            (
+        let (status, reason) = match full.symlink_metadata() {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (
                 "already-absent",
                 "pending sensitive artifact was already absent".into(),
-            )
-        } else if full.symlink_metadata()?.file_type().is_symlink() {
-            (
+            ),
+            Err(error) => return Err(error),
+            Ok(metadata) if !metadata.file_type().is_file() => (
                 "failed",
-                "symbolic links are not eligible for sensitive recovery".into(),
-            )
-        } else {
-            match fs::remove_file(&full) {
+                "only regular files are eligible for sensitive recovery".into(),
+            ),
+            Ok(_) => match fs::remove_file(&full) {
                 Ok(()) => ("removed", "recovered pending sensitive cleanup".into()),
                 Err(error) => ("failed", error.to_string()),
-            }
+            },
         };
         append_journal(bundle, "delete", &relative, "result", status)?;
         results.push(ArtifactActionResult {
@@ -160,13 +188,25 @@ pub fn recover_sensitive_actions(bundle: &Path) -> io::Result<Vec<ArtifactAction
 }
 
 pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBuf> {
-    if destination.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "share destination already exists",
-        ));
+    let destination = normalized_absolute(destination)?;
+    match destination.symlink_metadata() {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "share destination already exists",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     let source = source.canonicalize()?;
+    let resolved_destination = resolve_location(&destination)?;
+    if resolved_destination == source || resolved_destination.starts_with(&source) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "share destination must be outside the source bundle",
+        ));
+    }
     let manifest = read_manifest(&source)?;
     let parent = destination.parent().ok_or_else(|| {
         io::Error::new(
@@ -182,13 +222,17 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
             .and_then(|v| v.to_str())
             .unwrap_or("share")
     ));
-    if staging.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "share staging directory already exists",
-        ));
+    match staging.symlink_metadata() {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "share staging directory already exists",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    prepare_bundle(&staging)?;
+    prepare_protected_directory(&staging)?;
     let sensitive = sensitive_paths(&manifest)?;
     let mut included = Vec::new();
     let mut omitted = Vec::new();
@@ -233,7 +277,7 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
         file.write_all(&sharing)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&staging, destination)?;
+        fs::rename(&staging, &destination)?;
         Ok(())
     })();
     if result.is_err() {
@@ -273,7 +317,75 @@ fn sensitive_paths(manifest: &Value) -> io::Result<BTreeSet<PathBuf>> {
 
 fn contained(root: &Path, relative: &Path) -> io::Result<PathBuf> {
     validate_relative(relative)?;
-    Ok(root.join(relative))
+    let root = root.canonicalize()?;
+    let candidate = root.join(relative);
+    let resolved = resolve_location(&candidate)?;
+    if !resolved.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "artifact path resolves outside the bundle",
+        ));
+    }
+    Ok(candidate)
+}
+
+fn normalized_absolute(path: &Path) -> io::Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "share destination is empty",
+        ));
+    }
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "share destination must not contain a parent component",
+                ));
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn resolve_location(path: &Path) -> io::Result<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    let mut missing = Vec::<OsString>::new();
+    loop {
+        match ancestor.symlink_metadata() {
+            Ok(_) => {
+                let mut resolved = ancestor.canonicalize()?;
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let component = ancestor.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path has no existing ancestor")
+                })?;
+                missing.push(component.to_os_string());
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "path has no existing ancestor")
+                    })?
+                    .to_path_buf();
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn validate_relative(path: &Path) -> io::Result<()> {
@@ -297,8 +409,15 @@ fn append_journal(
     phase: &str,
     status: &str,
 ) -> io::Result<()> {
-    let journal = bundle.join(JOURNAL);
-    let current_bytes = journal.metadata().map(|m| m.len()).unwrap_or(0);
+    let journal = contained(bundle, Path::new(JOURNAL))?;
+    let metadata = journal.symlink_metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sensitive action journal is not a regular file",
+        ));
+    }
+    let current_bytes = metadata.len();
     if current_bytes > MAX_JOURNAL_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -420,6 +539,7 @@ mod tests {
         }
         assert!(!share.join("tls-keylog.log").exists());
         assert!(share.join("capture.fcapng").exists());
+        assert!(!share.join(JOURNAL).exists());
         let sharing: Value = serde_json::from_slice(&fs::read(sharing_manifest).unwrap()).unwrap();
         assert_eq!(sharing["status"], "complete");
         assert_eq!(sharing["included"].as_array().unwrap().len(), 1);
@@ -491,11 +611,134 @@ mod tests {
     }
 
     #[test]
+    fn linked_parent_escape_is_refused_before_cleanup_is_journaled() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        let outside = root.path().join("outside");
+        prepare_bundle(&bundle).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret"), b"outside").unwrap();
+        fs::write(
+            bundle.join("manifest.json"),
+            br#"{"artifacts":[{"path":"linked/secret","sensitivity":"sensitive"}]}"#,
+        )
+        .unwrap();
+        if let Err(error) = symlink_directory(&outside, &bundle.join("linked")) {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("could not create test directory link: {error}");
+        }
+        let journal_before = fs::read(bundle.join(JOURNAL)).unwrap();
+
+        assert_eq!(
+            cleanup_sensitive(&bundle).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(bundle.join(JOURNAL)).unwrap(), journal_before);
+        assert_eq!(fs::read(outside.join("secret")).unwrap(), b"outside");
+
+        append_journal(
+            &bundle,
+            "delete",
+            Path::new("linked/secret"),
+            "intent",
+            "pending",
+        )
+        .unwrap();
+        assert_eq!(
+            recover_sensitive_actions(&bundle).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(outside.join("secret")).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn share_destination_inside_source_is_refused_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        prepare_bundle(&bundle).unwrap();
+        fs::write(bundle.join("capture.fcapng"), b"ordinary").unwrap();
+        fs::write(
+            bundle.join("manifest.json"),
+            br#"{"artifacts":[{"path":"capture.fcapng","sensitivity":"ordinary"}]}"#,
+        )
+        .unwrap();
+        let journal_before = fs::read(bundle.join(JOURNAL)).unwrap();
+        let destination = bundle.join("share");
+
+        assert_eq!(
+            export_share_copy(&bundle, &destination).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!destination.exists());
+        assert_eq!(fs::read(bundle.join(JOURNAL)).unwrap(), journal_before);
+        assert_eq!(
+            fs::read(bundle.join("capture.fcapng")).unwrap(),
+            b"ordinary"
+        );
+    }
+
+    #[test]
+    fn linked_or_dangling_sensitive_files_and_journals_are_never_followed() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        let outside = root.path().join("outside.log");
+        prepare_bundle(&bundle).unwrap();
+        fs::write(&outside, b"outside").unwrap();
+        fs::write(
+            bundle.join("manifest.json"),
+            br#"{"artifacts":[{"path":"linked.log","sensitivity":"sensitive"}]}"#,
+        )
+        .unwrap();
+        if let Err(error) = symlink_file(&outside, &bundle.join("linked.log")) {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("could not create test file link: {error}");
+        }
+        let journal_before = fs::read(bundle.join(JOURNAL)).unwrap();
+        assert!(cleanup_sensitive(&bundle).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+        assert_eq!(fs::read(bundle.join(JOURNAL)).unwrap(), journal_before);
+
+        fs::remove_file(bundle.join("linked.log")).unwrap();
+        symlink_file(&root.path().join("absent"), &bundle.join("linked.log")).unwrap();
+        assert!(cleanup_sensitive(&bundle).is_err());
+        assert_eq!(fs::read(bundle.join(JOURNAL)).unwrap(), journal_before);
+
+        fs::remove_file(bundle.join(JOURNAL)).unwrap();
+        symlink_file(&outside, &bundle.join(JOURNAL)).unwrap();
+        assert!(prepare_bundle(&bundle).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    }
+
+    #[test]
     fn cleanup_of_an_unknown_bundle_leaves_no_directory_behind() {
         let root = tempfile::tempdir().unwrap();
         let missing = root.path().join("missing");
         assert!(cleanup_sensitive(&missing).is_err());
         assert!(!missing.exists());
+    }
+
+    #[cfg(unix)]
+    fn symlink_directory(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_directory(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
     }
 
     #[cfg(windows)]

@@ -47,6 +47,7 @@ fn export_is_a_separate_copy_with_an_exhaustive_manifest() {
     assert!(out.contains("sharing-manifest.json"));
     assert!(share.join("capture.fcapng").exists());
     assert!(!share.join("tls-keylog.log").exists());
+    assert!(!share.join(".sensitive-actions.jsonl").exists());
     assert_eq!(
         std::fs::read(bundle.join("tls-keylog.log")).unwrap(),
         before

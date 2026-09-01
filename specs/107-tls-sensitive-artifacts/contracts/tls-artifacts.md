@@ -25,10 +25,10 @@
 ## Sensitive artifacts
 
 - Bundle protection completes before the first writer or proxy starts.
-- Cleanup reads only normalized, contained, manifest-declared sensitive paths.
+- Cleanup resolves existing targets and ancestors beneath the canonical bundle root before journaling and again before deletion; linked escapes and non-regular targets are refused.
 - Each destructive action has a synced intent before its effect and a synced result after it.
 - Missing files are an idempotent success; unrelated ordinary evidence is never selected.
-- Sharing writes a sibling staging tree, excludes secret-adjacent roles, writes a complete transformation manifest, and publishes by rename.
+- Sharing refuses destinations that resolve to or beneath the source, writes a protected journal-free sibling staging tree, excludes secret-adjacent roles, writes a complete transformation manifest, and publishes by rename.
 - Source bundle bytes never change during sharing.
 
 ## Platform workflow
