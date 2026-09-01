@@ -650,15 +650,13 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
     ) -> Result<(), fragcap::deep_capture::StageFailure> {
         fragcap::deep_capture::prepare_bundle(&plan.bundle)
             .and_then(|()| {
-                fragcap::deep_capture::write_crash_prefix(&plan.bundle, &plan.session_id)
-            })
-            .and_then(|()| {
-                if let Some(root) =
-                    paths::deep_capture_session_dir().filter(|root| !plan.bundle.starts_with(root))
-                {
-                    crate::doctor::fix::register_custom_session_root(&root, &plan.bundle)?;
+                if let Some(root) = paths::deep_capture_session_dir() {
+                    crate::doctor::fix::register_session_owner(&root, &plan.bundle)?;
                 }
                 Ok(())
+            })
+            .and_then(|()| {
+                fragcap::deep_capture::write_crash_prefix(&plan.bundle, &plan.session_id)
             })
             .map_err(|error| {
                 fragcap::deep_capture::StageFailure::new(
