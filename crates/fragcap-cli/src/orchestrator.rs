@@ -531,6 +531,8 @@ enum DriverMsg {
     Packet(u32, Timestamp),
     /// A process start or exit the ETW watcher observed.
     Proc(ProcessEvent),
+    /// The ETW watcher ended, so process ownership can no longer be maintained.
+    WatcherLost,
 }
 
 /// One-shot authority gate for the title dispatch of an owned platform launch.
@@ -859,13 +861,7 @@ fn capture_live(
     };
     let event_forward = {
         let merged_tx = merged_tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(event) = rx.recv() {
-                if merged_tx.send(DriverMsg::Proc(event)).is_err() {
-                    break;
-                }
-            }
-        })
+        std::thread::spawn(move || forward_process_events(rx, merged_tx))
     };
     // The two forwarders hold the only remaining senders, so the merged channel
     // disconnects once both have ended.
@@ -997,6 +993,7 @@ fn drive_live(
                     gate_handle.close_at(event_at);
                 }
             }
+            Ok(DriverMsg::WatcherLost) => session.on_process_watcher_lost(),
             // Nothing arrived. Advance the clock so a duration bound can fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
             // Both forwarders ended: the pipeline is done and the watcher is
@@ -1047,6 +1044,16 @@ fn drive_live(
         }
     }
     display.resolve(emitter);
+}
+
+#[cfg(all(feature = "etw", windows))]
+fn forward_process_events(rx: Receiver<ProcessEvent>, merged_tx: mpsc::Sender<DriverMsg>) {
+    while let Ok(event) = rx.recv() {
+        if merged_tx.send(DriverMsg::Proc(event)).is_err() {
+            return;
+        }
+    }
+    let _ = merged_tx.send(DriverMsg::WatcherLost);
 }
 
 /// Everything the live status display needs across a run: which terminal
@@ -1479,8 +1486,22 @@ fn build_summary(
 #[cfg(test)]
 mod tests {
     use super::{final_exit, PlatformDispatchGate};
+    #[cfg(all(feature = "etw", windows))]
+    use super::{forward_process_events, DriverMsg};
     use fragcap::{StageId, StopReason};
     use std::sync::Arc;
+
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    fn process_forwarder_reports_watcher_loss_after_acquisition() {
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let (merged_tx, merged_rx) = std::sync::mpsc::channel();
+        drop(event_tx);
+
+        forward_process_events(event_rx, merged_tx);
+
+        assert!(matches!(merged_rx.recv(), Ok(DriverMsg::WatcherLost)));
+    }
 
     #[test]
     fn platform_dispatch_waits_for_the_exact_root_and_is_issued_once() {
