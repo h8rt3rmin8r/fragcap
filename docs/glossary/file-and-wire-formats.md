@@ -232,6 +232,10 @@ product version and declares one authority owner plus sensitivity, finalization,
 completeness, loss, and correlation for every artifact or omission. Version 1
 bundles remain read-only inputs.
 
+Native lifecycle bundles also carry `resource-journal.jsonl` as the synchronized
+ownership authority, `proxy.jsonl` and `cleanup.jsonl` as crash-readable
+chronologies, and `cleanup.json` as a derived compatibility summary.
+
 {: .matters }
 > Deep Capture should feel like an elevated Capture session, not a second
 > product. The bundle is what keeps decrypted application-layer observations,
@@ -242,6 +246,43 @@ bundles remain read-only inputs.
 [pcapng](file-and-wire-formats.md#pcapng),
 [JSON Lines](file-and-wire-formats.md#json-lines),
 [Proxy-owned TLS key-log export](file-and-wire-formats.md#proxy-owned-tls-key-log-export)
+
+## Resource journal
+
+A bounded append-only record of session-owned external resources and their
+state transitions, synchronized before and after each effect.
+
+Each transition names the resource kind, exact target, ownership evidence,
+recovery action, state, and sequence. A complete journal has a reconciling
+trailer. A crash prefix can be inspected or replayed only when its version,
+sequence, state transitions, and ownership evidence validate.
+
+{: .matters }
+> Recovery must never remove a resource merely because it resembles one fragcap
+> previously owned. Uncertain application and ambiguous ownership are recorded
+> refusals, not cleanup guesses.
+
+**See also:** [Session bundle](file-and-wire-formats.md#session-bundle),
+[Trailer record](file-and-wire-formats.md#trailer-record),
+[Deep Capture](capture-and-networking.md#deep-capture)
+
+## Lifecycle stream
+
+A versioned JSON Lines chronology with a header, ordered records, explicit gaps,
+and one reconciling trailer.
+
+Deep Capture uses lifecycle streams for native proxy operations and cleanup.
+Every complete record remains usable after interruption, while a missing trailer
+means the stream is incomplete. Bounded writer pressure is emitted as loss rather
+than inferred from missing records.
+
+{: .matters }
+> Machine consumers can reconcile listeners, connections, cleanup obligations,
+> attempts, and outcomes without parsing human log text.
+
+**See also:** [JSON Lines](file-and-wire-formats.md#json-lines),
+[Resource journal](file-and-wire-formats.md#resource-journal),
+[Trailer record](file-and-wire-formats.md#trailer-record)
 
 ## Proxy-owned TLS key-log export
 

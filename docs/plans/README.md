@@ -189,3 +189,11 @@ Any divergence from the specification discovered during implementation is
 recorded in the slice and promoted to specification section 29 at the next
 version. Silent divergence between the specification and the code is a defect
 in both.
+
+## Native completion follow-up
+
+S109 (`specs/109-lifecycle-authority`) follows S108 and closes #306, #320, and
+#336 as one dependency-ordered slice. It declares target-scoped routing before
+authorization, persists exact resource ownership before effects, and streams
+proxy and cleanup lifecycle evidence. Generic transports (#305) remain assigned
+to S110; broader doctor UX and the native completion gate remain later work.

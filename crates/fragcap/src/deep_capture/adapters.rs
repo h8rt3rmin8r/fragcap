@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 use super::{
     ArtifactResult, BackendDescriptor, Budget, CleanupResult, CompatibilityFact,
     CompatibilityObservation, DeepCaptureEvent, FactWriteStatus, LaunchCase, LoopbackEndpoint,
-    PreflightRefusal, PreparedCapture, PreparedTarget, SessionConfig, StageFailure,
+    PreflightRefusal, PreparedCapture, PreparedTarget, RoutingAdapter, SessionConfig, StageFailure,
     TerminalSnapshot,
 };
 
@@ -87,7 +87,7 @@ pub trait LaunchAdapter {
         &mut self,
         target: &PreparedTarget,
         launch_case: LaunchCase,
-        route: &ProxyRoute,
+        route: &super::AppliedRoute,
         budget: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure>;
 }
@@ -104,7 +104,7 @@ pub trait CaptureRunner {
     fn run(
         &mut self,
         prepared: &PreparedCapture,
-        route: &ProxyRoute,
+        route: &super::AppliedRoute,
         budget: Budget,
     ) -> Result<super::CaptureRunResult, StageFailure>;
 
@@ -200,6 +200,12 @@ pub trait ArtifactSink {
         Ok(())
     }
     fn finalize(&mut self, bundle: &Path, snapshot: &TerminalSnapshot) -> Vec<ArtifactResult>;
+    /// Refresh projections that depend on lifecycle authorities settled by
+    /// `finalize`. Implementations that do not derive such projections need no
+    /// second phase.
+    fn reconcile(&mut self, _bundle: &Path, _snapshot: &TerminalSnapshot) -> Vec<ArtifactResult> {
+        Vec::new()
+    }
 }
 
 /// Ordered typed event delivery. Presentation is outside this trait.
@@ -215,6 +221,7 @@ pub struct AdapterSet<'a> {
     pub identifiers: Box<dyn IdentifierSource + 'a>,
     pub proxy: Box<dyn ProxyBackend + 'a>,
     pub trust: Box<dyn TrustManager + 'a>,
+    pub routing: Box<dyn RoutingAdapter + 'a>,
     pub launch: Box<dyn LaunchAdapter + 'a>,
     pub capture: Box<dyn CaptureRunner + 'a>,
     pub facts: Box<dyn CompatibilityRepository + 'a>,

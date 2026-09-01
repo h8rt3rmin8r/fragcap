@@ -594,7 +594,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         .unwrap()
         .iter()
         .any(|resource| {
-            resource["resource"] == "manifest-state" && resource["status"] == "publication-ready"
+            resource["resource"] == "bundle-evidence" && resource["status"] == "retained"
         }));
 
     let pcap = std::fs::read(bundle.join("capture.fcapng")).unwrap();

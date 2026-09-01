@@ -8,6 +8,9 @@ correlation, and explicit omissions. Each published schema is byte-identical to
 its embedded copy; drift fails a workspace test.
 Committed complete, partial, crash-prefix, and legacy examples live under
 `examples/` and are parsed by the same versioned reader used for bundles.
+Manifest version 2 also distinguishes `proxy-lifecycle`,
+`cleanup-lifecycle`, `cleanup-summary`, and `resource-journal`; the summary is a
+derived projection whose authority source is `cleanup-lifecycle`.
 Emit the embedded copy with `fragcap schema print`, and validate any JSON file
 against it with `fragcap schema validate <file>`.
 

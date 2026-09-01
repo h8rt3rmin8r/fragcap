@@ -16,16 +16,21 @@ mod adapters;
 mod application;
 mod artifacts;
 mod har;
+mod journal;
+mod lifecycle;
 mod manifest;
 mod model;
 mod native;
 mod policy;
+mod routing;
 mod session;
 
 pub use adapters::*;
 pub use application::*;
 pub use artifacts::*;
 pub use har::*;
+pub use journal::*;
+pub use lifecycle::*;
 pub use manifest::*;
 pub use model::*;
 pub use native::{
@@ -39,4 +44,5 @@ pub use policy::{
     observation_proves_final_client_ca_acceptance, terminal_calibration_outcome,
     validate_compatibility_prerequisites,
 };
+pub use routing::*;
 pub use session::{DeepCapture, DeepCaptureSession, PreparedSession};

@@ -23,6 +23,10 @@ const SCHEMA_VERSION: u64 = 2;
 const MAX_CONNECTION_WINDOWS: usize = 65_536;
 #[cfg(test)]
 const MAX_CONNECTION_WINDOWS: usize = 8;
+#[cfg(not(test))]
+const MAX_BODY_QUEUE_LOSS_KEYS: usize = 4_096;
+#[cfg(test)]
+const MAX_BODY_QUEUE_LOSS_KEYS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationStreamStatus {
@@ -49,6 +53,9 @@ struct WriterAccount {
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
+    body_queue_loss_overflow_records: AtomicU64,
+    body_queue_loss_overflow_observed_bytes: AtomicU64,
+    body_queue_loss_overflow_retained_bytes: AtomicU64,
     connection_windows_unretained: AtomicU64,
     first_unretained_connection_id: AtomicU64,
 }
@@ -104,6 +111,15 @@ impl WriterAccount {
             },
         };
         let mut losses = self.body_queue_losses.lock().expect("body queue loss lock");
+        if !losses.contains_key(&key) && losses.len() >= MAX_BODY_QUEUE_LOSS_KEYS {
+            self.body_queue_loss_overflow_records
+                .fetch_add(1, Ordering::Relaxed);
+            self.body_queue_loss_overflow_observed_bytes
+                .fetch_add(segment.observed_len, Ordering::Relaxed);
+            self.body_queue_loss_overflow_retained_bytes
+                .fetch_add(segment.bytes.len() as u64, Ordering::Relaxed);
+            return;
+        }
         let totals = losses.entry(key).or_default();
         totals.records = totals.records.saturating_add(1);
         totals.observed_bytes = totals.observed_bytes.saturating_add(segment.observed_len);
@@ -477,6 +493,15 @@ fn writer_loop(
             })
         })
         .collect::<Vec<_>>();
+    let body_queue_loss_overflow_records = account
+        .body_queue_loss_overflow_records
+        .load(Ordering::Acquire);
+    let body_queue_loss_overflow_observed_bytes = account
+        .body_queue_loss_overflow_observed_bytes
+        .load(Ordering::Acquire);
+    let body_queue_loss_overflow_retained_bytes = account
+        .body_queue_loss_overflow_retained_bytes
+        .load(Ordering::Acquire);
     if dropped > 0 {
         sequence = sequence.saturating_add(1);
         write_record(
@@ -493,6 +518,12 @@ fn writer_loop(
                 "body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped,
                 "streaming_bytes_queue_dropped": streaming_bytes_queue_dropped,
                 "body_losses": body_queue_losses,
+                "body_loss_identity_overflow": {
+                    "dropped_records": body_queue_loss_overflow_records,
+                    "observed_bytes": body_queue_loss_overflow_observed_bytes,
+                    "retained_bytes": body_queue_loss_overflow_retained_bytes,
+                    "reason": "localized-body-loss-identity-bound",
+                },
             }),
         )?;
     }
@@ -517,6 +548,9 @@ fn writer_loop(
             ,"body_bytes_truncated": body_truncated
             ,"body_bytes_queue_dropped": body_bytes_queue_dropped
             ,"body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped
+            ,"body_loss_identity_overflow_records": body_queue_loss_overflow_records
+            ,"body_loss_identity_overflow_observed_bytes": body_queue_loss_overflow_observed_bytes
+            ,"body_loss_identity_overflow_retained_bytes": body_queue_loss_overflow_retained_bytes
             ,"streaming_bytes_queue_dropped": streaming_bytes_queue_dropped
             ,"streaming_bytes_observed": streaming_observed
             ,"streaming_bytes_retained": streaming_retained

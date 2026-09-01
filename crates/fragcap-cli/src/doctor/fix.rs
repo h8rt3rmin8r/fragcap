@@ -18,6 +18,15 @@
 //! hidden.
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 
 use super::action::{
     offered_actions, Action, ActionKind, ActionOutcome, Capabilities, ExtcapScope,
@@ -25,6 +34,10 @@ use super::action::{
 use super::{checks, probe, Report};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
+
+const SESSION_OWNER_REGISTRY: &str = "session-owners";
+const RECOVERY_LOCK: &str = "recovery.lock";
+static SESSION_OWNER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// A human confirmation for one action. Injected so the loop is driven by a
 /// scripted answer in tests. `true` performs the action; `false` skips it.
@@ -309,6 +322,13 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
     let mut removed = 0usize;
     let mut failed = Vec::new();
     let mut preserve_manifests = false;
+    let preserve_journals = match recover_deep_capture_journals(&root, out) {
+        Ok(()) => false,
+        Err(errors) => {
+            failed.extend(errors);
+            true
+        }
+    };
     match super::probe::ca_cleanup_targets(&root) {
         Ok(targets) => {
             for (store, thumbprint) in targets {
@@ -345,6 +365,14 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             );
             continue;
         }
+        if preserve_journals
+            && path
+                .file_name()
+                .is_some_and(|name| name == fragcap::deep_capture::RESOURCE_JOURNAL)
+        {
+            let _ = writeln!(out, "  preserved incomplete {}", path.display());
+            continue;
+        }
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 removed += 1;
@@ -363,6 +391,284 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             failed.join("; ")
         ))
     }
+}
+
+pub(crate) fn recover_deep_capture_journals(
+    root: &Path,
+    out: &mut dyn Write,
+) -> Result<(), Vec<String>> {
+    let _recovery_lock = RecoveryLock::acquire(root).map_err(|error| {
+        vec![format!(
+            "could not acquire Deep Capture recovery lock: {error}"
+        )]
+    })?;
+    let mut failed = Vec::new();
+    let mut roots = vec![root.to_path_buf()];
+    let mut recoverable_entries = Vec::new();
+    let mut active_bundles = Vec::new();
+    match registered_session_owners(root).and_then(|entries| {
+        let active = active_process_ids()?;
+        Ok(entries
+            .into_iter()
+            .partition::<Vec<_>, _>(|entry| active.contains(&entry.owner_pid)))
+    }) {
+        Ok((active, recoverable)) => {
+            active_bundles.extend(active.into_iter().map(|entry| entry.bundle));
+            roots.extend(recoverable.iter().map(|entry| entry.bundle.clone()));
+            recoverable_entries = recoverable;
+        }
+        Err(error) => failed.push(format!("session owner registry is invalid: {error}")),
+    }
+    roots.sort();
+    roots.dedup();
+    for journal in roots
+        .iter()
+        .flat_map(|root| resource_journals(root))
+        .filter(|journal| {
+            !active_bundles
+                .iter()
+                .any(|bundle| journal.starts_with(bundle))
+        })
+    {
+        match fragcap::deep_capture::recover_resource_journal(&journal, |action| {
+            match action.kind {
+                fragcap::deep_capture::ResourceKind::Trust => {
+                    let thumbprint = action.target.strip_prefix("sha1:").ok_or_else(|| {
+                        "trust recovery target lacks a SHA-1 thumbprint".to_string()
+                    })?;
+                    remove_ca_trust("CurrentUser/Root", thumbprint)?;
+                    Ok("removed the exact current-user trust entry".to_string())
+                }
+                fragcap::deep_capture::ResourceKind::Route
+                | fragcap::deep_capture::ResourceKind::Proxy
+                | fragcap::deep_capture::ResourceKind::Capture => Ok(
+                    "process-scoped resource cannot persist after the owning process ended"
+                        .to_string(),
+                ),
+                _ => Err("no unrelated-resource-safe recovery adapter exists".to_string()),
+            }
+        }) {
+            Ok(plan) if plan.refusals.is_empty() => {
+                let _ = writeln!(out, "  replayed {}", journal.display());
+            }
+            Ok(plan) => failed.push(format!(
+                "{} has {} recovery refusal(s)",
+                journal.display(),
+                plan.refusals.len()
+            )),
+            Err(error) => failed.push(format!("could not replay {}: {error}", journal.display())),
+        }
+    }
+    if failed.is_empty() {
+        for entry in recoverable_entries {
+            if let Err(error) = std::fs::remove_file(&entry.registry_path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(vec![format!(
+                        "could not retire session owner registry entry {}: {error}",
+                        entry.registry_path.display()
+                    )]);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(root.join(SESSION_OWNER_REGISTRY));
+        Ok(())
+    } else {
+        Err(failed)
+    }
+}
+
+struct RecoveryLock {
+    path: PathBuf,
+}
+
+impl RecoveryLock {
+    fn acquire(root: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join(RECOVERY_LOCK);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    writeln!(file, "{}", std::process::id())?;
+                    file.sync_all()?;
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let owner = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|value| value.trim().parse::<u32>().ok());
+                    let owner_is_active = match owner {
+                        Some(owner) => active_process_ids()?.contains(&owner),
+                        None => false,
+                    };
+                    if !owner_is_active {
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => continue,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            "another live process is still recovering session resources",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for RecoveryLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub(crate) fn register_session_owner(root: &Path, bundle: &Path) -> std::io::Result<()> {
+    let registry = root.join(SESSION_OWNER_REGISTRY);
+    std::fs::create_dir_all(&registry)?;
+    let bundle = bundle.canonicalize()?;
+    let owner_pid = std::process::id();
+    loop {
+        let sequence = SESSION_OWNER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = registry.join(format!("{owner_pid}-{sequence}.json"));
+        let mut file = match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({"bundle": bundle, "owner_pid": owner_pid}),
+        )
+        .map_err(std::io::Error::other)?;
+        file.write_all(b"\n")?;
+        return file.sync_all();
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SessionOwner {
+    bundle: PathBuf,
+    owner_pid: u32,
+    registry_path: PathBuf,
+}
+
+fn registered_session_owners(root: &Path) -> std::io::Result<Vec<SessionOwner>> {
+    let path = root.join(SESSION_OWNER_REGISTRY);
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut roots = Vec::new();
+    for entry in entries.take(4096) {
+        let registry_path = entry?.path();
+        let bytes = std::fs::read(&registry_path)?;
+        if bytes.len() > 4096 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session owner registry entry exceeds its byte limit",
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let bundle = value
+            .get("bundle")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "session owner entry lacks a bundle path",
+                )
+            })?;
+        let bundle = PathBuf::from(bundle);
+        if !bundle.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session owner bundle path is not absolute",
+            ));
+        }
+        let owner_pid = value
+            .get("owner_pid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "session owner entry lacks a valid process identifier",
+                )
+            })?;
+        roots.push(SessionOwner {
+            bundle,
+            owner_pid,
+            registry_path,
+        });
+    }
+    Ok(roots)
+}
+
+#[cfg(windows)]
+fn active_process_ids() -> std::io::Result<std::collections::HashSet<u32>> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let mut present = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while present {
+        ids.insert(entry.th32ProcessID);
+        present = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    Ok(ids)
+}
+
+#[cfg(not(windows))]
+fn active_process_ids() -> std::io::Result<std::collections::HashSet<u32>> {
+    Ok(std::iter::once(std::process::id()).collect())
+}
+
+fn resource_journals(root: &Path) -> Vec<PathBuf> {
+    fn walk(path: &Path, depth: usize, result: &mut Vec<PathBuf>) {
+        if depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten().take(200) {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, depth + 1, result);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == fragcap::deep_capture::RESOURCE_JOURNAL)
+            {
+                result.push(path);
+            }
+        }
+    }
+    let mut result = Vec::new();
+    walk(root, 0, &mut result);
+    result.sort();
+    result
 }
 
 #[cfg(windows)]
@@ -871,5 +1177,40 @@ mod tests {
             unrelated_empty_dir.exists(),
             "unrelated empty directories remain"
         );
+    }
+
+    #[test]
+    fn session_owner_registry_round_trips_an_absolute_bundle() {
+        let default = tempfile::tempdir().expect("default root");
+        let custom = tempfile::tempdir().expect("custom root");
+        let bundle = custom.path().join("custom-session");
+        std::fs::create_dir(&bundle).expect("custom bundle");
+        register_session_owner(default.path(), &bundle).expect("register custom bundle");
+        let roots = registered_session_owners(default.path()).expect("read registry");
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].bundle, bundle.canonicalize().unwrap());
+        assert_eq!(roots[0].owner_pid, std::process::id());
+        assert!(roots[0].registry_path.is_file());
+    }
+
+    #[test]
+    fn startup_recovery_preserves_a_custom_root_owned_by_this_live_process() {
+        let default = tempfile::tempdir().expect("default root");
+        let custom = tempfile::tempdir().expect("custom root");
+        let bundle = custom.path().join("active-session");
+        std::fs::create_dir(&bundle).expect("custom bundle");
+        register_session_owner(default.path(), &bundle).expect("register custom bundle");
+
+        recover_deep_capture_journals(default.path(), &mut std::io::sink())
+            .expect("an active session is skipped rather than replayed");
+
+        let roots = registered_session_owners(default.path()).expect("read registry");
+        assert_eq!(
+            roots.len(),
+            1,
+            "the active owner's entry remains registered"
+        );
+        assert_eq!(roots[0].bundle, bundle.canonicalize().unwrap());
+        assert_eq!(roots[0].owner_pid, std::process::id());
     }
 }

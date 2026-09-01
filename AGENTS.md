@@ -349,6 +349,17 @@ sensitivity, finalization, completeness, loss, correlation, and omissions for
 every expected artifact. Version 1 remains read-only. S108 adds no dependency or
 lockfile package, and Deep Capture remains incomplete until #334.
 
+S109 closes #306, #320, and #336 at the lifecycle-authority boundary. Routing
+is now an immutable, typed, target-scoped plan with child environment as the
+first concrete strategy and explicit refusal for unavailable strategies. Every
+current external effect is preceded by a synchronized resource obligation, and
+exact recovery decisions are shared with doctor. `proxy.jsonl` and
+`cleanup.jsonl` are versioned crash-readable streams with reconciling trailers;
+`cleanup.json` is their derived compatibility projection. S109 also bounds the
+localized application body-loss identity map and reports exact unlocalized
+overflow totals. It adds no dependency or lockfile package. Generic transports
+remain in S110 under #305, and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
