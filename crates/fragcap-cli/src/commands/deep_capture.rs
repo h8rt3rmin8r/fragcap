@@ -260,15 +260,6 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
                     .expect("resolved target retained"),
             )
             .map_err(|error| library_refusal("controlled-target", error))?;
-        } else if matches!(
-            target.launch_case,
-            fragcap::deep_capture::LaunchCase::SteamProtocolCold
-                | fragcap::deep_capture::LaunchCase::SteamProtocolWarm
-        ) {
-            return Err(fragcap::deep_capture::PreflightRefusal::new(
-                "native-steam-routing-unsupported",
-                "the native proxy cannot guarantee child-scoped environment inheritance through Steam protocol dispatch; direct-executable launches are supported until platform-client ownership lands under issue #308",
-            ));
         }
         fragcap::deep_capture::validate_compatibility_prerequisites(
             config.mode,
@@ -453,7 +444,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
     fn prepare(
         &mut self,
         config: &fragcap::deep_capture::SessionConfig,
-        _target: &fragcap::deep_capture::PreparedTarget,
+        target: &fragcap::deep_capture::PreparedTarget,
         _endpoint: fragcap::deep_capture::LoopbackEndpoint,
     ) -> Result<fragcap::deep_capture::PreparedCapture, fragcap::deep_capture::PreflightRefusal>
     {
@@ -465,8 +456,16 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 shutdown: config.deadlines.shutdown,
                 cleanup: config.deadlines.cleanup,
             };
-            let capture_args = real_capture_args(self.args, &config.bundle, deadlines);
-            let prepared = capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
+            let mut capture_args = real_capture_args(self.args, &config.bundle, deadlines);
+            if target.launch_case == fragcap::deep_capture::LaunchCase::SteamProtocolCold {
+                capture_args.wait = owned_platform_wait(capture_args.wait, config.deadlines.launch);
+            }
+            let prepared =
+                if target.launch_case == fragcap::deep_capture::LaunchCase::SteamProtocolCold {
+                    capture::prepare_owned_platform(&capture_args, &mut self.emitter.borrow_mut())
+                } else {
+                    capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
+                }
                 .map_err(|error| library_refusal("capture-prepare", error))?;
             self.prepared = Some((capture_args, prepared));
         }
@@ -1694,6 +1693,9 @@ fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError
             fragcap::managed_launch::ManagedLaunch::Steam(_) => {
                 unreachable!("a non-Steam stored target cannot prepare a Steam launch")
             }
+            fragcap::managed_launch::ManagedLaunch::Platform(_) => {
+                unreachable!("stored publisher preparation never creates a platform plan")
+            }
         }
     }
 }
@@ -1874,6 +1876,10 @@ fn real_capture_args(
         launch: true,
         offline: OfflineArgs::default(),
     }
+}
+
+fn owned_platform_wait(current: Option<Duration>, launch_deadline: Duration) -> Option<Duration> {
+    Some(current.map_or(launch_deadline, |value| value.min(launch_deadline)))
 }
 
 fn run_real_capture(
@@ -3067,6 +3073,13 @@ mod tests {
             calibration_outcome(CalibrationPhase::Reachability, &[launcher.clone()]),
             CalibrationOutcome::LauncherOnly
         );
+        let mut platform = client.clone();
+        platform.role = Some("platform".to_string());
+        assert_eq!(
+            calibration_outcome(CalibrationPhase::Reachability, &[platform.clone()]),
+            CalibrationOutcome::LauncherOnly,
+            "owned platform traffic does not prove final-client routing"
+        );
 
         let mut escaped = client.clone();
         escaped.flow_id = None;
@@ -3094,6 +3107,7 @@ mod tests {
             CalibrationOutcome::LocalCaAccepted
         );
         assert!(!observation_proves_final_client_ca_acceptance(&launcher));
+        assert!(!observation_proves_final_client_ca_acceptance(&platform));
         assert_eq!(
             calibration_outcome(CalibrationPhase::Tls, &[launcher]),
             CalibrationOutcome::UnknownTrust
@@ -3143,6 +3157,22 @@ mod tests {
         assert_eq!(
             bounded_timeout(None, CALIBRATION_OBSERVATION_TIMEOUT),
             CALIBRATION_OBSERVATION_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn owned_platform_capture_inherits_the_finite_session_launch_deadline() {
+        let deadline = Duration::from_secs(17);
+        assert_eq!(owned_platform_wait(None, deadline), Some(deadline));
+        assert_eq!(
+            owned_platform_wait(Some(Duration::from_secs(3)), deadline),
+            Some(Duration::from_secs(3)),
+            "an explicit shorter operator deadline is retained"
+        );
+        assert_eq!(
+            owned_platform_wait(Some(Duration::from_secs(30)), deadline),
+            Some(deadline),
+            "an operator value cannot exceed the session launch deadline"
         );
     }
 

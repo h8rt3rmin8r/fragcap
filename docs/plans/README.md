@@ -192,10 +192,10 @@ in both.
 
 ## Native completion follow-up
 
-S111 (`specs/111-publisher-launcher-chains`) follows S110 and closes #307 as the
-first Native Deep Capture 3 launch-coverage slice. It prepares one exact stored
-publisher chain through the shared Capture path, starts only its proven-cold
-root, and binds declared descendants until the terminal client owns the
-session. Warm restart remains #309, platform-client ownership remains #308,
-generic transports remain #310 through #315, and Deep Capture remains
-incomplete until #334.
+S112 (`specs/112-platform-client-ownership`) follows S111 and closes #308 as the
+second Native Deep Capture 3 launch-coverage slice. It prepares one exact cold
+Steam root through the shared Capture path, observes that created root before a
+separate retained title dispatch, and permits terminal ownership only beneath
+the owned platform ancestry. Ordinary Capture retains its Steam protocol path.
+Warm restart remains #309, generic transports remain #310 through #315, and
+Deep Capture remains incomplete until #334.

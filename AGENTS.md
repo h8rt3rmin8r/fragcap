@@ -376,6 +376,17 @@ confined beneath the game install root. Warm, escaped, ambiguous, and incomplete
 chains remain explicit refusals. S111 adds no dependency or lockfile package,
 and Deep Capture remains incomplete until #334.
 
+S112 closes #308 at the cold platform-client ownership boundary. Deep Capture
+now prepares an exact Steam root and retained application dispatch, applies the
+session route only to that root, and withholds title dispatch until the exact
+created process binds to the platform role. The terminal client must then bind
+beneath that owned platform ancestry. Warm Steam, escaped clients, early
+platform exit, failed dispatch, ambiguity, and timeout remain distinct
+non-success outcomes. Ordinary Capture keeps its existing Steam protocol path.
+Routing reachability and platform-to-client propagation remain separate facts.
+S112 adds no dependency or lockfile package, and Deep Capture remains incomplete
+until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

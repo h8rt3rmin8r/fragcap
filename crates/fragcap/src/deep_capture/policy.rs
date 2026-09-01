@@ -104,6 +104,12 @@ pub fn compatibility_fact_candidates(
     calibration: Option<CalibrationPhase>,
 ) -> Vec<CompatibilityFactCandidate> {
     let mut facts = Vec::new();
+    // A cold Steam launch is rooted in the exact platform process fragcap
+    // created with the scoped proxy environment. A correlated final client can
+    // only bind beneath that root, so reaching it proves propagation just as
+    // directly as the controlled harness does. Routing remains the independent
+    // reached-client fact below.
+    let propagation_owned = controlled || launch_case == LaunchCase::SteamProtocolCold.as_str();
     let final_owner_index = observations.iter().rposition(|observation| {
         observation
             .role
@@ -142,7 +148,7 @@ pub fn compatibility_fact_candidates(
         );
         push(
             CompatibilityFactKey::ProxyPropagation,
-            if reached_client && controlled {
+            if reached_client && propagation_owned {
                 "confirmed"
             } else if reached_client {
                 "not-tested"
@@ -373,9 +379,76 @@ pub fn compatibility_owner_role(role: &str) -> Option<&str> {
 mod launch_case_tests {
     use super::*;
 
+    fn correlated_client_observation() -> CompatibilityObservation {
+        CompatibilityObservation {
+            flow_id: crate::FlowId::new(1),
+            proxy_connection_id: "proxy-1".into(),
+            client_peer: None,
+            proxy_local: None,
+            observed_at: "1970-01-01T00:00:01Z".into(),
+            process_id: Some(42),
+            process_image: Some("game.exe".into()),
+            role: Some("client".into()),
+            attribution: Some("live".into()),
+            packet_observations: 1,
+            packet_observations_unretained: 0,
+            correlation_state: super::super::CorrelationState::Matched,
+            correlation_reason: "exact-flow-and-owner".into(),
+            protocol: "http".into(),
+            inspectability: Inspectability::MetadataOnly,
+            method: Some("GET".into()),
+            url: Some("http://example.invalid/".into()),
+            status: Some(200),
+            reason: Some("owned final-client flow".into()),
+        }
+    }
+
     #[test]
     fn exact_cold_publisher_chain_is_supported() {
         assert!(require_supported_launch_case(LaunchCase::PublisherLauncherCold).is_ok());
+    }
+
+    #[test]
+    fn cold_steam_owned_client_confirms_propagation_without_conflating_routing() {
+        let facts = compatibility_fact_candidates(
+            LaunchCase::SteamProtocolCold.as_str(),
+            &[correlated_client_observation()],
+            false,
+            Some(CalibrationPhase::Reachability),
+        );
+        let value = |key| {
+            facts
+                .iter()
+                .find(|fact| fact.key == key)
+                .map(|fact| fact.value.as_str())
+        };
+
+        assert_eq!(
+            value(CompatibilityFactKey::ProxyRouting),
+            Some("reached-client")
+        );
+        assert_eq!(
+            value(CompatibilityFactKey::ProxyPropagation),
+            Some("confirmed")
+        );
+    }
+
+    #[test]
+    fn unowned_correlated_client_does_not_claim_propagation() {
+        let facts = compatibility_fact_candidates(
+            LaunchCase::PublisherLauncherCold.as_str(),
+            &[correlated_client_observation()],
+            false,
+            Some(CalibrationPhase::Reachability),
+        );
+
+        assert_eq!(
+            facts
+                .iter()
+                .find(|fact| fact.key == CompatibilityFactKey::ProxyPropagation)
+                .map(|fact| fact.value.as_str()),
+            Some("not-tested")
+        );
     }
 
     #[test]

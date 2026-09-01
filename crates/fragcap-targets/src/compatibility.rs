@@ -580,4 +580,39 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn platform_ownership_reuses_separate_routing_and_propagation_sets() {
+        for routing in [
+            "reached-client",
+            "launcher-only-routing",
+            "escaped-tree",
+            "no-proxy-traffic",
+            "inconclusive",
+        ] {
+            assert!(CompatibilityFact::new(
+                1,
+                CompatibilityFactKey::ProxyRouting,
+                routing,
+                CompatibilityEvidenceSource::ObservedRun,
+            )
+            .is_ok());
+        }
+        for propagation in ["confirmed", "not-confirmed", "not-tested"] {
+            assert!(CompatibilityFact::new(
+                1,
+                CompatibilityFactKey::ProxyPropagation,
+                propagation,
+                CompatibilityEvidenceSource::ObservedRun,
+            )
+            .is_ok());
+        }
+        assert!(CompatibilityFact::new(
+            1,
+            CompatibilityFactKey::ProxyPropagation,
+            "owned-platform-reached-client",
+            CompatibilityEvidenceSource::ObservedRun,
+        )
+        .is_err());
+    }
 }

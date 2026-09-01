@@ -36,7 +36,7 @@ use fragcap_core::packet::{CapturedPacket, Timestamp};
 use fragcap_core::process::{ProcessEvent, ProcessId, ProcessRecord, ProcessTree};
 use fragcap_core::traits::{FlowAttributor, WriteGate};
 
-use fragcap_profile::matching::stage_for;
+use fragcap_profile::matching::{stage_for, stage_identity_holds};
 use fragcap_profile::schema::{Lifecycle, Profile};
 
 /// The five states of specification section 10.5.
@@ -75,6 +75,16 @@ pub enum StopReason {
     /// More than one process satisfied one declared stage identity. No later
     /// candidate is bound or promoted to terminal ownership.
     AmbiguousStageMatch,
+    /// The exact owned platform root exited before its terminal client bound.
+    PlatformExitedBeforeClient,
+    /// The declared client identity appeared outside the exact platform tree.
+    EscapedPlatformClient,
+    /// The retained title dispatch failed after the platform root was observed.
+    PlatformDispatchFailed,
+    /// The exact prepared platform root could not be created.
+    PlatformStartFailed,
+    /// Process lifecycle observation ended before terminal ownership completed.
+    ProcessWatcherLost,
 }
 
 /// What the session decided for one packet.
@@ -531,6 +541,16 @@ impl CaptureSession {
             )
         });
         let Some((sid, lifecycle, terminal, role)) = decision else {
+            if self.owns_platform_client()
+                && self.profile.stages().iter().any(|stage| {
+                    stage.is_terminal()
+                        && role_in(&self.allowed_roles, stage.role())
+                        && stage.predicates().descends_from() == Some("platform")
+                        && stage_identity_holds(stage, &self.tree, id)
+                })
+            {
+                self.stop(StopReason::EscapedPlatformClient);
+            }
             return;
         };
         // A stage outside the scoped role set is treated as if it were not in
@@ -547,6 +567,7 @@ impl CaptureSession {
         }
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
+            let platform = role == "platform";
             // A process whose exit was delivered before its start is bound
             // already exited: the tree joins a held exit on the start event, so
             // the node is not live even though this is its first appearance to
@@ -580,20 +601,28 @@ impl CaptureSession {
             // is: a terminal that has exited still stops capture, and a stale
             // live count cannot otherwise block AllProcessesExited.
             if already_exited {
-                self.note_bound_exit(terminal);
+                if platform && self.owns_platform_client() && self.pending_terminal {
+                    self.stop(StopReason::PlatformExitedBeforeClient);
+                } else {
+                    self.note_bound_exit(terminal);
+                }
             }
         }
     }
 
     fn on_bound_exit(&mut self, pid: u32) {
-        let mut hit: Option<(bool, bool)> = None; // (terminal, service)
+        let mut hit: Option<(bool, bool, bool)> = None; // (terminal, service, platform)
         if let Some(b) = self.bindings.iter_mut().find(|b| b.pid == pid && b.live) {
             b.live = false;
-            hit = Some((b.terminal, b.service));
+            hit = Some((b.terminal, b.service, b.role == "platform"));
         }
-        let Some((terminal, service)) = hit else {
+        let Some((terminal, service, platform)) = hit else {
             return;
         };
+        if platform && self.owns_platform_client() && self.pending_terminal {
+            self.stop(StopReason::PlatformExitedBeforeClient);
+            return;
+        }
         if !service {
             self.live_nonservice = self.live_nonservice.saturating_sub(1);
         }
@@ -640,6 +669,31 @@ impl CaptureSession {
             self.stop = Some(reason);
             self.state = SessionState::Draining;
         }
+    }
+
+    /// Record failure of the separately authorized title dispatch.
+    pub fn on_platform_dispatch_failure(&mut self) {
+        self.stop(StopReason::PlatformDispatchFailed);
+    }
+
+    /// Record failure to create the exact prepared platform root.
+    pub fn on_platform_start_failure(&mut self) {
+        self.stop(StopReason::PlatformStartFailed);
+    }
+
+    /// Record loss of lifecycle observation while acquisition is incomplete.
+    pub fn on_process_watcher_lost(&mut self) {
+        self.stop(StopReason::ProcessWatcherLost);
+    }
+
+    fn owns_platform_client(&self) -> bool {
+        self.config.exact_stage_ownership
+            && self.profile.game().platform().is_some()
+            && self
+                .profile
+                .stages()
+                .iter()
+                .any(|stage| stage.role() == "platform" && stage.lifecycle() == Lifecycle::Service)
     }
 }
 

@@ -330,8 +330,9 @@ adds proxy-owned TLS key logs, explicit upstream client identities, stable TLS
 refusal evidence, and protected sensitive-artifact cleanup and sharing. S108
 adds final packet/process correlation, bounded evidence-derived HAR 1.2, and
 manifest version 2 artifact authority. S109 adds immutable target-scoped routing
-and crash recovery, S110 closes native HTTP and TLS conformance, and S111 adds
-exact cold publisher-launcher chains. Broader launch and transport coverage,
+and crash recovery, S110 closes native HTTP and TLS conformance, S111 adds exact
+cold publisher-launcher chains, and S112 owns cold platform-client launch and
+propagation. Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector
 plugins, platform integrations, and analysis tooling remain deferred.

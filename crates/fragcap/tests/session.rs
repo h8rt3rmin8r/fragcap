@@ -34,6 +34,11 @@ fn profile(stages: &str) -> Profile {
     })
 }
 
+fn platform_profile() -> Profile {
+    let text = r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"t","name":"T","platform":"steam","app_id":"42"},"stage":[{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"game.exe","descends_from":"platform"}},{"role":"platform","lifecycle":"service","match":{"exe":"steam.exe"}}]}"#;
+    Profile::parse(text).unwrap_or_else(|d| panic!("platform profile did not validate: {d:?}"))
+}
+
 /// Launcher (transient) then client (session, terminal, descended from launcher).
 fn terminal_chain() -> Profile {
     profile(
@@ -65,6 +70,94 @@ fn a_session_arms_before_any_target() {
         s.state(),
         SessionState::Watching,
         "the handle is open and the watcher attached before any process exists"
+    );
+}
+
+#[test]
+fn owned_platform_exit_before_client_is_an_exact_failure() {
+    let mut s = CaptureSession::new(
+        platform_profile(),
+        SessionConfig {
+            exact_stage_ownership: true,
+            ..SessionConfig::default()
+        },
+    );
+    s.attach(at(0));
+    s.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1));
+    assert_eq!(s.state(), SessionState::Watching);
+    s.on_process_event(exit(10, 2));
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::PlatformExitedBeforeClient)
+    );
+}
+
+#[test]
+fn owned_platform_exit_before_its_start_event_never_authorizes_dispatch() {
+    let mut s = CaptureSession::new(
+        platform_profile(),
+        SessionConfig {
+            exact_stage_ownership: true,
+            ..SessionConfig::default()
+        },
+    );
+    s.attach(at(0));
+    s.on_process_event(exit(10, 2));
+    s.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1));
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::PlatformExitedBeforeClient)
+    );
+}
+
+#[test]
+fn owned_client_identity_outside_platform_tree_is_refused() {
+    let mut s = CaptureSession::new(
+        platform_profile(),
+        SessionConfig {
+            exact_stage_ownership: true,
+            ..SessionConfig::default()
+        },
+    );
+    s.attach(at(0));
+    s.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1));
+    s.on_process_event(start(20, 0, "C:\\Game\\game.exe", 2));
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(s.stop_reason(), Some(StopReason::EscapedPlatformClient));
+    assert!(
+        s.role_bindings().iter().all(|(pid, _, _)| *pid != 20),
+        "the escaped client must never receive the client role"
+    );
+}
+
+#[test]
+fn platform_start_dispatch_and_watcher_failures_are_named() {
+    fn check(stop: fn(&mut CaptureSession), expected: StopReason) {
+        let mut session = CaptureSession::new(
+            platform_profile(),
+            SessionConfig {
+                exact_stage_ownership: true,
+                ..SessionConfig::default()
+            },
+        );
+        session.attach(at(0));
+        stop(&mut session);
+        assert_eq!(session.state(), SessionState::Draining);
+        assert_eq!(session.stop_reason(), Some(expected));
+    }
+    check(
+        CaptureSession::on_platform_start_failure,
+        StopReason::PlatformStartFailed,
+    );
+    check(
+        CaptureSession::on_platform_dispatch_failure,
+        StopReason::PlatformDispatchFailed,
+    );
+    check(
+        CaptureSession::on_process_watcher_lost,
+        StopReason::ProcessWatcherLost,
     );
 }
 

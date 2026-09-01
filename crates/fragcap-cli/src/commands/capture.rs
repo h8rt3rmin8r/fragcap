@@ -130,6 +130,33 @@ pub(crate) fn prepare(
     })
 }
 
+/// Prepare the Deep Capture cold platform path without changing ordinary Capture.
+///
+/// Ordinary preparation first validates the existing Steam protocol request.
+/// This function then replaces that request with one immutable exact platform
+/// plan and replaces the resolved profile with its platform-rooted identity.
+/// All work remains side-effect-free.
+pub(crate) fn prepare_owned_platform(
+    args: &CaptureArgs,
+    emitter: &mut Emitter,
+) -> Result<PreparedCapture, CliError> {
+    use fragcap::managed_launch::{ManagedLaunch, PlatformLaunchAdapter, SteamPlatformAdapter};
+
+    let mut prepared = prepare(args, emitter)?;
+    if !matches!(prepared.config.launch, Some(ManagedLaunch::Steam(_))) {
+        return Err(CliError::usage(
+            "owned platform preparation requires a stored Steam managed launch",
+        ));
+    }
+    let platform = SteamPlatformAdapter::discover()
+        .and_then(|adapter| adapter.prepare(&prepared.profile))
+        .map_err(|error| CliError::usage(error.to_string()))?;
+    prepared.profile = target_resolve::synthesize_platform_profile(&prepared.profile, &platform)?;
+    prepared.config.launch = Some(ManagedLaunch::Platform(platform));
+    prepared.config.exact_stage_ownership = true;
+    Ok(prepared)
+}
+
 /// Run a capture that Deep Capture prepared before starting mutable session
 /// resources. Preparation is consumed so the validated launch request is the one
 /// the orchestrator executes.

@@ -217,7 +217,15 @@ fn final_exit(
 ) -> Exit {
     if matches!(
         stop_reason,
-        Some(StopReason::AcquisitionTimeout | StopReason::AmbiguousStageMatch)
+        Some(
+            StopReason::AcquisitionTimeout
+                | StopReason::AmbiguousStageMatch
+                | StopReason::PlatformExitedBeforeClient
+                | StopReason::EscapedPlatformClient
+                | StopReason::PlatformDispatchFailed
+                | StopReason::PlatformStartFailed
+                | StopReason::ProcessWatcherLost
+        )
     ) {
         return Exit::new(1);
     }
@@ -523,6 +531,46 @@ enum DriverMsg {
     Packet(u32, Timestamp),
     /// A process start or exit the ETW watcher observed.
     Proc(ProcessEvent),
+    /// The ETW watcher ended, so process ownership can no longer be maintained.
+    WatcherLost,
+}
+
+/// One-shot authority gate for the title dispatch of an owned platform launch.
+///
+/// The retained title action is authorized only after the watcher has bound the
+/// exact process created for the platform root to the `platform` role. Repeated
+/// snapshots cannot authorize a second dispatch.
+#[derive(Default)]
+#[cfg(any(test, all(feature = "etw", windows)))]
+struct PlatformDispatchGate {
+    root_pid: Option<u32>,
+    issued: bool,
+}
+
+#[cfg(any(test, all(feature = "etw", windows)))]
+type RoleBinding = (u32, Option<Arc<str>>, Option<fragcap::StageId>);
+
+#[cfg(any(test, all(feature = "etw", windows)))]
+impl PlatformDispatchGate {
+    fn arm(&mut self, root_pid: Option<u32>) {
+        self.root_pid = root_pid;
+    }
+
+    fn observe(&mut self, bindings: &[RoleBinding]) -> bool {
+        if self.issued {
+            return false;
+        }
+        let Some(root_pid) = self.root_pid else {
+            return false;
+        };
+        if bindings.iter().any(|(pid, role, _)| {
+            *pid == root_pid && role.as_deref().is_some_and(|role| role == "platform")
+        }) {
+            self.issued = true;
+            return true;
+        }
+        false
+    }
 }
 
 /// The live, streaming driver. Distinct from the offline two-phase path because
@@ -600,6 +648,7 @@ fn capture_live(
     let stamper_reader = components.stamper.clone();
     let (handle, stop, stream_reports, ring_evicted, live) =
         spawn_pipeline(config, &mut components, gate)?;
+    let mut platform_dispatch = PlatformDispatchGate::default();
 
     // Managed launch (S17, specification 16.4): the session is already Watching
     // (attached before this function) and the sinks are open (spawn_pipeline above),
@@ -619,24 +668,39 @@ fn capture_live(
                 "{} through publisher chain",
                 request.root().executable().display()
             ),
+            fragcap::managed_launch::ManagedLaunch::Platform(request) => format!(
+                "{} as an owned platform root",
+                request.root().executable().display()
+            ),
         };
         emitter.progress(&format!("launching {description}"));
-        if let Err(e) = request.execute() {
-            // The pipeline is already running from arm. Stop and join it so the
-            // sinks finalize and no output file is left unclosed, drop the watcher
-            // to end the live receiver, and surface the run's loss accounting,
-            // before returning the launch failure (Codex review of PR #31). The
-            // window was never opened, so every frame read is a watch-time discard
-            // already in the gate's tallies.
-            stop.stop();
-            let _ = components.watcher.take();
-            let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
-            emit_stream_reports(&stream_reports, emitter);
-            emit_ring_report(&ring_evicted, emitter);
-            session.finalize();
-            let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
-            emitter.summary(&summary);
-            return Err(CliError::failure(e.to_string()));
+        match request.execute() {
+            Ok(receipt) => {
+                if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
+                    platform_dispatch.arm(receipt.process_id());
+                }
+            }
+            Err(e) => {
+                // The pipeline is already running from arm. Stop and join it so the
+                // sinks finalize and no output file is left unclosed, drop the watcher
+                // to end the live receiver, and surface the run's loss accounting,
+                // before returning the launch failure (Codex review of PR #31). The
+                // window was never opened, so every frame read is a watch-time discard
+                // already in the gate's tallies.
+                stop.stop();
+                let _ = components.watcher.take();
+                let report: PipelineReport =
+                    handle.join().expect("the pipeline thread did not panic");
+                emit_stream_reports(&stream_reports, emitter);
+                emit_ring_report(&ring_evicted, emitter);
+                if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
+                    session.on_platform_start_failure();
+                }
+                session.finalize();
+                let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
+                emitter.summary(&summary);
+                return Err(CliError::failure(e.to_string()));
+            }
         }
     }
 
@@ -683,7 +747,20 @@ fn capture_live(
                 let event_at = event.at();
                 record_bound_image(&event, &mut bound_images);
                 apply_event(event, &mut session, &mut bound, emitter);
-                publisher.publish(session.role_bindings());
+                let bindings = session.role_bindings();
+                publisher.publish(bindings.clone());
+                if is_active(&session) && platform_dispatch.observe(&bindings) {
+                    let dispatch = config.launch.as_ref().and_then(|launch| match launch {
+                        fragcap::managed_launch::ManagedLaunch::Platform(platform) => {
+                            Some(platform.dispatch_title())
+                        }
+                        _ => None,
+                    });
+                    if let Some(Err(error)) = dispatch {
+                        emitter.progress(&format!("platform title dispatch failed: {error}"));
+                        session.on_platform_dispatch_failure();
+                    }
+                }
                 if session.state() == SessionState::Capturing {
                     acquired_at = Some(event_at);
                 }
@@ -692,7 +769,10 @@ fn capture_live(
             // acquisition timeout or duration bound can still fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
             // The watcher is gone; no target can now be acquired.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                session.on_process_watcher_lost();
+                break;
+            }
         }
     }
 
@@ -781,13 +861,7 @@ fn capture_live(
     };
     let event_forward = {
         let merged_tx = merged_tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(event) = rx.recv() {
-                if merged_tx.send(DriverMsg::Proc(event)).is_err() {
-                    break;
-                }
-            }
-        })
+        std::thread::spawn(move || forward_process_events(rx, merged_tx))
     };
     // The two forwarders hold the only remaining senders, so the merged channel
     // disconnects once both have ended.
@@ -919,6 +993,7 @@ fn drive_live(
                     gate_handle.close_at(event_at);
                 }
             }
+            Ok(DriverMsg::WatcherLost) => session.on_process_watcher_lost(),
             // Nothing arrived. Advance the clock so a duration bound can fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
             // Both forwarders ended: the pipeline is done and the watcher is
@@ -969,6 +1044,16 @@ fn drive_live(
         }
     }
     display.resolve(emitter);
+}
+
+#[cfg(all(feature = "etw", windows))]
+fn forward_process_events(rx: Receiver<ProcessEvent>, merged_tx: mpsc::Sender<DriverMsg>) {
+    while let Ok(event) = rx.recv() {
+        if merged_tx.send(DriverMsg::Proc(event)).is_err() {
+            return;
+        }
+    }
+    let _ = merged_tx.send(DriverMsg::WatcherLost);
 }
 
 /// Everything the live status display needs across a run: which terminal
@@ -1400,8 +1485,44 @@ fn build_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::final_exit;
-    use fragcap::StopReason;
+    use super::{final_exit, PlatformDispatchGate};
+    #[cfg(all(feature = "etw", windows))]
+    use super::{forward_process_events, DriverMsg};
+    use fragcap::{StageId, StopReason};
+    use std::sync::Arc;
+
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    fn process_forwarder_reports_watcher_loss_after_acquisition() {
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let (merged_tx, merged_rx) = std::sync::mpsc::channel();
+        drop(event_tx);
+
+        forward_process_events(event_rx, merged_tx);
+
+        assert!(matches!(merged_rx.recv(), Ok(DriverMsg::WatcherLost)));
+    }
+
+    #[test]
+    fn platform_dispatch_waits_for_the_exact_root_and_is_issued_once() {
+        let mut gate = PlatformDispatchGate::default();
+        gate.arm(Some(42));
+        let wrong_pid = vec![(
+            41,
+            Some(Arc::from("platform")),
+            Some(StageId::new("platform")),
+        )];
+        let wrong_role = vec![(42, Some(Arc::from("client")), Some(StageId::new("client")))];
+        let exact = vec![(
+            42,
+            Some(Arc::from("platform")),
+            Some(StageId::new("platform")),
+        )];
+        assert!(!gate.observe(&wrong_pid));
+        assert!(!gate.observe(&wrong_role));
+        assert!(gate.observe(&exact));
+        assert!(!gate.observe(&exact), "the retained dispatch is one-shot");
+    }
 
     // A run that ended with no sink failure is a success on any surface.
     #[test]
