@@ -50,6 +50,7 @@ struct WriterAccount {
     streaming_bytes_queue_dropped: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
     connection_windows_unretained: AtomicU64,
+    first_unretained_connection_id: AtomicU64,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -142,6 +143,14 @@ impl ApplicationEventSink for ChannelSink {
                     },
                 );
             } else {
+                // The proxy accept loop emits ConnectionOpen synchronously and
+                // assigns contiguous ids before spawning connection work. A
+                // first id plus a count therefore retains every overflowed
+                // identity in constant memory.
+                let _ = self
+                    .account
+                    .first_unretained_connection_id
+                    .compare_exchange(0, event.connection_id, Ordering::AcqRel, Ordering::Acquire);
                 self.account
                     .connection_windows_unretained
                     .fetch_add(1, Ordering::Relaxed);
@@ -413,21 +422,25 @@ fn writer_loop(
     let unretained_connections = account
         .connection_windows_unretained
         .load(Ordering::Acquire);
-    if unretained_connections > 0 {
+    let first_unretained_connection_id = account
+        .first_unretained_connection_id
+        .load(Ordering::Acquire);
+    for offset in 0..unretained_connections {
         *correlation_counts
             .entry("unavailable".to_string())
-            .or_default() += unretained_connections;
+            .or_default() += 1;
         sequence = sequence.saturating_add(1);
-        let value = json!({
-            "type":"application.correlation.gap",
-            "schema_version":SCHEMA_VERSION,
-            "session_id":session_id,
-            "sequence":sequence,
-            "event_time_ns":0,
-            "correlation_state":"unavailable",
-            "correlation_reason":"connection-history-bound-exceeded",
-            "connections_unretained":unretained_connections,
-        });
+        let connection_id = first_unretained_connection_id.saturating_add(offset);
+        let value = correlation_record(
+            session_id,
+            sequence,
+            connection_id,
+            ApplicationCorrelation {
+                state: Some("unavailable".to_string()),
+                reason: Some("connection-history-bound-exceeded".to_string()),
+                ..ApplicationCorrelation::default()
+            },
+        );
         write_record(&mut writer, &value)?;
         account.written.fetch_add(1, Ordering::Relaxed);
         account.accepted.fetch_add(1, Ordering::Relaxed);
@@ -435,7 +448,7 @@ fn writer_loop(
             .serialized_bytes
             .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
         *records_by_type
-            .entry("application.correlation.gap".to_string())
+            .entry("application.correlation".to_string())
             .or_default() += 1;
     }
     let dropped = account.dropped.load(Ordering::Acquire);
@@ -1090,16 +1103,6 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             correlation_total = correlation_total.saturating_add(1);
             *correlation_by_state.entry(state.to_string()).or_default() += 1;
         }
-        if kind == "application.correlation.gap" {
-            let count = record
-                .get("connections_unretained")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            correlation_total = correlation_total.saturating_add(count);
-            *correlation_by_state
-                .entry("unavailable".to_string())
-                .or_default() += count;
-        }
         if matches!(
             kind,
             "websocket.frame" | "websocket.message" | "sse.field" | "sse.event" | "grpc.message"
@@ -1325,12 +1328,19 @@ mod tests {
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
         assert_eq!(prefix.status, ApplicationStreamStatus::Complete);
-        let gap = prefix
+        let overflow = prefix
             .records
             .iter()
-            .find(|record| record["type"] == "application.correlation.gap")
-            .expect("overflow must produce an explicit correlation gap");
-        assert_eq!(gap["connections_unretained"], 1);
+            .find(|record| {
+                record["type"] == "application.correlation"
+                    && record["proxy_connection_id"] == MAX_CONNECTION_WINDOWS as u64 + 1
+            })
+            .expect("overflow must produce a per-connection correlation result");
+        assert_eq!(overflow["correlation_state"], "unavailable");
+        assert_eq!(
+            overflow["correlation_reason"],
+            "connection-history-bound-exceeded"
+        );
         let trailer = prefix.records.last().unwrap();
         assert_eq!(
             trailer["correlation_connections_total"],

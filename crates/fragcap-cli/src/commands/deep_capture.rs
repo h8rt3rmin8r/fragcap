@@ -2713,12 +2713,37 @@ fn apply_application_truth(artifact: &mut serde_json::Value, path: &Path) {
                 + record["streaming_bytes_truncated"].as_u64().unwrap_or(0)
         })
         .unwrap_or(0);
+    let unretained_connections = trailer
+        .and_then(|record| record["correlation_connections_unretained"].as_u64())
+        .unwrap_or(0);
     let correlations: Vec<_> = prefix
         .records
         .iter()
         .filter(|record| record["type"] == "application.correlation")
         .collect();
-    let correlation_state = if correlations.is_empty() {
+    let correlation_state = application_correlation_state(&correlations, unretained_connections);
+    artifact["finalization"] = json!(finalization);
+    artifact["completeness"] = json!(application_completeness(
+        finalization,
+        dropped,
+        truncated,
+        unretained_connections,
+    ));
+    artifact["loss"] = if dropped == 0 && truncated == 0 && unretained_connections == 0 {
+        json!({"state":"none"})
+    } else {
+        json!({"state":"observed","dropped_records":dropped,"truncated_bytes":truncated,"unretained_connections":unretained_connections})
+    };
+    artifact["correlation"] = json!({"state":correlation_state,"records":correlations.len()});
+}
+
+fn application_correlation_state(
+    correlations: &[&serde_json::Value],
+    unretained_connections: u64,
+) -> &'static str {
+    if unretained_connections > 0 {
+        "partial"
+    } else if correlations.is_empty() {
         "unavailable"
     } else if correlations
         .iter()
@@ -2727,23 +2752,24 @@ fn apply_application_truth(artifact: &mut serde_json::Value, path: &Path) {
         "complete"
     } else {
         "partial"
-    };
-    artifact["finalization"] = json!(finalization);
-    artifact["completeness"] = json!(if finalization != "complete" {
+    }
+}
+
+fn application_completeness(
+    finalization: &str,
+    dropped: u64,
+    truncated: u64,
+    unretained_connections: u64,
+) -> &'static str {
+    if finalization != "complete" {
         "partial"
     } else if truncated > 0 {
         "truncated"
-    } else if dropped > 0 {
+    } else if dropped > 0 || unretained_connections > 0 {
         "partial"
     } else {
         "complete"
-    });
-    artifact["loss"] = if dropped == 0 && truncated == 0 {
-        json!({"state":"none"})
-    } else {
-        json!({"state":"observed","dropped_records":dropped,"truncated_bytes":truncated})
-    };
-    artifact["correlation"] = json!({"state":correlation_state,"records":correlations.len()});
+    }
 }
 
 struct FactWriteResult {
@@ -3005,6 +3031,14 @@ mod tests {
         assert_eq!(records[1]["flow_id"], "flow-00000001");
         assert_eq!(records[2]["type"], "application.trailer");
         assert_eq!(records[2]["records"], 1);
+    }
+
+    #[test]
+    fn unretained_connection_history_keeps_application_truth_partial() {
+        let matched = json!({"correlation_state":"matched"});
+        let correlations = vec![&matched];
+        assert_eq!(application_correlation_state(&correlations, 1), "partial");
+        assert_eq!(application_completeness("complete", 0, 0, 1), "partial");
     }
 
     #[test]
