@@ -8,6 +8,7 @@
 //! timeout whose summary was printed) returns the code directly; an error means
 //! "print this and stop".
 
+pub mod bundle;
 pub mod capture;
 pub mod catalog;
 pub mod deep_capture;

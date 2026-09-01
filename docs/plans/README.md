@@ -13,7 +13,7 @@ spec and plan are still mandatory; see `AGENTS.md`.
 | Document | Purpose |
 | --- | --- |
 | [`000-repository-foundation.md`](000-repository-foundation.md) | What the repository foundation established, and why. Complete. |
-| [`deep-capture.md`](deep-capture.md) | Product positioning, shipped MVP history, and required native completion direction for Deep Capture. |
+| [`deep-capture.md`](deep-capture.md) | Product positioning, shipped MVP history, native completion direction, and S107 TLS evidence and sensitive-artifact boundary for Deep Capture. |
 | [`deep-capture-proxy-backends.md`](deep-capture-proxy-backends.md) | Historical candidate measurements and the S102 owned-stack supersession. |
 | [`steam-launcher-proxy-inheritance.md`](steam-launcher-proxy-inheritance.md) | Privacy-preserving measurement protocol for Steam and publisher-launcher proxy inheritance. |
 | [`reconnaissance.md`](reconnaissance.md) | Protocol for Q-1 to Q-6. Complete. |

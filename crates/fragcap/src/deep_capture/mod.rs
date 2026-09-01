@@ -14,6 +14,7 @@
 
 mod adapters;
 mod application;
+mod artifacts;
 mod model;
 mod native;
 mod policy;
@@ -21,9 +22,10 @@ mod session;
 
 pub use adapters::*;
 pub use application::*;
+pub use artifacts::*;
 pub use model::*;
 pub use native::{
-    run_controlled_native_requests, CertificateStore, NativeCertificateStore,
+    run_controlled_native_requests, CertificateStore, ClientIdentity, NativeCertificateStore,
     NativeObservationContext, NativeProxyAdapter, NativeProxyLimits, TrustController, TrustError,
     TrustMutation, TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
 };

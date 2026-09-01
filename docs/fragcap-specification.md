@@ -123,6 +123,7 @@ enforcement.
 | 0.1.29-draft | 2026-08-30 | W. Thompson | **Cuts Deep Capture over to native HTTP and TLS (issues #290, #292, and #293).** Removes the production Python and mitmdump path, adds session-authenticated bounded HTTP/1.1 and CONNECT forwarding, terminates approved client TLS with the session authority, establishes a separately verified upstream TLS boundary, maps truthful coarse observations through the facade, and verifies the public CLI with real controlled loopback traffic. Deep Capture remains incomplete until #334. |
 | 0.1.30-draft | 2026-08-30 | W. Thompson | **Adds native HTTP/2, complete protocol metadata, bounded streaming bodies, and application JSON Lines version 2 (issues #294, #296, #297, and #301).** Extends sections 13.7, 19.6, 25, and 28.1. HTTP/2 multiplexing retains distinct stream identity and bounded flow control, HTTP metadata preserves the evidence available at each protocol boundary, raw bodies stream independently from bounded retention and derived decoding, and the application artifact is append-only and crash-readable during the session. Deferred protocol families and unavailable HTTP/2 wire representations remain explicit. |
 | 0.1.31-draft | 2026-08-30 | W. Thompson | **Adds streaming application protocols (issues #295, #298, and #299).** Extends sections 13.7, 19.6, 25, and 28.1. Verified HTTP/1.1 upgrades and RFC 8441 carry bounded WebSocket frame and message evidence, identity event streams produce incremental SSE fields and events, and HTTP/2 gRPC streams retain method, metadata, opaque envelopes, compression flags, and terminal status without protobuf inference. Observation remains independent from transparent forwarding. |
+| 0.1.32-draft | 2026-09-01 | W. Thompson | **Completes native TLS evidence and sensitive artifact ownership (issues #300, #304, and #322).** Extends sections 13.7, 17.2, 19, 25, 26.3, and 28.1. Explicit client-facing TLS key logs are protected and live-flushed, operator-supplied client identities enable upstream mutual TLS, refusal categories preserve only observable evidence, and sensitive artifacts gain pre-traffic access control, bounded recovery, confirmed deletion, and immutable share-copy transformation. General session recovery remains open under #320. |
 
 ## 2. Purpose and Problem Statement
 
@@ -146,11 +147,13 @@ the shell wrappers are consumers of the command line tool. Deep Capture's
 session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
 
-Deep Capture is functional but incomplete. S106 extends the native Rust sole
+Deep Capture is functional but incomplete. S107 extends the native Rust sole
 production path with bounded HTTP/2 multiplexing, protocol-faithful HTTP
 metadata, incrementally retained bodies, bounded gzip, deflate, and Brotli
 decoding, a live application JSON Lines version 2 stream, WebSocket frame and
-message inspection, incremental SSE, and schema-free gRPC envelopes. Client-facing TLS
+message inspection, incremental SSE, schema-free gRPC envelopes, proxy-owned TLS
+key logs, explicit upstream client identities, and protected sensitive-artifact
+lifecycle operations. Client-facing TLS
 uses the exact session authority and upstream TLS is verified independently.
 Issue #278 is the completion authority. Deep Capture
 MUST NOT be described as self-contained or feature-complete until issue #334 closes.
@@ -3337,7 +3340,7 @@ support is exact:
 | Traffic | Capture | Deep Capture |
 | --- | --- | --- |
 | HTTP | Packets, attribution, and payload bytes unless payload capture is disabled | Native HTTP/1.1 and explicitly routed authenticated HTTP/2 retain boundary-faithful request, response, informational, and trailer metadata plus bounded raw and decoded body evidence in the live application stream |
-| HTTPS | Encrypted packets and attribution | Native HTTP/1.1 or HTTP/2 semantics when proxy-routed and accepted by the fragcap-owned local CA; no certificate-pinning bypass, client-certificate forwarding, or target key extraction |
+| HTTPS | Encrypted packets and attribution | Native HTTP/1.1 or HTTP/2 semantics when proxy-routed and accepted by the fragcap-owned local CA; an explicitly supplied operator-owned client identity may satisfy upstream mutual TLS, with no certificate-pinning bypass or target key extraction |
 | WebSocket | Packets and attribution | Verified HTTP/1.1 upgrades and RFC 8441 streams retain bounded raw frames, masking and fragmentation facts, derived messages, and negotiated per-message compression outcomes |
 | Server-Sent Events | Packets and attribution | Identity `text/event-stream` responses retain bounded incremental fields, comments, events, and reconnect metadata while raw body bytes remain authoritative |
 | gRPC | Packets and attribution | HTTP/2 gRPC calls retain method and metadata plus bounded opaque message envelopes, compression flags, and terminal status; protobuf fields are not inferred without schemas |
@@ -4384,6 +4387,9 @@ complete boundary-faithful HTTP metadata, bounded streaming body evidence and
 decoding, and live application JSON Lines version 2.
 S106 adds bounded WebSocket frame and message inspection, incremental SSE, and
 opaque gRPC envelope and status records without protobuf schema inference.
+S107 adds client-facing proxy TLS key logs, explicit operator-owned upstream
+client identities, stable TLS refusal categories, and the protected retention,
+cleanup, recovery, and share-copy lifecycle for sensitive bundle artifacts.
 
 The required dependency direction is:
 
@@ -4407,13 +4413,13 @@ Every existing or planned output has one owner:
 | Versioned bundle manifest and authority | #335 |
 | Complete `application.jsonl` | S105, #301 |
 | Truthful HAR 1.2 projection | #302 |
-| Proxy-owned TLS key log | #300 |
+| Proxy-owned TLS key log | S107, #300 |
 | Proxy and cleanup sidecars | #336 |
 | Process lifecycle evidence | #319 |
 | Compatibility facts and sidecar | #317 |
 | Crash journal and recovery | #320 |
 | Doctor readiness and residue | #321 |
-| Sensitivity, retention, and deletion | #322 |
+| Sensitivity, retention, and deletion | S107, #322 |
 | Consent, progress, and recovery UX | #332 |
 | Stable Rust API | #330 |
 | Final documentation and completion language | #331 and #334 |
@@ -4423,7 +4429,7 @@ The protocol and launch matrix is normative:
 | Case | v0.8 shipped state | Native owner or boundary |
 | --- | --- | --- |
 | HTTP/1.1 and CONNECT | Native bounded forwarding, complete metadata, and bounded body evidence | S105, #296 and #297 |
-| HTTPS | Native session-CA inspection with verified upstream TLS | Client certificates/pinning classification #304 |
+| HTTPS | Native session-CA inspection with verified upstream TLS, explicit client identity, and stable refusal evidence | S107, #304 |
 | HTTP/2 | Native bounded multiplexing with stream evidence | S105, #294 |
 | WebSocket | Native HTTP/1.1 and RFC 8441 frame and message evidence | S106, #295 |
 | SSE | Native incremental identity event-stream fields and events | S106, #298 |

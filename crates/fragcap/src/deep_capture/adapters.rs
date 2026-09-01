@@ -195,6 +195,10 @@ pub trait CompatibilityRepository {
 /// Bundle destination validation and independent artifact persistence.
 pub trait ArtifactSink {
     fn validate_destination(&mut self, path: &Path) -> Result<(), PreflightRefusal>;
+    /// Apply authorized protection before any proxy or writer may expose bytes.
+    fn prepare(&mut self, _plan: &super::SessionPlan) -> Result<(), StageFailure> {
+        Ok(())
+    }
     fn finalize(&mut self, bundle: &Path, snapshot: &TerminalSnapshot) -> Vec<ArtifactResult>;
 }
 

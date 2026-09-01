@@ -462,6 +462,24 @@ fn external_proxy_violation(path: &str, text: &str) -> Option<&'static str> {
     None
 }
 
+fn platform_trigger_violation(text: &str) -> Option<&'static str> {
+    let trigger = text.split("\nconcurrency:").next().unwrap_or(text);
+    if trigger
+        .lines()
+        .any(|line| matches!(line.trim(), "paths:" | "paths-ignore:"))
+    {
+        return Some("whole-workspace platform workflow must not use path filters");
+    }
+    if !trigger.contains("workflow_dispatch:")
+        || !trigger.contains("push:")
+        || !trigger.contains("branches: [main]")
+        || !trigger.contains("pull_request:")
+    {
+        return Some("platform workflow must run manually, on main pushes, and on pull requests");
+    }
+    None
+}
+
 pub fn run(root: &Path) -> std::io::Result<usize> {
     let mut files = Vec::new();
     collect(root, root, &mut files)?;
@@ -515,6 +533,12 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
                     "{shown}: native-proxy-cutover: production and release inputs contain {detail}"
                 );
                 total += 1;
+            }
+            if shown == ".github/workflows/platform.yml" {
+                if let Some(detail) = platform_trigger_violation(text) {
+                    println!("{shown}: platform-trigger-coverage: {detail}");
+                    total += 1;
+                }
             }
         }
 
@@ -684,6 +708,28 @@ mod tests {
         assert_eq!(
             external_proxy_violation("docs/history.md", "mitmdump was the former backend"),
             None
+        );
+    }
+
+    #[test]
+    fn platform_trigger_gate_rejects_filters_and_missing_events() {
+        let clean = "on:\n  workflow_dispatch:\n  push:\n    branches: [main]\n  pull_request:\n\nconcurrency:\n";
+        assert_eq!(platform_trigger_violation(clean), None);
+        assert_eq!(
+            platform_trigger_violation(
+                &clean.replace("  pull_request:\n", "  pull_request:\n    paths:\n")
+            ),
+            Some("whole-workspace platform workflow must not use path filters")
+        );
+        assert_eq!(
+            platform_trigger_violation(
+                &clean.replace("  pull_request:\n", "  pull_request:\n    paths-ignore:\n")
+            ),
+            Some("whole-workspace platform workflow must not use path filters")
+        );
+        assert_eq!(
+            platform_trigger_violation(&clean.replace("  pull_request:\n", "")),
+            Some("platform workflow must run manually, on main pushes, and on pull requests")
         );
     }
 

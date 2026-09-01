@@ -46,9 +46,11 @@ impl DeepCapture {
             endpoint,
             bundle: config.bundle.clone(),
             trust_ca: config.trust_ca,
+            client_identity: config.client_identity,
             artifacts: ArtifactRequests {
                 har: config.har,
                 key_log: config.key_log,
+                sensitive_retention: config.sensitive_retention,
             },
             deadlines: config.deadlines,
         };
@@ -152,6 +154,11 @@ impl DeepCaptureSession<'_> {
             plan: self.plan.clone(),
         });
         let started = self.adapters.clock.monotonic_elapsed();
+        if let Err(error) = self.adapters.artifacts.prepare(&self.plan) {
+            self.failures.push(error);
+            self.state = LifecycleState::Stopped;
+            return Ok(());
+        }
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
         match self.adapters.proxy.start(&self.plan, budget) {
             Ok(lease) => {

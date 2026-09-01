@@ -86,6 +86,8 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--launch-case",
         "--har",
         "--key-log",
+        "--client-certificate",
+        "--client-private-key",
     ] {
         assert!(
             out.contains(required),
@@ -117,6 +119,24 @@ fn calibration_arguments_are_paired() {
     ]);
     assert_eq!(code, 2);
     assert!(err.contains("--calibrate"), "pairing refusal: {err}");
+}
+
+#[test]
+fn client_identity_arguments_are_paired() {
+    for (provided, required) in [
+        ("--client-certificate", "--client-private-key"),
+        ("--client-private-key", "--client-certificate"),
+    ] {
+        let (code, _out, err) = run(&[
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            provided,
+            "identity.pem",
+        ]);
+        assert_eq!(code, 2);
+        assert!(err.contains(required), "pairing refusal: {err}");
+    }
 }
 
 #[test]
@@ -451,6 +471,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         "process-trace.jsonl",
         "compatibility.json",
         "cleanup.json",
+        "tls-keylog.log",
     ] {
         assert!(
             bundle.join(artifact).is_file(),
@@ -466,18 +487,25 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert_eq!(manifest["cleanup"]["status"], "succeeded");
     assert_eq!(manifest["trust"]["state"], "simulated-current-user");
     assert!(
-        manifest["omissions"]
+        manifest["artifacts"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|omission| omission["role"] == "tls-key-log"
-                && omission["reason"] == "not-produced"),
-        "the controlled backend reports the requested key log as an omission"
+            .any(|artifact| artifact["role"] == "tls-key-log"
+                && artifact["sensitivity"] == "secret-adjacent"),
+        "the native backend declares the produced proxy-owned key log"
     );
+    let key_log = std::fs::read_to_string(bundle.join("tls-keylog.log")).unwrap();
     assert!(
-        !bundle.join("tls-keylog.log").exists(),
-        "the controlled backend must not fabricate TLS secrets"
+        key_log.lines().all(|line| {
+            let fields: Vec<_> = line.split_ascii_whitespace().collect();
+            fields.len() == 3
+                && fields[1].bytes().all(|byte| byte.is_ascii_hexdigit())
+                && fields[2].bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) && !key_log.is_empty(),
+        "the native backend writes complete NSS key-log records"
     );
+    assert!(err.contains("\"event\":\"deep_capture.key_log_ready\""));
 
     let app = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
     let application_records: Vec<serde_json::Value> = app
@@ -619,6 +647,11 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["state"], "partial");
+    assert_eq!(
+        manifest["sensitive_artifacts"]["tls_key_log"]["state"],
+        "not-requested"
+    );
+    assert!(!bundle.join("tls-keylog.log").exists());
     assert!(bundle.join("capture.fcapng").is_file());
     let app = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
     let trailer: serde_json::Value = serde_json::from_str(app.lines().last().unwrap()).unwrap();

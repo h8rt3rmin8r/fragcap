@@ -11,7 +11,9 @@ use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptor
 use windows_sys::Win32::Security::Cryptography::{
     CryptProtectData, CRYPTOAPI_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
 };
-use windows_sys::Win32::Security::{SetFileSecurityW, DACL_SECURITY_INFORMATION};
+use windows_sys::Win32::Security::{
+    SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+};
 use windows_sys::Win32::System::Memory::LocalFree;
 
 use crate::CertificateError;
@@ -75,7 +77,13 @@ fn apply_private_dacl(path: &Path) -> Result<(), CertificateError> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let applied = unsafe { SetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
+    let applied = unsafe {
+        SetFileSecurityW(
+            wide.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        )
+    };
     let error = if applied == 0 {
         Some(unsafe { GetLastError() })
     } else {

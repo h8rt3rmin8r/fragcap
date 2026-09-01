@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
+use super::SensitiveRetention;
 use crate::targets::CompatibilityFactKey;
 use crate::FlowId;
 
@@ -148,6 +149,10 @@ pub struct SessionConfig {
     pub har: bool,
     /// Whether TLS key logging is requested.
     pub key_log: bool,
+    /// Whether an explicit operator-owned upstream client identity is configured.
+    pub client_identity: bool,
+    /// Lifecycle policy for sensitive bundle artifacts.
+    pub sensitive_retention: SensitiveRetention,
     /// Requested lifecycle deadlines.
     pub deadlines: Deadlines,
 }
@@ -159,6 +164,8 @@ pub struct ArtifactRequests {
     pub har: bool,
     /// Whether TLS key logging is requested.
     pub key_log: bool,
+    /// Authorized post-session handling policy.
+    pub sensitive_retention: SensitiveRetention,
 }
 
 /// Finite lifecycle deadlines.
@@ -256,6 +263,8 @@ pub struct SessionPlan {
     pub bundle: PathBuf,
     /// Whether trust will be acquired.
     pub trust_ca: bool,
+    /// Whether the plan is bound to an explicit upstream client identity.
+    pub client_identity: bool,
     /// Optional sensitive artifacts authorized with this exact plan.
     pub artifacts: ArtifactRequests,
     /// Effective bounded deadlines.

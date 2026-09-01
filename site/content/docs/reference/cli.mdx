@@ -144,6 +144,8 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `--id` | open | none | all | Select a stored target by durable identifier. |
 | `-i`, `--interface` | open | none | all | Select a capture interface; repeat for more than one. |
 | `--key-log` | open | `false` | all | Write a proxy-owned TLS key log at its final bundle path. |
+| `--client-certificate` | open | none | all | Present this explicit operator-owned certificate chain to an upstream requiring mutual TLS. Requires `--client-private-key`. |
+| `--client-private-key` | open | none | all | Use the private key matching `--client-certificate`. The key is never written to session output. |
 | `--launch` | open | `false` | all | Start the target under scoped proxy configuration. Required by the current implementation. |
 | `--launch-case` | `steam-protocol-warm`, `steam-protocol-cold`, `direct-exe-warm`, `direct-exe-cold`, `publisher-launcher`, `publisher-launcher-warm`, `publisher-launcher-game-start-clean-warm`, `publisher-launcher-cold` | none | all | Declare the launch case measured by `--calibrate`. Real calibration supports cold Steam protocol and cold direct-executable launches; other values receive a pre-side-effect refusal. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
@@ -389,6 +391,40 @@ precedence as `extcap install`.
 | `--user` | open | `false` | all | Use the per-user Wireshark directory, the default scope. |
 
 ## Data
+
+### `bundle`
+
+Group explicit lifecycle operations for completed Deep Capture bundles.
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+
+### `bundle cleanup`
+
+Delete only artifacts that the completed bundle manifest declares sensitive.
+The original journal records each intent and result so interrupted cleanup can
+resume without broad directory deletion.
+
+```powershell
+fragcap bundle cleanup .\fragcap-session --yes
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--yes` | open | `false` | all | Confirm targeted deletion of the manifest-declared sensitive artifacts. |
+
+### `bundle export`
+
+Create a separate share copy containing ordinary artifacts and a complete
+sharing manifest. The source bundle is never modified.
+
+```powershell
+fragcap bundle export .\fragcap-session --out .\fragcap-session-share
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--out` | open | none | all | Required destination directory for the new share copy. |
 
 Catalog store options resolve from explicit `--db`, then
 `FRAGCAP_CATALOG_DB`, then `%APPDATA%\fragcap\catalog.db`. The managed path is

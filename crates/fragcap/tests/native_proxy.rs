@@ -29,9 +29,11 @@ fn plan(session: &str) -> SessionPlan {
         endpoint: LoopbackEndpoint { port: 0 },
         bundle: PathBuf::from("unused-controlled-bundle"),
         trust_ca: true,
+        client_identity: false,
         artifacts: ArtifactRequests {
             har: false,
             key_log: false,
+            sensitive_retention: fragcap::deep_capture::SensitiveRetention::Retain,
         },
         deadlines: Deadlines::default(),
     }
