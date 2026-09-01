@@ -104,11 +104,38 @@ fn validate_version_identities(
     {
         problems.push("matrix or report product version differs from the workspace".to_string());
     }
-    for (name, version) in [("tokio", "1.53.1"), ("hyper", "1.11.1"), ("h2", "0.4.19")] {
-        if !lock.contains(&format!("name = \"{name}\"\nversion = \"{version}\"")) {
+    let Some(implementations) = matrix["implementations"].as_array() else {
+        problems.push("matrix implementations must be an array".to_string());
+        return Ok(problems);
+    };
+    for implementation in implementations {
+        let id = implementation["id"].as_str().unwrap_or_default();
+        let version = implementation["version"].as_str().unwrap_or_default();
+        if id == "fragcap-native" && version != workspace_version {
             problems.push(format!(
-                "conformance implementation version {name} {version} is not lock-resolved"
+                "matrix implementation {id} version {version} differs from the workspace"
             ));
+        }
+        if implementation["transport"] != "async-library" {
+            continue;
+        }
+        for identity in version.split('/') {
+            let Some((name, package_version)) = identity.rsplit_once('-') else {
+                problems.push(format!(
+                    "matrix implementation {id} has invalid package identity {identity}"
+                ));
+                continue;
+            };
+            if name.is_empty()
+                || package_version.is_empty()
+                || !lock.contains(&format!(
+                    "name = \"{name}\"\nversion = \"{package_version}\""
+                ))
+            {
+                problems.push(format!(
+                    "matrix implementation {id} package {name} {package_version} is not lock-resolved"
+                ));
+            }
         }
     }
     Ok(problems)
@@ -522,6 +549,18 @@ mod tests {
             validate_version_identities(&root, &matrix, &report).unwrap(),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn a_stale_matrix_package_version_is_rejected() {
+        let (mut matrix, report) = fixtures();
+        matrix["implementations"][1]["version"] =
+            Value::String("tokio-0.0.0/hyper-1.11.1/h2-0.4.19".to_string());
+        let root = super::super::repo_root();
+        assert!(validate_version_identities(&root, &matrix, &report)
+            .unwrap()
+            .iter()
+            .any(|problem| problem.contains("tokio 0.0.0 is not lock-resolved")));
     }
 
     #[test]
