@@ -33,6 +33,8 @@
 - Add a second chain reconciler beside `CaptureSession`. Rejected because two ancestry authorities could disagree and double lifecycle state.
 - Match descendants only by image name. Rejected because same-named unrelated and repeated-depth processes are a known P-9 failure.
 
+**Review correction**: Exact executable identity means an anchored, case-insensitive canonical-path predicate in addition to the basename. The capture session permits one binding per declared role; a competing match stops with `ambiguous-stage-match` and cannot become terminal ownership. The acquisition deadline remains active after launcher acquisition until the exact terminal stage binds. Publisher launches with no explicit `--wait` receive a finite two-minute default.
+
 ## R-4: Preserve role metadata in the existing launch-entry parser
 
 **Decision**: Extend the value parser for stored Windows launch entries to retain an optional role while preserving all current executable, argument, filter, and dedup behavior.

@@ -69,9 +69,12 @@ pub enum StopReason {
     Interrupt,
     /// An unrecoverable sink error occurred.
     SinkError,
-    /// No target was acquired before the acquisition timeout elapsed. The one
-    /// reason reached from Watching rather than Capturing.
+    /// No target was acquired, or an awaited terminal stage did not bind,
+    /// before the acquisition timeout elapsed.
     AcquisitionTimeout,
+    /// More than one process satisfied one declared stage identity. No later
+    /// candidate is bound or promoted to terminal ownership.
+    AmbiguousStageMatch,
 }
 
 /// What the session decided for one packet.
@@ -221,6 +224,7 @@ impl SessionStats {
 /// live.
 struct Binding {
     pid: u32,
+    role: String,
     terminal: bool,
     service: bool,
     live: bool,
@@ -241,6 +245,10 @@ pub struct CaptureSession {
     pending_nonservice: Vec<String>,
     /// Count of bound non-service processes still live.
     live_nonservice: u64,
+    /// Whether an allowed terminal stage has not yet bound exactly once. An
+    /// acquisition timeout remains active while this is true, even after a
+    /// launcher or intermediate stage begins capture.
+    pending_terminal: bool,
     /// The roles the run was scoped to with `--roles` (specification FR-011b).
     /// `None` means unscoped: every stage triggers and is captured. `Some` means
     /// only a stage whose role is in the set may bind, so a stage outside it
@@ -279,6 +287,10 @@ impl CaptureSession {
             .filter(|s| allowed(s.role()))
             .map(|s| s.role().to_string())
             .collect();
+        let pending_terminal = profile
+            .stages()
+            .iter()
+            .any(|s| s.is_terminal() && allowed(s.role()));
         CaptureSession {
             state: SessionState::Arming,
             profile,
@@ -290,6 +302,7 @@ impl CaptureSession {
             bindings: Vec::new(),
             pending_nonservice,
             live_nonservice: 0,
+            pending_terminal,
             allowed_roles,
         }
     }
@@ -390,14 +403,19 @@ impl CaptureSession {
         }
     }
 
-    /// The clock advanced. Fire the acquisition timeout from Watching, and the
-    /// duration bound from any active state, both measured from arm.
+    /// The clock advanced. Fire the acquisition timeout while no stage has
+    /// acquired or while an allowed terminal stage is still pending, and the
+    /// duration bound from any active state. Both are measured from arm.
     pub fn on_tick(&mut self, now: Timestamp) {
-        if self.state == SessionState::Watching {
+        if self.is_active() && (self.state == SessionState::Watching || self.pending_terminal) {
             if let (Some(timeout), Some(armed)) = (self.config.acquisition_timeout, self.armed_at) {
                 if elapsed(armed, now) >= timeout {
-                    self.stop = Some(StopReason::AcquisitionTimeout);
-                    self.state = SessionState::Complete;
+                    if self.state == SessionState::Watching {
+                        self.stop = Some(StopReason::AcquisitionTimeout);
+                        self.state = SessionState::Complete;
+                    } else {
+                        self.stop(StopReason::AcquisitionTimeout);
+                    }
                     return;
                 }
             }
@@ -496,6 +514,9 @@ impl CaptureSession {
         let Some(id) = self.tree.resolve(ProcessId(pid), at) else {
             return;
         };
+        if self.tree.node(id).and_then(|node| node.stage()).is_some() {
+            return;
+        }
         let decision = stage_for(&self.profile, &self.tree, id).map(|s| {
             (
                 StageId::new(s.role()),
@@ -513,6 +534,10 @@ impl CaptureSession {
         if !role_in(&self.allowed_roles, &role) {
             return;
         }
+        if self.bindings.iter().any(|binding| binding.role == role) {
+            self.stop(StopReason::AmbiguousStageMatch);
+            return;
+        }
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
             // A process whose exit was delivered before its start is bound
@@ -528,10 +553,14 @@ impl CaptureSession {
             }
             self.bindings.push(Binding {
                 pid,
+                role,
                 terminal,
                 service,
                 live: !already_exited,
             });
+            if terminal {
+                self.pending_terminal = false;
+            }
             // Only a non-service match acquires the target. Section 10.4: a
             // service is never awaited during acquisition, so a persistent
             // service that appears while Watching binds for attribution but does

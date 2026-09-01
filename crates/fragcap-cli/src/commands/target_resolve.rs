@@ -303,6 +303,10 @@ fn synthesize_publisher_profile(entry: &TargetEntry) -> Result<Profile, CliError
                 "exe".to_string(),
                 serde_json::Value::String(stage.image_name().to_string_lossy().into_owned()),
             );
+            predicates.insert(
+                "path_regex".to_string(),
+                serde_json::Value::String(exact_path_regex(stage.executable())),
+            );
             if let Some(parent) = stage.parent_role() {
                 predicates.insert(
                     "descends_from".to_string(),
@@ -325,6 +329,42 @@ fn synthesize_publisher_profile(entry: &TargetEntry) -> Result<Profile, CliError
         "stage": stages,
     });
     Profile::parse(&profile.to_string()).map_err(CliError::from)
+}
+
+/// Encode one canonical executable path as an exact case-insensitive regex.
+///
+/// Process paths on Windows are case-insensitive, while `path_regex` otherwise
+/// uses the regex engine's default case-sensitive comparison. Escaping every
+/// metacharacter and anchoring both ends preserves the retained executable
+/// identity instead of reducing it to a basename or substring.
+fn exact_path_regex(path: &Path) -> String {
+    let path = process_path_spelling(path);
+    let mut escaped = String::with_capacity(path.len().saturating_mul(2).saturating_add(7));
+    for ch in path.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    format!("(?i)^{escaped}$")
+}
+
+fn process_path_spelling(path: &Path) -> String {
+    let canonical = path.to_string_lossy();
+    // `std::fs::canonicalize` uses the Win32 verbatim prefix, while process
+    // creation events report the ordinary DOS or UNC spelling. They name the
+    // same path, so remove only that representation prefix before anchoring.
+    if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        canonical
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&canonical)
+            .to_string()
+    }
 }
 
 /// Build a validated two-stage observe-mode profile from an observed executable
@@ -1235,33 +1275,58 @@ mod tests {
         assert!(!stages[0].is_terminal());
         assert!(!stages[1].is_terminal());
         assert!(stages[2].is_terminal());
+        for (stage, image) in stages
+            .iter()
+            .zip(["Publisher.exe", "Bootstrap.exe", "Game.exe"])
+        {
+            let exact = stage
+                .predicates()
+                .path_regex()
+                .expect("publisher stages retain an exact path predicate");
+            let canonical = root.join(image).canonicalize().unwrap();
+            let expected = process_path_spelling(&canonical);
+            assert!(
+                exact.regex().is_match(&expected),
+                "{} does not match {}",
+                exact.as_str(),
+                expected
+            );
+            assert!(!exact
+                .regex()
+                .is_match(&root.join("other").join(image).to_string_lossy()));
+        }
 
+        let publisher_path =
+            process_path_spelling(&root.join("Publisher.exe").canonicalize().unwrap());
+        let bootstrap_path =
+            process_path_spelling(&root.join("Bootstrap.exe").canonicalize().unwrap());
+        let game_path = process_path_spelling(&root.join("Game.exe").canonicalize().unwrap());
         let mut tree = ProcessTree::new();
         tree.apply(ProcessEvent::started(
             100,
             0,
-            root.join("Publisher.exe").to_string_lossy(),
+            &publisher_path,
             "publisher",
             Timestamp::from_nanos(1),
         ));
         tree.apply(ProcessEvent::started(
             200,
             100,
-            root.join("Bootstrap.exe").to_string_lossy(),
+            &bootstrap_path,
             "bootstrap",
             Timestamp::from_nanos(2),
         ));
         tree.apply(ProcessEvent::started(
             300,
             200,
-            root.join("Game.exe").to_string_lossy(),
+            &game_path,
             "game",
             Timestamp::from_nanos(3),
         ));
         tree.apply(ProcessEvent::started(
             400,
             100,
-            root.join("Game.exe").to_string_lossy(),
+            &game_path,
             "escaped",
             Timestamp::from_nanos(4),
         ));

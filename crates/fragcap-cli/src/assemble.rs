@@ -34,6 +34,8 @@ use crate::args::{Direction, SinkFormat, SinkSpec, SinkTransport};
 use crate::cli::{CaptureArgs, ModeArg, OfflineArgs, ScopeArg};
 use crate::exit::CliError;
 
+const PUBLISHER_LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// The default snapshot length declared for a capture interface.
 const SNAP_LEN: u32 = 65_535;
 
@@ -144,6 +146,13 @@ pub fn effective_config_with_target(
     let mode = resolve_mode(args, profile);
     let ring = args.ring.map(map_ring_window);
     let launch = build_launch(args, profile, stored_target)?;
+    let acquisition_timeout = args.wait.or_else(|| {
+        matches!(
+            launch,
+            Some(fragcap::managed_launch::ManagedLaunch::Publisher(_))
+        )
+        .then_some(PUBLISHER_LAUNCH_TIMEOUT)
+    });
 
     Ok(EffectiveConfig {
         mode,
@@ -151,7 +160,7 @@ pub fn effective_config_with_target(
         out: args.out.clone(),
         sinks: args.sink.clone(),
         duration,
-        acquisition_timeout: args.wait,
+        acquisition_timeout,
         max_packets: args.max_packets,
         max_bytes: args.max_bytes,
         roles,
@@ -1245,6 +1254,55 @@ mod tests {
         };
         assert_eq!(publisher.stages().len(), 3);
         assert_eq!(publisher.stages()[2].role(), "client");
+        assert_eq!(
+            config.acquisition_timeout,
+            Some(PUBLISHER_LAUNCH_TIMEOUT),
+            "a publisher chain cannot wait forever when --wait is omitted"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_explicit_publisher_wait_overrides_the_finite_default() {
+        use fragcap::profile::FidelityTier;
+        use fragcap::targets::{ClassificationSource, TargetClassification, TargetEntry};
+
+        let root = tempfile::tempdir().unwrap();
+        for image in ["Publisher.exe", "Game.exe"] {
+            std::fs::write(root.path().join(image), b"fixture").unwrap();
+        }
+        let target = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "publisher".into(),
+            name: "Publisher".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Game.exe", "role": "client" }
+            ])),
+            install_root: Some(root.path().to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let profile = Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"authored","game":{"id":"publisher","name":"Publisher"},"stage":[{"role":"launcher","lifecycle":"session","match":{"exe":"Publisher.exe"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"Game.exe","descends_from":"launcher"}}]}"#,
+        )
+        .unwrap();
+
+        let config = effective_config_with_target(
+            &run_args(&["--launch", "--wait", "15s"]),
+            &profile,
+            Some(&target),
+        )
+        .unwrap();
+        assert_eq!(config.acquisition_timeout, Some(Duration::from_secs(15)));
     }
 
     // FR-011. --launch without a declared app_id is refused before capture.

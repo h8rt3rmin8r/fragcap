@@ -23,7 +23,7 @@ cargo test -p fragcap-cli target_resolve
 cargo test -p fragcap-cli --test cli_capture
 ```
 
-Expected: Capture synthesizes the declared multi-stage profile and only the client is terminal. Existing one-client, Steam, and unresolved-target paths retain their behavior.
+Expected: Capture synthesizes the declared multi-stage profile with exact canonical-path predicates, permits one process per role, keeps the finite acquisition deadline active until the sole terminal client binds, and preserves existing one-client, Steam, and unresolved-target behavior.
 
 ## 3. Validate Deep Capture policy and controlled outcomes
 

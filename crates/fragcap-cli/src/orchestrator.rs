@@ -210,7 +210,17 @@ pub fn capture(
 /// accounting (constitution P-4). The FIFO is opened before capture starts (a bad
 /// path fails at assembly), so a mid-capture failure is a consumer disconnect
 /// rather than a broken destination.
-fn final_exit(had_sink_failure: bool, sink_failure_is_clean: bool) -> Exit {
+fn final_exit(
+    had_sink_failure: bool,
+    sink_failure_is_clean: bool,
+    stop_reason: Option<StopReason>,
+) -> Exit {
+    if matches!(
+        stop_reason,
+        Some(StopReason::AcquisitionTimeout | StopReason::AmbiguousStageMatch)
+    ) {
+        return Exit::new(1);
+    }
     if !had_sink_failure || sink_failure_is_clean {
         Exit::SUCCESS
     } else {
@@ -349,7 +359,11 @@ fn capture_prerecorded(
     // analyzer closing its FIFO is the defined clean stop, so that end is a
     // success (the summary still carries the accounting).
     Ok(CaptureOutcome {
-        exit: final_exit(!report.sink_failures.is_empty(), sink_failure_is_clean),
+        exit: final_exit(
+            !report.sink_failures.is_empty(),
+            sink_failure_is_clean,
+            summary.stop_reason,
+        ),
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
     })
@@ -839,7 +853,11 @@ fn capture_live(
     emitter.summary(&summary);
 
     Ok(CaptureOutcome {
-        exit: final_exit(!report.sink_failures.is_empty(), sink_failure_is_clean),
+        exit: final_exit(
+            !report.sink_failures.is_empty(),
+            sink_failure_is_clean,
+            summary.stop_reason,
+        ),
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
     })
@@ -1383,12 +1401,13 @@ fn build_summary(
 #[cfg(test)]
 mod tests {
     use super::final_exit;
+    use fragcap::StopReason;
 
     // A run that ended with no sink failure is a success on any surface.
     #[test]
     fn no_sink_failure_is_always_a_success() {
-        assert_eq!(final_exit(false, false).code(), 0);
-        assert_eq!(final_exit(false, true).code(), 0);
+        assert_eq!(final_exit(false, false, None).code(), 0);
+        assert_eq!(final_exit(false, true, None).code(), 0);
     }
 
     // A sink failure is an unrecoverable end for `run` and `tap` (exit 1), but the
@@ -1398,14 +1417,26 @@ mod tests {
     #[test]
     fn a_sink_failure_ends_cleanly_only_for_an_extcap_capture() {
         assert_eq!(
-            final_exit(true, false).code(),
+            final_exit(true, false, None).code(),
             1,
             "run/tap: a sink failure is a failure"
         );
         assert_eq!(
-            final_exit(true, true).code(),
+            final_exit(true, true, None).code(),
             0,
             "extcap: a FIFO disconnect is a clean stop"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_or_ambiguous_chain_is_a_failure() {
+        assert_eq!(
+            final_exit(false, false, Some(StopReason::AcquisitionTimeout)).code(),
+            1
+        );
+        assert_eq!(
+            final_exit(false, false, Some(StopReason::AmbiguousStageMatch)).code(),
+            1
         );
     }
 }

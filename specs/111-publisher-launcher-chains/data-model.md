@@ -27,10 +27,12 @@ One exact declared role in the chain.
 
 The validated Capture profile synthesized from `PublisherStage` values.
 
-- The root stage matches its exact executable image.
-- Each later stage matches its exact executable image and descends from the prior role.
+- The root stage matches its exact canonical executable path and image.
+- Each later stage matches its exact canonical executable path and image, and descends from the prior role.
 - The client is the sole terminal stage.
 - All stages use session lifecycle so transient intermediates remain observable without becoming the stop authority.
+- One process may bind each role. A competitor produces explicit ambiguity and is not promoted.
+- The acquisition deadline stays active until the terminal stage binds. An omitted publisher `--wait` defaults to two minutes.
 
 ## PublisherChainState
 

@@ -236,6 +236,45 @@ fn no_target_by_the_acquisition_timeout_completes_without_capturing() {
 }
 
 #[test]
+fn acquisition_timeout_remains_active_until_the_terminal_stage_binds() {
+    let cfg = SessionConfig {
+        acquisition_timeout: Some(Duration::from_secs(30)),
+        ..SessionConfig::default()
+    };
+    let mut s = CaptureSession::new(terminal_chain(), cfg);
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\L\\launcher.exe", 1));
+    assert_eq!(s.state(), SessionState::Capturing);
+
+    s.on_tick(at(30_000_000_000));
+
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(s.stop_reason(), Some(StopReason::AcquisitionTimeout));
+    s.on_tick(at(31_000_000_000));
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::AcquisitionTimeout),
+        "later ticks cannot overwrite the terminal launch outcome"
+    );
+}
+
+#[test]
+fn a_second_match_for_one_stage_is_explicitly_ambiguous() {
+    let mut s = CaptureSession::new(identity(r#"{"exe":"game.exe"}"#), SessionConfig::default());
+    s.attach(at(0));
+    s.on_process_event(start(100, 0, "C:\\A\\game.exe", 1));
+    s.on_process_event(start(200, 0, "C:\\B\\game.exe", 2));
+
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(s.stop_reason(), Some(StopReason::AmbiguousStageMatch));
+    assert_eq!(
+        s.role_bindings().len(),
+        1,
+        "the competing process is observed but never promoted to stage ownership"
+    );
+}
+
+#[test]
 fn the_duration_bound_stops_capture() {
     let cfg = SessionConfig {
         duration: Some(Duration::from_secs(10)),

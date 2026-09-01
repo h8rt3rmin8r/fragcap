@@ -71,6 +71,7 @@ impl CompletionSummary {
             Some(StopReason::Interrupt) => "interrupt",
             Some(StopReason::SinkError) => "sink-error",
             Some(StopReason::AcquisitionTimeout) => "acquisition-timeout",
+            Some(StopReason::AmbiguousStageMatch) => "ambiguous-stage-match",
             None => "source-exhausted",
         }
     }

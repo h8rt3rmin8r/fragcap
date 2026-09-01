@@ -51,7 +51,10 @@ Stored target resolution returns one validated profile for both Capture and Deep
 - the launcher stage has no ancestry predicate;
 - each later stage names the prior role through `descends_from`;
 - only the client is terminal;
-- every stage retains exact executable matching.
+- every stage retains its basename and an anchored, case-insensitive canonical-path match;
+- one process may bind each declared role, and a competing match is an explicit ambiguity;
+- the acquisition deadline remains active until the exact terminal client binds;
+- an omitted publisher-chain `--wait` uses a finite two-minute default.
 
 ## Deep Capture policy contract
 
