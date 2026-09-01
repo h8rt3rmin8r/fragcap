@@ -328,6 +328,17 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
             let mut file = open_sensitive_file(&staging.join("manifest.json"))?;
             file.write_all(&bytes)?;
             file.sync_all()?;
+        } else {
+            let from = contained(&source, Path::new("manifest.json"))?;
+            let metadata = from.symlink_metadata()?;
+            if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "source manifest is not a regular file",
+                ));
+            }
+            fs::copy(&from, staging.join("manifest.json"))?;
+            included.push(json!({"path":"manifest.json","bytes":metadata.len()}));
         }
         let sharing = serde_json::to_vec_pretty(&json!({
             "version": 1,
@@ -607,10 +618,11 @@ mod tests {
         }
         assert!(!share.join("tls-keylog.log").exists());
         assert!(share.join("capture.fcapng").exists());
+        assert!(share.join("manifest.json").is_file());
         assert!(!share.join(JOURNAL).exists());
         let sharing: Value = serde_json::from_slice(&fs::read(sharing_manifest).unwrap()).unwrap();
         assert_eq!(sharing["status"], "complete");
-        assert_eq!(sharing["included"].as_array().unwrap().len(), 1);
+        assert_eq!(sharing["included"].as_array().unwrap().len(), 2);
         assert_eq!(sharing["omitted"].as_array().unwrap().len(), 1);
         assert_eq!(cleanup_sensitive(&bundle).unwrap()[0].status, "removed");
         assert_eq!(
@@ -618,6 +630,38 @@ mod tests {
             "already-absent"
         );
         assert!(bundle.join("capture.fcapng").exists());
+    }
+
+    #[test]
+    fn version_one_share_copy_retains_a_readable_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        prepare_bundle(&bundle).unwrap();
+        fs::write(bundle.join("capture.fcapng"), b"ordinary").unwrap();
+        fs::write(bundle.join("tls-keylog.log"), b"secret").unwrap();
+        let manifest = json!({
+            "manifest_version":1,
+            "artifacts":[
+                {"path":"capture.fcapng","sensitivity":"ordinary"},
+                {"path":"tls-keylog.log","sensitivity":"secret-adjacent"},
+                {"path":"manifest.json","sensitivity":"ordinary"}
+            ]
+        });
+        let source_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fs::write(bundle.join("manifest.json"), &source_bytes).unwrap();
+
+        let share = root.path().join("share");
+        let sharing_path = export_share_copy(&bundle, &share).unwrap();
+
+        assert_eq!(fs::read(share.join("manifest.json")).unwrap(), source_bytes);
+        assert!(super::super::ManifestDocument::read(&share.join("manifest.json")).is_ok());
+        assert!(!share.join("tls-keylog.log").exists());
+        let sharing: Value = serde_json::from_slice(&fs::read(sharing_path).unwrap()).unwrap();
+        assert!(sharing["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "manifest.json"));
     }
 
     #[test]

@@ -387,6 +387,8 @@ pub struct ProxyObservation {
     pub client_peer: SocketAddr,
     pub proxy_local: SocketAddr,
     pub timestamp_ns: u64,
+    pub connection_opened_at_ns: u64,
+    pub connection_closed_at_ns: u64,
     pub protocol: String,
     pub method: Option<String>,
     pub url: Option<String>,

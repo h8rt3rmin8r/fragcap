@@ -556,6 +556,7 @@ impl Pipeline {
 
         let (tx, rx) = buffer::channel(config.capacity);
         let output_stop = stop.clone();
+        let output_flow_registry = Arc::clone(&flow_registry);
         let handle = std::thread::spawn(move || {
             // Ends the acquisition loop however this thread terminates,
             // including an unwinding panic from a sink. Without it a panicking
@@ -565,7 +566,7 @@ impl Pipeline {
             // ordinary path this is a no-op: the output thread only returns
             // after acquisition has already ended and sent its terminal item.
             let _end_acquisition = StopOnDrop(output_stop.clone());
-            output_loop(rx, sinks, output_stop, gate, live, flow_registry)
+            output_loop(rx, sinks, output_stop, gate, live, output_flow_registry)
         });
         // The guard owns the producer as well as the join handle, so that
         // closing the buffer always precedes joining the thread that is
@@ -627,6 +628,7 @@ impl Pipeline {
             let stop = stop.clone();
             let read_timeout = config.read_timeout;
             let ack_tx = ack_tx.clone();
+            let flow_registry = Arc::clone(&flow_registry);
             threads.push(std::thread::spawn(move || {
                 // Winds the other capture threads down the moment this one
                 // unwinds, rather than when the main thread gets around to
@@ -650,6 +652,7 @@ impl Pipeline {
                     &filter_rx,
                     handle,
                     &ack_tx,
+                    &flow_registry,
                 );
                 stats.parse = *parser.stats();
                 stats.set_source(id, source.stats());
@@ -879,6 +882,7 @@ fn acquire(
     filter_rx: &Receiver<FilterProgram>,
     handle: usize,
     ack_tx: &Sender<(usize, bool)>,
+    flow_registry: &FlowRegistry,
 ) -> EndReason {
     loop {
         if stop.is_stopped() {
@@ -946,7 +950,11 @@ fn acquire(
         // The only interaction with the output side. Never waits for a sink to
         // make progress; see the buffer's module documentation for the exact
         // claim and why it is stated that way.
-        tx.push(Item::Packet(Box::new(packet)));
+        if let Some(evicted) = tx.push(Item::Packet(Box::new(packet))) {
+            if let Some(flow) = evicted.flow {
+                flow_registry.mark_unretained(flow);
+            }
+        }
     }
 }
 
@@ -979,7 +987,8 @@ impl OutputThread {
     /// Send the terminal item, close the buffer, and join.
     fn finish(&mut self, stats: CaptureStats) -> OutputOutcome {
         if let Some(tx) = self.tx.take() {
-            tx.push(Item::End(Box::new(stats)));
+            let evicted = tx.push(Item::End(Box::new(stats)));
+            debug_assert!(evicted.is_none(), "terminal items never evict packets");
             // Explicit, because the ordering is the whole point: the consumer
             // must see the terminal item and then the close, in that order.
             drop(tx);
@@ -1916,6 +1925,8 @@ mod tests {
         let (sink, release) = StubSink::gated(&log);
         let source = StubSource::new(frames(32)).signal_on_exhaustion(release);
         let mut p = pipeline(Box::new(source), 2);
+        let registry = Arc::new(FlowRegistry::default());
+        p.set_flow_registry(Arc::clone(&registry));
         p.add_sink(sink);
         let report = p.run();
 
@@ -1923,6 +1934,20 @@ mod tests {
         assert!(
             report.stats.buffer_dropped > 0,
             "a two-packet buffer and a held sink must have evicted"
+        );
+        let unretained = (0..32_u16)
+            .filter_map(|offset| {
+                registry.summary(&FlowKey::new(
+                    crate::flow::Proto::Udp,
+                    format!("192.0.2.10:{}", 40000 + offset).parse().unwrap(),
+                    "198.51.100.5:5055".parse().unwrap(),
+                ))
+            })
+            .map(|summary| summary.unretained_observations)
+            .sum::<u64>();
+        assert_eq!(
+            unretained, report.stats.buffer_dropped,
+            "every evicted packet must make correlation conservative"
         );
         assert_conserved(&report, &log, 0);
     }

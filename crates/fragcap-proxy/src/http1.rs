@@ -1685,6 +1685,8 @@ fn request_observation(
             .as_nanos()
             .try_into()
             .unwrap_or(u64::MAX),
+        connection_opened_at_ns: 0,
+        connection_closed_at_ns: 0,
         protocol: context.protocol.to_string(),
         method: Some(request.method.clone()),
         url: Some(if context.protocol == "https" {

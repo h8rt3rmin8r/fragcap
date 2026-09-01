@@ -23,9 +23,9 @@ pub use fragcap_proxy::{
 };
 
 use super::{
-    BackendDescriptor, Budget, CleanupResult, CleanupStatus, CompatibilityObservation,
-    CorrelationState, Inspectability, LoopbackEndpoint, ProxyBackend, ProxyLease, ProxyRoute,
-    SessionPlan, Stage, StageFailure,
+    ApplicationConnectionWindow, BackendDescriptor, Budget, CleanupResult, CleanupStatus,
+    CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint, ProxyBackend,
+    ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
 };
 
 /// Finite native runtime limits selected by the library consumer.
@@ -215,12 +215,9 @@ impl ProxyBackend for NativeProxyAdapter {
                                 "controlled-harness-has-no-packet-flow".to_string(),
                             )
                         } else {
-                            correlate_native_observation(
+                            correlate_connection_window(
                                 &correlation_context.flow_registry,
-                                descriptor.descriptor.client_peer,
-                                descriptor.descriptor.proxy_local,
-                                descriptor.opened_at_ns,
-                                descriptor.closed_at_ns.unwrap_or(u64::MAX),
+                                descriptor,
                             )
                         };
                         super::ApplicationCorrelation {
@@ -374,8 +371,8 @@ impl ProxyLease for NativeProxyLease {
                         &self.observation_context.flow_registry,
                         value.client_peer,
                         value.proxy_local,
-                        value.timestamp_ns,
-                        value.timestamp_ns,
+                        value.connection_opened_at_ns,
+                        value.connection_closed_at_ns,
                     )
                 };
                 CompatibilityObservation {
@@ -474,6 +471,32 @@ type NativeCorrelation = (
     CorrelationState,
     String,
 );
+
+fn correlate_connection_window(
+    registry: &FlowRegistry,
+    window: &ApplicationConnectionWindow,
+) -> NativeCorrelation {
+    let Some(closed_at_ns) = window.closed_at_ns else {
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            CorrelationState::Unavailable,
+            "connection-terminal-not-observed".to_string(),
+        );
+    };
+    correlate_native_observation(
+        registry,
+        window.descriptor.client_peer,
+        window.descriptor.proxy_local,
+        window.opened_at_ns,
+        closed_at_ns,
+    )
+}
 
 fn correlate_native_observation(
     registry: &FlowRegistry,
@@ -973,6 +996,37 @@ mod tests {
         assert_eq!(result.6, 1);
         assert_eq!(result.7, CorrelationState::Unavailable);
         assert_eq!(result.8, "packet-history-bound-exceeded");
+    }
+
+    #[test]
+    fn missing_connection_terminal_refuses_correlation() {
+        use fragcap_core::Timestamp;
+
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        registry.observe_at(
+            FlowKey::new(Proto::Tcp, client, proxy),
+            Timestamp::from_nanos(15),
+            Some(&Attribution::new(11, "game.exe", Fidelity::Live)),
+        );
+        let result = correlate_connection_window(
+            &registry,
+            &ApplicationConnectionWindow {
+                descriptor: fragcap_proxy::ConnectionDescriptor {
+                    transport: "tcp",
+                    client_peer: client,
+                    proxy_local: proxy,
+                },
+                opened_at_ns: 10,
+                closed_at_ns: None,
+            },
+        );
+
+        assert_eq!(result.7, CorrelationState::Unavailable);
+        assert_eq!(result.8, "connection-terminal-not-observed");
+        assert!(result.0.is_none());
+        assert!(result.1.is_none());
     }
 
     #[test]

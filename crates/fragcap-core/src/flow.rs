@@ -167,9 +167,10 @@ pub struct FlowSummary {
 
 /// The capture-wide mapping from canonical flow keys to session-local ids.
 ///
-/// Assignment happens on the pipeline's single output thread, after the write
-/// gate admits a packet. The mutex therefore does not enter packet acquisition;
-/// it only permits Deep Capture to read the completed mapping after capture.
+/// Ordinary assignment happens on the pipeline's single output thread, after
+/// the write gate admits a packet. A buffer eviction records only a conservative
+/// unretained marker from acquisition, so dropped evidence cannot later support
+/// a confident Deep Capture correlation.
 #[derive(Debug)]
 pub struct FlowRegistry {
     state: Mutex<FlowRegistryState>,
@@ -253,6 +254,31 @@ impl FlowRegistry {
         if retain {
             state.retained_observations += 1;
         }
+        id
+    }
+
+    /// Record that a packet for this flow was observed but evicted before its
+    /// full correlation evidence could be retained.
+    pub fn mark_unretained(&self, key: FlowKey) -> FlowId {
+        let mut state = self.state.lock().expect("flow registry mutex poisoned");
+        if let Some(flow) = state.flows.get_mut(&key) {
+            flow.unretained_observations = flow.unretained_observations.saturating_add(1);
+            return flow.id;
+        }
+        let id = FlowId::new(state.next).expect("the flow id counter starts at one");
+        state.next = state
+            .next
+            .checked_add(1)
+            .expect("the session-local flow id space is exhausted");
+        state.flows.insert(
+            key,
+            RegisteredFlow {
+                id,
+                attribution: None,
+                observations: Vec::new(),
+                unretained_observations: 1,
+            },
+        );
         id
     }
 
