@@ -1073,6 +1073,13 @@ fn output_loop(
         // conservation identity: a gate drop is withheld from every sink at once.
         if let Some(gate) = gate.as_ref() {
             if !gate.admit(&packet) {
+                // The packet still existed as correlation evidence even though
+                // capture policy withheld it from every sink. Preserve that
+                // fact conservatively so a later packet on a reused tuple
+                // cannot become a false sole match.
+                if let Some(flow) = packet.flow {
+                    flow_registry.mark_unretained(flow);
+                }
                 gate_dropped = gate_dropped.saturating_add(1);
                 continue;
             }
@@ -1850,6 +1857,8 @@ mod tests {
         let log = log();
         let (gate, rejected) = ScriptedGate::new([0u8, 2, 4, 6]);
         let mut p = pipeline(Box::new(StubSource::new(frames(8))), 64);
+        let registry = Arc::new(FlowRegistry::default());
+        p.set_flow_registry(Arc::clone(&registry));
         p.add_sink(StubSink::recording(&log));
         p.set_write_gate(gate);
         let report = p.run();
@@ -1862,6 +1871,17 @@ mod tests {
             "the four rejected packets are counted"
         );
         assert_eq!(rejected.load(std::sync::atomic::Ordering::Relaxed), 4);
+        let unretained = (0..8_u16)
+            .filter_map(|offset| {
+                registry.summary(&FlowKey::new(
+                    crate::flow::Proto::Udp,
+                    format!("192.0.2.10:{}", 40000 + offset).parse().unwrap(),
+                    "198.51.100.5:5055".parse().unwrap(),
+                ))
+            })
+            .map(|summary| summary.unretained_observations)
+            .sum::<u64>();
+        assert_eq!(unretained, report.stats.gate_dropped);
         // received (4) + buffer_dropped (0) + gate_dropped (4) + refusals (0) == 8.
         assert_conserved(&report, &log, 0);
         assert!(report.is_clean(), "a gate discard is not a failure");

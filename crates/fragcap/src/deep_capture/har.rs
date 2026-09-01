@@ -25,6 +25,7 @@ struct Transaction {
     request_bodies: Bodies,
     response_bodies: Bodies,
     correlation: Option<Value>,
+    body_evidence_gap: bool,
 }
 
 #[derive(Default)]
@@ -119,6 +120,10 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
             trailer = record.get("writer_status").and_then(Value::as_str) == Some("complete");
             continue;
         }
+        if kind == "application.gap" {
+            apply_body_losses(&record, &mut transactions)?;
+            continue;
+        }
         let Some(connection) = record.get("proxy_connection_id").and_then(Value::as_u64) else {
             continue;
         };
@@ -201,6 +206,53 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
         standard_entries,
         partial_entries,
     })
+}
+
+fn apply_body_losses(
+    record: &Value,
+    transactions: &mut BTreeMap<(u64, u64), Transaction>,
+) -> io::Result<()> {
+    let Some(losses) = record.get("body_losses").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for loss in losses {
+        let Some(connection) = loss.get("proxy_connection_id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(stream) = loss.get("http_stream_id").and_then(Value::as_u64) else {
+            continue;
+        };
+        if transactions.len() >= MAX_TRANSACTIONS
+            && !transactions.contains_key(&(connection, stream))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HAR transaction bound exceeded",
+            ));
+        }
+        let tx = transactions.entry((connection, stream)).or_default();
+        tx.body_evidence_gap = true;
+        let bodies = if loss.get("direction").and_then(Value::as_str) == Some("request") {
+            &mut tx.request_bodies
+        } else {
+            &mut tx.response_bodies
+        };
+        let representation = loss
+            .get("representation")
+            .and_then(Value::as_str)
+            .unwrap_or("raw");
+        let observed = loss
+            .get("observed_bytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let slot = bodies
+            .observed
+            .entry(representation.to_string())
+            .or_default();
+        *slot = slot.saturating_add(observed);
+        bodies.limited.insert(representation.to_string(), true);
+    }
+    Ok(())
 }
 
 fn body_summary(bodies: &Bodies) -> Value {
@@ -307,6 +359,9 @@ fn standard_entry(
     });
     if tx.terminal.as_deref() != Some("complete") {
         missing.push("complete-terminal");
+    }
+    if tx.body_evidence_gap {
+        missing.push("body-evidence-gap");
     }
     let method = binary_text(request.get("method"));
     let url = binary_text(request.get("url"));
@@ -537,6 +592,27 @@ mod tests {
         let reasons = standard_entry(7, 9, &tx).unwrap_err();
         assert!(reasons.contains(&"timing"));
         assert!(reasons.contains(&"phase-timings"));
+    }
+
+    #[test]
+    fn queue_dropped_body_evidence_forces_a_partial_entry() {
+        let mut transactions = BTreeMap::from([((7, 9), complete_transaction())]);
+        apply_body_losses(
+            &json!({"body_losses":[{
+                "proxy_connection_id":7,
+                "http_stream_id":9,
+                "direction":"response",
+                "representation":"content-decoded",
+                "observed_bytes":11
+            }]}),
+            &mut transactions,
+        )
+        .unwrap();
+        let tx = transactions.get(&(7, 9)).unwrap();
+        let reasons = standard_entry(7, 9, tx).unwrap_err();
+        assert!(reasons.contains(&"body-evidence-gap"));
+        assert_eq!(tx.response_bodies.observed["content-decoded"], 11);
+        assert!(tx.response_bodies.limited["content-decoded"]);
     }
 
     #[test]

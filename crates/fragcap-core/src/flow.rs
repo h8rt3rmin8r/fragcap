@@ -168,8 +168,8 @@ pub struct FlowSummary {
 /// The capture-wide mapping from canonical flow keys to session-local ids.
 ///
 /// Ordinary assignment happens on the pipeline's single output thread, after
-/// the write gate admits a packet. A buffer eviction records only a conservative
-/// unretained marker from acquisition, so dropped evidence cannot later support
+/// the write gate admits a packet. Buffer evictions and gate rejections record
+/// conservative unretained markers, so withheld evidence cannot later support
 /// a confident Deep Capture correlation.
 #[derive(Debug)]
 pub struct FlowRegistry {

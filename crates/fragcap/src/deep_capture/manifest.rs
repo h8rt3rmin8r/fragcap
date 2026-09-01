@@ -105,6 +105,10 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
             .and_then(|value| value.get("version"))
             .and_then(Value::as_str)
             .is_none_or(str::is_empty)
+        || object
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
         || object.get("artifacts").and_then(Value::as_array).is_none()
         || object.get("omissions").and_then(Value::as_array).is_none()
         || !matches!(
@@ -412,5 +416,17 @@ mod tests {
         .unwrap();
         assert!(directory.path().join("manifest.json").is_file());
         assert!(!directory.path().join(MANIFEST_PREFIX).exists());
+    }
+
+    #[test]
+    fn version_two_requires_a_nonempty_session_identifier() {
+        let mut value: Value = serde_json::from_slice(include_bytes!(
+            "../../../../docs/schema/examples/deep-capture-manifest-v2-complete.json"
+        ))
+        .unwrap();
+        value.as_object_mut().unwrap().remove("session_id");
+        assert!(ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["session_id"] = Value::String(String::new());
+        assert!(ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }

@@ -2,11 +2,23 @@
 
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fragcap_proxy::{
+    ApplicationEvent, ApplicationEventKind, ApplicationEventSink, EventDisposition,
     NativeProxyBackend, NativeProxyConfig, ProxyAuthorizationError, SessionCapability,
 };
+
+#[derive(Default)]
+struct Collector(Mutex<Vec<ApplicationEvent>>);
+
+impl ApplicationEventSink for Collector {
+    fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        self.0.lock().unwrap().push(event);
+        EventDisposition::Accepted
+    }
+}
 
 #[test]
 fn capability_is_random_redacted_and_exact() {
@@ -60,7 +72,9 @@ fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
         Duration::from_secs(1),
     )
     .unwrap();
-    let mut backend = NativeProxyBackend::new(config);
+    let collector = Arc::new(Collector::default());
+    let mut backend =
+        NativeProxyBackend::new(config).with_application_event_sink(collector.clone());
     let mut lease = backend.start(Duration::from_secs(1)).unwrap();
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let mut wrong = TcpStream::connect(endpoint).unwrap();
@@ -84,6 +98,22 @@ fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
     assert_eq!(report.observation.authentication_refused, 1);
     assert_eq!(report.observation.authenticated_connections, 1);
     assert_eq!(report.observation.accepted_connections, 2);
+    let events = collector.0.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, ApplicationEventKind::ConnectionOpen(_)))
+            .count(),
+        2,
+        "every accepted connection needs a correlation descriptor"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, ApplicationEventKind::ConnectionTerminal(_)))
+            .count(),
+        2
+    );
 }
 
 #[test]

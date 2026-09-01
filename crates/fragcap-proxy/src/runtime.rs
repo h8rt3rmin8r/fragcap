@@ -468,20 +468,6 @@ async fn connection_task(
             })
         }
     };
-    crate::application::emit(
-        &services.application_sink,
-        crate::ApplicationEvent::now(
-            &config.session_id,
-            connection_id,
-            None,
-            None,
-            crate::ApplicationEventKind::ConnectionOpen(crate::ConnectionDescriptor {
-                transport: "tcp",
-                client_peer: peer,
-                proxy_local: local,
-            }),
-        ),
-    );
     if first.is_connect() {
         let authority = first.authority().clone();
         let upstream = match connect_upstream(&authority, policy, config.protocol.upstream).await {
@@ -1112,6 +1098,22 @@ async fn run(
                                 observation.peak_live_connections = observation
                                     .peak_live_connections
                                     .max(observation.live_connections);
+                                crate::application::emit(
+                                    &connection_services.application_sink,
+                                    crate::ApplicationEvent::now(
+                                        &connection_services.config.session_id,
+                                        connection_id,
+                                        None,
+                                        None,
+                                        crate::ApplicationEventKind::ConnectionOpen(
+                                            crate::ConnectionDescriptor {
+                                                transport: "tcp",
+                                                client_peer: peer,
+                                                proxy_local: local,
+                                            },
+                                        ),
+                                    ),
+                                );
                                 tasks.spawn(async move {
                                     let terminal_sink = connection_services.application_sink.clone();
                                     let terminal_session = connection_services.config.session_id.clone();
