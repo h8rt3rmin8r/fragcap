@@ -397,6 +397,17 @@ declared image set. Cold state triggers fresh target resolution and preparation,
 followed by a second authorization before any session effect. S113 adds no
 dependency or lockfile package, and Deep Capture remains incomplete until #334.
 
+S114 closes #310 at the authenticated SOCKS5 TCP routing boundary. The shared
+native listener recognizes SOCKS5, accepts only RFC 1929 credentials bound to
+the current session capability, and supports CONNECT for IPv4, IPv6, and
+proxy-resolved domain destinations under the existing upstream policy. Relay is
+bounded, byte-transparent, half-close aware, cancellable, and loss-accounted.
+Typed application and lifecycle evidence records negotiation, address form, DNS
+ownership, classification, byte totals, and terminal state without retaining the
+capability or claiming generic TCP payload semantics. UDP ASSOCIATE remains #311,
+generic TCP and non-HTTP TLS semantics remain #312, and Deep Capture remains
+incomplete until #334. S114 adds no dependency or lockfile package.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

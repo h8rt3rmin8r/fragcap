@@ -381,7 +381,10 @@ impl ProxyLease for NativeProxyLease {
             LoopbackEndpoint {
                 port: endpoint.port(),
             },
-            self.lease.proxy_url(),
+            (
+                self.lease.proxy_url(),
+                self.lease.capability_proof().socks5h_url(endpoint),
+            ),
             self.lease.capability_proof().proxy_authorization(),
             self.lease.ca_der().to_vec(),
             self.lease.ca_sha1_thumbprint().to_string(),

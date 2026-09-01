@@ -2318,6 +2318,7 @@ fn run_controlled_target_harness(
     on_started: impl FnOnce(u32),
 ) -> Result<u32, CliError> {
     let proxy_url = route.proxy_url();
+    let socks5h_url = route.socks5h_url();
     let executable = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
@@ -2330,7 +2331,7 @@ fn run_controlled_target_harness(
         .arg("__controlled-target")
         .env("HTTP_PROXY", proxy_url)
         .env("HTTPS_PROXY", proxy_url)
-        .env("ALL_PROXY", proxy_url)
+        .env("ALL_PROXY", socks5h_url)
         .env("NO_PROXY", "")
         .env(
             "FRAGCAP_NATIVE_PROXY_ENDPOINT",
@@ -2388,12 +2389,17 @@ fn run_controlled_target_harness(
 pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliError> {
     let proxy = std::env::var("HTTP_PROXY")
         .map_err(|_| CliError::failure("controlled target did not inherit HTTP_PROXY"))?;
-    for key in ["HTTPS_PROXY", "ALL_PROXY"] {
-        if std::env::var(key).as_deref() != Ok(proxy.as_str()) {
-            return Err(CliError::failure(format!(
-                "controlled target did not inherit {key}"
-            )));
-        }
+    if std::env::var("HTTPS_PROXY").as_deref() != Ok(proxy.as_str()) {
+        return Err(CliError::failure(
+            "controlled target did not inherit HTTPS_PROXY",
+        ));
+    }
+    let socks = std::env::var("ALL_PROXY")
+        .map_err(|_| CliError::failure("controlled target did not inherit ALL_PROXY"))?;
+    if !socks.starts_with("socks5h://fragcap:") {
+        return Err(CliError::failure(
+            "controlled target ALL_PROXY is not the authenticated SOCKS5 route",
+        ));
     }
     if std::env::var("NO_PROXY").as_deref() != Ok("") {
         return Err(CliError::failure(

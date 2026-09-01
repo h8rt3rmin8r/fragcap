@@ -464,6 +464,10 @@ impl BoundedTlsUpstreamStream {
 }
 
 impl BoundedUpstreamStream {
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.local_addr()
+    }
+
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, UpstreamError> {
         timeout(self.read_budget, self.stream.read(buffer))
             .await
@@ -571,9 +575,15 @@ pub async fn connect_upstream_cancellable(
                 })
             }
             Ok(Err(error)) => {
+                let code = match error.kind() {
+                    std::io::ErrorKind::ConnectionRefused => "connection-refused",
+                    std::io::ErrorKind::NetworkUnreachable => "network-unreachable",
+                    std::io::ErrorKind::HostUnreachable => "host-unreachable",
+                    _ => "connect-failed",
+                };
                 last = Some(UpstreamError::with_detail(
                     UpstreamStage::Tcp,
-                    "connect-failed",
+                    code,
                     error.to_string(),
                 ))
             }

@@ -363,6 +363,21 @@ pub struct ProtocolAccounting {
     pub application_events_accepted: u64,
     pub application_events_dropped: u64,
     pub streaming_bytes_queue_dropped: u64,
+    pub socks_negotiations: u64,
+    pub socks_auth_succeeded: u64,
+    pub socks_auth_refused: u64,
+    pub socks_connect_requested: u64,
+    pub socks_connect_succeeded: u64,
+    pub socks_connect_refused: u64,
+    pub socks_dns_owned: u64,
+    pub socks_ipv4: u64,
+    pub socks_ipv6: u64,
+    pub socks_domain: u64,
+    pub socks_http: u64,
+    pub socks_tls: u64,
+    pub socks_tcp_opaque: u64,
+    pub socks_client_bytes: u64,
+    pub socks_upstream_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

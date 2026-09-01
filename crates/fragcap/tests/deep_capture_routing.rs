@@ -29,3 +29,26 @@ fn child_routing_clears_inherited_proxy_bypass() {
     assert_eq!(no_proxy.scope, "managed-child-only");
     assert_eq!(no_proxy.value, RouteValueSource::Literal(String::new()));
 }
+
+#[test]
+fn child_routing_uses_distinct_http_and_proxy_resolved_socks_values() {
+    let plan = RoutingPlan::child_environment();
+    for name in ["HTTP_PROXY", "HTTPS_PROXY"] {
+        assert_eq!(
+            plan.effects
+                .iter()
+                .find(|effect| effect.destination == name)
+                .expect("HTTP route is declared")
+                .value,
+            RouteValueSource::SessionProxyUrl
+        );
+    }
+    assert_eq!(
+        plan.effects
+            .iter()
+            .find(|effect| effect.destination == "ALL_PROXY")
+            .expect("SOCKS route is declared")
+            .value,
+        RouteValueSource::SessionSocks5hUrl
+    );
+}
