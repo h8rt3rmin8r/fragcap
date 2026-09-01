@@ -94,6 +94,25 @@ fn owned_platform_exit_before_client_is_an_exact_failure() {
 }
 
 #[test]
+fn owned_platform_exit_before_its_start_event_never_authorizes_dispatch() {
+    let mut s = CaptureSession::new(
+        platform_profile(),
+        SessionConfig {
+            exact_stage_ownership: true,
+            ..SessionConfig::default()
+        },
+    );
+    s.attach(at(0));
+    s.on_process_event(exit(10, 2));
+    s.on_process_event(start(10, 0, "C:\\Steam\\steam.exe", 1));
+    assert_eq!(s.state(), SessionState::Draining);
+    assert_eq!(
+        s.stop_reason(),
+        Some(StopReason::PlatformExitedBeforeClient)
+    );
+}
+
+#[test]
 fn owned_client_identity_outside_platform_tree_is_refused() {
     let mut s = CaptureSession::new(
         platform_profile(),

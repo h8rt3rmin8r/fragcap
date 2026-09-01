@@ -747,7 +747,7 @@ fn capture_live(
                 apply_event(event, &mut session, &mut bound, emitter);
                 let bindings = session.role_bindings();
                 publisher.publish(bindings.clone());
-                if platform_dispatch.observe(&bindings) {
+                if is_active(&session) && platform_dispatch.observe(&bindings) {
                     let dispatch = config.launch.as_ref().and_then(|launch| match launch {
                         fragcap::managed_launch::ManagedLaunch::Platform(platform) => {
                             Some(platform.dispatch_title())

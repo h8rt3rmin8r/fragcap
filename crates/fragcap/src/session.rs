@@ -567,6 +567,7 @@ impl CaptureSession {
         }
         if self.tree.bind_stage(id, sid) {
             let service = lifecycle == Lifecycle::Service;
+            let platform = role == "platform";
             // A process whose exit was delivered before its start is bound
             // already exited: the tree joins a held exit on the start event, so
             // the node is not live even though this is its first appearance to
@@ -600,7 +601,11 @@ impl CaptureSession {
             // is: a terminal that has exited still stops capture, and a stale
             // live count cannot otherwise block AllProcessesExited.
             if already_exited {
-                self.note_bound_exit(terminal);
+                if platform && self.owns_platform_client() && self.pending_terminal {
+                    self.stop(StopReason::PlatformExitedBeforeClient);
+                } else {
+                    self.note_bound_exit(terminal);
+                }
             }
         }
     }

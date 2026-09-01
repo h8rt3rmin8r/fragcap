@@ -456,7 +456,10 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 shutdown: config.deadlines.shutdown,
                 cleanup: config.deadlines.cleanup,
             };
-            let capture_args = real_capture_args(self.args, &config.bundle, deadlines);
+            let mut capture_args = real_capture_args(self.args, &config.bundle, deadlines);
+            if target.launch_case == fragcap::deep_capture::LaunchCase::SteamProtocolCold {
+                capture_args.wait = owned_platform_wait(capture_args.wait, config.deadlines.launch);
+            }
             let prepared =
                 if target.launch_case == fragcap::deep_capture::LaunchCase::SteamProtocolCold {
                     capture::prepare_owned_platform(&capture_args, &mut self.emitter.borrow_mut())
@@ -1875,6 +1878,10 @@ fn real_capture_args(
     }
 }
 
+fn owned_platform_wait(current: Option<Duration>, launch_deadline: Duration) -> Option<Duration> {
+    Some(current.map_or(launch_deadline, |value| value.min(launch_deadline)))
+}
+
 fn run_real_capture(
     capture_args: &CaptureArgs,
     prepared: capture::PreparedCapture,
@@ -3150,6 +3157,22 @@ mod tests {
         assert_eq!(
             bounded_timeout(None, CALIBRATION_OBSERVATION_TIMEOUT),
             CALIBRATION_OBSERVATION_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn owned_platform_capture_inherits_the_finite_session_launch_deadline() {
+        let deadline = Duration::from_secs(17);
+        assert_eq!(owned_platform_wait(None, deadline), Some(deadline));
+        assert_eq!(
+            owned_platform_wait(Some(Duration::from_secs(3)), deadline),
+            Some(Duration::from_secs(3)),
+            "an explicit shorter operator deadline is retained"
+        );
+        assert_eq!(
+            owned_platform_wait(Some(Duration::from_secs(30)), deadline),
+            Some(deadline),
+            "an operator value cannot exceed the session launch deadline"
         );
     }
 
