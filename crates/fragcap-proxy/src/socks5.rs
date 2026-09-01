@@ -347,12 +347,6 @@ async fn read_connect_request(
             SocksReplyCode::GeneralFailure,
         ));
     }
-    if head[1] != CONNECT {
-        return Err(SocksFailure::reply(
-            "socks-command-unsupported",
-            SocksReplyCode::CommandNotSupported,
-        ));
-    }
     let (host, address_type) = match head[3] {
         1 => {
             let mut octets = [0_u8; 4];
@@ -398,6 +392,12 @@ async fn read_connect_request(
     };
     let mut port = [0_u8; 2];
     read_exact(stream, &mut port, budget, "socks-port").await?;
+    if head[1] != CONNECT {
+        return Err(SocksFailure::reply(
+            "socks-command-unsupported",
+            SocksReplyCode::CommandNotSupported,
+        ));
+    }
     let port = u16::from_be_bytes(port);
     let authority = DestinationAuthority::parse(&format!("{host}:{port}")).map_err(|error| {
         SocksFailure::reply(error.code, SocksReplyCode::AddressTypeNotSupported)
