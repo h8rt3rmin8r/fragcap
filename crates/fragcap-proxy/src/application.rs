@@ -36,7 +36,47 @@ pub enum ApplicationEventKind {
     Body(BodySegment),
     Transformation(Transformation),
     Streaming(StreamingEvent),
+    SocksNegotiation(SocksNegotiationEvent),
+    SocksConnect(SocksConnectEvent),
+    SocksTransfer(SocksTransferEvent),
     Error { code: &'static str },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocksClassification {
+    Http,
+    Tls,
+    OpaqueTcp,
+}
+
+impl SocksClassification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Tls => "tls",
+            Self::OpaqueTcp => "tcp-opaque",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SocksNegotiationEvent {
+    pub authenticated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SocksConnectEvent {
+    pub authority: String,
+    pub address_type: &'static str,
+    pub dns_owner: &'static str,
+    pub outcome: &'static str,
+    pub classification: Option<SocksClassification>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SocksTransferEvent {
+    pub client_to_upstream_bytes: u64,
+    pub upstream_to_client_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -368,6 +368,7 @@ impl Drop for NativeProxyLease {
 enum ConnectionOutcome {
     Completed(HttpRun),
     Failed(HttpRun),
+    PreAuthenticationFailed(HttpRun),
     AuthenticationRefused(ProtocolError),
 }
 
@@ -405,6 +406,45 @@ async fn connection_task(
     let connection_id = identity.id;
     let peer = identity.peer;
     let local = identity.local;
+    let socks5 = tokio::select! {
+        _ = shutdown.changed() => false,
+        value = crate::socks5::is_socks5(&stream, config.protocol.header_timeout) => value,
+    };
+    if socks5 {
+        let run = crate::socks5::serve_socks5(
+            stream,
+            capability,
+            policy,
+            crate::socks5::SocksConnectionContext {
+                limits: config.protocol_limits(),
+                shutdown,
+                session_id: &config.session_id,
+                connection_id,
+                peer,
+                local,
+                sink: &services.application_sink,
+                buffer_bytes: config.per_connection_buffer_bytes(),
+            },
+        )
+        .await;
+        if run
+            .failure
+            .as_ref()
+            .is_some_and(|error| error.authentication_refused)
+        {
+            return ConnectionOutcome::AuthenticationRefused(
+                run.failure.expect("authentication refusal has an error"),
+            );
+        }
+        if run.accounting.socks_auth_succeeded == 0 {
+            return ConnectionOutcome::PreAuthenticationFailed(run);
+        }
+        return if run.failure.is_some() {
+            ConnectionOutcome::Failed(run)
+        } else {
+            ConnectionOutcome::Completed(run)
+        };
+    }
     let cleartext_http2 = tokio::select! {
         _ = shutdown.changed() => false,
         value = has_http2_preface(&stream, config.protocol.header_timeout) => value,
@@ -897,7 +937,9 @@ async fn connection_task(
 
 fn stamp_observation_window(outcome: &mut ConnectionOutcome, opened_at_ns: u64, closed_at_ns: u64) {
     let run = match outcome {
-        ConnectionOutcome::Completed(run) | ConnectionOutcome::Failed(run) => run,
+        ConnectionOutcome::Completed(run)
+        | ConnectionOutcome::Failed(run)
+        | ConnectionOutcome::PreAuthenticationFailed(run) => run,
         ConnectionOutcome::AuthenticationRefused(_) => return,
     };
     for observation in &mut run.observations {
@@ -1133,7 +1175,11 @@ async fn run(
                                     let terminal = match &outcome {
                                         ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
                                         ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
+                                        ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
+                                        ConnectionOutcome::PreAuthenticationFailed(_) => crate::StreamTerminal::ProtocolError,
                                         ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
+                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.code == "connection-cancelled") => crate::StreamTerminal::Shutdown,
+                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.code == "socks-forward-failed") => crate::StreamTerminal::TransportError,
                                         ConnectionOutcome::Failed(_) => crate::StreamTerminal::ProtocolError,
                                     };
                                     crate::application::emit(
@@ -1267,10 +1313,32 @@ fn account_join(
             observation.completed_connections = observation.completed_connections.saturating_add(1);
             observation.protocol.parse_refused =
                 observation.protocol.parse_refused.saturating_add(1);
+            if error.code.starts_with("socks-") {
+                observation.protocol.socks_negotiations =
+                    observation.protocol.socks_negotiations.saturating_add(1);
+                observation.protocol.socks_auth_refused =
+                    observation.protocol.socks_auth_refused.saturating_add(1);
+            }
             observation.failures.push(RuntimeFailure {
                 code: error.code,
                 detail: error.detail,
                 connection_id: None,
+            });
+        }
+        Ok((id, ConnectionOutcome::PreAuthenticationFailed(run))) => {
+            observation.failed_connections = observation.failed_connections.saturating_add(1);
+            let failure = run.failure.clone();
+            merge_protocol(observation, run, max_observations);
+            let failure = failure.unwrap_or_else(|| {
+                ProtocolError::new(
+                    "pre-authentication-failed",
+                    "connection failed before authentication",
+                )
+            });
+            observation.failures.push(RuntimeFailure {
+                code: failure.code,
+                detail: failure.detail,
+                connection_id: Some(id),
             });
         }
         Ok((id, ConnectionOutcome::Failed(run))) => {
@@ -1384,6 +1452,66 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .application_events_dropped
         .saturating_add(source.application_events_dropped);
+    observation.protocol.socks_negotiations = observation
+        .protocol
+        .socks_negotiations
+        .saturating_add(source.socks_negotiations);
+    observation.protocol.socks_auth_succeeded = observation
+        .protocol
+        .socks_auth_succeeded
+        .saturating_add(source.socks_auth_succeeded);
+    observation.protocol.socks_auth_refused = observation
+        .protocol
+        .socks_auth_refused
+        .saturating_add(source.socks_auth_refused);
+    observation.protocol.socks_connect_requested = observation
+        .protocol
+        .socks_connect_requested
+        .saturating_add(source.socks_connect_requested);
+    observation.protocol.socks_connect_succeeded = observation
+        .protocol
+        .socks_connect_succeeded
+        .saturating_add(source.socks_connect_succeeded);
+    observation.protocol.socks_connect_refused = observation
+        .protocol
+        .socks_connect_refused
+        .saturating_add(source.socks_connect_refused);
+    observation.protocol.socks_dns_owned = observation
+        .protocol
+        .socks_dns_owned
+        .saturating_add(source.socks_dns_owned);
+    observation.protocol.socks_ipv4 = observation
+        .protocol
+        .socks_ipv4
+        .saturating_add(source.socks_ipv4);
+    observation.protocol.socks_ipv6 = observation
+        .protocol
+        .socks_ipv6
+        .saturating_add(source.socks_ipv6);
+    observation.protocol.socks_domain = observation
+        .protocol
+        .socks_domain
+        .saturating_add(source.socks_domain);
+    observation.protocol.socks_http = observation
+        .protocol
+        .socks_http
+        .saturating_add(source.socks_http);
+    observation.protocol.socks_tls = observation
+        .protocol
+        .socks_tls
+        .saturating_add(source.socks_tls);
+    observation.protocol.socks_tcp_opaque = observation
+        .protocol
+        .socks_tcp_opaque
+        .saturating_add(source.socks_tcp_opaque);
+    observation.protocol.socks_client_bytes = observation
+        .protocol
+        .socks_client_bytes
+        .saturating_add(source.socks_client_bytes);
+    observation.protocol.socks_upstream_bytes = observation
+        .protocol
+        .socks_upstream_bytes
+        .saturating_add(source.socks_upstream_bytes);
     observation.application.extend(run.observations);
     let excess = observation
         .application

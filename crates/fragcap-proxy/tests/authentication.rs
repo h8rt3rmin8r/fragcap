@@ -64,6 +64,20 @@ fn capability_uses_strict_standard_proxy_authorization() {
 }
 
 #[test]
+fn capability_uses_the_same_secret_for_a_redacted_socks5h_route() {
+    let capability = SessionCapability::generate().unwrap();
+    let proof = capability.proof();
+    let password = proof.proxy_password();
+    assert!(capability.authenticates_socks_credentials(b"fragcap", password.as_bytes()));
+    assert!(!capability.authenticates_socks_credentials(b"other", password.as_bytes()));
+    assert!(!capability.authenticates_socks_credentials(b"fragcap", b"wrong"));
+    let url = proof.socks5h_url("127.0.0.1:3210".parse().unwrap());
+    assert!(url.starts_with("socks5h://fragcap:"));
+    assert!(url.ends_with("@127.0.0.1:3210"));
+    assert!(!format!("{proof:?}").contains(password.as_str()));
+}
+
+#[test]
 fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
     let config = NativeProxyConfig::new(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),

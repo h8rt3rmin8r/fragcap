@@ -570,10 +570,10 @@ fn header_record(session_id: &str) -> Value {
         "session_id": session_id,
         "sequence": 0,
         "event_time_ns": 0,
-        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc"],
+        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "tcp-metadata"],
         "non_exports": {
-            "tcp": "deferred-issue-306",
-            "udp": "deferred-issue-307",
+            "tcp-payload": "deferred-issue-312",
+            "udp": "deferred-issues-311-and-313",
             "quic": "deferred-issue-314"
         }
     })
@@ -709,6 +709,29 @@ fn event_json(
             }),
         ),
         ApplicationEventKind::Streaming(value) => streaming_json(value),
+        ApplicationEventKind::SocksNegotiation(value) => (
+            "socks5.negotiation",
+            json!({"authenticated": value.authenticated}),
+        ),
+        ApplicationEventKind::SocksConnect(value) => (
+            "socks5.connect",
+            json!({
+                "authority": value.authority,
+                "address_type": value.address_type,
+                "dns_owner": value.dns_owner,
+                "outcome": value.outcome,
+                "classification": value.classification.map(|item| item.as_str()),
+                "inspectability": "metadata-only",
+            }),
+        ),
+        ApplicationEventKind::SocksTransfer(value) => (
+            "socks5.transfer",
+            json!({
+                "client_to_upstream_bytes": value.client_to_upstream_bytes,
+                "upstream_to_client_bytes": value.upstream_to_client_bytes,
+                "payload_retained": false,
+            }),
+        ),
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
@@ -731,6 +754,9 @@ fn event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::Body(_) => "http.body_segment",
         ApplicationEventKind::Transformation(_) => "http.transformation",
         ApplicationEventKind::Streaming(value) => streaming_type(value),
+        ApplicationEventKind::SocksNegotiation(_) => "socks5.negotiation",
+        ApplicationEventKind::SocksConnect(_) => "socks5.connect",
+        ApplicationEventKind::SocksTransfer(_) => "socks5.transfer",
         ApplicationEventKind::Error { .. } => "application.error",
     }
 }

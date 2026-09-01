@@ -47,6 +47,7 @@ pub enum RoutingAvailability {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RouteValueSource {
     SessionProxyUrl,
+    SessionSocks5hUrl,
     SessionProxyAuthorization,
     Literal(String),
 }
@@ -72,13 +73,18 @@ impl RoutingPlan {
         Self {
             strategy: RoutingStrategyKind::ChildEnvironment,
             availability: RoutingAvailability::Implemented,
-            effects: ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+            effects: ["HTTP_PROXY", "HTTPS_PROXY"]
                 .into_iter()
                 .map(|name| RouteEffect {
                     destination: name.to_string(),
                     value: RouteValueSource::SessionProxyUrl,
                     scope: "managed-child-only".to_string(),
                 })
+                .chain(std::iter::once(RouteEffect {
+                    destination: "ALL_PROXY".to_string(),
+                    value: RouteValueSource::SessionSocks5hUrl,
+                    scope: "managed-child-only".to_string(),
+                }))
                 .chain(std::iter::once(RouteEffect {
                     destination: "FRAGCAP_PROXY_AUTHORIZATION".to_string(),
                     value: RouteValueSource::SessionProxyAuthorization,
@@ -173,6 +179,7 @@ impl AppliedRoute {
         for effect in &plan.effects {
             let value = match &effect.value {
                 RouteValueSource::SessionProxyUrl => proxy.proxy_url().to_string(),
+                RouteValueSource::SessionSocks5hUrl => proxy.socks5h_url().to_string(),
                 RouteValueSource::SessionProxyAuthorization => {
                     proxy.proxy_authorization().to_string()
                 }

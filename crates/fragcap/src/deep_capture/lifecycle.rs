@@ -481,6 +481,9 @@ fn proxy_event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::Body(_) => "proxy.body",
         ApplicationEventKind::Transformation(_) => "proxy.transformation",
         ApplicationEventKind::Streaming(_) => "proxy.streaming",
+        ApplicationEventKind::SocksNegotiation(_) => "proxy.socks5-negotiation",
+        ApplicationEventKind::SocksConnect(_) => "proxy.socks5-connect",
+        ApplicationEventKind::SocksTransfer(_) => "proxy.socks5-transfer",
         ApplicationEventKind::Error { .. } => "proxy.error",
     }
 }
@@ -491,6 +494,20 @@ fn proxy_event_detail(kind: &ApplicationEventKind) -> Value {
             "transport": value.transport,
             "client_peer": value.client_peer.to_string(),
             "proxy_local": value.proxy_local.to_string(),
+        }),
+        ApplicationEventKind::SocksNegotiation(value) => json!({
+            "authenticated": value.authenticated,
+        }),
+        ApplicationEventKind::SocksConnect(value) => json!({
+            "authority": value.authority,
+            "address_type": value.address_type,
+            "dns_owner": value.dns_owner,
+            "outcome": value.outcome,
+            "classification": value.classification.map(|classification| classification.as_str()),
+        }),
+        ApplicationEventKind::SocksTransfer(value) => json!({
+            "client_to_upstream_bytes": value.client_to_upstream_bytes,
+            "upstream_to_client_bytes": value.upstream_to_client_bytes,
         }),
         ApplicationEventKind::Error { code } => json!({"code": code}),
         _ => json!({"kind": format!("{kind:?}")}),

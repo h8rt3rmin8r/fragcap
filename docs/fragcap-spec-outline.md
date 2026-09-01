@@ -333,7 +333,10 @@ manifest version 2 artifact authority. S109 adds immutable target-scoped routing
 and crash recovery, S110 closes native HTTP and TLS conformance, S111 adds exact
 cold publisher-launcher chains, and S112 owns cold platform-client launch and
 propagation. S113 adds the explicit bounded warm-to-cold close-and-retry workflow
-with fresh preparation and authorization and no process-control action. Broader
+with fresh preparation and authorization and no process-control action. S114
+adds session-authenticated SOCKS5 TCP CONNECT, proxy-owned domain resolution,
+bounded byte-transparent relay, and typed tunnel evidence on the shared native
+listener. UDP ASSOCIATE and generic TCP payload semantics remain deferred. Broader
 launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

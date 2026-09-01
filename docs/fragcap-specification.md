@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.36-draft \
+**Version:** 0.1.37-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -128,6 +128,7 @@ enforcement.
 | 0.1.34-draft | 2026-09-01 | W. Thompson | **Adds the native HTTP and TLS conformance gate (issue #305).** Extends sections 25 and 28.1. A closed versioned matrix requires two independent client and origin lineages for HTTP/1.1, HTTPS, HTTP/2, WebSocket, SSE, and gRPC, exact expected and observed outcomes, zero skipped required rows, complete native artifact reconciliation, and unmodified TShark consumption in a dedicated CI tier. Generic transports remain in milestone 3 and Deep Capture remains incomplete until #334. |
 | 0.1.35-draft | 2026-09-01 | W. Thompson | **Adds exact managed publisher-launcher chains (issue #307).** Extends sections 16.4, 17.2.1, and 28.1. One stored ordered role chain now supplies the shared Capture profile and managed launch, fragcap starts only a proven-cold root with child-scoped routing, and creation-time ancestry binds declared intermediates to the terminal client. Exact absolute paths may name external publisher installs; relative paths remain confined beneath the game install root. Warm and uncertain chains remain refused, and Deep Capture remains incomplete until #334. |
 | 0.1.36-draft | 2026-09-01 | W. Thompson | **Adds cold platform-client ownership (issue #308).** Extends sections 16.4, 17.2.1, and 28.1. Deep Capture prepares an exact Steam root and retained title dispatch, starts the cold root with child-scoped routing, waits until the exact created process binds to the platform role, and then dispatches the selected title once. Terminal ownership requires the declared client beneath that platform ancestry. Warm, escaped, exited, failed, ambiguous, and timed-out paths remain named non-success outcomes. Routing and propagation remain separate evidence, ordinary Capture keeps Steam protocol launch, and Deep Capture remains incomplete until #334. |
+| 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds authenticated native SOCKS5 TCP routing (issue #310).** Extends sections 17.2.1, 19, 25, and 28.1. The shared loopback listener accepts only RFC 1929 username/password credentials bound to the current session capability, supports bounded CONNECT for IPv4, IPv6, and proxy-resolved domain destinations under the existing upstream policy, preserves full-duplex bytes and half-close, and records typed negotiation, destination, classification, transfer, and terminal evidence. UDP ASSOCIATE and generic TCP payload semantics remain deferred, and Deep Capture remains incomplete until #334. |
 | 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds the explicit warm-to-cold Deep Capture workflow (issue #309).** Extends sections 17.2.1, 26, 28, and 29. A selected bounded workflow reports identity-uncertain warm image observations, waits while the operator uses normal application shutdown, freshly resolves and prepares the cold launch, and requires a second authorization before effects. fragcap performs no process-control action or force-kill fallback. |
 
 ## 2. Purpose and Problem Statement
@@ -4558,6 +4559,14 @@ remains identity-uncertain, process shutdown remains operator-owned, and cold
 state causes fresh preparation plus a second authorization before effects. It
 closes #309 without adding process control, calibration expansion, generic
 transport support, or a final completion claim.
+S114 adds session-authenticated SOCKS5 TCP CONNECT to the shared native listener.
+RFC 1929 carries the existing session capability, domain-form requests retain
+proxy-owned DNS, every resolved destination passes the existing upstream policy,
+and bounded byte-transparent relay preserves half-close. Typed application and
+lifecycle evidence records negotiation, address form, DNS ownership,
+classification, byte counts, and terminal outcome without retaining the secret
+or claiming generic TCP payload semantics. It closes #310 while UDP ASSOCIATE
+remains #311 and generic TCP and non-HTTP TLS semantics remain #312.
 
 The required dependency direction is:
 
@@ -4602,8 +4611,9 @@ The protocol and launch matrix is normative:
 | WebSocket | Native HTTP/1.1 and RFC 8441 frame and message evidence | S106, #295 |
 | SSE | Native incremental identity event-stream fields and events | S106, #298 |
 | gRPC | Native HTTP/2 opaque envelopes, compression flags, and status | S106, #299 |
-| Generic TCP and non-HTTP TLS | Metadata-only current claim | #312 |
-| SOCKS5 TCP and UDP | Not implemented | #310 and #311 |
+| Generic TCP and non-HTTP TLS | SOCKS-routed connections carry metadata-only classification and byte counts; payload semantics remain unavailable | #312 |
+| SOCKS5 TCP | Native session-authenticated CONNECT for IPv4, IPv6, and proxy-resolved domains | S114, #310 |
+| SOCKS5 UDP ASSOCIATE | Not implemented | #311 |
 | Generic UDP | Packet truth only | #313 |
 | QUIC and HTTP/3 | Packet truth only, no decryption | #314 |
 | IPv6 | No complete native parity claim | #315 |

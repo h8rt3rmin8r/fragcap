@@ -519,7 +519,10 @@ fn released(resource: &str) -> CleanupResult {
 fn test_route() -> ProxyRoute {
     ProxyRoute::new(
         LoopbackEndpoint { port: 31_337 },
-        "http://fragcap:test@127.0.0.1:31337".to_string(),
+        (
+            "http://fragcap:test@127.0.0.1:31337".to_string().into(),
+            "socks5h://fragcap:test@127.0.0.1:31337".to_string().into(),
+        ),
         "Basic test".to_string(),
         vec![1, 2, 3],
         "test-thumbprint".to_string(),

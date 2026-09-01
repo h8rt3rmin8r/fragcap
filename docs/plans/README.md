@@ -192,11 +192,10 @@ in both.
 
 ## Native completion follow-up
 
-S113 (`specs/113-warm-to-cold-restart`) follows S112 and closes #309 as the third
-Native Deep Capture 3 launch-coverage slice. An explicitly selected, bounded
-workflow reports identity-uncertain warm direct, Steam, and publisher image
-observations, waits while the operator closes the application normally, then
-re-resolves and re-prepares the corresponding cold case. A second authorization
-precedes every session effect. fragcap performs no process-control action or
-force-kill fallback. Generic transports remain #310 through #315, and Deep
-Capture remains incomplete until #334.
+S114 (`specs/114-authenticated-socks5-tcp`) follows S113 and closes #310 as the
+first Native Deep Capture 3 transport-coverage slice. The shared native listener
+admits SOCKS5 TCP only through the current session capability, owns domain
+resolution and destination policy, relays bounded full-duplex bytes with
+half-close, and records typed correlated metadata without claiming generic TCP
+payload semantics. UDP ASSOCIATE remains #311, generic TCP and non-HTTP TLS
+semantics remain #312, and Deep Capture remains incomplete until #334.

@@ -979,6 +979,41 @@ sink established in slice S08.
 
 **See also:** [Interface identifier](capture-and-networking.md#interface-identifier)
 
+## SOCKS5
+
+The version 5 socket proxy protocol used by a managed child to request a TCP
+connection through fragcap's session-scoped native listener. fragcap accepts
+only username/password authentication carrying the current session capability;
+loopback reachability alone never authorizes a request.
+
+**See also:** [SOCKS5 CONNECT](capture-and-networking.md#socks5-connect),
+[Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
+[Deep Capture session capability](capture-and-networking.md#deep-capture-session-capability)
+
+## SOCKS5 CONNECT
+
+The SOCKS5 command that asks fragcap to open one policy-approved upstream TCP
+connection for an IPv4, IPv6, or domain destination. Success is reported only
+after the upstream exists. The resulting relay preserves bytes and half-close
+under finite buffers, deadlines, and session cancellation.
+
+UDP ASSOCIATE and BIND are not part of this contract.
+
+**See also:** [SOCKS5](capture-and-networking.md#socks5),
+[Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
+[Backpressure](capture-and-networking.md#backpressure)
+
+## Proxy-owned DNS
+
+Name resolution performed by the proxy after an authenticated client supplies a
+domain-form destination. Each resolved address is evaluated by the destination
+policy before a connection attempt, and evidence identifies the proxy as the DNS
+owner. Managed children receive a `socks5h` route so they do not resolve the name
+before sending the request.
+
+**See also:** [SOCKS5 CONNECT](capture-and-networking.md#socks5-connect),
+[Capture scope](capture-and-networking.md#capture-scope)
+
 ## Selection outcome
 
 The complete result of applying specification section 12.1's precedence to an

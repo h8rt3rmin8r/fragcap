@@ -64,6 +64,13 @@ impl CapabilityProof {
         ))
     }
 
+    pub fn socks5h_url(&self, endpoint: SocketAddr) -> Zeroizing<String> {
+        Zeroizing::new(format!(
+            "socks5h://{PROXY_USERNAME}:{}@{endpoint}",
+            self.proxy_password().as_str()
+        ))
+    }
+
     pub fn proxy_authorization(&self) -> Zeroizing<String> {
         let credentials = Zeroizing::new(format!(
             "{PROXY_USERNAME}:{}",
@@ -105,6 +112,15 @@ pub enum ProxyAuthorizationError {
 }
 
 impl SessionCapability {
+    pub fn authenticates_socks_credentials(&self, username: &[u8], password: &[u8]) -> bool {
+        if username.len() != PROXY_USERNAME.len() {
+            return false;
+        }
+        let username_matches: bool = PROXY_USERNAME.as_bytes().ct_eq(username).into();
+        let proof = Zeroizing::new(URL_SAFE_NO_PAD.decode(password).unwrap_or_default());
+        username_matches && self.authenticates(proof.as_slice())
+    }
+
     pub fn authenticates_proxy_authorization(
         &self,
         value: Option<&[u8]>,

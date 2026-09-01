@@ -10,8 +10,10 @@ sole production Deep Capture proxy path. S105 adds bounded HTTP/2 multiplexing,
 protocol-faithful metadata, incremental body evidence, and bounded gzip,
 zlib-deflate, and Brotli derivations. S106 adds wire-preserving WebSocket,
 incremental Server-Sent Events, and schema-free gRPC envelope observation.
-Later milestones own broader transports,
-transports, launch coverage, richer artifacts, and final completion.
+S114 adds session-authenticated SOCKS5 TCP CONNECT for IPv4, IPv6, and
+proxy-resolved domains, with bounded byte-transparent relay and typed tunnel
+metadata. Later milestones own UDP ASSOCIATE, generic TCP payload semantics,
+broader transports, launch coverage, richer artifacts, and final completion.
 
 This crate never configures an ambient system proxy and never reaches inside a
 target process.
