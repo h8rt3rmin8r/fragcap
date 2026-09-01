@@ -195,14 +195,27 @@ fn collect_rust_source(path: &Path, target: &mut String) -> io::Result<()> {
 
 fn validate_fixture_drift(root: &Path) -> io::Result<Vec<String>> {
     let committed = fs::read(root.join(EVIDENCE).join("analyzer.pcapng"))?;
-    let generated_source = fs::read(root.join("fixtures/goldens/loopback.fcapng"))?;
-    if committed == generated_source {
-        Ok(Vec::new())
-    } else {
-        Ok(vec![
-            "analyzer.pcapng drifted from the generated synthetic loopback golden".to_string(),
-        ])
+    let ordinary_capture = fs::read(root.join("fixtures/goldens/loopback.fcapng"))?;
+    let key_log = fs::read_to_string(root.join(EVIDENCE).join("tls-keylog.log"))?;
+    let mut problems = Vec::new();
+    if committed.len() < 1_024 || !committed.starts_with(&0x0a0d0d0a_u32.to_le_bytes()) {
+        problems
+            .push("analyzer.pcapng is not the bounded synthetic TLS pcapng fixture".to_string());
     }
+    if committed == ordinary_capture {
+        problems.push("analyzer.pcapng contains no dedicated TLS transcript".to_string());
+    }
+    for label in [
+        "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+        "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+        "CLIENT_TRAFFIC_SECRET_0",
+        "SERVER_TRAFFIC_SECRET_0",
+    ] {
+        if !key_log.lines().any(|line| line.starts_with(label)) {
+            problems.push(format!("TLS key log lacks {label}"));
+        }
+    }
+    Ok(problems)
 }
 
 fn read_json(path: &Path) -> io::Result<Value> {
@@ -423,12 +436,18 @@ fn run_analyzer(root: &Path) -> Result<(), String> {
                 "tls.keylog_file:{}",
                 directory.join("tls-keylog.log").display()
             ),
+            "-Y",
+            "http.request",
             "-T",
             "fields",
             "-e",
             "frame.number",
             "-e",
-            "_ws.col.Protocol",
+            "tls.record.version",
+            "-e",
+            "http.request.method",
+            "-e",
+            "http.host",
         ])
         .output()
         .map_err(|error| format!("could not execute TShark: {error}"))?;
@@ -455,11 +474,19 @@ fn validate_analyzer_output(success: bool, stdout: &str, stderr: &str) -> Result
             stderr.trim()
         ));
     }
-    if stdout.lines().all(|line| line.trim().is_empty()) {
-        return Err("TShark emitted zero packet rows".to_string());
-    }
-    if !stdout.contains("TCP") && !stdout.contains("UDP") {
-        return Err("TShark emitted no expected protocol field".to_string());
+    let decrypted = stdout.lines().any(|line| {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        fields.len() >= 4
+            && !fields[0].is_empty()
+            && !fields[1].is_empty()
+            && fields[2] == "GET"
+            && fields[3] == "s110.invalid"
+    });
+    if !decrypted {
+        return Err(
+            "TShark did not decrypt the synthetic GET for s110.invalid with the key log"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -522,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn analyzer_fixture_is_generated_from_the_corpus_golden() {
+    fn analyzer_fixture_is_a_dedicated_tls_transcript() {
         let root = super::super::repo_root();
         assert_eq!(validate_fixture_drift(&root).unwrap(), Vec::<String>::new());
     }
@@ -531,14 +558,14 @@ mod tests {
     fn analyzer_exit_zero_without_packets_or_protocol_is_not_a_pass() {
         assert!(validate_analyzer_output(true, "", "")
             .unwrap_err()
-            .contains("zero packet"));
-        assert!(validate_analyzer_output(true, "1\tEthernet\n", "")
+            .contains("did not decrypt"));
+        assert!(validate_analyzer_output(true, "1\t0x0303\t\t\n", "")
             .unwrap_err()
-            .contains("no expected protocol"));
+            .contains("did not decrypt"));
         assert!(validate_analyzer_output(false, "", "broken capture")
             .unwrap_err()
             .contains("broken capture"));
-        validate_analyzer_output(true, "1\tTCP\n2\tUDP\n", "").unwrap();
+        validate_analyzer_output(true, "8\t0x0303\tGET\ts110.invalid\n", "").unwrap();
     }
 
     #[test]

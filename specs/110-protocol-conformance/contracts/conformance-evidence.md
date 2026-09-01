@@ -39,7 +39,7 @@ Integrated rows must validate:
 
 ## Analyzer gate
 
-The dedicated analyzer tier must invoke an unmodified `tshark` executable with the committed pcapng input and the TLS key-log preference. It must record the exact TShark version, exit successfully, emit a nonzero frame count, and match every field assertion declared by the matrix. Absence of the executable is a gate failure.
+The dedicated analyzer tier must invoke an unmodified `tshark` executable with the committed pcapng input and the TLS key-log preference. It must record the exact TShark version, exit successfully, and decrypt the declared HTTP method and host from TLS application data. Ordinary transport fields, an ignored key log, or a nonzero packet count alone cannot pass. Absence of the executable is a gate failure.
 
 ## Sanitization
 
