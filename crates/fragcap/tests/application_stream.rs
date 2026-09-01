@@ -77,8 +77,14 @@ fn version_two_stream_is_live_binary_safe_and_trailer_complete() {
         )),
         fragcap_proxy::EventDisposition::Accepted
     );
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    let live = read_application_prefix(&path).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let live = loop {
+        let prefix = read_application_prefix(&path).unwrap();
+        if prefix.records.len() >= 3 || std::time::Instant::now() >= deadline {
+            break prefix;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(live.schema_version, 2);
     assert_eq!(live.status, ApplicationStreamStatus::Incomplete);
     assert!(live.records.len() >= 3);
