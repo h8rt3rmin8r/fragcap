@@ -13,6 +13,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -313,6 +314,10 @@ fn emit_restart_outcome(
     });
 }
 
+fn warm_restart_interrupted(interrupt: &AtomicBool) -> bool {
+    interrupt.load(Ordering::Relaxed)
+}
+
 fn run_warm_restart(
     args: &DeepCaptureArgs,
     store: &Store,
@@ -352,11 +357,25 @@ fn run_warm_restart(
         context.plan.images().join(", "),
         CalibrationDeadlines::seconds(context.plan.deadline()),
     ));
+    crate::orchestrator::install_interrupt_handler();
     if !confirm_warm_restart(
         args,
         emitter,
         "Wait while you close the application normally? [y/N] ",
     )? {
+        if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "wait-authorization",
+                "interrupted",
+                None,
+                "the operator interrupted warm restart; no effects were applied",
+            );
+            return Err(CliError::failure(
+                "warm restart was interrupted; no effects were applied",
+            ));
+        }
         emit_restart_outcome(
             emitter,
             &context,
@@ -380,6 +399,19 @@ fn run_warm_restart(
     emitter.progress("Waiting for every declared image to become absent...");
     let started = Instant::now();
     loop {
+        if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "waiting",
+                "interrupted",
+                None,
+                "the operator interrupted the bounded wait; no effects were applied",
+            );
+            return Err(CliError::failure(
+                "warm restart was interrupted; no effects were applied",
+            ));
+        }
         let present = match process_images_running(context.plan.images()) {
             Ok(present) => present,
             Err(error) => {
@@ -474,14 +506,6 @@ fn run_warm_restart(
             cold.as_str()
         )));
     }
-    emit_restart_outcome(
-        emitter,
-        &context,
-        "reprepare",
-        "cold-ready",
-        Some(cold),
-        "all declared images are absent and current target facts resolve to the cold case",
-    );
     Ok(Some(context))
 }
 
@@ -1550,10 +1574,55 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             bundle: bundle.clone(),
         }),
     };
-    let prepared = fragcap::deep_capture::DeepCapture::preflight(config, &mut adapters)
-        .map_err(cli_error_from_library_refusal)?;
+    let prepared = match fragcap::deep_capture::DeepCapture::preflight(config, &mut adapters) {
+        Ok(prepared) => prepared,
+        Err(refusal) => {
+            if let Some(restart) = &restart {
+                emit_restart_outcome(
+                    &mut emitter.borrow_mut(),
+                    restart,
+                    "preflight",
+                    "refused",
+                    Some(restart.plan.cold_case()),
+                    "ordinary Deep Capture preflight refused the freshly resolved cold plan",
+                );
+            }
+            return Err(cli_error_from_library_refusal(refusal));
+        }
+    };
 
     if let Some(restart) = &restart {
+        let preflight_case = selected_launch_case
+            .borrow()
+            .expect("successful preflight retained its exact launch case");
+        let same_authority = {
+            let preflight_target = selected.borrow();
+            let preflight_target = preflight_target
+                .as_ref()
+                .expect("successful preflight retained its exact target");
+            WarmRestartAuthority::from_target(preflight_target) == restart.authority
+        };
+        if !same_authority || library_launch_case(preflight_case) != restart.plan.cold_case() {
+            emit_restart_outcome(
+                &mut emitter.borrow_mut(),
+                restart,
+                "preflight",
+                "changed-target",
+                Some(library_launch_case(preflight_case)),
+                "preflight resolved a different target launch authority than the cold transition",
+            );
+            return Err(CliError::usage(
+                "the target launch declaration changed before authorization; no effects were applied",
+            ));
+        }
+        emit_restart_outcome(
+            &mut emitter.borrow_mut(),
+            restart,
+            "preflight",
+            "cold-ready",
+            Some(restart.plan.cold_case()),
+            "ordinary preflight retained the exact cold target authority and accepted the plan",
+        );
         emitter.borrow_mut().required_human(&format!(
             "Cold Deep Capture plan re-prepared\n  target: {}\n  launch case: {}\n  plan: {}\n  process control: none\n",
             restart.target,
@@ -1565,6 +1634,19 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             &mut emitter.borrow_mut(),
             "Authorize this newly prepared cold session? [y/N] ",
         )? {
+            if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
+                emit_restart_outcome(
+                    &mut emitter.borrow_mut(),
+                    restart,
+                    "launch-authorization",
+                    "interrupted",
+                    Some(restart.plan.cold_case()),
+                    "the operator interrupted authorization; no effects were applied",
+                );
+                return Err(CliError::failure(
+                    "cold session authorization was interrupted; no effects were applied",
+                ));
+            }
             emit_restart_outcome(
                 &mut emitter.borrow_mut(),
                 restart,
@@ -3391,6 +3473,14 @@ mod tests {
             {"os": "windows", "executable": "Changed.exe"}
         ]));
         assert_ne!(changed, original);
+    }
+
+    #[test]
+    fn warm_restart_observes_an_injected_interrupt_flag() {
+        let interrupt = AtomicBool::new(false);
+        assert!(!warm_restart_interrupted(&interrupt));
+        interrupt.store(true, Ordering::Relaxed);
+        assert!(warm_restart_interrupted(&interrupt));
     }
 
     fn observation() -> Observation {
