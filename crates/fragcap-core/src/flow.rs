@@ -164,6 +164,7 @@ pub struct FlowSummary {
     pub id: FlowId,
     pub observations: Vec<FlowObservation>,
     pub unretained_observations: u64,
+    pub global_unretained_observations: u64,
 }
 
 /// The capture-wide mapping from canonical flow keys to session-local ids.
@@ -326,9 +327,8 @@ impl FlowRegistry {
             .map(|flow| FlowSummary {
                 id: flow.id,
                 observations: flow.observations.clone(),
-                unretained_observations: flow
-                    .unretained_observations
-                    .saturating_add(self.globally_unretained()),
+                unretained_observations: flow.unretained_observations,
+                global_unretained_observations: self.globally_unretained(),
             })
     }
 }
@@ -525,6 +525,17 @@ mod tests {
         let summary = registry.summary(&tcp()).unwrap();
         assert_eq!(summary.observations.len(), 1);
         assert_eq!(summary.unretained_observations, 2);
+    }
+
+    #[test]
+    fn global_loss_is_not_multiplied_into_each_flow_count() {
+        let registry = FlowRegistry::default();
+        registry.observe_at(tcp(), Timestamp::from_nanos(10), None);
+        registry.mark_globally_unretained();
+
+        let summary = registry.summary(&tcp()).unwrap();
+        assert_eq!(summary.unretained_observations, 0);
+        assert_eq!(summary.global_unretained_observations, 1);
     }
 
     #[test]

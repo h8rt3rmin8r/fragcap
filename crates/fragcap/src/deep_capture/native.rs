@@ -537,6 +537,19 @@ fn correlate_native_observation(
             "packet-history-bound-exceeded".to_string(),
         );
     }
+    if summary.global_unretained_observations > 0 {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            summary.observations.len() as u64,
+            summary.unretained_observations,
+            CorrelationState::Unavailable,
+            "capture-buffer-history-incomplete".to_string(),
+        );
+    }
     let overlapping = summary
         .observations
         .iter()
@@ -1017,6 +1030,24 @@ mod tests {
         assert_eq!(result.6, 1);
         assert_eq!(result.7, CorrelationState::Unavailable);
         assert_eq!(result.8, "packet-history-bound-exceeded");
+    }
+
+    #[test]
+    fn global_buffer_loss_is_uncertainty_not_per_flow_loss() {
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        registry.observe_at(
+            FlowKey::new(Proto::Tcp, client, proxy),
+            Timestamp::from_nanos(10),
+            Some(&Attribution::new(11, "game.exe", Fidelity::Live)),
+        );
+        registry.mark_globally_unretained();
+
+        let result = correlate_native_observation(&registry, client, proxy, 5, 25);
+        assert_eq!(result.6, 0);
+        assert_eq!(result.7, CorrelationState::Unavailable);
+        assert_eq!(result.8, "capture-buffer-history-incomplete");
     }
 
     #[test]

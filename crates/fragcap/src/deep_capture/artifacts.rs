@@ -328,6 +328,7 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
             let mut file = open_sensitive_file(&staging.join("manifest.json"))?;
             file.write_all(&bytes)?;
             file.sync_all()?;
+            included.push(json!({"path":"manifest.json","bytes":bytes.len()}));
         } else {
             let from = contained(&source, Path::new("manifest.json"))?;
             let metadata = from.symlink_metadata()?;
@@ -703,7 +704,7 @@ mod tests {
         fs::write(bundle.join("manifest.json"), &source_bytes).unwrap();
 
         let share = root.path().join("share");
-        export_share_copy(&bundle, &share).unwrap();
+        let sharing_path = export_share_copy(&bundle, &share).unwrap();
 
         assert_eq!(
             fs::read(bundle.join("manifest.json")).unwrap(),
@@ -721,6 +722,12 @@ mod tests {
             .unwrap();
         assert_eq!(application["completeness"], "omitted");
         assert!(application.get("path").is_none());
+        let sharing: Value = serde_json::from_slice(&fs::read(sharing_path).unwrap()).unwrap();
+        assert!(sharing["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "manifest.json"));
     }
 
     #[test]
