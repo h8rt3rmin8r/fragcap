@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -71,6 +71,7 @@ impl Framing {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RequestHead {
+    raw_len: usize,
     method: String,
     version: u8,
     headers: Vec<(String, Vec<u8>)>,
@@ -268,6 +269,7 @@ impl BodyEmitter {
         {
             Ok(Ok(permit)) => {
                 let result = crate::decode_content(
+                    self.direction,
                     encoding,
                     &self.content_input,
                     limits.max_decoded_body_bytes,
@@ -281,6 +283,7 @@ impl BodyEmitter {
             Ok(Err(_)) | Err(_) => (
                 Vec::new(),
                 crate::Transformation {
+                    direction: self.direction,
                     encoding: encoding.clone(),
                     input_bytes: self.content_input.len() as u64,
                     output_bytes: 0,
@@ -540,7 +543,8 @@ where
                 Some(ProtocolVersion::Http11),
                 ApplicationEventKind::Metadata(
                     MetadataBlock::http1(MetadataKind::Request, &request.headers)
-                        .with_http1_request(&request.method, &request.origin_target),
+                        .with_http1_request(&request.method, &request.origin_target, &request.url)
+                        .with_head_bytes(request.raw_len),
                 ),
             ),
         );
@@ -567,6 +571,7 @@ where
         };
         let exchange = async {
             let mut upstream = BufReader::new(connect(request.authority.clone()).await?);
+            let send_started_at = Instant::now();
             let head = encode_request(&request);
             write_bounded(&mut upstream, &head, limits.idle_timeout).await?;
 
@@ -637,6 +642,7 @@ where
                 .await?;
             }
 
+            let request_sent_at = Instant::now();
             let response = match early_final {
                 Some(response) => response,
                 None => loop {
@@ -657,13 +663,20 @@ where
                     break response;
                 },
             };
-            Ok::<_, ProtocolError>((upstream, response, force_close))
+            Ok::<_, ProtocolError>((
+                upstream,
+                response,
+                force_close,
+                send_started_at,
+                request_sent_at,
+            ))
         }
         .await;
         request_body
             .finish(limits, crate::StreamingOutcome::Complete)
             .await;
-        let (mut upstream, response, force_close) = match exchange {
+        let (mut upstream, response, force_close, send_started_at, request_sent_at) = match exchange
+        {
             Ok(value) => value,
             Err(error) => {
                 request_body.emit_failure(&error);
@@ -673,6 +686,7 @@ where
                 break Some(error);
             }
         };
+        let response_head_at = Instant::now();
         accounting.responses = accounting.responses.saturating_add(1);
         crate::application::emit(
             &context.application_sink,
@@ -683,7 +697,8 @@ where
                 Some(ProtocolVersion::Http11),
                 ApplicationEventKind::Metadata(
                     MetadataBlock::http1(MetadataKind::Response, &response.headers)
-                        .with_http1_response(response.status, response.reason.as_deref()),
+                        .with_http1_response(response.status, response.reason.as_deref())
+                        .with_head_bytes(response.raw.len()),
                 ),
             ),
         );
@@ -789,6 +804,21 @@ where
             break Some(error);
         }
         observations.push(observation);
+        let response_complete_at = Instant::now();
+        crate::application::emit(
+            &context.application_sink,
+            ApplicationEvent::now(
+                context.session_id,
+                context.connection_id,
+                Some(ordinal),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::HttpTiming(crate::HttpTiming {
+                    send_ns: duration_ns(request_sent_at.duration_since(send_started_at)),
+                    wait_ns: duration_ns(response_head_at.duration_since(request_sent_at)),
+                    receive_ns: duration_ns(response_complete_at.duration_since(response_head_at)),
+                }),
+            ),
+        );
         emit_http1_terminal(&context, ordinal, crate::StreamTerminal::Complete);
         if force_close
             || request.close
@@ -815,6 +845,10 @@ where
         accounting,
         failure,
     }
+}
+
+fn duration_ns(value: std::time::Duration) -> u64 {
+    value.as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
 fn terminal_for_error(error: &ProtocolError) -> crate::StreamTerminal {
@@ -1143,6 +1177,7 @@ fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, Pro
         transformations.push("proxy-connection-removed");
     }
     Ok(RequestHead {
+        raw_len: raw.len(),
         method,
         version,
         headers,

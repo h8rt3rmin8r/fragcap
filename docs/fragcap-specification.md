@@ -124,6 +124,7 @@ enforcement.
 | 0.1.30-draft | 2026-08-30 | W. Thompson | **Adds native HTTP/2, complete protocol metadata, bounded streaming bodies, and application JSON Lines version 2 (issues #294, #296, #297, and #301).** Extends sections 13.7, 19.6, 25, and 28.1. HTTP/2 multiplexing retains distinct stream identity and bounded flow control, HTTP metadata preserves the evidence available at each protocol boundary, raw bodies stream independently from bounded retention and derived decoding, and the application artifact is append-only and crash-readable during the session. Deferred protocol families and unavailable HTTP/2 wire representations remain explicit. |
 | 0.1.31-draft | 2026-08-30 | W. Thompson | **Adds streaming application protocols (issues #295, #298, and #299).** Extends sections 13.7, 19.6, 25, and 28.1. Verified HTTP/1.1 upgrades and RFC 8441 carry bounded WebSocket frame and message evidence, identity event streams produce incremental SSE fields and events, and HTTP/2 gRPC streams retain method, metadata, opaque envelopes, compression flags, and terminal status without protobuf inference. Observation remains independent from transparent forwarding. |
 | 0.1.32-draft | 2026-09-01 | W. Thompson | **Completes native TLS evidence and sensitive artifact ownership (issues #300, #304, and #322).** Extends sections 13.7, 17.2, 19, 25, 26.3, and 28.1. Explicit client-facing TLS key logs are protected and live-flushed, operator-supplied client identities enable upstream mutual TLS, refusal categories preserve only observable evidence, and sensitive artifacts gain pre-traffic access control, bounded recovery, confirmed deletion, and immutable share-copy transformation. General session recovery remains open under #320. |
+| 0.1.33-draft | 2026-09-01 | W. Thompson | **Correlates native evidence and versions the bundle contract (issues #302, #303, and #335).** Extends sections 13.7, 25, and 28.1. Accepted proxy connections reconcile after capture against timestamped packet-flow ownership, truthful bounded HAR 1.2 is projected only from complete native application evidence, and manifest version 2 declares authority, sensitivity, finalization, completeness, loss, correlation, and omissions under a published schema. Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -147,13 +148,14 @@ the shell wrappers are consumers of the command line tool. Deep Capture's
 session orchestration is exposed through the public facade API; the CLI maps
 arguments and supplies the shipped production effect bridges.
 
-Deep Capture is functional but incomplete. S107 extends the native Rust sole
+Deep Capture is functional but incomplete. S108 extends the native Rust sole
 production path with bounded HTTP/2 multiplexing, protocol-faithful HTTP
 metadata, incrementally retained bodies, bounded gzip, deflate, and Brotli
 decoding, a live application JSON Lines version 2 stream, WebSocket frame and
 message inspection, incremental SSE, schema-free gRPC envelopes, proxy-owned TLS
 key logs, explicit upstream client identities, and protected sensitive-artifact
-lifecycle operations. Client-facing TLS
+lifecycle operations, final packet/process correlation, truthful bounded HAR
+1.2 projection, and versioned native bundle authority. Client-facing TLS
 uses the exact session authority and upstream TLS is verified independently.
 Issue #278 is the completion authority. Deep Capture
 MUST NOT be described as self-contained or feature-complete until issue #334 closes.
@@ -1836,6 +1838,22 @@ Application JSON Lines version 2 is the canonical machine-readable application e
 HTTP metadata records retain HTTP/1.1 field order, name casing, duplicates, empty values, informational blocks, and trailers. HTTP/2 records retain typed pseudo-fields, binary-safe regular values, duplicate value order exposed by the protocol engine, and explicit provenance that original HPACK bytes and compressed cross-name order are unavailable. Body records are bounded ordered segments. Raw observed bytes are authoritative; transfer and gzip, zlib-wrapped deflate, or Brotli decoding are separate derived transformations with exact completion or failure outcomes. Forwarding capacity is independent from evidence-retention capacity, so a valid large or indefinite stream is not refused merely because its artifact is truncated.
 
 HAR is an HTTP-oriented projection, not the only application truth and not exclusive to Deep Capture. Capture may produce HAR when HTTP semantics are actually observable, such as plaintext HTTP or an already-decrypted stream. Deep Capture is the expected mode for useful HTTPS HAR output because the proxy can observe HTTP semantics only when the selected target routes through it and accepts the configured local certificate authority.
+
+HAR 1.2 is finalized from a complete application JSON Lines stream, never from
+parallel ad hoc state. A standard entry requires observed request, response,
+status, absolute URL, terminal outcome, and native send, wait, and receive
+timings. Transactions lacking those facts remain under
+`_fragcapPartialEntries` with exact reasons. Header sizes come from observed
+HTTP/1.1 head bytes or remain unavailable; bodies prefer content-decoded, then
+transfer-decoded, then raw evidence, retain explicit truncation, and encode
+binary content as base64. Projection and publication are bounded and atomic.
+
+Manifest version 2 is distinct from the product version and is validated before
+atomic publication. Each produced artifact or omission has one authority owner,
+sensitivity, content type, finalization, completeness, loss, and correlation
+contract. A protected crash prefix cannot claim completion. Version 1 manifests
+remain readable without rewrite, and share copies receive a destination manifest
+that declares omitted sensitive artifacts instead of copying source claims.
 
 TLS key logs are optional analyzer aids for proxy-owned TLS tunnels. They are sensitive session material, not decrypted output. When an operator requests analyzer integration or selects an output profile that includes it, fragcap creates the final bundle's key-log file before starting proxy traffic and announces its absolute path through human status and `deep_capture.key_log_ready`. The proxy appends secrets to that same file during the session so analyzers can consume them without waiting for finalization. The manifest marks a nonempty result as session-scoped, proxy-owned, and secret-adjacent.
 
@@ -4390,6 +4408,11 @@ opaque gRPC envelope and status records without protobuf schema inference.
 S107 adds client-facing proxy TLS key logs, explicit operator-owned upstream
 client identities, stable TLS refusal categories, and the protected retention,
 cleanup, recovery, and share-copy lifecycle for sensitive bundle artifacts.
+S108 adds final accepted-connection correlation against timestamped packet-flow
+history, bounded evidence-derived HAR 1.2, and native manifest version 2 with a
+published validator and truthful share-copy authority. It closes the correlation,
+HAR, and bundle-index items but does not close the wider transport or completion
+gates.
 
 The required dependency direction is:
 
@@ -4410,9 +4433,9 @@ Every existing or planned output has one owner:
 | Contract | Native owner |
 | --- | --- |
 | `capture.fcapng` packet truth | Existing Capture pipeline |
-| Versioned bundle manifest and authority | #335 |
+| Versioned bundle manifest and authority | S108, #335 |
 | Complete `application.jsonl` | S105, #301 |
-| Truthful HAR 1.2 projection | #302 |
+| Truthful HAR 1.2 projection | S108, #302 |
 | Proxy-owned TLS key log | S107, #300 |
 | Proxy and cleanup sidecars | #336 |
 | Process lifecycle evidence | #319 |

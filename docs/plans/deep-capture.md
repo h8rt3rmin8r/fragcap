@@ -10,7 +10,10 @@ Deep Capture is now functional but incomplete. Issue #278 requires a complete
 native Rust product. S102 establishes the bounded runtime, S103 completes the
 authenticated listener, upstream policy, certificate/trust, raw-event, and
 protocol-lab foundation, and S104 cuts production over to bounded native
-HTTP/1.1, CONNECT, and HTTPS inspection. Only #334 may authorize a
+HTTP/1.1, CONNECT, and HTTPS inspection. S105 through S107 add HTTP/2,
+streaming protocols, TLS evidence, and sensitive-artifact ownership. S108 adds
+final packet/process correlation, truthful bounded HAR 1.2, and manifest version
+2 authority. Only #334 may authorize a
 feature-complete claim.
 
 ## Decision

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fragcap.dev/schema/deep-capture-manifest.v2.json",
+  "title": "fragcap Deep Capture manifest version 2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["$schema", "manifest_version", "product", "session_id", "state", "artifacts", "omissions"],
+  "properties": {
+    "$schema": {"const": "https://fragcap.dev/schema/deep-capture-manifest.v2.json"},
+    "manifest_version": {"const": 2},
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {"name": {"const": "fragcap"}, "version": {"type": "string", "minLength": 1}}
+    },
+    "session_id": {"type": "string", "minLength": 1},
+    "state": {"enum": ["complete", "partial", "failed", "interrupted", "crash-prefix"]},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "authority", "sensitivity", "content_type", "required", "finalization", "completeness", "loss", "correlation"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)[^\\\\\\u0000-\\u001F\\u007F]+$"},
+          "omission_reason": {"type": "string", "minLength": 1},
+          "authority": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "owner"],
+            "properties": {
+              "kind": {"enum": ["primary-evidence", "derived-projection", "bundle-index", "analyzer-aid", "operational-record"]},
+              "owner": {"type": "string", "minLength": 1},
+              "source_role": {"type": ["string", "null"]}
+            }
+          },
+          "sensitivity": {"enum": ["ordinary", "sensitive", "secret-adjacent"]},
+          "content_type": {"type": "string", "minLength": 1},
+          "required": {"type": "boolean"},
+          "finalization": {"enum": ["complete", "incomplete", "failed"]},
+          "completeness": {"enum": ["complete", "partial", "truncated", "failed", "omitted", "pending"]},
+          "loss": {"type": "object"},
+          "correlation": {"type": "object"}
+        },
+        "allOf": [
+          {"if": {"properties": {"completeness": {"const": "omitted"}}}, "then": {"required": ["omission_reason"], "not": {"required": ["path"]}}},
+          {"if": {"not": {"properties": {"completeness": {"const": "omitted"}}}}, "then": {"required": ["path"]}}
+        ]
+      }
+    },
+    "omissions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "reason", "severity"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1},
+          "severity": {"enum": ["info", "warn", "error"]}
+        }
+      }
+    }
+  }
+}

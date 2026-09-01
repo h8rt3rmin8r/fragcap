@@ -30,7 +30,6 @@ mod commands;
 mod emit;
 mod events;
 mod exit;
-mod har;
 // The live capture status display (slice S069) is reachable only from
 // `capture_live`/`drive_live`, which are themselves `etw`+`windows`-gated
 // (an ETW event stream has no non-Windows meaning). Gating this module the

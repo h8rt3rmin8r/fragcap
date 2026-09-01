@@ -4,6 +4,7 @@
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::Bytes;
 use h2::client::SendRequest;
@@ -437,16 +438,6 @@ where
                 )
             }
         };
-    emit(
-        &sink,
-        ApplicationEvent::now(
-            &session_id,
-            connection_id,
-            None,
-            Some(ProtocolVersion::Http2),
-            ApplicationEventKind::ConnectionOpen,
-        ),
-    );
     let origin_driver = AbortOnDrop(tokio::spawn(origin_connection));
     let mut tasks = JoinSet::new();
     let mut accounting = ProtocolAccounting::default();
@@ -765,9 +756,11 @@ async fn bridge_stream_inner(
         .await
         .map_err(|error| ProtocolError::new("http2-origin-not-ready", error.to_string()))?;
     let end_stream = request_body.is_end_stream();
+    let send_started_at = Instant::now();
     let (response_future, origin_body) = origin
         .send_request(outbound, end_stream)
         .map_err(|error| ProtocolError::new("http2-request-send-failed", error.to_string()))?;
+    let request_sent_at = Instant::now();
     let mut deferred_request = Some((request_body, origin_body));
     let mut request_pump = if websocket {
         None
@@ -797,6 +790,7 @@ async fn bridge_stream_inner(
         .await
         .map_err(|_| ProtocolError::timeout("http2-response-timeout"))?
         .map_err(|error| h2_error("http2-response-failed", error))?;
+    let response_head_at = Instant::now();
     let (parts, response_body) = response.into_parts();
     let status = parts.status;
     let websocket_mode = if websocket && status.is_success() {
@@ -960,7 +954,26 @@ async fn bridge_stream_inner(
         ProtocolError::new("http2-request-pump-join-failed", error.to_string())
     })??;
     response_result?;
+    let response_complete_at = Instant::now();
+    emit(
+        sink,
+        ApplicationEvent::now(
+            session_id.as_str(),
+            connection_id,
+            Some(stream_id),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::HttpTiming(crate::HttpTiming {
+                send_ns: duration_ns(request_sent_at.duration_since(send_started_at)),
+                wait_ns: duration_ns(response_head_at.duration_since(request_sent_at)),
+                receive_ns: duration_ns(response_complete_at.duration_since(response_head_at)),
+            }),
+        ),
+    );
     Ok(())
+}
+
+fn duration_ns(value: std::time::Duration) -> u64 {
+    value.as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
 async fn pump_body(
@@ -1105,6 +1118,7 @@ async fn pump_body(
         {
             Ok(Ok(permit)) => {
                 let result = crate::decode_content(
+                    direction,
                     &encoding,
                     &retained_bytes,
                     max_decoded_body_bytes,
@@ -1118,6 +1132,7 @@ async fn pump_body(
             Ok(Err(_)) | Err(_) => (
                 Vec::new(),
                 crate::Transformation {
+                    direction,
                     encoding: encoding.clone(),
                     input_bytes: retained_bytes.len() as u64,
                     output_bytes: 0,

@@ -2,6 +2,7 @@
 
 //! Typed, nonblocking application observation delivery.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,17 +25,32 @@ pub enum StreamTerminal {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationEventKind {
-    ConnectionOpen,
+    ConnectionOpen(ConnectionDescriptor),
     ConnectionTerminal(StreamTerminal),
     TlsNegotiation(TlsNegotiation),
     TlsTerminal(StreamTerminal),
     HttpStreamOpen,
     HttpStreamTerminal(StreamTerminal),
+    HttpTiming(HttpTiming),
     Metadata(MetadataBlock),
     Body(BodySegment),
     Transformation(Transformation),
     Streaming(StreamingEvent),
     Error { code: &'static str },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpTiming {
+    pub send_ns: u64,
+    pub wait_ns: u64,
+    pub receive_ns: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConnectionDescriptor {
+    pub transport: &'static str,
+    pub client_peer: SocketAddr,
+    pub proxy_local: SocketAddr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -99,4 +115,35 @@ pub(crate) type SharedEventSink = Option<Arc<dyn ApplicationEventSink>>;
 pub(crate) fn emit(sink: &SharedEventSink, event: ApplicationEvent) -> EventDisposition {
     sink.as_ref()
         .map_or(EventDisposition::Retired, |sink| sink.try_emit(event))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_connection_and_phase_timing_are_typed_without_placeholder_values() {
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: "[::1]:41000".parse().unwrap(),
+            proxy_local: "[::1]:42000".parse().unwrap(),
+        };
+        let event = ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::ConnectionOpen(descriptor),
+        );
+        assert_eq!(event.connection_id, 7);
+        assert!(event.timestamp_ns > 0);
+        assert_eq!(event.kind, ApplicationEventKind::ConnectionOpen(descriptor));
+
+        let timing = HttpTiming {
+            send_ns: 1,
+            wait_ns: 2,
+            receive_ns: 3,
+        };
+        assert_eq!(timing.send_ns + timing.wait_ns + timing.receive_ns, 6);
+    }
 }

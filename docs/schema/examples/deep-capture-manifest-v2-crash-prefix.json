@@ -1,0 +1,9 @@
+{
+  "$schema": "https://fragcap.dev/schema/deep-capture-manifest.v2.json",
+  "manifest_version": 2,
+  "product": {"name": "fragcap", "version": "0.8.0"},
+  "session_id": "example-crash-prefix",
+  "state": "crash-prefix",
+  "artifacts": [],
+  "omissions": []
+}

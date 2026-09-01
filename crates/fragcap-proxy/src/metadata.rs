@@ -49,8 +49,10 @@ pub struct MetadataBlock {
     pub unavailable: Vec<&'static str>,
     pub method: Option<Vec<u8>>,
     pub target: Option<Vec<u8>>,
+    pub url: Option<Vec<u8>>,
     pub status: Option<u16>,
     pub reason: Option<Vec<u8>>,
+    pub head_bytes: Option<u64>,
     pub query: Vec<DerivedMetadataValue>,
     pub cookies: Vec<DerivedMetadataValue>,
 }
@@ -77,16 +79,19 @@ impl MetadataBlock {
             unavailable: Vec::new(),
             method: None,
             target: None,
+            url: None,
             status: None,
             reason: None,
+            head_bytes: None,
             query: Vec::new(),
             cookies,
         }
     }
 
-    pub fn with_http1_request(mut self, method: &str, target: &str) -> Self {
+    pub fn with_http1_request(mut self, method: &str, target: &str, url: &str) -> Self {
         self.method = Some(method.as_bytes().to_vec());
         self.target = Some(target.as_bytes().to_vec());
+        self.url = Some(url.as_bytes().to_vec());
         self.query = query_pairs_bytes(target.as_bytes());
         self
     }
@@ -94,6 +99,11 @@ impl MetadataBlock {
     pub fn with_http1_response(mut self, status: u16, reason: Option<&str>) -> Self {
         self.status = Some(status);
         self.reason = reason.map(|value| value.as_bytes().to_vec());
+        self
+    }
+
+    pub fn with_head_bytes(mut self, bytes: usize) -> Self {
+        self.head_bytes = Some(bytes.try_into().unwrap_or(u64::MAX));
         self
     }
 
@@ -107,6 +117,17 @@ impl MetadataBlock {
             .find(|field| field.name == b":path")
             .map_or_else(Vec::new, |field| query_pairs_bytes(&field.value));
         let cookies = cookie_pairs_from_fields(&fields);
+        let url = absolute_http2_url(&pseudo_fields);
+        let pseudo = |name: &[u8]| {
+            pseudo_fields
+                .iter()
+                .find(|field| field.name == name)
+                .map(|field| field.value.clone())
+        };
+        let method = pseudo(b":method");
+        let target = pseudo(b":path");
+        let status =
+            pseudo(b":status").and_then(|value| std::str::from_utf8(&value).ok()?.parse().ok());
         Self {
             kind,
             version: ProtocolVersion::Http2,
@@ -114,14 +135,32 @@ impl MetadataBlock {
             pseudo_fields,
             fields,
             unavailable: vec!["hpack-wire-bytes", "compressed-cross-name-order"],
-            method: None,
-            target: None,
-            status: None,
+            method,
+            target,
+            url,
+            status,
             reason: None,
+            head_bytes: None,
             query,
             cookies,
         }
     }
+}
+
+fn absolute_http2_url(fields: &[MetadataField]) -> Option<Vec<u8>> {
+    let value = |name: &[u8]| {
+        fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.value.as_slice())
+    };
+    let (scheme, authority, path) = (value(b":scheme")?, value(b":authority")?, value(b":path")?);
+    let mut url = Vec::with_capacity(scheme.len() + authority.len() + path.len() + 3);
+    url.extend_from_slice(scheme);
+    url.extend_from_slice(b"://");
+    url.extend_from_slice(authority);
+    url.extend_from_slice(path);
+    Some(url)
 }
 
 pub fn fields_from_header_map(headers: &hyper::HeaderMap) -> Vec<MetadataField> {
@@ -318,7 +357,11 @@ mod tests {
             MetadataKind::Request,
             &[("Cookie".to_string(), b"sid=one; sid=two".to_vec())],
         )
-        .with_http1_request("POST", "/play?mode=a&mode=b&bad=%zz");
+        .with_http1_request(
+            "POST",
+            "/play?mode=a&mode=b&bad=%zz",
+            "http://example.test/play?mode=a&mode=b&bad=%zz",
+        );
         assert_eq!(block.method.as_deref(), Some(b"POST".as_slice()));
         assert_eq!(
             block.target.as_deref(),

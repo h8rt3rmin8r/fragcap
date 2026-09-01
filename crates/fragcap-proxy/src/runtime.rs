@@ -475,7 +475,11 @@ async fn connection_task(
             connection_id,
             None,
             None,
-            crate::ApplicationEventKind::ConnectionOpen,
+            crate::ApplicationEventKind::ConnectionOpen(crate::ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: peer,
+                proxy_local: local,
+            }),
         ),
     );
     if first.is_connect() {

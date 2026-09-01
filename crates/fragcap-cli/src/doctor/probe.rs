@@ -450,6 +450,9 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
                     push_unique(state.stale_manifests, path.clone());
                 }
             }
+            if name == fragcap::deep_capture::MANIFEST_PREFIX {
+                push_unique(state.stale_manifests, path.clone());
+            }
             if name.eq_ignore_ascii_case("tls-keylog.log")
                 || name.eq_ignore_ascii_case("sslkeylog.log")
             {
@@ -705,10 +708,7 @@ pub(crate) fn manifest_declared_artifacts(
     stale_tls_key_logs: &mut Vec<PathBuf>,
     sensitive_artifacts: &mut Vec<PathBuf>,
 ) {
-    let Ok(text) = std::fs::read_to_string(manifest) else {
-        return;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let Some(value) = compatible_manifest_value(manifest) else {
         return;
     };
     let Some(artifacts) = value
@@ -723,7 +723,16 @@ pub(crate) fn manifest_declared_artifacts(
     for artifact in artifacts {
         let role = artifact.get("role").and_then(|role| role.as_str());
         let path = artifact.get("path").and_then(|path| path.as_str());
-        let Some(path) = path.and_then(safe_manifest_relative_path) else {
+        let path = if value
+            .get("manifest_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+        {
+            path.and_then(|path| fragcap::deep_capture::validate_relative_path(path).ok())
+        } else {
+            path.and_then(safe_manifest_relative_path)
+        };
+        let Some(path) = path else {
             continue;
         };
         let resolved = bundle_root.join(path);
@@ -766,10 +775,7 @@ fn safe_manifest_relative_path(path: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn manifest_cleanup_unfinished(path: &std::path::Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return true;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let Some(value) = compatible_manifest_value(path) else {
         return true;
     };
     let status = value
@@ -777,6 +783,17 @@ pub(crate) fn manifest_cleanup_unfinished(path: &std::path::Path) -> bool {
         .and_then(|cleanup| cleanup.get("status"))
         .and_then(|status| status.as_str());
     !matches!(status, Some("succeeded" | "not-needed"))
+}
+
+fn compatible_manifest_value(path: &std::path::Path) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(path).ok()?;
+    let loose: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if loose.get("manifest_version").is_some() {
+        return fragcap::deep_capture::ManifestDocument::parse(&bytes)
+            .ok()
+            .map(|document| document.value().clone());
+    }
+    Some(loose)
 }
 
 pub(crate) fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {

@@ -15,6 +15,8 @@
 mod adapters;
 mod application;
 mod artifacts;
+mod har;
+mod manifest;
 mod model;
 mod native;
 mod policy;
@@ -23,6 +25,8 @@ mod session;
 pub use adapters::*;
 pub use application::*;
 pub use artifacts::*;
+pub use har::*;
+pub use manifest::*;
 pub use model::*;
 pub use native::{
     run_controlled_native_requests, CertificateStore, ClientIdentity, NativeCertificateStore,

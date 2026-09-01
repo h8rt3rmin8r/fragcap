@@ -648,13 +648,17 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         &mut self,
         plan: &fragcap::deep_capture::SessionPlan,
     ) -> Result<(), fragcap::deep_capture::StageFailure> {
-        fragcap::deep_capture::prepare_bundle(&plan.bundle).map_err(|error| {
-            fragcap::deep_capture::StageFailure::new(
-                fragcap::deep_capture::Stage::Bundle,
-                "bundle-protection-failed",
-                error.to_string(),
-            )
-        })
+        fragcap::deep_capture::prepare_bundle(&plan.bundle)
+            .and_then(|()| {
+                fragcap::deep_capture::write_crash_prefix(&plan.bundle, &plan.session_id)
+            })
+            .map_err(|error| {
+                fragcap::deep_capture::StageFailure::new(
+                    fragcap::deep_capture::Stage::Bundle,
+                    "bundle-protection-failed",
+                    error.to_string(),
+                )
+            })
     }
 
     fn finalize(
@@ -1977,7 +1981,7 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     let application = ctx.session.bundle.join("application.jsonl");
     if !application.is_file() {
         write_file(
-            application,
+            application.clone(),
             application_jsonl(
                 &ctx.session.session_id,
                 ctx.session.target_id,
@@ -1987,16 +1991,21 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
             .as_bytes(),
         )?;
     }
-    let har_produced = ctx.har_requested
-        && ctx
-            .observations
-            .iter()
-            .any(|observation| observation.method.is_some() && observation.url.is_some());
-    if har_produced {
-        write_file(
-            ctx.session.bundle.join("http.har"),
-            har_json(ctx.observations)?.as_bytes(),
-        )?;
+    let mut har_produced = false;
+    let mut har_partial = false;
+    let mut har_omission_reason = "not-requested";
+    if ctx.har_requested {
+        match fragcap::deep_capture::project_application_har(&application) {
+            Ok(projection) if projection.standard_entries + projection.partial_entries > 0 => {
+                har_partial = projection.partial_entries > 0;
+                match projection.publish(&ctx.session.bundle.join("http.har")) {
+                    Ok(_) => har_produced = true,
+                    Err(_) => har_omission_reason = "writer-failed",
+                }
+            }
+            Ok(_) => har_omission_reason = "no-http-semantics",
+            Err(_) => har_omission_reason = "projection-failed",
+        }
     }
     write_file(
         ctx.session.bundle.join("proxy.jsonl"),
@@ -2079,17 +2088,17 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         ctx.session.bundle.join("cleanup.json"),
         cleanup_json(&ctx.session.session_id, &final_cleanup)?.as_bytes(),
     )?;
-    write_file(
-        ctx.session.bundle.join("manifest.json"),
-        manifest_json(
-            ctx,
-            &final_cleanup,
-            har_produced,
-            key_log_produced,
-            packet_truth_produced,
-        )?
-        .as_bytes(),
+    let manifest = manifest_json(
+        ctx,
+        &final_cleanup,
+        har_produced,
+        har_partial,
+        har_omission_reason,
+        key_log_produced,
+        packet_truth_produced,
     )?;
+    fragcap::deep_capture::publish_final(&ctx.session.bundle, manifest.as_bytes())
+        .map_err(|error| CliError::failure(format!("cannot publish final manifest: {error}")))?;
     let manifest_state = final_cleanup
         .resources
         .iter_mut()
@@ -2219,6 +2228,10 @@ fn application_jsonl(
             "process_image": observation.process_image,
             "role": observation.role,
             "attribution": observation.attribution.as_deref().unwrap_or_else(|| if observation.flow_id.is_some() { "packet-flow-only" } else { "proxy-only" }),
+            "packet_observations": observation.packet_observations,
+            "packet_observations_unretained": observation.packet_observations_unretained,
+            "correlation_state": observation.correlation_state.as_str(),
+            "correlation_reason": observation.correlation_reason,
             "http": has_http.then(|| json!({
                 "method": observation.method,
                 "url": observation.url,
@@ -2318,20 +2331,6 @@ fn process_trace_jsonl(
     output
 }
 
-fn har_json(observations: &[Observation]) -> Result<String, CliError> {
-    let entries: Vec<_> = observations
-        .iter()
-        .filter(|o| o.method.is_some() && o.url.is_some())
-        .map(|observation| crate::har::Entry {
-            started_at: &observation.observed_at,
-            method: observation.method.as_deref().unwrap_or("GET"),
-            url: observation.url.as_deref().unwrap_or("http://127.0.0.1/"),
-            status: observation.status.unwrap_or(0),
-        })
-        .collect();
-    crate::har::render(&entries).map_err(|e| CliError::failure(e.to_string()))
-}
-
 fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
     serde_json::to_string_pretty(&json!({
         "session_id": ctx.session.session_id,
@@ -2368,6 +2367,16 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
         })).collect::<Vec<_>>(),
         "observations": ctx.observations.iter().map(|o| {
             json!({
+                "flow_id": o.flow_id.map(|id| id.to_string()),
+                "proxy_connection_id": o.proxy_connection_id,
+                "process_id": o.process_id,
+                "process_image": o.process_image,
+                "role": o.role,
+                "attribution": o.attribution,
+                "packet_observations": o.packet_observations,
+                "packet_observations_unretained": o.packet_observations_unretained,
+                "correlation_state": o.correlation_state.as_str(),
+                "correlation_reason": o.correlation_reason,
                 "protocol": o.protocol,
                 "inspectability": o.inspectability.as_str(),
             })
@@ -2393,6 +2402,8 @@ fn manifest_json(
     ctx: &BundleContext<'_>,
     cleanup: &CleanupReport,
     har_produced: bool,
+    har_partial: bool,
+    har_omission_reason: &str,
     key_log_produced: bool,
     packet_truth_produced: bool,
 ) -> Result<String, CliError> {
@@ -2411,15 +2422,20 @@ fn manifest_json(
         (true, true, true) => "partial",
         (true, true, false) => "retained",
     };
+    let mut application_artifact = artifact(
+        "application-jsonl",
+        "application.jsonl",
+        "application-events",
+        "sensitive",
+        "application/x-ndjson",
+        true,
+    );
+    apply_application_truth(
+        &mut application_artifact,
+        &ctx.session.bundle.join("application.jsonl"),
+    );
     let mut artifacts = vec![
-        artifact(
-            "application-jsonl",
-            "application.jsonl",
-            "application-events",
-            "sensitive",
-            "application/x-ndjson",
-            true,
-        ),
+        application_artifact,
         artifact(
             "proxy-log",
             "proxy.jsonl",
@@ -2463,33 +2479,60 @@ fn manifest_json(
     ];
     let mut omissions = Vec::new();
     if packet_truth_produced {
-        artifacts.insert(
-            0,
-            artifact(
-                "pcapng",
-                "capture.fcapng",
-                "packet-truth",
-                "ordinary",
-                "application/x-pcapng",
-                true,
-            ),
+        let mut packet_artifact = artifact(
+            "pcapng",
+            "capture.fcapng",
+            "packet-truth",
+            "ordinary",
+            "application/x-pcapng",
+            true,
         );
+        packet_artifact["loss"] = json!({"state":"reported-in-artifact"});
+        artifacts.insert(0, packet_artifact);
     } else {
         omissions.push(json!({"role":"pcapng","reason":"writer-failed","severity":"error"}));
+        artifacts.push(omitted_artifact(
+            "pcapng",
+            "packet-truth",
+            "ordinary",
+            "application/x-pcapng",
+            true,
+            "writer-failed",
+        ));
     }
     if har_produced {
-        artifacts.push(artifact(
+        let mut har = artifact(
             "har",
             "http.har",
             "http-projection",
             "sensitive",
             "application/json",
             false,
-        ));
+        );
+        if har_partial {
+            har["completeness"] = json!("partial");
+        }
+        artifacts.push(har);
     } else if ctx.har_requested {
-        omissions.push(json!({"role":"har","reason":"no-http-semantics","severity":"info"}));
+        omissions.push(json!({"role":"har","reason":har_omission_reason,"severity":if har_omission_reason == "no-http-semantics" {"info"} else {"error"}}));
+        artifacts.push(omitted_artifact(
+            "har",
+            "http-projection",
+            "sensitive",
+            "application/json",
+            false,
+            har_omission_reason,
+        ));
     } else {
         omissions.push(json!({"role":"har","reason":"not-requested","severity":"info"}));
+        artifacts.push(omitted_artifact(
+            "har",
+            "http-projection",
+            "sensitive",
+            "application/json",
+            false,
+            "not-requested",
+        ));
     }
     if ctx.key_log_requested && key_log_produced {
         artifacts.push(artifact(
@@ -2502,14 +2545,49 @@ fn manifest_json(
         ));
     } else if ctx.key_log_requested {
         omissions.push(json!({"role":"tls-key-log","reason":"not-produced","severity":"warn"}));
+        artifacts.push(omitted_artifact(
+            "tls-key-log",
+            "analyzer-aid",
+            "secret-adjacent",
+            "text/plain",
+            false,
+            "writer-failed",
+        ));
     } else {
         omissions.push(json!({"role":"tls-key-log","reason":"not-requested","severity":"info"}));
+        artifacts.push(omitted_artifact(
+            "tls-key-log",
+            "analyzer-aid",
+            "secret-adjacent",
+            "text/plain",
+            false,
+            "not-requested",
+        ));
     }
+    let manifest_state = if ctx.session_state == "complete"
+        && (artifacts.iter().any(|artifact| {
+            matches!(
+                artifact["completeness"].as_str(),
+                Some("partial" | "truncated" | "failed" | "pending")
+            ) || (artifact["required"] == true && artifact["completeness"] == "omitted")
+        }) || omissions
+            .iter()
+            .any(|omission| omission["severity"] == "error"))
+    {
+        "partial"
+    } else {
+        ctx.session_state
+    };
     serde_json::to_string_pretty(&json!({
-        "manifest_version": 1,
+        "$schema": "https://fragcap.dev/schema/deep-capture-manifest.v2.json",
+        "manifest_version": 2,
+        "product": {
+            "name": "fragcap",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
         "session_id": ctx.session.session_id,
         "mode": "deep-capture",
-        "state": ctx.session_state,
+        "state": manifest_state,
         "target": {
             "id": ctx.session.target.id,
             "stable_id": ctx.session.target.stable_id,
@@ -2571,11 +2649,112 @@ fn artifact(
     json!({
         "role": role,
         "path": path,
-        "authority": authority,
+        "authority": authority_contract(authority),
         "sensitivity": sensitivity,
         "content_type": content_type,
         "required": required,
+        "finalization": "complete",
+        "completeness": "complete",
+        "loss": {"state": "none"},
+        "correlation": if role == "application-jsonl" || role == "har" || role == "pcapng" {
+            json!({"state": "partial", "reason": "reported-by-correlation-accounting"})
+        } else {
+            json!({"state": "not-applicable"})
+        },
     })
+}
+
+fn omitted_artifact(
+    role: &str,
+    authority: &str,
+    sensitivity: &str,
+    content_type: &str,
+    required: bool,
+    reason: &str,
+) -> serde_json::Value {
+    json!({
+        "role": role,
+        "authority": authority_contract(authority),
+        "sensitivity": sensitivity,
+        "content_type": content_type,
+        "required": required,
+        "finalization": "complete",
+        "completeness": "omitted",
+        "omission_reason": reason,
+        "loss": {"state":"not-applicable"},
+        "correlation": {"state":"not-applicable"},
+    })
+}
+
+fn authority_contract(authority: &str) -> serde_json::Value {
+    let (kind, source_role) = match authority {
+        "packet-truth" | "application-events" => ("primary-evidence", None),
+        "http-projection" => ("derived-projection", Some("application-jsonl")),
+        "bundle-index" => ("bundle-index", None),
+        "analyzer-aid" => ("analyzer-aid", None),
+        _ => ("operational-record", None),
+    };
+    json!({"kind":kind,"owner":authority,"source_role":source_role})
+}
+
+fn apply_application_truth(artifact: &mut serde_json::Value, path: &Path) {
+    let Ok(prefix) = fragcap::deep_capture::read_application_prefix(path) else {
+        artifact["finalization"] = json!("failed");
+        artifact["completeness"] = json!("failed");
+        artifact["loss"] = json!({"state":"unknown"});
+        artifact["correlation"] =
+            json!({"state":"unavailable","reason":"application-stream-unreadable"});
+        return;
+    };
+    let finalization = match prefix.status {
+        fragcap::deep_capture::ApplicationStreamStatus::Complete => "complete",
+        fragcap::deep_capture::ApplicationStreamStatus::Incomplete => "incomplete",
+        fragcap::deep_capture::ApplicationStreamStatus::UnknownVersion => "failed",
+    };
+    let trailer = prefix
+        .records
+        .last()
+        .filter(|record| record["type"] == "application.trailer");
+    let dropped = trailer
+        .and_then(|record| record["dropped_records"].as_u64())
+        .unwrap_or(0);
+    let truncated = trailer
+        .map(|record| {
+            record["body_bytes_truncated"].as_u64().unwrap_or(0)
+                + record["streaming_bytes_truncated"].as_u64().unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let correlations: Vec<_> = prefix
+        .records
+        .iter()
+        .filter(|record| record["type"] == "application.correlation")
+        .collect();
+    let correlation_state = if correlations.is_empty() {
+        "unavailable"
+    } else if correlations
+        .iter()
+        .all(|record| record["correlation_state"] == "matched")
+    {
+        "complete"
+    } else {
+        "partial"
+    };
+    artifact["finalization"] = json!(finalization);
+    artifact["completeness"] = json!(if finalization != "complete" {
+        "partial"
+    } else if truncated > 0 {
+        "truncated"
+    } else if dropped > 0 {
+        "partial"
+    } else {
+        "complete"
+    });
+    artifact["loss"] = if dropped == 0 && truncated == 0 {
+        json!({"state":"none"})
+    } else {
+        json!({"state":"observed","dropped_records":dropped,"truncated_bytes":truncated})
+    };
+    artifact["correlation"] = json!({"state":correlation_state,"records":correlations.len()});
 }
 
 struct FactWriteResult {
@@ -2652,7 +2831,7 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
         ))
         .map_err(|e| CliError::failure(format!("cannot declare controlled interface: {e}")))?;
 
-    for (index, observation) in observations.iter().enumerate() {
+    for (index, _observation) in observations.iter().enumerate() {
         let ordinal = u16::try_from(index + 1).expect("the controlled corpus has four records");
         let raw = RawPacket::new(
             Timestamp::from_parts(1, u32::from(ordinal) * 1_000),
@@ -2667,7 +2846,7 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
             .parse()
             .expect("controlled endpoint parses");
         packet.flow = Some(FlowKey::new(Proto::Tcp, endpoint_a, endpoint_b));
-        packet.flow_id = observation.flow_id;
+        packet.flow_id = fragcap::FlowId::new(index as u64 + 1);
         writer
             .write(&packet)
             .map_err(|e| CliError::failure(format!("cannot write controlled packet: {e}")))?;
@@ -2692,6 +2871,10 @@ mod tests {
             process_image: None,
             role: None,
             attribution: None,
+            packet_observations: 1,
+            packet_observations_unretained: 0,
+            correlation_state: fragcap::deep_capture::CorrelationState::FlowOnly,
+            correlation_reason: "test-flow".to_string(),
             protocol: "https".to_string(),
             inspectability: Inspectability::Full,
             method: Some("GET".to_string()),

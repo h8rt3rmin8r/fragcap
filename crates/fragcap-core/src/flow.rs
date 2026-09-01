@@ -14,6 +14,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use crate::attribution::Attribution;
+use crate::packet::Timestamp;
 
 /// Transport protocol of a flow.
 ///
@@ -137,12 +138,31 @@ impl fmt::Display for FlowId {
 struct FlowRegistryState {
     next: u64,
     flows: HashMap<FlowKey, RegisteredFlow>,
+    retained_observations: usize,
+    observation_limit: usize,
 }
 
 #[derive(Clone, Debug)]
 struct RegisteredFlow {
     id: FlowId,
     attribution: Option<Attribution>,
+    observations: Vec<FlowObservation>,
+    unretained_observations: u64,
+}
+
+/// Packet-side evidence retained for deterministic Deep Capture correlation.
+#[derive(Clone, Debug)]
+pub struct FlowObservation {
+    pub timestamp: Timestamp,
+    pub attribution: Option<Attribution>,
+}
+
+/// Immutable history for one canonical flow.
+#[derive(Clone, Debug)]
+pub struct FlowSummary {
+    pub id: FlowId,
+    pub observations: Vec<FlowObservation>,
+    pub unretained_observations: u64,
 }
 
 /// The capture-wide mapping from canonical flow keys to session-local ids.
@@ -157,16 +177,22 @@ pub struct FlowRegistry {
 
 impl Default for FlowRegistry {
     fn default() -> Self {
-        Self {
-            state: Mutex::new(FlowRegistryState {
-                next: 1,
-                flows: HashMap::new(),
-            }),
-        }
+        Self::with_history_limit(262_144)
     }
 }
 
 impl FlowRegistry {
+    /// Construct a registry with a finite capture-wide correlation history.
+    pub fn with_history_limit(observation_limit: usize) -> Self {
+        Self {
+            state: Mutex::new(FlowRegistryState {
+                next: 1,
+                flows: HashMap::new(),
+                retained_observations: 0,
+                observation_limit: observation_limit.max(1),
+            }),
+        }
+    }
     /// Return the existing id or assign the next session-local id.
     pub fn assign(&self, key: FlowKey) -> FlowId {
         self.observe(key, None)
@@ -174,12 +200,35 @@ impl FlowRegistry {
 
     /// Record a flow and its latest resolved attribution, returning its id.
     pub fn observe(&self, key: FlowKey, attribution: Option<&Attribution>) -> FlowId {
+        self.observe_at(key, Timestamp::from_nanos(0), attribution)
+    }
+
+    /// Record timestamped packet evidence for later interval reconciliation.
+    pub fn observe_at(
+        &self,
+        key: FlowKey,
+        timestamp: Timestamp,
+        attribution: Option<&Attribution>,
+    ) -> FlowId {
         let mut state = self.state.lock().expect("flow registry mutex poisoned");
+        let retain = state.retained_observations < state.observation_limit;
         if let Some(flow) = state.flows.get_mut(&key) {
             if let Some(attribution) = attribution {
                 flow.attribution = Some(attribution.clone());
             }
-            return flow.id;
+            let id = flow.id;
+            if retain {
+                flow.observations.push(FlowObservation {
+                    timestamp,
+                    attribution: attribution.cloned(),
+                });
+            } else {
+                flow.unretained_observations = flow.unretained_observations.saturating_add(1);
+            }
+            if retain {
+                state.retained_observations += 1;
+            }
+            return id;
         }
         let id = FlowId::new(state.next).expect("the flow id counter starts at one");
         state.next = state
@@ -191,8 +240,19 @@ impl FlowRegistry {
             RegisteredFlow {
                 id,
                 attribution: attribution.cloned(),
+                observations: retain
+                    .then(|| FlowObservation {
+                        timestamp,
+                        attribution: attribution.cloned(),
+                    })
+                    .into_iter()
+                    .collect(),
+                unretained_observations: u64::from(!retain),
             },
         );
+        if retain {
+            state.retained_observations += 1;
+        }
         id
     }
 
@@ -214,6 +274,20 @@ impl FlowRegistry {
             .flows
             .get(key)
             .and_then(|flow| flow.attribution.clone())
+    }
+
+    /// Snapshot all packet observations for one canonical flow.
+    pub fn summary(&self, key: &FlowKey) -> Option<FlowSummary> {
+        self.state
+            .lock()
+            .expect("flow registry mutex poisoned")
+            .flows
+            .get(key)
+            .map(|flow| FlowSummary {
+                id: flow.id,
+                observations: flow.observations.clone(),
+                unretained_observations: flow.unretained_observations,
+            })
     }
 }
 
@@ -379,6 +453,36 @@ mod tests {
         let attribution = Attribution::new(7, "client.exe", Fidelity::Live).with_role("client");
         registry.observe(tcp(), Some(&attribution));
         assert_eq!(registry.attribution(&tcp()), Some(attribution));
+    }
+
+    #[test]
+    fn flow_registry_preserves_timestamped_owner_history() {
+        use crate::attribution::Fidelity;
+
+        let registry = FlowRegistry::default();
+        let first = Attribution::new(7, "first.exe", Fidelity::Live);
+        let second = Attribution::new(8, "second.exe", Fidelity::Retained);
+        registry.observe_at(tcp(), Timestamp::from_nanos(10), Some(&first));
+        registry.observe_at(tcp(), Timestamp::from_nanos(20), Some(&second));
+
+        let summary = registry.summary(&tcp()).unwrap();
+        assert_eq!(summary.observations.len(), 2);
+        assert_eq!(summary.observations[0].timestamp.as_nanos(), 10);
+        assert_eq!(summary.observations[0].attribution, Some(first));
+        assert_eq!(summary.observations[1].timestamp.as_nanos(), 20);
+        assert_eq!(summary.observations[1].attribution, Some(second));
+    }
+
+    #[test]
+    fn flow_registry_bounds_history_and_counts_every_unretained_observation() {
+        let registry = FlowRegistry::with_history_limit(1);
+        registry.observe_at(tcp(), Timestamp::from_nanos(10), None);
+        registry.observe_at(tcp(), Timestamp::from_nanos(20), None);
+        registry.observe_at(tcp(), Timestamp::from_nanos(30), None);
+
+        let summary = registry.summary(&tcp()).unwrap();
+        assert_eq!(summary.observations.len(), 1);
+        assert_eq!(summary.unretained_observations, 2);
     }
 
     #[test]

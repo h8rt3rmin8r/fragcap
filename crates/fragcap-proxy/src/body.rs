@@ -52,6 +52,7 @@ pub struct BodySegment {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Transformation {
+    pub direction: BodyDirection,
     pub encoding: String,
     pub input_bytes: u64,
     pub output_bytes: u64,
@@ -90,6 +91,7 @@ pub(crate) fn claim_retention(counter: &AtomicU64, limit: u64, requested: usize)
 }
 
 pub async fn decode_content(
+    direction: BodyDirection,
     encoding: &str,
     input: &[u8],
     max_output: usize,
@@ -105,6 +107,7 @@ pub async fn decode_content(
             return (
                 Vec::new(),
                 Transformation {
+                    direction,
                     encoding: normalized,
                     input_bytes: input.len() as u64,
                     output_bytes: 0,
@@ -125,6 +128,7 @@ pub async fn decode_content(
         Ok(Ok(output)) => (output, BodyOutcome::Complete),
     };
     let transformation = Transformation {
+        direction,
         encoding: normalized,
         input_bytes: input.len() as u64,
         output_bytes: output.len() as u64,
@@ -190,6 +194,7 @@ mod tests {
         for encoding in ["gzip", "deflate", "br"] {
             let compressed = encode(encoding, &source).await;
             let (decoded, record) = decode_content(
+                BodyDirection::Response,
                 encoding,
                 &compressed,
                 source.len() * 2,
@@ -203,8 +208,15 @@ mod tests {
         }
 
         let compressed = encode("gzip", &source).await;
-        let (decoded, record) =
-            decode_content("gzip", &compressed, 8, 128, Duration::from_secs(1)).await;
+        let (decoded, record) = decode_content(
+            BodyDirection::Response,
+            "gzip",
+            &compressed,
+            8,
+            128,
+            Duration::from_secs(1),
+        )
+        .await;
         assert!(decoded.is_empty());
         assert_eq!(record.outcome, BodyOutcome::ExpansionLimit);
     }
@@ -212,17 +224,31 @@ mod tests {
     #[tokio::test]
     async fn unsupported_and_malformed_encodings_are_distinct() {
         assert_eq!(
-            decode_content("zstd", b"raw", 1024, 16, Duration::from_secs(1))
-                .await
-                .1
-                .outcome,
+            decode_content(
+                BodyDirection::Response,
+                "zstd",
+                b"raw",
+                1024,
+                16,
+                Duration::from_secs(1),
+            )
+            .await
+            .1
+            .outcome,
             BodyOutcome::UnsupportedEncoding
         );
         assert_eq!(
-            decode_content("gzip", b"not-gzip", 1024, 16, Duration::from_secs(1))
-                .await
-                .1
-                .outcome,
+            decode_content(
+                BodyDirection::Request,
+                "gzip",
+                b"not-gzip",
+                1024,
+                16,
+                Duration::from_secs(1),
+            )
+            .await
+            .1
+            .outcome,
             BodyOutcome::MalformedEncoding
         );
     }
