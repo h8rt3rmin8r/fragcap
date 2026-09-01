@@ -331,7 +331,8 @@ async fn raw_http2_client_and_origin_interoperate_through_native_proxy() {
         let mut trailers = Vec::new();
         hpack_literal_name(&mut trailers, b"grpc-status", b"0");
         write_h2_frame(&mut tcp, 1, 5, 1, &trailers).await;
-        tcp.shutdown().await.unwrap();
+        let mut closed = [0_u8; 1];
+        let _ = tokio::time::timeout(Duration::from_secs(2), tcp.read(&mut closed)).await;
     });
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
