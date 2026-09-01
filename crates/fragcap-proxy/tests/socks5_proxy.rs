@@ -412,3 +412,105 @@ fn bounded_relay_preserves_a_payload_larger_than_its_buffers() {
     assert_eq!(report.observation.protocol.socks_client_bytes, 128 * 1024);
     assert_eq!(report.observation.protocol.socks_upstream_bytes, 128 * 1024);
 }
+
+#[test]
+fn relay_idle_deadline_resets_while_traffic_progresses() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let mut byte = [0_u8; 1];
+        while stream.read_exact(&mut byte).is_ok() {
+            stream.write_all(&byte).unwrap();
+        }
+    });
+    let limits = ProtocolLimits {
+        idle_timeout: Duration::from_millis(60),
+        ..ProtocolLimits::default()
+    };
+    let mut lease = start_proxy_with(address, limits, None);
+    let password = lease.capability_proof().proxy_password();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(&mut client, password.as_bytes());
+    connect_ipv4(&mut client, address);
+    for value in 0_u8..4 {
+        client.write_all(&[value]).unwrap();
+        let mut echoed = [0_u8; 1];
+        client.read_exact(&mut echoed).unwrap();
+        assert_eq!(echoed, [value]);
+        std::thread::sleep(Duration::from_millis(35));
+    }
+    client.shutdown(Shutdown::Write).unwrap();
+    let mut terminal = [0_u8; 1];
+    assert_eq!(client.read(&mut terminal).unwrap(), 0);
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.timed_out, 0);
+    assert_eq!(report.observation.protocol.socks_client_bytes, 4);
+    assert_eq!(report.observation.protocol.socks_upstream_bytes, 4);
+}
+
+#[test]
+fn idle_timeout_retains_directional_progress() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = origin.accept().unwrap();
+        let mut bytes = [0_u8; 4];
+        stream.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"sent");
+        std::thread::sleep(Duration::from_millis(150));
+    });
+    let limits = ProtocolLimits {
+        idle_timeout: Duration::from_millis(60),
+        ..ProtocolLimits::default()
+    };
+    let mut lease = start_proxy_with(address, limits, None);
+    let password = lease.capability_proof().proxy_password();
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(&mut client, password.as_bytes());
+    connect_ipv4(&mut client, address);
+    client.write_all(b"sent").unwrap();
+    let mut terminal = [0_u8; 1];
+    let _ = client.read(&mut terminal);
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.timed_out, 1);
+    assert_eq!(report.observation.protocol.socks_client_bytes, 4);
+    assert_eq!(report.observation.protocol.socks_upstream_bytes, 0);
+}
+
+#[test]
+fn authentication_fields_share_one_deadline() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    origin.set_nonblocking(true).unwrap();
+    let limits = ProtocolLimits {
+        header_timeout: Duration::from_millis(80),
+        ..ProtocolLimits::default()
+    };
+    let mut lease = start_proxy_with(origin.local_addr().unwrap(), limits, None);
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    client.write_all(&[5, 1]).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    client.write_all(&[2]).unwrap();
+    let mut selection = [0_u8; 2];
+    client.read_exact(&mut selection).unwrap();
+    assert_eq!(selection, [5, 2]);
+    std::thread::sleep(Duration::from_millis(50));
+    let _ = client.write_all(&[1, 7]);
+    let mut terminal = [0_u8; 1];
+    assert!(matches!(client.read(&mut terminal), Ok(0) | Err(_)));
+    assert!(origin.accept().is_err());
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.timed_out, 1);
+    assert_eq!(report.observation.protocol.socks_auth_succeeded, 0);
+}

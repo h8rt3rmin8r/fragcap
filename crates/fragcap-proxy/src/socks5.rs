@@ -4,12 +4,13 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::io::{copy_bidirectional_with_sizes, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::watch;
-use tokio::time::timeout;
+use tokio::sync::{watch, Notify};
+use tokio::time::{timeout, Instant};
 
 use crate::http1::{HttpRun, ProtocolError};
 use crate::{
@@ -223,52 +224,52 @@ pub(crate) async fn serve_socks5(
         "connected",
         Some(classification),
     );
-    let forwarding = tokio::select! {
-        _ = shutdown.changed() => Err(SocksFailure::cancelled()),
-        result = timeout(
-            limits.idle_timeout,
-            copy_bidirectional_with_sizes(
-                &mut client,
-                &mut upstream,
-                buffer_bytes,
-                buffer_bytes,
-            ),
-        ) => match result {
-            Ok(Ok(bytes)) => Ok(bytes),
-            Ok(Err(error)) => Err(SocksFailure::new("socks-forward-failed", error.to_string())),
-            Err(_) => Err(SocksFailure::timeout("socks-forward-timeout", SocksReplyCode::TtlExpired)),
+    let client_bytes = AtomicU64::new(0);
+    let upstream_bytes = AtomicU64::new(0);
+    let activity = Notify::new();
+    let forwarding = relay_with_idle_timeout(
+        &mut client,
+        &mut upstream,
+        RelayContext {
+            buffer_bytes,
+            idle_timeout: limits.idle_timeout,
+            shutdown: &mut shutdown,
+            client_bytes: &client_bytes,
+            upstream_bytes: &upstream_bytes,
+            activity: &activity,
         },
-    };
+    )
+    .await;
+    let client_bytes = client_bytes.load(Ordering::Relaxed);
+    let upstream_bytes = upstream_bytes.load(Ordering::Relaxed);
+    accounting.socks_client_bytes = client_bytes;
+    accounting.socks_upstream_bytes = upstream_bytes;
+    crate::application::emit(
+        sink,
+        ApplicationEvent::now(
+            session_id,
+            connection_id,
+            None,
+            None,
+            ApplicationEventKind::SocksTransfer(SocksTransferEvent {
+                client_to_upstream_bytes: client_bytes,
+                upstream_to_client_bytes: upstream_bytes,
+            }),
+        ),
+    );
     match forwarding {
-        Ok((client_bytes, upstream_bytes)) => {
-            accounting.socks_client_bytes = client_bytes;
-            accounting.socks_upstream_bytes = upstream_bytes;
-            crate::application::emit(
-                sink,
-                ApplicationEvent::now(
-                    session_id,
-                    connection_id,
-                    None,
-                    None,
-                    ApplicationEventKind::SocksTransfer(SocksTransferEvent {
-                        client_to_upstream_bytes: client_bytes,
-                        upstream_to_client_bytes: upstream_bytes,
-                    }),
-                ),
-            );
-            HttpRun {
-                observations: vec![observation(
-                    session_id,
-                    connection_id,
-                    peer,
-                    local,
-                    &authority_text,
-                    classification.as_str(),
-                )],
-                accounting,
-                failure: None,
-            }
-        }
+        Ok(()) => HttpRun {
+            observations: vec![observation(
+                session_id,
+                connection_id,
+                peer,
+                local,
+                &authority_text,
+                classification.as_str(),
+            )],
+            accounting,
+            failure: None,
+        },
         Err(failure) => {
             accounting.timed_out = u64::from(failure.timed_out);
             failed_with_observation(
@@ -292,13 +293,14 @@ async fn negotiate(
     capability: &SessionCapability,
     budget: Duration,
 ) -> Result<(), SocksFailure> {
+    let deadline = Instant::now() + budget;
     let mut head = [0_u8; 2];
-    read_exact(stream, &mut head, budget, "socks-greeting").await?;
+    read_exact_until(stream, &mut head, deadline, "socks-greeting").await?;
     if head[0] != SOCKS_VERSION || head[1] == 0 {
         return Err(SocksFailure::auth("socks-greeting-invalid"));
     }
     let mut methods = vec![0_u8; usize::from(head[1])];
-    read_exact(stream, &mut methods, budget, "socks-methods").await?;
+    read_exact_until(stream, &mut methods, deadline, "socks-methods").await?;
     if !methods.contains(&USERNAME_PASSWORD) {
         let _ = stream
             .write_all(&[SOCKS_VERSION, NO_ACCEPTABLE_METHODS])
@@ -310,21 +312,21 @@ async fn negotiate(
         .await
         .map_err(|error| SocksFailure::new("socks-method-write-failed", error.to_string()))?;
     let mut auth_head = [0_u8; 2];
-    read_exact(stream, &mut auth_head, budget, "socks-auth-head").await?;
+    read_exact_until(stream, &mut auth_head, deadline, "socks-auth-head").await?;
     if auth_head[0] != AUTH_VERSION || auth_head[1] == 0 {
         let _ = stream.write_all(&[AUTH_VERSION, 1]).await;
         return Err(SocksFailure::auth("socks-auth-malformed"));
     }
     let mut username = vec![0_u8; usize::from(auth_head[1])];
-    read_exact(stream, &mut username, budget, "socks-username").await?;
+    read_exact_until(stream, &mut username, deadline, "socks-username").await?;
     let mut password_len = [0_u8; 1];
-    read_exact(stream, &mut password_len, budget, "socks-password-length").await?;
+    read_exact_until(stream, &mut password_len, deadline, "socks-password-length").await?;
     if password_len[0] == 0 {
         let _ = stream.write_all(&[AUTH_VERSION, 1]).await;
         return Err(SocksFailure::auth("socks-auth-malformed"));
     }
     let mut password = zeroize::Zeroizing::new(vec![0_u8; usize::from(password_len[0])]);
-    read_exact(stream, password.as_mut_slice(), budget, "socks-password").await?;
+    read_exact_until(stream, password.as_mut_slice(), deadline, "socks-password").await?;
     if !capability.authenticates_socks_credentials(&username, &password) {
         let _ = stream.write_all(&[AUTH_VERSION, 1]).await;
         return Err(SocksFailure::auth("socks-auth-refused"));
@@ -339,8 +341,9 @@ async fn read_connect_request(
     stream: &mut TcpStream,
     budget: Duration,
 ) -> Result<ConnectRequest, SocksFailure> {
+    let deadline = Instant::now() + budget;
     let mut head = [0_u8; 4];
-    read_exact(stream, &mut head, budget, "socks-request-head").await?;
+    read_exact_until(stream, &mut head, deadline, "socks-request-head").await?;
     if head[0] != SOCKS_VERSION || head[2] != 0 {
         return Err(SocksFailure::reply(
             "socks-request-invalid",
@@ -350,7 +353,7 @@ async fn read_connect_request(
     let (host, address_type) = match head[3] {
         1 => {
             let mut octets = [0_u8; 4];
-            read_exact(stream, &mut octets, budget, "socks-ipv4").await?;
+            read_exact_until(stream, &mut octets, deadline, "socks-ipv4").await?;
             (
                 IpAddr::V4(Ipv4Addr::from(octets)).to_string(),
                 SocksAddressType::Ipv4,
@@ -358,7 +361,7 @@ async fn read_connect_request(
         }
         3 => {
             let mut length = [0_u8; 1];
-            read_exact(stream, &mut length, budget, "socks-domain-length").await?;
+            read_exact_until(stream, &mut length, deadline, "socks-domain-length").await?;
             if length[0] == 0 {
                 return Err(SocksFailure::reply(
                     "socks-domain-empty",
@@ -366,7 +369,7 @@ async fn read_connect_request(
                 ));
             }
             let mut bytes = vec![0_u8; usize::from(length[0])];
-            read_exact(stream, &mut bytes, budget, "socks-domain").await?;
+            read_exact_until(stream, &mut bytes, deadline, "socks-domain").await?;
             let domain = std::str::from_utf8(&bytes).map_err(|_| {
                 SocksFailure::reply(
                     "socks-domain-invalid",
@@ -377,7 +380,7 @@ async fn read_connect_request(
         }
         4 => {
             let mut octets = [0_u8; 16];
-            read_exact(stream, &mut octets, budget, "socks-ipv6").await?;
+            read_exact_until(stream, &mut octets, deadline, "socks-ipv6").await?;
             (
                 format!("[{}]", Ipv6Addr::from(octets)),
                 SocksAddressType::Ipv6,
@@ -391,7 +394,7 @@ async fn read_connect_request(
         }
     };
     let mut port = [0_u8; 2];
-    read_exact(stream, &mut port, budget, "socks-port").await?;
+    read_exact_until(stream, &mut port, deadline, "socks-port").await?;
     if head[1] != CONNECT {
         return Err(SocksFailure::reply(
             "socks-command-unsupported",
@@ -419,6 +422,144 @@ async fn read_exact(
         .map_err(|_| SocksFailure::timeout(stage, SocksReplyCode::TtlExpired))?
         .map(|_| ())
         .map_err(|error| SocksFailure::new(stage, error.to_string()))
+}
+
+async fn read_exact_until(
+    stream: &mut TcpStream,
+    bytes: &mut [u8],
+    deadline: Instant,
+    stage: &'static str,
+) -> Result<(), SocksFailure> {
+    read_exact(
+        stream,
+        bytes,
+        deadline.saturating_duration_since(Instant::now()),
+        stage,
+    )
+    .await
+}
+
+struct RelayContext<'a> {
+    buffer_bytes: usize,
+    idle_timeout: Duration,
+    shutdown: &'a mut watch::Receiver<bool>,
+    client_bytes: &'a AtomicU64,
+    upstream_bytes: &'a AtomicU64,
+    activity: &'a Notify,
+}
+
+async fn relay_with_idle_timeout<U>(
+    client: &mut TcpStream,
+    upstream: &mut U,
+    context: RelayContext<'_>,
+) -> Result<(), SocksFailure>
+where
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    let RelayContext {
+        buffer_bytes,
+        idle_timeout,
+        shutdown,
+        client_bytes,
+        upstream_bytes,
+        activity,
+    } = context;
+    let relay = relay_bidirectional(
+        client,
+        upstream,
+        buffer_bytes,
+        client_bytes,
+        upstream_bytes,
+        activity,
+    );
+    tokio::pin!(relay);
+    let idle = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return Err(SocksFailure::cancelled()),
+            _ = activity.notified() => idle.as_mut().reset(Instant::now() + idle_timeout),
+            result = &mut relay => {
+                return result.map_err(|error| {
+                    SocksFailure::new("socks-forward-failed", error.to_string())
+                });
+            }
+            _ = &mut idle => {
+                return Err(SocksFailure::timeout(
+                    "socks-forward-timeout",
+                    SocksReplyCode::TtlExpired,
+                ));
+            }
+        }
+    }
+}
+
+async fn relay_bidirectional<U>(
+    client: &mut TcpStream,
+    upstream: &mut U,
+    buffer_bytes: usize,
+    client_bytes: &AtomicU64,
+    upstream_bytes: &AtomicU64,
+    activity: &Notify,
+) -> io::Result<()>
+where
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    let (client_read, client_write) = tokio::io::split(client);
+    let (upstream_read, upstream_write) = tokio::io::split(upstream);
+    tokio::try_join!(
+        relay_direction(
+            client_read,
+            upstream_write,
+            buffer_bytes,
+            client_bytes,
+            activity,
+        ),
+        relay_direction(
+            upstream_read,
+            client_write,
+            buffer_bytes,
+            upstream_bytes,
+            activity,
+        ),
+    )?;
+    Ok(())
+}
+
+async fn relay_direction<R, W>(
+    mut reader: R,
+    mut writer: W,
+    buffer_bytes: usize,
+    transferred: &AtomicU64,
+    activity: &Notify,
+) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = vec![0_u8; buffer_bytes];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            writer.shutdown().await?;
+            return Ok(());
+        }
+        activity.notify_one();
+        let mut written = 0;
+        while written < read {
+            let count = writer.write(&buffer[written..read]).await?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "SOCKS relay write made no progress",
+                ));
+            }
+            written += count;
+            transferred.fetch_add(count as u64, Ordering::Relaxed);
+            activity.notify_one();
+        }
+    }
 }
 
 async fn write_reply(
