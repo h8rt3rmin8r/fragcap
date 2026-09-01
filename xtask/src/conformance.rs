@@ -193,27 +193,119 @@ fn collect_rust_source(path: &Path, target: &mut String) -> io::Result<()> {
     Ok(())
 }
 
+fn regenerate_analyzer_fixture(source: &str) -> Result<(Vec<u8>, String), String> {
+    let mut pcapng = Vec::new();
+    push_u32(&mut pcapng, 0x0a0d0d0a);
+    push_u32(&mut pcapng, 28);
+    push_u32(&mut pcapng, 0x1a2b3c4d);
+    pcapng.extend_from_slice(&1_u16.to_le_bytes());
+    pcapng.extend_from_slice(&0_u16.to_le_bytes());
+    pcapng.extend_from_slice(&u64::MAX.to_le_bytes());
+    push_u32(&mut pcapng, 28);
+    push_u32(&mut pcapng, 1);
+    push_u32(&mut pcapng, 20);
+    pcapng.extend_from_slice(&1_u16.to_le_bytes());
+    pcapng.extend_from_slice(&0_u16.to_le_bytes());
+    push_u32(&mut pcapng, 65_535);
+    push_u32(&mut pcapng, 20);
+
+    let mut key_log =
+        String::from("# Synthetic TLS 1.3 secrets for the committed S110 analyzer fixture\n");
+    let mut packets = 0_usize;
+    let mut secrets = 0_usize;
+    for (index, line) in source.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("packet ") {
+            let mut fields = rest.split_whitespace();
+            let timestamp = parse_source_number(fields.next(), index, "timestamp")?;
+            let original_length = parse_source_number(fields.next(), index, "original length")?;
+            let packet = decode_hex(fields.next().ok_or_else(|| {
+                format!("analyzer source line {} lacks packet bytes", index + 1)
+            })?)?;
+            if fields.next().is_some() || packet.len() != original_length as usize {
+                return Err(format!(
+                    "analyzer source line {} has inconsistent packet length",
+                    index + 1
+                ));
+            }
+            let padded_length = (packet.len() + 3) & !3;
+            let block_length = (32 + padded_length) as u32;
+            push_u32(&mut pcapng, 6);
+            push_u32(&mut pcapng, block_length);
+            push_u32(&mut pcapng, 0);
+            push_u32(&mut pcapng, (timestamp >> 32) as u32);
+            push_u32(&mut pcapng, timestamp as u32);
+            push_u32(&mut pcapng, packet.len() as u32);
+            push_u32(&mut pcapng, original_length as u32);
+            pcapng.extend_from_slice(&packet);
+            pcapng.resize(pcapng.len() + padded_length - packet.len(), 0);
+            push_u32(&mut pcapng, block_length);
+            packets += 1;
+        } else if let Some(secret) = line.strip_prefix("keylog ") {
+            if secret.split_whitespace().count() != 3 {
+                return Err(format!(
+                    "analyzer source line {} has an invalid key-log entry",
+                    index + 1
+                ));
+            }
+            key_log.push_str(secret);
+            key_log.push('\n');
+            secrets += 1;
+        } else {
+            return Err(format!("unknown analyzer source line {}", index + 1));
+        }
+    }
+    if packets != 9 || secrets != 5 {
+        return Err(format!(
+            "analyzer source has {packets} packets and {secrets} secrets; expected 9 and 5"
+        ));
+    }
+    Ok((pcapng, key_log))
+}
+
+fn parse_source_number(value: Option<&str>, index: usize, field: &str) -> Result<u64, String> {
+    value
+        .ok_or_else(|| format!("analyzer source line {} lacks {field}", index + 1))?
+        .parse()
+        .map_err(|_| format!("analyzer source line {} has invalid {field}", index + 1))
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("analyzer source contains odd-length packet hex".to_string());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair).expect("hex source is ASCII");
+            u8::from_str_radix(digits, 16)
+                .map_err(|_| "analyzer source contains non-hex packet bytes".to_string())
+        })
+        .collect()
+}
+
+fn push_u32(target: &mut Vec<u8>, value: u32) {
+    target.extend_from_slice(&value.to_le_bytes());
+}
+
 fn validate_fixture_drift(root: &Path) -> io::Result<Vec<String>> {
     let committed = fs::read(root.join(EVIDENCE).join("analyzer.pcapng"))?;
-    let ordinary_capture = fs::read(root.join("fixtures/goldens/loopback.fcapng"))?;
     let key_log = fs::read_to_string(root.join(EVIDENCE).join("tls-keylog.log"))?;
+    let source = fs::read_to_string(root.join(EVIDENCE).join("analyzer-source-v1.txt"))?;
+    let (regenerated, regenerated_key_log) = regenerate_analyzer_fixture(&source)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut problems = Vec::new();
-    if committed.len() < 1_024 || !committed.starts_with(&0x0a0d0d0a_u32.to_le_bytes()) {
+    if committed != regenerated {
         problems
-            .push("analyzer.pcapng is not the bounded synthetic TLS pcapng fixture".to_string());
+            .push("analyzer.pcapng differs from its deterministic transcript source".to_string());
     }
-    if committed == ordinary_capture {
-        problems.push("analyzer.pcapng contains no dedicated TLS transcript".to_string());
-    }
-    for label in [
-        "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-        "SERVER_HANDSHAKE_TRAFFIC_SECRET",
-        "CLIENT_TRAFFIC_SECRET_0",
-        "SERVER_TRAFFIC_SECRET_0",
-    ] {
-        if !key_log.lines().any(|line| line.starts_with(label)) {
-            problems.push(format!("TLS key log lacks {label}"));
-        }
+    if key_log != regenerated_key_log {
+        problems
+            .push("tls-keylog.log differs from its deterministic transcript source".to_string());
     }
     Ok(problems)
 }

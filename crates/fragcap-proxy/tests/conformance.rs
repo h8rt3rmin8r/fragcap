@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -307,41 +308,35 @@ fn hpack_literal_name(target: &mut Vec<u8>, name: &[u8], value: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn raw_http2_client_and_origin_interoperate_through_native_proxy() {
+async fn raw_http2_client_multiplexes_through_native_proxy() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = listener.local_addr().unwrap();
     let origin_task = tokio::spawn(async move {
-        let (mut tcp, _) = listener.accept().await.unwrap();
-        let mut preface = [0_u8; 24];
-        tcp.read_exact(&mut preface).await.unwrap();
-        assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-        let (kind, flags, _, _) = read_h2_frame(&mut tcp, "raw origin settings").await;
-        assert_eq!(kind, 4);
-        assert_eq!(flags & 1, 0);
-        write_h2_frame(&mut tcp, 4, 0, 0, &[]).await;
-        write_h2_frame(&mut tcp, 4, 1, 0, &[]).await;
-        let mut saw_request_headers = false;
-        loop {
-            let (kind, flags, stream, _) = read_h2_frame(&mut tcp, "raw origin request").await;
-            if kind == 4 && flags & 1 == 0 {
-                write_h2_frame(&mut tcp, 4, 1, 0, &[]).await;
-            }
-            if kind == 1 && stream == 1 {
-                saw_request_headers = true;
-            }
-            if saw_request_headers && stream == 1 && flags & 1 == 1 {
-                break;
-            }
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut connection = h2::server::handshake(tcp).await.unwrap();
+        for _ in 0..2 {
+            let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+            let body = match request.uri().path() {
+                "/raw-grpc" => b"\0\0\0\0\x02ok".as_slice(),
+                "/raw-grpc-second" => b"\0\0\0\0\x02go".as_slice(),
+                value => panic!("unexpected HTTP/2 origin path {value}"),
+            };
+            let response = Response::builder()
+                .status(200)
+                .header("content-type", "application/grpc")
+                .body(())
+                .unwrap();
+            let mut send = respond.send_response(response, false).unwrap();
+            send.send_data(Bytes::copy_from_slice(body), false).unwrap();
+            let mut trailers = hyper::HeaderMap::new();
+            trailers.insert("grpc-status", "0".parse().unwrap());
+            send.send_trailers(trailers).unwrap();
         }
-        let mut response_headers = vec![0x88];
-        hpack_literal_name(&mut response_headers, b"content-type", b"application/grpc");
-        write_h2_frame(&mut tcp, 1, 4, 1, &response_headers).await;
-        write_h2_frame(&mut tcp, 0, 0, 1, b"\0\0\0\0\x02ok").await;
-        let mut trailers = Vec::new();
-        hpack_literal_name(&mut trailers, b"grpc-status", b"0");
-        write_h2_frame(&mut tcp, 1, 5, 1, &trailers).await;
-        let mut closed = [0_u8; 1];
-        let _ = tokio::time::timeout(Duration::from_secs(2), tcp.read(&mut closed)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while connection.accept().await.is_some() {}
+        })
+        .await;
+        connection.graceful_shutdown();
     });
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
@@ -379,33 +374,137 @@ async fn raw_http2_client_and_origin_interoperate_through_native_proxy() {
             .as_str()
             .as_bytes(),
     );
-    write_h2_frame(&mut tcp, 1, 4, 1, &headers).await;
-    write_h2_frame(&mut tcp, 0, 1, 1, b"\0\0\0\0\x02hi").await;
-    let mut response_data = Vec::new();
-    loop {
-        let (kind, flags, stream, payload) = read_h2_frame(&mut tcp, "raw client response").await;
-        if kind == 0 && stream == 1 {
-            response_data.extend_from_slice(&payload);
-        }
-        if response_data == b"\0\0\0\0\x02ok" || (kind == 1 && stream == 1 && flags & 1 == 1) {
-            break;
+    write_h2_frame(&mut tcp, 1, 5, 1, &headers).await;
+    let mut second_headers = vec![0x83, 0x86];
+    hpack_literal_name(&mut second_headers, b":path", b"/raw-grpc-second");
+    hpack_literal_name(
+        &mut second_headers,
+        b":authority",
+        origin.to_string().as_bytes(),
+    );
+    hpack_literal_name(&mut second_headers, b"content-type", b"application/grpc");
+    hpack_literal_name(
+        &mut second_headers,
+        b"proxy-authorization",
+        lease
+            .capability_proof()
+            .proxy_authorization()
+            .as_str()
+            .as_bytes(),
+    );
+    write_h2_frame(&mut tcp, 1, 5, 3, &second_headers).await;
+    let mut ended_streams = BTreeSet::new();
+    while ended_streams.len() != 2 {
+        let (_, flags, stream, _) = read_h2_frame(&mut tcp, "raw multiplexed response").await;
+        if matches!(stream, 1 | 3) && flags & 1 == 1 {
+            ended_streams.insert(stream);
         }
     }
-    assert_eq!(response_data, b"\0\0\0\0\x02ok");
+    let terminal_streams: BTreeSet<_> = collector
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                ApplicationEventKind::Streaming(StreamingEvent::GrpcTerminal { .. })
+            )
+        })
+        .filter_map(|event| event.stream_id)
+        .collect();
+    assert_eq!(terminal_streams, BTreeSet::from([1, 3]));
     drop(tcp);
     origin_task.await.unwrap();
     let report = lease.cleanup(Duration::from_secs(2));
     assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.observation.protocol.http2_streams_completed, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn h2_grpc_client_interoperates_with_raw_http2_origin_through_native_proxy() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        let (mut tcp, _) = listener.accept().await.unwrap();
+        let mut preface = [0_u8; 24];
+        tcp.read_exact(&mut preface).await.unwrap();
+        assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        let (kind, flags, _, _) = read_h2_frame(&mut tcp, "raw origin settings").await;
+        assert_eq!((kind, flags & 1), (4, 0));
+        write_h2_frame(&mut tcp, 4, 0, 0, &[]).await;
+        write_h2_frame(&mut tcp, 4, 1, 0, &[]).await;
+        loop {
+            let (kind, flags, stream, _) = read_h2_frame(&mut tcp, "raw origin request").await;
+            if kind == 4 && flags & 1 == 0 {
+                write_h2_frame(&mut tcp, 4, 1, 0, &[]).await;
+            }
+            if kind == 1 && stream == 1 && flags & 1 == 1 {
+                break;
+            }
+        }
+        let mut response_headers = vec![0x88];
+        hpack_literal_name(&mut response_headers, b"content-type", b"application/grpc");
+        write_h2_frame(&mut tcp, 1, 4, 1, &response_headers).await;
+        write_h2_frame(&mut tcp, 0, 0, 1, b"\0\0\0\0\x02ok").await;
+        let mut trailers = Vec::new();
+        hpack_literal_name(&mut trailers, b"grpc-status", b"0");
+        write_h2_frame(&mut tcp, 1, 5, 1, &trailers).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let mut head = [0_u8; 9];
+                if tcp.read_exact(&mut head).await.is_err() {
+                    break;
+                }
+                let length =
+                    ((head[0] as usize) << 16) | ((head[1] as usize) << 8) | head[2] as usize;
+                let mut payload = vec![0_u8; length];
+                if tcp.read_exact(&mut payload).await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+    });
+
+    let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
+    policy.grant_for_test(origin);
+    let mut lease = NativeProxyBackend::new(config("s110-raw-h2-origin"))
+        .with_destination_policy(policy)
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let tcp = tokio::net::TcpStream::connect(lease.endpoint())
+        .await
+        .unwrap();
+    let (mut sender, connection) = h2::client::handshake(tcp).await.unwrap();
+    let driver = tokio::spawn(connection);
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("http://{origin}/raw-origin"))
+        .header("content-type", "application/grpc")
+        .header(
+            "proxy-authorization",
+            lease.capability_proof().proxy_authorization().as_str(),
+        )
+        .body(())
+        .unwrap();
+    let (response, _) = sender.send_request(request, true).unwrap();
+    let mut body = response.await.unwrap().into_body();
+    let mut observed = Vec::new();
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.unwrap();
+        body.flow_control().release_capacity(chunk.len()).unwrap();
+        observed.extend_from_slice(&chunk);
+    }
+    assert_eq!(observed, b"\0\0\0\0\x02ok");
+    assert_eq!(body.trailers().await.unwrap().unwrap()["grpc-status"], "0");
+    drop(sender);
+    driver.abort();
+    let _ = driver.await;
+    origin_task.await.unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert!(report.is_clean(), "{report:?}");
     assert_eq!(report.observation.protocol.http2_streams_completed, 1);
-    let events = collector.0.lock().unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event.kind,
-        ApplicationEventKind::Streaming(StreamingEvent::GrpcMessage(_))
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event.kind,
-        ApplicationEventKind::Streaming(StreamingEvent::GrpcTerminal { .. })
-    )));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

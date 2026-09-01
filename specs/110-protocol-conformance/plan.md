@@ -71,6 +71,7 @@ conformance/native-http-tls/
 ├── matrix-v1.json
 ├── report-v1.json
 ├── analyzer.pcapng
+├── analyzer-source-v1.txt
 └── tls-keylog.log
 
 crates/fragcap/tests/

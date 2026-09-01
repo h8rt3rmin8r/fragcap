@@ -6,6 +6,7 @@
 - `conformance/native-http-tls/report-v1.json` is the normalized committed observation.
 - `conformance/native-http-tls/analyzer.pcapng` is the synthetic analyzer input.
 - `conformance/native-http-tls/tls-keylog.log` is the synthetic standard key-log input.
+- `conformance/native-http-tls/analyzer-source-v1.txt` is the canonical packet and key-log source. The portable gate regenerates both analyzer inputs from it and requires byte-for-byte equality.
 
 ## Required row semantics
 

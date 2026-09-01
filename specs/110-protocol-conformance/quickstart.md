@@ -6,7 +6,7 @@
 cargo xtask conformance
 ```
 
-This validates the closed matrix, runs or checks the portable harness evidence, verifies integrated artifact reconciliation, checks deterministic drift and sanitization, and rejects every skipped or missing required row.
+This validates the closed matrix, runs or checks the portable harness evidence, verifies integrated artifact reconciliation, regenerates both analyzer inputs byte for byte from `analyzer-source-v1.txt`, checks sanitization, and rejects every skipped or missing required row.
 
 ## External analyzer validation
 
