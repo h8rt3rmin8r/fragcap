@@ -339,6 +339,16 @@ copy with an exhaustive transformation manifest. The bounded sensitive-action
 journal does not complete general session recovery, so #320 remains open. S107
 adds no dependency or lockfile package.
 
+S108 closes #302, #303, and #335 at the correlated-evidence boundary. Accepted
+native proxy connections reconcile only after collection against timestamped
+packet-flow ownership, including explicit unavailable and ambiguous outcomes.
+HAR 1.2 is a bounded, atomic projection of complete application JSON Lines and
+never fills missing status, size, timing, or body facts with placeholders.
+Manifest version 2 separates schema and product versions and declares authority,
+sensitivity, finalization, completeness, loss, correlation, and omissions for
+every expected artifact. Version 1 remains read-only. S108 adds no dependency or
+lockfile package, and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

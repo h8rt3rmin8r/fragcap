@@ -1,0 +1,22 @@
+{
+  "$schema": "https://fragcap.dev/schema/deep-capture-manifest.v2.json",
+  "manifest_version": 2,
+  "product": {"name": "fragcap", "version": "0.8.0"},
+  "session_id": "example-complete",
+  "state": "complete",
+  "artifacts": [
+    {
+      "role": "manifest",
+      "path": "manifest.json",
+      "authority": {"kind": "bundle-index", "owner": "bundle-index", "source_role": null},
+      "sensitivity": "ordinary",
+      "content_type": "application/json",
+      "required": true,
+      "finalization": "complete",
+      "completeness": "complete",
+      "loss": {"state": "none"},
+      "correlation": {"state": "not-applicable"}
+    }
+  ],
+  "omissions": []
+}

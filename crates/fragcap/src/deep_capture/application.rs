@@ -13,11 +13,16 @@ use std::thread::JoinHandle;
 use base64::Engine;
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, ApplicationEventSink, ApplicationSinkAccounting,
-    BodyOutcome, BodyRepresentation, EventDisposition, MetadataOrdering, ProtocolVersion,
+    BodyOutcome, BodyRepresentation, ConnectionDescriptor, EventDisposition, MetadataOrdering,
+    ProtocolVersion,
 };
 use serde_json::{json, Value};
 
 const SCHEMA_VERSION: u64 = 2;
+#[cfg(not(test))]
+const MAX_CONNECTION_WINDOWS: usize = 65_536;
+#[cfg(test)]
+const MAX_CONNECTION_WINDOWS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationStreamStatus {
@@ -44,6 +49,8 @@ struct WriterAccount {
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
+    connection_windows_unretained: AtomicU64,
+    first_unretained_connection_id: AtomicU64,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -110,10 +117,54 @@ struct ChannelSink {
     sender: Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>,
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
+    connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
 }
 
 impl ApplicationEventSink for ChannelSink {
     fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        // Connection lifetime is correlation control data, not a lossy body or
+        // protocol observation. Retain it independently before attempting the
+        // bounded event queue so pressure cannot erase the only descriptor for
+        // an accepted connection.
+        if let ApplicationEventKind::ConnectionOpen(descriptor) = &event.kind {
+            let mut connections = self
+                .connections
+                .lock()
+                .expect("application connection lock");
+            if connections.len() < MAX_CONNECTION_WINDOWS
+                || connections.contains_key(&event.connection_id)
+            {
+                connections.insert(
+                    event.connection_id,
+                    ApplicationConnectionWindow {
+                        descriptor: *descriptor,
+                        opened_at_ns: event.timestamp_ns,
+                        closed_at_ns: None,
+                    },
+                );
+            } else {
+                // The proxy accept loop emits ConnectionOpen synchronously and
+                // assigns contiguous ids before spawning connection work. A
+                // first id plus a count therefore retains every overflowed
+                // identity in constant memory.
+                let _ = self
+                    .account
+                    .first_unretained_connection_id
+                    .compare_exchange(0, event.connection_id, Ordering::AcqRel, Ordering::Acquire);
+                self.account
+                    .connection_windows_unretained
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        } else if matches!(event.kind, ApplicationEventKind::ConnectionTerminal(_)) {
+            if let Some(window) = self
+                .connections
+                .lock()
+                .expect("application connection lock")
+                .get_mut(&event.connection_id)
+            {
+                window.closed_at_ns = Some(event.timestamp_ns);
+            }
+        }
         if self.retired.load(Ordering::Acquire) {
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::Retired;
@@ -166,10 +217,24 @@ pub struct ApplicationArtifactLease {
 #[derive(Clone, Debug, Default)]
 pub struct ApplicationCorrelation {
     pub target_id: Option<i64>,
+    pub flow_id: Option<fragcap_core::FlowId>,
     pub process_id: Option<u32>,
     pub process_image: Option<String>,
     pub role: Option<String>,
     pub attribution: Option<String>,
+    pub packet_observations: u64,
+    pub packet_observations_unretained: u64,
+    pub state: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// The proxy-side lifetime used to reconcile one accepted connection against
+/// packet evidence after capture has stopped.
+#[derive(Clone, Copy, Debug)]
+pub struct ApplicationConnectionWindow {
+    pub descriptor: ConnectionDescriptor,
+    pub opened_at_ns: u64,
+    pub closed_at_ns: Option<u64>,
 }
 
 impl ApplicationArtifactLease {
@@ -182,7 +247,7 @@ impl ApplicationArtifactLease {
             path,
             session_id,
             capacity,
-            Arc::new(ApplicationCorrelation::default),
+            Arc::new(|_| ApplicationCorrelation::default()),
         )
     }
 
@@ -190,7 +255,9 @@ impl ApplicationArtifactLease {
         path: impl Into<PathBuf>,
         session_id: impl Into<String>,
         capacity: usize,
-        correlation: Arc<dyn Fn() -> ApplicationCorrelation + Send + Sync>,
+        correlation: Arc<
+            dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync,
+        >,
     ) -> io::Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
@@ -206,10 +273,12 @@ impl ApplicationArtifactLease {
         let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
+        let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = Arc::new(ChannelSink {
             sender: Mutex::new(Some(sender)),
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
+            connections: Arc::clone(&connections),
         });
         let worker_account = Arc::clone(&account);
         let worker = std::thread::Builder::new()
@@ -221,6 +290,7 @@ impl ApplicationArtifactLease {
                     receiver,
                     retired,
                     worker_account,
+                    connections,
                     correlation,
                 )
             })?;
@@ -269,7 +339,8 @@ fn writer_loop(
     receiver: mpsc::Receiver<ApplicationEvent>,
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
-    correlation: Arc<dyn Fn() -> ApplicationCorrelation + Send + Sync>,
+    connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
+    correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
 ) -> io::Result<()> {
     let mut writer = BufWriter::new(file);
     let mut sequence = 0_u64;
@@ -305,7 +376,10 @@ fn writer_loop(
             }
         }
         sequence = sequence.saturating_add(1);
-        let value = event_json(event, sequence, correlation());
+        // Packet capture and proxy observation run concurrently. Publishing a
+        // live answer here would make identity depend on scheduling, so event
+        // records remain explicitly deferred until final reconciliation.
+        let value = event_json(event, sequence, ApplicationCorrelation::default());
         match write_record(&mut writer, &value) {
             Ok(()) => {
                 account.written.fetch_add(1, Ordering::Relaxed);
@@ -319,6 +393,63 @@ fn writer_loop(
                 return Err(error);
             }
         }
+    }
+    let mut correlation_counts = BTreeMap::<String, u64>::new();
+    let connections =
+        std::mem::take(&mut *connections.lock().expect("application connection lock"));
+    for (connection_id, window) in connections {
+        sequence = sequence.saturating_add(1);
+        let resolved = correlation(&window);
+        *correlation_counts
+            .entry(
+                resolved
+                    .state
+                    .clone()
+                    .unwrap_or_else(|| "unavailable".to_string()),
+            )
+            .or_default() += 1;
+        let value = correlation_record(session_id, sequence, connection_id, resolved);
+        write_record(&mut writer, &value)?;
+        account.written.fetch_add(1, Ordering::Relaxed);
+        account.accepted.fetch_add(1, Ordering::Relaxed);
+        account
+            .serialized_bytes
+            .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
+        *records_by_type
+            .entry("application.correlation".to_string())
+            .or_default() += 1;
+    }
+    let unretained_connections = account
+        .connection_windows_unretained
+        .load(Ordering::Acquire);
+    let first_unretained_connection_id = account
+        .first_unretained_connection_id
+        .load(Ordering::Acquire);
+    for offset in 0..unretained_connections {
+        *correlation_counts
+            .entry("unavailable".to_string())
+            .or_default() += 1;
+        sequence = sequence.saturating_add(1);
+        let connection_id = first_unretained_connection_id.saturating_add(offset);
+        let value = correlation_record(
+            session_id,
+            sequence,
+            connection_id,
+            ApplicationCorrelation {
+                state: Some("unavailable".to_string()),
+                reason: Some("connection-history-bound-exceeded".to_string()),
+                ..ApplicationCorrelation::default()
+            },
+        );
+        write_record(&mut writer, &value)?;
+        account.written.fetch_add(1, Ordering::Relaxed);
+        account.accepted.fetch_add(1, Ordering::Relaxed);
+        account
+            .serialized_bytes
+            .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
+        *records_by_type
+            .entry("application.correlation".to_string())
+            .or_default() += 1;
     }
     let dropped = account.dropped.load(Ordering::Acquire);
     let body_bytes_queue_dropped = account.body_bytes_queue_dropped.load(Ordering::Acquire);
@@ -391,6 +522,9 @@ fn writer_loop(
             ,"streaming_bytes_retained": streaming_retained
             ,"streaming_bytes_truncated": streaming_truncated
             ,"streaming_records_by_outcome": streaming_by_outcome
+            ,"correlation_connections_by_state": correlation_counts
+            ,"correlation_connections_total": correlation_counts.values().sum::<u64>()
+            ,"correlation_connections_unretained": unretained_connections
         }),
     )
 }
@@ -408,6 +542,32 @@ fn header_record(session_id: &str) -> Value {
             "udp": "deferred-issue-307",
             "quic": "deferred-issue-305"
         }
+    })
+}
+
+fn correlation_record(
+    session_id: &str,
+    sequence: u64,
+    connection_id: u64,
+    value: ApplicationCorrelation,
+) -> Value {
+    json!({
+        "type": "application.correlation",
+        "schema_version": SCHEMA_VERSION,
+        "session_id": session_id,
+        "sequence": sequence,
+        "event_time_ns": 0,
+        "proxy_connection_id": connection_id,
+        "flow_id": value.flow_id.map(|id| id.to_string()),
+        "target_id": value.target_id,
+        "process_id": value.process_id,
+        "process_image": value.process_image,
+        "role": value.role,
+        "attribution": value.attribution,
+        "packet_observations": value.packet_observations,
+        "packet_observations_unretained": value.packet_observations_unretained,
+        "correlation_state": value.state.unwrap_or_else(|| "unavailable".to_string()),
+        "correlation_reason": value.reason.unwrap_or_else(|| "correlation-context-unavailable".to_string()),
     })
 }
 
@@ -435,14 +595,26 @@ fn event_json(
         "http_stream_id": event.stream_id,
         "protocol": protocol,
         "target_id": correlation.target_id,
+        "flow_id": correlation.flow_id.map(|id| id.to_string()),
         "process_id": correlation.process_id,
         "process_image": correlation.process_image,
         "role": correlation.role,
         "attribution": correlation.attribution,
+        "correlation_state": correlation.state.unwrap_or_else(|| "deferred".to_string()),
+        "correlation_reason": correlation.reason.unwrap_or_else(|| "final-reconciliation-pending".to_string()),
     });
     let mut object = common.as_object().cloned().unwrap_or_default();
     let (kind, detail) = match event.kind {
-        ApplicationEventKind::ConnectionOpen => ("connection.open", json!({})),
+        ApplicationEventKind::ConnectionOpen(value) => (
+            "connection.open",
+            json!({
+                "transport": value.transport,
+                "client_peer": value.client_peer.to_string(),
+                "proxy_local": value.proxy_local.to_string(),
+                "correlation_state": "deferred",
+                "correlation_reason": "final-reconciliation-pending",
+            }),
+        ),
         ApplicationEventKind::ConnectionTerminal(outcome) => (
             "connection.terminal",
             json!({"outcome": format!("{outcome:?}").to_ascii_lowercase()}),
@@ -468,6 +640,10 @@ fn event_json(
             "http.stream.terminal",
             json!({"outcome": format!("{outcome:?}").to_ascii_lowercase()}),
         ),
+        ApplicationEventKind::HttpTiming(value) => (
+            "http.timing",
+            json!({"send_ns": value.send_ns, "wait_ns": value.wait_ns, "receive_ns": value.receive_ns}),
+        ),
         ApplicationEventKind::Metadata(block) => (
             "http.metadata",
             json!({
@@ -478,8 +654,10 @@ fn event_json(
                 "fields": block.fields.into_iter().map(field_json).collect::<Vec<_>>(),
                 "method": block.method.map(binary_json),
                 "target": block.target.map(binary_json),
+                "url": block.url.map(binary_json),
                 "status": block.status,
                 "reason": block.reason.map(binary_json),
+                "head_bytes": block.head_bytes,
                 "query": block.query.into_iter().map(derived_json).collect::<Vec<_>>(),
                 "cookies": block.cookies.into_iter().map(derived_json).collect::<Vec<_>>(),
                 "unavailable": block.unavailable,
@@ -489,6 +667,7 @@ fn event_json(
         ApplicationEventKind::Transformation(value) => (
             "http.transformation",
             json!({
+                "direction": direction(value.direction),
                 "encoding": value.encoding,
                 "input_bytes": value.input_bytes,
                 "output_bytes": value.output_bytes,
@@ -507,12 +686,13 @@ fn event_json(
 
 fn event_type(kind: &ApplicationEventKind) -> &'static str {
     match kind {
-        ApplicationEventKind::ConnectionOpen => "connection.open",
+        ApplicationEventKind::ConnectionOpen(_) => "connection.open",
         ApplicationEventKind::ConnectionTerminal(_) => "connection.terminal",
         ApplicationEventKind::TlsNegotiation(_) => "tls.negotiation",
         ApplicationEventKind::TlsTerminal(_) => "tls.terminal",
         ApplicationEventKind::HttpStreamOpen => "http.stream.open",
         ApplicationEventKind::HttpStreamTerminal(_) => "http.stream.terminal",
+        ApplicationEventKind::HttpTiming(_) => "http.timing",
         ApplicationEventKind::Metadata(_) => "http.metadata",
         ApplicationEventKind::Body(_) => "http.body_segment",
         ApplicationEventKind::Transformation(_) => "http.transformation",
@@ -865,6 +1045,8 @@ fn trailer_reconciles(records: &[Value]) -> bool {
     let mut streaming_retained = 0_u64;
     let mut streaming_truncated = 0_u64;
     let mut streaming_by_outcome = BTreeMap::<String, u64>::new();
+    let mut correlation_total = 0_u64;
+    let mut correlation_by_state = BTreeMap::<String, u64>::new();
     for record in records.iter().skip(1).take(records.len().saturating_sub(2)) {
         let Some(kind) = record.get("type").and_then(Value::as_str) else {
             return false;
@@ -913,6 +1095,13 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             if record.get("outcome").and_then(Value::as_str) == Some("retention-limit") {
                 body_truncated = body_truncated.saturating_add(observed.saturating_sub(retained));
             }
+        }
+        if kind == "application.correlation" {
+            let Some(state) = record.get("correlation_state").and_then(Value::as_str) else {
+                return false;
+            };
+            correlation_total = correlation_total.saturating_add(1);
+            *correlation_by_state.entry(state.to_string()).or_default() += 1;
         }
         if matches!(
             kind,
@@ -981,4 +1170,277 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             .cloned()
             .unwrap_or_else(|| json!({}))
             == json!(streaming_by_outcome)
+        && trailer
+            .get("correlation_connections_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == correlation_total
+        && trailer
+            .get("correlation_connections_by_state")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            == json!(correlation_by_state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fragcap_proxy::{ApplicationEvent, ApplicationEventKind, StreamTerminal};
+
+    #[test]
+    fn queue_pressure_cannot_erase_a_connection_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.jsonl");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        write_record(&mut file, &header_record("session")).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let retired = Arc::new(AtomicBool::new(false));
+        let account = Arc::new(WriterAccount::default());
+        let connections = Arc::new(Mutex::new(BTreeMap::new()));
+        let sink = ChannelSink {
+            sender: Mutex::new(Some(sender)),
+            retired: Arc::clone(&retired),
+            account: Arc::clone(&account),
+            connections: Arc::clone(&connections),
+        };
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                99,
+                Some(1),
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::HttpStreamOpen,
+            )),
+            EventDisposition::Accepted
+        );
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        };
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                7,
+                None,
+                None,
+                ApplicationEventKind::ConnectionOpen(descriptor),
+            )),
+            EventDisposition::QueueFull
+        );
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                7,
+                None,
+                None,
+                ApplicationEventKind::ConnectionTerminal(StreamTerminal::Complete),
+            )),
+            EventDisposition::QueueFull
+        );
+        drop(sink.sender.lock().unwrap().take());
+        writer_loop(
+            file,
+            "session",
+            receiver,
+            retired,
+            account,
+            connections,
+            Arc::new(|_| ApplicationCorrelation {
+                state: Some("unavailable".to_string()),
+                reason: Some("packet-evidence-unavailable".to_string()),
+                ..ApplicationCorrelation::default()
+            }),
+        )
+        .unwrap();
+        let prefix = read_application_prefix(&path).unwrap();
+        assert_eq!(prefix.status, ApplicationStreamStatus::Complete);
+        let correlation = prefix
+            .records
+            .iter()
+            .find(|record| record["type"] == "application.correlation")
+            .expect("the queue-dropped descriptor still produces final correlation");
+        assert_eq!(correlation["proxy_connection_id"], 7);
+        assert_eq!(correlation["correlation_state"], "unavailable");
+    }
+
+    #[test]
+    fn connection_history_bound_is_reported_as_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.jsonl");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        write_record(&mut file, &header_record("session")).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let retired = Arc::new(AtomicBool::new(false));
+        let account = Arc::new(WriterAccount::default());
+        let connections = Arc::new(Mutex::new(BTreeMap::new()));
+        let sink = ChannelSink {
+            sender: Mutex::new(Some(sender)),
+            retired: Arc::clone(&retired),
+            account: Arc::clone(&account),
+            connections: Arc::clone(&connections),
+        };
+        for connection_id in 1..=(MAX_CONNECTION_WINDOWS as u64 + 1) {
+            let descriptor = ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: format!("127.0.0.1:{}", 41_000 + connection_id)
+                    .parse()
+                    .unwrap(),
+                proxy_local: "127.0.0.1:42000".parse().unwrap(),
+            };
+            let _ = sink.try_emit(ApplicationEvent::now(
+                "session",
+                connection_id,
+                None,
+                None,
+                ApplicationEventKind::ConnectionOpen(descriptor),
+            ));
+        }
+        assert_eq!(connections.lock().unwrap().len(), MAX_CONNECTION_WINDOWS);
+        assert_eq!(
+            account
+                .connection_windows_unretained
+                .load(Ordering::Acquire),
+            1
+        );
+        drop(sink.sender.lock().unwrap().take());
+        writer_loop(
+            file,
+            "session",
+            receiver,
+            retired,
+            account,
+            connections,
+            Arc::new(|_| ApplicationCorrelation {
+                state: Some("unavailable".to_string()),
+                reason: Some("packet-evidence-unavailable".to_string()),
+                ..ApplicationCorrelation::default()
+            }),
+        )
+        .unwrap();
+        let prefix = read_application_prefix(&path).unwrap();
+        assert_eq!(prefix.status, ApplicationStreamStatus::Complete);
+        let overflow = prefix
+            .records
+            .iter()
+            .find(|record| {
+                record["type"] == "application.correlation"
+                    && record["proxy_connection_id"] == MAX_CONNECTION_WINDOWS as u64 + 1
+            })
+            .expect("overflow must produce a per-connection correlation result");
+        assert_eq!(overflow["correlation_state"], "unavailable");
+        assert_eq!(
+            overflow["correlation_reason"],
+            "connection-history-bound-exceeded"
+        );
+        let trailer = prefix.records.last().unwrap();
+        assert_eq!(
+            trailer["correlation_connections_total"],
+            MAX_CONNECTION_WINDOWS as u64 + 1
+        );
+        assert_eq!(trailer["correlation_connections_unretained"], 1);
+    }
+
+    #[test]
+    fn connection_correlation_is_resolved_once_after_event_collection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.jsonl");
+        let ready = Arc::new(AtomicBool::new(false));
+        let resolver_ready = Arc::clone(&ready);
+        let mut lease = ApplicationArtifactLease::open_correlated(
+            &path,
+            "session",
+            8,
+            Arc::new(move |window| {
+                assert!(resolver_ready.load(Ordering::Acquire));
+                assert!(window.closed_at_ns.is_some());
+                ApplicationCorrelation {
+                    packet_observations: 2,
+                    state: Some("matched".to_string()),
+                    reason: Some("exact-flow-and-owner".to_string()),
+                    ..ApplicationCorrelation::default()
+                }
+            }),
+        )
+        .unwrap();
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        };
+        let sink = lease.sink();
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                1,
+                None,
+                None,
+                ApplicationEventKind::ConnectionOpen(descriptor),
+            )),
+            EventDisposition::Accepted
+        );
+        for stream_id in [1, 3] {
+            assert_eq!(
+                sink.try_emit(ApplicationEvent::now(
+                    "session",
+                    1,
+                    Some(stream_id),
+                    Some(ProtocolVersion::Http2),
+                    ApplicationEventKind::HttpStreamOpen,
+                )),
+                EventDisposition::Accepted
+            );
+        }
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                1,
+                None,
+                None,
+                ApplicationEventKind::ConnectionTerminal(StreamTerminal::Complete),
+            )),
+            EventDisposition::Accepted
+        );
+        ready.store(true, Ordering::Release);
+        lease.finish().unwrap();
+
+        let prefix = read_application_prefix(&path).unwrap();
+        assert_eq!(prefix.status, ApplicationStreamStatus::Complete);
+        let correlation = prefix
+            .records
+            .iter()
+            .find(|record| record["type"] == "application.correlation")
+            .unwrap();
+        assert_eq!(correlation["correlation_state"], "matched");
+        assert_eq!(correlation["packet_observations"], 2);
+        let stream_ids = prefix
+            .records
+            .iter()
+            .filter(|record| record["type"] == "http.stream.open")
+            .filter_map(|record| record["http_stream_id"].as_u64())
+            .collect::<Vec<_>>();
+        assert_eq!(stream_ids, [1, 3]);
+        assert!(prefix
+            .records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record["type"].as_str(),
+                    Some("connection.open" | "connection.terminal")
+                )
+            })
+            .all(|record| record["correlation_state"].is_null()
+                || record["correlation_state"] == "deferred"));
+        let trailer = prefix.records.last().unwrap();
+        assert_eq!(trailer["correlation_connections_total"], 1);
+        assert_eq!(trailer["correlation_connections_by_state"]["matched"], 1);
+    }
 }

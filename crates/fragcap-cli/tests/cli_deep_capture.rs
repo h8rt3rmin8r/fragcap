@@ -482,6 +482,8 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["mode"], "deep-capture");
+    assert_eq!(manifest["manifest_version"], 2);
+    assert_eq!(manifest["product"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest["state"], "complete");
     assert_eq!(manifest["target"]["handle"], "sample-target");
     assert_eq!(manifest["cleanup"]["status"], "succeeded");
@@ -530,6 +532,35 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert!(application_records[1..application_records.len() - 1]
         .iter()
         .any(|record| record["process_id"].as_u64().is_some_and(|pid| pid > 0)));
+    assert!(application_records.iter().any(|record| {
+        record["type"] == "application.correlation"
+            && record["flow_id"].is_null()
+            && record["correlation_reason"] == "controlled-harness-has-no-packet-flow"
+    }));
+
+    let har: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("http.har")).unwrap()).unwrap();
+    assert_eq!(har["log"]["version"], "1.2");
+    assert!(har["log"]["entries"]
+        .as_array()
+        .is_some_and(|entries| !entries.is_empty()));
+    assert!(har["log"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| {
+            entry["response"]["status"].as_u64().is_some()
+                && entry["time"].as_f64().is_some_and(|value| value >= 0.0)
+                && entry["timings"]["send"]
+                    .as_f64()
+                    .is_some_and(|value| value >= 0.0)
+                && entry["timings"]["wait"]
+                    .as_f64()
+                    .is_some_and(|value| value >= 0.0)
+                && entry["timings"]["receive"]
+                    .as_f64()
+                    .is_some_and(|value| value >= 0.0)
+        }));
 
     let process_trace = std::fs::read_to_string(bundle.join("process-trace.jsonl")).unwrap();
     assert!(process_trace.contains("controlled-harness.exited"));
@@ -563,7 +594,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         .unwrap()
         .iter()
         .any(|resource| {
-            resource["resource"] == "manifest-state" && resource["status"] == "written"
+            resource["resource"] == "manifest-state" && resource["status"] == "publication-ready"
         }));
 
     let pcap = std::fs::read(bundle.join("capture.fcapng")).unwrap();

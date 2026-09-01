@@ -104,18 +104,24 @@ impl Producer {
     /// Admit an item, evicting the oldest packet first if the buffer is full.
     ///
     /// Never waits for the consumer to remove anything.
-    pub(crate) fn push(&self, item: Item) {
+    pub(crate) fn push(&self, item: Item) -> Option<Box<CapturedPacket>> {
         let (lock, cvar) = &*self.shared;
         let mut shared = lock.lock().expect("the buffer mutex is never poisoned");
         // A terminal item is admitted regardless of length. See the module
         // documentation and research decision R-6.
-        if matches!(item, Item::Packet(_)) && shared.queue.len() >= shared.capacity {
-            shared.queue.pop_front();
+        let evicted = if matches!(item, Item::Packet(_)) && shared.queue.len() >= shared.capacity {
             shared.evicted = shared.evicted.saturating_add(1);
-        }
+            match shared.queue.pop_front() {
+                Some(Item::Packet(packet)) => Some(packet),
+                Some(Item::End(_)) | None => unreachable!("only packets are capacity bounded"),
+            }
+        } else {
+            None
+        };
         shared.queue.push_back(item);
         drop(shared);
         cvar.notify_one();
+        evicted
     }
 }
 

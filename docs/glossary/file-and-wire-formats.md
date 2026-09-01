@@ -200,6 +200,10 @@ used by browser developer tools and HTTP inspection software.
 In fragcap, HAR is a candidate Deep Capture artifact for supported HTTP traffic
 and a candidate utility-wide export from ordinary Capture metadata where enough
 information exists. It is not a packet format and does not replace pcapng.
+fragcap emits a standard entry only when the native application stream contains
+the mandatory request, response, status, URL, completion, and phase timing
+evidence. Other transactions remain in the namespaced partial-entry extension;
+missing facts are never replaced with zeroes or synthetic values.
 
 {: .matters }
 > HAR is useful because application developers already know how to inspect it.
@@ -223,6 +227,10 @@ inspection artifacts produced during the same run.
 A session bundle may include pcapng, JSON Lines, HAR when supported, proxy logs,
 proxy-owned TLS key-log export, process traces, compatibility facts, and a
 manifest tying each artifact to the same run identity and time base.
+Native bundles use manifest version 2, which is separate from the fragcap
+product version and declares one authority owner plus sensitivity, finalization,
+completeness, loss, and correlation for every artifact or omission. Version 1
+bundles remain read-only inputs.
 
 {: .matters }
 > Deep Capture should feel like an elevated Capture session, not a second

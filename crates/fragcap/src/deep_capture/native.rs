@@ -23,9 +23,9 @@ pub use fragcap_proxy::{
 };
 
 use super::{
-    BackendDescriptor, Budget, CleanupResult, CleanupStatus, CompatibilityObservation,
-    Inspectability, LoopbackEndpoint, ProxyBackend, ProxyLease, ProxyRoute, SessionPlan, Stage,
-    StageFailure,
+    ApplicationConnectionWindow, BackendDescriptor, Budget, CleanupResult, CleanupStatus,
+    CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint, ProxyBackend,
+    ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
 };
 
 /// Finite native runtime limits selected by the library consumer.
@@ -191,12 +191,47 @@ impl ProxyBackend for NativeProxyAdapter {
                     path,
                     &plan.session_id,
                     4_096,
-                    Arc::new(move || super::ApplicationCorrelation {
-                        target_id: Some(target_id),
-                        process_id: correlation_context.controlled_process_id(),
-                        process_image: controlled.then(|| "client.exe".to_string()),
-                        role: controlled.then(|| "client".to_string()),
-                        attribution: controlled.then(|| "controlled-harness".to_string()),
+                    Arc::new(move |descriptor| {
+                        let (
+                            flow_id,
+                            process_id,
+                            process_image,
+                            role,
+                            attribution,
+                            packet_observations,
+                            packet_observations_unretained,
+                            state,
+                            reason,
+                        ) = if controlled {
+                            (
+                                None,
+                                correlation_context.controlled_process_id(),
+                                Some("client.exe".to_string()),
+                                Some("client".to_string()),
+                                Some("controlled-harness".to_string()),
+                                0,
+                                0,
+                                CorrelationState::Unavailable,
+                                "controlled-harness-has-no-packet-flow".to_string(),
+                            )
+                        } else {
+                            correlate_connection_window(
+                                &correlation_context.flow_registry,
+                                descriptor,
+                            )
+                        };
+                        super::ApplicationCorrelation {
+                            target_id: Some(target_id),
+                            flow_id,
+                            process_id,
+                            process_image,
+                            role,
+                            attribution,
+                            packet_observations,
+                            packet_observations_unretained,
+                            state: Some(state.as_str().to_string()),
+                            reason: Some(reason),
+                        }
                     }),
                 )
                 .map_err(|error| {
@@ -309,19 +344,35 @@ impl ProxyLease for NativeProxyLease {
             .application
             .into_iter()
             .map(|value| {
-                let (flow_id, process_id, process_image, role, attribution) = if self.controlled {
+                let (
+                    flow_id,
+                    process_id,
+                    process_image,
+                    role,
+                    attribution,
+                    packet_observations,
+                    packet_observations_unretained,
+                    correlation_state,
+                    correlation_reason,
+                ) = if self.controlled {
                     (
-                        fragcap_core::FlowId::new(value.connection_id),
+                        None,
                         self.observation_context.controlled_process_id(),
                         Some("client.exe".to_string()),
                         Some("client".to_string()),
                         Some("controlled-harness".to_string()),
+                        0,
+                        0,
+                        CorrelationState::Unavailable,
+                        "controlled-harness-has-no-packet-flow".to_string(),
                     )
                 } else {
                     correlate_native_observation(
                         &self.observation_context.flow_registry,
                         value.client_peer,
                         value.proxy_local,
+                        value.connection_opened_at_ns,
+                        value.connection_closed_at_ns,
                     )
                 };
                 CompatibilityObservation {
@@ -334,6 +385,10 @@ impl ProxyLease for NativeProxyLease {
                     process_image,
                     role,
                     attribution,
+                    packet_observations,
+                    packet_observations_unretained,
+                    correlation_state,
+                    correlation_reason,
                     protocol: match value.protocol.as_str() {
                         "connect" | "tls" => "https".to_string(),
                         _ => value.protocol,
@@ -411,12 +466,44 @@ type NativeCorrelation = (
     Option<String>,
     Option<String>,
     Option<String>,
+    u64,
+    u64,
+    CorrelationState,
+    String,
 );
+
+fn correlate_connection_window(
+    registry: &FlowRegistry,
+    window: &ApplicationConnectionWindow,
+) -> NativeCorrelation {
+    let Some(closed_at_ns) = window.closed_at_ns else {
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            CorrelationState::Unavailable,
+            "connection-terminal-not-observed".to_string(),
+        );
+    };
+    correlate_native_observation(
+        registry,
+        window.descriptor.client_peer,
+        window.descriptor.proxy_local,
+        window.opened_at_ns,
+        closed_at_ns,
+    )
+}
 
 fn correlate_native_observation(
     registry: &FlowRegistry,
     client_peer: SocketAddr,
     proxy_local: SocketAddr,
+    opened_at_ns: u64,
+    closed_at_ns: u64,
 ) -> NativeCorrelation {
     let (local, remote) = if client_peer <= proxy_local {
         (client_peer, proxy_local)
@@ -424,15 +511,135 @@ fn correlate_native_observation(
         (proxy_local, client_peer)
     };
     let key = FlowKey::new(Proto::Tcp, local, remote);
-    let flow_id = registry.lookup(&key);
-    let Some(attribution) = registry.attribution(&key) else {
-        return (flow_id, None, None, None, None);
+    let Some(summary) = registry.summary(&key) else {
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            CorrelationState::Unavailable,
+            "packet-flow-not-observed".to_string(),
+        );
     };
+    if summary.unretained_observations > 0 {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            summary.observations.len() as u64,
+            summary.unretained_observations,
+            CorrelationState::Unavailable,
+            "packet-history-bound-exceeded".to_string(),
+        );
+    }
+    if summary.global_unretained_observations > 0 {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            summary.observations.len() as u64,
+            summary.unretained_observations,
+            CorrelationState::Unavailable,
+            "capture-buffer-history-incomplete".to_string(),
+        );
+    }
+    let overlapping = summary
+        .observations
+        .iter()
+        .filter(|observation| {
+            let timestamp = observation.timestamp.as_nanos();
+            timestamp >= 0
+                && (timestamp as u64) >= opened_at_ns
+                && (timestamp as u64) <= closed_at_ns
+        })
+        .collect::<Vec<_>>();
+    if overlapping.is_empty() {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            CorrelationState::Unavailable,
+            "packet-flow-has-no-overlapping-observation".to_string(),
+        );
+    }
+    let has_unattributed = overlapping
+        .iter()
+        .any(|observation| observation.attribution.is_none());
+    let mut owners = overlapping
+        .iter()
+        .filter_map(|observation| observation.attribution.as_ref())
+        .collect::<Vec<_>>();
+    owners.sort_by_key(|owner| {
+        let fidelity = match owner.fidelity {
+            Fidelity::Retained => 0,
+            Fidelity::Live => 1,
+            Fidelity::None => 2,
+        };
+        (
+            owner.pid,
+            owner.process.clone(),
+            owner.role.clone(),
+            fidelity,
+        )
+    });
+    owners.dedup_by(|left, right| {
+        left.pid == right.pid && left.process == right.process && left.role == right.role
+    });
+    let Some(attribution) = owners.first() else {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            overlapping.len() as u64,
+            0,
+            CorrelationState::FlowOnly,
+            "packet-flow-unattributed".to_string(),
+        );
+    };
+    if owners.len() != 1 {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            overlapping.len() as u64,
+            0,
+            CorrelationState::Ambiguous,
+            "conflicting-packet-owners".to_string(),
+        );
+    }
+    if has_unattributed {
+        return (
+            Some(summary.id),
+            None,
+            None,
+            None,
+            None,
+            overlapping.len() as u64,
+            0,
+            CorrelationState::Ambiguous,
+            "packet-owner-partially-unresolved".to_string(),
+        );
+    }
     (
-        flow_id,
+        Some(summary.id),
         Some(attribution.pid),
         Some(attribution.process.to_string()),
-        attribution.role.map(|role| role.to_string()),
+        attribution.role.as_ref().map(|role| role.to_string()),
         Some(
             match attribution.fidelity {
                 Fidelity::Live => "live",
@@ -441,6 +648,10 @@ fn correlate_native_observation(
             }
             .to_string(),
         ),
+        overlapping.len() as u64,
+        0,
+        CorrelationState::Matched,
+        "exact-flow-and-owner".to_string(),
     )
 }
 
@@ -684,7 +895,7 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fragcap_core::Attribution;
+    use fragcap_core::{Attribution, Timestamp};
 
     #[test]
     fn native_observation_correlation_restores_packet_and_process_truth() {
@@ -697,12 +908,33 @@ mod tests {
             Some(&Attribution::new(77, "game.exe", Fidelity::Live).with_role("client")),
         );
 
-        let correlated = correlate_native_observation(&registry, client, proxy);
+        let correlated = correlate_native_observation(&registry, client, proxy, 0, u64::MAX);
         assert_eq!(correlated.0, registry.lookup(&key));
         assert_eq!(correlated.1, Some(77));
         assert_eq!(correlated.2.as_deref(), Some("game.exe"));
         assert_eq!(correlated.3.as_deref(), Some("client"));
         assert_eq!(correlated.4.as_deref(), Some("live"));
+    }
+
+    #[test]
+    fn mixed_live_and_retained_evidence_reports_the_weaker_fidelity() {
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(10),
+            Some(&Attribution::new(77, "game.exe", Fidelity::Live).with_role("client")),
+        );
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(20),
+            Some(&Attribution::new(77, "game.exe", Fidelity::Retained).with_role("client")),
+        );
+
+        let correlated = correlate_native_observation(&registry, client, proxy, 0, 30);
+        assert_eq!(correlated.4.as_deref(), Some("retained"));
     }
 
     #[test]
@@ -712,8 +944,164 @@ mod tests {
             &registry,
             "127.0.0.1:41000".parse().unwrap(),
             "127.0.0.1:42000".parse().unwrap(),
+            0,
+            u64::MAX,
         );
-        assert_eq!(correlated, (None, None, None, None, None));
+        assert_eq!(
+            correlated,
+            (
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+                0,
+                CorrelationState::Unavailable,
+                "packet-flow-not-observed".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn reused_endpoint_is_reconciled_only_inside_the_connection_window() {
+        use fragcap_core::Timestamp;
+
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(10),
+            Some(&Attribution::new(11, "old.exe", Fidelity::Live)),
+        );
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(30),
+            Some(&Attribution::new(22, "new.exe", Fidelity::Live)),
+        );
+
+        let old = correlate_native_observation(&registry, client, proxy, 5, 20);
+        let new = correlate_native_observation(&registry, client, proxy, 25, 40);
+
+        assert_eq!(old.1, Some(11));
+        assert_eq!(new.1, Some(22));
+        assert_eq!(old.7, CorrelationState::Matched);
+        assert_eq!(new.7, CorrelationState::Matched);
+    }
+
+    #[test]
+    fn conflicting_owners_in_one_window_are_reported_as_ambiguous() {
+        use fragcap_core::Timestamp;
+
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        for (timestamp, pid) in [(10, 11), (20, 22)] {
+            registry.observe_at(
+                key,
+                Timestamp::from_nanos(timestamp),
+                Some(&Attribution::new(pid, format!("{pid}.exe"), Fidelity::Live)),
+            );
+        }
+
+        let result = correlate_native_observation(&registry, client, proxy, 5, 25);
+        assert_eq!(result.7, CorrelationState::Ambiguous);
+        assert_eq!(result.8, "conflicting-packet-owners");
+        assert!(result.1.is_none());
+    }
+
+    #[test]
+    fn bounded_history_loss_prevents_a_confident_join() {
+        use fragcap_core::Timestamp;
+
+        let registry = FlowRegistry::with_history_limit(1);
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        let owner = Attribution::new(11, "game.exe", Fidelity::Live);
+        registry.observe_at(key, Timestamp::from_nanos(10), Some(&owner));
+        registry.observe_at(key, Timestamp::from_nanos(20), Some(&owner));
+
+        let result = correlate_native_observation(&registry, client, proxy, 5, 25);
+        assert_eq!(result.5, 1);
+        assert_eq!(result.6, 1);
+        assert_eq!(result.7, CorrelationState::Unavailable);
+        assert_eq!(result.8, "packet-history-bound-exceeded");
+    }
+
+    #[test]
+    fn global_buffer_loss_is_uncertainty_not_per_flow_loss() {
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        registry.observe_at(
+            FlowKey::new(Proto::Tcp, client, proxy),
+            Timestamp::from_nanos(10),
+            Some(&Attribution::new(11, "game.exe", Fidelity::Live)),
+        );
+        registry.mark_globally_unretained();
+
+        let result = correlate_native_observation(&registry, client, proxy, 5, 25);
+        assert_eq!(result.6, 0);
+        assert_eq!(result.7, CorrelationState::Unavailable);
+        assert_eq!(result.8, "capture-buffer-history-incomplete");
+    }
+
+    #[test]
+    fn missing_connection_terminal_refuses_correlation() {
+        use fragcap_core::Timestamp;
+
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        registry.observe_at(
+            FlowKey::new(Proto::Tcp, client, proxy),
+            Timestamp::from_nanos(15),
+            Some(&Attribution::new(11, "game.exe", Fidelity::Live)),
+        );
+        let result = correlate_connection_window(
+            &registry,
+            &ApplicationConnectionWindow {
+                descriptor: fragcap_proxy::ConnectionDescriptor {
+                    transport: "tcp",
+                    client_peer: client,
+                    proxy_local: proxy,
+                },
+                opened_at_ns: 10,
+                closed_at_ns: None,
+            },
+        );
+
+        assert_eq!(result.7, CorrelationState::Unavailable);
+        assert_eq!(result.8, "connection-terminal-not-observed");
+        assert!(result.0.is_none());
+        assert!(result.1.is_none());
+    }
+
+    #[test]
+    fn ipv6_endpoint_order_and_observation_permutation_do_not_change_the_join() {
+        use fragcap_core::Timestamp;
+
+        let client: SocketAddr = "[::1]:41000".parse().unwrap();
+        let proxy: SocketAddr = "[::1]:42000".parse().unwrap();
+        let owner = Attribution::new(77, "game.exe", Fidelity::Retained).with_role("client");
+        let mut results = Vec::new();
+        for observations in [[(10, &owner), (20, &owner)], [(20, &owner), (10, &owner)]] {
+            let registry = FlowRegistry::default();
+            let key = FlowKey::new(Proto::Tcp, client, proxy);
+            for (timestamp, attribution) in observations {
+                registry.observe_at(key, Timestamp::from_nanos(timestamp), Some(attribution));
+            }
+            results.push(correlate_native_observation(
+                &registry, proxy, client, 5, 25,
+            ));
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[0].4.as_deref(), Some("retained"));
+        assert_eq!(results[0].7, CorrelationState::Matched);
     }
 
     #[test]

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://fragcap.dev/schema/deep-capture-manifest.v2.json",
+  "manifest_version": 2,
+  "product": {"name": "fragcap", "version": "0.8.0"},
+  "session_id": "example-partial",
+  "state": "partial",
+  "artifacts": [
+    {
+      "role": "har",
+      "authority": {"kind": "derived-projection", "owner": "http-projection", "source_role": "application-jsonl"},
+      "sensitivity": "sensitive",
+      "content_type": "application/json",
+      "required": false,
+      "finalization": "complete",
+      "completeness": "omitted",
+      "omission_reason": "projection-failed",
+      "loss": {"state": "not-applicable"},
+      "correlation": {"state": "not-applicable"}
+    }
+  ],
+  "omissions": [{"role": "har", "reason": "projection-failed", "severity": "error"}]
+}

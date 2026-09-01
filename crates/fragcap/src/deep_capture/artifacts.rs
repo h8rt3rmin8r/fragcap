@@ -245,7 +245,10 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
             let Some(path) = artifact.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            let relative = PathBuf::from(path);
+            if path == "manifest.json" {
+                continue;
+            }
+            let relative = super::validate_relative_path(path)?;
             let from = contained(&source, &relative)?;
             if sensitive.contains(&relative) {
                 omitted.push(json!({"path": path, "reason": "sensitive"}));
@@ -264,6 +267,79 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
             }
             fs::copy(&from, &to)?;
             included.push(json!({"path": path, "bytes": metadata.len()}));
+        }
+        if manifest.get("manifest_version").and_then(Value::as_u64) == Some(2) {
+            let sharing_omissions = omitted
+                .iter()
+                .filter_map(|entry| {
+                    let path = entry.get("path")?;
+                    let role = manifest["artifacts"]
+                        .as_array()?
+                        .iter()
+                        .find(|artifact| artifact.get("path") == Some(path))?
+                        .get("role")?;
+                    Some(json!({
+                        "role":role,
+                        "reason":"sharing-excludes-sensitive-artifact",
+                        "severity":"info"
+                    }))
+                })
+                .collect::<Vec<_>>();
+            let mut shared = manifest.clone();
+            let source_state = manifest
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("failed");
+            shared["state"] = json!(shared_manifest_state(source_state, !omitted.is_empty()));
+            shared["sharing"] = json!({
+                "source_bundle": source,
+                "transformation": "sensitive-artifacts-omitted",
+                "status": "complete"
+            });
+            if let Some(artifacts) = shared.get_mut("artifacts").and_then(Value::as_array_mut) {
+                for artifact in artifacts {
+                    let role = artifact.get("role").and_then(Value::as_str);
+                    if role == Some("manifest") {
+                        continue;
+                    }
+                    let Some(path) = artifact.get("path").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if omitted.iter().any(|entry| entry["path"] == path) {
+                        let object = artifact.as_object_mut().expect("artifact is an object");
+                        object.remove("path");
+                        object.insert("completeness".to_string(), json!("omitted"));
+                        object.insert("finalization".to_string(), json!("complete"));
+                        object.insert(
+                            "omission_reason".to_string(),
+                            json!("sharing-excludes-sensitive-artifact"),
+                        );
+                        object.insert("loss".to_string(), json!({"state":"not-applicable"}));
+                        object.insert("correlation".to_string(), json!({"state":"not-applicable"}));
+                    }
+                }
+            }
+            shared["omissions"]
+                .as_array_mut()
+                .expect("version 2 manifest omissions are validated")
+                .extend(sharing_omissions);
+            super::validate_v2(&shared)?;
+            let bytes = serde_json::to_vec_pretty(&shared).map_err(io::Error::other)?;
+            let mut file = open_sensitive_file(&staging.join("manifest.json"))?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            included.push(json!({"path":"manifest.json","bytes":bytes.len()}));
+        } else {
+            let from = contained(&source, Path::new("manifest.json"))?;
+            let metadata = from.symlink_metadata()?;
+            if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "source manifest is not a regular file",
+                ));
+            }
+            fs::copy(&from, staging.join("manifest.json"))?;
+            included.push(json!({"path":"manifest.json","bytes":metadata.len()}));
         }
         let sharing = serde_json::to_vec_pretty(&json!({
             "version": 1,
@@ -287,9 +363,24 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
     Ok(destination.join("sharing-manifest.json"))
 }
 
+fn shared_manifest_state(source_state: &str, sharing_omits_artifacts: bool) -> &'static str {
+    match source_state {
+        "failed" | "crash-prefix" => "failed",
+        "partial" => "partial",
+        "complete" if sharing_omits_artifacts => "partial",
+        "complete" => "complete",
+        _ => "failed",
+    }
+}
+
 fn read_manifest(bundle: &Path) -> io::Result<Value> {
-    serde_json::from_slice(&fs::read(bundle.join("manifest.json"))?)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    let bytes = fs::read(bundle.join("manifest.json"))?;
+    let loose: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if loose.get("manifest_version").is_some() {
+        return Ok(super::ManifestDocument::parse(&bytes)?.value().clone());
+    }
+    Ok(loose)
 }
 
 fn sensitive_paths(manifest: &Value) -> io::Result<BTreeSet<PathBuf>> {
@@ -307,8 +398,7 @@ fn sensitive_paths(manifest: &Value) -> io::Result<BTreeSet<PathBuf>> {
             continue;
         }
         if let Some(path) = artifact.get("path").and_then(Value::as_str) {
-            let path = PathBuf::from(path);
-            validate_relative(&path)?;
+            let path = super::validate_relative_path(path)?;
             paths.insert(path);
         }
     }
@@ -539,10 +629,11 @@ mod tests {
         }
         assert!(!share.join("tls-keylog.log").exists());
         assert!(share.join("capture.fcapng").exists());
+        assert!(share.join("manifest.json").is_file());
         assert!(!share.join(JOURNAL).exists());
         let sharing: Value = serde_json::from_slice(&fs::read(sharing_manifest).unwrap()).unwrap();
         assert_eq!(sharing["status"], "complete");
-        assert_eq!(sharing["included"].as_array().unwrap().len(), 1);
+        assert_eq!(sharing["included"].as_array().unwrap().len(), 2);
         assert_eq!(sharing["omitted"].as_array().unwrap().len(), 1);
         assert_eq!(cleanup_sensitive(&bundle).unwrap()[0].status, "removed");
         assert_eq!(
@@ -550,6 +641,101 @@ mod tests {
             "already-absent"
         );
         assert!(bundle.join("capture.fcapng").exists());
+    }
+
+    #[test]
+    fn version_one_share_copy_retains_a_readable_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        prepare_bundle(&bundle).unwrap();
+        fs::write(bundle.join("capture.fcapng"), b"ordinary").unwrap();
+        fs::write(bundle.join("tls-keylog.log"), b"secret").unwrap();
+        let manifest = json!({
+            "manifest_version":1,
+            "artifacts":[
+                {"path":"capture.fcapng","sensitivity":"ordinary"},
+                {"path":"tls-keylog.log","sensitivity":"secret-adjacent"},
+                {"path":"manifest.json","sensitivity":"ordinary"}
+            ]
+        });
+        let source_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fs::write(bundle.join("manifest.json"), &source_bytes).unwrap();
+
+        let share = root.path().join("share");
+        let sharing_path = export_share_copy(&bundle, &share).unwrap();
+
+        assert_eq!(fs::read(share.join("manifest.json")).unwrap(), source_bytes);
+        assert!(super::super::ManifestDocument::read(&share.join("manifest.json")).is_ok());
+        assert!(!share.join("tls-keylog.log").exists());
+        let sharing: Value = serde_json::from_slice(&fs::read(sharing_path).unwrap()).unwrap();
+        assert!(sharing["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "manifest.json"));
+    }
+
+    #[test]
+    fn version_two_share_copy_rewrites_authority_without_mutating_source() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        prepare_bundle(&bundle).unwrap();
+        fs::write(bundle.join("capture.fcapng"), b"ordinary").unwrap();
+        fs::write(bundle.join("application.jsonl"), b"sensitive").unwrap();
+        let artifact = |role: &str, path: &str, sensitivity: &str| {
+            json!({
+                "role":role,"path":path,
+                "authority":{"kind":"primary-evidence","owner":role,"source_role":null},
+                "sensitivity":sensitivity,"content_type":"application/octet-stream",
+                "required":false,"finalization":"complete","completeness":"complete",
+                "loss":{"state":"none"},"correlation":{"state":"not-applicable"}
+            })
+        };
+        let source = json!({
+            "$schema":super::super::MANIFEST_SCHEMA,"manifest_version":2,
+            "product":{"name":"fragcap","version":"test"},"session_id":"share-test",
+            "state":"complete","artifacts":[
+                artifact("pcapng","capture.fcapng","ordinary"),
+                artifact("application-jsonl","application.jsonl","sensitive"),
+                {"role":"manifest","path":"manifest.json","authority":{"kind":"bundle-index","owner":"bundle-index","source_role":null},"sensitivity":"ordinary","content_type":"application/json","required":true,"finalization":"complete","completeness":"complete","loss":{"state":"none"},"correlation":{"state":"not-applicable"}}
+            ],"omissions":[]
+        });
+        let source_bytes = serde_json::to_vec_pretty(&source).unwrap();
+        fs::write(bundle.join("manifest.json"), &source_bytes).unwrap();
+
+        let share = root.path().join("share");
+        let sharing_path = export_share_copy(&bundle, &share).unwrap();
+
+        assert_eq!(
+            fs::read(bundle.join("manifest.json")).unwrap(),
+            source_bytes
+        );
+        assert!(share.join("capture.fcapng").is_file());
+        assert!(!share.join("application.jsonl").exists());
+        let shared = super::super::ManifestDocument::read(&share.join("manifest.json")).unwrap();
+        assert_eq!(shared.value()["state"], "partial");
+        let application = shared.value()["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["role"] == "application-jsonl")
+            .unwrap();
+        assert_eq!(application["completeness"], "omitted");
+        assert!(application.get("path").is_none());
+        let sharing: Value = serde_json::from_slice(&fs::read(sharing_path).unwrap()).unwrap();
+        assert!(sharing["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "manifest.json"));
+    }
+
+    #[test]
+    fn sharing_never_upgrades_partial_or_failed_source_truth() {
+        assert_eq!(shared_manifest_state("partial", false), "partial");
+        assert_eq!(shared_manifest_state("failed", false), "failed");
+        assert_eq!(shared_manifest_state("complete", false), "complete");
+        assert_eq!(shared_manifest_state("complete", true), "partial");
     }
 
     #[test]

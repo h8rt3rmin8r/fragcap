@@ -114,9 +114,12 @@ pub fn compatibility_fact_candidates(
         push(CompatibilityFactKey::LaunchCase, launch_case, phase);
     }
     if !observations.is_empty() && calibration != Some(CalibrationPhase::Tls) {
-        let reached_client = observations
-            .iter()
-            .any(observation_is_correlated_to_final_client);
+        let reached_client = observations.iter().any(|observation| {
+            observation_is_correlated_to_final_client(observation)
+                || (controlled
+                    && observation.attribution.as_deref() == Some("controlled-harness")
+                    && observation.role.as_deref() == Some("client"))
+        });
         let phase = calibration.unwrap_or(CalibrationPhase::Reachability);
         push(
             CompatibilityFactKey::ProxyRouting,
@@ -143,9 +146,14 @@ pub fn compatibility_fact_candidates(
         }
     }
     if calibration != Some(CalibrationPhase::Reachability)
-        && observations
-            .iter()
-            .any(observation_proves_final_client_ca_acceptance)
+        && observations.iter().any(|observation| {
+            observation_proves_final_client_ca_acceptance(observation)
+                || (controlled
+                    && observation.attribution.as_deref() == Some("controlled-harness")
+                    && observation.role.as_deref() == Some("client")
+                    && observation.protocol == "https"
+                    && observation.inspectability == Inspectability::Full)
+        })
     {
         push(
             CompatibilityFactKey::TlsTrustBehavior,
@@ -192,10 +200,10 @@ pub fn calibration_outcome(
 ) -> CalibrationOutcome {
     match phase {
         CalibrationPhase::Reachability => {
-            if observations
-                .iter()
-                .any(observation_is_correlated_to_final_client)
-            {
+            if observations.iter().any(|observation| {
+                observation_is_correlated_to_final_client(observation)
+                    || controlled_harness_client(observation)
+            }) {
                 CalibrationOutcome::ReachedClient
             } else if observations.iter().any(|observation| {
                 matches!(
@@ -234,10 +242,12 @@ pub fn calibration_outcome(
             }
         }
         CalibrationPhase::Tls => {
-            if observations
-                .iter()
-                .any(observation_proves_final_client_ca_acceptance)
-            {
+            if observations.iter().any(|observation| {
+                observation_proves_final_client_ca_acceptance(observation)
+                    || (controlled_harness_client(observation)
+                        && observation.protocol == "https"
+                        && observation.inspectability == Inspectability::Full)
+            }) {
                 CalibrationOutcome::LocalCaAccepted
             } else if observations
                 .iter()
@@ -266,6 +276,11 @@ pub fn calibration_outcome(
             }
         }
     }
+}
+
+fn controlled_harness_client(observation: &CompatibilityObservation) -> bool {
+    observation.attribution.as_deref() == Some("controlled-harness")
+        && observation.role.as_deref() == Some("client")
 }
 
 /// Whether the observation is packet-correlated to the final client role.

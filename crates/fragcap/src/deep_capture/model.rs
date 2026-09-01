@@ -424,6 +424,25 @@ impl Inspectability {
 }
 
 /// One proxy-side observation with optional packet/process correlation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CorrelationState {
+    Matched,
+    FlowOnly,
+    Ambiguous,
+    Unavailable,
+}
+
+impl CorrelationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Matched => "matched",
+            Self::FlowOnly => "flow-only",
+            Self::Ambiguous => "ambiguous",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompatibilityObservation {
     pub flow_id: Option<FlowId>,
@@ -435,6 +454,10 @@ pub struct CompatibilityObservation {
     pub process_image: Option<String>,
     pub role: Option<String>,
     pub attribution: Option<String>,
+    pub packet_observations: u64,
+    pub packet_observations_unretained: u64,
+    pub correlation_state: CorrelationState,
+    pub correlation_reason: String,
     pub protocol: String,
     pub inspectability: Inspectability,
     pub method: Option<String>,

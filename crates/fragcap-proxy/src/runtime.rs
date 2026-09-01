@@ -468,16 +468,6 @@ async fn connection_task(
             })
         }
     };
-    crate::application::emit(
-        &services.application_sink,
-        crate::ApplicationEvent::now(
-            &config.session_id,
-            connection_id,
-            None,
-            None,
-            crate::ApplicationEventKind::ConnectionOpen,
-        ),
-    );
     if first.is_connect() {
         let authority = first.authority().clone();
         let upstream = match connect_upstream(&authority, policy, config.protocol.upstream).await {
@@ -905,6 +895,26 @@ async fn connection_task(
     }
 }
 
+fn stamp_observation_window(outcome: &mut ConnectionOutcome, opened_at_ns: u64, closed_at_ns: u64) {
+    let run = match outcome {
+        ConnectionOutcome::Completed(run) | ConnectionOutcome::Failed(run) => run,
+        ConnectionOutcome::AuthenticationRefused(_) => return,
+    };
+    for observation in &mut run.observations {
+        observation.connection_opened_at_ns = opened_at_ns;
+        observation.connection_closed_at_ns = closed_at_ns.max(opened_at_ns);
+    }
+}
+
+fn wall_clock_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 async fn has_http2_preface(stream: &TcpStream, budget: Duration) -> bool {
     const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     let deadline = Instant::now() + budget;
@@ -948,6 +958,8 @@ fn connect_observation(
             .as_nanos()
             .try_into()
             .unwrap_or(u64::MAX),
+        connection_opened_at_ns: 0,
+        connection_closed_at_ns: 0,
         protocol: "connect".to_string(),
         method: Some(request.method().to_string()),
         url: Some(request.url().to_string()),
@@ -979,6 +991,8 @@ fn tls_observation(
             .as_nanos()
             .try_into()
             .unwrap_or(u64::MAX),
+        connection_opened_at_ns: 0,
+        connection_closed_at_ns: 0,
         protocol: "tls".to_string(),
         method: None,
         url: None,
@@ -1075,6 +1089,7 @@ async fn run(
                                 let connection_shutdown = shutdown_receive.clone();
                                 let connection_services = services.clone();
                                 let local = stream.local_addr().unwrap_or(endpoint);
+                                let opened_at_ns = wall_clock_ns();
                                 next_connection_id = next_connection_id.saturating_add(1);
                                 observation.accepted_connections = observation.accepted_connections.saturating_add(1);
                                 observation.live_connections = config
@@ -1083,16 +1098,38 @@ async fn run(
                                 observation.peak_live_connections = observation
                                     .peak_live_connections
                                     .max(observation.live_connections);
+                                crate::application::emit(
+                                    &connection_services.application_sink,
+                                    crate::ApplicationEvent::now(
+                                        &connection_services.config.session_id,
+                                        connection_id,
+                                        None,
+                                        None,
+                                        crate::ApplicationEventKind::ConnectionOpen(
+                                            crate::ConnectionDescriptor {
+                                                transport: "tcp",
+                                                client_peer: peer,
+                                                proxy_local: local,
+                                            },
+                                        ),
+                                    ),
+                                );
                                 tasks.spawn(async move {
                                     let terminal_sink = connection_services.application_sink.clone();
                                     let terminal_session = connection_services.config.session_id.clone();
-                                    let outcome = connection_task(
+                                    let mut outcome = connection_task(
                                         stream,
                                         connection_shutdown,
                                         connection_services,
                                         ConnectionIdentity { id: connection_id, peer, local },
                                         permit,
                                     ).await;
+                                    let closed_at_ns = wall_clock_ns();
+                                    stamp_observation_window(
+                                        &mut outcome,
+                                        opened_at_ns,
+                                        closed_at_ns,
+                                    );
                                     let terminal = match &outcome {
                                         ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
                                         ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
@@ -1483,6 +1520,8 @@ mod tests {
             client_peer: "127.0.0.1:41000".parse().unwrap(),
             proxy_local: "127.0.0.1:40002".parse().unwrap(),
             timestamp_ns: connection_id,
+            connection_opened_at_ns: connection_id,
+            connection_closed_at_ns: connection_id,
             protocol: "http".to_string(),
             method: Some("GET".to_string()),
             url: Some("http://example.test/".to_string()),
@@ -1510,6 +1549,41 @@ mod tests {
             vec![2, 3]
         );
         assert_eq!(observed.protocol.observations_dropped_oldest, 1);
+    }
+
+    #[test]
+    fn completed_connection_stamps_its_full_observation_interval() {
+        let observation = crate::ProxyObservation {
+            session_id: "window".to_string(),
+            connection_id: 7,
+            request_ordinal: 1,
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+            timestamp_ns: 15,
+            connection_opened_at_ns: 0,
+            connection_closed_at_ns: 0,
+            protocol: "http".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("http://example.test/".to_string()),
+            status: Some(200),
+            inspectability: "full",
+            reason: None,
+            tls: None,
+            transformations: Vec::new(),
+        };
+        let mut outcome = ConnectionOutcome::Completed(HttpRun {
+            observations: vec![observation],
+            accounting: Default::default(),
+            failure: None,
+        });
+
+        stamp_observation_window(&mut outcome, 10, 20);
+
+        let ConnectionOutcome::Completed(run) = outcome else {
+            unreachable!()
+        };
+        assert_eq!(run.observations[0].connection_opened_at_ns, 10);
+        assert_eq!(run.observations[0].connection_closed_at_ns, 20);
     }
 
     #[test]

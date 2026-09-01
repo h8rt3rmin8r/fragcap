@@ -4,6 +4,7 @@
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::Bytes;
 use h2::client::SendRequest;
@@ -437,16 +438,6 @@ where
                 )
             }
         };
-    emit(
-        &sink,
-        ApplicationEvent::now(
-            &session_id,
-            connection_id,
-            None,
-            Some(ProtocolVersion::Http2),
-            ApplicationEventKind::ConnectionOpen,
-        ),
-    );
     let origin_driver = AbortOnDrop(tokio::spawn(origin_connection));
     let mut tasks = JoinSet::new();
     let mut accounting = ProtocolAccounting::default();
@@ -765,38 +756,34 @@ async fn bridge_stream_inner(
         .await
         .map_err(|error| ProtocolError::new("http2-origin-not-ready", error.to_string()))?;
     let end_stream = request_body.is_end_stream();
+    let send_started_at = Instant::now();
     let (response_future, origin_body) = origin
         .send_request(outbound, end_stream)
         .map_err(|error| ProtocolError::new("http2-request-send-failed", error.to_string()))?;
+    let request_sent_at = Instant::now();
     let mut deferred_request = Some((request_body, origin_body));
     let mut request_pump = if websocket {
         None
     } else {
         let (request_body, origin_body) = deferred_request.take().expect("request streams exist");
-        Some(AbortOnDrop(tokio::spawn(pump_body(
-            request_body,
-            origin_body,
-            end_stream,
-            request_pump_context(
-                limits,
-                &context,
-                request_encoding.clone(),
-                grpc.as_ref().map(|_| {
-                    ProtocolObserver::Grpc(
-                        crate::GrpcObserver::new(
-                            BodyDirection::Request,
-                            limits.max_grpc_message_bytes,
-                        )
-                        .with_encoding(grpc_encoding.clone()),
-                    )
-                }),
-            ),
-        ))))
+        let streaming = grpc.as_ref().map(|_| {
+            ProtocolObserver::Grpc(
+                crate::GrpcObserver::new(BodyDirection::Request, limits.max_grpc_message_bytes)
+                    .with_encoding(grpc_encoding.clone()),
+            )
+        });
+        let pump_context =
+            request_pump_context(limits, &context, request_encoding.clone(), streaming);
+        Some(AbortOnDrop(tokio::spawn(async move {
+            let result = pump_body(request_body, origin_body, end_stream, pump_context).await;
+            (result, Instant::now())
+        })))
     };
     let response = timeout(limits.idle_timeout, response_future)
         .await
         .map_err(|_| ProtocolError::timeout("http2-response-timeout"))?
         .map_err(|error| h2_error("http2-response-failed", error))?;
+    let response_head_at = Instant::now();
     let (parts, response_body) = response.into_parts();
     let status = parts.status;
     let websocket_mode = if websocket && status.is_success() {
@@ -837,12 +824,12 @@ async fn bridge_stream_inner(
                 .with_no_context_takeover(mode.client_no_context_takeover),
             )
         });
-        request_pump = Some(AbortOnDrop(tokio::spawn(pump_body(
-            request_body,
-            origin_body,
-            end_stream,
-            request_pump_context(limits, &context, request_encoding.clone(), streaming),
-        ))));
+        let pump_context =
+            request_pump_context(limits, &context, request_encoding.clone(), streaming);
+        request_pump = Some(AbortOnDrop(tokio::spawn(async move {
+            let result = pump_body(request_body, origin_body, end_stream, pump_context).await;
+            (result, Instant::now())
+        })));
     }
     let mut request_pump = request_pump.expect("request pump is started");
     let response_encoding = content_encoding(&parts.headers);
@@ -956,11 +943,55 @@ async fn bridge_stream_inner(
         },
     );
     let (request_result, response_result) = tokio::join!(&mut request_pump.0, response_pump);
-    request_result.map_err(|error| {
-        ProtocolError::new("http2-request-pump-join-failed", error.to_string())
-    })??;
+    let (request_result, request_complete_at) = request_result
+        .map_err(|error| ProtocolError::new("http2-request-pump-join-failed", error.to_string()))?;
+    request_result?;
     response_result?;
+    let response_complete_at = Instant::now();
+    if let Some(timing) = http2_timing(
+        send_started_at,
+        request_sent_at,
+        request_complete_at,
+        response_head_at,
+        response_complete_at,
+        end_stream,
+    ) {
+        emit(
+            sink,
+            ApplicationEvent::now(
+                session_id.as_str(),
+                connection_id,
+                Some(stream_id),
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::HttpTiming(timing),
+            ),
+        );
+    }
     Ok(())
+}
+
+fn http2_timing(
+    send_started_at: Instant,
+    request_headers_sent_at: Instant,
+    request_complete_at: Instant,
+    response_head_at: Instant,
+    response_complete_at: Instant,
+    request_had_no_body: bool,
+) -> Option<crate::HttpTiming> {
+    let request_complete_at = if request_had_no_body {
+        request_headers_sent_at
+    } else {
+        request_complete_at
+    };
+    (response_head_at >= request_complete_at).then(|| crate::HttpTiming {
+        send_ns: duration_ns(request_complete_at.duration_since(send_started_at)),
+        wait_ns: duration_ns(response_head_at.duration_since(request_complete_at)),
+        receive_ns: duration_ns(response_complete_at.duration_since(response_head_at)),
+    })
+}
+
+fn duration_ns(value: std::time::Duration) -> u64 {
+    value.as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
 async fn pump_body(
@@ -1105,6 +1136,7 @@ async fn pump_body(
         {
             Ok(Ok(permit)) => {
                 let result = crate::decode_content(
+                    direction,
                     &encoding,
                     &retained_bytes,
                     max_decoded_body_bytes,
@@ -1118,6 +1150,7 @@ async fn pump_body(
             Ok(Err(_)) | Err(_) => (
                 Vec::new(),
                 crate::Transformation {
+                    direction,
                     encoding: encoding.clone(),
                     input_bytes: retained_bytes.len() as u64,
                     output_bytes: 0,
@@ -1351,6 +1384,7 @@ fn account_stream_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn grpc_content_type_requires_a_native_media_type_boundary() {
@@ -1369,5 +1403,37 @@ mod tests {
             headers.insert(hyper::header::CONTENT_TYPE, rejected.parse().unwrap());
             assert!(grpc_content_type(&headers).is_none(), "{rejected}");
         }
+    }
+
+    #[test]
+    fn request_body_completion_defines_http2_send_time() {
+        let start = Instant::now();
+        let timing = http2_timing(
+            start,
+            start + Duration::from_nanos(1),
+            start + Duration::from_nanos(11),
+            start + Duration::from_nanos(20),
+            start + Duration::from_nanos(30),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(timing.send_ns, 11);
+        assert_eq!(timing.wait_ns, 9);
+        assert_eq!(timing.receive_ns, 10);
+    }
+
+    #[test]
+    fn an_early_http2_response_has_no_fabricated_serial_timing() {
+        let start = Instant::now();
+        assert!(http2_timing(
+            start,
+            start + Duration::from_nanos(1),
+            start + Duration::from_nanos(20),
+            start + Duration::from_nanos(10),
+            start + Duration::from_nanos(30),
+            false,
+        )
+        .is_none());
     }
 }

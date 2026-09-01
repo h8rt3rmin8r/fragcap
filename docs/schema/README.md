@@ -1,8 +1,13 @@
 # fragcap master target schema
 
-This directory holds the published copy of fragcap's master JSON Schema,
-`target-schema.v1.json` (JSON Schema Draft 2020-12). It is byte-identical to the
-copy embedded in the binary; a drift between the two fails a workspace test.
+This directory holds the published copies of fragcap's JSON Schemas
+(JSON Schema Draft 2020-12). `target-schema.v1.json` governs target documents.
+`deep-capture-manifest.v2.json` governs the native Deep Capture bundle index,
+including artifact authority, sensitivity, finalization, completeness, loss,
+correlation, and explicit omissions. Each published schema is byte-identical to
+its embedded copy; drift fails a workspace test.
+Committed complete, partial, crash-prefix, and legacy examples live under
+`examples/` and are parsed by the same versioned reader used for bundles.
 Emit the embedded copy with `fragcap schema print`, and validate any JSON file
 against it with `fragcap schema validate <file>`.
 
