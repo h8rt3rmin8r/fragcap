@@ -235,8 +235,38 @@ fn confirm_warm_restart(
 #[derive(Clone, Debug)]
 struct WarmRestartContext {
     target: String,
-    target_stable_id: i64,
+    authority: WarmRestartAuthority,
     plan: fragcap::deep_capture::WarmRestartPlan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WarmRestartAuthority {
+    stable_id: i64,
+    anchor: Option<String>,
+    install_root: Option<String>,
+    launch_entries: Option<serde_json::Value>,
+}
+
+impl WarmRestartAuthority {
+    fn from_target(target: &TargetEntry) -> Self {
+        Self {
+            stable_id: target.stable_id,
+            anchor: target.anchor.clone(),
+            install_root: target.install_root.clone(),
+            launch_entries: target.launch_entries.clone(),
+        }
+    }
+}
+
+fn steam_restart_images(target: &TargetEntry) -> Vec<String> {
+    platform_restart_images(entry_windows_clients(target))
+}
+
+fn platform_restart_images(client_images: Vec<String>) -> Vec<String> {
+    let mut images = Vec::with_capacity(client_images.len() + 1);
+    images.push("steam.exe".to_string());
+    images.extend(client_images);
+    images
 }
 
 fn warm_restart_images(
@@ -244,7 +274,7 @@ fn warm_restart_images(
     launch_case: CompatibilityLaunchCase,
 ) -> Result<Vec<String>, CliError> {
     match launch_case {
-        CompatibilityLaunchCase::SteamProtocolWarm => Ok(vec!["steam.exe".to_string()]),
+        CompatibilityLaunchCase::SteamProtocolWarm => Ok(steam_restart_images(target)),
         CompatibilityLaunchCase::DirectExeWarm => Ok(entry_windows_clients(target)),
         CompatibilityLaunchCase::PublisherLauncherWarm
         | CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm => {
@@ -306,7 +336,7 @@ fn run_warm_restart(
     .map_err(|error| CliError::usage(error.to_string()))?;
     let context = WarmRestartContext {
         target: target.handle.clone(),
-        target_stable_id: target.stable_id,
+        authority: WarmRestartAuthority::from_target(&target),
         plan,
     };
     emitter.event(&Event::DeepCaptureRestartPlan {
@@ -402,17 +432,17 @@ fn run_warm_restart(
             )));
         }
     };
-    if refreshed.stable_id != context.target_stable_id {
+    if WarmRestartAuthority::from_target(&refreshed) != context.authority {
         emit_restart_outcome(
             emitter,
             &context,
             "reprepare",
             "changed-target",
             None,
-            "the selector resolved to a different stored target after shutdown",
+            "the selected target's launch authority changed after shutdown",
         );
         return Err(CliError::usage(
-            "the selected target changed during warm restart; no effects were applied",
+            "the selected target launch declaration changed during warm restart; no effects were applied",
         ));
     }
     let cold = match launch_case(&refreshed) {
@@ -3331,6 +3361,36 @@ mod tests {
             direct_launch_case(false),
             CompatibilityLaunchCase::DirectExeCold
         );
+    }
+
+    #[test]
+    fn steam_restart_waits_for_platform_and_declared_client_images() {
+        assert_eq!(
+            platform_restart_images(vec!["Game.exe".to_string()]),
+            ["steam.exe", "Game.exe"]
+        );
+    }
+
+    #[test]
+    fn changed_launch_authority_is_not_the_same_target_plan() {
+        let original = WarmRestartAuthority {
+            stable_id: 1,
+            anchor: Some("steam:1".to_string()),
+            install_root: Some("C:\\game".to_string()),
+            launch_entries: Some(serde_json::json!([
+                {"os": "windows", "executable": "Game.exe"}
+            ])),
+        };
+
+        let mut changed = original.clone();
+        changed.install_root = Some("C:\\changed".to_string());
+        assert_ne!(changed, original);
+
+        let mut changed = original.clone();
+        changed.launch_entries = Some(serde_json::json!([
+            {"os": "windows", "executable": "Changed.exe"}
+        ]));
+        assert_ne!(changed, original);
     }
 
     fn observation() -> Observation {
