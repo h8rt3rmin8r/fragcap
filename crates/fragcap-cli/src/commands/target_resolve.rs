@@ -20,8 +20,8 @@ use fragcap::profile::{
 };
 use fragcap::steam::SteamWalkerProvider;
 use fragcap::targets::{
-    is_row_index, launch_is_unresolved, observed_executable, resolve_id, resolve_positional,
-    Selection, Store, TargetEntry,
+    entry_windows_launch_entries, is_row_index, launch_is_unresolved, observed_executable,
+    resolve_id, resolve_positional, Selection, Store, TargetEntry,
 };
 
 use crate::emit::Emitter;
@@ -243,6 +243,16 @@ pub(crate) fn resolve_stored(
         }
     }
 
+    let launches = entry_windows_launch_entries(&entry);
+    if launches.len() > 1 && launches.iter().any(|launch| launch.role().is_some()) {
+        let profile = synthesize_publisher_profile(&entry)?;
+        return Ok(ResolvedTarget {
+            profile,
+            entry: *entry,
+            promotion: None,
+        });
+    }
+
     // Reduce the resolved launch entries to their distinct Windows clients by the
     // same filter, file-name reduction, and case-insensitive dedup the hint provider
     // applies (P-10). Exactly one is capturable; zero or more than one is refused
@@ -272,6 +282,89 @@ pub(crate) fn resolve_stored(
             many.len(),
             many.join(", ")
         ))),
+    }
+}
+
+/// Build the shared Capture identity for one exact stored publisher chain.
+fn synthesize_publisher_profile(entry: &TargetEntry) -> Result<Profile, CliError> {
+    let launch = fragcap::managed_launch::prepare_managed_launch(entry)
+        .map_err(|error| CliError::usage(error.to_string()))?;
+    let fragcap::managed_launch::ManagedLaunch::Publisher(publisher) = launch else {
+        return Err(CliError::usage(
+            "stored target does not declare a complete publisher chain",
+        ));
+    };
+    let stages: Vec<serde_json::Value> = publisher
+        .stages()
+        .iter()
+        .rev()
+        .map(|stage| {
+            let mut predicates = serde_json::Map::new();
+            predicates.insert(
+                "exe".to_string(),
+                serde_json::Value::String(stage.image_name().to_string_lossy().into_owned()),
+            );
+            predicates.insert(
+                "path_regex".to_string(),
+                serde_json::Value::String(exact_path_regex(stage.executable())),
+            );
+            if let Some(parent) = stage.parent_role() {
+                predicates.insert(
+                    "descends_from".to_string(),
+                    serde_json::Value::String(parent.to_string()),
+                );
+            }
+            serde_json::json!({
+                "role": stage.role(),
+                "lifecycle": "session",
+                "terminal": stage.is_terminal(),
+                "match": predicates,
+            })
+        })
+        .collect();
+    let profile = serde_json::json!({
+        "schema": 1,
+        "kind": "profile",
+        "fidelity": entry.fidelity.as_str(),
+        "game": { "id": entry.handle, "name": entry.name },
+        "stage": stages,
+    });
+    Profile::parse(&profile.to_string()).map_err(CliError::from)
+}
+
+/// Encode one canonical executable path as an exact case-insensitive regex.
+///
+/// Process paths on Windows are case-insensitive, while `path_regex` otherwise
+/// uses the regex engine's default case-sensitive comparison. Escaping every
+/// metacharacter and anchoring both ends preserves the retained executable
+/// identity instead of reducing it to a basename or substring.
+fn exact_path_regex(path: &Path) -> String {
+    let path = process_path_spelling(path);
+    let mut escaped = String::with_capacity(path.len().saturating_mul(2).saturating_add(7));
+    for ch in path.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    format!("(?i)^{escaped}$")
+}
+
+fn process_path_spelling(path: &Path) -> String {
+    let canonical = path.to_string_lossy();
+    // `std::fs::canonicalize` uses the Win32 verbatim prefix, while process
+    // creation events report the ordinary DOS or UNC spelling. They name the
+    // same path, so remove only that representation prefix before anchoring.
+    if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        canonical
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&canonical)
+            .to_string()
     }
 }
 
@@ -1136,6 +1229,205 @@ mod tests {
     fn a_synthesized_profile_is_a_single_target_stage() {
         let profile = synthesize_profile(&identity(), None).unwrap();
         assert_eq!(profile.stages().len(), 1);
+    }
+
+    #[test]
+    fn publisher_profile_preserves_exact_order_ancestry_and_terminal_client() {
+        use fragcap::core::{ProcessEvent, ProcessTree, Timestamp};
+        use fragcap::profile::{bind_stages, stage_for};
+        use fragcap::targets::{ClassificationSource, TargetClassification};
+
+        let root = scratch("publisher-profile");
+        std::fs::create_dir_all(&root).unwrap();
+        for image in ["Publisher.exe", "Bootstrap.exe", "Game.exe"] {
+            std::fs::write(root.join(image), b"fixture").unwrap();
+        }
+        let entry = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "publisher-game".into(),
+            name: "Publisher Game".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Bootstrap.exe", "role": "bootstrap" },
+                { "executable": "Game.exe", "role": "client" }
+            ])),
+            install_root: Some(root.to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+
+        let profile = synthesize_publisher_profile(&entry).expect("valid publisher profile");
+        let stages = profile.stages();
+        assert_eq!(
+            stages.iter().map(|stage| stage.role()).collect::<Vec<_>>(),
+            ["client", "bootstrap", "launcher"],
+            "descendant stages precede broader ancestors for matching"
+        );
+        let launcher = stages
+            .iter()
+            .find(|stage| stage.role() == "launcher")
+            .unwrap();
+        let bootstrap = stages
+            .iter()
+            .find(|stage| stage.role() == "bootstrap")
+            .unwrap();
+        let client = stages
+            .iter()
+            .find(|stage| stage.role() == "client")
+            .unwrap();
+        assert_eq!(launcher.predicates().descends_from(), None);
+        assert_eq!(bootstrap.predicates().descends_from(), Some("launcher"));
+        assert_eq!(client.predicates().descends_from(), Some("bootstrap"));
+        assert!(!launcher.is_terminal());
+        assert!(!bootstrap.is_terminal());
+        assert!(client.is_terminal());
+        for (role, image) in [
+            ("launcher", "Publisher.exe"),
+            ("bootstrap", "Bootstrap.exe"),
+            ("client", "Game.exe"),
+        ] {
+            let stage = stages.iter().find(|stage| stage.role() == role).unwrap();
+            let exact = stage
+                .predicates()
+                .path_regex()
+                .expect("publisher stages retain an exact path predicate");
+            let canonical = root.join(image).canonicalize().unwrap();
+            let expected = process_path_spelling(&canonical);
+            assert!(
+                exact.regex().is_match(&expected),
+                "{} does not match {}",
+                exact.as_str(),
+                expected
+            );
+            assert!(!exact
+                .regex()
+                .is_match(&root.join("other").join(image).to_string_lossy()));
+        }
+
+        let publisher_path =
+            process_path_spelling(&root.join("Publisher.exe").canonicalize().unwrap());
+        let bootstrap_path =
+            process_path_spelling(&root.join("Bootstrap.exe").canonicalize().unwrap());
+        let game_path = process_path_spelling(&root.join("Game.exe").canonicalize().unwrap());
+        let mut tree = ProcessTree::new();
+        tree.apply(ProcessEvent::started(
+            100,
+            0,
+            &publisher_path,
+            "publisher",
+            Timestamp::from_nanos(1),
+        ));
+        tree.apply(ProcessEvent::started(
+            200,
+            100,
+            &bootstrap_path,
+            "bootstrap",
+            Timestamp::from_nanos(2),
+        ));
+        tree.apply(ProcessEvent::started(
+            300,
+            200,
+            &game_path,
+            "game",
+            Timestamp::from_nanos(3),
+        ));
+        tree.apply(ProcessEvent::started(
+            400,
+            100,
+            &game_path,
+            "escaped",
+            Timestamp::from_nanos(4),
+        ));
+        bind_stages(&profile, &mut tree);
+        let role_for = |pid| {
+            let node = tree
+                .nodes()
+                .find(|node| node.pid().get() == pid)
+                .expect("timeline node");
+            stage_for(&profile, &tree, node.id()).map(|stage| stage.role())
+        };
+        assert_eq!(role_for(100), Some("launcher"));
+        assert_eq!(role_for(200), Some("bootstrap"));
+        assert_eq!(role_for(300), Some("client"));
+        assert_eq!(
+            role_for(400),
+            None,
+            "escaped client is not guessed into the chain"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publisher_profile_disambiguates_roles_that_share_one_executable() {
+        use fragcap::core::{ProcessEvent, ProcessTree, Timestamp};
+        use fragcap::profile::{bind_stages, stage_for};
+        use fragcap::targets::{ClassificationSource, TargetClassification};
+
+        let root = scratch("publisher-shared-image");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Publisher.exe"), b"fixture").unwrap();
+        let entry = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "publisher-shared".into(),
+            name: "Publisher Shared".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Publisher.exe", "role": "bootstrap" },
+                { "executable": "Publisher.exe", "role": "client" }
+            ])),
+            install_root: Some(root.to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let profile = synthesize_publisher_profile(&entry).unwrap();
+        let image = process_path_spelling(&root.join("Publisher.exe").canonicalize().unwrap());
+        let mut tree = ProcessTree::new();
+        tree.apply(ProcessEvent::started(
+            100,
+            0,
+            &image,
+            "root",
+            Timestamp::from_nanos(1),
+        ));
+        tree.apply(ProcessEvent::started(
+            200,
+            100,
+            &image,
+            "middle",
+            Timestamp::from_nanos(2),
+        ));
+        tree.apply(ProcessEvent::started(
+            300,
+            200,
+            &image,
+            "client",
+            Timestamp::from_nanos(3),
+        ));
+        bind_stages(&profile, &mut tree);
+        let role_for = |pid| {
+            let node = tree.nodes().find(|node| node.pid().get() == pid).unwrap();
+            stage_for(&profile, &tree, node.id()).map(|stage| stage.role())
+        };
+        assert_eq!(role_for(100), Some("launcher"));
+        assert_eq!(role_for(200), Some("bootstrap"));
+        assert_eq!(role_for(300), Some("client"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // Slice S059. The observe-mode profile validates and has the two-stage shape

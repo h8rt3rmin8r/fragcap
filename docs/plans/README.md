@@ -192,9 +192,10 @@ in both.
 
 ## Native completion follow-up
 
-S110 (`specs/110-protocol-conformance`) follows S109 and closes #305 as the
-Native Deep Capture 2 conformance gate. It proves the shipped HTTP and TLS path
-against independent clients and origins, reconciles the complete artifact set,
-and requires unmodified TShark consumption. Generic TCP, SOCKS, UDP, QUIC,
-HTTP/3, and IPv6 remain assigned to milestone 3 issues #310 through #315;
-broader doctor UX and the native completion gate remain later work.
+S111 (`specs/111-publisher-launcher-chains`) follows S110 and closes #307 as the
+first Native Deep Capture 3 launch-coverage slice. It prepares one exact stored
+publisher chain through the shared Capture path, starts only its proven-cold
+root, and binds declared descendants until the terminal client owns the
+session. Warm restart remains #309, platform-client ownership remains #308,
+generic transports remain #310 through #315, and Deep Capture remains
+incomplete until #334.

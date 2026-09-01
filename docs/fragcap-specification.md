@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.27-draft \
+**Version:** 0.1.35-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -126,6 +126,7 @@ enforcement.
 | 0.1.32-draft | 2026-09-01 | W. Thompson | **Completes native TLS evidence and sensitive artifact ownership (issues #300, #304, and #322).** Extends sections 13.7, 17.2, 19, 25, 26.3, and 28.1. Explicit client-facing TLS key logs are protected and live-flushed, operator-supplied client identities enable upstream mutual TLS, refusal categories preserve only observable evidence, and sensitive artifacts gain pre-traffic access control, bounded recovery, confirmed deletion, and immutable share-copy transformation. General session recovery remains open under #320. |
 | 0.1.33-draft | 2026-09-01 | W. Thompson | **Correlates native evidence and versions the bundle contract (issues #302, #303, and #335).** Extends sections 13.7, 25, and 28.1. Accepted proxy connections reconcile after capture against timestamped packet-flow ownership, truthful bounded HAR 1.2 is projected only from complete native application evidence, and manifest version 2 declares authority, sensitivity, finalization, completeness, loss, correlation, and omissions under a published schema. Deep Capture remains incomplete until #334. |
 | 0.1.34-draft | 2026-09-01 | W. Thompson | **Adds the native HTTP and TLS conformance gate (issue #305).** Extends sections 25 and 28.1. A closed versioned matrix requires two independent client and origin lineages for HTTP/1.1, HTTPS, HTTP/2, WebSocket, SSE, and gRPC, exact expected and observed outcomes, zero skipped required rows, complete native artifact reconciliation, and unmodified TShark consumption in a dedicated CI tier. Generic transports remain in milestone 3 and Deep Capture remains incomplete until #334. |
+| 0.1.35-draft | 2026-09-01 | W. Thompson | **Adds exact managed publisher-launcher chains (issue #307).** Extends sections 16.4, 17.2.1, and 28.1. One stored ordered role chain now supplies the shared Capture profile and managed launch, fragcap starts only a proven-cold root with child-scoped routing, and creation-time ancestry binds declared intermediates to the terminal client. Exact absolute paths may name external publisher installs; relative paths remain confined beneath the game install root. Warm and uncertain chains remain refused, and Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2749,7 +2750,8 @@ operator can find the app id to register.
 process watcher is attached and the capture handle is open. A target carrying a
 `steam:<app_id>` anchor uses Steam's protocol handler unchanged. A target with no
 platform anchor may instead launch one exact resolved Windows client beneath its
-stored install root. A `--process` capture cannot be launched (section 17.2).
+stored install root, or one exact ordered publisher chain declared by stored
+roles. A `--process` capture cannot be launched (section 17.2).
 
 This eliminates the acquisition race entirely. Because fragcap is
 already in the `Watching` state when the launch is issued, every
@@ -2768,6 +2770,16 @@ missing file, or non-file is a configuration error. Direct execution creates
 that exact child without a command shell and does not inspect it or retain a
 second process observer. ETW and socket-table attribution remain authoritative
 for the process and its descendants.
+
+A publisher chain is another immutable managed-launch value, not a sequence of
+commands. Its first stored role is `launcher`, its last is `client`, and each
+unique intermediate role descends from the role immediately before it. fragcap
+starts only the launcher root; the publisher software creates every descendant.
+The shared Capture profile binds those observed descendants through creation-time
+ancestry and makes only the client terminal. An exact stored absolute path may
+name an external publisher installation. A relative path resolves beneath the
+canonical game install root and cannot escape it. Missing, duplicate, reordered,
+ambiguous, or escaping declarations refuse before effects.
 
 ### 16.5 Environment Inheritance
 
@@ -2939,14 +2951,29 @@ fragcap deep-capture <SELECTOR> --launch --calibrate reachability --launch-case 
 fragcap deep-capture <SELECTOR> --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
 ```
 
-The two calibration flags are a pair and are absent from an ordinary Deep Capture invocation. Real calibration supports cold Steam protocol and cold direct-executable launches. Warm Steam, warm direct executable, publisher launcher, a declared-versus-observed case mismatch, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
+The two calibration flags are a pair and are absent from an ordinary Deep Capture invocation. Real calibration supports cold Steam protocol, cold direct-executable, and exact cold publisher-chain launches. Warm Steam, warm direct executable, warm publisher launcher, a declared-versus-observed case mismatch, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
 
 After side-effect-free resolution, launch-state validation, bundle validation, and Capture preparation, calibration emits the complete plan in human or structured form. It then requires an interactive affirmative answer or `--yes`. Preconfirmation never suppresses the plan. JSON and noninteractive runs without `--yes` refuse before mutation. Reachability refuses trust, HAR, and key-log options and never constructs a trust manager. TLS requires current same-case final-client routing and explicit trust intent.
 
 Each phase has finite launch, observation, proxy-shutdown, and cleanup deadlines. A shorter operator-supplied `--wait` or `--duration` becomes the effective bound; a longer value is capped at the calibration maximum. The plan and bundle report those effective values, proxy shutdown and cleanup enforce their displayed bounds, and no advertised deadline is merely descriptive. Structured events include `deep_capture.calibration_plan` before confirmation and `deep_capture.calibration_phase` for transitions and the terminal phase outcome. Existing proxy, trust, launch, application, bundle, cleanup, and completion events remain authoritative for their resources. Outcomes distinguish reached client, launcher only, escaped tree, proxy not reached, no relevant traffic, inconclusive, local CA accepted, explicitly observed certificate pinning, unknown trust, metadata only, unsupported protocol, interruption, and failure. Silence alone never proves a negative routing or pinning fact. Local CA acceptance additionally requires a full HTTPS observation correlated to the final client; launcher traffic cannot establish the selected target's trust behavior.
 
 The supported real-target managed paths are a Steam protocol launch from a cold
-Steam state and a cold direct-executable launch. A running Steam process cannot
+Steam state, a cold direct-executable launch, and an exact cold publisher chain
+whose current facts prove routing reaches its terminal client. A publisher chain
+is prepared from ordered stored roles through the same Capture path, starts only
+the root launcher, and binds each declared descendant by an anchored,
+case-insensitive canonical executable path plus creation-time ancestry. One
+process may bind each declared role in that publisher session. A competing
+match ends with explicit ambiguity and cannot become terminal ownership.
+Generated profile stages use descendant-first matching precedence, while the
+prepared launch plan retains stored root-to-client order, so roles may reuse an
+executable. The publisher session's acquisition deadline stays active after the
+launcher appears until the exact terminal client binds; an omitted
+publisher-chain `--wait` uses a finite two-minute default. Ordinary profiles
+retain multi-process roles and watching-only acquisition timeout behavior.
+Explicitly stored absolute stages may name an external publisher installation;
+relative stages remain confined beneath the selected game's install root. A
+running Steam process cannot
 inherit environment changes made in fragcap, so a warm Steam protocol launch is
 refused even when older facts exist for that case. A warm direct target is also
 refused because fragcap cannot retroactively change its environment. Deep Capture
@@ -2955,6 +2982,12 @@ before starting the proxy, creating session CA material, or changing current-use
 trust. For a direct launch, it adds the selected loopback proxy variables to that
 exact child configuration. The run consumes the prepared path, working directory,
 arguments, and environment rather than resolving them again afterward.
+
+A running publisher launcher remains warm even when its game client is absent,
+because child-scoped routing cannot be applied retroactively. Existing launcher,
+intermediate, or client images therefore refuse the cold path. Same-named
+unrelated processes produce a conservative refusal, and escaped, ambiguous,
+missing, failed, or timed-out descendants never acquire terminal-client identity.
 
 The no-handle startup snapshot exposes executable image names, not full paths.
 When any process already has the selected direct client's image name, preflight
@@ -4461,6 +4494,10 @@ origin lineages, the complete bundle evidence reconciles through production
 readers, and a dedicated CI tier opens synthetic pcapng and TLS key-log inputs
 with unmodified TShark. It closes #305 without claiming generic transport or
 final completion.
+S111 adds one immutable exact publisher-launcher plan through the shared Capture
+preparation, root-only child-scoped launch, declared process ancestry, terminal
+client lifecycle, and distinct cold and warm preflight outcomes. It closes #307
+without claiming warm restart, platform-client ownership, or final completion.
 
 The required dependency direction is:
 
@@ -4512,7 +4549,7 @@ The protocol and launch matrix is normative:
 | IPv6 | No complete native parity claim | #315 |
 | Cold direct executable | Shipped managed path | Native routing strategy #306 and calibration #317 |
 | Cold Steam protocol | Shipped when local facts prove reachability | Platform-client ownership #308 and calibration #317 |
-| Publisher launcher chain | Compatibility-dependent | #307 |
+| Exact cold publisher launcher chain | Shipped when stored roles and current local facts prove final-client routing | S111, #307 |
 | Warm client | Refused | Explicit warm-to-cold workflow #309 |
 | Target process hooks, memory reads, key extraction, interception drivers, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
 
