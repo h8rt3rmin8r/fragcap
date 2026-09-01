@@ -192,8 +192,9 @@ in both.
 
 ## Native completion follow-up
 
-S109 (`specs/109-lifecycle-authority`) follows S108 and closes #306, #320, and
-#336 as one dependency-ordered slice. It declares target-scoped routing before
-authorization, persists exact resource ownership before effects, and streams
-proxy and cleanup lifecycle evidence. Generic transports (#305) remain assigned
-to S110; broader doctor UX and the native completion gate remain later work.
+S110 (`specs/110-protocol-conformance`) follows S109 and closes #305 as the
+Native Deep Capture 2 conformance gate. It proves the shipped HTTP and TLS path
+against independent clients and origins, reconciles the complete artifact set,
+and requires unmodified TShark consumption. Generic TCP, SOCKS, UDP, QUIC,
+HTTP/3, and IPv6 remain assigned to milestone 3 issues #310 through #315;
+broader doctor UX and the native completion gate remain later work.

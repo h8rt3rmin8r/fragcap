@@ -125,6 +125,7 @@ enforcement.
 | 0.1.31-draft | 2026-08-30 | W. Thompson | **Adds streaming application protocols (issues #295, #298, and #299).** Extends sections 13.7, 19.6, 25, and 28.1. Verified HTTP/1.1 upgrades and RFC 8441 carry bounded WebSocket frame and message evidence, identity event streams produce incremental SSE fields and events, and HTTP/2 gRPC streams retain method, metadata, opaque envelopes, compression flags, and terminal status without protobuf inference. Observation remains independent from transparent forwarding. |
 | 0.1.32-draft | 2026-09-01 | W. Thompson | **Completes native TLS evidence and sensitive artifact ownership (issues #300, #304, and #322).** Extends sections 13.7, 17.2, 19, 25, 26.3, and 28.1. Explicit client-facing TLS key logs are protected and live-flushed, operator-supplied client identities enable upstream mutual TLS, refusal categories preserve only observable evidence, and sensitive artifacts gain pre-traffic access control, bounded recovery, confirmed deletion, and immutable share-copy transformation. General session recovery remains open under #320. |
 | 0.1.33-draft | 2026-09-01 | W. Thompson | **Correlates native evidence and versions the bundle contract (issues #302, #303, and #335).** Extends sections 13.7, 25, and 28.1. Accepted proxy connections reconcile after capture against timestamped packet-flow ownership, truthful bounded HAR 1.2 is projected only from complete native application evidence, and manifest version 2 declares authority, sensitivity, finalization, completeness, loss, correlation, and omissions under a published schema. Deep Capture remains incomplete until #334. |
+| 0.1.34-draft | 2026-09-01 | W. Thompson | **Adds the native HTTP and TLS conformance gate (issue #305).** Extends sections 25 and 28.1. A closed versioned matrix requires two independent client and origin lineages for HTTP/1.1, HTTPS, HTTP/2, WebSocket, SSE, and gRPC, exact expected and observed outcomes, zero skipped required rows, complete native artifact reconciliation, and unmodified TShark consumption in a dedicated CI tier. Generic transports remain in milestone 3 and Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4452,6 +4453,14 @@ S109 adds immutable pluggable target-scoped routing, an fsync-backed resource
 journal with exact recovery decisions, complete proxy and cleanup lifecycle
 streams, and the derived cleanup summary contract. It closes #306, #320, and
 #336 without claiming generic transport, full doctor UX, or final completion.
+S110 adds a closed native HTTP and TLS conformance matrix whose required rows
+name standards, exact peer implementations and versions, expected and observed
+results, executable evidence, artifact authorities, and CI tiers. Required rows
+cannot skip or disappear, each standard protocol has two independent client and
+origin lineages, the complete bundle evidence reconciles through production
+readers, and a dedicated CI tier opens synthetic pcapng and TLS key-log inputs
+with unmodified TShark. It closes #305 without claiming generic transport or
+final completion.
 
 The required dependency direction is:
 
