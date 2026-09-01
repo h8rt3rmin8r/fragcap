@@ -26,6 +26,7 @@ struct Transaction {
     response_bodies: Bodies,
     correlation: Option<Value>,
     body_evidence_gap: bool,
+    failed_transformations: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -173,6 +174,11 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
                     .map(ToOwned::to_owned)
             }
             "http.body_segment" => append_body(tx, &record)?,
+            "http.transformation"
+                if record.get("outcome").and_then(Value::as_str) != Some("complete") =>
+            {
+                tx.failed_transformations.push(record)
+            }
             _ => {}
         }
     }
@@ -196,6 +202,7 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
                     "response": tx.response,
                     "timing": tx.timing,
                     "terminal": tx.terminal,
+                    "failedTransformations": tx.failed_transformations,
                     "requestBody": body_summary(&tx.request_bodies),
                     "responseBody": body_summary(&tx.response_bodies)
                 }
@@ -383,6 +390,9 @@ fn standard_entry(
     }
     if tx.body_evidence_gap {
         missing.push("body-evidence-gap");
+    }
+    if !tx.failed_transformations.is_empty() {
+        missing.push("content-transformation-failed");
     }
     let (request_body, request_limited, request_observed, request_representation) =
         tx.request_bodies.selected();
@@ -702,6 +712,19 @@ mod tests {
         let reasons = standard_entry(7, 9, &tx).unwrap_err();
         assert!(reasons.contains(&"request-header-size"));
         assert!(reasons.contains(&"response-header-size"));
+    }
+
+    #[test]
+    fn failed_content_transformation_stays_partial() {
+        let mut tx = complete_transaction();
+        tx.failed_transformations.push(json!({
+            "type":"http.transformation",
+            "direction":"response",
+            "encoding":"gzip",
+            "outcome":"malformed-encoding"
+        }));
+        let reasons = standard_entry(7, 9, &tx).unwrap_err();
+        assert!(reasons.contains(&"content-transformation-failed"));
     }
 
     #[test]
