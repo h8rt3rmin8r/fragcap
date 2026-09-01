@@ -200,6 +200,12 @@ pub trait ArtifactSink {
         Ok(())
     }
     fn finalize(&mut self, bundle: &Path, snapshot: &TerminalSnapshot) -> Vec<ArtifactResult>;
+    /// Refresh projections that depend on lifecycle authorities settled by
+    /// `finalize`. Implementations that do not derive such projections need no
+    /// second phase.
+    fn reconcile(&mut self, _bundle: &Path, _snapshot: &TerminalSnapshot) -> Vec<ArtifactResult> {
+        Vec::new()
+    }
 }
 
 /// Ordered typed event delivery. Presentation is outside this trait.

@@ -859,6 +859,49 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         }
         results
     }
+
+    fn reconcile(
+        &mut self,
+        bundle: &Path,
+        snapshot: &fragcap::deep_capture::TerminalSnapshot,
+    ) -> Vec<fragcap::deep_capture::ArtifactResult> {
+        let result = (|| -> Result<(), CliError> {
+            let cleanup = cleanup_from_lifecycle(&bundle.join("cleanup.jsonl"))?;
+            write_file(
+                bundle.join("cleanup.json"),
+                cleanup_json(&snapshot.session_id, &cleanup)?.as_bytes(),
+            )?;
+            let manifest_path = bundle.join("manifest.json");
+            if manifest_path.is_file() {
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| {
+                        CliError::failure(format!(
+                            "cannot read {} for reconciliation: {error}",
+                            manifest_path.display()
+                        ))
+                    })?)
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+                manifest["cleanup"]["status"] = json!(cleanup.status());
+                let bytes = serde_json::to_vec_pretty(&manifest)
+                    .map_err(|error| CliError::failure(error.to_string()))?;
+                write_file(manifest_path, &bytes)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Vec::new(),
+            Err(error) => vec![fragcap::deep_capture::ArtifactResult {
+                role: "lifecycle-reconciliation".to_string(),
+                path: bundle.to_path_buf(),
+                sensitivity: fragcap::deep_capture::Sensitivity::Metadata,
+                required: true,
+                status: fragcap::deep_capture::ArtifactStatus::Failed {
+                    code: "lifecycle-reconciliation".to_string(),
+                    detail: error.to_string(),
+                },
+            }],
+        }
+    }
 }
 
 struct LibraryEventAdapter<'a, 'e, 'w> {

@@ -2,9 +2,11 @@
 
 #![cfg(feature = "deep-capture")]
 
+use std::io::Write;
+
 use fragcap::deep_capture::{
-    read_resource_journal, JournalStatus, ResourceJournal, ResourceKind, ResourceState,
-    ResourceTransition,
+    read_resource_journal, recover_resource_journal, JournalStatus, ResourceJournal, ResourceKind,
+    ResourceState, ResourceTransition,
 };
 
 fn transition(id: &str, state: ResourceState) -> ResourceTransition {
@@ -30,8 +32,8 @@ fn synchronized_prefix_is_recoverable_before_the_effect_result() {
     let prefix = read_resource_journal(journal.path()).unwrap();
     assert_eq!(prefix.status, JournalStatus::CrashPrefix);
     assert_eq!(prefix.transitions.len(), 1);
-    assert!(prefix.recovery_plan().actions.is_empty());
-    assert_eq!(prefix.recovery_plan().refusals.len(), 1);
+    assert_eq!(prefix.recovery_plan().actions.len(), 1);
+    assert!(prefix.recovery_plan().refusals.is_empty());
 }
 
 #[test]
@@ -87,6 +89,48 @@ fn corrupt_and_noncontiguous_records_fail_closed() {
     assert_eq!(
         read_resource_journal(&path).unwrap_err().kind(),
         std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn a_torn_final_record_preserves_the_synchronized_prefix() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+    journal
+        .append(transition("trust", ResourceState::Pending))
+        .unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(journal.path())
+        .unwrap()
+        .write_all(b"{\"type\":\"resource.transition\"")
+        .unwrap();
+    let prefix = read_resource_journal(journal.path()).unwrap();
+    assert_eq!(prefix.status, JournalStatus::CrashPrefix);
+    assert_eq!(prefix.transitions.len(), 1);
+}
+
+#[test]
+fn a_complete_journal_with_an_unresolved_effect_can_resume_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = {
+        let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+        journal
+            .append(transition("trust", ResourceState::Pending))
+            .unwrap();
+        journal
+            .append(transition("trust", ResourceState::Applied))
+            .unwrap();
+        journal.finish().unwrap();
+        journal.path().to_path_buf()
+    };
+    let plan = recover_resource_journal(&path, |_| Ok("removed exact trust entry".into())).unwrap();
+    assert_eq!(plan.actions.len(), 1);
+    let prefix = read_resource_journal(&path).unwrap();
+    assert_eq!(prefix.status, JournalStatus::Complete);
+    assert_eq!(
+        prefix.transitions.last().unwrap().state,
+        ResourceState::Released
     );
 }
 

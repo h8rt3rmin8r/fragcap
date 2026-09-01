@@ -83,6 +83,7 @@ impl PreparedSession {
             state: LifecycleState::Prepared,
             proxy: None,
             trust: None,
+            trust_target: None,
             routing: None,
             launch: None,
             observations: Vec::new(),
@@ -110,6 +111,7 @@ pub struct DeepCaptureSession<'a> {
     state: LifecycleState,
     proxy: Option<Box<dyn ProxyLease>>,
     trust: Option<Box<dyn TrustLease>>,
+    trust_target: Option<String>,
     routing: Option<Box<dyn RoutingLease>>,
     launch: Option<Box<dyn LaunchLease>>,
     observations: Vec<CompatibilityObservation>,
@@ -311,6 +313,7 @@ impl DeepCaptureSession<'_> {
                         "current-user trust entry acquired",
                     );
                     self.trust = Some(lease);
+                    self.trust_target = Some(trust_target);
                     self.emit(DeepCaptureEvent::TrustAcquired {
                         sequence: 0,
                         session_id: self.plan.session_id.clone(),
@@ -617,12 +620,16 @@ impl DeepCaptureSession<'_> {
         self.state = LifecycleState::Finalizing;
         self.persist_facts();
         self.cleanup_resources();
-        self.finish_lifecycle_authority();
+        self.prepare_lifecycle_authority();
         let mut snapshot = self.snapshot();
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
             snapshot.outcome = SessionOutcome::Partial;
         }
+        let failures_before_publication = self.failures.len();
         self.write_bundle(&snapshot);
+        self.settle_lifecycle_authority(self.failures.len() == failures_before_publication);
+        let reconciled_snapshot = self.snapshot();
+        self.reconcile_bundle(&reconciled_snapshot);
         snapshot.failures = self.failures.clone();
         if self.required_reporting_failed() && snapshot.outcome == SessionOutcome::Complete {
             snapshot.outcome = SessionOutcome::Partial;
@@ -751,17 +758,20 @@ impl DeepCaptureSession<'_> {
             self.record_cleanup(result);
         }
         if let Some(mut trust) = self.trust.take() {
-            let target = "authorized-session-thumbprint";
+            let target = self
+                .trust_target
+                .take()
+                .expect("acquired trust retains its exact recovery target");
             self.record_resource(
                 "trust-entry",
                 ResourceKind::Trust,
-                target,
+                &target,
                 "remove-current-user-root-by-exact-thumbprint",
                 ResourceState::CleanupPending,
                 "bounded exact trust cleanup attempt",
             );
             let result = trust.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
-            self.record_cleanup_transition("trust-entry", ResourceKind::Trust, target, &result);
+            self.record_cleanup_transition("trust-entry", ResourceKind::Trust, &target, &result);
             self.record_cleanup(result);
         } else if !self
             .cleanup
@@ -965,7 +975,7 @@ impl DeepCaptureSession<'_> {
         );
     }
 
-    fn finish_lifecycle_authority(&mut self) {
+    fn prepare_lifecycle_authority(&mut self) {
         if self.resource_journal.is_none() {
             return;
         }
@@ -978,21 +988,71 @@ impl DeepCaptureSession<'_> {
             ResourceState::Pending,
             "artifact retention must follow this durable obligation",
         );
+        if let Some(writer) = self.cleanup_lifecycle.as_mut() {
+            if let Err(error) = writer.finish() {
+                self.fail(
+                    Stage::Bundle,
+                    "cleanup-lifecycle-finish-failed",
+                    error.to_string(),
+                );
+            }
+        }
+        if let Some(journal) = self.resource_journal.as_mut() {
+            if let Err(error) = journal.finish() {
+                self.fail(
+                    Stage::Bundle,
+                    "resource-journal-finish-failed",
+                    error.to_string(),
+                );
+            }
+        }
+    }
+
+    fn settle_lifecycle_authority(&mut self, publication_succeeded: bool) {
+        let journal_path = self
+            .resource_journal
+            .take()
+            .map(|journal| journal.path().to_path_buf());
+        let cleanup_path = self
+            .cleanup_lifecycle
+            .take()
+            .map(|writer| writer.path().to_path_buf());
+        if let Some(path) = journal_path {
+            match ResourceJournal::resume(&path) {
+                Ok(journal) => self.resource_journal = Some(journal),
+                Err(error) => self.fail(
+                    Stage::Bundle,
+                    "resource-journal-resume-failed",
+                    error.to_string(),
+                ),
+            }
+        }
+        if let Some(path) = cleanup_path {
+            match LifecycleWriter::resume(&path) {
+                Ok(writer) => self.cleanup_lifecycle = Some(writer),
+                Err(error) => self.fail(
+                    Stage::Bundle,
+                    "cleanup-lifecycle-resume-failed",
+                    error.to_string(),
+                ),
+            }
+        }
+        let bundle_target = self.plan.bundle.display().to_string();
         self.record_resource(
             "bundle-evidence",
             ResourceKind::Artifact,
             &bundle_target,
             "retain-authorized-evidence",
-            ResourceState::Applied,
-            "authorized evidence writers completed before final publication",
-        );
-        self.record_resource(
-            "bundle-evidence",
-            ResourceKind::Artifact,
-            &bundle_target,
-            "retain-authorized-evidence",
-            ResourceState::Retained,
-            "bundle retained until exact confirmed cleanup",
+            if publication_succeeded {
+                ResourceState::Retained
+            } else {
+                ResourceState::Failed
+            },
+            if publication_succeeded {
+                "bundle publication completed before retention was declared"
+            } else {
+                "bundle publication failed; retention was not declared"
+            },
         );
         if let Some(writer) = self.cleanup_lifecycle.as_mut() {
             if let Err(error) = writer.finish() {
@@ -1047,6 +1107,19 @@ impl DeepCaptureSession<'_> {
             .adapters
             .artifacts
             .finalize(&self.plan.bundle, snapshot)
+        {
+            if let ArtifactStatus::Failed { code, detail } = &result.status {
+                self.fail(Stage::Bundle, code.clone(), detail.clone());
+            }
+            self.artifacts.push(result);
+        }
+    }
+
+    fn reconcile_bundle(&mut self, snapshot: &TerminalSnapshot) {
+        for result in self
+            .adapters
+            .artifacts
+            .reconcile(&self.plan.bundle, snapshot)
         {
             if let ArtifactStatus::Failed { code, detail } = &result.status {
                 self.fail(Stage::Bundle, code.clone(), detail.clone());

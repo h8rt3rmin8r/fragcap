@@ -84,6 +84,11 @@ impl RoutingPlan {
                     value: RouteValueSource::SessionProxyAuthorization,
                     scope: "managed-child-only".to_string(),
                 }))
+                .chain(std::iter::once(RouteEffect {
+                    destination: "NO_PROXY".to_string(),
+                    value: RouteValueSource::Literal(String::new()),
+                    scope: "managed-child-only".to_string(),
+                }))
                 .collect(),
             verification: "packet-flow-and-socket-owner-evidence".to_string(),
             cleanup: vec!["child-environment-ends-with-process".to_string()],

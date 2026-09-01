@@ -169,13 +169,6 @@ impl JournalPrefix {
                 });
                 continue;
             }
-            if transition.state == ResourceState::Pending {
-                refusals.push(RecoveryRefusal {
-                    resource_id: transition.resource_id.clone(),
-                    reason: "the journal does not prove that the pending effect occurred".into(),
-                });
-                continue;
-            }
             let exact = match transition.kind {
                 ResourceKind::Trust => {
                     transition
@@ -189,7 +182,10 @@ impl JournalPrefix {
                 ResourceKind::Launch => {
                     transition.target.contains("pid:") && transition.target.contains("created:")
                 }
-                ResourceKind::Artifact => transition.target.contains(transition.ownership.as_str()),
+                ResourceKind::Artifact => transition
+                    .ownership
+                    .strip_prefix("session:")
+                    .is_some_and(|session_id| transition.target.contains(session_id)),
             };
             if !exact {
                 refusals.push(RecoveryRefusal {
@@ -283,11 +279,14 @@ impl ResourceJournal {
             ));
         }
         let prefix = read_resource_journal(path)?;
-        if prefix.status != JournalStatus::CrashPrefix {
+        if prefix.status == JournalStatus::UnknownVersion {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "only a crash-prefix journal can resume",
+                "an unknown resource journal version cannot resume",
             ));
+        }
+        if prefix.status == JournalStatus::Complete {
+            remove_terminal_trailer(path)?;
         }
         let file = OpenOptions::new().append(true).read(true).open(path)?;
         Ok(Self {
@@ -458,6 +457,7 @@ pub fn read_resource_journal(path: &Path) -> io::Result<JournalPrefix> {
             "resource journal exceeds byte limit",
         ));
     }
+    let ends_with_newline = fs::read(path)?.last() == Some(&b'\n');
     let mut lines = BufReader::new(File::open(path)?).lines();
     let header = lines.next().ok_or_else(|| {
         io::Error::new(io::ErrorKind::UnexpectedEof, "resource journal is empty")
@@ -482,7 +482,8 @@ pub fn read_resource_journal(path: &Path) -> io::Result<JournalPrefix> {
     let mut transitions = Vec::new();
     let mut latest = BTreeMap::<String, ResourceTransition>::new();
     let mut trailer = false;
-    for (index, line) in lines.enumerate() {
+    let mut lines = lines.enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
         if index >= MAX_RECORDS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -490,7 +491,11 @@ pub fn read_resource_journal(path: &Path) -> io::Result<JournalPrefix> {
             ));
         }
         let line = line?;
-        let value: Value = serde_json::from_str(&line).map_err(invalid_json)?;
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) if lines.peek().is_none() && !ends_with_newline => break,
+            Err(error) => return Err(invalid_json(error)),
+        };
         match value.get("type").and_then(Value::as_str) {
             Some("resource.transition") => {
                 if trailer {
@@ -546,7 +551,11 @@ fn validate_transition(
         let allowed = match previous.state {
             ResourceState::Pending => matches!(
                 next.state,
-                ResourceState::Applied | ResourceState::Failed | ResourceState::NotApplied
+                ResourceState::Applied
+                    | ResourceState::CleanupPending
+                    | ResourceState::Failed
+                    | ResourceState::Retained
+                    | ResourceState::NotApplied
             ),
             ResourceState::Applied | ResourceState::Failed | ResourceState::TimedOut => matches!(
                 next.state,
@@ -628,6 +637,28 @@ fn write_line(file: &mut File, value: &Value) -> io::Result<()> {
 
 fn invalid_json(error: serde_json::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+fn remove_terminal_trailer(path: &Path) -> io::Result<()> {
+    let bytes = fs::read(path)?;
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    let start = bytes[..end]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |position| position + 1);
+    let trailer: Value = serde_json::from_slice(&bytes[start..end]).map_err(invalid_json)?;
+    if trailer.get("type").and_then(Value::as_str) != Some("resource-journal.trailer") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "complete resource journal does not end in a trailer",
+        ));
+    }
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(start as u64)?;
+    file.sync_all()
 }
 
 #[cfg(not(windows))]

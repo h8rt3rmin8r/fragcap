@@ -3,7 +3,7 @@
 //! Bounded, append-only native proxy and cleanup lifecycle streams.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -80,6 +80,33 @@ impl LifecycleWriter {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn resume(path: &Path) -> io::Result<Self> {
+        let prefix = read_lifecycle_prefix(path)?;
+        if prefix.status == LifecycleStreamStatus::UnknownVersion {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "an unknown lifecycle stream version cannot resume",
+            ));
+        }
+        if prefix.status == LifecycleStreamStatus::Complete {
+            remove_terminal_trailer(path, "lifecycle.trailer")?;
+        }
+        let mut counts = BTreeMap::new();
+        for record in &prefix.records {
+            let record_type = required_string(record, "type")?;
+            *counts.entry(record_type).or_default() += 1;
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            file: OpenOptions::new().append(true).read(true).open(path)?,
+            stream: prefix.stream,
+            session_id: prefix.session_id,
+            sequence: prefix.records.len() as u64,
+            counts,
+            finished: false,
+        })
     }
 
     pub fn append(&mut self, record_type: &str, fields: Value) -> io::Result<u64> {
@@ -433,4 +460,26 @@ fn required_string(value: &Value, field: &str) -> io::Result<String> {
 
 fn invalid_json(error: serde_json::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+fn remove_terminal_trailer(path: &Path, expected_type: &str) -> io::Result<()> {
+    let bytes = fs::read(path)?;
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    let start = bytes[..end]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |position| position + 1);
+    let trailer: Value = serde_json::from_slice(&bytes[start..end]).map_err(invalid_json)?;
+    if trailer.get("type").and_then(Value::as_str) != Some(expected_type) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "complete lifecycle stream does not end in its trailer",
+        ));
+    }
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(start as u64)?;
+    file.sync_all()
 }
