@@ -4,7 +4,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -185,7 +185,7 @@ impl CaptureRunner for TimedCapture {
     fn run(
         &mut self,
         _: &PreparedCapture,
-        _: &ProxyRoute,
+        _: &AppliedRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         *self.0.borrow_mut() = Duration::from_secs(8);
@@ -226,10 +226,10 @@ impl LaunchAdapter for Launch {
         &mut self,
         _: &PreparedTarget,
         _: LaunchCase,
-        route: &ProxyRoute,
+        route: &AppliedRoute,
         _: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure> {
-        assert_eq!(route.endpoint().port, 31_337);
+        assert_eq!(route.proxy().endpoint().port, 31_337);
         self.0.borrow_mut().push("launch.start".into());
         Ok(Box::new(LaunchRun(self.0.clone())))
     }
@@ -258,7 +258,7 @@ impl CaptureRunner for Capture {
     fn run(
         &mut self,
         prepared: &PreparedCapture,
-        _: &ProxyRoute,
+        _: &AppliedRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         assert_eq!(prepared.token, "prepared");
@@ -382,7 +382,7 @@ impl LaunchAdapter for FailingLaunch {
         &mut self,
         _: &PreparedTarget,
         _: LaunchCase,
-        _: &ProxyRoute,
+        _: &AppliedRoute,
         _: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure> {
         self.0.borrow_mut().push("launch.start.failed".into());
@@ -409,7 +409,7 @@ impl CaptureRunner for FailingCapture {
     fn run(
         &mut self,
         _: &PreparedCapture,
-        _: &ProxyRoute,
+        _: &AppliedRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         self.0.borrow_mut().push("capture.run.failed".into());
@@ -440,7 +440,7 @@ impl CaptureRunner for InterruptedCapture {
     fn run(
         &mut self,
         _: &PreparedCapture,
-        _: &ProxyRoute,
+        _: &AppliedRoute,
         _: Budget,
     ) -> Result<CaptureRunResult, StageFailure> {
         self.0.borrow_mut().push("capture.interrupted".into());
@@ -529,12 +529,17 @@ fn test_route() -> ProxyRoute {
 }
 
 fn config() -> SessionConfig {
+    static NEXT_BUNDLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let bundle_id = NEXT_BUNDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     SessionConfig {
         target: "controlled-target".into(),
         launch_case: Some(LaunchCase::Controlled),
         mode: SessionMode::TlsCalibration,
         controlled: true,
-        bundle: PathBuf::from("controlled-bundle"),
+        bundle: std::env::temp_dir().join(format!(
+            "fragcap-deep-capture-session-{}-{bundle_id}",
+            std::process::id()
+        )),
         trust_ca: true,
         har: true,
         key_log: false,
@@ -552,6 +557,7 @@ fn adapters(ledger: &Ledger) -> AdapterSet<'_> {
         identifiers: Box::new(Ids(VecDeque::from(["session-1".into(), "plan-1".into()]))),
         proxy: Box::new(Proxy(ledger.clone())),
         trust: Box::new(Trust(ledger.clone())),
+        routing: Box::new(ChildEnvironmentRouting),
         launch: Box::new(Launch(ledger.clone())),
         capture: Box::new(Capture(ledger.clone())),
         facts: Box::new(Facts(ledger.clone())),
@@ -581,7 +587,7 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
     assert!(report.is_complete());
     assert_eq!(report.snapshot.observations.len(), 1);
     assert_eq!(report.snapshot.fact_writes.len(), 5);
-    assert_eq!(report.snapshot.cleanup.len(), 5);
+    assert_eq!(report.snapshot.cleanup.len(), 6);
     assert_eq!(report.snapshot.artifacts, prepared_artifact_requests());
     assert_eq!(report.artifacts.last().expect("manifest").role, "manifest");
     let calls = ledger.borrow();

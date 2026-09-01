@@ -261,6 +261,8 @@ pub struct SessionPlan {
     pub endpoint: LoopbackEndpoint,
     /// Bundle destination.
     pub bundle: PathBuf,
+    /// Immutable target-scoped routing effects authorized with this plan.
+    pub routing: super::RoutingPlan,
     /// Whether trust will be acquired.
     pub trust_ca: bool,
     /// Whether the plan is bound to an explicit upstream client identity.
@@ -341,6 +343,7 @@ pub enum Stage {
     Authorization,
     ProxyStart,
     Trust,
+    Routing,
     Launch,
     Capture,
     Observe,
@@ -576,6 +579,7 @@ pub struct TerminalSnapshot {
     pub artifacts: ArtifactRequests,
     pub outcome: SessionOutcome,
     pub observations: Vec<CompatibilityObservation>,
+    pub route_verification: Option<super::RouteVerification>,
     pub failures: Vec<StageFailure>,
     pub fact_writes: Vec<FactWriteResult>,
     pub cleanup: Vec<CleanupResult>,

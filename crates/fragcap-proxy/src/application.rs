@@ -110,6 +110,56 @@ pub trait ApplicationEventSink: Send + Sync {
     }
 }
 
+/// Delivers each event to every configured observer without making one
+/// observer's queue pressure block or retire the others.
+pub struct FanoutApplicationEventSink {
+    sinks: Vec<Arc<dyn ApplicationEventSink>>,
+}
+
+impl FanoutApplicationEventSink {
+    pub fn new(sinks: Vec<Arc<dyn ApplicationEventSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+impl ApplicationEventSink for FanoutApplicationEventSink {
+    fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        let mut accepted = false;
+        let mut full = false;
+        for sink in &self.sinks {
+            match sink.try_emit(event.clone()) {
+                EventDisposition::Accepted => accepted = true,
+                EventDisposition::QueueFull => full = true,
+                EventDisposition::Retired => {}
+            }
+        }
+        if accepted {
+            EventDisposition::Accepted
+        } else if full {
+            EventDisposition::QueueFull
+        } else {
+            EventDisposition::Retired
+        }
+    }
+
+    fn accounting(&self) -> ApplicationSinkAccounting {
+        self.sinks
+            .iter()
+            .fold(ApplicationSinkAccounting::default(), |mut total, sink| {
+                let value = sink.accounting();
+                total.accepted_events = total.accepted_events.saturating_add(value.accepted_events);
+                total.dropped_events = total.dropped_events.saturating_add(value.dropped_events);
+                total.body_bytes_queue_dropped = total
+                    .body_bytes_queue_dropped
+                    .saturating_add(value.body_bytes_queue_dropped);
+                total.streaming_bytes_queue_dropped = total
+                    .streaming_bytes_queue_dropped
+                    .saturating_add(value.streaming_bytes_queue_dropped);
+                total
+            })
+    }
+}
+
 pub(crate) type SharedEventSink = Option<Arc<dyn ApplicationEventSink>>;
 
 pub(crate) fn emit(sink: &SharedEventSink, event: ApplicationEvent) -> EventDisposition {

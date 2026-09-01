@@ -967,6 +967,25 @@ and must cooperatively honor them. Event-delivery failure after effects begin is
 reported but never prevents bounded cleanup. Controlled adapters exercise the
 whole public API without platform or privileged effects.
 
+Routing is a typed effect in the immutable plan. The plan names the strategy,
+every destination and scope, the source of each secret-bearing value, the
+verification contract, and cleanup. Child environment is the first implemented
+strategy. Command arguments, reversible target configuration, HTTP proxy, SOCKS,
+and protocol-specific routing remain explicit unavailable strategies until an
+adapter can prepare and verify them. Preparation refuses an unsupported target
+before proxy or trust mutation. No adapter may silently fall back to a global
+proxy setting, and verification reports evidence about the final socket owner
+rather than inferring environment propagation.
+
+After bundle protection and before the first proxy effect, the coordinator opens
+an append-only resource journal. It synchronizes a pending obligation before each
+listener, task, trust, route, launch, Capture, artifact, or cleanup effect and
+synchronizes the resulting state afterward. Recovery consumes only a validated,
+bounded crash prefix and mutates only a resource with exact ownership evidence.
+Pending effects with uncertain application, reused resources, malformed records,
+and unsupported versions are refusals. The same recovery planner is used by
+startup inspection and `doctor`; repeated successful recovery is idempotent.
+
 The production native proxy implementation belongs to the leaf
 `fragcap-proxy` crate and is adapted to these facade traits without a binary
 dependency. Its S102 foundation owns an explicit loopback listener, finite
@@ -1857,7 +1876,23 @@ that declares omitted sensitive artifacts instead of copying source claims.
 
 TLS key logs are optional analyzer aids for proxy-owned TLS tunnels. They are sensitive session material, not decrypted output. When an operator requests analyzer integration or selects an output profile that includes it, fragcap creates the final bundle's key-log file before starting proxy traffic and announces its absolute path through human status and `deep_capture.key_log_ready`. The proxy appends secrets to that same file during the session so analyzers can consume them without waiting for finalization. The manifest marks a nonempty result as session-scoped, proxy-owned, and secret-adjacent.
 
-Proxy logs, process traces, compatibility update records, and cleanup reports are sidecars. The proxy log owns proxy startup, shutdown, backend errors, and proxy connection ids. The process trace owns process launch and exit chronology. Compatibility update records name Deep Capture facts written or proposed for the local target store. Cleanup reports own per-resource cleanup results for proxy processes, proxy ports, local CA trust, local CA material, TLS key logs, and sensitive output artifacts; the manifest records only the latest cleanup report path and aggregate cleanup status.
+`proxy.jsonl` and `cleanup.jsonl` are versioned append-only lifecycle streams.
+The proxy stream owns listener, accepted connection, TLS, protocol, error, loss,
+stop, and drain records. Every application connection identifier is either named
+by lifecycle evidence or by an exact bounded-loss identity range. Successful DNS
+answers remain an explicit typed gap until the native resolver exposes them.
+The cleanup stream owns obligation creation, acquisition, attempt, adapter result,
+retention, and recovery-journal linkage. Both streams keep complete newline-framed
+crash prefixes and require one reconciling trailer for completion. Partial writer
+failure and queue pressure remain explicit and cannot block forwarding.
+
+`resource-journal.jsonl` is the synchronized ownership authority.
+`cleanup.json` is a derived compatibility projection of a completed
+`cleanup.jsonl` stream and declares `cleanup-lifecycle` as its source role in
+manifest version 2. Process traces and compatibility update records remain
+sidecars. The manifest declares the proxy chronology, cleanup chronology, cleanup
+summary, journal, finalization, completeness, loss, correlation, and omissions as
+separate roles.
 
 Expected artifacts that are not produced are recorded as manifest omissions with reasons, such as `not-requested`, `not-observable`, `unsupported-protocol`, `proxy-not-reached`, `certificate-pinned`, `backend-unavailable`, or `writer-failed`. A Deep Capture session that could only provide metadata remains useful, but it must say which application artifacts were unavailable and why.
 
@@ -1869,7 +1904,7 @@ session with no packet truth reports that absence rather than creating a
 fabricated capture. A requested TLS key log is declared only when the proxy
 produced non-empty proxy-owned key material.
 
-For compatibility calibration, `compatibility.json` also owns the displayed plan, declared phase, phase outcome, observation summaries, omissions, proposed fact rows, and the result of each attempted local-store append. The plan is emitted before confirmation and names the target, launch case, loopback proxy action, bundle destination, finite launch, observation, shutdown, and cleanup deadlines, possible fact families, trust action, and cleanup obligations. `cleanup.json` remains authoritative for individual cleanup resources, and `manifest.json` remains the bundle index. A phase outcome is not a target compatibility verdict.
+For compatibility calibration, `compatibility.json` also owns the displayed plan, declared phase, phase outcome, observation summaries, omissions, proposed fact rows, and the result of each attempted local-store append. The plan is emitted before confirmation and names the target, launch case, loopback proxy action, bundle destination, finite launch, observation, shutdown, and cleanup deadlines, possible fact families, trust action, and cleanup obligations. `cleanup.jsonl` is authoritative for individual cleanup resources, `cleanup.json` is its derived compatibility projection, and `manifest.json` remains the bundle index. A phase outcome is not a target compatibility verdict.
 
 ## 14. Sinks and Streaming
 
@@ -4413,6 +4448,10 @@ history, bounded evidence-derived HAR 1.2, and native manifest version 2 with a
 published validator and truthful share-copy authority. It closes the correlation,
 HAR, and bundle-index items but does not close the wider transport or completion
 gates.
+S109 adds immutable pluggable target-scoped routing, an fsync-backed resource
+journal with exact recovery decisions, complete proxy and cleanup lifecycle
+streams, and the derived cleanup summary contract. It closes #306, #320, and
+#336 without claiming generic transport, full doctor UX, or final completion.
 
 The required dependency direction is:
 
@@ -4437,10 +4476,10 @@ Every existing or planned output has one owner:
 | Complete `application.jsonl` | S105, #301 |
 | Truthful HAR 1.2 projection | S108, #302 |
 | Proxy-owned TLS key log | S107, #300 |
-| Proxy and cleanup sidecars | #336 |
+| Proxy and cleanup sidecars | S109, #336 |
 | Process lifecycle evidence | #319 |
 | Compatibility facts and sidecar | #317 |
-| Crash journal and recovery | #320 |
+| Crash journal and recovery | S109, #320 |
 | Doctor readiness and residue | #321 |
 | Sensitivity, retention, and deletion | S107, #322 |
 | Consent, progress, and recovery UX | #332 |

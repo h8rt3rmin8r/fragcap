@@ -88,10 +88,12 @@ The `authority` and `sensitivity` columns below reproduce the values written int
 | `application-jsonl`, `application.jsonl` | `application-events` | `sensitive` | yes | Opened before proxy traffic, appended and flushed during the session, and completed by one reconciling trailer on orderly finalization. A surviving prefix without that trailer is explicitly incomplete. |
 | `har`, `http.har` | `http-projection` | `sensitive` | no | Written only when `--har` was requested and an observation has both HTTP method and URL. Retained like other sensitive sidecars. |
 | `tls-key-log`, `tls-keylog.log` | `analyzer-aid` | `secret-adjacent` | no | Requested explicitly and declared only when the proxy leaves a nonempty file. Retained for analyzer use until operator removal or confirmed residue cleanup. |
-| `proxy-log`, `proxy.jsonl` | `proxy-events` | `sensitive` | yes | Written at finalization with proxy start and stop context. Retained like other sensitive sidecars. |
+| `proxy-lifecycle`, `proxy.jsonl` | `proxy-lifecycle-events` | `sensitive` | yes | Streamed during the session with listener, connection, TLS, protocol, error, loss, stop, and drain records plus a reconciling trailer. |
 | `process-trace`, `process-trace.jsonl` | `process-events` | `sensitive` | yes | Written at finalization with observed stage lifecycle events or one explicit unavailable record. Retained like other sensitive sidecars. |
 | `compatibility`, `compatibility.json` | `compatibility-updates` | `ordinary` | yes | Written at finalization with scrubbed run context and observations. For calibration it also records the displayed plan, phase outcome, and fact-write results. |
-| `cleanup`, `cleanup.json` | `cleanup-report` | `ordinary` | yes | Written with per-resource disposition and updated after the final manifest write. Retained as the cleanup authority. |
+| `cleanup-lifecycle`, `cleanup.jsonl` | `cleanup-lifecycle-events` | `ordinary` | yes | Streamed with journal-linked obligations, attempts, adapter results, retention, and recovery outcomes. This is cleanup authority. |
+| `cleanup-summary`, `cleanup.json` | `cleanup-projection` | `ordinary` | yes | Derived only from a completed `cleanup.jsonl` stream for compatibility consumers. |
+| `resource-journal`, `resource-journal.jsonl` | `resource-ownership-journal` | `secret-adjacent` | yes | Synchronized before and after external effects and retained for exact crash recovery and audit. |
 
 ## Application observations and projections
 
@@ -113,12 +115,13 @@ This [proxy-owned TLS key-log export](/docs/glossary/file-and-wire-formats#proxy
 
 ## Diagnostic and audit sidecars
 
-- `proxy.jsonl` owns the proxy backend identity, loopback listener, start, stop, and final operation status recorded by v0.7.0. It is not packet truth or a complete application event stream.
+- `proxy.jsonl` owns the native proxy lifecycle chronology. Every application connection id resolves to a connection record or an exact bounded-loss range. Successful DNS answers remain an explicit gap until the native resolver exposes them.
 - `process-trace.jsonl` owns observed target-stage match and exit chronology. When no stage lifecycle event is available, it writes `process-trace.unavailable` and says packet attribution remains authoritative.
 - `compatibility.json` records the selected target identity, launch case, proxy backend, and scrubbed observations used as compatibility-update context. A calibration bundle also records the displayed plan, phase, phase outcome, bounded deadlines, trust intent, explicit non-actions, proposed facts, and each database write result. Inspect the local target matrix with `fragcap targets show` for rows that actually committed.
-- `cleanup.json` owns each resource's cleanup status and human-readable reason. The manifest repeats only its path and aggregate status.
+- `cleanup.jsonl` owns each resource obligation, attempt, adapter result, retained state, and resource-journal link. `cleanup.json` is a derived summary and names `cleanup-lifecycle` as its source role.
+- `resource-journal.jsonl` owns synchronized external-effect state and exact recovery evidence. A missing trailer is a crash prefix, not success.
 
-Session state, cleanup status, and artifact omissions answer different questions. A partial session can clean up successfully, and a complete operation still relies on `cleanup.json` for per-resource results.
+Session state, cleanup status, and artifact omissions answer different questions. A partial session can clean up successfully, and a complete operation relies on `cleanup.jsonl` for per-resource results.
 
 ## Manifest omissions
 
@@ -141,7 +144,7 @@ These tokens describe absent artifact roles only. An application record's free-f
 | `session_id` | Manifest, application stream, proxy log, process trace, compatibility record, cleanup report, and status events | HAR and pcapng do not carry this field directly. |
 | Target id or handle | Manifest, application target id, and compatibility record | Proxy and process sidecars do not repeat target identity. |
 | `flow_id` | Application observations, matching pcapng packet comments, and the manifest's summary list | Missing when proxy endpoints cannot be joined to packet truth. |
-| `proxy_connection_id` | Application observations | The v0.7.0 proxy lifecycle log does not repeat every observation id. |
+| `proxy_connection_id` | Application observations and proxy lifecycle records or bounded-loss ranges | A queue gap retains the first omitted connection id and exact count. |
 | `started_at`, `ended_at` | Application observations; HAR projects `started_at` | Other sidecars do not expose one complete shared event-time contract. |
 | Process id, image, and role | Correlated application observations, process trace where observed, and pcapng attribution comments | Values can be null or unavailable and are never inferred merely to complete a join. |
 | Attribution state | Application observations and packet-side attribution comments | `packet-flow-only` and `proxy-only` describe the available evidence path, not the absence of other activity. |

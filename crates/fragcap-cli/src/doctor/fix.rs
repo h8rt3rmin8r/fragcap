@@ -18,6 +18,7 @@
 //! hidden.
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use super::action::{
     offered_actions, Action, ActionKind, ActionOutcome, Capabilities, ExtcapScope,
@@ -309,6 +310,13 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
     let mut removed = 0usize;
     let mut failed = Vec::new();
     let mut preserve_manifests = false;
+    let preserve_journals = match recover_deep_capture_journals(&root, out) {
+        Ok(()) => false,
+        Err(errors) => {
+            failed.extend(errors);
+            true
+        }
+    };
     match super::probe::ca_cleanup_targets(&root) {
         Ok(targets) => {
             for (store, thumbprint) in targets {
@@ -345,6 +353,14 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             );
             continue;
         }
+        if preserve_journals
+            && path
+                .file_name()
+                .is_some_and(|name| name == fragcap::deep_capture::RESOURCE_JOURNAL)
+        {
+            let _ = writeln!(out, "  preserved incomplete {}", path.display());
+            continue;
+        }
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 removed += 1;
@@ -363,6 +379,74 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             failed.join("; ")
         ))
     }
+}
+
+pub(crate) fn recover_deep_capture_journals(
+    root: &Path,
+    out: &mut dyn Write,
+) -> Result<(), Vec<String>> {
+    let mut failed = Vec::new();
+    for journal in resource_journals(root) {
+        match fragcap::deep_capture::recover_resource_journal(&journal, |action| {
+            match action.kind {
+                fragcap::deep_capture::ResourceKind::Trust => {
+                    let thumbprint = action.target.strip_prefix("sha1:").ok_or_else(|| {
+                        "trust recovery target lacks a SHA-1 thumbprint".to_string()
+                    })?;
+                    remove_ca_trust("CurrentUser/Root", thumbprint)?;
+                    Ok("removed the exact current-user trust entry".to_string())
+                }
+                fragcap::deep_capture::ResourceKind::Route
+                | fragcap::deep_capture::ResourceKind::Proxy
+                | fragcap::deep_capture::ResourceKind::Capture => Ok(
+                    "process-scoped resource cannot persist after the owning process ended"
+                        .to_string(),
+                ),
+                _ => Err("no unrelated-resource-safe recovery adapter exists".to_string()),
+            }
+        }) {
+            Ok(plan) if plan.refusals.is_empty() => {
+                let _ = writeln!(out, "  replayed {}", journal.display());
+            }
+            Ok(plan) => failed.push(format!(
+                "{} has {} recovery refusal(s)",
+                journal.display(),
+                plan.refusals.len()
+            )),
+            Err(error) => failed.push(format!("could not replay {}: {error}", journal.display())),
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed)
+    }
+}
+
+fn resource_journals(root: &Path) -> Vec<PathBuf> {
+    fn walk(path: &Path, depth: usize, result: &mut Vec<PathBuf>) {
+        if depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten().take(200) {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, depth + 1, result);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == fragcap::deep_capture::RESOURCE_JOURNAL)
+            {
+                result.push(path);
+            }
+        }
+    }
+    let mut result = Vec::new();
+    walk(root, 0, &mut result);
+    result.sort();
+    result
 }
 
 #[cfg(windows)]

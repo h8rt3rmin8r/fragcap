@@ -53,6 +53,7 @@ pub struct NativeProxyAdapter {
     limits: NativeProxyLimits,
     observation_context: NativeObservationContext,
     application_artifact: Option<PathBuf>,
+    proxy_lifecycle_artifact: Option<PathBuf>,
     key_log_artifact: Option<PathBuf>,
     capture_payloads: bool,
     client_identity: Option<ClientIdentity>,
@@ -91,6 +92,7 @@ impl NativeProxyAdapter {
             limits,
             observation_context: NativeObservationContext::default(),
             application_artifact: None,
+            proxy_lifecycle_artifact: None,
             key_log_artifact: None,
             capture_payloads: true,
             client_identity: None,
@@ -110,6 +112,12 @@ impl NativeProxyAdapter {
     /// Stream native application observations to this approved artifact path.
     pub fn with_application_artifact(mut self, path: impl Into<PathBuf>) -> Self {
         self.application_artifact = Some(path.into());
+        self
+    }
+
+    /// Stream the native proxy resource chronology to this protected path.
+    pub fn with_proxy_lifecycle_artifact(mut self, path: impl Into<PathBuf>) -> Self {
+        self.proxy_lifecycle_artifact = Some(path.into());
         self
     }
 
@@ -243,6 +251,25 @@ impl ProxyBackend for NativeProxyAdapter {
                 })
             })
             .transpose()?;
+        let mut proxy_lifecycle = self
+            .proxy_lifecycle_artifact
+            .as_ref()
+            .map(|path| {
+                super::ProxyLifecycleLease::open_with_listener(
+                    path,
+                    &plan.session_id,
+                    4_096,
+                    format!("127.0.0.1:{}", plan.endpoint.port),
+                )
+                .map_err(|error| {
+                    StageFailure::new(
+                        Stage::ProxyStart,
+                        "proxy-lifecycle-open-failed",
+                        error.to_string(),
+                    )
+                })
+            })
+            .transpose()?;
         let mut backend = RuntimeBackend::new(config);
         let key_log = if plan.artifacts.key_log {
             let path = self.key_log_artifact.as_ref().ok_or_else(|| {
@@ -262,8 +289,17 @@ impl ProxyBackend for NativeProxyAdapter {
         if let Some(key_log) = &key_log {
             backend = backend.with_key_log(Arc::clone(key_log));
         }
+        let mut event_sinks = Vec::new();
         if let Some(artifact) = &application_artifact {
-            backend = backend.with_application_event_sink(artifact.sink());
+            event_sinks.push(artifact.sink());
+        }
+        if let Some(lifecycle) = &proxy_lifecycle {
+            event_sinks.push(lifecycle.sink());
+        }
+        if !event_sinks.is_empty() {
+            backend = backend.with_application_event_sink(Arc::new(
+                fragcap_proxy::FanoutApplicationEventSink::new(event_sinks),
+            ));
         }
         if controlled_lab.is_none() && self.client_identity.is_some() {
             let tls = native_tls_client_config_with_identity(self.client_identity.as_ref())
@@ -300,6 +336,7 @@ impl ProxyBackend for NativeProxyAdapter {
             controlled_lab,
             observation_context: self.observation_context.clone(),
             application_artifact: application_artifact.take(),
+            proxy_lifecycle: proxy_lifecycle.take(),
             key_log,
         }))
     }
@@ -311,6 +348,7 @@ struct NativeProxyLease {
     controlled_lab: Option<ControlledLab>,
     observation_context: NativeObservationContext,
     application_artifact: Option<super::ApplicationArtifactLease>,
+    proxy_lifecycle: Option<super::ProxyLifecycleLease>,
     key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
 }
 
@@ -413,6 +451,12 @@ impl ProxyLease for NativeProxyLease {
                     result.reason = format!("application writer failed: {error}");
                 }
             }
+            if let Some(lifecycle) = self.proxy_lifecycle.as_mut() {
+                if let Err(error) = lifecycle.finish() {
+                    result.status = CleanupStatus::Failed;
+                    result.reason = format!("proxy lifecycle writer failed: {error}");
+                }
+            }
         }
         result
     }
@@ -449,6 +493,21 @@ impl ProxyLease for NativeProxyLease {
                 },
                 reason: status.err().map_or_else(
                     || "application stream finalized".to_string(),
+                    |error| error.to_string(),
+                ),
+            });
+        }
+        if let Some(mut lifecycle) = self.proxy_lifecycle.take() {
+            let result = lifecycle.finish();
+            results.push(CleanupResult {
+                resource: "proxy-lifecycle-writer".to_string(),
+                status: if result.is_ok() {
+                    CleanupStatus::Released
+                } else {
+                    CleanupStatus::Failed
+                },
+                reason: result.err().map_or_else(
+                    || "proxy lifecycle writer completed".to_string(),
                     |error| error.to_string(),
                 ),
             });

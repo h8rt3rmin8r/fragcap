@@ -144,7 +144,8 @@ different upgrade paths. A Mermaid diagram of the pipeline belongs here.
 Covers the facade crate, the dependency direction rule (core depends on
 nothing platform-specific), the leaf `fragcap-proxy` crate and its bounded
 native runtime, the public Deep Capture prepared-plan and session
-coordinator, its narrow effect adapters, and the plugin seam for dissectors.
+coordinator, its immutable routing strategy and synchronized recovery journal,
+its narrow effect adapters, and the plugin seam for dissectors.
 
 ## 9. Platform Strategy
 

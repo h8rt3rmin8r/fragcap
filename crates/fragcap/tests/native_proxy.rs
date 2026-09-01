@@ -8,7 +8,7 @@ use std::time::Duration;
 use fragcap::deep_capture::{
     run_controlled_native_requests, ArtifactRequests, BackendDescriptor, Budget, CleanupStatus,
     Deadlines, LaunchCase, LoopbackEndpoint, NativeProxyAdapter, PlanId, PreparedTarget,
-    ProxyBackend, SessionMode, SessionPlan,
+    ProxyBackend, RoutingPlan, SessionMode, SessionPlan,
 };
 
 fn plan(session: &str) -> SessionPlan {
@@ -28,6 +28,7 @@ fn plan(session: &str) -> SessionPlan {
         },
         endpoint: LoopbackEndpoint { port: 0 },
         bundle: PathBuf::from("unused-controlled-bundle"),
+        routing: RoutingPlan::child_environment(),
         trust_ca: true,
         client_identity: false,
         artifacts: ArtifactRequests {

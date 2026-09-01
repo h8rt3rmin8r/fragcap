@@ -453,6 +453,23 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
             if name == fragcap::deep_capture::MANIFEST_PREFIX {
                 push_unique(state.stale_manifests, path.clone());
             }
+            if name == fragcap::deep_capture::RESOURCE_JOURNAL {
+                push_unique(state.sensitive_artifacts, path.clone());
+                match fragcap::deep_capture::read_resource_journal(&path) {
+                    Ok(prefix)
+                        if prefix.status == fragcap::deep_capture::JournalStatus::CrashPrefix
+                            && (!prefix.recovery_plan().actions.is_empty()
+                                || !prefix.recovery_plan().refusals.is_empty()) =>
+                    {
+                        push_unique(state.stale_manifests, path.clone());
+                    }
+                    Ok(_) => {}
+                    Err(error) => push_scan_error(
+                        state.errors,
+                        format!("could not read {}: {error}", path.display()),
+                    ),
+                }
+            }
             if name.eq_ignore_ascii_case("tls-keylog.log")
                 || name.eq_ignore_ascii_case("sslkeylog.log")
             {
@@ -460,7 +477,11 @@ fn scan_deep_capture_residue(root: &std::path::Path) -> DeepCaptureScan {
             }
             if matches!(
                 name,
-                "application.jsonl" | "http.har" | "proxy.jsonl" | "process-trace.jsonl"
+                "application.jsonl"
+                    | "http.har"
+                    | "proxy.jsonl"
+                    | "cleanup.jsonl"
+                    | "process-trace.jsonl"
             ) {
                 push_unique(state.sensitive_artifacts, path);
             }

@@ -417,7 +417,7 @@ impl fragcap::deep_capture::LaunchAdapter for LibraryLaunchAdapter {
         &mut self,
         _target: &fragcap::deep_capture::PreparedTarget,
         _launch_case: fragcap::deep_capture::LaunchCase,
-        _route: &fragcap::deep_capture::ProxyRoute,
+        _route: &fragcap::deep_capture::AppliedRoute,
         _budget: fragcap::deep_capture::Budget,
     ) -> Result<Box<dyn fragcap::deep_capture::LaunchLease>, fragcap::deep_capture::StageFailure>
     {
@@ -478,7 +478,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
     fn run(
         &mut self,
         _prepared: &fragcap::deep_capture::PreparedCapture,
-        route: &fragcap::deep_capture::ProxyRoute,
+        route: &fragcap::deep_capture::AppliedRoute,
         budget: fragcap::deep_capture::Budget,
     ) -> Result<fragcap::deep_capture::CaptureRunResult, fragcap::deep_capture::StageFailure> {
         if self.args.controlled_target {
@@ -492,10 +492,15 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
             };
             let runtime = Rc::clone(&self.runtime);
             let context = self.observation_context.clone();
-            run_controlled_target_harness(route, phase, budget.remaining(), move |process_id| {
-                runtime.borrow_mut().controlled_process_id = Some(process_id);
-                context.record_controlled_process_id(process_id);
-            })
+            run_controlled_target_harness(
+                route.proxy(),
+                phase,
+                budget.remaining(),
+                move |process_id| {
+                    runtime.borrow_mut().controlled_process_id = Some(process_id);
+                    context.record_controlled_process_id(process_id);
+                },
+            )
             .map_err(|error| {
                 library_stage_failure(
                     fragcap::deep_capture::Stage::Capture,
@@ -516,12 +521,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
             )
         })?;
         prepared
-            .with_launch_environment([
-                ("HTTP_PROXY", route.proxy_url()),
-                ("HTTPS_PROXY", route.proxy_url()),
-                ("ALL_PROXY", route.proxy_url()),
-                ("NO_PROXY", ""),
-            ])
+            .with_launch_environment(route.environment())
             .map_err(|error| {
                 library_stage_failure(
                     fragcap::deep_capture::Stage::Launch,
@@ -708,24 +708,6 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             action: "none".to_string(),
             thumbprint: None,
         });
-        let cleanup = CleanupReport::new(
-            snapshot
-                .cleanup
-                .iter()
-                .map(|result| CleanupResource {
-                    resource: result.resource.clone(),
-                    status: match result.status {
-                        fragcap::deep_capture::CleanupStatus::Released => "succeeded",
-                        fragcap::deep_capture::CleanupStatus::NotNeeded => "not-needed",
-                        fragcap::deep_capture::CleanupStatus::TimedOut
-                        | fragcap::deep_capture::CleanupStatus::Failed => "failed",
-                        _ => "failed",
-                    }
-                    .to_string(),
-                    reason: result.reason.clone(),
-                })
-                .collect(),
-        );
         let fact_writes: Vec<FactWriteResult> = snapshot
             .fact_writes
             .iter()
@@ -782,7 +764,6 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             sensitive_retention: snapshot.artifacts.sensitive_retention,
             observations: &snapshot.observations,
             trust: &trust,
-            cleanup: &cleanup,
             session_state,
             controlled_process_id: runtime.controlled_process_id,
             process_events: &runtime.process_events,
@@ -804,9 +785,19 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                 fragcap::deep_capture::Sensitivity::Payload,
             ),
             (
-                "proxy-log",
+                "proxy-lifecycle",
                 "proxy.jsonl",
                 fragcap::deep_capture::Sensitivity::Payload,
+            ),
+            (
+                "cleanup-lifecycle",
+                "cleanup.jsonl",
+                fragcap::deep_capture::Sensitivity::Metadata,
+            ),
+            (
+                "resource-journal",
+                "resource-journal.jsonl",
+                fragcap::deep_capture::Sensitivity::Secret,
             ),
             (
                 "process-trace",
@@ -819,7 +810,7 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                 fragcap::deep_capture::Sensitivity::Metadata,
             ),
             (
-                "cleanup",
+                "cleanup-summary",
                 "cleanup.json",
                 fragcap::deep_capture::Sensitivity::Metadata,
             ),
@@ -1108,6 +1099,21 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             "Deep Capture HTTPS inspection requires explicit CA trust confirmation; pass --trust-ca or --yes",
         ));
     }
+    if let Some(root) = paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
+        let root = root.canonicalize().map_err(|error| {
+            CliError::failure(format!(
+                "cannot inspect prior Deep Capture sessions: {error}"
+            ))
+        })?;
+        crate::doctor::fix::recover_deep_capture_journals(&root, &mut std::io::sink()).map_err(
+            |errors| {
+                CliError::failure(format!(
+                    "prior Deep Capture recovery is incomplete; run `fragcap doctor --fix`: {}",
+                    errors.join("; ")
+                ))
+            },
+        )?;
+    }
     let mode = match calibration {
         None => fragcap::deep_capture::SessionMode::Capture,
         Some(CalibrationPhase::Reachability) => {
@@ -1170,6 +1176,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             let mut proxy = fragcap::deep_capture::NativeProxyAdapter::default()
                 .with_observation_context(observation_context.clone())
                 .with_application_artifact(bundle.join("application.jsonl"))
+                .with_proxy_lifecycle_artifact(bundle.join("proxy.jsonl"))
                 .with_key_log_artifact(bundle.join("tls-keylog.log"))
                 .with_payload_capture(!args.no_payload);
             if let Some(identity) = client_identity {
@@ -1181,6 +1188,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
         }),
+        routing: Box::new(fragcap::deep_capture::ChildEnvironmentRouting),
         launch: Box::new(LibraryLaunchAdapter),
         capture: Box::new(LibraryCaptureAdapter {
             args,
@@ -1957,7 +1965,6 @@ struct BundleContext<'a> {
     sensitive_retention: fragcap::deep_capture::SensitiveRetention,
     observations: &'a [Observation],
     trust: &'a TrustOutcome,
-    cleanup: &'a CleanupReport,
     session_state: &'a str,
     controlled_process_id: Option<u32>,
     process_events: &'a [String],
@@ -2008,16 +2015,6 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         }
     }
     write_file(
-        ctx.session.bundle.join("proxy.jsonl"),
-        proxy_jsonl(
-            &ctx.session.session_id,
-            &ctx.session.backend,
-            ctx.session.listen_port,
-            ctx.session_state,
-        )
-        .as_bytes(),
-    )?;
-    write_file(
         ctx.session.bundle.join("process-trace.jsonl"),
         process_trace_jsonl(
             &ctx.session.session_id,
@@ -2042,48 +2039,7 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
             ))
         })?;
     }
-    let mut cleanup_resources = ctx.cleanup.resources.clone();
-    cleanup_resources.push(CleanupResource::new(
-        "packet-capture",
-        if packet_truth_produced {
-            "retained"
-        } else {
-            "not-produced"
-        },
-        if packet_truth_produced {
-            "packet truth retained in the session bundle"
-        } else {
-            "packet capture failed before packet truth was produced"
-        },
-    ));
-    cleanup_resources.push(CleanupResource::new(
-        "tls-key-log",
-        if key_log_produced {
-            "retained"
-        } else if ctx.key_log_requested {
-            "not-produced"
-        } else {
-            "not-requested"
-        },
-        if key_log_produced {
-            "requested analyzer key log retained in the session bundle"
-        } else if ctx.key_log_requested {
-            "the proxy backend did not produce an analyzer key log"
-        } else {
-            "analyzer key logging was not requested"
-        },
-    ));
-    cleanup_resources.push(CleanupResource::new(
-        "bundle-artifacts",
-        "retained",
-        "declared session artifacts retained for the operator",
-    ));
-    cleanup_resources.push(CleanupResource::new(
-        "manifest-state",
-        "publication-ready",
-        "resource cleanup truth is durable; final manifest may now be published",
-    ));
-    let final_cleanup = CleanupReport::new(cleanup_resources);
+    let final_cleanup = cleanup_from_lifecycle(&ctx.session.bundle.join("cleanup.jsonl"))?;
     write_file(
         ctx.session.bundle.join("cleanup.json"),
         cleanup_json(&ctx.session.session_id, &final_cleanup)?.as_bytes(),
@@ -2102,10 +2058,12 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
 
     let mut produced_artifacts = vec![
         ("application-jsonl", "sensitive"),
-        ("proxy-log", "sensitive"),
+        ("proxy-lifecycle", "sensitive"),
+        ("cleanup-lifecycle", "ordinary"),
+        ("resource-journal", "secret-adjacent"),
         ("process-trace", "sensitive"),
         ("compatibility", "ordinary"),
-        ("cleanup", "ordinary"),
+        ("cleanup-summary", "ordinary"),
         ("manifest", "ordinary"),
     ];
     if packet_truth_produced {
@@ -2149,14 +2107,85 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     Ok(())
 }
 
+fn cleanup_from_lifecycle(path: &Path) -> Result<CleanupReport, CliError> {
+    let prefix = fragcap::deep_capture::read_lifecycle_prefix(path).map_err(|error| {
+        CliError::failure(format!(
+            "cannot read cleanup chronology {}: {error}",
+            path.display()
+        ))
+    })?;
+    if prefix.status != fragcap::deep_capture::LifecycleStreamStatus::Complete {
+        return Err(CliError::failure(format!(
+            "cleanup chronology {} has no reconciling trailer",
+            path.display()
+        )));
+    }
+    let mut resources = std::collections::BTreeMap::new();
+    for record in prefix
+        .records
+        .iter()
+        .filter(|record| record["type"] == "cleanup.result")
+    {
+        let fields = &record["fields"];
+        let Some(resource) = fields["resource_id"].as_str() else {
+            continue;
+        };
+        let state = fields["state"].as_str().unwrap_or("failed");
+        let status = match state {
+            "released" | "not-applied" => "succeeded",
+            "retained" => "retained",
+            "timed-out" => "timed-out",
+            _ => "failed",
+        };
+        resources.insert(
+            resource.to_string(),
+            CleanupResource::new(
+                resource,
+                status,
+                fields["detail"]
+                    .as_str()
+                    .unwrap_or("cleanup result lacked detail"),
+            ),
+        );
+    }
+    for record in prefix
+        .records
+        .iter()
+        .filter(|record| record["type"] == "cleanup.adapter-result")
+    {
+        let fields = &record["fields"];
+        let Some(resource) = fields["resource_id"].as_str() else {
+            continue;
+        };
+        resources.insert(
+            resource.to_string(),
+            CleanupResource::new(
+                resource,
+                fields["status"].as_str().unwrap_or("failed"),
+                fields["reason"]
+                    .as_str()
+                    .unwrap_or("cleanup result lacked reason"),
+            ),
+        );
+    }
+    if resources.is_empty() {
+        return Err(CliError::failure(
+            "cleanup chronology contains no terminal results",
+        ));
+    }
+    Ok(CleanupReport::new(resources.into_values().collect()))
+}
+
 fn artifact_path(role: &str) -> &'static str {
     match role {
         "pcapng" => "capture.fcapng",
         "application-jsonl" => "application.jsonl",
-        "proxy-log" => "proxy.jsonl",
+        "proxy-lifecycle" => "proxy.jsonl",
+        "cleanup-lifecycle" => "cleanup.jsonl",
+        "resource-journal" => "resource-journal.jsonl",
         "process-trace" => "process-trace.jsonl",
         "compatibility" => "compatibility.json",
-        "cleanup" => "cleanup.json",
+        "cleanup-summary" => "cleanup.json",
         "manifest" => "manifest.json",
         _ => "",
     }
@@ -2242,31 +2271,6 @@ fn application_jsonl(
     );
     out.push('\n');
     out
-}
-
-fn proxy_jsonl(
-    session_id: &str,
-    backend: &ProxyBackend,
-    listen_port: u16,
-    session_state: &str,
-) -> String {
-    let started = json!({
-        "session_id": session_id,
-        "event": "proxy.started",
-        "backend": backend.name,
-        "version": backend.version,
-        "listen_addr": "127.0.0.1",
-        "listen_port": listen_port,
-    })
-    .to_string();
-    let stopped = json!({
-        "session_id": session_id,
-        "event": "proxy.stopped",
-        "backend": backend.name,
-        "status": session_state,
-    })
-    .to_string();
-    format!("{started}\n{stopped}\n")
 }
 
 fn process_trace_jsonl(
@@ -2426,10 +2430,26 @@ fn manifest_json(
     let mut artifacts = vec![
         application_artifact,
         artifact(
-            "proxy-log",
+            "proxy-lifecycle",
             "proxy.jsonl",
-            "proxy-events",
+            "proxy-lifecycle-events",
             "sensitive",
+            "application/x-ndjson",
+            true,
+        ),
+        artifact(
+            "cleanup-lifecycle",
+            "cleanup.jsonl",
+            "cleanup-lifecycle-events",
+            "ordinary",
+            "application/x-ndjson",
+            true,
+        ),
+        artifact(
+            "resource-journal",
+            "resource-journal.jsonl",
+            "resource-ownership-journal",
+            "secret-adjacent",
             "application/x-ndjson",
             true,
         ),
@@ -2450,9 +2470,9 @@ fn manifest_json(
             true,
         ),
         artifact(
-            "cleanup",
+            "cleanup-summary",
             "cleanup.json",
-            "cleanup-report",
+            "cleanup-projection",
             "ordinary",
             "application/json",
             true,
@@ -2677,8 +2697,11 @@ fn omitted_artifact(
 
 fn authority_contract(authority: &str) -> serde_json::Value {
     let (kind, source_role) = match authority {
-        "packet-truth" | "application-events" => ("primary-evidence", None),
+        "packet-truth" | "application-events" | "proxy-lifecycle-events" => {
+            ("primary-evidence", None)
+        }
         "http-projection" => ("derived-projection", Some("application-jsonl")),
+        "cleanup-projection" => ("derived-projection", Some("cleanup-lifecycle")),
         "bundle-index" => ("bundle-index", None),
         "analyzer-aid" => ("analyzer-aid", None),
         _ => ("operational-record", None),
