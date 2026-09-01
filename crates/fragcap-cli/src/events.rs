@@ -98,6 +98,22 @@ pub enum Event {
         status: String,
         reason: String,
     },
+    /// An explicit warm-to-cold plan, emitted before the operator acts.
+    DeepCaptureRestartPlan {
+        target: String,
+        warm_case: String,
+        images: Vec<String>,
+        deadline_secs: u64,
+    },
+    /// A warm-to-cold transition or terminal pre-effect outcome.
+    DeepCaptureRestart {
+        target: String,
+        stage: String,
+        status: String,
+        warm_case: String,
+        cold_case: Option<String>,
+        reason: String,
+    },
     /// The Deep Capture proxy backend started.
     DeepCaptureProxyStarted {
         session_id: String,
@@ -196,6 +212,8 @@ impl Event {
             Event::DeepCapturePreflight { .. } => "deep_capture.preflight",
             Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
+            Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
+            Event::DeepCaptureRestart { .. } => "deep_capture.restart",
             Event::DeepCaptureProxyStarted { .. } => "deep_capture.proxy_started",
             Event::DeepCaptureKeyLogReady { .. } => "deep_capture.key_log_ready",
             Event::DeepCaptureTrust { .. } => "deep_capture.trust",
@@ -368,6 +386,53 @@ impl Event {
                 write_json_string(stage, &mut line);
                 line.push_str(",\"status\":");
                 write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
+            }
+            Event::DeepCaptureRestartPlan {
+                target,
+                warm_case,
+                images,
+                deadline_secs,
+            } => {
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
+                line.push_str(",\"warm_case\":");
+                write_json_string(warm_case, &mut line);
+                line.push_str(",\"images\":[");
+                for (index, image) in images.iter().enumerate() {
+                    if index > 0 {
+                        line.push(',');
+                    }
+                    write_json_string(image, &mut line);
+                }
+                line.push_str("],\"deadline_secs\":");
+                line.push_str(&deadline_secs.to_string());
+                line.push_str(
+                    ",\"identity\":\"image-name-observation-only\",\"process_control\":\"none\"",
+                );
+            }
+            Event::DeepCaptureRestart {
+                target,
+                stage,
+                status,
+                warm_case,
+                cold_case,
+                reason,
+            } => {
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
+                line.push_str(",\"stage\":");
+                write_json_string(stage, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"warm_case\":");
+                write_json_string(warm_case, &mut line);
+                line.push_str(",\"cold_case\":");
+                match cold_case {
+                    Some(cold_case) => write_json_string(cold_case, &mut line),
+                    None => line.push_str("null"),
+                }
                 line.push_str(",\"reason\":");
                 write_json_string(reason, &mut line);
             }
@@ -681,6 +746,28 @@ mod tests {
         .render(now);
         assert!(phase.contains("\"event\":\"deep_capture.calibration_phase\""));
         assert!(phase.contains("\"status\":\"metadata-only\""));
+
+        let restart_plan = Event::DeepCaptureRestartPlan {
+            target: "sample-target".to_string(),
+            warm_case: "direct-exe-warm".to_string(),
+            images: vec!["client.exe".to_string()],
+            deadline_secs: 120,
+        }
+        .render(now);
+        assert!(restart_plan.contains("\"event\":\"deep_capture.restart_plan\""));
+        assert!(restart_plan.contains("\"process_control\":\"none\""));
+
+        let restart = Event::DeepCaptureRestart {
+            target: "sample-target".to_string(),
+            stage: "reprepare".to_string(),
+            status: "cold-ready".to_string(),
+            warm_case: "direct-exe-warm".to_string(),
+            cold_case: Some("direct-exe-cold".to_string()),
+            reason: "current facts are cold".to_string(),
+        }
+        .render(now);
+        assert!(restart.contains("\"event\":\"deep_capture.restart\""));
+        assert!(restart.contains("\"cold_case\":\"direct-exe-cold\""));
     }
 
     // `Event::CaptureProgress` is `etw`+`windows`-gated (see its own doc

@@ -82,6 +82,7 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--interface",
         "--no-payload",
         "--trust-ca",
+        "--restart-warm",
         "--calibrate",
         "--launch-case",
         "--har",
@@ -96,6 +97,25 @@ fn deep_capture_help_exposes_the_operator_contract() {
     }
     assert!(!out.contains("--controlled-target"));
     assert!(!out.contains("--proxy-backend"));
+}
+
+#[test]
+fn warm_restart_cannot_be_combined_with_calibration() {
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--restart-warm",
+        "--calibrate",
+        "reachability",
+        "--launch-case",
+        "direct-exe-warm",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("cannot be used with"),
+        "conflict refusal: {err}"
+    );
 }
 
 #[test]

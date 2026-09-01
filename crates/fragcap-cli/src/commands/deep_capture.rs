@@ -13,6 +13,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,6 +55,7 @@ const CALIBRATION_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 const CALIBRATION_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(60);
 const CALIBRATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const CALIBRATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
+const WARM_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 fn calibration_phase(value: DeepCaptureCalibrationArg) -> CalibrationPhase {
     match value {
@@ -202,6 +204,309 @@ fn confirm_calibration(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<
         Ok(0) | Err(_) => Ok(false),
         Ok(_) => Ok(calibration_answer_is_affirmative(&answer)),
     }
+}
+
+fn confirm_warm_restart(
+    args: &DeepCaptureArgs,
+    emitter: &mut Emitter,
+    prompt: &str,
+) -> Result<bool, CliError> {
+    if args.yes {
+        return Ok(true);
+    }
+    if emitter.is_json() {
+        return Err(CliError::usage(
+            "JSON warm restart requires --yes because it cannot prompt",
+        ));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::usage(
+            "warm restart requires interactive input or --yes",
+        ));
+    }
+    emitter.required_human(prompt);
+    emitter.flush();
+    let mut answer = String::new();
+    match std::io::stdin().read_line(&mut answer) {
+        Ok(0) | Err(_) => Ok(false),
+        Ok(_) => Ok(calibration_answer_is_affirmative(&answer)),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WarmRestartContext {
+    target: String,
+    authority: WarmRestartAuthority,
+    plan: fragcap::deep_capture::WarmRestartPlan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WarmRestartAuthority {
+    stable_id: i64,
+    anchor: Option<String>,
+    install_root: Option<String>,
+    launch_entries: Option<serde_json::Value>,
+}
+
+impl WarmRestartAuthority {
+    fn from_target(target: &TargetEntry) -> Self {
+        Self {
+            stable_id: target.stable_id,
+            anchor: target.anchor.clone(),
+            install_root: target.install_root.clone(),
+            launch_entries: target.launch_entries.clone(),
+        }
+    }
+}
+
+fn steam_restart_images(target: &TargetEntry) -> Vec<String> {
+    platform_restart_images(entry_windows_clients(target))
+}
+
+fn platform_restart_images(client_images: Vec<String>) -> Vec<String> {
+    let mut images = Vec::with_capacity(client_images.len() + 1);
+    images.push("steam.exe".to_string());
+    images.extend(client_images);
+    images
+}
+
+fn warm_restart_images(
+    target: &TargetEntry,
+    launch_case: CompatibilityLaunchCase,
+) -> Result<Vec<String>, CliError> {
+    match launch_case {
+        CompatibilityLaunchCase::SteamProtocolWarm => Ok(steam_restart_images(target)),
+        CompatibilityLaunchCase::DirectExeWarm => Ok(entry_windows_clients(target)),
+        CompatibilityLaunchCase::PublisherLauncherWarm
+        | CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm => {
+            match fragcap::managed_launch::prepare_managed_launch(target)
+                .map_err(|error| CliError::usage(error.to_string()))?
+            {
+                fragcap::managed_launch::ManagedLaunch::Publisher(publisher) => Ok(publisher
+                    .stages()
+                    .iter()
+                    .map(|stage| stage.image_name().to_string_lossy().into_owned())
+                    .collect()),
+                _ => Err(CliError::failure(
+                    "warm publisher state did not reprepare as a publisher chain",
+                )),
+            }
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn emit_restart_outcome(
+    emitter: &mut Emitter,
+    context: &WarmRestartContext,
+    stage: &str,
+    status: &str,
+    cold_case: Option<fragcap::deep_capture::LaunchCase>,
+    reason: &str,
+) {
+    emitter.event(&Event::DeepCaptureRestart {
+        target: context.target.clone(),
+        stage: stage.to_string(),
+        status: status.to_string(),
+        warm_case: context.plan.warm_case().as_str().to_string(),
+        cold_case: cold_case.map(|case| case.as_str().to_string()),
+        reason: reason.to_string(),
+    });
+}
+
+fn warm_restart_interrupted(interrupt: &AtomicBool) -> bool {
+    interrupt.load(Ordering::Relaxed)
+}
+
+fn run_warm_restart(
+    args: &DeepCaptureArgs,
+    store: &Store,
+    emitter: &mut Emitter,
+) -> Result<Option<WarmRestartContext>, CliError> {
+    if !args.restart_warm {
+        return Ok(None);
+    }
+    let target = resolve_target(store, args)?;
+    let observed = launch_case(&target)?;
+    let images = warm_restart_images(&target, observed)?;
+    if images.is_empty() {
+        emitter.progress("warm restart was requested, but the selected target is already cold");
+        return Ok(None);
+    }
+    let plan = fragcap::deep_capture::WarmRestartPlan::new(
+        library_launch_case(observed),
+        images,
+        args.wait,
+    )
+    .map_err(|error| CliError::usage(error.to_string()))?;
+    let context = WarmRestartContext {
+        target: target.handle.clone(),
+        authority: WarmRestartAuthority::from_target(&target),
+        plan,
+    };
+    emitter.event(&Event::DeepCaptureRestartPlan {
+        target: context.target.clone(),
+        warm_case: context.plan.warm_case().as_str().to_string(),
+        images: context.plan.images().to_vec(),
+        deadline_secs: CalibrationDeadlines::seconds(context.plan.deadline()),
+    });
+    emitter.required_human(&format!(
+        "Warm-to-cold restart plan\n  target: {}\n  observed case: {}\n  declared images: {}\n  identity: image-name observation only; ownership is not proven\n  deadline: {}s\n  action: close the application through its normal Exit or Quit control\n  process control: none; fragcap will never force kill or signal it\n",
+        context.target,
+        context.plan.warm_case().as_str(),
+        context.plan.images().join(", "),
+        CalibrationDeadlines::seconds(context.plan.deadline()),
+    ));
+    crate::orchestrator::install_interrupt_handler();
+    if !confirm_warm_restart(
+        args,
+        emitter,
+        "Wait while you close the application normally? [y/N] ",
+    )? {
+        if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "wait-authorization",
+                "interrupted",
+                None,
+                "the operator interrupted warm restart; no effects were applied",
+            );
+            return Err(CliError::failure(
+                "warm restart was interrupted; no effects were applied",
+            ));
+        }
+        emit_restart_outcome(
+            emitter,
+            &context,
+            "wait-authorization",
+            "declined",
+            None,
+            "operator declined the close-and-retry wait; no effects were applied",
+        );
+        return Err(CliError::usage(
+            "warm restart was declined; no effects were applied",
+        ));
+    }
+    emit_restart_outcome(
+        emitter,
+        &context,
+        "waiting",
+        "active",
+        None,
+        "operator authorized bounded observation while performing normal shutdown",
+    );
+    emitter.progress("Waiting for every declared image to become absent...");
+    let started = Instant::now();
+    loop {
+        if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "waiting",
+                "interrupted",
+                None,
+                "the operator interrupted the bounded wait; no effects were applied",
+            );
+            return Err(CliError::failure(
+                "warm restart was interrupted; no effects were applied",
+            ));
+        }
+        let present = match process_images_running(context.plan.images()) {
+            Ok(present) => present,
+            Err(error) => {
+                emit_restart_outcome(
+                    emitter,
+                    &context,
+                    "waiting",
+                    "inventory-failed",
+                    None,
+                    "the process image snapshot could not be read",
+                );
+                return Err(error);
+            }
+        };
+        if context.plan.snapshot_is_cold(&present) {
+            break;
+        }
+        if started.elapsed() >= context.plan.deadline() {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "waiting",
+                "timeout",
+                None,
+                "one or more declared images remained present at the deadline",
+            );
+            return Err(CliError::failure(format!(
+                "warm restart timed out after {} seconds; fragcap did not stop any process",
+                CalibrationDeadlines::seconds(context.plan.deadline())
+            )));
+        }
+        std::thread::sleep(
+            WARM_RESTART_POLL_INTERVAL
+                .min(context.plan.deadline().saturating_sub(started.elapsed())),
+        );
+    }
+    let refreshed = match resolve_target(store, args) {
+        Ok(target) => target,
+        Err(error) => {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "reprepare",
+                "target-resolution-failed",
+                None,
+                "the selected target could not be resolved again after shutdown",
+            );
+            return Err(CliError::usage(format!(
+                "warm restart reached an observed cold state, but target re-resolution failed: {error}"
+            )));
+        }
+    };
+    if WarmRestartAuthority::from_target(&refreshed) != context.authority {
+        emit_restart_outcome(
+            emitter,
+            &context,
+            "reprepare",
+            "changed-target",
+            None,
+            "the selected target's launch authority changed after shutdown",
+        );
+        return Err(CliError::usage(
+            "the selected target launch declaration changed during warm restart; no effects were applied",
+        ));
+    }
+    let cold = match launch_case(&refreshed) {
+        Ok(case) => library_launch_case(case),
+        Err(error) => {
+            emit_restart_outcome(
+                emitter,
+                &context,
+                "reprepare",
+                "launch-preparation-failed",
+                None,
+                "current launch facts could not be prepared after shutdown",
+            );
+            return Err(error);
+        }
+    };
+    if cold != context.plan.cold_case() {
+        emit_restart_outcome(
+            emitter,
+            &context,
+            "reprepare",
+            "not-cold",
+            Some(cold),
+            "fresh launch-state resolution did not produce the corresponding cold case",
+        );
+        return Err(CliError::usage(format!(
+            "warm restart did not produce the expected {} state; observed {}",
+            context.plan.cold_case().as_str(),
+            cold.as_str()
+        )));
+    }
+    Ok(Some(context))
 }
 
 struct LibraryTargetAdapter<'a> {
@@ -1176,6 +1481,8 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         .map(str::to_string)
         .or_else(|| args.id.map(|id| id.to_string()))
         .unwrap_or_default();
+    let store = Rc::new(RefCell::new(open_local_store(args.local_db.as_deref())?));
+    let restart = run_warm_restart(args, &store.borrow(), emitter)?;
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
     let config = fragcap::deep_capture::SessionConfig {
@@ -1201,7 +1508,6 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         },
     };
 
-    let store = Rc::new(RefCell::new(open_local_store(args.local_db.as_deref())?));
     let selected = Rc::new(RefCell::new(None));
     let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
@@ -1268,8 +1574,100 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             bundle: bundle.clone(),
         }),
     };
-    let prepared = fragcap::deep_capture::DeepCapture::preflight(config, &mut adapters)
-        .map_err(cli_error_from_library_refusal)?;
+    let prepared = match fragcap::deep_capture::DeepCapture::preflight(config, &mut adapters) {
+        Ok(prepared) => prepared,
+        Err(refusal) => {
+            if let Some(restart) = &restart {
+                emit_restart_outcome(
+                    &mut emitter.borrow_mut(),
+                    restart,
+                    "preflight",
+                    "refused",
+                    Some(restart.plan.cold_case()),
+                    "ordinary Deep Capture preflight refused the freshly resolved cold plan",
+                );
+            }
+            return Err(cli_error_from_library_refusal(refusal));
+        }
+    };
+
+    if let Some(restart) = &restart {
+        let preflight_case = selected_launch_case
+            .borrow()
+            .expect("successful preflight retained its exact launch case");
+        let same_authority = {
+            let preflight_target = selected.borrow();
+            let preflight_target = preflight_target
+                .as_ref()
+                .expect("successful preflight retained its exact target");
+            WarmRestartAuthority::from_target(preflight_target) == restart.authority
+        };
+        if !same_authority || library_launch_case(preflight_case) != restart.plan.cold_case() {
+            emit_restart_outcome(
+                &mut emitter.borrow_mut(),
+                restart,
+                "preflight",
+                "changed-target",
+                Some(library_launch_case(preflight_case)),
+                "preflight resolved a different target launch authority than the cold transition",
+            );
+            return Err(CliError::usage(
+                "the target launch declaration changed before authorization; no effects were applied",
+            ));
+        }
+        emit_restart_outcome(
+            &mut emitter.borrow_mut(),
+            restart,
+            "preflight",
+            "cold-ready",
+            Some(restart.plan.cold_case()),
+            "ordinary preflight retained the exact cold target authority and accepted the plan",
+        );
+        emitter.borrow_mut().required_human(&format!(
+            "Cold Deep Capture plan re-prepared\n  target: {}\n  launch case: {}\n  plan: {}\n  process control: none\n",
+            restart.target,
+            restart.plan.cold_case().as_str(),
+            prepared.plan().id,
+        ));
+        if !confirm_warm_restart(
+            args,
+            &mut emitter.borrow_mut(),
+            "Authorize this newly prepared cold session? [y/N] ",
+        )? {
+            if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
+                emit_restart_outcome(
+                    &mut emitter.borrow_mut(),
+                    restart,
+                    "launch-authorization",
+                    "interrupted",
+                    Some(restart.plan.cold_case()),
+                    "the operator interrupted authorization; no effects were applied",
+                );
+                return Err(CliError::failure(
+                    "cold session authorization was interrupted; no effects were applied",
+                ));
+            }
+            emit_restart_outcome(
+                &mut emitter.borrow_mut(),
+                restart,
+                "launch-authorization",
+                "declined",
+                Some(restart.plan.cold_case()),
+                "operator declined the re-prepared cold session; no effects were applied",
+            );
+            return Err(CliError::usage(
+                "the re-prepared cold session was declined; no effects were applied",
+            ));
+        }
+        emit_restart_outcome(
+            &mut emitter.borrow_mut(),
+            restart,
+            "launch-authorization",
+            "authorized",
+            Some(restart.plan.cold_case()),
+            "operator authorized the exact re-prepared cold plan",
+        );
+    }
 
     if let Some(phase) = calibration {
         let target = selected
@@ -1672,14 +2070,7 @@ fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError
                     )));
                 }
             };
-            if process_image_is_running(client)? {
-                return Err(CliError::usage(format!(
-                    "cannot prove a cold direct launch while a process named {client} is already \
-                     running; the no-handle process snapshot cannot distinguish same-named \
-                     executables by path, so close that process and retry"
-                )));
-            }
-            return Ok(CompatibilityLaunchCase::DirectExeCold);
+            return Ok(direct_launch_case(process_image_is_running(client)?));
         }
         match fragcap::managed_launch::prepare_managed_launch(target)
             .map_err(|error| CliError::usage(error.to_string()))?
@@ -1739,6 +2130,14 @@ fn steam_launch_case(steam_running: bool) -> CompatibilityLaunchCase {
         CompatibilityLaunchCase::SteamProtocolWarm
     } else {
         CompatibilityLaunchCase::SteamProtocolCold
+    }
+}
+
+fn direct_launch_case(client_running: bool) -> CompatibilityLaunchCase {
+    if client_running {
+        CompatibilityLaunchCase::DirectExeWarm
+    } else {
+        CompatibilityLaunchCase::DirectExeCold
     }
 }
 
@@ -3032,6 +3431,56 @@ mod tests {
             classify_publisher_processes(&[false, false, true]),
             CompatibilityLaunchCase::PublisherLauncherWarm
         );
+    }
+
+    #[test]
+    fn direct_process_inventory_returns_typed_warm_and_cold_states() {
+        assert_eq!(
+            direct_launch_case(true),
+            CompatibilityLaunchCase::DirectExeWarm
+        );
+        assert_eq!(
+            direct_launch_case(false),
+            CompatibilityLaunchCase::DirectExeCold
+        );
+    }
+
+    #[test]
+    fn steam_restart_waits_for_platform_and_declared_client_images() {
+        assert_eq!(
+            platform_restart_images(vec!["Game.exe".to_string()]),
+            ["steam.exe", "Game.exe"]
+        );
+    }
+
+    #[test]
+    fn changed_launch_authority_is_not_the_same_target_plan() {
+        let original = WarmRestartAuthority {
+            stable_id: 1,
+            anchor: Some("steam:1".to_string()),
+            install_root: Some("C:\\game".to_string()),
+            launch_entries: Some(serde_json::json!([
+                {"os": "windows", "executable": "Game.exe"}
+            ])),
+        };
+
+        let mut changed = original.clone();
+        changed.install_root = Some("C:\\changed".to_string());
+        assert_ne!(changed, original);
+
+        let mut changed = original.clone();
+        changed.launch_entries = Some(serde_json::json!([
+            {"os": "windows", "executable": "Changed.exe"}
+        ]));
+        assert_ne!(changed, original);
+    }
+
+    #[test]
+    fn warm_restart_observes_an_injected_interrupt_flag() {
+        let interrupt = AtomicBool::new(false);
+        assert!(!warm_restart_interrupted(&interrupt));
+        interrupt.store(true, Ordering::Relaxed);
+        assert!(warm_restart_interrupted(&interrupt));
     }
 
     fn observation() -> Observation {

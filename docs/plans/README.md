@@ -192,10 +192,11 @@ in both.
 
 ## Native completion follow-up
 
-S112 (`specs/112-platform-client-ownership`) follows S111 and closes #308 as the
-second Native Deep Capture 3 launch-coverage slice. It prepares one exact cold
-Steam root through the shared Capture path, observes that created root before a
-separate retained title dispatch, and permits terminal ownership only beneath
-the owned platform ancestry. Ordinary Capture retains its Steam protocol path.
-Warm restart remains #309, generic transports remain #310 through #315, and
-Deep Capture remains incomplete until #334.
+S113 (`specs/113-warm-to-cold-restart`) follows S112 and closes #309 as the third
+Native Deep Capture 3 launch-coverage slice. An explicitly selected, bounded
+workflow reports identity-uncertain warm direct, Steam, and publisher image
+observations, waits while the operator closes the application normally, then
+re-resolves and re-prepares the corresponding cold case. A second authorization
+precedes every session effect. fragcap performs no process-control action or
+force-kill fallback. Generic transports remain #310 through #315, and Deep
+Capture remains incomplete until #334.

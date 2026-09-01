@@ -387,6 +387,16 @@ Routing reachability and platform-to-client propagation remain separate facts.
 S112 adds no dependency or lockfile package, and Deep Capture remains incomplete
 until #334.
 
+S113 closes #309 at the explicit warm-to-cold transition boundary. Direct,
+Steam platform, and publisher launch observations now enter one bounded
+operator-confirmed close-and-retry workflow only when selected explicitly.
+Because the permitted snapshot cannot prove path identity for a same-named
+process, fragcap never stops, signals, messages, or force kills one. The operator
+uses the application's normal shutdown control while fragcap observes the full
+declared image set. Cold state triggers fresh target resolution and preparation,
+followed by a second authorization before any session effect. S113 adds no
+dependency or lockfile package, and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
