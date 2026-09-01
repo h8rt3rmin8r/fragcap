@@ -327,9 +327,31 @@ impl ProxyBackend for NativeProxyAdapter {
                 .with_destination_policy(policy)
                 .with_tls_client_config(tls);
         }
-        let lease = backend
-            .start(budget.remaining())
-            .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?;
+        let lease = match backend.start(budget.remaining()) {
+            Ok(lease) => lease,
+            Err(error) => {
+                if let Some(lifecycle) = proxy_lifecycle.as_mut() {
+                    let _ = lifecycle.listener_failed(&error.detail);
+                    let _ = lifecycle.finish();
+                }
+                return Err(StageFailure::new(
+                    Stage::ProxyStart,
+                    error.code,
+                    error.detail,
+                ));
+            }
+        };
+        if let Some(lifecycle) = &proxy_lifecycle {
+            lifecycle
+                .listener_started(lease.endpoint().to_string())
+                .map_err(|error| {
+                    StageFailure::new(
+                        Stage::ProxyStart,
+                        "proxy-lifecycle-listener-start-failed",
+                        error.to_string(),
+                    )
+                })?;
+        }
         Ok(Box::new(NativeProxyLease {
             lease,
             controlled: plan.controlled,

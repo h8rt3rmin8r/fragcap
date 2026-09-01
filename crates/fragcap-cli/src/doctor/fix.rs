@@ -27,6 +27,8 @@ use super::{checks, probe, Report};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 
+const CUSTOM_SESSION_ROOTS: &str = "custom-session-roots.jsonl";
+
 /// A human confirmation for one action. Injected so the loop is driven by a
 /// scripted answer in tests. `true` performs the action; `false` skips it.
 pub trait ActionConfirm {
@@ -386,7 +388,14 @@ pub(crate) fn recover_deep_capture_journals(
     out: &mut dyn Write,
 ) -> Result<(), Vec<String>> {
     let mut failed = Vec::new();
-    for journal in resource_journals(root) {
+    let mut roots = vec![root.to_path_buf()];
+    match registered_custom_session_roots(root) {
+        Ok(custom) => roots.extend(custom),
+        Err(error) => failed.push(format!("custom session root registry is invalid: {error}")),
+    }
+    roots.sort();
+    roots.dedup();
+    for journal in roots.iter().flat_map(|root| resource_journals(root)) {
         match fragcap::deep_capture::recover_resource_journal(&journal, |action| {
             match action.kind {
                 fragcap::deep_capture::ResourceKind::Trust => {
@@ -417,10 +426,72 @@ pub(crate) fn recover_deep_capture_journals(
         }
     }
     if failed.is_empty() {
+        let registry = root.join(CUSTOM_SESSION_ROOTS);
+        if let Err(error) = std::fs::remove_file(&registry) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(vec![format!(
+                    "could not retire custom session root registry {}: {error}",
+                    registry.display()
+                )]);
+            }
+        }
         Ok(())
     } else {
         Err(failed)
     }
+}
+
+pub(crate) fn register_custom_session_root(root: &Path, bundle: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(root)?;
+    let bundle = bundle.canonicalize()?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join(CUSTOM_SESSION_ROOTS))?;
+    serde_json::to_writer(&mut file, &serde_json::json!({"bundle": bundle}))
+        .map_err(std::io::Error::other)?;
+    file.write_all(b"\n")?;
+    file.sync_all()
+}
+
+fn registered_custom_session_roots(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let path = root.join(CUSTOM_SESSION_ROOTS);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() > 1024 * 1024 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "custom session root registry exceeds its byte limit",
+        ));
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let mut roots = Vec::new();
+    for line in text.lines().take(4096) {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let bundle = value
+            .get("bundle")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "custom session root entry lacks a bundle path",
+                )
+            })?;
+        let bundle = PathBuf::from(bundle);
+        if !bundle.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "custom session root is not absolute",
+            ));
+        }
+        roots.push(bundle);
+    }
+    Ok(roots)
 }
 
 fn resource_journals(root: &Path) -> Vec<PathBuf> {
@@ -955,5 +1026,16 @@ mod tests {
             unrelated_empty_dir.exists(),
             "unrelated empty directories remain"
         );
+    }
+
+    #[test]
+    fn custom_session_root_registry_round_trips_an_absolute_bundle() {
+        let default = tempfile::tempdir().expect("default root");
+        let custom = tempfile::tempdir().expect("custom root");
+        let bundle = custom.path().join("custom-session");
+        std::fs::create_dir(&bundle).expect("custom bundle");
+        register_custom_session_root(default.path(), &bundle).expect("register custom bundle");
+        let roots = registered_custom_session_roots(default.path()).expect("read registry");
+        assert_eq!(roots, vec![bundle.canonicalize().unwrap()]);
     }
 }

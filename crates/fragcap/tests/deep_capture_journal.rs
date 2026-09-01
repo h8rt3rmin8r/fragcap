@@ -93,6 +93,21 @@ fn corrupt_and_noncontiguous_records_fail_closed() {
 }
 
 #[test]
+fn a_resource_identity_cannot_change_after_its_obligation() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+    journal
+        .append(transition("trust", ResourceState::Pending))
+        .unwrap();
+    let mut changed = transition("trust", ResourceState::Applied);
+    changed.target = "sha1:ffffffffffffffffffffffffffffffffffffffff".into();
+    assert_eq!(
+        journal.append(changed).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
 fn a_torn_final_record_preserves_the_synchronized_prefix() {
     let temp = tempfile::tempdir().unwrap();
     let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();

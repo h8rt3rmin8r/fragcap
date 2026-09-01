@@ -167,6 +167,7 @@ pub fn read_lifecycle_prefix(path: &Path) -> io::Result<LifecyclePrefix> {
             "lifecycle stream exceeds byte limit",
         ));
     }
+    let ends_with_newline = fs::read(path)?.last() == Some(&b'\n');
     let mut lines = BufReader::new(File::open(path)?).lines();
     let header = lines.next().ok_or_else(|| {
         io::Error::new(io::ErrorKind::UnexpectedEof, "lifecycle stream is empty")
@@ -190,14 +191,20 @@ pub fn read_lifecycle_prefix(path: &Path) -> io::Result<LifecyclePrefix> {
     let session_id = required_string(&header, "session_id")?;
     let mut records = Vec::new();
     let mut trailer = false;
-    for (index, line) in lines.enumerate() {
+    let mut lines = lines.enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
         if index >= MAX_STREAM_RECORDS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "lifecycle stream exceeds record limit",
             ));
         }
-        let value: Value = serde_json::from_str(&line?).map_err(invalid_json)?;
+        let line = line?;
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) if lines.peek().is_none() && !ends_with_newline => break,
+            Err(error) => return Err(invalid_json(error)),
+        };
         let record_type = value
             .get("type")
             .and_then(Value::as_str)
@@ -239,8 +246,14 @@ struct ProxyAccount {
 }
 
 struct ProxySink {
-    sender: Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>,
+    sender: Mutex<Option<mpsc::SyncSender<ProxyLifecycleMessage>>>,
     account: Arc<ProxyAccount>,
+}
+
+enum ProxyLifecycleMessage {
+    Event(Box<ApplicationEvent>),
+    ListenerStarted(String),
+    ListenerFailed(String),
 }
 
 impl ApplicationEventSink for ProxySink {
@@ -256,7 +269,7 @@ impl ApplicationEventSink for ProxySink {
         };
         let connection_open = matches!(event.kind, ApplicationEventKind::ConnectionOpen(_));
         let connection_id = event.connection_id;
-        match sender.try_send(event) {
+        match sender.try_send(ProxyLifecycleMessage::Event(Box::new(event))) {
             Ok(()) => {
                 self.account.accepted.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::Accepted
@@ -315,7 +328,7 @@ impl ProxyLifecycleLease {
     ) -> io::Result<Self> {
         let mut writer = LifecycleWriter::create(path, "proxy", session_id)?;
         writer.append(
-            "proxy.listener-started",
+            "proxy.listener-attempt",
             json!({"listener": listener.into(), "scope": "loopback-only"}),
         )?;
         writer.gap(
@@ -340,6 +353,28 @@ impl ProxyLifecycleLease {
 
     pub fn sink(&self) -> Arc<dyn ApplicationEventSink> {
         self.sink.clone()
+    }
+
+    pub fn listener_started(&self, listener: impl Into<String>) -> io::Result<()> {
+        self.sink
+            .sender
+            .lock()
+            .expect("proxy lifecycle sender lock")
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle is retired"))?
+            .send(ProxyLifecycleMessage::ListenerStarted(listener.into()))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle writer retired"))
+    }
+
+    pub fn listener_failed(&self, detail: impl Into<String>) -> io::Result<()> {
+        self.sink
+            .sender
+            .lock()
+            .expect("proxy lifecycle sender lock")
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle is retired"))?
+            .send(ProxyLifecycleMessage::ListenerFailed(detail.into()))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "lifecycle writer retired"))
     }
 
     pub fn finish(&mut self) -> io::Result<()> {
@@ -368,21 +403,36 @@ impl Drop for ProxyLifecycleLease {
 
 fn proxy_writer_loop(
     mut writer: LifecycleWriter,
-    receiver: mpsc::Receiver<ApplicationEvent>,
+    receiver: mpsc::Receiver<ProxyLifecycleMessage>,
     account: Arc<ProxyAccount>,
 ) -> io::Result<()> {
-    for event in receiver {
-        writer.append(
-            proxy_event_type(&event.kind),
-            json!({
-                "connection_id": event.connection_id,
-                "stream_id": event.stream_id,
-                "timestamp_ns": event.timestamp_ns,
-                "protocol": event.protocol.map(|value| format!("{value:?}")),
-                "detail": proxy_event_detail(&event.kind),
-            }),
-        )?;
-        account.written.fetch_add(1, Ordering::Relaxed);
+    let mut listener_started = false;
+    for message in receiver {
+        match message {
+            ProxyLifecycleMessage::ListenerStarted(listener) => {
+                listener_started = true;
+                writer.append(
+                    "proxy.listener-started",
+                    json!({"listener": listener, "scope": "loopback-only"}),
+                )?;
+            }
+            ProxyLifecycleMessage::ListenerFailed(detail) => {
+                writer.append("proxy.listener-failed", json!({"detail": detail}))?;
+            }
+            ProxyLifecycleMessage::Event(event) => {
+                writer.append(
+                    proxy_event_type(&event.kind),
+                    json!({
+                        "connection_id": event.connection_id,
+                        "stream_id": event.stream_id,
+                        "timestamp_ns": event.timestamp_ns,
+                        "protocol": event.protocol.map(|value| format!("{value:?}")),
+                        "detail": proxy_event_detail(&event.kind),
+                    }),
+                )?;
+                account.written.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
     let dropped = account.dropped.load(Ordering::Acquire);
     let dropped_connection_opens = account.dropped_connection_opens.load(Ordering::Acquire);
@@ -411,7 +461,9 @@ fn proxy_writer_loop(
             "dropped": dropped,
         }),
     )?;
-    writer.append("proxy.listener-stopped", json!({"status": "released"}))?;
+    if listener_started {
+        writer.append("proxy.listener-stopped", json!({"status": "released"}))?;
+    }
     writer.append("proxy.drain", json!({"status": "complete"}))?;
     writer.finish()
 }

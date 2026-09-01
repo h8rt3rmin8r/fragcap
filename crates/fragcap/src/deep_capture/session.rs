@@ -208,14 +208,14 @@ impl DeepCaptureSession<'_> {
             "proxy-listener",
             ResourceKind::Proxy,
             &proxy_target,
-            "bind-loopback-listener",
+            "close-loopback-listener",
             ResourceState::Pending,
             "listener bind must follow this durable obligation",
         ) || !self.record_resource(
             "proxy-runtime",
             ResourceKind::Proxy,
             &proxy_target,
-            "own-proxy-tasks",
+            "join-proxy-tasks",
             ResourceState::Pending,
             "runtime task ownership must follow this durable obligation",
         ) {
@@ -228,7 +228,7 @@ impl DeepCaptureSession<'_> {
                     "proxy-listener",
                     ResourceKind::Proxy,
                     &proxy_target,
-                    "bind-loopback-listener",
+                    "close-loopback-listener",
                     ResourceState::Applied,
                     "native listener acquired",
                 );
@@ -236,7 +236,7 @@ impl DeepCaptureSession<'_> {
                     "proxy-runtime",
                     ResourceKind::Proxy,
                     &proxy_target,
-                    "own-proxy-tasks",
+                    "join-proxy-tasks",
                     ResourceState::Applied,
                     "native runtime tasks acquired",
                 );
@@ -261,7 +261,7 @@ impl DeepCaptureSession<'_> {
                     "proxy-listener",
                     ResourceKind::Proxy,
                     &proxy_target,
-                    "bind-loopback-listener",
+                    "close-loopback-listener",
                     ResourceState::NotApplied,
                     &error.detail,
                 );
@@ -269,7 +269,7 @@ impl DeepCaptureSession<'_> {
                     "proxy-runtime",
                     ResourceKind::Proxy,
                     &proxy_target,
-                    "own-proxy-tasks",
+                    "join-proxy-tasks",
                     ResourceState::NotApplied,
                     &error.detail,
                 );
@@ -542,7 +542,13 @@ impl DeepCaptureSession<'_> {
         );
         let budget = self.remaining_budget(started, self.plan.deadlines.shutdown);
         let capture = self.adapters.capture.stop(budget);
-        self.record_cleanup_transition("capture", ResourceKind::Capture, &capture_target, &capture);
+        self.record_cleanup_transition(
+            "capture",
+            ResourceKind::Capture,
+            &capture_target,
+            "stop-capture",
+            &capture,
+        );
         self.record_cleanup(capture);
         if self.proxy.is_some() {
             let elapsed = self.adapters.clock.monotonic_elapsed();
@@ -567,6 +573,7 @@ impl DeepCaptureSession<'_> {
                 "proxy-listener",
                 ResourceKind::Proxy,
                 &proxy_target,
+                "close-loopback-listener",
                 &result,
             );
             self.record_cleanup(result);
@@ -739,7 +746,13 @@ impl DeepCaptureSession<'_> {
             );
             let result =
                 launch.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
-            self.record_cleanup_transition("managed-child", ResourceKind::Launch, &target, &result);
+            self.record_cleanup_transition(
+                "managed-child",
+                ResourceKind::Launch,
+                &target,
+                "stop-managed-child",
+                &result,
+            );
             self.record_cleanup(result);
         }
         if let Some(mut routing) = self.routing.take() {
@@ -754,7 +767,13 @@ impl DeepCaptureSession<'_> {
             );
             let result =
                 routing.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
-            self.record_cleanup_transition("route", ResourceKind::Route, &target, &result);
+            self.record_cleanup_transition(
+                "route",
+                ResourceKind::Route,
+                &target,
+                "remove-target-scoped-route",
+                &result,
+            );
             self.record_cleanup(result);
         }
         if let Some(mut trust) = self.trust.take() {
@@ -771,7 +790,13 @@ impl DeepCaptureSession<'_> {
                 "bounded exact trust cleanup attempt",
             );
             let result = trust.cleanup(self.remaining_budget(started, self.plan.deadlines.cleanup));
-            self.record_cleanup_transition("trust-entry", ResourceKind::Trust, &target, &result);
+            self.record_cleanup_transition(
+                "trust-entry",
+                ResourceKind::Trust,
+                &target,
+                "remove-current-user-root-by-exact-thumbprint",
+                &result,
+            );
             self.record_cleanup(result);
         } else if !self
             .cleanup
@@ -825,6 +850,7 @@ impl DeepCaptureSession<'_> {
                 "proxy-runtime",
                 ResourceKind::Proxy,
                 &target,
+                "join-proxy-tasks",
                 &combined,
             );
             for result in results {
@@ -958,6 +984,7 @@ impl DeepCaptureSession<'_> {
         resource_id: &str,
         kind: ResourceKind,
         target: &str,
+        action: &str,
         result: &CleanupResult,
     ) {
         let state = match result.status {
@@ -965,14 +992,7 @@ impl DeepCaptureSession<'_> {
             CleanupStatus::TimedOut => ResourceState::TimedOut,
             CleanupStatus::Failed => ResourceState::Failed,
         };
-        self.record_resource(
-            resource_id,
-            kind,
-            target,
-            "complete-cleanup",
-            state,
-            &result.reason,
-        );
+        self.record_resource(resource_id, kind, target, action, state, &result.reason);
     }
 
     fn prepare_lifecycle_authority(&mut self) {

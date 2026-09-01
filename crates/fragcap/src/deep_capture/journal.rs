@@ -307,6 +307,14 @@ impl ResourceJournal {
                 "journal is finished",
             ));
         }
+        let prefix = read_resource_journal(&self.path)?;
+        validate_transition(
+            prefix
+                .latest()
+                .get(transition.resource_id.as_str())
+                .copied(),
+            &transition,
+        )?;
         self.sequence = self.sequence.checked_add(1).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "journal sequence overflow")
         })?;
@@ -548,6 +556,16 @@ fn validate_transition(
         ));
     }
     if let Some(previous) = previous.filter(|value| value.resource_id == next.resource_id) {
+        if previous.kind != next.kind
+            || previous.target != next.target
+            || previous.ownership != next.ownership
+            || previous.action != next.action
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "resource identity changed across journal transitions",
+            ));
+        }
         let allowed = match previous.state {
             ResourceState::Pending => matches!(
                 next.state,
