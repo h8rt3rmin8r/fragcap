@@ -315,12 +315,21 @@ async fn raw_http2_client_and_origin_interoperate_through_native_proxy() {
         let mut preface = [0_u8; 24];
         tcp.read_exact(&mut preface).await.unwrap();
         assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-        let (kind, _, _, _) = read_h2_frame(&mut tcp, "raw origin settings").await;
+        let (kind, flags, _, _) = read_h2_frame(&mut tcp, "raw origin settings").await;
         assert_eq!(kind, 4);
+        assert_eq!(flags & 1, 0);
         write_h2_frame(&mut tcp, 4, 0, 0, &[]).await;
+        write_h2_frame(&mut tcp, 4, 1, 0, &[]).await;
+        let mut saw_request_headers = false;
         loop {
-            let (kind, _, stream, _) = read_h2_frame(&mut tcp, "raw origin request").await;
+            let (kind, flags, stream, _) = read_h2_frame(&mut tcp, "raw origin request").await;
+            if kind == 4 && flags & 1 == 0 {
+                write_h2_frame(&mut tcp, 4, 1, 0, &[]).await;
+            }
             if kind == 1 && stream == 1 {
+                saw_request_headers = true;
+            }
+            if saw_request_headers && stream == 1 && flags & 1 == 1 {
                 break;
             }
         }
