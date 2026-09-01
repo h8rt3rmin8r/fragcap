@@ -363,6 +363,13 @@ fn standard_entry(
     if tx.body_evidence_gap {
         missing.push("body-evidence-gap");
     }
+    let (request_body, request_limited, request_observed, request_representation) =
+        tx.request_bodies.selected();
+    let (response_body, response_limited, response_observed, response_representation) =
+        tx.response_bodies.selected();
+    if request_limited || response_limited {
+        missing.push("body-evidence-limited");
+    }
     let method = binary_text(request.get("method"));
     let url = binary_text(request.get("url"));
     let status = response.get("status").and_then(Value::as_u64);
@@ -390,10 +397,6 @@ fn standard_entry(
     }
     let request_headers = headers(request)?;
     let response_headers = headers(response)?;
-    let (request_body, request_limited, request_observed, request_representation) =
-        tx.request_bodies.selected();
-    let (response_body, response_limited, response_observed, response_representation) =
-        tx.response_bodies.selected();
     let mime = header_value(&response_headers, "content-type").unwrap_or_default();
     let content = if response_limited {
         json!({"size":-1,"mimeType":mime,"_fragcap":{"limited":true,"representation":response_representation,"retainedBytes":response_body.len(),"observedBytes":response_observed}})
@@ -415,7 +418,7 @@ fn standard_entry(
     let mut request_value = json!({
         "method":method.unwrap(),"url":url.unwrap(),"httpVersion":har_version(tx.protocol.as_deref()),
         "headers":request_headers,"queryString":derived(request,"query"),"cookies":derived(request,"cookies"),
-        "headersSize":head_size(request),"bodySize":if request_limited {-1_i64} else {i64::try_from(request_body.len()).unwrap_or(i64::MAX)}
+        "headersSize":head_size(request),"bodySize":transferred_size(&tx.request_bodies, request_body)
     });
     if let Some(post_data) = post_data {
         request_value["postData"] = post_data;
@@ -431,7 +434,7 @@ fn standard_entry(
     let total = send.unwrap() + wait.unwrap() + receive.unwrap();
     Ok(json!({"startedDateTime":started.unwrap(),"time":total,
         "request":request_value,
-        "response":{"status":status.unwrap(),"statusText":binary_text(response.get("reason")).unwrap_or_default(),"httpVersion":har_version(tx.protocol.as_deref()),"headers":response_headers,"cookies":response_cookies(response),"content":content,"redirectURL":redirect,"headersSize":head_size(response),"bodySize":if response_limited {-1_i64} else {i64::try_from(response_body.len()).unwrap_or(i64::MAX)}},
+        "response":{"status":status.unwrap(),"statusText":binary_text(response.get("reason")).unwrap_or_default(),"httpVersion":har_version(tx.protocol.as_deref()),"headers":response_headers,"cookies":response_cookies(response),"content":content,"redirectURL":redirect,"headersSize":head_size(response),"bodySize":transferred_size(&tx.response_bodies, response_body)},
         "cache":{},"timings":{"send":send.unwrap(),"wait":wait.unwrap(),"receive":receive.unwrap()},
         "_fragcap":{"proxyConnectionId":connection,"httpStreamId":stream,"correlation":tx.correlation,
             "requestBody":{"representation":request_representation,"observedBytes":request_observed,"retainedBytes":request_body.len(),"limited":request_limited},
@@ -516,6 +519,13 @@ fn response_cookies(record: &Value) -> Vec<Value> {
 fn nanos_ms(value: Option<&Value>) -> Option<f64> {
     Some(value?.as_u64()? as f64 / 1_000_000.0)
 }
+fn transferred_size(bodies: &Bodies, selected: &[u8]) -> i64 {
+    let bytes = bodies
+        .representations
+        .get("raw")
+        .map_or(selected.len(), Vec::len);
+    i64::try_from(bytes).unwrap_or(i64::MAX)
+}
 fn har_version(value: Option<&str>) -> &'static str {
     if value == Some("h2") {
         "HTTP/2"
@@ -538,7 +548,8 @@ fn rfc3339_nanos(nanos: u64) -> String {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let year = year + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+    let fraction = nanos % 1_000_000_000;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{fraction:09}Z")
 }
 
 #[cfg(test)]
@@ -579,9 +590,19 @@ mod tests {
         let entry = standard_entry(7, 9, &complete_transaction()).unwrap();
         assert_eq!(entry["time"], 6.0);
         assert_eq!(entry["response"]["content"]["text"], "decoded");
+        assert_eq!(entry["response"]["content"]["size"], 7);
+        assert_eq!(entry["response"]["bodySize"], 4);
         assert_eq!(
             entry["response"]["content"]["_fragcap"]["representation"],
             "content-decoded"
+        );
+    }
+
+    #[test]
+    fn request_start_time_preserves_nanoseconds() {
+        assert_eq!(
+            rfc3339_nanos(1_700_000_000_123_456_789),
+            "2023-11-14T22:13:20.123456789Z"
         );
     }
 
@@ -637,13 +658,8 @@ mod tests {
             .response_bodies
             .observed
             .insert("raw".to_string(), 4096);
-        let entry = standard_entry(1, 1, &omitted).unwrap();
-        assert_eq!(entry["response"]["bodySize"], -1);
-        assert_eq!(entry["response"]["content"]["size"], -1);
-        assert_eq!(
-            entry["response"]["content"]["_fragcap"]["observedBytes"],
-            4096
-        );
+        let reasons = standard_entry(1, 1, &omitted).unwrap_err();
+        assert!(reasons.contains(&"body-evidence-limited"));
     }
 
     #[test]

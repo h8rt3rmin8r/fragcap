@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::attribution::Attribution;
@@ -174,6 +175,7 @@ pub struct FlowSummary {
 #[derive(Debug)]
 pub struct FlowRegistry {
     state: Mutex<FlowRegistryState>,
+    globally_unretained: AtomicU64,
 }
 
 impl Default for FlowRegistry {
@@ -192,6 +194,7 @@ impl FlowRegistry {
                 retained_observations: 0,
                 observation_limit: observation_limit.max(1),
             }),
+            globally_unretained: AtomicU64::new(0),
         }
     }
     /// Return the existing id or assign the next session-local id.
@@ -282,6 +285,17 @@ impl FlowRegistry {
         id
     }
 
+    /// Conservatively record an eviction without taking the registry mutex.
+    /// This is used only on acquisition threads, where blocking behind output
+    /// correlation bookkeeping would amplify capture loss.
+    pub fn mark_globally_unretained(&self) {
+        self.globally_unretained.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn globally_unretained(&self) -> u64 {
+        self.globally_unretained.load(Ordering::Acquire)
+    }
+
     /// Look up an id without creating one.
     pub fn lookup(&self, key: &FlowKey) -> Option<FlowId> {
         self.state
@@ -312,7 +326,9 @@ impl FlowRegistry {
             .map(|flow| FlowSummary {
                 id: flow.id,
                 observations: flow.observations.clone(),
-                unretained_observations: flow.unretained_observations,
+                unretained_observations: flow
+                    .unretained_observations
+                    .saturating_add(self.globally_unretained()),
             })
     }
 }

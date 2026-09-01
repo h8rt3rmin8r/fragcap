@@ -19,6 +19,10 @@ use fragcap_proxy::{
 use serde_json::{json, Value};
 
 const SCHEMA_VERSION: u64 = 2;
+#[cfg(not(test))]
+const MAX_CONNECTION_WINDOWS: usize = 65_536;
+#[cfg(test)]
+const MAX_CONNECTION_WINDOWS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationStreamStatus {
@@ -45,6 +49,7 @@ struct WriterAccount {
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
+    connection_windows_unretained: AtomicU64,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -121,10 +126,14 @@ impl ApplicationEventSink for ChannelSink {
         // bounded event queue so pressure cannot erase the only descriptor for
         // an accepted connection.
         if let ApplicationEventKind::ConnectionOpen(descriptor) = &event.kind {
-            self.connections
+            let mut connections = self
+                .connections
                 .lock()
-                .expect("application connection lock")
-                .insert(
+                .expect("application connection lock");
+            if connections.len() < MAX_CONNECTION_WINDOWS
+                || connections.contains_key(&event.connection_id)
+            {
+                connections.insert(
                     event.connection_id,
                     ApplicationConnectionWindow {
                         descriptor: *descriptor,
@@ -132,6 +141,11 @@ impl ApplicationEventSink for ChannelSink {
                         closed_at_ns: None,
                     },
                 );
+            } else {
+                self.account
+                    .connection_windows_unretained
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         } else if matches!(event.kind, ApplicationEventKind::ConnectionTerminal(_)) {
             if let Some(window) = self
                 .connections
@@ -396,6 +410,34 @@ fn writer_loop(
             .entry("application.correlation".to_string())
             .or_default() += 1;
     }
+    let unretained_connections = account
+        .connection_windows_unretained
+        .load(Ordering::Acquire);
+    if unretained_connections > 0 {
+        *correlation_counts
+            .entry("unavailable".to_string())
+            .or_default() += unretained_connections;
+        sequence = sequence.saturating_add(1);
+        let value = json!({
+            "type":"application.correlation.gap",
+            "schema_version":SCHEMA_VERSION,
+            "session_id":session_id,
+            "sequence":sequence,
+            "event_time_ns":0,
+            "correlation_state":"unavailable",
+            "correlation_reason":"connection-history-bound-exceeded",
+            "connections_unretained":unretained_connections,
+        });
+        write_record(&mut writer, &value)?;
+        account.written.fetch_add(1, Ordering::Relaxed);
+        account.accepted.fetch_add(1, Ordering::Relaxed);
+        account
+            .serialized_bytes
+            .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
+        *records_by_type
+            .entry("application.correlation.gap".to_string())
+            .or_default() += 1;
+    }
     let dropped = account.dropped.load(Ordering::Acquire);
     let body_bytes_queue_dropped = account.body_bytes_queue_dropped.load(Ordering::Acquire);
     let streaming_bytes_queue_dropped = account
@@ -469,6 +511,7 @@ fn writer_loop(
             ,"streaming_records_by_outcome": streaming_by_outcome
             ,"correlation_connections_by_state": correlation_counts
             ,"correlation_connections_total": correlation_counts.values().sum::<u64>()
+            ,"correlation_connections_unretained": unretained_connections
         }),
     )
 }
@@ -1047,6 +1090,16 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             correlation_total = correlation_total.saturating_add(1);
             *correlation_by_state.entry(state.to_string()).or_default() += 1;
         }
+        if kind == "application.correlation.gap" {
+            let count = record
+                .get("connections_unretained")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            correlation_total = correlation_total.saturating_add(count);
+            *correlation_by_state
+                .entry("unavailable".to_string())
+                .or_default() += count;
+        }
         if matches!(
             kind,
             "websocket.frame" | "websocket.message" | "sse.field" | "sse.event" | "grpc.message"
@@ -1210,6 +1263,80 @@ mod tests {
             .expect("the queue-dropped descriptor still produces final correlation");
         assert_eq!(correlation["proxy_connection_id"], 7);
         assert_eq!(correlation["correlation_state"], "unavailable");
+    }
+
+    #[test]
+    fn connection_history_bound_is_reported_as_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.jsonl");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        write_record(&mut file, &header_record("session")).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let retired = Arc::new(AtomicBool::new(false));
+        let account = Arc::new(WriterAccount::default());
+        let connections = Arc::new(Mutex::new(BTreeMap::new()));
+        let sink = ChannelSink {
+            sender: Mutex::new(Some(sender)),
+            retired: Arc::clone(&retired),
+            account: Arc::clone(&account),
+            connections: Arc::clone(&connections),
+        };
+        for connection_id in 1..=(MAX_CONNECTION_WINDOWS as u64 + 1) {
+            let descriptor = ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: format!("127.0.0.1:{}", 41_000 + connection_id)
+                    .parse()
+                    .unwrap(),
+                proxy_local: "127.0.0.1:42000".parse().unwrap(),
+            };
+            let _ = sink.try_emit(ApplicationEvent::now(
+                "session",
+                connection_id,
+                None,
+                None,
+                ApplicationEventKind::ConnectionOpen(descriptor),
+            ));
+        }
+        assert_eq!(connections.lock().unwrap().len(), MAX_CONNECTION_WINDOWS);
+        assert_eq!(
+            account
+                .connection_windows_unretained
+                .load(Ordering::Acquire),
+            1
+        );
+        drop(sink.sender.lock().unwrap().take());
+        writer_loop(
+            file,
+            "session",
+            receiver,
+            retired,
+            account,
+            connections,
+            Arc::new(|_| ApplicationCorrelation {
+                state: Some("unavailable".to_string()),
+                reason: Some("packet-evidence-unavailable".to_string()),
+                ..ApplicationCorrelation::default()
+            }),
+        )
+        .unwrap();
+        let prefix = read_application_prefix(&path).unwrap();
+        assert_eq!(prefix.status, ApplicationStreamStatus::Complete);
+        let gap = prefix
+            .records
+            .iter()
+            .find(|record| record["type"] == "application.correlation.gap")
+            .expect("overflow must produce an explicit correlation gap");
+        assert_eq!(gap["connections_unretained"], 1);
+        let trailer = prefix.records.last().unwrap();
+        assert_eq!(
+            trailer["correlation_connections_total"],
+            MAX_CONNECTION_WINDOWS as u64 + 1
+        );
+        assert_eq!(trailer["correlation_connections_unretained"], 1);
     }
 
     #[test]

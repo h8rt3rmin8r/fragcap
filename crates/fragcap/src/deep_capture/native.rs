@@ -569,8 +569,8 @@ fn correlate_native_observation(
         .collect::<Vec<_>>();
     owners.sort_by_key(|owner| {
         let fidelity = match owner.fidelity {
-            Fidelity::Live => 0,
-            Fidelity::Retained => 1,
+            Fidelity::Retained => 0,
+            Fidelity::Live => 1,
             Fidelity::None => 2,
         };
         (
@@ -882,7 +882,7 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fragcap_core::Attribution;
+    use fragcap_core::{Attribution, Timestamp};
 
     #[test]
     fn native_observation_correlation_restores_packet_and_process_truth() {
@@ -901,6 +901,27 @@ mod tests {
         assert_eq!(correlated.2.as_deref(), Some("game.exe"));
         assert_eq!(correlated.3.as_deref(), Some("client"));
         assert_eq!(correlated.4.as_deref(), Some("live"));
+    }
+
+    #[test]
+    fn mixed_live_and_retained_evidence_reports_the_weaker_fidelity() {
+        let registry = FlowRegistry::default();
+        let client: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let proxy: SocketAddr = "127.0.0.1:42000".parse().unwrap();
+        let key = FlowKey::new(Proto::Tcp, client, proxy);
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(10),
+            Some(&Attribution::new(77, "game.exe", Fidelity::Live).with_role("client")),
+        );
+        registry.observe_at(
+            key,
+            Timestamp::from_nanos(20),
+            Some(&Attribution::new(77, "game.exe", Fidelity::Retained).with_role("client")),
+        );
+
+        let correlated = correlate_native_observation(&registry, client, proxy, 0, 30);
+        assert_eq!(correlated.4.as_deref(), Some("retained"));
     }
 
     #[test]

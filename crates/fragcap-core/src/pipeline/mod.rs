@@ -950,10 +950,8 @@ fn acquire(
         // The only interaction with the output side. Never waits for a sink to
         // make progress; see the buffer's module documentation for the exact
         // claim and why it is stated that way.
-        if let Some(evicted) = tx.push(Item::Packet(Box::new(packet))) {
-            if let Some(flow) = evicted.flow {
-                flow_registry.mark_unretained(flow);
-            }
+        if tx.push(Item::Packet(Box::new(packet))).is_some() {
+            flow_registry.mark_globally_unretained();
         }
     }
 }
@@ -1955,18 +1953,9 @@ mod tests {
             report.stats.buffer_dropped > 0,
             "a two-packet buffer and a held sink must have evicted"
         );
-        let unretained = (0..32_u16)
-            .filter_map(|offset| {
-                registry.summary(&FlowKey::new(
-                    crate::flow::Proto::Udp,
-                    format!("192.0.2.10:{}", 40000 + offset).parse().unwrap(),
-                    "198.51.100.5:5055".parse().unwrap(),
-                ))
-            })
-            .map(|summary| summary.unretained_observations)
-            .sum::<u64>();
         assert_eq!(
-            unretained, report.stats.buffer_dropped,
+            registry.globally_unretained(),
+            report.stats.buffer_dropped,
             "every evicted packet must make correlation conservative"
         );
         assert_conserved(&report, &log, 0);
