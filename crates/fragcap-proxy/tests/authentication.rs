@@ -68,9 +68,13 @@ fn capability_uses_the_same_secret_for_a_redacted_socks5h_route() {
     let capability = SessionCapability::generate().unwrap();
     let proof = capability.proof();
     let password = proof.proxy_password();
+    let other_password = SessionCapability::generate()
+        .unwrap()
+        .proof()
+        .proxy_password();
     assert!(capability.authenticates_socks_credentials(b"fragcap", password.as_bytes()));
     assert!(!capability.authenticates_socks_credentials(b"other", password.as_bytes()));
-    assert!(!capability.authenticates_socks_credentials(b"fragcap", b"wrong"));
+    assert!(!capability.authenticates_socks_credentials(b"fragcap", other_password.as_bytes()));
     let url = proof.socks5h_url("127.0.0.1:3210".parse().unwrap());
     assert!(url.starts_with("socks5h://fragcap:"));
     assert!(url.ends_with("@127.0.0.1:3210"));
