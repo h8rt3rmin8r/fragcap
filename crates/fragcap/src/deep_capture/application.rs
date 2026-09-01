@@ -42,6 +42,7 @@ struct WriterAccount {
     failures: AtomicU64,
     body_bytes_queue_dropped: AtomicU64,
     body_retained_bytes_queue_dropped: AtomicU64,
+    streaming_bytes_queue_dropped: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
 }
 
@@ -62,6 +63,19 @@ struct BodyDropTotals {
 
 impl WriterAccount {
     fn record_queue_drop(&self, event: &ApplicationEvent) {
+        if let ApplicationEventKind::Streaming(value) = &event.kind {
+            let bytes = match value {
+                fragcap_proxy::StreamingEvent::WebSocketFrame(value) => value.wire_payload.len(),
+                fragcap_proxy::StreamingEvent::WebSocketMessage(value) => value.payload.len(),
+                fragcap_proxy::StreamingEvent::SseField(value) => value.value.len(),
+                fragcap_proxy::StreamingEvent::SseEvent(value) => value.data.len(),
+                fragcap_proxy::StreamingEvent::GrpcMessage(value) => value.payload.len(),
+                _ => 0,
+            };
+            self.streaming_bytes_queue_dropped
+                .fetch_add(bytes as u64, Ordering::Relaxed);
+            return;
+        }
         let ApplicationEventKind::Body(segment) = &event.kind else {
             return;
         };
@@ -134,6 +148,10 @@ impl ApplicationEventSink for ChannelSink {
             body_bytes_queue_dropped: self
                 .account
                 .body_bytes_queue_dropped
+                .load(Ordering::Acquire),
+            streaming_bytes_queue_dropped: self
+                .account
+                .streaming_bytes_queue_dropped
                 .load(Ordering::Acquire),
         }
     }
@@ -259,6 +277,10 @@ fn writer_loop(
     let mut body_observed = 0_u64;
     let mut body_retained = 0_u64;
     let mut body_truncated = 0_u64;
+    let mut streaming_observed = 0_u64;
+    let mut streaming_retained = 0_u64;
+    let mut streaming_truncated = 0_u64;
+    let mut streaming_by_outcome = BTreeMap::<String, u64>::new();
     for event in receiver {
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
@@ -271,6 +293,15 @@ fn writer_loop(
                         .observed_len
                         .saturating_sub(segment.bytes.len() as u64),
                 );
+            }
+        }
+        if let ApplicationEventKind::Streaming(value) = &event.kind {
+            if let Some((outcome, observed, retained)) = streaming_measure(value) {
+                streaming_observed = streaming_observed.saturating_add(observed);
+                streaming_retained = streaming_retained.saturating_add(retained);
+                streaming_truncated =
+                    streaming_truncated.saturating_add(observed.saturating_sub(retained));
+                *streaming_by_outcome.entry(outcome.to_string()).or_default() += 1;
             }
         }
         sequence = sequence.saturating_add(1);
@@ -291,6 +322,9 @@ fn writer_loop(
     }
     let dropped = account.dropped.load(Ordering::Acquire);
     let body_bytes_queue_dropped = account.body_bytes_queue_dropped.load(Ordering::Acquire);
+    let streaming_bytes_queue_dropped = account
+        .streaming_bytes_queue_dropped
+        .load(Ordering::Acquire);
     let body_retained_bytes_queue_dropped = account
         .body_retained_bytes_queue_dropped
         .load(Ordering::Acquire);
@@ -326,6 +360,7 @@ fn writer_loop(
                 "reason": "event-queue-or-retired-writer",
                 "body_bytes_queue_dropped": body_bytes_queue_dropped,
                 "body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped,
+                "streaming_bytes_queue_dropped": streaming_bytes_queue_dropped,
                 "body_losses": body_queue_losses,
             }),
         )?;
@@ -351,6 +386,11 @@ fn writer_loop(
             ,"body_bytes_truncated": body_truncated
             ,"body_bytes_queue_dropped": body_bytes_queue_dropped
             ,"body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped
+            ,"streaming_bytes_queue_dropped": streaming_bytes_queue_dropped
+            ,"streaming_bytes_observed": streaming_observed
+            ,"streaming_bytes_retained": streaming_retained
+            ,"streaming_bytes_truncated": streaming_truncated
+            ,"streaming_records_by_outcome": streaming_by_outcome
         }),
     )
 }
@@ -362,11 +402,8 @@ fn header_record(session_id: &str) -> Value {
         "session_id": session_id,
         "sequence": 0,
         "event_time_ns": 0,
-        "exports": ["connection", "tls", "http", "metadata", "body", "transformation"],
+        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc"],
         "non_exports": {
-            "websocket": "deferred-issue-295",
-            "sse": "deferred-issue-298",
-            "grpc": "deferred-issue-299",
             "tcp": "deferred-issue-306",
             "udp": "deferred-issue-307",
             "quic": "deferred-issue-305"
@@ -458,6 +495,7 @@ fn event_json(
                 "outcome": body_outcome(value.outcome),
             }),
         ),
+        ApplicationEventKind::Streaming(value) => streaming_json(value),
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
@@ -478,8 +516,208 @@ fn event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::Metadata(_) => "http.metadata",
         ApplicationEventKind::Body(_) => "http.body_segment",
         ApplicationEventKind::Transformation(_) => "http.transformation",
+        ApplicationEventKind::Streaming(value) => streaming_type(value),
         ApplicationEventKind::Error { .. } => "application.error",
     }
+}
+
+fn streaming_type(value: &fragcap_proxy::StreamingEvent) -> &'static str {
+    use fragcap_proxy::StreamingEvent::*;
+    match value {
+        WebSocketFrame(_) => "websocket.frame",
+        WebSocketMessage(_) => "websocket.message",
+        WebSocketTerminal { .. } => "websocket.terminal",
+        SseField(_) => "sse.field",
+        SseEvent(_) => "sse.event",
+        SseTerminal { .. } => "sse.terminal",
+        GrpcCall { .. } => "grpc.call",
+        GrpcMessage(_) => "grpc.message",
+        GrpcTerminal { .. } => "grpc.terminal",
+    }
+}
+
+fn streaming_json(value: fragcap_proxy::StreamingEvent) -> (&'static str, Value) {
+    use fragcap_proxy::StreamingEvent::*;
+    match value {
+        WebSocketFrame(frame) => {
+            let omitted = frame.payload_omitted;
+            let mut body = json!({
+                "direction": direction(frame.direction), "frame_sequence": frame.sequence,
+                "fin": frame.fin, "rsv1": frame.rsv1, "opcode": frame.opcode,
+                "masked": frame.masked, "masking_key": frame.masking_key.map(|value| base64::engine::general_purpose::STANDARD.encode(value)),
+                "declared_len": frame.declared_len, "retained_len": frame.wire_payload.len(),
+            "payload_omitted": frame.payload_omitted,
+            "payload_encoding": "base64", "payload": base64::engine::general_purpose::STANDARD.encode(frame.wire_payload),
+            "close_code": frame.close_code, "close_reason": binary_json(frame.close_reason),
+            "close_reason_utf8": frame.close_reason_utf8,
+                "outcome": streaming_outcome(frame.outcome),
+            });
+            if omitted {
+                let object = body.as_object_mut().expect("streaming record is an object");
+                object.remove("payload_encoding");
+                object.remove("payload");
+                object.remove("close_reason");
+                object.remove("close_reason_utf8");
+            }
+            ("websocket.frame", body)
+        }
+        WebSocketMessage(message) => {
+            let omitted = message.payload_omitted;
+            let mut body = json!({
+                "direction": direction(message.direction), "message_sequence": message.sequence,
+                "first_frame": message.first_frame, "frame_count": message.frame_count,
+                "kind": format!("{:?}", message.kind).to_ascii_lowercase(), "compressed": message.compressed,
+                "observed_len": message.observed_len, "retained_len": message.payload.len(),
+                "payload_omitted": message.payload_omitted,
+                "payload_encoding": "base64", "payload": base64::engine::general_purpose::STANDARD.encode(message.payload),
+                "outcome": streaming_outcome(message.outcome),
+            });
+            if omitted {
+                let object = body.as_object_mut().expect("streaming record is an object");
+                object.remove("payload_encoding");
+                object.remove("payload");
+            }
+            ("websocket.message", body)
+        }
+        WebSocketTerminal {
+            direction: value,
+            outcome,
+        } => (
+            "websocket.terminal",
+            json!({"direction": direction(value), "outcome": streaming_outcome(outcome)}),
+        ),
+        SseField(field) => {
+            let omitted = field.payload_omitted;
+            let retained_len = field.value.len();
+            let mut body = json!({
+                "field_sequence": field.sequence, "line": field.line, "comment": field.comment,
+                "name": binary_json(field.name), "value": binary_json(field.value),
+                "observed_len": field.observed_len, "retained_len": retained_len,
+                "payload_omitted": field.payload_omitted,
+                "outcome": streaming_outcome(field.outcome),
+            });
+            if omitted {
+                let object = body.as_object_mut().expect("streaming record is an object");
+                object.remove("name");
+                object.remove("value");
+            }
+            ("sse.field", body)
+        }
+        SseEvent(event) => {
+            let omitted = event.payload_omitted;
+            let retained_len = event.data.len();
+            let mut body = json!({
+                "event_sequence": event.sequence, "first_line": event.first_line, "last_line": event.last_line,
+                "event_type": binary_json(event.event_type), "data": binary_json(event.data),
+                "last_event_id": binary_json(event.last_event_id), "retry_ms": event.retry_ms,
+                "observed_len": event.observed_len, "retained_len": retained_len,
+                "payload_omitted": event.payload_omitted,
+                "outcome": streaming_outcome(event.outcome),
+            });
+            if omitted {
+                let object = body.as_object_mut().expect("streaming record is an object");
+                object.remove("event_type");
+                object.remove("data");
+                object.remove("last_event_id");
+                object.remove("retry_ms");
+            }
+            ("sse.event", body)
+        }
+        SseTerminal { outcome } => (
+            "sse.terminal",
+            json!({"outcome": streaming_outcome(outcome)}),
+        ),
+        GrpcCall {
+            method,
+            content_type,
+            encoding,
+        } => (
+            "grpc.call",
+            json!({
+                "method": binary_json(method), "content_type": binary_json(content_type),
+                "encoding": encoding.map(binary_json),
+            }),
+        ),
+        GrpcMessage(message) => {
+            let omitted = message.payload_omitted;
+            let mut body = json!({
+                "direction": direction(message.direction), "message_sequence": message.sequence,
+            "compressed": message.compressed, "declared_len": message.declared_len,
+            "encoding": message.encoding.map(binary_json),
+                "retained_len": message.payload.len(), "payload_encoding": "base64",
+                "payload_omitted": message.payload_omitted,
+                "payload": base64::engine::general_purpose::STANDARD.encode(message.payload),
+                "outcome": streaming_outcome(message.outcome),
+            });
+            if omitted {
+                let object = body.as_object_mut().expect("streaming record is an object");
+                object.remove("payload_encoding");
+                object.remove("payload");
+            }
+            ("grpc.message", body)
+        }
+        GrpcTerminal {
+            direction: value,
+            status,
+            message,
+            status_details,
+            outcome,
+        } => (
+            "grpc.terminal",
+            json!({
+                "direction": direction(value),
+                "status": status.map(binary_json), "message": message.map(binary_json),
+                "status_details": status_details.map(binary_json),
+                "outcome": streaming_outcome(outcome),
+            }),
+        ),
+    }
+}
+
+fn direction(value: fragcap_proxy::BodyDirection) -> &'static str {
+    match value {
+        fragcap_proxy::BodyDirection::Request => "request",
+        fragcap_proxy::BodyDirection::Response => "response",
+    }
+}
+
+fn streaming_outcome(value: fragcap_proxy::StreamingOutcome) -> &'static str {
+    use fragcap_proxy::StreamingOutcome::*;
+    match value {
+        Complete => "complete",
+        IntentionallyOmitted => "intentionally-omitted",
+        Partial => "partial",
+        Malformed => "malformed",
+        Limit => "limit",
+        UnsupportedCompression => "unsupported-compression",
+        InvalidUtf8 => "invalid-utf8",
+        Cancelled => "cancelled",
+    }
+}
+
+fn streaming_measure(value: &fragcap_proxy::StreamingEvent) -> Option<(&'static str, u64, u64)> {
+    use fragcap_proxy::StreamingEvent::*;
+    let (outcome, observed, retained) = match value {
+        WebSocketFrame(value) => (
+            value.outcome,
+            value.declared_len,
+            value.wire_payload.len() as u64,
+        ),
+        WebSocketMessage(value) => (
+            value.outcome,
+            value.observed_len,
+            value.payload.len() as u64,
+        ),
+        SseField(value) => (value.outcome, value.observed_len, value.value.len() as u64),
+        SseEvent(value) => (value.outcome, value.observed_len, value.data.len() as u64),
+        GrpcMessage(value) => (
+            value.outcome,
+            u64::from(value.declared_len),
+            value.payload.len() as u64,
+        ),
+        _ => return None,
+    };
+    Some((streaming_outcome(outcome), observed, retained))
 }
 
 fn body_json(segment: fragcap_proxy::BodySegment) -> Value {
@@ -622,6 +860,11 @@ fn trailer_reconciles(records: &[Value]) -> bool {
     let mut body_truncated = 0_u64;
     let mut body_queue_dropped = 0_u64;
     let mut body_retained_queue_dropped = 0_u64;
+    let mut streaming_queue_dropped = 0_u64;
+    let mut streaming_observed = 0_u64;
+    let mut streaming_retained = 0_u64;
+    let mut streaming_truncated = 0_u64;
+    let mut streaming_by_outcome = BTreeMap::<String, u64>::new();
     for record in records.iter().skip(1).take(records.len().saturating_sub(2)) {
         let Some(kind) = record.get("type").and_then(Value::as_str) else {
             return false;
@@ -645,6 +888,12 @@ fn trailer_reconciles(records: &[Value]) -> bool {
                     .and_then(Value::as_u64)
                     .unwrap_or(0),
             );
+            streaming_queue_dropped = streaming_queue_dropped.saturating_add(
+                record
+                    .get("streaming_bytes_queue_dropped")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
             continue;
         }
         written = written.saturating_add(1);
@@ -665,6 +914,29 @@ fn trailer_reconciles(records: &[Value]) -> bool {
                 body_truncated = body_truncated.saturating_add(observed.saturating_sub(retained));
             }
         }
+        if matches!(
+            kind,
+            "websocket.frame" | "websocket.message" | "sse.field" | "sse.event" | "grpc.message"
+        ) {
+            let observed = record
+                .get("observed_len")
+                .or_else(|| record.get("declared_len"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let retained = record
+                .get("retained_len")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            streaming_observed = streaming_observed.saturating_add(observed);
+            streaming_retained = streaming_retained.saturating_add(retained);
+            streaming_truncated =
+                streaming_truncated.saturating_add(observed.saturating_sub(retained));
+            let outcome = record
+                .get("outcome")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            *streaming_by_outcome.entry(outcome.to_string()).or_default() += 1;
+        }
     }
     trailer.get("writer_status").and_then(Value::as_str) == Some("complete")
         && trailer.get("writer_failures").and_then(Value::as_u64) == Some(0)
@@ -684,4 +956,29 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             .get("body_retained_bytes_queue_dropped")
             .and_then(Value::as_u64)
             == Some(body_retained_queue_dropped)
+        && trailer
+            .get("streaming_bytes_queue_dropped")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == streaming_queue_dropped
+        && trailer
+            .get("streaming_bytes_observed")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == streaming_observed
+        && trailer
+            .get("streaming_bytes_retained")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == streaming_retained
+        && trailer
+            .get("streaming_bytes_truncated")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == streaming_truncated
+        && trailer
+            .get("streaming_records_by_outcome")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            == json!(streaming_by_outcome)
 }

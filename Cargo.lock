@@ -619,6 +619,7 @@ dependencies = [
  "async-compression",
  "base64",
  "bytes",
+ "flate2",
  "h2",
  "http-body-util",
  "httparse",

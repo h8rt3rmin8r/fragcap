@@ -58,9 +58,9 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 **v0.8.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. The public library API and CLI can orchestrate eligible cold Steam and direct-executable launches. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
 
-> **Deep Capture is functional but incomplete.** S105 adds bounded native HTTP/2,
-> protocol-faithful HTTP metadata, incrementally retained bodies with bounded
-> decoding, and a live crash-readable application JSON Lines version 2 stream
+> **Deep Capture is functional but incomplete.** S106 adds bounded WebSocket
+> frames and messages over HTTP/1.1 and HTTP/2, incremental Server-Sent Events,
+> and schema-free gRPC message envelopes to the live application stream
 > to the native Rust sole production path. Python and mitmdump are no
 > longer runtime prerequisites. Protocol, launch, transport, recovery, artifact,
 > and completion coverage continues through the remaining Deep Capture milestones.

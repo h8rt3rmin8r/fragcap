@@ -10,7 +10,8 @@ use fragcap::deep_capture::{
 };
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, BodyDirection, BodyOutcome, BodyRepresentation,
-    BodySegment, MetadataBlock, MetadataField, MetadataKind, ProtocolVersion,
+    BodySegment, GrpcMessage, MetadataBlock, MetadataField, MetadataKind, ProtocolVersion,
+    StreamingEvent, StreamingOutcome,
 };
 
 #[test]
@@ -99,6 +100,207 @@ fn version_two_stream_is_live_binary_safe_and_trailer_complete() {
     assert_eq!(
         metadata["unavailable"],
         serde_json::json!(["hpack-wire-bytes", "compressed-cross-name-order"])
+    );
+}
+
+#[test]
+fn version_two_serializes_reserved_streaming_protocol_families() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("streaming.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-106", 8).unwrap();
+    let sink = lease.sink();
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
+            "session-106",
+            2,
+            Some(5),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::Streaming(StreamingEvent::GrpcMessage(GrpcMessage {
+                direction: BodyDirection::Response,
+                sequence: 1,
+                compressed: false,
+                declared_len: 3,
+                payload: b"abc".to_vec(),
+                encoding: None,
+                payload_omitted: false,
+                outcome: StreamingOutcome::Complete,
+            })),
+        )),
+        fragcap_proxy::EventDisposition::Accepted
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    let header = &stream.records[0];
+    assert!(header["exports"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("grpc")));
+    let message = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "grpc.message")
+        .unwrap();
+    assert_eq!(message["declared_len"], 3);
+    assert_eq!(message["payload"], "YWJj");
+    let trailer = stream.records.last().unwrap();
+    assert_eq!(trailer["streaming_bytes_observed"], 3);
+    assert_eq!(trailer["streaming_bytes_retained"], 3);
+    assert_eq!(trailer["streaming_bytes_truncated"], 0);
+    assert_eq!(trailer["streaming_records_by_outcome"]["complete"], 1);
+}
+
+#[test]
+fn streaming_queue_loss_is_counted_without_blocking_the_producer() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("streaming-pressure.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-stream-pressure", 1).unwrap();
+    let sink = lease.sink();
+    let mut queue_full = 0_u64;
+    for sequence in 0..10_000 {
+        let disposition = sink.try_emit(ApplicationEvent::now(
+            "session-stream-pressure",
+            3,
+            Some(7),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::Streaming(StreamingEvent::GrpcMessage(GrpcMessage {
+                direction: BodyDirection::Response,
+                sequence,
+                compressed: false,
+                declared_len: 8,
+                payload: b"retained".to_vec(),
+                encoding: None,
+                payload_omitted: false,
+                outcome: StreamingOutcome::Complete,
+            })),
+        ));
+        queue_full += u64::from(disposition == fragcap_proxy::EventDisposition::QueueFull);
+    }
+    assert!(queue_full > 0);
+    assert_eq!(
+        sink.accounting().streaming_bytes_queue_dropped,
+        queue_full * 8
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    let gap = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "application.gap")
+        .unwrap();
+    assert_eq!(gap["streaming_bytes_queue_dropped"], queue_full * 8);
+    assert_eq!(
+        stream.records.last().unwrap()["streaming_bytes_queue_dropped"],
+        queue_full * 8
+    );
+}
+
+#[test]
+fn streaming_scope_omission_is_explicit_and_retains_no_payload() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("streaming-omitted.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-stream-omitted", 2).unwrap();
+    let sink = lease.sink();
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
+            "session-stream-omitted",
+            3,
+            Some(7),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::Streaming(StreamingEvent::GrpcMessage(GrpcMessage {
+                direction: BodyDirection::Response,
+                sequence: 1,
+                compressed: false,
+                declared_len: 8,
+                payload: Vec::new(),
+                encoding: None,
+                payload_omitted: true,
+                outcome: StreamingOutcome::IntentionallyOmitted,
+            })),
+        )),
+        fragcap_proxy::EventDisposition::Accepted
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    let message = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "grpc.message")
+        .unwrap();
+    assert_eq!(message["outcome"], "intentionally-omitted");
+    assert_eq!(message["declared_len"], 8);
+    assert_eq!(message["retained_len"], 0);
+    assert!(message.get("payload").is_none());
+    let trailer = stream.records.last().unwrap();
+    assert_eq!(trailer["streaming_bytes_observed"], 8);
+    assert_eq!(trailer["streaming_bytes_retained"], 0);
+    assert_eq!(trailer["streaming_bytes_truncated"], 8);
+    assert_eq!(
+        trailer["streaming_records_by_outcome"]["intentionally-omitted"],
+        1
+    );
+}
+
+#[test]
+fn streaming_parse_failure_survives_payload_omission() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("streaming-malformed-omitted.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-malformed-omitted", 2).unwrap();
+    let sink = lease.sink();
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
+            "session-malformed-omitted",
+            4,
+            Some(8),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::Streaming(StreamingEvent::GrpcMessage(GrpcMessage {
+                direction: BodyDirection::Response,
+                sequence: 1,
+                compressed: false,
+                declared_len: 3,
+                payload: Vec::new(),
+                encoding: None,
+                payload_omitted: true,
+                outcome: StreamingOutcome::Malformed,
+            })),
+        )),
+        fragcap_proxy::EventDisposition::Accepted
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    let message = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "grpc.message")
+        .unwrap();
+    assert_eq!(message["outcome"], "malformed");
+    assert_eq!(message["payload_omitted"], true);
+    assert!(message.get("payload").is_none());
+}
+
+#[test]
+fn reader_accepts_a_pre_s106_complete_version_two_stream() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("pre-s106.jsonl");
+    let text = concat!(
+        "{\"type\":\"application.header\",\"schema_version\":2,\"sequence\":0,\"session_id\":\"older\"}\n",
+        "{\"type\":\"application.trailer\",\"schema_version\":2,\"sequence\":1,\"session_id\":\"older\",",
+        "\"writer_status\":\"complete\",\"writer_failures\":0,\"accepted_records\":0,",
+        "\"written_records\":0,\"dropped_records\":0,\"serialized_bytes\":0,",
+        "\"records_by_type\":{},\"body_bytes_observed\":0,\"body_bytes_retained\":0,",
+        "\"body_bytes_truncated\":0,\"body_bytes_queue_dropped\":0,",
+        "\"body_retained_bytes_queue_dropped\":0}\n"
+    );
+    std::fs::write(&path, text).unwrap();
+    assert_eq!(
+        read_application_prefix(&path).unwrap().status,
+        ApplicationStreamStatus::Complete
     );
 }
 
