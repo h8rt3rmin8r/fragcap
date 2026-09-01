@@ -160,6 +160,15 @@ pub fn install_root_for(app_id: &str) -> Result<InstallLookup, SteamError> {
     library::install_root_in(&root, app_id)
 }
 
+/// Locate the exact installed Steam client root without enumerating libraries.
+///
+/// Managed platform launch uses this side-effect-free value before it starts
+/// any proxy, trust, capture, or process effect. The lookup reads only the same
+/// registry values as [`discover`] and opens no process handle.
+pub fn installation_root() -> Result<PathBuf, SteamError> {
+    steam_root()
+}
+
 /// The Steam install directory, from the Windows registry.
 #[cfg(windows)]
 fn steam_root() -> Result<PathBuf, SteamError> {

@@ -72,6 +72,11 @@ impl CompletionSummary {
             Some(StopReason::SinkError) => "sink-error",
             Some(StopReason::AcquisitionTimeout) => "acquisition-timeout",
             Some(StopReason::AmbiguousStageMatch) => "ambiguous-stage-match",
+            Some(StopReason::PlatformExitedBeforeClient) => "platform-exited-before-client",
+            Some(StopReason::EscapedPlatformClient) => "escaped-platform-client",
+            Some(StopReason::PlatformDispatchFailed) => "platform-dispatch-failed",
+            Some(StopReason::PlatformStartFailed) => "platform-start-failed",
+            Some(StopReason::ProcessWatcherLost) => "process-watcher-lost",
             None => "source-exhausted",
         }
     }

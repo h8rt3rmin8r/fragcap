@@ -52,6 +52,29 @@ pub fn stage_for<'p>(profile: &'p Profile, tree: &ProcessTree, node: NodeId) -> 
         .find(|stage| predicates_hold(stage.predicates(), tree, node, n))
 }
 
+/// Whether every predicate except `descends_from` holds for one stage and node.
+///
+/// This is the conservative escape detector used by exact platform ownership:
+/// it establishes that the observed process has the declared client identity,
+/// while leaving the ancestry predicate to [`stage_for`]. A caller may therefore
+/// distinguish an identity match outside the owned tree from an unrelated
+/// process without weakening ordinary stage matching.
+pub fn stage_identity_holds(stage: &Stage, tree: &ProcessTree, node: NodeId) -> bool {
+    let Some(n) = tree.node(node) else {
+        return false;
+    };
+    let pred = stage.predicates();
+    if !image_and_path_hold(pred, n) {
+        return false;
+    }
+    if let Some(sub) = pred.cmdline_contains() {
+        if !n.command_line().as_str().is_some_and(|cl| cl.contains(sub)) {
+            return false;
+        }
+    }
+    true
+}
+
 /// The first live node whose image-and-path identity holds, in creation order,
 /// or `None`.
 ///

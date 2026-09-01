@@ -217,7 +217,15 @@ fn final_exit(
 ) -> Exit {
     if matches!(
         stop_reason,
-        Some(StopReason::AcquisitionTimeout | StopReason::AmbiguousStageMatch)
+        Some(
+            StopReason::AcquisitionTimeout
+                | StopReason::AmbiguousStageMatch
+                | StopReason::PlatformExitedBeforeClient
+                | StopReason::EscapedPlatformClient
+                | StopReason::PlatformDispatchFailed
+                | StopReason::PlatformStartFailed
+                | StopReason::ProcessWatcherLost
+        )
     ) {
         return Exit::new(1);
     }
@@ -525,6 +533,44 @@ enum DriverMsg {
     Proc(ProcessEvent),
 }
 
+/// One-shot authority gate for the title dispatch of an owned platform launch.
+///
+/// The retained title action is authorized only after the watcher has bound the
+/// exact process created for the platform root to the `platform` role. Repeated
+/// snapshots cannot authorize a second dispatch.
+#[derive(Default)]
+#[cfg(any(test, all(feature = "etw", windows)))]
+struct PlatformDispatchGate {
+    root_pid: Option<u32>,
+    issued: bool,
+}
+
+#[cfg(any(test, all(feature = "etw", windows)))]
+type RoleBinding = (u32, Option<Arc<str>>, Option<fragcap::StageId>);
+
+#[cfg(any(test, all(feature = "etw", windows)))]
+impl PlatformDispatchGate {
+    fn arm(&mut self, root_pid: Option<u32>) {
+        self.root_pid = root_pid;
+    }
+
+    fn observe(&mut self, bindings: &[RoleBinding]) -> bool {
+        if self.issued {
+            return false;
+        }
+        let Some(root_pid) = self.root_pid else {
+            return false;
+        };
+        if bindings.iter().any(|(pid, role, _)| {
+            *pid == root_pid && role.as_deref().is_some_and(|role| role == "platform")
+        }) {
+            self.issued = true;
+            return true;
+        }
+        false
+    }
+}
+
 /// The live, streaming driver. Distinct from the offline two-phase path because
 /// a live stream has no end the driver can read ahead to.
 ///
@@ -600,6 +646,7 @@ fn capture_live(
     let stamper_reader = components.stamper.clone();
     let (handle, stop, stream_reports, ring_evicted, live) =
         spawn_pipeline(config, &mut components, gate)?;
+    let mut platform_dispatch = PlatformDispatchGate::default();
 
     // Managed launch (S17, specification 16.4): the session is already Watching
     // (attached before this function) and the sinks are open (spawn_pipeline above),
@@ -619,24 +666,39 @@ fn capture_live(
                 "{} through publisher chain",
                 request.root().executable().display()
             ),
+            fragcap::managed_launch::ManagedLaunch::Platform(request) => format!(
+                "{} as an owned platform root",
+                request.root().executable().display()
+            ),
         };
         emitter.progress(&format!("launching {description}"));
-        if let Err(e) = request.execute() {
-            // The pipeline is already running from arm. Stop and join it so the
-            // sinks finalize and no output file is left unclosed, drop the watcher
-            // to end the live receiver, and surface the run's loss accounting,
-            // before returning the launch failure (Codex review of PR #31). The
-            // window was never opened, so every frame read is a watch-time discard
-            // already in the gate's tallies.
-            stop.stop();
-            let _ = components.watcher.take();
-            let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
-            emit_stream_reports(&stream_reports, emitter);
-            emit_ring_report(&ring_evicted, emitter);
-            session.finalize();
-            let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
-            emitter.summary(&summary);
-            return Err(CliError::failure(e.to_string()));
+        match request.execute() {
+            Ok(receipt) => {
+                if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
+                    platform_dispatch.arm(receipt.process_id());
+                }
+            }
+            Err(e) => {
+                // The pipeline is already running from arm. Stop and join it so the
+                // sinks finalize and no output file is left unclosed, drop the watcher
+                // to end the live receiver, and surface the run's loss accounting,
+                // before returning the launch failure (Codex review of PR #31). The
+                // window was never opened, so every frame read is a watch-time discard
+                // already in the gate's tallies.
+                stop.stop();
+                let _ = components.watcher.take();
+                let report: PipelineReport =
+                    handle.join().expect("the pipeline thread did not panic");
+                emit_stream_reports(&stream_reports, emitter);
+                emit_ring_report(&ring_evicted, emitter);
+                if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
+                    session.on_platform_start_failure();
+                }
+                session.finalize();
+                let summary = build_summary(false, &session, &report.stats, Some(&gate_handle));
+                emitter.summary(&summary);
+                return Err(CliError::failure(e.to_string()));
+            }
         }
     }
 
@@ -683,7 +745,20 @@ fn capture_live(
                 let event_at = event.at();
                 record_bound_image(&event, &mut bound_images);
                 apply_event(event, &mut session, &mut bound, emitter);
-                publisher.publish(session.role_bindings());
+                let bindings = session.role_bindings();
+                publisher.publish(bindings.clone());
+                if platform_dispatch.observe(&bindings) {
+                    let dispatch = config.launch.as_ref().and_then(|launch| match launch {
+                        fragcap::managed_launch::ManagedLaunch::Platform(platform) => {
+                            Some(platform.dispatch_title())
+                        }
+                        _ => None,
+                    });
+                    if let Some(Err(error)) = dispatch {
+                        emitter.progress(&format!("platform title dispatch failed: {error}"));
+                        session.on_platform_dispatch_failure();
+                    }
+                }
                 if session.state() == SessionState::Capturing {
                     acquired_at = Some(event_at);
                 }
@@ -692,7 +767,10 @@ fn capture_live(
             // acquisition timeout or duration bound can still fire.
             Err(mpsc::RecvTimeoutError::Timeout) => session.on_tick(elapsed_ts(started)),
             // The watcher is gone; no target can now be acquired.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                session.on_process_watcher_lost();
+                break;
+            }
         }
     }
 
@@ -1400,8 +1478,30 @@ fn build_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::final_exit;
-    use fragcap::StopReason;
+    use super::{final_exit, PlatformDispatchGate};
+    use fragcap::{StageId, StopReason};
+    use std::sync::Arc;
+
+    #[test]
+    fn platform_dispatch_waits_for_the_exact_root_and_is_issued_once() {
+        let mut gate = PlatformDispatchGate::default();
+        gate.arm(Some(42));
+        let wrong_pid = vec![(
+            41,
+            Some(Arc::from("platform")),
+            Some(StageId::new("platform")),
+        )];
+        let wrong_role = vec![(42, Some(Arc::from("client")), Some(StageId::new("client")))];
+        let exact = vec![(
+            42,
+            Some(Arc::from("platform")),
+            Some(StageId::new("platform")),
+        )];
+        assert!(!gate.observe(&wrong_pid));
+        assert!(!gate.observe(&wrong_role));
+        assert!(gate.observe(&exact));
+        assert!(!gate.observe(&exact), "the retained dispatch is one-shot");
+    }
 
     // A run that ended with no sink failure is a success on any surface.
     #[test]

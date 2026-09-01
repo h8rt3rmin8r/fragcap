@@ -20,6 +20,8 @@ use crate::targets::{entry_windows_launch_entries, TargetEntry};
 pub enum ManagedLaunch {
     /// Existing Steam protocol managed launch.
     Steam(crate::steam::LaunchRequest),
+    /// Exact cold platform root followed by a separately authorized title dispatch.
+    Platform(PlatformClientLaunch),
     /// Exact direct child-process creation.
     Direct(DirectExecutableLaunch),
     /// Exact publisher launcher root plus its declared descendant chain.
@@ -40,6 +42,7 @@ impl ManagedLaunch {
     {
         match self {
             Self::Steam(_) => Err(LaunchConfigError::EnvironmentUnsupported),
+            Self::Platform(platform) => platform.with_environment(entries).map(Self::Platform),
             Self::Direct(mut direct) => {
                 for (key, value) in entries {
                     let key = key.into();
@@ -69,7 +72,164 @@ impl ManagedLaunch {
             }
             Self::Direct(direct) => direct.execute(),
             Self::Publisher(publisher) => publisher.root.execute(),
+            Self::Platform(platform) => platform.root.execute(),
         }
+    }
+}
+
+/// Side-effect-free producer of one exact platform launch plan.
+pub trait PlatformLaunchAdapter {
+    /// Prepare the platform root and retained title dispatch from local facts.
+    fn prepare(
+        &self,
+        profile: &crate::profile::Profile,
+    ) -> Result<PlatformClientLaunch, LaunchConfigError>;
+}
+
+/// Steam implementation of the reusable platform launch boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SteamPlatformAdapter {
+    root: PathBuf,
+}
+
+impl SteamPlatformAdapter {
+    /// Construct an adapter from an already-resolved root, primarily for tests.
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    /// Resolve the current local Steam root through the existing registry reader.
+    pub fn discover() -> Result<Self, LaunchConfigError> {
+        crate::steam::installation_root()
+            .map(Self::new)
+            .map_err(|error| LaunchConfigError::Platform(error.to_string()))
+    }
+}
+
+impl PlatformLaunchAdapter for SteamPlatformAdapter {
+    fn prepare(
+        &self,
+        profile: &crate::profile::Profile,
+    ) -> Result<PlatformClientLaunch, LaunchConfigError> {
+        let request = crate::steam::launch_request(profile)
+            .map_err(|error| LaunchConfigError::Platform(error.to_string()))?;
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|source| LaunchConfigError::Path {
+                path: self.root.clone(),
+                source,
+            })?;
+        let executable_path = root.join("steam.exe");
+        let executable =
+            executable_path
+                .canonicalize()
+                .map_err(|source| LaunchConfigError::Path {
+                    path: executable_path,
+                    source,
+                })?;
+        validate_direct_paths(&executable, &root)?;
+        PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(executable, root, vec![OsString::from("-silent")])?,
+            PlatformDispatch::SteamApp {
+                application_id: request.app_id,
+            },
+        )
+    }
+}
+
+/// Exact retained title dispatch for a prepared platform client.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformDispatch {
+    /// Dispatch one Steam application through the exact retained client.
+    SteamApp { application_id: String },
+}
+
+impl PlatformDispatch {
+    pub fn application_id(&self) -> &str {
+        match self {
+            Self::SteamApp { application_id } => application_id,
+        }
+    }
+}
+
+/// Immutable cold platform root and a separate application dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformClientLaunch {
+    platform: String,
+    root: DirectExecutableLaunch,
+    dispatch: PlatformDispatch,
+}
+
+impl PlatformClientLaunch {
+    pub fn new(
+        platform: impl Into<String>,
+        root: DirectExecutableLaunch,
+        dispatch: PlatformDispatch,
+    ) -> Result<Self, LaunchConfigError> {
+        let platform = platform.into();
+        if platform.is_empty() || dispatch.application_id().is_empty() {
+            return Err(LaunchConfigError::InvalidPlatformLaunch(
+                "platform and application identifiers must be non-empty".into(),
+            ));
+        }
+        Ok(Self {
+            platform,
+            root,
+            dispatch,
+        })
+    }
+
+    pub fn platform(&self) -> &str {
+        &self.platform
+    }
+
+    pub fn root(&self) -> &DirectExecutableLaunch {
+        &self.root
+    }
+
+    pub fn dispatch(&self) -> &PlatformDispatch {
+        &self.dispatch
+    }
+
+    pub fn application_id(&self) -> &str {
+        self.dispatch.application_id()
+    }
+
+    pub fn with_environment<I, K, V>(mut self, entries: I) -> Result<Self, LaunchConfigError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        for (key, value) in entries {
+            let key = key.into();
+            validate_environment_key(&key)?;
+            self.root.environment.insert(key, value.into());
+        }
+        Ok(self)
+    }
+
+    /// Issue the retained application dispatch through the exact prepared client.
+    pub fn dispatch_title(&self) -> Result<LaunchReceipt, LaunchError> {
+        let arguments = match &self.dispatch {
+            PlatformDispatch::SteamApp { application_id } => {
+                vec![OsString::from("-applaunch"), OsString::from(application_id)]
+            }
+        };
+        let dispatch = DirectExecutableLaunch {
+            executable: self.root.executable.clone(),
+            working_directory: self.root.working_directory.clone(),
+            arguments,
+            environment: BTreeMap::new(),
+        };
+        dispatch.execute().map_err(|error| match error {
+            LaunchError::Direct { executable, source } => {
+                LaunchError::Dispatch { executable, source }
+            }
+            other => other,
+        })
     }
 }
 
@@ -231,6 +391,9 @@ pub fn prepare_direct_launch(target: &TargetEntry) -> Result<ManagedLaunch, Laun
                 .map(|stage| stage.executable.display().to_string())
                 .collect(),
         )),
+        ManagedLaunch::Platform(_) => {
+            unreachable!("stored target preparation never creates a platform plan")
+        }
         ManagedLaunch::Steam(_) => unreachable!("stored target preparation never creates Steam"),
     }
 }
@@ -469,6 +632,8 @@ pub enum LaunchConfigError {
     InvalidEnvironmentKey(OsString),
     InvalidArguments(String),
     InvalidPublisherChain(Vec<String>),
+    Platform(String),
+    InvalidPlatformLaunch(String),
 }
 
 impl fmt::Display for LaunchConfigError {
@@ -522,6 +687,10 @@ impl fmt::Display for LaunchConfigError {
                 "stored publisher chain is invalid: {}",
                 diagnostics.join("; ")
             ),
+            Self::Platform(message) => write!(f, "platform launch is unavailable: {message}"),
+            Self::InvalidPlatformLaunch(message) => {
+                write!(f, "platform launch is invalid: {message}")
+            }
         }
     }
 }
@@ -536,6 +705,10 @@ pub enum LaunchError {
         executable: PathBuf,
         source: std::io::Error,
     },
+    Dispatch {
+        executable: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for LaunchError {
@@ -545,6 +718,11 @@ impl fmt::Display for LaunchError {
             Self::Direct { executable, source } => {
                 write!(f, "cannot launch {}: {source}", executable.display())
             }
+            Self::Dispatch { executable, source } => write!(
+                f,
+                "cannot dispatch the selected title through {}: {source}",
+                executable.display()
+            ),
         }
     }
 }
@@ -747,6 +925,87 @@ mod tests {
         );
         fs::remove_dir_all(game_root).unwrap();
         fs::remove_dir_all(publisher_root).unwrap();
+    }
+
+    #[test]
+    fn steam_adapter_prepares_exact_root_and_separate_dispatch() {
+        let root = unique_dir("steam-platform");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("steam.exe"), b"fixture").unwrap();
+        let profile = crate::profile::Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G","platform":"steam","app_id":"900883"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"Game.exe"}}]}"#,
+        )
+        .unwrap();
+
+        let launch = SteamPlatformAdapter::new(root.clone())
+            .prepare(&profile)
+            .unwrap()
+            .with_environment([("HTTP_PROXY", "http://127.0.0.1:43126")])
+            .unwrap();
+
+        assert_eq!(launch.platform(), "steam");
+        assert_eq!(launch.application_id(), "900883");
+        assert_eq!(
+            launch.root().working_directory(),
+            root.canonicalize().unwrap()
+        );
+        assert_eq!(
+            launch.root().executable(),
+            root.join("steam.exe").canonicalize().unwrap()
+        );
+        assert_eq!(
+            launch.root().environment().get(OsStr::new("HTTP_PROXY")),
+            Some(&OsString::from("http://127.0.0.1:43126"))
+        );
+        assert_eq!(
+            launch.dispatch(),
+            &PlatformDispatch::SteamApp {
+                application_id: "900883".into()
+            }
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn steam_adapter_refuses_a_missing_or_escaping_executable() {
+        let root = unique_dir("steam-platform-invalid");
+        fs::create_dir_all(&root).unwrap();
+        let profile = crate::profile::Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"verified","game":{"id":"g","name":"G","platform":"steam","app_id":"1"},"stage":[{"role":"target","lifecycle":"session","terminal":true,"match":{"exe":"Game.exe"}}]}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            SteamPlatformAdapter::new(root.clone()).prepare(&profile),
+            Err(LaunchConfigError::Path { .. })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn platform_launch_environment_is_applied_only_to_the_owned_root() {
+        let executable = std::env::current_exe().unwrap();
+        let working_directory = executable.parent().unwrap().to_path_buf();
+        let platform = PlatformClientLaunch::new(
+            "steam",
+            DirectExecutableLaunch::new(executable, working_directory, Vec::new()).unwrap(),
+            PlatformDispatch::SteamApp {
+                application_id: "42".into(),
+            },
+        )
+        .unwrap();
+
+        let launch = ManagedLaunch::Platform(platform)
+            .with_environment([("HTTPS_PROXY", "http://127.0.0.1:43127")])
+            .unwrap();
+        let ManagedLaunch::Platform(platform) = launch else {
+            panic!("expected platform launch");
+        };
+        assert_eq!(
+            platform.root().environment().get(OsStr::new("HTTPS_PROXY")),
+            Some(&OsString::from("http://127.0.0.1:43127"))
+        );
+        assert_eq!(platform.application_id(), "42");
     }
 
     #[test]
