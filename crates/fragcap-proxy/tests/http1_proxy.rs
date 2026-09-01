@@ -136,7 +136,8 @@ fn forwards_early_hints_and_continue_before_waiting_for_the_request_body() {
             .unwrap();
     });
 
-    let mut lease = start_proxy(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with_sink(address, Some(collector.clone()));
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let auth = lease.capability_proof().proxy_authorization();
     let mut client = TcpStream::connect(endpoint).unwrap();
@@ -212,6 +213,7 @@ fn forwards_a_final_expectation_rejection_without_waiting_for_a_body() {
         let (mut stream, _) = origin.accept().unwrap();
         let request = String::from_utf8(read_head(&mut stream)).unwrap();
         assert!(request.contains("Expect: 100-continue\r\n"));
+        std::thread::sleep(Duration::from_millis(50));
         stream
             .write_all(
                 b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -222,7 +224,8 @@ fn forwards_a_final_expectation_rejection_without_waiting_for_a_body() {
         assert!(body.is_empty());
     });
 
-    let mut lease = start_proxy(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with_sink(address, Some(collector.clone()));
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let auth = lease.capability_proof().proxy_authorization();
     let mut client = TcpStream::connect(endpoint).unwrap();
@@ -238,6 +241,16 @@ fn forwards_a_final_expectation_rejection_without_waiting_for_a_body() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.responses, 1);
     assert_eq!(report.observation.application[0].status, Some(417));
+    let events = collector.0.lock().unwrap();
+    let timing = events
+        .iter()
+        .find_map(|event| match event.kind {
+            ApplicationEventKind::HttpTiming(timing) => Some(timing),
+            _ => None,
+        })
+        .expect("the early final response has measured phases");
+    assert!(timing.wait_ns >= 25_000_000, "{timing:?}");
+    assert!(timing.send_ns < timing.wait_ns, "{timing:?}");
 }
 
 #[test]

@@ -121,6 +121,13 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
             "invalid version 2 manifest",
         ));
     }
+    let product = product.expect("validated product object");
+    if !has_only_keys(product, &["name", "version"]) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "product contains an unknown field",
+        ));
+    }
     let mut roles = BTreeSet::new();
     let mut omitted_roles = BTreeSet::new();
     let mut paths = BTreeSet::new();
@@ -132,7 +139,29 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
         let role = artifact
             .get("role")
             .and_then(Value::as_str)
+            .filter(|role| !role.is_empty())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "artifact role missing"))?;
+        if !has_only_keys(
+            artifact,
+            &[
+                "role",
+                "path",
+                "omission_reason",
+                "authority",
+                "sensitivity",
+                "content_type",
+                "required",
+                "finalization",
+                "completeness",
+                "loss",
+                "correlation",
+            ],
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "artifact contains an unknown field",
+            ));
+        }
         if !roles.insert(role.to_string()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -161,8 +190,24 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "artifact authority invalid")
             })?;
-        if authority.get("kind").and_then(Value::as_str).is_none()
-            || authority.get("owner").and_then(Value::as_str).is_none()
+        if !has_only_keys(authority, &["kind", "owner", "source_role"])
+            || !matches!(
+                authority.get("kind").and_then(Value::as_str),
+                Some(
+                    "primary-evidence"
+                        | "derived-projection"
+                        | "bundle-index"
+                        | "analyzer-aid"
+                        | "operational-record"
+                )
+            )
+            || authority
+                .get("owner")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || authority
+                .get("source_role")
+                .is_some_and(|value| !value.is_null() && value.as_str().is_none_or(str::is_empty))
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -181,6 +226,15 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
         let finalization = artifact.get("finalization").and_then(Value::as_str);
         let required = artifact.get("required").and_then(Value::as_bool) == Some(true);
         if artifact.get("required").and_then(Value::as_bool).is_none()
+            || artifact
+                .get("content_type")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || !artifact.get("loss").is_some_and(Value::is_object)
+            || !artifact.get("correlation").is_some_and(Value::is_object)
+            || artifact
+                .get("omission_reason")
+                .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
             || !matches!(
                 artifact.get("sensitivity").and_then(Value::as_str),
                 Some("ordinary" | "sensitive" | "secret-adjacent")
@@ -197,6 +251,15 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
             ));
         }
         let path = artifact.get("path").and_then(Value::as_str);
+        if artifact
+            .get("path")
+            .is_some_and(|value| value.as_str().is_none())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "artifact path has invalid type",
+            ));
+        }
         if completeness == Some("omitted") {
             omitted_roles.insert(role.to_string());
             if path.is_some()
@@ -240,11 +303,19 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
     }
     let mut declared_omissions = BTreeSet::new();
     for omission in object["omissions"].as_array().expect("checked above") {
+        let omission = omission.as_object().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "omission must be an object")
+        })?;
         let role = omission
             .get("role")
             .and_then(Value::as_str)
+            .filter(|role| !role.is_empty())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "omission role missing"))?;
-        if omission.get("reason").and_then(Value::as_str).is_none()
+        if !has_only_keys(omission, &["role", "reason", "severity"])
+            || omission
+                .get("reason")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
             || !matches!(
                 omission.get("severity").and_then(Value::as_str),
                 Some("info" | "warn" | "error")
@@ -264,6 +335,10 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn has_only_keys(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> bool {
+    object.keys().all(|key| allowed.contains(&key.as_str()))
 }
 
 pub fn write_crash_prefix(bundle: &Path, session_id: &str) -> io::Result<()> {
@@ -427,6 +502,30 @@ mod tests {
         value.as_object_mut().unwrap().remove("session_id");
         assert!(ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err());
         value["session_id"] = Value::String(String::new());
+        assert!(ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn version_two_enforces_artifact_field_types_and_enums() {
+        let original: Value = serde_json::from_slice(include_bytes!(
+            "../../../../docs/schema/examples/deep-capture-manifest-v2-complete.json"
+        ))
+        .unwrap();
+        for (field, invalid) in [
+            ("loss", Value::Null),
+            ("correlation", Value::String("unknown".to_string())),
+            ("content_type", Value::String(String::new())),
+            ("sensitivity", Value::String("private".to_string())),
+        ] {
+            let mut value = original.clone();
+            value["artifacts"][0][field] = invalid;
+            assert!(
+                ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "{field} must match the published schema"
+            );
+        }
+        let mut value = original;
+        value["artifacts"][0]["unexpected"] = Value::Bool(true);
         assert!(ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }

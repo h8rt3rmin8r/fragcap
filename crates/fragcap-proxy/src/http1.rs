@@ -574,6 +574,7 @@ where
             let send_started_at = Instant::now();
             let head = encode_request(&request);
             write_bounded(&mut upstream, &head, limits.idle_timeout).await?;
+            let request_head_sent_at = Instant::now();
 
             let mut early_final = None;
             let mut force_close = false;
@@ -605,6 +606,7 @@ where
                     let response =
                         read_forward_response(&mut upstream, &mut client, limits, &request.method)
                             .await?;
+                    let response_head_at = Instant::now();
                     if (100..200).contains(&response.status) && response.status != 101 {
                         emit_response_metadata(
                             &context,
@@ -628,7 +630,7 @@ where
                         continue;
                     }
                     force_close = true;
-                    early_final = Some(response);
+                    early_final = Some((response, response_head_at));
                     break;
                 }
             } else {
@@ -642,13 +644,18 @@ where
                 .await?;
             }
 
-            let request_sent_at = Instant::now();
-            let response = match early_final {
+            let request_sent_at = if early_final.is_some() {
+                request_head_sent_at
+            } else {
+                Instant::now()
+            };
+            let (response, response_head_at) = match early_final {
                 Some(response) => response,
                 None => loop {
                     let response =
                         read_forward_response(&mut upstream, &mut client, limits, &request.method)
                             .await?;
+                    let response_head_at = Instant::now();
                     if (100..200).contains(&response.status) && response.status != 101 {
                         emit_response_metadata(
                             &context,
@@ -660,7 +667,7 @@ where
                             accounting.informational_responses.saturating_add(1);
                         continue;
                     }
-                    break response;
+                    break (response, response_head_at);
                 },
             };
             Ok::<_, ProtocolError>((
@@ -669,14 +676,21 @@ where
                 force_close,
                 send_started_at,
                 request_sent_at,
+                response_head_at,
             ))
         }
         .await;
         request_body
             .finish(limits, crate::StreamingOutcome::Complete)
             .await;
-        let (mut upstream, response, force_close, send_started_at, request_sent_at) = match exchange
-        {
+        let (
+            mut upstream,
+            response,
+            force_close,
+            send_started_at,
+            request_sent_at,
+            response_head_at,
+        ) = match exchange {
             Ok(value) => value,
             Err(error) => {
                 request_body.emit_failure(&error);
@@ -686,7 +700,6 @@ where
                 break Some(error);
             }
         };
-        let response_head_at = Instant::now();
         accounting.responses = accounting.responses.saturating_add(1);
         crate::application::emit(
             &context.application_sink,

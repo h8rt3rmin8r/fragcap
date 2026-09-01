@@ -2080,10 +2080,10 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     ));
     cleanup_resources.push(CleanupResource::new(
         "manifest-state",
-        "pending",
-        "resource cleanup finished; final manifest write is pending",
+        "publication-ready",
+        "resource cleanup truth is durable; final manifest may now be published",
     ));
-    let mut final_cleanup = CleanupReport::new(cleanup_resources);
+    let final_cleanup = CleanupReport::new(cleanup_resources);
     write_file(
         ctx.session.bundle.join("cleanup.json"),
         cleanup_json(&ctx.session.session_id, &final_cleanup)?.as_bytes(),
@@ -2099,17 +2099,6 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     )?;
     fragcap::deep_capture::publish_final(&ctx.session.bundle, manifest.as_bytes())
         .map_err(|error| CliError::failure(format!("cannot publish final manifest: {error}")))?;
-    let manifest_state = final_cleanup
-        .resources
-        .iter_mut()
-        .find(|resource| resource.resource == "manifest-state")
-        .expect("the cleanup report always declares manifest state");
-    manifest_state.status = "written".to_string();
-    manifest_state.reason = "final manifest written after resource cleanup".to_string();
-    write_file(
-        ctx.session.bundle.join("cleanup.json"),
-        cleanup_json(&ctx.session.session_id, &final_cleanup)?.as_bytes(),
-    )?;
 
     let mut produced_artifacts = vec![
         ("application-jsonl", "sensitive"),

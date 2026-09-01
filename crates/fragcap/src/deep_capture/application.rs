@@ -111,10 +111,37 @@ struct ChannelSink {
     sender: Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>,
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
+    connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
 }
 
 impl ApplicationEventSink for ChannelSink {
     fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        // Connection lifetime is correlation control data, not a lossy body or
+        // protocol observation. Retain it independently before attempting the
+        // bounded event queue so pressure cannot erase the only descriptor for
+        // an accepted connection.
+        if let ApplicationEventKind::ConnectionOpen(descriptor) = &event.kind {
+            self.connections
+                .lock()
+                .expect("application connection lock")
+                .insert(
+                    event.connection_id,
+                    ApplicationConnectionWindow {
+                        descriptor: *descriptor,
+                        opened_at_ns: event.timestamp_ns,
+                        closed_at_ns: None,
+                    },
+                );
+        } else if matches!(event.kind, ApplicationEventKind::ConnectionTerminal(_)) {
+            if let Some(window) = self
+                .connections
+                .lock()
+                .expect("application connection lock")
+                .get_mut(&event.connection_id)
+            {
+                window.closed_at_ns = Some(event.timestamp_ns);
+            }
+        }
         if self.retired.load(Ordering::Acquire) {
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::Retired;
@@ -223,10 +250,12 @@ impl ApplicationArtifactLease {
         let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
+        let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = Arc::new(ChannelSink {
             sender: Mutex::new(Some(sender)),
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
+            connections: Arc::clone(&connections),
         });
         let worker_account = Arc::clone(&account);
         let worker = std::thread::Builder::new()
@@ -238,6 +267,7 @@ impl ApplicationArtifactLease {
                     receiver,
                     retired,
                     worker_account,
+                    connections,
                     correlation,
                 )
             })?;
@@ -286,6 +316,7 @@ fn writer_loop(
     receiver: mpsc::Receiver<ApplicationEvent>,
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
+    connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
     correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
 ) -> io::Result<()> {
     let mut writer = BufWriter::new(file);
@@ -298,22 +329,7 @@ fn writer_loop(
     let mut streaming_retained = 0_u64;
     let mut streaming_truncated = 0_u64;
     let mut streaming_by_outcome = BTreeMap::<String, u64>::new();
-    let mut connections = BTreeMap::<u64, ApplicationConnectionWindow>::new();
     for event in receiver {
-        if let ApplicationEventKind::ConnectionOpen(descriptor) = &event.kind {
-            connections.insert(
-                event.connection_id,
-                ApplicationConnectionWindow {
-                    descriptor: *descriptor,
-                    opened_at_ns: event.timestamp_ns,
-                    closed_at_ns: None,
-                },
-            );
-        } else if matches!(event.kind, ApplicationEventKind::ConnectionTerminal(_)) {
-            if let Some(window) = connections.get_mut(&event.connection_id) {
-                window.closed_at_ns = Some(event.timestamp_ns);
-            }
-        }
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
         if let ApplicationEventKind::Body(segment) = &event.kind {
@@ -356,6 +372,8 @@ fn writer_loop(
         }
     }
     let mut correlation_counts = BTreeMap::<String, u64>::new();
+    let connections =
+        std::mem::take(&mut *connections.lock().expect("application connection lock"));
     for (connection_id, window) in connections {
         sequence = sequence.saturating_add(1);
         let resolved = correlation(&window);
@@ -1112,6 +1130,87 @@ fn trailer_reconciles(records: &[Value]) -> bool {
 mod tests {
     use super::*;
     use fragcap_proxy::{ApplicationEvent, ApplicationEventKind, StreamTerminal};
+
+    #[test]
+    fn queue_pressure_cannot_erase_a_connection_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.jsonl");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        write_record(&mut file, &header_record("session")).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let retired = Arc::new(AtomicBool::new(false));
+        let account = Arc::new(WriterAccount::default());
+        let connections = Arc::new(Mutex::new(BTreeMap::new()));
+        let sink = ChannelSink {
+            sender: Mutex::new(Some(sender)),
+            retired: Arc::clone(&retired),
+            account: Arc::clone(&account),
+            connections: Arc::clone(&connections),
+        };
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                99,
+                Some(1),
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::HttpStreamOpen,
+            )),
+            EventDisposition::Accepted
+        );
+        let descriptor = ConnectionDescriptor {
+            transport: "tcp",
+            client_peer: "127.0.0.1:41000".parse().unwrap(),
+            proxy_local: "127.0.0.1:42000".parse().unwrap(),
+        };
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                7,
+                None,
+                None,
+                ApplicationEventKind::ConnectionOpen(descriptor),
+            )),
+            EventDisposition::QueueFull
+        );
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                7,
+                None,
+                None,
+                ApplicationEventKind::ConnectionTerminal(StreamTerminal::Complete),
+            )),
+            EventDisposition::QueueFull
+        );
+        drop(sink.sender.lock().unwrap().take());
+        writer_loop(
+            file,
+            "session",
+            receiver,
+            retired,
+            account,
+            connections,
+            Arc::new(|_| ApplicationCorrelation {
+                state: Some("unavailable".to_string()),
+                reason: Some("packet-evidence-unavailable".to_string()),
+                ..ApplicationCorrelation::default()
+            }),
+        )
+        .unwrap();
+        let prefix = read_application_prefix(&path).unwrap();
+        assert_eq!(prefix.status, ApplicationStreamStatus::Complete);
+        let correlation = prefix
+            .records
+            .iter()
+            .find(|record| record["type"] == "application.correlation")
+            .expect("the queue-dropped descriptor still produces final correlation");
+        assert_eq!(correlation["proxy_connection_id"], 7);
+        assert_eq!(correlation["correlation_state"], "unavailable");
+    }
 
     #[test]
     fn connection_correlation_is_resolved_once_after_event_collection() {
