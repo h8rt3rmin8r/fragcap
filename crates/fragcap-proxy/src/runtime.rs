@@ -1175,6 +1175,7 @@ async fn run(
                                     let terminal = match &outcome {
                                         ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
                                         ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
+                                        ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.code == "connection-cancelled") => crate::StreamTerminal::Shutdown,
                                         ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
                                         ConnectionOutcome::PreAuthenticationFailed(_) => crate::StreamTerminal::ProtocolError,
                                         ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,

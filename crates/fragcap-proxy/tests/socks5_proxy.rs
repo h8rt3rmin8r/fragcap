@@ -228,7 +228,12 @@ fn tls_prefix_is_classified_without_consuming_it() {
 fn no_auth_method_and_unsupported_command_are_finite_refusals() {
     let origin = TcpListener::bind("127.0.0.1:0").unwrap();
     origin.set_nonblocking(true).unwrap();
-    let mut lease = start_proxy(origin.local_addr().unwrap());
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with(
+        origin.local_addr().unwrap(),
+        ProtocolLimits::default(),
+        Some(collector.clone()),
+    );
     let mut unauthenticated = TcpStream::connect(lease.endpoint()).unwrap();
     unauthenticated
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -252,6 +257,14 @@ fn no_auth_method_and_unsupported_command_are_finite_refusals() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.authentication_refused, 1);
     assert_eq!(report.observation.protocol.socks_connect_refused, 1);
+    assert!(collector.0.lock().unwrap().iter().any(|event| {
+        matches!(
+            event.kind,
+            ApplicationEventKind::Error {
+                code: "socks-command-unsupported"
+            }
+        )
+    }));
 }
 
 #[test]
@@ -378,6 +391,34 @@ fn cancellation_is_terminal_and_typed_events_share_connection_identity() {
                 event.kind,
                 ApplicationEventKind::ConnectionTerminal(StreamTerminal::Shutdown)
             )
+    }));
+}
+
+#[test]
+fn cancellation_during_authentication_is_a_shutdown_terminal() {
+    let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with(
+        origin.local_addr().unwrap(),
+        ProtocolLimits::default(),
+        Some(collector.clone()),
+    );
+    let mut client = TcpStream::connect(lease.endpoint()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client.write_all(&[5, 1, 2]).unwrap();
+    let mut selection = [0_u8; 2];
+    client.read_exact(&mut selection).unwrap();
+    assert_eq!(selection, [5, 2]);
+
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.socks_auth_succeeded, 0);
+    assert!(collector.0.lock().unwrap().iter().any(|event| {
+        matches!(
+            event.kind,
+            ApplicationEventKind::ConnectionTerminal(StreamTerminal::Shutdown)
+        )
     }));
 }
 

@@ -2,6 +2,7 @@
 
 //! Bounded SOCKS5 TCP negotiation and byte-transparent relay.
 
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -146,6 +147,16 @@ pub(crate) async fn serve_socks5(
         Err(failure) => {
             accounting.parse_refused = 1;
             accounting.socks_connect_refused = 1;
+            crate::application::emit(
+                sink,
+                ApplicationEvent::now(
+                    session_id,
+                    connection_id,
+                    None,
+                    None,
+                    ApplicationEventKind::Error { code: failure.code },
+                ),
+            );
             let _ = write_reply(&mut client, failure.reply, None).await;
             return failed(accounting, failure);
         }
@@ -233,6 +244,8 @@ pub(crate) async fn serve_socks5(
         RelayContext {
             buffer_bytes,
             idle_timeout: limits.idle_timeout,
+            upstream_read_timeout: limits.upstream.read,
+            upstream_write_timeout: limits.upstream.write,
             shutdown: &mut shutdown,
             client_bytes: &client_bytes,
             upstream_bytes: &upstream_bytes,
@@ -442,6 +455,8 @@ async fn read_exact_until(
 struct RelayContext<'a> {
     buffer_bytes: usize,
     idle_timeout: Duration,
+    upstream_read_timeout: Duration,
+    upstream_write_timeout: Duration,
     shutdown: &'a mut watch::Receiver<bool>,
     client_bytes: &'a AtomicU64,
     upstream_bytes: &'a AtomicU64,
@@ -459,18 +474,25 @@ where
     let RelayContext {
         buffer_bytes,
         idle_timeout,
+        upstream_read_timeout,
+        upstream_write_timeout,
         shutdown,
         client_bytes,
         upstream_bytes,
         activity,
     } = context;
+    let progress = RelayProgress {
+        client_bytes,
+        upstream_bytes,
+        activity,
+    };
     let relay = relay_bidirectional(
         client,
         upstream,
         buffer_bytes,
-        client_bytes,
-        upstream_bytes,
-        activity,
+        upstream_read_timeout,
+        upstream_write_timeout,
+        &progress,
     );
     tokio::pin!(relay);
     let idle = tokio::time::sleep(idle_timeout);
@@ -481,8 +503,12 @@ where
             _ = shutdown.changed() => return Err(SocksFailure::cancelled()),
             _ = activity.notified() => idle.as_mut().reset(Instant::now() + idle_timeout),
             result = &mut relay => {
-                return result.map_err(|error| {
-                    SocksFailure::new("socks-forward-failed", error.to_string())
+                return result.map_err(|error| match error.kind() {
+                    io::ErrorKind::TimedOut => SocksFailure::timeout(
+                        "socks-forward-operation-timeout",
+                        SocksReplyCode::TtlExpired,
+                    ),
+                    _ => SocksFailure::new("socks-forward-failed", error.to_string()),
                 });
             }
             _ = &mut idle => {
@@ -495,13 +521,19 @@ where
     }
 }
 
+struct RelayProgress<'a> {
+    client_bytes: &'a AtomicU64,
+    upstream_bytes: &'a AtomicU64,
+    activity: &'a Notify,
+}
+
 async fn relay_bidirectional<U>(
     client: &mut TcpStream,
     upstream: &mut U,
     buffer_bytes: usize,
-    client_bytes: &AtomicU64,
-    upstream_bytes: &AtomicU64,
-    activity: &Notify,
+    upstream_read_timeout: Duration,
+    upstream_write_timeout: Duration,
+    progress: &RelayProgress<'_>,
 ) -> io::Result<()>
 where
     U: AsyncRead + AsyncWrite + Unpin,
@@ -513,15 +545,19 @@ where
             client_read,
             upstream_write,
             buffer_bytes,
-            client_bytes,
-            activity,
+            None,
+            Some(upstream_write_timeout),
+            progress.client_bytes,
+            progress.activity,
         ),
         relay_direction(
             upstream_read,
             client_write,
             buffer_bytes,
-            upstream_bytes,
-            activity,
+            Some(upstream_read_timeout),
+            None,
+            progress.upstream_bytes,
+            progress.activity,
         ),
     )?;
     Ok(())
@@ -531,6 +567,8 @@ async fn relay_direction<R, W>(
     mut reader: R,
     mut writer: W,
     buffer_bytes: usize,
+    read_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
     transferred: &AtomicU64,
     activity: &Notify,
 ) -> io::Result<()>
@@ -540,15 +578,15 @@ where
 {
     let mut buffer = vec![0_u8; buffer_bytes];
     loop {
-        let read = reader.read(&mut buffer).await?;
+        let read = timed_io(read_timeout, reader.read(&mut buffer)).await?;
         if read == 0 {
-            writer.shutdown().await?;
+            timed_io(write_timeout, writer.shutdown()).await?;
             return Ok(());
         }
         activity.notify_one();
         let mut written = 0;
         while written < read {
-            let count = writer.write(&buffer[written..read]).await?;
+            let count = timed_io(write_timeout, writer.write(&buffer[written..read])).await?;
             if count == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
@@ -559,6 +597,18 @@ where
             transferred.fetch_add(count as u64, Ordering::Relaxed);
             activity.notify_one();
         }
+    }
+}
+
+async fn timed_io<T>(
+    budget: Option<Duration>,
+    operation: impl Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    match budget {
+        Some(budget) => timeout(budget, operation)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SOCKS relay I/O timed out"))?,
+        None => operation.await,
     }
 }
 
@@ -756,5 +806,48 @@ fn failed_with_observation(
         observations: observation.into().into_iter().collect(),
         accounting,
         failure: Some(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn relay_honors_upstream_read_and_write_budgets() {
+        let (_idle_source, source) = tokio::io::duplex(1);
+        let (destination, _idle_destination) = tokio::io::duplex(1);
+        let transferred = AtomicU64::new(0);
+        let activity = Notify::new();
+        let read_timeout = relay_direction(
+            source,
+            destination,
+            8,
+            Some(Duration::from_millis(20)),
+            None,
+            &transferred,
+            &activity,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(read_timeout.kind(), io::ErrorKind::TimedOut);
+
+        let (mut source, reader) = tokio::io::duplex(8);
+        let (writer, _blocked_reader) = tokio::io::duplex(1);
+        source.write_all(b"bounded").await.unwrap();
+        source.shutdown().await.unwrap();
+        let write_timeout = relay_direction(
+            reader,
+            writer,
+            8,
+            None,
+            Some(Duration::from_millis(20)),
+            &transferred,
+            &activity,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(write_timeout.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(transferred.load(Ordering::Relaxed), 1);
     }
 }
