@@ -128,6 +128,7 @@ enforcement.
 | 0.1.34-draft | 2026-09-01 | W. Thompson | **Adds the native HTTP and TLS conformance gate (issue #305).** Extends sections 25 and 28.1. A closed versioned matrix requires two independent client and origin lineages for HTTP/1.1, HTTPS, HTTP/2, WebSocket, SSE, and gRPC, exact expected and observed outcomes, zero skipped required rows, complete native artifact reconciliation, and unmodified TShark consumption in a dedicated CI tier. Generic transports remain in milestone 3 and Deep Capture remains incomplete until #334. |
 | 0.1.35-draft | 2026-09-01 | W. Thompson | **Adds exact managed publisher-launcher chains (issue #307).** Extends sections 16.4, 17.2.1, and 28.1. One stored ordered role chain now supplies the shared Capture profile and managed launch, fragcap starts only a proven-cold root with child-scoped routing, and creation-time ancestry binds declared intermediates to the terminal client. Exact absolute paths may name external publisher installs; relative paths remain confined beneath the game install root. Warm and uncertain chains remain refused, and Deep Capture remains incomplete until #334. |
 | 0.1.36-draft | 2026-09-01 | W. Thompson | **Adds cold platform-client ownership (issue #308).** Extends sections 16.4, 17.2.1, and 28.1. Deep Capture prepares an exact Steam root and retained title dispatch, starts the cold root with child-scoped routing, waits until the exact created process binds to the platform role, and then dispatches the selected title once. Terminal ownership requires the declared client beneath that platform ancestry. Warm, escaped, exited, failed, ambiguous, and timed-out paths remain named non-success outcomes. Routing and propagation remain separate evidence, ordinary Capture keeps Steam protocol launch, and Deep Capture remains incomplete until #334. |
+| 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds the explicit warm-to-cold Deep Capture workflow (issue #309).** Extends sections 17.2.1, 26, 28, and 29. A selected bounded workflow reports identity-uncertain warm image observations, waits while the operator uses normal application shutdown, freshly resolves and prepares the cold launch, and requires a second authorization before effects. fragcap performs no process-control action or force-kill fallback. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2928,6 +2929,7 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --no-payload           Write packet metadata without payload bytes
       --trust-ca             Confirm fragcap-owned CA trust changes
       --yes                  Pre-confirm Deep Capture prompts
+      --restart-warm         Wait for normal shutdown and prepare a new cold launch
       --calibrate <PHASE>    Measure compatibility: reachability or tls
       --launch-case <CASE>   Declare the launch case being measured
       --har                  Write HAR when HTTP semantics are observable
@@ -3019,6 +3021,26 @@ When any process already has the selected direct client's image name, preflight
 therefore refuses because it cannot prove cold ownership. It does not claim that
 the same-named process is the selected target. Exact path disambiguation would
 require the target-process handle the project deliberately does not open.
+
+`--restart-warm` adds an explicit ordinary Deep Capture preflight workflow for
+warm direct, Steam, and publisher observations. It does not claim the same-named
+process belongs to the selected target and performs no terminate, signal,
+window-message, protocol-exit, relaunch, or force-kill action. After an
+interactive confirmation, or `--yes`, the operator closes the application
+through its normal user-facing control while fragcap observes the complete
+declared image set. The effective wait is the shorter of `--wait` and two
+minutes, defaulting to two minutes. Partial closure, inventory failure, and
+deadline expiry are distinct no-effect outcomes.
+
+One complete snapshot with every declared image absent permits fresh target
+resolution and cold launch preparation. The selector must resolve to the same
+stored target and the observed result must be the corresponding supported cold
+case. fragcap then presents that newly prepared plan and requires a second
+interactive authorization, also pre-confirmable by `--yes`, before bundle,
+proxy, trust, routing, launch, or compatibility effects. The ordinary managed
+session and cleanup authorities own every later result. The option conflicts
+with compatibility calibration and the controlled target; #317 retains
+calibration expansion.
 
 S104 removes the backend selector and makes the library-owned native proxy the
 sole production path. Continuous verification launches a controlled child process
@@ -4530,6 +4552,12 @@ ambiguity, loss, and deadline outcomes. It closes #308 without claiming warm
 restart, another platform adapter, generic transport support, or final
 completion. Routing reachability and platform-to-client propagation remain
 separate observations and compatibility facts.
+S113 adds an explicitly selected, finite warm-to-cold close-and-retry workflow
+for direct, Steam platform, and publisher launch cases. Image-name observation
+remains identity-uncertain, process shutdown remains operator-owned, and cold
+state causes fresh preparation plus a second authorization before effects. It
+closes #309 without adding process control, calibration expansion, generic
+transport support, or a final completion claim.
 
 The required dependency direction is:
 
@@ -4582,7 +4610,7 @@ The protocol and launch matrix is normative:
 | Cold direct executable | Shipped managed path | Native routing strategy #306 and calibration #317 |
 | Exact cold Steam platform client | Shipped when local facts prove reachability and the created platform root is observed before title dispatch | S112, #308 and calibration #317 |
 | Exact cold publisher launcher chain | Shipped when stored roles and current local facts prove final-client routing | S111, #307 |
-| Warm client | Refused | Explicit warm-to-cold workflow #309 |
+| Warm client | Explicit bounded operator-owned close-and-retry, otherwise refused | S113, #309 |
 | Target process hooks, memory reads, key extraction, interception drivers, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
 
 Protocol classification and omission reasons become exhaustive under #316;

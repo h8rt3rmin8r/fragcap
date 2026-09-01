@@ -154,6 +154,7 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
 | `--trust-ca` | open | `false` | all | Confirm the fragcap-owned CA trust change needed for HTTPS inspection. |
+| `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, then freshly prepare and authorize the cold launch. Conflicts with calibration. |
 | `--wait` | open | none | all | Set the target acquisition timeout. |
 | `--yes` | open | `false` | all | Pre-confirm Deep Capture prompts for an unattended run. |
 

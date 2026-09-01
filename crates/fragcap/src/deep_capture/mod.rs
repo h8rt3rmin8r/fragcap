@@ -22,6 +22,7 @@ mod manifest;
 mod model;
 mod native;
 mod policy;
+mod restart;
 mod routing;
 mod session;
 
@@ -44,5 +45,6 @@ pub use policy::{
     observation_proves_final_client_ca_acceptance, terminal_calibration_outcome,
     validate_compatibility_prerequisites,
 };
+pub use restart::*;
 pub use routing::*;
 pub use session::{DeepCapture, DeepCaptureSession, PreparedSession};

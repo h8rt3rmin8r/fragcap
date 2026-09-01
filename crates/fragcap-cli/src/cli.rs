@@ -448,6 +448,14 @@ pub struct DeepCaptureArgs {
     #[arg(long)]
     pub yes: bool,
 
+    /// Wait for operator-owned normal shutdown, then prepare a new cold launch.
+    #[arg(
+        long,
+        conflicts_with = "calibrate",
+        conflicts_with = "controlled_target"
+    )]
+    pub restart_warm: bool,
+
     /// Run one explicit compatibility calibration phase.
     #[arg(long, value_enum, requires = "launch_case")]
     pub calibrate: Option<DeepCaptureCalibrationArg>,
