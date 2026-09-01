@@ -297,6 +297,7 @@ fn synthesize_publisher_profile(entry: &TargetEntry) -> Result<Profile, CliError
     let stages: Vec<serde_json::Value> = publisher
         .stages()
         .iter()
+        .rev()
         .map(|stage| {
             let mut predicates = serde_json::Map::new();
             predicates.insert(
@@ -1267,18 +1268,33 @@ mod tests {
         let stages = profile.stages();
         assert_eq!(
             stages.iter().map(|stage| stage.role()).collect::<Vec<_>>(),
-            ["launcher", "bootstrap", "client"]
+            ["client", "bootstrap", "launcher"],
+            "descendant stages precede broader ancestors for matching"
         );
-        assert_eq!(stages[0].predicates().descends_from(), None);
-        assert_eq!(stages[1].predicates().descends_from(), Some("launcher"));
-        assert_eq!(stages[2].predicates().descends_from(), Some("bootstrap"));
-        assert!(!stages[0].is_terminal());
-        assert!(!stages[1].is_terminal());
-        assert!(stages[2].is_terminal());
-        for (stage, image) in stages
+        let launcher = stages
             .iter()
-            .zip(["Publisher.exe", "Bootstrap.exe", "Game.exe"])
-        {
+            .find(|stage| stage.role() == "launcher")
+            .unwrap();
+        let bootstrap = stages
+            .iter()
+            .find(|stage| stage.role() == "bootstrap")
+            .unwrap();
+        let client = stages
+            .iter()
+            .find(|stage| stage.role() == "client")
+            .unwrap();
+        assert_eq!(launcher.predicates().descends_from(), None);
+        assert_eq!(bootstrap.predicates().descends_from(), Some("launcher"));
+        assert_eq!(client.predicates().descends_from(), Some("bootstrap"));
+        assert!(!launcher.is_terminal());
+        assert!(!bootstrap.is_terminal());
+        assert!(client.is_terminal());
+        for (role, image) in [
+            ("launcher", "Publisher.exe"),
+            ("bootstrap", "Bootstrap.exe"),
+            ("client", "Game.exe"),
+        ] {
+            let stage = stages.iter().find(|stage| stage.role() == role).unwrap();
             let exact = stage
                 .predicates()
                 .path_regex()
@@ -1346,6 +1362,71 @@ mod tests {
             None,
             "escaped client is not guessed into the chain"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publisher_profile_disambiguates_roles_that_share_one_executable() {
+        use fragcap::core::{ProcessEvent, ProcessTree, Timestamp};
+        use fragcap::profile::{bind_stages, stage_for};
+        use fragcap::targets::{ClassificationSource, TargetClassification};
+
+        let root = scratch("publisher-shared-image");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Publisher.exe"), b"fixture").unwrap();
+        let entry = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "publisher-shared".into(),
+            name: "Publisher Shared".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Publisher.exe", "role": "bootstrap" },
+                { "executable": "Publisher.exe", "role": "client" }
+            ])),
+            install_root: Some(root.to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let profile = synthesize_publisher_profile(&entry).unwrap();
+        let image = process_path_spelling(&root.join("Publisher.exe").canonicalize().unwrap());
+        let mut tree = ProcessTree::new();
+        tree.apply(ProcessEvent::started(
+            100,
+            0,
+            &image,
+            "root",
+            Timestamp::from_nanos(1),
+        ));
+        tree.apply(ProcessEvent::started(
+            200,
+            100,
+            &image,
+            "middle",
+            Timestamp::from_nanos(2),
+        ));
+        tree.apply(ProcessEvent::started(
+            300,
+            200,
+            &image,
+            "client",
+            Timestamp::from_nanos(3),
+        ));
+        bind_stages(&profile, &mut tree);
+        let role_for = |pid| {
+            let node = tree.nodes().find(|node| node.pid().get() == pid).unwrap();
+            stage_for(&profile, &tree, node.id()).map(|stage| stage.role())
+        };
+        assert_eq!(role_for(100), Some("launcher"));
+        assert_eq!(role_for(200), Some("bootstrap"));
+        assert_eq!(role_for(300), Some("client"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

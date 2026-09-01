@@ -179,6 +179,10 @@ pub struct SessionConfig {
     /// (enforced)` line true of packet retention rather than only of which
     /// stages trigger acquisition.
     pub allowed_roles: Option<Vec<String>>,
+    /// Apply S111's exact publisher-chain ownership rules: one process per
+    /// declared role, and keep the acquisition deadline active until the
+    /// terminal stage binds. False for ordinary authored profiles.
+    pub exact_stage_ownership: bool,
 }
 
 /// The session's own accounting.
@@ -287,10 +291,11 @@ impl CaptureSession {
             .filter(|s| allowed(s.role()))
             .map(|s| s.role().to_string())
             .collect();
-        let pending_terminal = profile
-            .stages()
-            .iter()
-            .any(|s| s.is_terminal() && allowed(s.role()));
+        let pending_terminal = config.exact_stage_ownership
+            && profile
+                .stages()
+                .iter()
+                .any(|s| s.is_terminal() && allowed(s.role()));
         CaptureSession {
             state: SessionState::Arming,
             profile,
@@ -534,7 +539,9 @@ impl CaptureSession {
         if !role_in(&self.allowed_roles, &role) {
             return;
         }
-        if self.bindings.iter().any(|binding| binding.role == role) {
+        if self.config.exact_stage_ownership
+            && self.bindings.iter().any(|binding| binding.role == role)
+        {
             self.stop(StopReason::AmbiguousStageMatch);
             return;
         }

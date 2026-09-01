@@ -2963,10 +2963,14 @@ whose current facts prove routing reaches its terminal client. A publisher chain
 is prepared from ordered stored roles through the same Capture path, starts only
 the root launcher, and binds each declared descendant by an anchored,
 case-insensitive canonical executable path plus creation-time ancestry. One
-process may bind each declared role. A competing match ends with explicit
-ambiguity and cannot become terminal ownership. The acquisition deadline stays
-active after the launcher appears until the exact terminal client binds; an
-omitted publisher-chain `--wait` uses a finite two-minute default.
+process may bind each declared role in that publisher session. A competing
+match ends with explicit ambiguity and cannot become terminal ownership.
+Generated profile stages use descendant-first matching precedence, while the
+prepared launch plan retains stored root-to-client order, so roles may reuse an
+executable. The publisher session's acquisition deadline stays active after the
+launcher appears until the exact terminal client binds; an omitted
+publisher-chain `--wait` uses a finite two-minute default. Ordinary profiles
+retain multi-process roles and watching-only acquisition timeout behavior.
 Explicitly stored absolute stages may name an external publisher installation;
 relative stages remain confined beneath the selected game's install root. A
 running Steam process cannot

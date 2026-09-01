@@ -33,7 +33,7 @@
 - Add a second chain reconciler beside `CaptureSession`. Rejected because two ancestry authorities could disagree and double lifecycle state.
 - Match descendants only by image name. Rejected because same-named unrelated and repeated-depth processes are a known P-9 failure.
 
-**Review correction**: Exact executable identity means an anchored, case-insensitive canonical-path predicate in addition to the basename. The capture session permits one binding per declared role; a competing match stops with `ambiguous-stage-match` and cannot become terminal ownership. The acquisition deadline remains active after launcher acquisition until the exact terminal stage binds. Publisher launches with no explicit `--wait` receive a finite two-minute default.
+**Review correction**: Exact executable identity means an anchored, case-insensitive canonical-path predicate in addition to the basename. Generated profile stages use descendant-first matching precedence, while the immutable publisher plan retains stored root-to-client order, so consecutive roles may name the same executable without collapsing into the root role. Only sessions explicitly prepared from a publisher chain permit one binding per declared role; a competing match stops with `ambiguous-stage-match` and cannot become terminal ownership. Only those publisher sessions keep the acquisition deadline active after launcher acquisition until the exact terminal stage binds. Publisher launches with no explicit `--wait` receive a finite two-minute default. Ordinary profiles retain their prior multi-process role and watching-only timeout behavior.
 
 ## R-4: Preserve role metadata in the existing launch-entry parser
 

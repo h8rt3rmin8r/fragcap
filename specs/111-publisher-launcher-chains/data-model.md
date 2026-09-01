@@ -29,10 +29,12 @@ The validated Capture profile synthesized from `PublisherStage` values.
 
 - The root stage matches its exact canonical executable path and image.
 - Each later stage matches its exact canonical executable path and image, and descends from the prior role.
+- Matching precedence is descendant-first even though the immutable launch plan remains root-to-client, so several roles may reuse one executable.
 - The client is the sole terminal stage.
 - All stages use session lifecycle so transient intermediates remain observable without becoming the stop authority.
-- One process may bind each role. A competitor produces explicit ambiguity and is not promoted.
-- The acquisition deadline stays active until the terminal stage binds. An omitted publisher `--wait` defaults to two minutes.
+- In a publisher session, one process may bind each role. A competitor produces explicit ambiguity and is not promoted.
+- In a publisher session, the acquisition deadline stays active until the terminal stage binds. An omitted publisher `--wait` defaults to two minutes.
+- Ordinary profiles retain multi-process roles and watching-only acquisition timeout semantics.
 
 ## PublisherChainState
 

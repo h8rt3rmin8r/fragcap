@@ -51,10 +51,13 @@ Stored target resolution returns one validated profile for both Capture and Deep
 - the launcher stage has no ancestry predicate;
 - each later stage names the prior role through `descends_from`;
 - only the client is terminal;
+- generated matching precedence is descendant-first, while `PublisherChainLaunch` retains stored root-to-client order, so roles may reuse one executable;
 - every stage retains its basename and an anchored, case-insensitive canonical-path match;
-- one process may bind each declared role, and a competing match is an explicit ambiguity;
-- the acquisition deadline remains active until the exact terminal client binds;
+- publisher sessions permit one process per declared role, and a competing match is an explicit ambiguity;
+- publisher sessions keep the acquisition deadline active until the exact terminal client binds;
 - an omitted publisher-chain `--wait` uses a finite two-minute default.
+
+Ordinary authored profiles retain their existing ability to bind several processes to one role and apply `--wait` only while watching.
 
 ## Deep Capture policy contract
 

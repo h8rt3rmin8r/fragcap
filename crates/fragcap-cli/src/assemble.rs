@@ -80,6 +80,8 @@ pub struct EffectiveConfig {
     /// the profile declares a Steam platform and app_id (specification 16.4).
     #[allow(dead_code)]
     pub launch: Option<fragcap::managed_launch::ManagedLaunch>,
+    /// Whether the selected stored target is an exact S111 publisher chain.
+    pub exact_stage_ownership: bool,
 }
 
 impl EffectiveConfig {
@@ -95,6 +97,7 @@ impl EffectiveConfig {
             // run's `roles ... (enforced)` line true of what the file contains
             // rather than only of which stages trigger acquisition (issue #184).
             allowed_roles: self.roles.clone(),
+            exact_stage_ownership: self.exact_stage_ownership,
         }
     }
 
@@ -146,6 +149,10 @@ pub fn effective_config_with_target(
     let mode = resolve_mode(args, profile);
     let ring = args.ring.map(map_ring_window);
     let launch = build_launch(args, profile, stored_target)?;
+    let exact_stage_ownership = stored_target.is_some_and(|target| {
+        let entries = fragcap::targets::entry_windows_launch_entries(target);
+        entries.len() > 1 && entries.iter().any(|entry| entry.role().is_some())
+    });
     let acquisition_timeout = args.wait.or_else(|| {
         matches!(
             launch,
@@ -170,6 +177,7 @@ pub fn effective_config_with_target(
         loopback,
         payload,
         launch,
+        exact_stage_ownership,
     })
 }
 
@@ -257,6 +265,7 @@ pub fn effective_config_for_extcap(
         loopback,
         payload,
         launch: None,
+        exact_stage_ownership: false,
     }
 }
 
@@ -1109,6 +1118,7 @@ mod tests {
             interfaces: vec!["eth0".to_string()],
             loopback: false,
             payload: true,
+            exact_stage_ownership: false,
             launch: None,
         }
     }
