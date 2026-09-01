@@ -189,6 +189,6 @@ async fn tls_connector_verifies_the_chain_and_requested_identity() {
     .await
     .unwrap_err();
     assert_eq!(error.stage, UpstreamStage::Tls);
-    assert_eq!(error.code, "tls-verification-failed");
+    assert_eq!(error.code, "certificate-validation");
     task.await.unwrap();
 }

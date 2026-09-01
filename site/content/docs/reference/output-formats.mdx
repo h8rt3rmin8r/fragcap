@@ -107,7 +107,7 @@ An observation carries the available session, target, proxy connection, HTTP str
 
 ### Proxy-owned TLS key log
 
-When `--key-log` is selected, fragcap creates `tls-keylog.log` at its final bundle path before proxy traffic and announces that path so an analyzer can consume new entries during the session. The proxy appends its own TLS session material. Finalization retains and declares the file only when it is nonempty; an empty placeholder is removed and appears as a `not-produced` omission.
+When `--key-log` is selected, fragcap creates `tls-keylog.log` at its final bundle path before proxy traffic and announces that path so an analyzer can consume new entries during the session. The proxy appends its own TLS session material. Finalization retains and declares the file only when it is nonempty; an empty placeholder is removed and its `tls_key_log.state` is `empty`.
 
 This [proxy-owned TLS key-log export](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export) is secret-adjacent analyzer material. It is not decrypted application output, does not contain keys extracted from the selected process, and does not bypass certificate pinning.
 
@@ -203,7 +203,7 @@ This shortened example shows the relationships rather than every field. Paths ar
 
 Finalized bundle artifacts remain until the operator removes them. Normal session cleanup attempts to stop the owned proxy, release its port, undo authorized trust, and remove proxy-private temporary material. It retains declared evidence, including a nonempty requested key log.
 
-Plain `fragcap doctor` is read-only. Under fragcap-owned session storage, it reports sensitive sidecars, key logs, unfinished manifests, and incomplete trust cleanup. After confirmation, `fragcap doctor --fix` can remove known sensitive sidecars and unfinished manifests. It does not promise to erase every file from a completed bundle, and it preserves manifest ownership evidence when CA trust cleanup is incomplete.
+Plain `fragcap doctor` is read-only. Under fragcap-owned session storage, it reports unfinished manifests and incomplete trust cleanup. After confirmation, `fragcap doctor --fix` can repair unfinished fragcap-owned residue. It does not delete retained evidence from a completed bundle. Use `fragcap bundle cleanup <bundle> --yes` for exact manifest-declared sensitive deletion, or `fragcap bundle export <bundle> --out <copy>` to create a separate share copy.
 
 Keep the whole bundle private by default. Preserve the original observation. If material must be shared, make a copy, remove or transform sensitive content deliberately, record what changed, and review the copy for packet payloads, URLs, identifiers, local paths, process details, and session secrets.
 

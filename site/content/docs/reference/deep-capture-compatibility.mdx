@@ -29,14 +29,14 @@ does not bypass certificate pinning, downgrade TLS, extract keys from a target
 process, or silently change system-wide proxy settings. Packet truth remains
 available through Capture even when application inspection is unavailable.
 
-See [Output formats and session bundles](/docs/reference/output-formats) for the current v0.8 artifact authority, sensitivity, omission, correlation, retention, and cleanup contract. Native manifest, HAR, TLS key-log, correlation, and proxy/cleanup sidecar completion is owned by [#335](https://github.com/h8rt3rmin8r/fragcap/issues/335), [#302](https://github.com/h8rt3rmin8r/fragcap/issues/302), [#300](https://github.com/h8rt3rmin8r/fragcap/issues/300), [#303](https://github.com/h8rt3rmin8r/fragcap/issues/303), and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336).
+See [Output formats and session bundles](/docs/reference/output-formats) for the current v0.8 artifact authority, sensitivity, omission, correlation, retention, and cleanup contract. Native manifest, HAR, correlation, and proxy/cleanup sidecar completion is owned by [#335](https://github.com/h8rt3rmin8r/fragcap/issues/335), [#302](https://github.com/h8rt3rmin8r/fragcap/issues/302), [#303](https://github.com/h8rt3rmin8r/fragcap/issues/303), and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336).
 
 ## Traffic support
 
 | Traffic | Capture | Deep Capture | Outputs and limits |
 | --- | --- | --- | --- |
 | HTTP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Observes HTTP/1.1 metadata and bounded streaming bodies when the request reaches the proxy. | HTTP/2 cleartext prior knowledge is limited to explicitly routed authorized traffic; WebSocket and event-stream semantics remain deferred. |
-| HTTPS | Records encrypted packets and attribution. | Negotiates native HTTP/1.1 or HTTP/2 after the connection reaches the proxy and accepts the local CA, retaining available metadata and bounded body evidence. | Certificate pinning and client-certificate boundaries remain [#304](https://github.com/h8rt3rmin8r/fragcap/issues/304). |
+| HTTPS | Records encrypted packets and attribution. | Negotiates native HTTP/1.1 or HTTP/2 after the connection reaches the proxy and accepts the local CA, retaining available metadata and bounded body evidence. Explicit paired operator-owned credentials support upstream mutual TLS. | Certificate pinning is classified only when conclusive and is never bypassed. Ambiguous refusal remains unknown. |
 | WebSocket | Records packets and attribution. | Can observe the HTTP upgrade handshake when it reaches the HTTP proxy. | Complete frame and message support is [#295](https://github.com/h8rt3rmin8r/fragcap/issues/295). An observed handshake is not full support. |
 | Non-HTTP TLS | Records encrypted packets and attribution. | Records proxy connection metadata when the flow reaches the proxy, without interpreting the application protocol. | Generic native stream observations are [#312](https://github.com/h8rt3rmin8r/fragcap/issues/312); protocol-specific interpretation remains an explicit dissector or omission. |
 | QUIC | Records the underlying UDP packets and attribution. | Unsupported by the current HTTP proxy path. | Scoped QUIC and HTTP/3 are [#314](https://github.com/h8rt3rmin8r/fragcap/issues/314). No current routing or decryption claim. |

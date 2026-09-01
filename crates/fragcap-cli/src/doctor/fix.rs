@@ -418,14 +418,14 @@ fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::Pat
                 continue;
             };
             let cleanup_manifest = name == "manifest.json";
-            if cleanup_manifest {
+            let stale_manifest =
+                cleanup_manifest && super::probe::manifest_cleanup_unfinished(&path);
+            if stale_manifest {
                 for declared in super::probe::manifest_declared_cleanup_paths(&path) {
                     super::probe::push_unique(out, declared);
                 }
             }
-            let stale_manifest =
-                cleanup_manifest && super::probe::manifest_cleanup_unfinished(&path);
-            let sensitive_sidecar = matches!(
+            let recognized_sensitive_sidecar = matches!(
                 name,
                 "application.jsonl"
                     | "http.har"
@@ -434,6 +434,11 @@ fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::Pat
                     | "proxy.jsonl"
                     | "process-trace.jsonl"
             );
+            let completed_manifest = path.parent().is_some_and(|parent| {
+                let manifest = parent.join("manifest.json");
+                manifest.is_file() && !super::probe::manifest_cleanup_unfinished(&manifest)
+            });
+            let sensitive_sidecar = recognized_sensitive_sidecar && !completed_manifest;
             if stale_manifest || sensitive_sidecar {
                 super::probe::push_unique(out, path);
             }
@@ -844,11 +849,17 @@ mod tests {
         std::env::remove_var(crate::paths::SESSION_DIR_ENV);
 
         assert_eq!(outcome, ActionOutcome::Performed);
-        assert!(!keylog.exists(), "known key-log residue removed");
-        assert!(!app.exists(), "known application sidecar removed");
         assert!(
-            !declared_app.exists(),
-            "manifest-declared application sidecar removed"
+            keylog.exists(),
+            "completed retained key-log evidence remains"
+        );
+        assert!(
+            app.exists(),
+            "completed retained application evidence remains"
+        );
+        assert!(
+            declared_app.exists(),
+            "manifest-declared completed evidence remains"
         );
         assert!(
             clean_manifest.exists(),

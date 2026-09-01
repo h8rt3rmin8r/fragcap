@@ -644,6 +644,19 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         validate_bundle_root(path).map_err(|error| library_refusal("bundle-destination", error))
     }
 
+    fn prepare(
+        &mut self,
+        plan: &fragcap::deep_capture::SessionPlan,
+    ) -> Result<(), fragcap::deep_capture::StageFailure> {
+        fragcap::deep_capture::prepare_bundle(&plan.bundle).map_err(|error| {
+            fragcap::deep_capture::StageFailure::new(
+                fragcap::deep_capture::Stage::Bundle,
+                "bundle-protection-failed",
+                error.to_string(),
+            )
+        })
+    }
+
     fn finalize(
         &mut self,
         bundle: &Path,
@@ -762,6 +775,7 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             controlled: snapshot.controlled,
             har_requested: snapshot.artifacts.har,
             key_log_requested: snapshot.artifacts.key_log,
+            sensitive_retention: snapshot.artifacts.sensitive_retention,
             observations: &snapshot.observations,
             trust: &trust,
             cleanup: &cleanup,
@@ -916,6 +930,12 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     listen_addr: "127.0.0.1".to_string(),
                     listen_port: runtime.listen_port.unwrap_or_default(),
                 });
+                if self.args.key_log {
+                    emitter.event(&Event::DeepCaptureKeyLogReady {
+                        session_id: session_id.clone(),
+                        path: self.bundle.join("tls-keylog.log").display().to_string(),
+                    });
+                }
             }
             fragcap::deep_capture::DeepCaptureEvent::TrustAcquired { session_id, .. } => {
                 let runtime = self.runtime.borrow();
@@ -1037,6 +1057,33 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
 }
 
 /// Run `deep-capture` through the public library coordinator.
+fn load_client_identity(
+    args: &DeepCaptureArgs,
+) -> Result<Option<fragcap::deep_capture::ClientIdentity>, CliError> {
+    let (Some(certificate_path), Some(private_key_path)) =
+        (&args.client_certificate, &args.client_private_key)
+    else {
+        return Ok(None);
+    };
+    let mut certificate = fs::read(certificate_path).map_err(|error| {
+        CliError::failure(format!(
+            "could not read client certificate {}: {error}",
+            certificate_path.display()
+        ))
+    })?;
+    let mut private_key = fs::read(private_key_path).map_err(|error| {
+        CliError::failure(format!(
+            "could not read client private key {}: {error}",
+            private_key_path.display()
+        ))
+    })?;
+    let identity = fragcap::deep_capture::ClientIdentity::from_bytes(&certificate, &private_key)
+        .map_err(|error| CliError::failure(format!("client identity is invalid: {}", error.code)));
+    certificate.fill(0);
+    private_key.fill(0);
+    identity.map(Some)
+}
+
 pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
     if !args.launch {
         return Err(CliError::usage(
@@ -1086,6 +1133,8 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             && (args.trust_ca || args.yes),
         har: args.har,
         key_log: args.key_log,
+        client_identity: args.client_certificate.is_some(),
+        sensitive_retention: fragcap::deep_capture::SensitiveRetention::Retain,
         deadlines: fragcap::deep_capture::Deadlines {
             launch: deadlines.launch,
             observation: deadlines.observation,
@@ -1099,6 +1148,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
     let observation_context = fragcap::deep_capture::NativeObservationContext::default();
+    let client_identity = load_client_identity(args)?;
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = fragcap::deep_capture::AdapterSet {
         targets: Box::new(LibraryTargetAdapter {
@@ -1112,12 +1162,17 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             started: Instant::now(),
         }),
         identifiers: Box::new(LibraryIdentifierAdapter),
-        proxy: Box::new(
-            fragcap::deep_capture::NativeProxyAdapter::default()
+        proxy: Box::new({
+            let mut proxy = fragcap::deep_capture::NativeProxyAdapter::default()
                 .with_observation_context(observation_context.clone())
                 .with_application_artifact(bundle.join("application.jsonl"))
-                .with_payload_capture(!args.no_payload),
-        ),
+                .with_key_log_artifact(bundle.join("tls-keylog.log"))
+                .with_payload_capture(!args.no_payload);
+            if let Some(identity) = client_identity {
+                proxy = proxy.with_client_identity(identity);
+            }
+            proxy
+        }),
         trust: Box::new(LibraryTrustAdapter {
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
@@ -1895,6 +1950,7 @@ struct BundleContext<'a> {
     controlled: bool,
     har_requested: bool,
     key_log_requested: bool,
+    sensitive_retention: fragcap::deep_capture::SensitiveRetention,
     observations: &'a [Observation],
     trust: &'a TrustOutcome,
     cleanup: &'a CleanupReport,
@@ -1970,7 +2026,12 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         .metadata()
         .is_ok_and(|metadata| metadata.len() > 0);
     if key_log_path.is_file() && !key_log_produced {
-        let _ = fs::remove_file(&key_log_path);
+        fs::remove_file(&key_log_path).map_err(|error| {
+            CliError::failure(format!(
+                "empty TLS key-log cleanup failed for {}: {error}",
+                key_log_path.display()
+            ))
+        })?;
     }
     let mut cleanup_resources = ctx.cleanup.resources.clone();
     cleanup_resources.push(CleanupResource::new(
@@ -2335,6 +2396,21 @@ fn manifest_json(
     key_log_produced: bool,
     packet_truth_produced: bool,
 ) -> Result<String, CliError> {
+    let key_log_cleanup_failed = cleanup
+        .resources
+        .iter()
+        .any(|resource| resource.resource == "tls-key-log" && resource.status == "failed");
+    let key_log_state = match (
+        ctx.key_log_requested,
+        key_log_produced,
+        key_log_cleanup_failed,
+    ) {
+        (false, _, _) => "not-requested",
+        (true, false, true) => "failed",
+        (true, false, false) => "empty",
+        (true, true, true) => "partial",
+        (true, true, false) => "retained",
+    };
     let mut artifacts = vec![
         artifact(
             "application-jsonl",
@@ -2470,6 +2546,15 @@ fn manifest_json(
             "status": cleanup.status(),
             "report": "cleanup.json",
             "updated_at": rfc3339_utc(SystemTime::now()),
+        },
+        "sensitive_artifacts": {
+            "retention": ctx.sensitive_retention.as_str(),
+            "cleanup_command": "fragcap bundle cleanup <bundle> --yes",
+            "journal": ".sensitive-actions.jsonl",
+            "tls_key_log": {
+                "requested": ctx.key_log_requested,
+                "state": key_log_state,
+            },
         },
     }))
     .map_err(|e| CliError::failure(e.to_string()))

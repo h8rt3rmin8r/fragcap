@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
 use fragcap_proxy::{
-    tls_client_config_with_roots, DestinationPolicy, NativeProxyBackend, NativeProxyConfig,
+    tls_client_config_with_roots, tls_client_config_with_roots_and_identity, ClientIdentity,
+    DestinationPolicy, NativeProxyBackend, NativeProxyConfig, SessionKeyLog,
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
@@ -95,9 +96,12 @@ fn round_trip(version: &'static rustls::SupportedProtocolVersion, session: &str)
     policy.grant_for_test(origin);
     let mut upstream_roots = rustls::RootCertStore::empty();
     upstream_roots.add(origin_certificate).unwrap();
+    let mut key_log_file = tempfile::tempfile().unwrap();
+    let key_log = Arc::new(SessionKeyLog::new(key_log_file.try_clone().unwrap()));
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
         .with_tls_client_config(tls_client_config_with_roots(upstream_roots).unwrap())
+        .with_key_log(Arc::clone(&key_log))
         .start(Duration::from_secs(2))
         .unwrap();
 
@@ -169,6 +173,26 @@ fn round_trip(version: &'static rustls::SupportedProtocolVersion, session: &str)
             && facts.version.as_deref() == Some(expected_version)
             && facts.alpn.as_deref() == Some(b"http/1.1".as_slice())
     }));
+    key_log_file.rewind().unwrap();
+    let mut secrets = String::new();
+    key_log_file.read_to_string(&mut secrets).unwrap();
+    assert!(!secrets.is_empty());
+    assert!(secrets
+        .lines()
+        .all(|line| line.split_ascii_whitespace().count() == 3));
+    if std::ptr::eq(version, &rustls::version::TLS12) {
+        assert!(secrets
+            .lines()
+            .any(|line| line.starts_with("CLIENT_RANDOM ")));
+    } else {
+        assert!(secrets
+            .lines()
+            .any(|line| line.starts_with("CLIENT_HANDSHAKE_TRAFFIC_SECRET ")));
+        assert!(secrets
+            .lines()
+            .any(|line| line.starts_with("SERVER_TRAFFIC_SECRET_0 ")));
+    }
+    assert_eq!(key_log.status().records, secrets.lines().count() as u64);
 }
 
 #[test]
@@ -260,11 +284,93 @@ fn connect_fails_closed_for_wrong_name_and_untrusted_upstream() {
             .observation
             .failures
             .iter()
-            .any(|failure| failure.code == "tls-verification-failed"));
+            .any(|failure| failure.code == "certificate-validation"));
         assert!(!report
             .observation
             .application
             .iter()
             .any(|item| { item.protocol == "https" && item.inspectability == "full" }));
     }
+}
+
+#[test]
+fn explicit_operator_identity_authenticates_to_mtls_upstream() {
+    let origin = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let origin_cert = CertificateDer::from(origin.cert);
+    let origin_key = PrivatePkcs8KeyDer::from(origin.signing_key.serialize_der());
+    let client_ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut client_ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    client_ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    client_ca_params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    let client_ca_certificate = client_ca_params.self_signed(&client_ca_key).unwrap();
+    let client_key_pair = rcgen::KeyPair::generate().unwrap();
+    let mut client_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    let mut client_name = rcgen::DistinguishedName::new();
+    client_name.push(rcgen::DnType::CommonName, "fragcap controlled client");
+    client_params.distinguished_name = client_name;
+    client_params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    client_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+    let client_issuer = rcgen::Issuer::from_params(&client_ca_params, &client_ca_key);
+    let client_certificate = client_params
+        .signed_by(&client_key_pair, &client_issuer)
+        .unwrap();
+    let client_cert = client_certificate.der().clone();
+    let client_key = client_key_pair.serialize_der();
+
+    let mut client_roots = rustls::RootCertStore::empty();
+    client_roots
+        .add(client_ca_certificate.der().clone())
+        .unwrap();
+    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(client_roots))
+        .build()
+        .unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let server_config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(vec![origin_cert.clone()], origin_key.into())
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(server_config)).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, tcp);
+        let mut byte = [0_u8; 1];
+        tls.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [7]);
+        tls.write_all(&[8]).unwrap();
+        tls.flush().unwrap();
+    });
+
+    let identity = ClientIdentity::from_bytes(client_cert.as_ref(), &client_key).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(origin_cert).unwrap();
+    let config = tls_client_config_with_roots_and_identity(roots, Some(&identity)).unwrap();
+    let connection = rustls::ClientConnection::new(
+        config,
+        ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into()),
+    )
+    .unwrap();
+    let mut stream = rustls::StreamOwned::new(connection, TcpStream::connect(address).unwrap());
+    stream.write_all(&[7]).unwrap();
+    stream.flush().unwrap();
+    let mut response = [0_u8; 1];
+    stream.read_exact(&mut response).unwrap();
+    assert_eq!(response, [8]);
+    server.join().unwrap();
+}
+
+#[test]
+fn mismatched_operator_identity_is_rejected_before_connection() {
+    let certificate = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
+    let wrong_key = rcgen::KeyPair::generate().unwrap().serialize_der();
+    let identity = ClientIdentity::from_bytes(certificate.cert.der(), &wrong_key).unwrap();
+    let root = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(CertificateDer::from(root.cert)).unwrap();
+    let error = tls_client_config_with_roots_and_identity(roots, Some(&identity)).unwrap_err();
+    assert_eq!(error.code, "client-identity-invalid");
+    assert!(!format!("{identity:?}").contains("PRIVATE"));
 }

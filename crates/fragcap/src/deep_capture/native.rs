@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub use fragcap_proxy::ClientIdentity;
 use fragcap_proxy::{
-    tls_client_config_with_roots, DestinationPolicy, NativeProxyBackend as RuntimeBackend,
-    NativeProxyConfig, ShutdownReport,
+    native_tls_client_config_with_identity, tls_client_config_with_roots_and_identity,
+    DestinationPolicy, NativeProxyBackend as RuntimeBackend, NativeProxyConfig, ShutdownReport,
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
@@ -52,7 +53,9 @@ pub struct NativeProxyAdapter {
     limits: NativeProxyLimits,
     observation_context: NativeObservationContext,
     application_artifact: Option<PathBuf>,
+    key_log_artifact: Option<PathBuf>,
     capture_payloads: bool,
+    client_identity: Option<ClientIdentity>,
 }
 
 /// Session-owned bridge between packet truth and native proxy observations.
@@ -88,7 +91,9 @@ impl NativeProxyAdapter {
             limits,
             observation_context: NativeObservationContext::default(),
             application_artifact: None,
+            key_log_artifact: None,
             capture_payloads: true,
+            client_identity: None,
         }
     }
 
@@ -108,9 +113,21 @@ impl NativeProxyAdapter {
         self
     }
 
+    /// Stream client-facing proxy TLS secrets to this approved protected path.
+    pub fn with_key_log_artifact(mut self, path: impl Into<PathBuf>) -> Self {
+        self.key_log_artifact = Some(path.into());
+        self
+    }
+
     /// Select whether application body bytes may be retained.
     pub fn with_payload_capture(mut self, capture_payloads: bool) -> Self {
         self.capture_payloads = capture_payloads;
+        self
+    }
+
+    /// Use one explicit operator-owned identity for upstream mutual TLS.
+    pub fn with_client_identity(mut self, identity: ClientIdentity) -> Self {
+        self.client_identity = Some(identity);
         self
     }
 }
@@ -134,6 +151,13 @@ impl ProxyBackend for NativeProxyAdapter {
         plan: &SessionPlan,
         budget: Budget,
     ) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        if plan.client_identity != self.client_identity.is_some() {
+            return Err(StageFailure::new(
+                Stage::ProxyStart,
+                "client-identity-plan-mismatch",
+                "the authorized plan and configured upstream client identity differ",
+            ));
+        }
         let endpoint = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), plan.endpoint.port);
         let protocol = fragcap_proxy::ProtocolLimits {
             capture_payloads: self.capture_payloads,
@@ -185,8 +209,31 @@ impl ProxyBackend for NativeProxyAdapter {
             })
             .transpose()?;
         let mut backend = RuntimeBackend::new(config);
+        let key_log = if plan.artifacts.key_log {
+            let path = self.key_log_artifact.as_ref().ok_or_else(|| {
+                StageFailure::new(
+                    Stage::ProxyStart,
+                    "key-log-path-missing",
+                    "the authorized plan requested a key log without a protected artifact path",
+                )
+            })?;
+            let file = super::open_sensitive_file(path).map_err(|error| {
+                StageFailure::new(Stage::ProxyStart, "key-log-open-failed", error.to_string())
+            })?;
+            Some(Arc::new(fragcap_proxy::SessionKeyLog::new(file)))
+        } else {
+            None
+        };
+        if let Some(key_log) = &key_log {
+            backend = backend.with_key_log(Arc::clone(key_log));
+        }
         if let Some(artifact) = &application_artifact {
             backend = backend.with_application_event_sink(artifact.sink());
+        }
+        if controlled_lab.is_none() && self.client_identity.is_some() {
+            let tls = native_tls_client_config_with_identity(self.client_identity.as_ref())
+                .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?;
+            backend = backend.with_tls_client_config(tls);
         }
         if let Some(lab) = &controlled_lab {
             let mut policy = DestinationPolicy::new(endpoint);
@@ -200,8 +247,11 @@ impl ProxyBackend for NativeProxyAdapter {
                     error.to_string(),
                 )
             })?;
-            let tls = tls_client_config_with_roots(roots)
-                .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?;
+            let tls =
+                tls_client_config_with_roots_and_identity(roots, self.client_identity.as_ref())
+                    .map_err(|error| {
+                        StageFailure::new(Stage::ProxyStart, error.code, error.detail)
+                    })?;
             backend = backend
                 .with_destination_policy(policy)
                 .with_tls_client_config(tls);
@@ -215,6 +265,7 @@ impl ProxyBackend for NativeProxyAdapter {
             controlled_lab,
             observation_context: self.observation_context.clone(),
             application_artifact: application_artifact.take(),
+            key_log,
         }))
     }
 }
@@ -225,6 +276,7 @@ struct NativeProxyLease {
     controlled_lab: Option<ControlledLab>,
     observation_context: NativeObservationContext,
     application_artifact: Option<super::ApplicationArtifactLease>,
+    key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
 }
 
 impl ProxyLease for NativeProxyLease {
@@ -313,6 +365,24 @@ impl ProxyLease for NativeProxyLease {
     fn cleanup(&mut self, budget: Budget) -> Vec<CleanupResult> {
         let report = self.lease.cleanup(budget.remaining());
         let mut results = vec![cleanup_result("native-proxy-runtime", &report)];
+        if let Some(key_log) = self.key_log.take() {
+            let status = key_log.status();
+            results.push(CleanupResult {
+                resource: "tls-key-log".to_string(),
+                status: if status.failure.is_none() {
+                    CleanupStatus::Released
+                } else {
+                    CleanupStatus::Failed
+                },
+                reason: format!(
+                    "records={}, bytes={}, flushes={}, failure={}",
+                    status.records,
+                    status.bytes,
+                    status.flushes,
+                    status.failure.as_deref().unwrap_or("none")
+                ),
+            });
+        }
         if let Some(mut artifact) = self.application_artifact.take() {
             let status = artifact.finish();
             results.push(CleanupResult {

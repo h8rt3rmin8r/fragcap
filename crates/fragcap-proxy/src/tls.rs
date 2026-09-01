@@ -13,7 +13,7 @@ use tokio_rustls::server::TlsStream;
 use crate::{
     AuthorityHost, BoundedTlsUpstreamStream, CertificateIdentity, DestinationAuthority,
     DestinationPolicy, LeafCache, ProtocolError, ProtocolLimits, SessionCertificateAuthority,
-    UpstreamStage,
+    SessionKeyLog, UpstreamStage,
 };
 
 #[derive(Debug)]
@@ -28,6 +28,7 @@ impl ResolvesServerCert for FixedCertificate {
 fn client_server_config_with_alpn(
     leaf: Arc<CertifiedKey>,
     alpn_protocols: Vec<Vec<u8>>,
+    key_log: Option<Arc<SessionKeyLog>>,
 ) -> Result<Arc<ServerConfig>, ProtocolError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = ServerConfig::builder_with_provider(provider)
@@ -36,6 +37,9 @@ fn client_server_config_with_alpn(
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(FixedCertificate(leaf)));
     config.alpn_protocols = alpn_protocols;
+    if let Some(key_log) = key_log {
+        config.key_log = key_log;
+    }
     Ok(Arc::new(config))
 }
 
@@ -43,6 +47,7 @@ pub(crate) fn client_server_config(
     authority: &DestinationAuthority,
     certificate_authority: &SessionCertificateAuthority,
     leaf_cache: &mut LeafCache,
+    key_log: Option<Arc<SessionKeyLog>>,
 ) -> Result<Arc<ServerConfig>, ProtocolError> {
     let identity = match authority.host() {
         AuthorityHost::Dns(name) => CertificateIdentity::Dns(name.clone()),
@@ -54,6 +59,7 @@ pub(crate) fn client_server_config(
     client_server_config_with_alpn(
         Arc::clone(&leaf.certified_key),
         vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        key_log,
     )
 }
 
@@ -76,7 +82,10 @@ pub(crate) async fn accept_client_tls(
     let tls = timeout(limits.tls_handshake_timeout, acceptor.accept(stream))
         .await
         .map_err(|_| ProtocolError::timeout("client-tls-handshake-timeout"))?
-        .map_err(|error| ProtocolError::new("client-tls-handshake-failed", error.to_string()))?;
+        .map_err(|error| {
+            let class = crate::classify_tls_io_error(&error, true, false);
+            ProtocolError::new(class.code(), error.to_string())
+        })?;
     if let (AuthorityHost::Dns(expected), Some(observed)) =
         (authority.host(), tls.get_ref().1.server_name())
     {

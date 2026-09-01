@@ -202,6 +202,7 @@ fn dispatch(
     match command {
         Command::Capture(args) => commands::capture::run(&args, emitter),
         Command::DeepCapture(args) => commands::deep_capture::run(&args, emitter),
+        Command::Bundle(args) => commands::bundle::run(&args, out),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::Doctor(args) => commands::doctor::run(&args, json, out, emitter),
         Command::Replay(_) => commands::stub::run(Stub::Replay),

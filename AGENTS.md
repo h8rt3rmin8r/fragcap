@@ -329,6 +329,16 @@ status without inventing protobuf meaning. All observers are bounded sidecars
 to byte-transparent forwarding. `flate2` is promoted from the existing lock
 graph for stateful RFC 7692 raw DEFLATE, so the slice adds no lock package.
 
+S107 closes #300, #304, and #322 together because the client-facing TLS key
+log and operator-supplied client identity create the strict artifact class whose
+protection and lifecycle must ship with the producer. Key logging is attached
+only to client-facing server configurations; upstream TLS cannot enter it.
+Sensitive bundle protection now precedes proxy startup, completed evidence is
+retained until exact confirmed cleanup, and sharing produces a separate atomic
+copy with an exhaustive transformation manifest. The bounded sensitive-action
+journal does not complete general session recovery, so #320 remains open. S107
+adds no dependency or lockfile package.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

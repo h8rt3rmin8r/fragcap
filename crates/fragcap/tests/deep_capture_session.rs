@@ -534,6 +534,8 @@ fn config() -> SessionConfig {
         trust_ca: true,
         har: true,
         key_log: false,
+        client_identity: false,
+        sensitive_retention: SensitiveRetention::Retain,
         deadlines: Deadlines::default(),
     }
 }
@@ -564,6 +566,7 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
         ArtifactRequests {
             har: true,
             key_log: false,
+            sensitive_retention: SensitiveRetention::Retain,
         }
     );
     let authorization = Authorization::approved(prepared.plan().id.clone());
@@ -602,6 +605,7 @@ fn prepared_artifact_requests() -> ArtifactRequests {
     ArtifactRequests {
         har: true,
         key_log: false,
+        sensitive_retention: SensitiveRetention::Retain,
     }
 }
 

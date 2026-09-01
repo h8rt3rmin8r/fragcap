@@ -65,6 +65,7 @@ Commands:
   Data:
     catalog       Maintain the shipped catalog store (catalog.db)
     schema        Validate JSON artifacts against the master schema
+    bundle        Clean or prepare a Deep Capture bundle for sharing
 
 Options:
 {options}"
@@ -138,6 +139,8 @@ pub enum Command {
     /// writes a session bundle containing packet truth, application records,
     /// proxy and process sidecars, compatibility facts, and cleanup status.
     DeepCapture(Box<DeepCaptureArgs>),
+    /// Manage completed Deep Capture bundle evidence.
+    Bundle(BundleArgs),
     /// Internal controlled target used by the Deep Capture verification harness.
     #[command(name = "__controlled-target", hide = true)]
     ControlledTarget(ControlledTargetArgs),
@@ -461,9 +464,43 @@ pub struct DeepCaptureArgs {
     #[arg(long)]
     pub key_log: bool,
 
+    /// A certificate chain to present to an upstream that requires mutual TLS.
+    #[arg(long, value_name = "FILE", requires = "client_private_key")]
+    pub client_certificate: Option<PathBuf>,
+
+    /// The operator-owned private key matching `--client-certificate`.
+    #[arg(long, value_name = "FILE", requires = "client_certificate")]
+    pub client_private_key: Option<PathBuf>,
+
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
     pub controlled_target: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BundleArgs {
+    #[command(subcommand)]
+    pub command: BundleCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BundleCommand {
+    /// Remove only sensitive artifacts declared by a completed bundle.
+    Cleanup {
+        /// The completed Deep Capture bundle.
+        bundle: PathBuf,
+        /// Confirm deletion without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Create a separate share copy with sensitive artifacts omitted.
+    Export {
+        /// The source Deep Capture bundle, which is never modified.
+        bundle: PathBuf,
+        /// The new destination directory.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 /// A compatibility calibration phase.

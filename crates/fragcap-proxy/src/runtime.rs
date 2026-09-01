@@ -37,6 +37,7 @@ pub struct NativeProxyBackend {
     destination_policy: Option<DestinationPolicy>,
     tls_client_config: Option<Arc<rustls::ClientConfig>>,
     application_sink: crate::application::SharedEventSink,
+    key_log: Option<Arc<crate::SessionKeyLog>>,
 }
 
 impl NativeProxyBackend {
@@ -46,6 +47,7 @@ impl NativeProxyBackend {
             destination_policy: None,
             tls_client_config: None,
             application_sink: None,
+            key_log: None,
         }
     }
 
@@ -64,6 +66,11 @@ impl NativeProxyBackend {
         sink: Arc<dyn crate::ApplicationEventSink>,
     ) -> Self {
         self.application_sink = Some(sink);
+        self
+    }
+
+    pub fn with_key_log(mut self, key_log: Arc<crate::SessionKeyLog>) -> Self {
+        self.key_log = Some(key_log);
         self
     }
 
@@ -188,6 +195,7 @@ impl NativeProxyBackend {
             leaf_cache,
             tls_client_config,
             application_sink: self.application_sink.clone(),
+            key_log: self.key_log.clone(),
             body_resources: crate::body::SessionBodyResources::new(
                 self.config.protocol.max_concurrent_decoders,
             ),
@@ -373,6 +381,7 @@ struct RuntimeServices {
     leaf_cache: Arc<Mutex<LeafCache>>,
     tls_client_config: Arc<rustls::ClientConfig>,
     application_sink: crate::application::SharedEventSink,
+    key_log: Option<Arc<crate::SessionKeyLog>>,
     body_resources: crate::body::SessionBodyResources,
 }
 
@@ -511,7 +520,12 @@ async fn connection_task(
         }
         let server_config = {
             let mut cache = services.leaf_cache.lock().await;
-            match client_server_config(&authority, &services.certificate_authority, &mut cache) {
+            match client_server_config(
+                &authority,
+                &services.certificate_authority,
+                &mut cache,
+                services.key_log.clone(),
+            ) {
                 Ok(config) => config,
                 Err(error) => {
                     return ConnectionOutcome::Failed(HttpRun {

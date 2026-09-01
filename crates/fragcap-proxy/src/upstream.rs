@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use rustls::pki_types::ServerName;
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
@@ -220,11 +220,151 @@ pub enum UpstreamStage {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlsRefusalClass {
+    ClientCertificateRequired,
+    ClientCertificateRejected,
+    CertificateValidation,
+    ProtocolMismatch,
+    ClientTrustRejection,
+    CertificatePinned,
+    Unknown,
+}
+
+impl TlsRefusalClass {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ClientCertificateRequired => "client-certificate-required",
+            Self::ClientCertificateRejected => "client-certificate-rejected",
+            Self::CertificateValidation => "certificate-validation",
+            Self::ProtocolMismatch => "protocol-mismatch",
+            Self::ClientTrustRejection => "client-trust-rejection",
+            Self::CertificatePinned => "certificate-pinned",
+            Self::Unknown => "tls-refusal-unknown",
+        }
+    }
+}
+
+pub fn classify_tls_io_error(
+    error: &std::io::Error,
+    client_facing: bool,
+    identity_configured: bool,
+) -> TlsRefusalClass {
+    use rustls::{AlertDescription as Alert, Error};
+    let Some(error) = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<Error>())
+    else {
+        return TlsRefusalClass::Unknown;
+    };
+    match error {
+        Error::AlertReceived(Alert::BadCertificateHashValue) if client_facing => {
+            TlsRefusalClass::CertificatePinned
+        }
+        Error::AlertReceived(Alert::CertificateRequired | Alert::NoCertificate)
+            if identity_configured =>
+        {
+            TlsRefusalClass::ClientCertificateRejected
+        }
+        Error::AlertReceived(Alert::CertificateRequired | Alert::NoCertificate) => {
+            TlsRefusalClass::ClientCertificateRequired
+        }
+        Error::AlertReceived(
+            Alert::BadCertificate
+            | Alert::UnsupportedCertificate
+            | Alert::CertificateRevoked
+            | Alert::CertificateExpired
+            | Alert::CertificateUnknown
+            | Alert::UnknownCA
+            | Alert::AccessDenied,
+        ) if client_facing => TlsRefusalClass::ClientTrustRejection,
+        Error::AlertReceived(
+            Alert::BadCertificate
+            | Alert::UnsupportedCertificate
+            | Alert::CertificateRevoked
+            | Alert::CertificateExpired
+            | Alert::CertificateUnknown
+            | Alert::UnknownCA
+            | Alert::AccessDenied,
+        ) if identity_configured => TlsRefusalClass::ClientCertificateRejected,
+        Error::InvalidCertificate(_) => TlsRefusalClass::CertificateValidation,
+        Error::PeerIncompatible(_)
+        | Error::NoApplicationProtocol
+        | Error::AlertReceived(
+            Alert::ProtocolVersion | Alert::NoApplicationProtocol | Alert::InsufficientSecurity,
+        ) => TlsRefusalClass::ProtocolMismatch,
+        _ => TlsRefusalClass::Unknown,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpstreamError {
     pub stage: UpstreamStage,
     pub code: &'static str,
     pub detail: String,
+}
+
+/// Explicit operator-owned client identity for one upstream TLS configuration.
+pub struct ClientIdentity {
+    chain: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+}
+
+impl ClientIdentity {
+    pub fn from_bytes(
+        certificate_bytes: &[u8],
+        private_key_bytes: &[u8],
+    ) -> Result<Self, UpstreamError> {
+        let chain = if certificate_bytes.starts_with(b"-----BEGIN") {
+            CertificateDer::pem_slice_iter(certificate_bytes)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    UpstreamError::with_detail(
+                        UpstreamStage::Tls,
+                        "client-certificate-invalid",
+                        error.to_string(),
+                    )
+                })?
+        } else {
+            vec![CertificateDer::from(certificate_bytes.to_vec())]
+        };
+        if chain.is_empty() {
+            return Err(UpstreamError::new(
+                UpstreamStage::Tls,
+                "client-certificate-empty",
+            ));
+        }
+        let key = if private_key_bytes.starts_with(b"-----BEGIN") {
+            PrivateKeyDer::from_pem_slice(private_key_bytes).map_err(|error| {
+                UpstreamError::with_detail(
+                    UpstreamStage::Tls,
+                    "client-private-key-invalid",
+                    error.to_string(),
+                )
+            })?
+        } else {
+            PrivateKeyDer::try_from(private_key_bytes.to_vec()).map_err(|error| {
+                UpstreamError::with_detail(UpstreamStage::Tls, "client-private-key-invalid", error)
+            })?
+        };
+        Ok(Self { chain, key })
+    }
+}
+
+impl fmt::Debug for ClientIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientIdentity")
+            .field("certificates", &self.chain.len())
+            .field("private_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for ClientIdentity {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.key);
+    }
 }
 
 impl UpstreamError {
@@ -444,6 +584,12 @@ pub async fn connect_upstream_cancellable(
 }
 
 pub fn native_tls_client_config() -> Result<Arc<ClientConfig>, UpstreamError> {
+    native_tls_client_config_with_identity(None)
+}
+
+pub fn native_tls_client_config_with_identity(
+    identity: Option<&ClientIdentity>,
+) -> Result<Arc<ClientConfig>, UpstreamError> {
     let loaded = rustls_native_certs::load_native_certs();
     let mut roots = RootCertStore::empty();
     let mut rejected = 0_usize;
@@ -463,13 +609,24 @@ pub fn native_tls_client_config() -> Result<Arc<ClientConfig>, UpstreamError> {
         ));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut config = ClientConfig::builder_with_provider(provider)
+    let builder = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| {
             UpstreamError::with_detail(UpstreamStage::Tls, "tls-config-failed", error.to_string())
         })?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+        .with_root_certificates(roots);
+    let mut config = match identity {
+        Some(identity) => builder
+            .with_client_auth_cert(identity.chain.clone(), identity.key.clone_key())
+            .map_err(|error| {
+                UpstreamError::with_detail(
+                    UpstreamStage::Tls,
+                    "client-identity-invalid",
+                    error.to_string(),
+                )
+            })?,
+        None => builder.with_no_client_auth(),
+    };
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
@@ -531,7 +688,7 @@ async fn connect_tls_over_upstream_cancellable(
     .map_err(|error| {
         UpstreamError::with_detail(UpstreamStage::Tls, "invalid-server-name", error.to_string())
     })?;
-    let connector = tokio_rustls::TlsConnector::from(config);
+    let connector = tokio_rustls::TlsConnector::from(Arc::clone(&config));
     let tls = tokio::select! {
         () = cancellation.cancelled() => {
             return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
@@ -540,11 +697,9 @@ async fn connect_tls_over_upstream_cancellable(
     }
     .map_err(|_| UpstreamError::new(UpstreamStage::Tls, "tls-timeout"))?
     .map_err(|error| {
-        UpstreamError::with_detail(
-            UpstreamStage::Tls,
-            "tls-verification-failed",
-            error.to_string(),
-        )
+        let class =
+            classify_tls_io_error(&error, false, config.client_auth_cert_resolver.has_certs());
+        UpstreamError::with_detail(UpstreamStage::Tls, class.code(), error.to_string())
     })?;
     Ok(BoundedTlsUpstreamStream {
         stream: tls,
@@ -556,17 +711,107 @@ async fn connect_tls_over_upstream_cancellable(
 pub fn tls_client_config_with_roots(
     roots: RootCertStore,
 ) -> Result<Arc<ClientConfig>, UpstreamError> {
+    tls_client_config_with_roots_and_identity(roots, None)
+}
+
+pub fn tls_client_config_with_roots_and_identity(
+    roots: RootCertStore,
+    identity: Option<&ClientIdentity>,
+) -> Result<Arc<ClientConfig>, UpstreamError> {
     if roots.is_empty() {
         return Err(UpstreamError::new(UpstreamStage::Tls, "empty-root-store"));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut config = ClientConfig::builder_with_provider(provider)
+    let builder = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| {
             UpstreamError::with_detail(UpstreamStage::Tls, "tls-config-failed", error.to_string())
         })?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+        .with_root_certificates(roots);
+    let mut config = match identity {
+        Some(identity) => builder
+            .with_client_auth_cert(identity.chain.clone(), identity.key.clone_key())
+            .map_err(|error| {
+                UpstreamError::with_detail(
+                    UpstreamStage::Tls,
+                    "client-identity-invalid",
+                    error.to_string(),
+                )
+            })?,
+        None => builder.with_no_client_auth(),
+    };
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
+}
+
+#[cfg(test)]
+mod tls_refusal_tests {
+    use super::*;
+
+    fn io(error: rustls::Error) -> std::io::Error {
+        std::io::Error::other(error)
+    }
+
+    #[test]
+    fn refusal_categories_use_structured_rustls_evidence() {
+        use rustls::AlertDescription as Alert;
+        assert_eq!(
+            classify_tls_io_error(
+                &io(rustls::Error::AlertReceived(Alert::CertificateRequired)),
+                false,
+                false,
+            ),
+            TlsRefusalClass::ClientCertificateRequired
+        );
+        assert_eq!(
+            classify_tls_io_error(
+                &io(rustls::Error::AlertReceived(Alert::CertificateRequired)),
+                false,
+                true,
+            ),
+            TlsRefusalClass::ClientCertificateRejected
+        );
+        assert_eq!(
+            classify_tls_io_error(
+                &io(rustls::Error::AlertReceived(Alert::BadCertificate)),
+                false,
+                true,
+            ),
+            TlsRefusalClass::ClientCertificateRejected
+        );
+        for alert in [Alert::CertificateExpired, Alert::CertificateRevoked] {
+            assert_eq!(
+                classify_tls_io_error(&io(rustls::Error::AlertReceived(alert)), false, true,),
+                TlsRefusalClass::ClientCertificateRejected
+            );
+        }
+        assert_eq!(
+            classify_tls_io_error(
+                &io(rustls::Error::AlertReceived(Alert::BadCertificateHashValue)),
+                true,
+                false,
+            ),
+            TlsRefusalClass::CertificatePinned
+        );
+        assert_eq!(
+            classify_tls_io_error(
+                &io(rustls::Error::AlertReceived(Alert::UnknownCA)),
+                true,
+                false,
+            ),
+            TlsRefusalClass::ClientTrustRejection
+        );
+        assert_eq!(
+            classify_tls_io_error(
+                &std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "closed"),
+                true,
+                false,
+            ),
+            TlsRefusalClass::Unknown
+        );
+        assert_eq!(
+            classify_tls_io_error(&io(rustls::Error::NoApplicationProtocol), false, false,),
+            TlsRefusalClass::ProtocolMismatch
+        );
+    }
 }

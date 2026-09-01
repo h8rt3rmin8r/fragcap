@@ -19,28 +19,14 @@ name: platform
 # S09 gave this real triggers, replacing dispatch-only. A dated decision is
 # recorded in changelog.d, per the pinned-artifact rule.
 #
-# Only the paths that can change the answer. The live source, the crate that
-# holds it, and this file. A documentation change does not need a Windows
-# runner with a capture driver on it.
+# This workflow tests the whole workspace, so every pull request and every
+# main-branch change can change its answer. A narrower path list drifted from
+# the job during S106 and skipped the follow-up that fixed a Windows-only test.
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "crates/fragcap-capture/**"
-      - "crates/fragcap-attr/**"
-      - "crates/fragcap-core/**"
-      - "crates/fragcap-attr/**"
-      - ".github/workflows/platform.yml"
-      - "Cargo.lock"
   pull_request:
-    paths:
-      - "crates/fragcap-capture/**"
-      - "crates/fragcap-attr/**"
-      - "crates/fragcap-core/**"
-      - "crates/fragcap-attr/**"
-      - ".github/workflows/platform.yml"
-      - "Cargo.lock"
 
 concurrency:
   group: platform-${{ github.ref }}
