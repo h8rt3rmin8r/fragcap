@@ -1,0 +1,2 @@
+<!-- spec-impact: 16.4, 17.2.1, 28.1 -->
+**2026-09-01:** S111 closes issue #307 at the managed publisher-launcher boundary. Stored roles are the sole chain authority; explicitly stored absolute paths may name external publisher installs, relative paths remain confined beneath the game install root, and warm, escaped, ambiguous, or incomplete chains remain refused. S111 adds no dependency or lockfile package, and Deep Capture remains incomplete until #334.

@@ -25,9 +25,9 @@ use fragcap::deep_capture::{
 #[cfg(windows)]
 use fragcap::deep_capture::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
 use fragcap::targets::{
-    entry_windows_clients, resolve_id, resolve_positional, CompatibilityEvidenceSource,
-    CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store,
-    TargetEntry,
+    entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
+    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
+    Selection, Store, TargetEntry,
 };
 #[cfg(test)]
 use fragcap::FlowId;
@@ -1653,30 +1653,72 @@ fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError
     {
         Ok(steam_launch_case(steam_is_running()?))
     } else {
-        let clients = entry_windows_clients(target);
-        let client = match clients.as_slice() {
-            [] => {
-                return Err(CliError::usage(
-                    "direct Deep Capture requires one resolved Windows client executable",
-                ));
-            }
-            [client] => client,
-            _ => {
+        let launches = entry_windows_launch_entries(target);
+        let publisher_declaration = (launches.len() > 1
+            && launches.iter().any(|launch| launch.role().is_some()))
+            || (launches.len() == 1 && launches[0].role().is_some_and(|role| role != "client"));
+        if !publisher_declaration {
+            let clients = entry_windows_clients(target);
+            let client = match clients.as_slice() {
+                [] => {
+                    return Err(CliError::usage(
+                        "direct Deep Capture requires one resolved Windows client executable",
+                    ));
+                }
+                [client] => client,
+                _ => {
+                    return Err(CliError::usage(format!(
+                        "direct Deep Capture found multiple Windows client executables: {}",
+                        clients.join(", ")
+                    )));
+                }
+            };
+            if process_image_is_running(client)? {
                 return Err(CliError::usage(format!(
-                    "direct Deep Capture found multiple Windows client executables: {}",
-                    clients.join(", ")
+                    "cannot prove a cold direct launch while a process named {client} is already \
+                     running; the no-handle process snapshot cannot distinguish same-named \
+                     executables by path, so close that process and retry"
                 )));
             }
-        };
-        if process_image_is_running(client)? {
-            return Err(CliError::usage(format!(
-                "cannot prove a cold direct launch while a process named {client} is already \
-                 running; the no-handle process snapshot cannot distinguish same-named \
-                 executables by path, so close that process and retry"
-            )));
+            return Ok(CompatibilityLaunchCase::DirectExeCold);
         }
-        Ok(CompatibilityLaunchCase::DirectExeCold)
+        match fragcap::managed_launch::prepare_managed_launch(target)
+            .map_err(|error| CliError::usage(error.to_string()))?
+        {
+            fragcap::managed_launch::ManagedLaunch::Publisher(publisher) => {
+                publisher_launch_case(&publisher)
+            }
+            fragcap::managed_launch::ManagedLaunch::Direct(_) => {
+                unreachable!("publisher declarations prepare as publisher chains")
+            }
+            fragcap::managed_launch::ManagedLaunch::Steam(_) => {
+                unreachable!("a non-Steam stored target cannot prepare a Steam launch")
+            }
+        }
     }
+}
+
+fn publisher_launch_case(
+    publisher: &fragcap::managed_launch::PublisherChainLaunch,
+) -> Result<CompatibilityLaunchCase, CliError> {
+    let images: Vec<String> = publisher
+        .stages()
+        .iter()
+        .map(|stage| stage.image_name().to_string_lossy().into_owned())
+        .collect();
+    let running = process_images_running(&images)?;
+    Ok(classify_publisher_processes(&running))
+}
+
+fn classify_publisher_processes(running: &[bool]) -> CompatibilityLaunchCase {
+    debug_assert!(running.len() >= 2, "publisher chains have root and client");
+    if !running[0] && running.iter().skip(1).all(|present| !present) {
+        return CompatibilityLaunchCase::PublisherLauncherCold;
+    }
+    if running[0] && !running[running.len() - 1] {
+        return CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm;
+    }
+    CompatibilityLaunchCase::PublisherLauncherWarm
 }
 
 fn effective_launch_case(
@@ -1705,6 +1747,11 @@ fn steam_is_running() -> Result<bool, CliError> {
 
 #[cfg(windows)]
 fn process_image_is_running(image: &str) -> Result<bool, CliError> {
+    process_images_running(&[image.to_string()]).map(|running| running[0])
+}
+
+#[cfg(windows)]
+fn process_images_running(images: &[String]) -> Result<Vec<bool>, CliError> {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
     };
@@ -1713,13 +1760,15 @@ fn process_image_is_running(image: &str) -> Result<bool, CliError> {
         TH32CS_SNAPPROCESS,
     };
 
+    let mut running = vec![false; images.len()];
+
     // This is a handle to a read-only process snapshot, not to any process. It
     // supplies the image names needed to distinguish a cold launch from a warm
     // protocol dispatch without requesting rights against Steam or a target.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE || snapshot == 0 {
         return Err(CliError::failure(format!(
-            "cannot determine whether {image} is already running: {}",
+            "cannot determine whether declared target processes are already running: {}",
             std::io::Error::last_os_error()
         )));
     }
@@ -1732,7 +1781,7 @@ fn process_image_is_running(image: &str) -> Result<bool, CliError> {
         // SAFETY: the snapshot handle is closed exactly once before returning.
         unsafe { CloseHandle(snapshot) };
         return Err(CliError::failure(format!(
-            "cannot enumerate processes while checking {image}: {error}"
+            "cannot enumerate processes while checking the declared target chain: {error}"
         )));
     }
 
@@ -1742,10 +1791,11 @@ fn process_image_is_running(image: &str) -> Result<bool, CliError> {
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
-        if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case(image) {
-            // SAFETY: the snapshot handle is closed exactly once before returning.
-            unsafe { CloseHandle(snapshot) };
-            return Ok(true);
+        let observed = String::from_utf16_lossy(&entry.szExeFile[..end]);
+        for (index, image) in images.iter().enumerate() {
+            if observed.eq_ignore_ascii_case(image) {
+                running[index] = true;
+            }
         }
         // SAFETY: the same live snapshot and initialized entry remain valid.
         if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
@@ -1754,10 +1804,10 @@ fn process_image_is_running(image: &str) -> Result<bool, CliError> {
             // SAFETY: the snapshot handle is closed exactly once before returning.
             unsafe { CloseHandle(snapshot) };
             if code == ERROR_NO_MORE_FILES {
-                return Ok(false);
+                return Ok(running);
             }
             return Err(CliError::failure(format!(
-                "cannot finish enumerating processes while checking {image}: {}",
+                "cannot finish enumerating processes while checking the declared target chain: {}",
                 std::io::Error::from_raw_os_error(code as i32)
             )));
         }
@@ -1775,6 +1825,13 @@ fn steam_is_running() -> Result<bool, CliError> {
 fn process_image_is_running(_image: &str) -> Result<bool, CliError> {
     Err(CliError::usage(
         "Deep Capture managed direct launch is only supported on Windows",
+    ))
+}
+
+#[cfg(not(windows))]
+fn process_images_running(_images: &[String]) -> Result<Vec<bool>, CliError> {
+    Err(CliError::usage(
+        "Deep Capture managed publisher launch is only supported on Windows",
     ))
 }
 
@@ -2947,6 +3004,30 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 mod tests {
     use super::*;
 
+    #[test]
+    fn publisher_process_inventory_keeps_cold_and_warm_states_distinct() {
+        assert_eq!(
+            classify_publisher_processes(&[false, false, false]),
+            CompatibilityLaunchCase::PublisherLauncherCold
+        );
+        assert_eq!(
+            classify_publisher_processes(&[true, false, false]),
+            CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
+        );
+        assert_eq!(
+            classify_publisher_processes(&[true, true, false]),
+            CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm
+        );
+        assert_eq!(
+            classify_publisher_processes(&[false, true, false]),
+            CompatibilityLaunchCase::PublisherLauncherWarm
+        );
+        assert_eq!(
+            classify_publisher_processes(&[false, false, true]),
+            CompatibilityLaunchCase::PublisherLauncherWarm
+        );
+    }
+
     fn observation() -> Observation {
         Observation {
             flow_id: FlowId::new(1),
@@ -3224,7 +3305,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_policy_accepts_cold_steam_but_the_native_cli_only_routes_direct_launches() {
+    fn compatibility_policy_accepts_exact_cold_managed_launches() {
         let validate = |launch_case| {
             fragcap::deep_capture::validate_compatibility_prerequisites(
                 fragcap::deep_capture::SessionMode::Capture,
@@ -3235,10 +3316,12 @@ mod tests {
         };
         assert!(validate(CompatibilityLaunchCase::SteamProtocolCold).is_ok());
         assert!(validate(CompatibilityLaunchCase::DirectExeCold).is_ok());
+        assert!(validate(CompatibilityLaunchCase::PublisherLauncherCold).is_ok());
         for unsupported in [
             CompatibilityLaunchCase::SteamProtocolWarm,
             CompatibilityLaunchCase::DirectExeWarm,
-            CompatibilityLaunchCase::PublisherLauncherCold,
+            CompatibilityLaunchCase::PublisherLauncherWarm,
+            CompatibilityLaunchCase::PublisherLauncherGameStartCleanWarm,
         ] {
             assert!(
                 validate(unsupported).is_err(),

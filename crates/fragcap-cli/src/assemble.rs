@@ -11,8 +11,8 @@
 //! scripted attributor, and a scripted process timeline) that drives every
 //! tier-1 test, and the feature-gated live, socket-table, and ETW paths that
 //! run only on a developer machine. The not-yet-supported modes, transport
-//! sinks, and managed launch are refused here as configuration errors naming
-//! the slice that delivers them (FR-010, FR-011).
+//! sinks, and managed launch are validated here as configuration errors before
+//! capture effects begin (FR-010, FR-011).
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -117,7 +117,7 @@ pub fn effective_config(
 }
 
 /// Build effective Capture configuration while retaining the selected stored
-/// target as the sole source for a direct managed launch.
+/// target as the sole source for an exact managed launch.
 pub fn effective_config_with_target(
     args: &CaptureArgs,
     profile: &Profile,
@@ -166,10 +166,10 @@ pub fn effective_config_with_target(
 
 /// Build the managed-launch request from `--launch` and the profile.
 ///
-/// Absent `--launch`, there is none. With it, the profile must declare a Steam
-/// platform and an app_id, or the launch is refused as a named configuration
-/// error before capture starts (FR-011); on a non-Windows build it is refused as
-/// unsupported, since there is no Steam protocol handler to invoke.
+/// Absent `--launch`, there is none. With it, a Steam profile must declare an
+/// app_id; another stored target must declare one exact direct or publisher
+/// chain. Invalid preparation refuses before capture starts (FR-011). Managed
+/// launch remains Windows-only.
 fn build_launch(
     args: &CaptureArgs,
     profile: &Profile,
@@ -195,8 +195,8 @@ fn build_launch(
                 .map_err(|e| CliError::usage(e.to_string()));
         }
         let target = stored_target
-            .ok_or_else(|| CliError::usage("managed direct launch requires a stored target"))?;
-        fragcap::managed_launch::prepare_direct_launch(target)
+            .ok_or_else(|| CliError::usage("managed launch requires a stored target"))?;
+        fragcap::managed_launch::prepare_managed_launch(target)
             .map(Some)
             .map_err(|error| CliError::usage(error.to_string()))
     }
@@ -1198,6 +1198,53 @@ mod tests {
             panic!("expected Steam launch");
         };
         assert_eq!(req.url, "steam://run/900883");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_on_a_stored_publisher_profile_uses_the_shared_chain() {
+        use fragcap::profile::FidelityTier;
+        use fragcap::targets::{ClassificationSource, TargetClassification, TargetEntry};
+
+        let root = tempfile::tempdir().unwrap();
+        for image in ["Publisher.exe", "Bootstrap.exe", "Game.exe"] {
+            std::fs::write(root.path().join(image), b"fixture").unwrap();
+        }
+        let target = TargetEntry {
+            id: Some(1),
+            stable_id: 1,
+            handle: "publisher".into(),
+            name: "Publisher".into(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                { "executable": "Publisher.exe", "role": "launcher" },
+                { "executable": "Bootstrap.exe", "role": "bootstrap" },
+                { "executable": "Game.exe", "role": "client" }
+            ])),
+            install_root: Some(root.path().to_string_lossy().into_owned()),
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+        let profile = Profile::parse(
+            r#"{"schema":1,"kind":"profile","fidelity":"authored","game":{"id":"publisher","name":"Publisher"},"stage":[{"role":"launcher","lifecycle":"session","match":{"exe":"Publisher.exe"}},{"role":"bootstrap","lifecycle":"session","match":{"exe":"Bootstrap.exe","descends_from":"launcher"}},{"role":"client","lifecycle":"session","terminal":true,"match":{"exe":"Game.exe","descends_from":"bootstrap"}}]}"#,
+        )
+        .unwrap();
+
+        let config =
+            effective_config_with_target(&run_args(&["--launch"]), &profile, Some(&target))
+                .expect("publisher launch prepares through Capture");
+        let Some(fragcap::managed_launch::ManagedLaunch::Publisher(publisher)) = config.launch
+        else {
+            panic!("expected shared publisher launch");
+        };
+        assert_eq!(publisher.stages().len(), 3);
+        assert_eq!(publisher.stages()[2].role(), "client");
     }
 
     // FR-011. --launch without a declared app_id is refused before capture.

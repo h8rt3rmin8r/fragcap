@@ -279,7 +279,8 @@ pub fn entry_windows_clients(entry: &TargetEntry) -> Vec<String> {
 ///
 /// Unlike [`entry_windows_clients`], this preserves every relative directory
 /// component. Process matching needs only the image name; managed launch needs
-/// the exact path beneath the stored install root. Both functions share the
+/// the exact stored path. Relative paths remain beneath the stored install root,
+/// while an authored absolute path can name an external publisher install. Both share the
 /// same parsed launch entries, Windows filter, case folding, and first-seen
 /// ordering so they cannot disagree about eligibility.
 pub fn entry_windows_launch_paths(entry: &TargetEntry) -> Vec<String> {
@@ -293,7 +294,8 @@ pub fn entry_windows_launch_paths(entry: &TargetEntry) -> Vec<String> {
 ///
 /// Managed launch needs the arguments paired with the exact executable rather
 /// than a second lookup after effects begin. Entries that differ by arguments
-/// remain distinct and therefore ambiguous; byte-for-byte duplicates collapse.
+/// remain distinct and therefore ambiguous. Roles are part of publisher-chain
+/// identity, so otherwise identical entries with different roles do not collapse.
 pub fn entry_windows_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
     let mut seen_folded = Vec::new();
     let mut out = Vec::new();
@@ -305,7 +307,11 @@ pub fn entry_windows_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
         if executable.is_empty() {
             continue;
         }
-        let folded = (executable.to_lowercase(), launch.arguments.clone());
+        let folded = (
+            executable.to_lowercase(),
+            launch.arguments.clone(),
+            launch.role.clone(),
+        );
         if seen_folded.contains(&folded) {
             continue;
         }
@@ -383,6 +389,10 @@ fn entry_launch_entries(entry: &TargetEntry) -> Vec<LaunchEntry> {
             le.os = item.get("os").and_then(|v| v.as_str()).map(str::to_string);
             le.arguments = item
                 .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            le.role = item
+                .get("role")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             out.push(le);
@@ -536,6 +546,38 @@ mod tests {
         assert_eq!(launches.len(), 2);
         assert_eq!(launches[0].arguments.as_deref(), Some("--mode one"));
         assert_eq!(launches[1].arguments.as_deref(), Some("--mode two"));
+    }
+
+    #[test]
+    fn publisher_roles_are_preserved_and_part_of_dedup_identity() {
+        let entry = TargetEntry {
+            id: None,
+            stable_id: 2,
+            handle: "publisher".to_string(),
+            name: "Publisher".to_string(),
+            classification: TargetClassification::Game,
+            classification_source: ClassificationSource::User,
+            fidelity: FidelityTier::Authored,
+            provenance: None,
+            anchor: None,
+            launch_entries: Some(serde_json::json!([
+                { "executable": "Publisher.exe", "os": "windows", "role": "launcher" },
+                { "executable": "PUBLISHER.EXE", "os": "Windows", "role": "bootstrap" },
+                { "executable": "Game.exe", "os": "windows", "role": "client" },
+                { "executable": "game.exe", "os": "Windows", "role": "client" }
+            ])),
+            install_root: None,
+            evidence: None,
+            detection_scan: None,
+            folder_name: None,
+            executable_hint: None,
+        };
+
+        let launches = entry_windows_launch_entries(&entry);
+        assert_eq!(launches.len(), 3);
+        assert_eq!(launches[0].role(), Some("launcher"));
+        assert_eq!(launches[1].role(), Some("bootstrap"));
+        assert_eq!(launches[2].role(), Some("client"));
     }
 
     #[test]

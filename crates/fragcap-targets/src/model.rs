@@ -183,6 +183,8 @@ pub struct LaunchEntry {
     executable: String,
     pub arguments: Option<String>,
     pub description: Option<String>,
+    /// Stored publisher-chain role, when the target declares one.
+    pub role: Option<String>,
 }
 
 impl LaunchEntry {
@@ -204,12 +206,18 @@ impl LaunchEntry {
             executable,
             arguments: None,
             description: None,
+            role: None,
         })
     }
 
     /// The invoked binary. Non-empty by construction.
     pub fn executable(&self) -> &str {
         &self.executable
+    }
+
+    /// The declared publisher-chain role, if present.
+    pub fn role(&self) -> Option<&str> {
+        self.role.as_deref()
     }
 }
 

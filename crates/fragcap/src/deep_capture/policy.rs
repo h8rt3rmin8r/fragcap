@@ -51,7 +51,9 @@ pub fn validate_compatibility_prerequisites(
 
 fn require_supported_launch_case(launch_case: LaunchCase) -> Result<(), PreflightRefusal> {
     match launch_case {
-        LaunchCase::SteamProtocolCold | LaunchCase::DirectExeCold => Ok(()),
+        LaunchCase::SteamProtocolCold
+        | LaunchCase::DirectExeCold
+        | LaunchCase::PublisherLauncherCold => Ok(()),
         LaunchCase::SteamProtocolWarm => Err(PreflightRefusal::new(
             "launch-case",
             "Deep Capture cannot apply scoped proxy settings through an already-running Steam process; close Steam and retry so fragcap can own the cold launch",
@@ -60,10 +62,18 @@ fn require_supported_launch_case(launch_case: LaunchCase) -> Result<(), Prefligh
             "launch-case",
             "Deep Capture cannot apply scoped proxy settings to an already-running direct executable; close it and retry so fragcap can own the cold launch",
         )),
+        LaunchCase::PublisherLauncherWarm => Err(PreflightRefusal::new(
+            "launch-case",
+            "Deep Capture cannot apply scoped proxy settings to an already-running publisher launcher; close the publisher chain and retry so fragcap can own the cold launch",
+        )),
+        LaunchCase::PublisherLauncherGameStartCleanWarm => Err(PreflightRefusal::new(
+            "launch-case",
+            "Deep Capture cannot apply scoped proxy settings retroactively to a publisher launcher even when the game client is not running; close the launcher and retry from a cold chain",
+        )),
         _ => Err(PreflightRefusal::new(
             "launch-case",
             format!(
-                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol and cold direct-executable launches whose compatibility facts prove client routing",
+                "Deep Capture does not support managed launch case {}; supported managed paths are cold Steam protocol, cold direct-executable, and exact cold publisher-chain launches whose compatibility facts prove client routing",
                 launch_case.as_str()
             ),
         )),
@@ -356,5 +366,28 @@ pub fn compatibility_owner_role(role: &str) -> Option<&str> {
         "wrapper" => Some("wrapper"),
         "unknown" => Some("unknown"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod launch_case_tests {
+    use super::*;
+
+    #[test]
+    fn exact_cold_publisher_chain_is_supported() {
+        assert!(require_supported_launch_case(LaunchCase::PublisherLauncherCold).is_ok());
+    }
+
+    #[test]
+    fn both_warm_publisher_states_remain_distinct_refusals() {
+        let warm = require_supported_launch_case(LaunchCase::PublisherLauncherWarm).unwrap_err();
+        let clean_game =
+            require_supported_launch_case(LaunchCase::PublisherLauncherGameStartCleanWarm)
+                .unwrap_err();
+        assert_eq!(warm.code, "launch-case");
+        assert_eq!(clean_game.code, "launch-case");
+        assert_ne!(warm.detail, clean_game.detail);
+        assert!(warm.detail.contains("already-running publisher launcher"));
+        assert!(clean_game.detail.contains("game client is not running"));
     }
 }

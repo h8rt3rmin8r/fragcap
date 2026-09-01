@@ -601,6 +601,10 @@ fn capture_live(
             fragcap::managed_launch::ManagedLaunch::Direct(request) => {
                 request.executable().display().to_string()
             }
+            fragcap::managed_launch::ManagedLaunch::Publisher(request) => format!(
+                "{} through publisher chain",
+                request.root().executable().display()
+            ),
         };
         emitter.progress(&format!("launching {description}"));
         if let Err(e) = request.execute() {

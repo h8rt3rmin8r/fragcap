@@ -366,6 +366,16 @@ rows, complete artifact reconciliation, and unmodified TShark consumption in a
 dedicated CI tier. Generic transports remain in milestone 3 under #310 through
 #315, and Deep Capture remains incomplete until #334.
 
+S111 closes #307 at the managed publisher-launcher boundary. The existing
+stored target now carries ordered launch roles into one immutable shared
+Capture and Deep Capture preparation. fragcap starts only a proven-cold exact
+launcher root with child-scoped routing, binds declared intermediate ancestry
+through the process tree, and treats only the final client as terminal. Exact
+absolute entries may name external publisher installs; relative entries remain
+confined beneath the game install root. Warm, escaped, ambiguous, and incomplete
+chains remain explicit refusals. S111 adds no dependency or lockfile package,
+and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
