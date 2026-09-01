@@ -15,6 +15,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 # Supersede in-flight runs for the same ref. Without this, pushing three times
 # to a branch leaves three runs competing for runners, and the two stale ones
 # are pure waste.
@@ -50,6 +53,9 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+      - name: Native HTTP and TLS conformance evidence
+        run: cargo run --package xtask -- conformance
 
       - name: Repository conventions
         run: cargo run --package xtask -- lint
@@ -117,3 +123,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Build at the declared minimum
         run: cargo build --workspace --locked
+
+  analyzer:
+    name: unmodified TShark consumes native evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install TShark
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+      - name: Read pcapng with the TLS key log and require protocol fields
+        run: cargo run --package xtask -- conformance --analyzer

@@ -357,8 +357,14 @@ exact recovery decisions are shared with doctor. `proxy.jsonl` and
 `cleanup.jsonl` are versioned crash-readable streams with reconciling trailers;
 `cleanup.json` is their derived compatibility projection. S109 also bounds the
 localized application body-loss identity map and reports exact unlocalized
-overflow totals. It adds no dependency or lockfile package. Generic transports
-remain in S110 under #305, and Deep Capture remains incomplete until #334.
+overflow totals. It adds no dependency or lockfile package.
+
+S110 closes #305 at the native HTTP and TLS conformance boundary. Its closed,
+versioned matrix requires two independent client and origin lineages per
+standard protocol, exact expected and observed outcomes, zero skipped required
+rows, complete artifact reconciliation, and unmodified TShark consumption in a
+dedicated CI tier. Generic transports remain in milestone 3 under #310 through
+#315, and Deep Capture remains incomplete until #334.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

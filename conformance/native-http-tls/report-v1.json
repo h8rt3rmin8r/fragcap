@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "matrix_id": "fragcap-native-http-tls-v1",
+  "product_version": "0.8.0",
+  "generated_by": "cargo-xtask-conformance-s110-v1",
+  "rows": [
+    {"id":"http1-wire","status":"pass","observed":"200-body-trailers-preserved"},
+    {"id":"http1-library","status":"pass","observed":"200-metadata-and-body-reconciled"},
+    {"id":"https-wire","status":"pass","observed":"tls12-two-verified-boundaries"},
+    {"id":"https-library","status":"pass","observed":"tls13-two-verified-boundaries"},
+    {"id":"http2-wire","status":"pass","observed":"multiplexed-streams-reconciled"},
+    {"id":"http2-library","status":"pass","observed":"authenticated-authority-bound-h2"},
+    {"id":"websocket-wire","status":"pass","observed":"upgrade-frames-messages-preserved"},
+    {"id":"websocket-library","status":"pass","observed":"extended-connect-frames-preserved"},
+    {"id":"sse-wire","status":"pass","observed":"identity-events-incremental"},
+    {"id":"sse-library","status":"pass","observed":"h2-events-and-terminal-reconciled"},
+    {"id":"grpc-wire","status":"pass","observed":"envelopes-and-status-preserved"},
+    {"id":"grpc-library","status":"pass","observed":"h2-envelopes-trailers-reconciled"},
+    {"id":"failure-auth","status":"pass","observed":"407-before-origin"},
+    {"id":"failure-framing","status":"pass","observed":"ambiguous-framing-refused"},
+    {"id":"failure-name","status":"pass","observed":"certificate-name-refused"},
+    {"id":"failure-chain","status":"pass","observed":"untrusted-chain-refused"},
+    {"id":"https-client-identity","status":"pass","observed":"operator-identity-authenticates-upstream"},
+    {"id":"failure-disconnect","status":"pass","observed":"request-retained-response-unavailable"},
+    {"id":"failure-timeout","status":"pass","observed":"bounded-timeout-explicit"},
+    {"id":"failure-cancel","status":"pass","observed":"stream-cancel-explicit"},
+    {"id":"failure-cleanup","status":"pass","observed":"retained-obligation-explicit"}
+  ],
+  "artifacts": [
+    {"role":"application-jsonl","authority":"fragcap production prefix reader","status":"pass"},
+    {"role":"har","authority":"fragcap HAR projection validator","status":"pass"},
+    {"role":"tls-key-log","authority":"rustls key-log contract and TShark preference","status":"pass"},
+    {"role":"pcapng","authority":"fragcap golden writer and TShark","status":"pass"},
+    {"role":"correlation","authority":"fragcap final reconciliation","status":"pass"},
+    {"role":"proxy-lifecycle","authority":"fragcap lifecycle prefix reader","status":"pass"},
+    {"role":"cleanup-lifecycle","authority":"fragcap lifecycle prefix reader","status":"pass"},
+    {"role":"cleanup-summary","authority":"cleanup chronology projection","status":"pass"},
+    {"role":"resource-journal","authority":"fragcap journal inspection","status":"pass"},
+    {"role":"manifest-v2","authority":"embedded schema and semantic validator","status":"pass"}
+  ],
+  "tiers": [
+    {"id":"portable-linux","status":"required","authority":"GitHub Actions ubuntu-latest"},
+    {"id":"portable-windows","status":"required","authority":"GitHub Actions windows-latest"},
+    {"id":"analyzer","status":"required","authority":"GitHub Actions TShark job"}
+  ],
+  "summary": {"required":21,"passed":21,"failed":0,"skipped":0,"not_run":0,"missing":0,"duplicate":0},
+  "sanitization": {"synthetic":true,"secrets":0,"private_keys":0,"live_endpoints":0,"absolute_user_paths":0,"nondeterministic_fields":0}
+}

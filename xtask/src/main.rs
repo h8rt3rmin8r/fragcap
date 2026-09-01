@@ -14,6 +14,7 @@
 //! repository.
 
 mod changelog;
+mod conformance;
 mod deps;
 mod docs;
 mod license;
@@ -46,6 +47,7 @@ cargo xtask <command>
   publish    Registry publication in dependency order (--execute to publish)
   notes      Print release notes for a version, from CHANGELOG.md
   changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
+  conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
 
@@ -180,6 +182,18 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+
+        "conformance" => {
+            let analyzer = std::env::args().any(|argument| argument == "--analyzer");
+            match conformance::run(&root, analyzer) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("conformance: could not run: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
 
         "neutral" => {
             let installed = Command::new("rustup")
@@ -399,6 +413,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: spec could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running native HTTP/TLS conformance evidence");
+            match conformance::run(&root, false) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: conformance reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: conformance could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

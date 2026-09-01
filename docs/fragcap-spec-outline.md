@@ -147,6 +147,12 @@ native runtime, the public Deep Capture prepared-plan and session
 coordinator, its immutable routing strategy and synchronized recovery journal,
 its narrow effect adapters, and the plugin seam for dissectors.
 
+The native HTTP and TLS conformance gate is a closed versioned matrix. It binds
+each required protocol row to independent peer implementations, exact expected
+and observed outcomes, executable evidence, production artifact authorities,
+and a required CI tier. Missing or skipped required rows fail, and unmodified
+TShark consumption is a separate analyzer proof.
+
 ## 9. Platform Strategy
 
 Windows 11 is the v0.2.0 target. Documents why the capture binary must

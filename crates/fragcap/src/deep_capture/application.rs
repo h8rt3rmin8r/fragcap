@@ -574,7 +574,7 @@ fn header_record(session_id: &str) -> Value {
         "non_exports": {
             "tcp": "deferred-issue-306",
             "udp": "deferred-issue-307",
-            "quic": "deferred-issue-305"
+            "quic": "deferred-issue-314"
         }
     })
 }
