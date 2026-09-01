@@ -110,6 +110,7 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
     let mut transactions = BTreeMap::<(u64, u64), Transaction>::new();
     let mut correlations = BTreeMap::<u64, Value>::new();
     let mut trailer = false;
+    let mut unlocalized_gap_records = 0_u64;
     for line in BufReader::new(File::open(path)?).lines() {
         let record: Value = serde_json::from_str(&line?).map_err(io::Error::other)?;
         let kind = record
@@ -121,7 +122,14 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
             continue;
         }
         if kind == "application.gap" {
-            apply_body_losses(&record, &mut transactions)?;
+            let localized = apply_body_losses(&record, &mut transactions)?;
+            unlocalized_gap_records = unlocalized_gap_records.saturating_add(
+                record
+                    .get("dropped_records")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .saturating_sub(localized),
+            );
             continue;
         }
         let Some(connection) = record.get("proxy_connection_id").and_then(Value::as_u64) else {
@@ -194,6 +202,13 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
             })),
         }
     }
+    if unlocalized_gap_records > 0 {
+        partial.push(json!({
+            "missingOrPartial":["unlocalized-application-gap"],
+            "unlocalizedDroppedRecords":unlocalized_gap_records,
+            "source":{"applicationGap":true}
+        }));
+    }
     let standard_entries = entries.len();
     let partial_entries = partial.len();
     let json = serde_json::to_string_pretty(&json!({"log": {
@@ -211,10 +226,11 @@ pub fn project_application_har(path: &Path) -> io::Result<HarProjection> {
 fn apply_body_losses(
     record: &Value,
     transactions: &mut BTreeMap<(u64, u64), Transaction>,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let Some(losses) = record.get("body_losses").and_then(Value::as_array) else {
-        return Ok(());
+        return Ok(0);
     };
+    let mut localized = 0_u64;
     for loss in losses {
         let Some(connection) = loss.get("proxy_connection_id").and_then(Value::as_u64) else {
             continue;
@@ -245,6 +261,11 @@ fn apply_body_losses(
             .get("observed_bytes")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        localized = localized.saturating_add(
+            loss.get("dropped_records")
+                .and_then(Value::as_u64)
+                .unwrap_or(1),
+        );
         let slot = bodies
             .observed
             .entry(representation.to_string())
@@ -252,7 +273,7 @@ fn apply_body_losses(
         *slot = slot.saturating_add(observed);
         bodies.limited.insert(representation.to_string(), true);
     }
-    Ok(())
+    Ok(localized)
 }
 
 fn body_summary(bodies: &Bodies) -> Value {
@@ -392,6 +413,14 @@ fn standard_entry(
     if started.is_none() {
         missing.push("started-time");
     }
+    let request_head_size = head_size(request);
+    let response_head_size = head_size(response);
+    if request_head_size.is_none() {
+        missing.push("request-header-size");
+    }
+    if response_head_size.is_none() {
+        missing.push("response-header-size");
+    }
     if !missing.is_empty() {
         return Err(missing);
     }
@@ -418,7 +447,7 @@ fn standard_entry(
     let mut request_value = json!({
         "method":method.unwrap(),"url":url.unwrap(),"httpVersion":har_version(tx.protocol.as_deref()),
         "headers":request_headers,"queryString":derived(request,"query"),"cookies":derived(request,"cookies"),
-        "headersSize":head_size(request),"bodySize":transferred_size(&tx.request_bodies, request_body)
+        "headersSize":request_head_size.unwrap(),"bodySize":transferred_size(&tx.request_bodies, request_body)
     });
     if let Some(post_data) = post_data {
         request_value["postData"] = post_data;
@@ -434,7 +463,7 @@ fn standard_entry(
     let total = send.unwrap() + wait.unwrap() + receive.unwrap();
     Ok(json!({"startedDateTime":started.unwrap(),"time":total,
         "request":request_value,
-        "response":{"status":status.unwrap(),"statusText":binary_text(response.get("reason")).unwrap_or_default(),"httpVersion":har_version(tx.protocol.as_deref()),"headers":response_headers,"cookies":response_cookies(response),"content":content,"redirectURL":redirect,"headersSize":head_size(response),"bodySize":transferred_size(&tx.response_bodies, response_body)},
+        "response":{"status":status.unwrap(),"statusText":binary_text(response.get("reason")).unwrap_or_default(),"httpVersion":har_version(tx.protocol.as_deref()),"headers":response_headers,"cookies":response_cookies(response),"content":content,"redirectURL":redirect,"headersSize":response_head_size.unwrap(),"bodySize":transferred_size(&tx.response_bodies, response_body)},
         "cache":{},"timings":{"send":send.unwrap(),"wait":wait.unwrap(),"receive":receive.unwrap()},
         "_fragcap":{"proxyConnectionId":connection,"httpStreamId":stream,"correlation":tx.correlation,
             "requestBody":{"representation":request_representation,"observedBytes":request_observed,"retainedBytes":request_body.len(),"limited":request_limited},
@@ -489,12 +518,11 @@ fn header_value(headers: &[Value], name: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
 }
-fn head_size(record: &Value) -> i64 {
+fn head_size(record: &Value) -> Option<i64> {
     record
         .get("head_bytes")
         .and_then(Value::as_u64)
         .and_then(|value| value.try_into().ok())
-        .unwrap_or(-1)
 }
 fn response_cookies(record: &Value) -> Vec<Value> {
     let Ok(headers) = headers(record) else {
@@ -634,6 +662,46 @@ mod tests {
         assert!(reasons.contains(&"body-evidence-gap"));
         assert_eq!(tx.response_bodies.observed["content-decoded"], 11);
         assert!(tx.response_bodies.limited["content-decoded"]);
+    }
+
+    #[test]
+    fn application_gap_separates_localized_body_loss_from_unknown_loss() {
+        let mut transactions = BTreeMap::new();
+        let record = json!({
+            "dropped_records":3,
+            "body_losses":[{
+                "proxy_connection_id":7,
+                "http_stream_id":9,
+                "direction":"response",
+                "representation":"raw",
+                "dropped_records":1,
+                "observed_bytes":11
+            }]
+        });
+        let localized = apply_body_losses(&record, &mut transactions).unwrap();
+        assert_eq!(localized, 1);
+        assert_eq!(record["dropped_records"].as_u64().unwrap() - localized, 2);
+    }
+
+    #[test]
+    fn http2_without_wire_header_sizes_stays_partial() {
+        let mut tx = complete_transaction();
+        tx.protocol = Some("h2".to_string());
+        tx.request
+            .as_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("head_bytes");
+        tx.response
+            .as_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("head_bytes");
+        let reasons = standard_entry(7, 9, &tx).unwrap_err();
+        assert!(reasons.contains(&"request-header-size"));
+        assert!(reasons.contains(&"response-header-size"));
     }
 
     #[test]

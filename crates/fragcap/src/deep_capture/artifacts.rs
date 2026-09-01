@@ -286,11 +286,11 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
                 })
                 .collect::<Vec<_>>();
             let mut shared = manifest.clone();
-            shared["state"] = json!(if omitted.is_empty() {
-                "complete"
-            } else {
-                "partial"
-            });
+            let source_state = manifest
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("failed");
+            shared["state"] = json!(shared_manifest_state(source_state, !omitted.is_empty()));
             shared["sharing"] = json!({
                 "source_bundle": source,
                 "transformation": "sensitive-artifacts-omitted",
@@ -360,6 +360,16 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
     }
     result?;
     Ok(destination.join("sharing-manifest.json"))
+}
+
+fn shared_manifest_state(source_state: &str, sharing_omits_artifacts: bool) -> &'static str {
+    match source_state {
+        "failed" | "crash-prefix" => "failed",
+        "partial" => "partial",
+        "complete" if sharing_omits_artifacts => "partial",
+        "complete" => "complete",
+        _ => "failed",
+    }
 }
 
 fn read_manifest(bundle: &Path) -> io::Result<Value> {
@@ -711,6 +721,14 @@ mod tests {
             .unwrap();
         assert_eq!(application["completeness"], "omitted");
         assert!(application.get("path").is_none());
+    }
+
+    #[test]
+    fn sharing_never_upgrades_partial_or_failed_source_truth() {
+        assert_eq!(shared_manifest_state("partial", false), "partial");
+        assert_eq!(shared_manifest_state("failed", false), "failed");
+        assert_eq!(shared_manifest_state("complete", false), "complete");
+        assert_eq!(shared_manifest_state("complete", true), "partial");
     }
 
     #[test]
