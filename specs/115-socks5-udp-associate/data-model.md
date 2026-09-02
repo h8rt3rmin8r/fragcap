@@ -3,8 +3,8 @@
 ## SocksRequest
 
 - command: CONNECT or UDP ASSOCIATE
-- address type: IPv4, IPv6, or domain
-- authority: validated destination or expected client endpoint
+- address type: IPv4, IPv6, or domain for destinations; IPv4 or IPv6 for client endpoint claims
+- authority: validated destination or IP-literal expected client endpoint
 
 ## UdpAssociation
 

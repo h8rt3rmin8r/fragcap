@@ -391,7 +391,7 @@ fn idle_timeout_releases_association() {
         idle_timeout: Duration::from_millis(50),
         ..ProtocolLimits::default()
     };
-    let mut lease = start_proxy(&[], limits, collector);
+    let mut lease = start_proxy(&[], limits, Arc::clone(&collector));
     let mut control = TcpStream::connect(lease.endpoint()).unwrap();
     control
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -406,6 +406,37 @@ fn idle_timeout_releases_association() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.timed_out, 1);
     assert_eq!(report.observation.live_connections, 0);
+    assert!(collector.0.lock().unwrap().iter().any(|event| matches!(
+        &event.kind,
+        ApplicationEventKind::SocksUdp(value)
+            if value.action == "terminal" && value.outcome == "timed-out"
+    )));
+}
+
+#[test]
+fn rejected_domain_client_claim_is_charged_to_udp_associate() {
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy(&[], ProtocolLimits::default(), collector);
+    let mut control = TcpStream::connect(lease.endpoint()).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut control,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    control
+        .write_all(&[
+            5, 3, 0, 3, 9, b'l', b'o', b'c', b'a', b'l', b'h', b'o', b's', b't', 0, 0,
+        ])
+        .unwrap();
+    let mut reply = [0_u8; 10];
+    control.read_exact(&mut reply).unwrap();
+    assert_eq!(&reply[..4], &[5, 8, 0, 1]);
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(report.observation.protocol.socks_udp_associate_requested, 1);
+    assert_eq!(report.observation.protocol.socks_udp_associate_refused, 1);
+    assert_eq!(report.observation.protocol.socks_connect_refused, 0);
 }
 
 #[test]
