@@ -2,14 +2,15 @@
 
 //! Bounded SOCKS5 TCP negotiation and byte-transparent relay.
 
-use std::future::Future;
+use std::collections::BTreeSet;
+use std::future::{pending, Future};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{watch, Notify};
 use tokio::time::{timeout, Instant};
 
@@ -18,7 +19,7 @@ use crate::{
     connect_upstream, ApplicationEvent, ApplicationEventKind, DestinationAuthority,
     DestinationPolicy, ProtocolAccounting, ProtocolLimits, ProxyObservation, SessionCapability,
     SocksClassification, SocksConnectEvent, SocksNegotiationEvent, SocksTransferEvent,
-    UpstreamError, UpstreamStage,
+    SocksUdpEvent, UpstreamError, UpstreamStage,
 };
 
 const SOCKS_VERSION: u8 = 5;
@@ -26,6 +27,7 @@ const AUTH_VERSION: u8 = 1;
 const USERNAME_PASSWORD: u8 = 2;
 const NO_ACCEPTABLE_METHODS: u8 = 0xff;
 const CONNECT: u8 = 1;
+const UDP_ASSOCIATE: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SocksAddressType {
@@ -61,6 +63,18 @@ pub enum SocksReplyCode {
 struct ConnectRequest {
     authority: DestinationAuthority,
     address_type: SocksAddressType,
+}
+
+#[derive(Debug)]
+struct UdpAssociateRequest {
+    client_endpoint: Option<SocketAddr>,
+    address_type: SocksAddressType,
+}
+
+#[derive(Debug)]
+enum SocksRequest {
+    Connect(ConnectRequest),
+    UdpAssociate(UdpAssociateRequest),
 }
 
 pub(crate) struct SocksConnectionContext<'a> {
@@ -140,7 +154,7 @@ pub(crate) async fn serve_socks5(
 
     let request = tokio::select! {
         _ = shutdown.changed() => Err(SocksFailure::cancelled()),
-        result = read_connect_request(&mut client, limits.header_timeout) => result,
+        result = read_request(&mut client, limits.header_timeout) => result,
     };
     let request = match request {
         Ok(request) => request,
@@ -159,6 +173,28 @@ pub(crate) async fn serve_socks5(
             );
             let _ = write_reply(&mut client, failure.reply, None).await;
             return failed(accounting, failure);
+        }
+    };
+    let request = match request {
+        SocksRequest::Connect(request) => request,
+        SocksRequest::UdpAssociate(request) => {
+            accounting.socks_udp_associate_requested = 1;
+            return serve_udp_association(
+                client,
+                request,
+                policy,
+                UdpAssociationContext {
+                    limits,
+                    shutdown,
+                    session_id,
+                    connection_id,
+                    peer,
+                    local,
+                    sink,
+                },
+                accounting,
+            )
+            .await;
         }
     };
     accounting.socks_connect_requested = 1;
@@ -350,10 +386,10 @@ async fn negotiate(
         .map_err(|error| SocksFailure::new("socks-auth-write-failed", error.to_string()))
 }
 
-async fn read_connect_request(
+async fn read_request(
     stream: &mut TcpStream,
     budget: Duration,
-) -> Result<ConnectRequest, SocksFailure> {
+) -> Result<SocksRequest, SocksFailure> {
     let deadline = Instant::now() + budget;
     let mut head = [0_u8; 4];
     read_exact_until(stream, &mut head, deadline, "socks-request-head").await?;
@@ -408,20 +444,634 @@ async fn read_connect_request(
     };
     let mut port = [0_u8; 2];
     read_exact_until(stream, &mut port, deadline, "socks-port").await?;
+    let port = u16::from_be_bytes(port);
+    if head[1] == UDP_ASSOCIATE {
+        let client_endpoint = match address_type {
+            SocksAddressType::Ipv4 | SocksAddressType::Ipv6 => {
+                let ip = host
+                    .trim_matches(['[', ']'])
+                    .parse::<IpAddr>()
+                    .map_err(|_| {
+                        SocksFailure::reply(
+                            "socks-udp-client-address-invalid",
+                            SocksReplyCode::AddressTypeNotSupported,
+                        )
+                    })?;
+                if ip.is_unspecified() {
+                    (port != 0).then(|| SocketAddr::new(ip, port))
+                } else {
+                    Some(SocketAddr::new(ip, port))
+                }
+            }
+            SocksAddressType::Domain => {
+                return Err(SocksFailure::reply(
+                    "socks-udp-client-domain-unsupported",
+                    SocksReplyCode::AddressTypeNotSupported,
+                ));
+            }
+        };
+        return Ok(SocksRequest::UdpAssociate(UdpAssociateRequest {
+            client_endpoint,
+            address_type,
+        }));
+    }
     if head[1] != CONNECT {
         return Err(SocksFailure::reply(
             "socks-command-unsupported",
             SocksReplyCode::CommandNotSupported,
         ));
     }
-    let port = u16::from_be_bytes(port);
     let authority = DestinationAuthority::parse(&format!("{host}:{port}")).map_err(|error| {
         SocksFailure::reply(error.code, SocksReplyCode::AddressTypeNotSupported)
     })?;
-    Ok(ConnectRequest {
+    Ok(SocksRequest::Connect(ConnectRequest {
         authority,
         address_type,
+    }))
+}
+
+struct UdpAssociationContext<'a> {
+    limits: &'a ProtocolLimits,
+    shutdown: watch::Receiver<bool>,
+    session_id: &'a str,
+    connection_id: u64,
+    peer: SocketAddr,
+    local: SocketAddr,
+    sink: &'a crate::application::SharedEventSink,
+}
+
+async fn serve_udp_association(
+    mut control: TcpStream,
+    request: UdpAssociateRequest,
+    policy: &DestinationPolicy,
+    context: UdpAssociationContext<'_>,
+    mut accounting: ProtocolAccounting,
+) -> HttpRun {
+    let UdpAssociationContext {
+        limits,
+        mut shutdown,
+        session_id,
+        connection_id,
+        peer,
+        local,
+        sink,
+    } = context;
+    let claimed = request.client_endpoint.map(|address| {
+        if address.ip().is_unspecified() {
+            SocketAddr::new(peer.ip(), address.port())
+        } else {
+            normalize_socket(address)
+        }
+    });
+    if claimed.is_some_and(|address| normalize_ip(address.ip()) != normalize_ip(peer.ip())) {
+        accounting.socks_udp_associate_refused = 1;
+        let failure = SocksFailure::reply(
+            "socks-udp-client-address-refused",
+            SocksReplyCode::ConnectionRefused,
+        );
+        let _ = write_reply(&mut control, failure.reply, None).await;
+        emit_udp(
+            sink,
+            session_id,
+            connection_id,
+            "association",
+            "client-address-refused",
+            Some(request.address_type),
+            claimed,
+            0,
+            0,
+        );
+        return failed(accounting, failure);
+    }
+
+    let relay_bind = SocketAddr::new(local.ip(), 0);
+    let relay = match UdpSocket::bind(relay_bind).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            accounting.socks_udp_associate_refused = 1;
+            let failure = SocksFailure::new("socks-udp-bind-failed", error.to_string());
+            let _ = write_reply(&mut control, failure.reply, None).await;
+            return failed(accounting, failure);
+        }
+    };
+    let upstream_v4 = match UdpSocket::bind("0.0.0.0:0").await {
+        Ok(socket) => socket,
+        Err(error) => {
+            accounting.socks_udp_associate_refused = 1;
+            let failure = SocksFailure::new("socks-udp-ipv4-bind-failed", error.to_string());
+            let _ = write_reply(&mut control, failure.reply, None).await;
+            return failed(accounting, failure);
+        }
+    };
+    let upstream_v6 = UdpSocket::bind("[::]:0").await.ok();
+    let relay_address = match relay.local_addr() {
+        Ok(address) => address,
+        Err(error) => {
+            accounting.socks_udp_associate_refused = 1;
+            return failed(
+                accounting,
+                SocksFailure::new("socks-udp-local-address-failed", error.to_string()),
+            );
+        }
+    };
+    if let Err(error) =
+        write_reply(&mut control, SocksReplyCode::Succeeded, Some(relay_address)).await
+    {
+        accounting.socks_udp_associate_refused = 1;
+        return failed(
+            accounting,
+            SocksFailure::new("socks-udp-reply-write-failed", error.to_string()),
+        );
+    }
+    accounting.socks_udp_associate_succeeded = 1;
+    emit_udp(
+        sink,
+        session_id,
+        connection_id,
+        "association",
+        if claimed.is_some_and(|value| value.port() != 0) {
+            "declared-client"
+        } else {
+            "awaiting-client"
+        },
+        Some(request.address_type),
+        Some(relay_address),
+        0,
+        0,
+    );
+
+    let capacity = limits.max_socks_udp_datagram_bytes.saturating_add(1);
+    let upstream_capacity = limits
+        .max_socks_udp_datagram_bytes
+        .saturating_sub(22)
+        .saturating_add(1);
+    let mut client_buffer = vec![0_u8; capacity];
+    let mut upstream_v4_buffer = vec![0_u8; upstream_capacity];
+    let mut upstream_v6_buffer = vec![0_u8; upstream_capacity];
+    let mut client_endpoint = claimed.filter(|value| value.port() != 0);
+    let mut peers = BTreeSet::new();
+    let idle = tokio::time::sleep(limits.idle_timeout);
+    tokio::pin!(idle);
+    let terminal = loop {
+        let mut control_byte = [0_u8; 1];
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break Err(SocksFailure::cancelled()),
+            result = control.read(&mut control_byte) => match result {
+                Ok(0) => break Ok("control-closed"),
+                Ok(_) => break Err(SocksFailure::new(
+                    "socks-udp-control-data-unexpected",
+                    "UDP association control connection carried unexpected data",
+                )),
+                Err(error) => break Err(SocksFailure::new(
+                    "socks-udp-control-read-failed",
+                    error.to_string(),
+                )),
+            },
+            result = relay.recv_from(&mut client_buffer) => {
+                let (read, source) = match result {
+                    Ok(value) => value,
+                    Err(error) => break Err(SocksFailure::new("socks-udp-client-read-failed", error.to_string())),
+                };
+                accounting.socks_udp_client_datagrams = accounting.socks_udp_client_datagrams.saturating_add(1);
+                if normalize_ip(source.ip()) != normalize_ip(peer.ip())
+                    || client_endpoint.is_some_and(|expected| normalize_socket(expected) != normalize_socket(source))
+                {
+                    accounting.socks_udp_source_dropped = accounting.socks_udp_source_dropped.saturating_add(1);
+                    emit_udp(sink, session_id, connection_id, "drop", "client-source-refused", None, Some(source), 0, peers.len());
+                    continue;
+                }
+                if read > limits.max_socks_udp_datagram_bytes {
+                    accounting.socks_udp_oversized_dropped = accounting.socks_udp_oversized_dropped.saturating_add(1);
+                    emit_udp(sink, session_id, connection_id, "drop", "oversized", None, Some(source), read as u64, peers.len());
+                    continue;
+                }
+                let datagram = match parse_udp_datagram(&client_buffer[..read]) {
+                    Ok(value) => value,
+                    Err(UdpFrameError::Fragmented) => {
+                        accounting.socks_udp_fragment_dropped = accounting.socks_udp_fragment_dropped.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "fragmentation-unsupported", None, Some(source), 0, peers.len());
+                        continue;
+                    }
+                    Err(UdpFrameError::Malformed) => {
+                        accounting.socks_udp_malformed_dropped = accounting.socks_udp_malformed_dropped.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "malformed", None, Some(source), 0, peers.len());
+                        continue;
+                    }
+                };
+                if client_endpoint.is_none() {
+                    client_endpoint = Some(source);
+                }
+                let address_type = datagram.address_type;
+                let payload_len = datagram.payload.len();
+                let candidates = match crate::resolve_allowed_udp(
+                    &datagram.authority,
+                    policy,
+                    limits.upstream.dns,
+                ).await {
+                    Ok(value) => value,
+                    Err(error) if error.stage == UpstreamStage::Policy => {
+                        accounting.socks_udp_policy_dropped = accounting.socks_udp_policy_dropped.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "destination-refused", Some(address_type), None, payload_len as u64, peers.len());
+                        continue;
+                    }
+                    Err(_) => {
+                        accounting.socks_udp_transport_dropped = accounting.socks_udp_transport_dropped.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "resolution-failed", Some(address_type), None, payload_len as u64, peers.len());
+                        continue;
+                    }
+                };
+                let selected = candidates.iter().copied().find(|address| peers.contains(address))
+                    .or_else(|| candidates.first().copied());
+                let Some(selected) = selected else {
+                    accounting.socks_udp_resolution_dropped = accounting.socks_udp_resolution_dropped.saturating_add(1);
+                    continue;
+                };
+                if !peers.contains(&selected) && peers.len() >= limits.max_socks_udp_peers {
+                    accounting.socks_udp_peer_limit_dropped = accounting.socks_udp_peer_limit_dropped.saturating_add(1);
+                    emit_udp(sink, session_id, connection_id, "drop", "peer-limit", Some(address_type), Some(selected), payload_len as u64, peers.len());
+                    continue;
+                }
+                let send = match selected {
+                    SocketAddr::V4(_) => timeout(limits.upstream.write, upstream_v4.send_to(datagram.payload, selected)).await,
+                    SocketAddr::V6(_) => match upstream_v6.as_ref() {
+                        Some(socket) => timeout(limits.upstream.write, socket.send_to(datagram.payload, selected)).await,
+                        None => {
+                            accounting.socks_udp_resolution_dropped = accounting.socks_udp_resolution_dropped.saturating_add(1);
+                            emit_udp(sink, session_id, connection_id, "drop", "ipv6-unavailable", Some(address_type), Some(selected), payload_len as u64, peers.len());
+                            continue;
+                        }
+                    },
+                };
+                match send {
+                    Ok(Ok(written)) if written == payload_len => {
+                        peers.insert(selected);
+                        accounting.socks_udp_peak_peers = accounting.socks_udp_peak_peers.max(peers.len() as u64);
+                        accounting.socks_udp_client_forwarded = accounting.socks_udp_client_forwarded.saturating_add(1);
+                        accounting.socks_udp_client_bytes = accounting.socks_udp_client_bytes.saturating_add(written as u64);
+                        emit_udp(sink, session_id, connection_id, "datagram", "forwarded", Some(address_type), Some(selected), written as u64, peers.len());
+                        idle.as_mut().reset(Instant::now() + limits.idle_timeout);
+                    }
+                    Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                        accounting.socks_udp_resolution_dropped = accounting.socks_udp_resolution_dropped.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "transport-failed", Some(address_type), Some(selected), payload_len as u64, peers.len());
+                    }
+                }
+            },
+            result = upstream_v4.recv_from(&mut upstream_v4_buffer) => {
+                let (read, source) = match result {
+                    Ok(value) => value,
+                    Err(error) => break Err(SocksFailure::new("socks-udp-ipv4-read-failed", error.to_string())),
+                };
+                if handle_upstream_datagram(
+                    &upstream_v4_buffer[..read],
+                    source,
+                    UdpReplyContext {
+                        relay: &relay,
+                        client_endpoint,
+                        peers: &peers,
+                        limits,
+                        sink,
+                        session_id,
+                        connection_id,
+                    },
+                    &mut accounting,
+                ).await {
+                    idle.as_mut().reset(Instant::now() + limits.idle_timeout);
+                }
+            },
+            result = recv_optional(upstream_v6.as_ref(), &mut upstream_v6_buffer) => {
+                let (read, source) = match result {
+                    Ok(value) => value,
+                    Err(error) => break Err(SocksFailure::new("socks-udp-ipv6-read-failed", error.to_string())),
+                };
+                if handle_upstream_datagram(
+                    &upstream_v6_buffer[..read],
+                    source,
+                    UdpReplyContext {
+                        relay: &relay,
+                        client_endpoint,
+                        peers: &peers,
+                        limits,
+                        sink,
+                        session_id,
+                        connection_id,
+                    },
+                    &mut accounting,
+                ).await {
+                    idle.as_mut().reset(Instant::now() + limits.idle_timeout);
+                }
+            },
+            _ = &mut idle => break Err(SocksFailure::timeout("socks-udp-idle-timeout", SocksReplyCode::TtlExpired)),
+        }
+    };
+    peers.clear();
+    drop(upstream_v6);
+    drop(upstream_v4);
+    drop(relay);
+    emit_udp(
+        sink,
+        session_id,
+        connection_id,
+        "terminal",
+        terminal.as_ref().copied().unwrap_or("failed"),
+        None,
+        None,
+        0,
+        0,
+    );
+    let observation = udp_observation(session_id, connection_id, peer, local);
+    match terminal {
+        Ok(_) => HttpRun {
+            observations: vec![observation],
+            accounting,
+            failure: None,
+        },
+        Err(failure) => {
+            accounting.timed_out = accounting
+                .timed_out
+                .saturating_add(u64::from(failure.timed_out));
+            failed_with_observation(accounting, failure, observation)
+        }
+    }
+}
+
+async fn recv_optional(
+    socket: Option<&UdpSocket>,
+    buffer: &mut [u8],
+) -> io::Result<(usize, SocketAddr)> {
+    match socket {
+        Some(socket) => socket.recv_from(buffer).await,
+        None => pending().await,
+    }
+}
+
+struct UdpReplyContext<'a> {
+    relay: &'a UdpSocket,
+    client_endpoint: Option<SocketAddr>,
+    peers: &'a BTreeSet<SocketAddr>,
+    limits: &'a ProtocolLimits,
+    sink: &'a crate::application::SharedEventSink,
+    session_id: &'a str,
+    connection_id: u64,
+}
+
+async fn handle_upstream_datagram(
+    payload: &[u8],
+    source: SocketAddr,
+    context: UdpReplyContext<'_>,
+    accounting: &mut ProtocolAccounting,
+) -> bool {
+    let UdpReplyContext {
+        relay,
+        client_endpoint,
+        peers,
+        limits,
+        sink,
+        session_id,
+        connection_id,
+    } = context;
+    accounting.socks_udp_upstream_datagrams =
+        accounting.socks_udp_upstream_datagrams.saturating_add(1);
+    if payload.len() > limits.max_socks_udp_datagram_bytes.saturating_sub(22) {
+        accounting.socks_udp_oversized_dropped =
+            accounting.socks_udp_oversized_dropped.saturating_add(1);
+        emit_udp(
+            sink,
+            session_id,
+            connection_id,
+            "drop",
+            "oversized",
+            None,
+            Some(source),
+            payload.len() as u64,
+            peers.len(),
+        );
+        return false;
+    }
+    if !peers.contains(&source) || client_endpoint.is_none() {
+        accounting.socks_udp_unsolicited_dropped =
+            accounting.socks_udp_unsolicited_dropped.saturating_add(1);
+        emit_udp(
+            sink,
+            session_id,
+            connection_id,
+            "drop",
+            "unsolicited-peer",
+            None,
+            Some(source),
+            payload.len() as u64,
+            peers.len(),
+        );
+        return false;
+    }
+    let mut framed = encode_udp_response(source, payload);
+    let client_endpoint = client_endpoint.expect("checked above");
+    match timeout(
+        limits.upstream.write,
+        relay.send_to(&framed, client_endpoint),
+    )
+    .await
+    {
+        Ok(Ok(written)) if written == framed.len() => {
+            accounting.socks_udp_upstream_forwarded =
+                accounting.socks_udp_upstream_forwarded.saturating_add(1);
+            accounting.socks_udp_upstream_bytes = accounting
+                .socks_udp_upstream_bytes
+                .saturating_add(payload.len() as u64);
+            emit_udp(
+                sink,
+                session_id,
+                connection_id,
+                "datagram",
+                "forwarded",
+                Some(address_type(source)),
+                Some(source),
+                payload.len() as u64,
+                peers.len(),
+            );
+            framed.fill(0);
+            return true;
+        }
+        _ => {
+            accounting.socks_udp_transport_dropped =
+                accounting.socks_udp_transport_dropped.saturating_add(1);
+            emit_udp(
+                sink,
+                session_id,
+                connection_id,
+                "drop",
+                "client-send-failed",
+                Some(address_type(source)),
+                Some(source),
+                payload.len() as u64,
+                peers.len(),
+            );
+        }
+    }
+    framed.fill(0);
+    false
+}
+
+#[derive(Debug)]
+struct ParsedUdpDatagram<'a> {
+    authority: DestinationAuthority,
+    address_type: SocksAddressType,
+    payload: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UdpFrameError {
+    Fragmented,
+    Malformed,
+}
+
+fn parse_udp_datagram(bytes: &[u8]) -> Result<ParsedUdpDatagram<'_>, UdpFrameError> {
+    if bytes.get(2).is_some_and(|fragment| *fragment != 0) {
+        return Err(UdpFrameError::Fragmented);
+    }
+    if bytes.len() < 7 || bytes[0..2] != [0, 0] {
+        return Err(UdpFrameError::Malformed);
+    }
+    let mut cursor = 4;
+    let (host, address_type) = match bytes[3] {
+        1 if bytes.len() >= cursor + 4 + 2 => {
+            let ip = Ipv4Addr::new(
+                bytes[cursor],
+                bytes[cursor + 1],
+                bytes[cursor + 2],
+                bytes[cursor + 3],
+            );
+            cursor += 4;
+            (ip.to_string(), SocksAddressType::Ipv4)
+        }
+        4 if bytes.len() >= cursor + 16 + 2 => {
+            let octets: [u8; 16] = bytes[cursor..cursor + 16]
+                .try_into()
+                .map_err(|_| UdpFrameError::Malformed)?;
+            cursor += 16;
+            (
+                format!("[{}]", Ipv6Addr::from(octets)),
+                SocksAddressType::Ipv6,
+            )
+        }
+        3 if bytes.len() > cursor => {
+            let length = usize::from(bytes[cursor]);
+            cursor += 1;
+            if length == 0 || bytes.len() < cursor + length + 2 {
+                return Err(UdpFrameError::Malformed);
+            }
+            let domain = std::str::from_utf8(&bytes[cursor..cursor + length])
+                .map_err(|_| UdpFrameError::Malformed)?;
+            cursor += length;
+            (domain.to_string(), SocksAddressType::Domain)
+        }
+        _ => return Err(UdpFrameError::Malformed),
+    };
+    if bytes.len() < cursor + 2 {
+        return Err(UdpFrameError::Malformed);
+    }
+    let port = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]);
+    cursor += 2;
+    let authority = DestinationAuthority::parse(&format!("{host}:{port}"))
+        .map_err(|_| UdpFrameError::Malformed)?;
+    Ok(ParsedUdpDatagram {
+        authority,
+        address_type,
+        payload: &bytes[cursor..],
     })
+}
+
+fn encode_udp_response(source: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0, 0, 0];
+    match source {
+        SocketAddr::V4(address) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&address.ip().octets());
+            bytes.extend_from_slice(&address.port().to_be_bytes());
+        }
+        SocketAddr::V6(address) => {
+            bytes.push(4);
+            bytes.extend_from_slice(&address.ip().octets());
+            bytes.extend_from_slice(&address.port().to_be_bytes());
+        }
+    }
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+fn normalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(ip)),
+        ip => ip,
+    }
+}
+
+fn normalize_socket(address: SocketAddr) -> SocketAddr {
+    SocketAddr::new(normalize_ip(address.ip()), address.port())
+}
+
+fn address_type(address: SocketAddr) -> SocksAddressType {
+    match address {
+        SocketAddr::V4(_) => SocksAddressType::Ipv4,
+        SocketAddr::V6(_) => SocksAddressType::Ipv6,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the typed UDP evidence fields remain explicit at each security decision"
+)]
+fn emit_udp(
+    sink: &crate::application::SharedEventSink,
+    session_id: &str,
+    connection_id: u64,
+    action: &'static str,
+    outcome: &'static str,
+    address_type: Option<SocksAddressType>,
+    remote: Option<SocketAddr>,
+    payload_bytes: u64,
+    active_peers: usize,
+) {
+    crate::application::emit(
+        sink,
+        ApplicationEvent::now(
+            session_id,
+            connection_id,
+            None,
+            None,
+            ApplicationEventKind::SocksUdp(SocksUdpEvent {
+                action,
+                outcome,
+                address_type: address_type.map(SocksAddressType::as_str),
+                remote,
+                payload_bytes,
+                active_peers,
+            }),
+        ),
+    );
+}
+
+fn udp_observation(
+    session_id: &str,
+    connection_id: u64,
+    peer: SocketAddr,
+    local: SocketAddr,
+) -> ProxyObservation {
+    let mut value = observation(
+        session_id,
+        connection_id,
+        peer,
+        local,
+        "",
+        "udp-association",
+    );
+    value.method = Some("UDP_ASSOCIATE".to_string());
+    value.url = None;
+    value
 }
 
 async fn read_exact(
@@ -812,6 +1462,53 @@ fn failed_with_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn udp_frames_cover_address_forms_and_refuse_fragmentation() {
+        let ipv4 = [0, 0, 0, 1, 127, 0, 0, 1, 0, 53, 1, 2];
+        let parsed = parse_udp_datagram(&ipv4).unwrap();
+        assert_eq!(parsed.address_type, SocksAddressType::Ipv4);
+        assert_eq!(parsed.authority.lookup_host(), "127.0.0.1:53");
+        assert_eq!(parsed.payload, [1, 2]);
+
+        let domain = [
+            0, 0, 0, 3, 9, b'l', b'o', b'c', b'a', b'l', b'h', b'o', b's', b't', 0, 53,
+        ];
+        let parsed = parse_udp_datagram(&domain).unwrap();
+        assert_eq!(parsed.address_type, SocksAddressType::Domain);
+        assert_eq!(parsed.authority.lookup_host(), "localhost:53");
+
+        let mut ipv6 = vec![0, 0, 0, 4];
+        ipv6.extend_from_slice(&Ipv6Addr::LOCALHOST.octets());
+        ipv6.extend_from_slice(&53_u16.to_be_bytes());
+        ipv6.extend_from_slice(b"payload");
+        let parsed = parse_udp_datagram(&ipv6).unwrap();
+        assert_eq!(parsed.address_type, SocksAddressType::Ipv6);
+        assert_eq!(parsed.payload, b"payload");
+
+        let mut fragmented = ipv4;
+        fragmented[2] = 1;
+        assert_eq!(
+            parse_udp_datagram(&fragmented).unwrap_err(),
+            UdpFrameError::Fragmented
+        );
+        for malformed in [&[][..], &[0, 0, 0, 9][..], &[0, 0, 0, 3, 4, b'a'][..]] {
+            assert_eq!(
+                parse_udp_datagram(malformed).unwrap_err(),
+                UdpFrameError::Malformed
+            );
+        }
+    }
+
+    #[test]
+    fn udp_response_names_the_observed_source() {
+        let source: SocketAddr = "[::1]:4242".parse().unwrap();
+        let encoded = encode_udp_response(source, b"reply");
+        assert_eq!(&encoded[..4], &[0, 0, 0, 4]);
+        assert_eq!(&encoded[4..20], &Ipv6Addr::LOCALHOST.octets());
+        assert_eq!(&encoded[20..22], &4242_u16.to_be_bytes());
+        assert_eq!(&encoded[22..], b"reply");
+    }
 
     #[tokio::test]
     async fn relay_honors_upstream_read_and_write_budgets() {

@@ -250,7 +250,7 @@ fn no_auth_method_and_unsupported_command_are_finite_refusals() {
         .unwrap();
     authenticate(&mut unsupported, password.as_bytes());
     unsupported
-        .write_all(&[5, 3, 0, 1, 127, 0, 0, 1, 0, 53])
+        .write_all(&[5, 2, 0, 1, 127, 0, 0, 1, 0, 53])
         .unwrap();
     assert_eq!(read_reply(&mut unsupported).0, 7);
     assert!(origin.accept().is_err());

@@ -408,6 +408,18 @@ capability or claiming generic TCP payload semantics. UDP ASSOCIATE remains #311
 generic TCP and non-HTTP TLS semantics remain #312, and Deep Capture remains
 incomplete until #334. S114 adds no dependency or lockfile package.
 
+S115 closes #311 at the scoped SOCKS5 UDP association boundary. Exactly one
+authenticated TCP control connection owns one finite UDP relay. Its TCP peer IP
+and declared or once-learned UDP port are immutable, its client-facing plus
+IPv4 and IPv6 upstream sockets are fixed, and its exact contacted-peer map is
+bounded without silent eviction. Every destination passes the existing policy
+after proxy-owned resolution, and only an exact contacted peer may reply.
+Fragmentation is explicitly unsupported; malformed, fragmented, spoofed,
+unsolicited, refused, saturated, oversized, transport-failed, timed-out, and
+cancelled outcomes remain counted. Evidence is metadata-only, generic UDP
+payload truth remains #313, and Deep Capture remains incomplete until #334.
+S115 adds no dependency or lockfile package.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

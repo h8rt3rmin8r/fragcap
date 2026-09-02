@@ -1513,6 +1513,82 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .socks_upstream_bytes
         .saturating_add(source.socks_upstream_bytes);
+    observation.protocol.socks_udp_associate_requested = observation
+        .protocol
+        .socks_udp_associate_requested
+        .saturating_add(source.socks_udp_associate_requested);
+    observation.protocol.socks_udp_associate_succeeded = observation
+        .protocol
+        .socks_udp_associate_succeeded
+        .saturating_add(source.socks_udp_associate_succeeded);
+    observation.protocol.socks_udp_associate_refused = observation
+        .protocol
+        .socks_udp_associate_refused
+        .saturating_add(source.socks_udp_associate_refused);
+    observation.protocol.socks_udp_client_datagrams = observation
+        .protocol
+        .socks_udp_client_datagrams
+        .saturating_add(source.socks_udp_client_datagrams);
+    observation.protocol.socks_udp_client_forwarded = observation
+        .protocol
+        .socks_udp_client_forwarded
+        .saturating_add(source.socks_udp_client_forwarded);
+    observation.protocol.socks_udp_upstream_datagrams = observation
+        .protocol
+        .socks_udp_upstream_datagrams
+        .saturating_add(source.socks_udp_upstream_datagrams);
+    observation.protocol.socks_udp_upstream_forwarded = observation
+        .protocol
+        .socks_udp_upstream_forwarded
+        .saturating_add(source.socks_udp_upstream_forwarded);
+    observation.protocol.socks_udp_malformed_dropped = observation
+        .protocol
+        .socks_udp_malformed_dropped
+        .saturating_add(source.socks_udp_malformed_dropped);
+    observation.protocol.socks_udp_fragment_dropped = observation
+        .protocol
+        .socks_udp_fragment_dropped
+        .saturating_add(source.socks_udp_fragment_dropped);
+    observation.protocol.socks_udp_source_dropped = observation
+        .protocol
+        .socks_udp_source_dropped
+        .saturating_add(source.socks_udp_source_dropped);
+    observation.protocol.socks_udp_policy_dropped = observation
+        .protocol
+        .socks_udp_policy_dropped
+        .saturating_add(source.socks_udp_policy_dropped);
+    observation.protocol.socks_udp_resolution_dropped = observation
+        .protocol
+        .socks_udp_resolution_dropped
+        .saturating_add(source.socks_udp_resolution_dropped);
+    observation.protocol.socks_udp_peer_limit_dropped = observation
+        .protocol
+        .socks_udp_peer_limit_dropped
+        .saturating_add(source.socks_udp_peer_limit_dropped);
+    observation.protocol.socks_udp_oversized_dropped = observation
+        .protocol
+        .socks_udp_oversized_dropped
+        .saturating_add(source.socks_udp_oversized_dropped);
+    observation.protocol.socks_udp_unsolicited_dropped = observation
+        .protocol
+        .socks_udp_unsolicited_dropped
+        .saturating_add(source.socks_udp_unsolicited_dropped);
+    observation.protocol.socks_udp_transport_dropped = observation
+        .protocol
+        .socks_udp_transport_dropped
+        .saturating_add(source.socks_udp_transport_dropped);
+    observation.protocol.socks_udp_client_bytes = observation
+        .protocol
+        .socks_udp_client_bytes
+        .saturating_add(source.socks_udp_client_bytes);
+    observation.protocol.socks_udp_upstream_bytes = observation
+        .protocol
+        .socks_udp_upstream_bytes
+        .saturating_add(source.socks_udp_upstream_bytes);
+    observation.protocol.socks_udp_peak_peers = observation
+        .protocol
+        .socks_udp_peak_peers
+        .max(source.socks_udp_peak_peers);
     observation.application.extend(run.observations);
     let excess = observation
         .application

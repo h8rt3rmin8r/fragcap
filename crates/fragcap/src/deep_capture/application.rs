@@ -732,6 +732,18 @@ fn event_json(
                 "payload_retained": false,
             }),
         ),
+        ApplicationEventKind::SocksUdp(value) => (
+            "socks5.udp",
+            json!({
+                "action": value.action,
+                "outcome": value.outcome,
+                "address_type": value.address_type,
+                "remote": value.remote.map(|address| address.to_string()),
+                "payload_bytes": value.payload_bytes,
+                "active_peers": value.active_peers,
+                "payload_retained": false,
+            }),
+        ),
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
@@ -757,6 +769,7 @@ fn event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::SocksNegotiation(_) => "socks5.negotiation",
         ApplicationEventKind::SocksConnect(_) => "socks5.connect",
         ApplicationEventKind::SocksTransfer(_) => "socks5.transfer",
+        ApplicationEventKind::SocksUdp(_) => "socks5.udp",
         ApplicationEventKind::Error { .. } => "application.error",
     }
 }

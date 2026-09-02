@@ -185,6 +185,7 @@ the owning category page.
 - [Socket table entry](process-and-attribution.md#socket-table-entry)
 - [SOCKS5](capture-and-networking.md#socks5)
 - [SOCKS5 CONNECT](capture-and-networking.md#socks5-connect)
+- [SOCKS5 UDP association](capture-and-networking.md#socks5-udp-association)
 - [spec-impact](rust-and-tooling.md#spec-impact)
 - [Stable identifier](process-and-attribution.md#stable-identifier)
 - [Stage](process-and-attribution.md#stage)
