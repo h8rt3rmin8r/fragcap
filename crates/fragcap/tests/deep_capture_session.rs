@@ -571,6 +571,7 @@ fn config() -> SessionConfig {
         har: true,
         key_log: false,
         client_identity: false,
+        proxy_bypass: Vec::new(),
         sensitive_retention: SensitiveRetention::Retain,
         deadlines: Deadlines::default(),
     }

@@ -360,6 +360,14 @@ current matrix, with separate family, detection, inspectability, and stable
 reason axes. Application records and CLI summaries reconcile from retained
 classifications, compatibility promotion requires exact eligible evidence, and
 typed manifest omissions retain artifact authority independently.
+S121 binds calibration and evidence reuse to one exact native launch, route,
+address-family, protocol, backend, product, and target-version case while
+preserving legacy and conflicting rows append-only.
+S122 adds one typed canonical proxy-bypass policy, exact listener
+infrastructure exclusion, complete upper/lowercase child environment ownership,
+per-answer local-destination enforcement, and additive routing-policy evidence.
+It closes Native Deep Capture milestone 3 without claiming Deep Capture
+completion before the final #334 gate.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

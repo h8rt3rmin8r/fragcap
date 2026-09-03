@@ -217,16 +217,19 @@ impl DestinationPolicy {
 
     pub fn evaluate(&self, address: SocketAddr) -> DestinationDecision {
         let normalized = canonical_address(address);
-        let allowed = normalized != self.listener
-            && (self.exact_grants.contains(&normalized) || public_address(normalized.ip()));
+        let (allowed, reason) = if normalized == self.listener {
+            (false, "proxy-listener")
+        } else if self.exact_grants.contains(&normalized) {
+            (true, "controlled-origin-grant")
+        } else if public_address(normalized.ip()) {
+            (true, "public-destination")
+        } else {
+            (false, "local-destination-refused")
+        };
         DestinationDecision {
             address,
             allowed,
-            reason: if allowed {
-                "allowed"
-            } else {
-                "destination-refused"
-            },
+            reason,
         }
     }
 }
@@ -892,6 +895,35 @@ mod address_tests {
         assert_eq!(retained.len(), MAX_RESOLVED_CANDIDATES);
         assert!(retained.contains(&ipv4));
         assert!(retained.iter().any(SocketAddr::is_ipv6));
+    }
+
+    #[test]
+    fn every_mixed_dns_answer_is_rechecked_without_local_fallback() {
+        let listener = "127.0.0.1:8080".parse().unwrap();
+        let policy = DestinationPolicy::new(listener);
+        let allowed = retain_allowed_candidates(
+            vec![
+                listener,
+                "10.0.0.1:443".parse().unwrap(),
+                "8.8.8.8:443".parse().unwrap(),
+                "[::1]:443".parse().unwrap(),
+                "[2606:4700:4700::1111]:443".parse().unwrap(),
+            ],
+            &policy,
+        )
+        .unwrap();
+        assert_eq!(
+            allowed,
+            vec![
+                "8.8.8.8:443".parse::<SocketAddr>().unwrap(),
+                "[2606:4700:4700::1111]:443".parse::<SocketAddr>().unwrap(),
+            ]
+        );
+        assert_eq!(policy.evaluate(listener).reason, "proxy-listener");
+        assert_eq!(
+            policy.evaluate("127.0.0.2:443".parse().unwrap()).reason,
+            "local-destination-refused"
+        );
     }
 
     #[tokio::test]

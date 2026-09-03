@@ -867,15 +867,10 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
             };
             let runtime = Rc::clone(&self.runtime);
             let context = self.observation_context.clone();
-            run_controlled_target_harness(
-                route.proxy(),
-                phase,
-                budget.remaining(),
-                move |process_id| {
-                    runtime.borrow_mut().controlled_process_id = Some(process_id);
-                    context.record_controlled_process_id(process_id);
-                },
-            )
+            run_controlled_target_harness(route, phase, budget.remaining(), move |process_id| {
+                runtime.borrow_mut().controlled_process_id = Some(process_id);
+                context.record_controlled_process_id(process_id);
+            })
             .map_err(|error| {
                 library_stage_failure(
                     fragcap::deep_capture::Stage::Capture,
@@ -1014,6 +1009,7 @@ struct LibraryArtifactAdapter<'e, 'w> {
     deadlines: CalibrationDeadlines,
     family: DeepCaptureProxyFamilyArg,
     protocol: Option<CompatibilityProtocol>,
+    routing: Option<fragcap::deep_capture::RoutingPlan>,
 }
 
 impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
@@ -1028,6 +1024,7 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         &mut self,
         plan: &fragcap::deep_capture::SessionPlan,
     ) -> Result<(), fragcap::deep_capture::StageFailure> {
+        self.routing = Some(plan.routing.clone());
         fragcap::deep_capture::prepare_bundle(&plan.bundle)
             .and_then(|()| {
                 if let Some(root) = paths::deep_capture_session_dir() {
@@ -1088,6 +1085,10 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             launch_case,
             address_family: compatibility_address_family(self.family),
             protocol: self.protocol,
+            routing: self
+                .routing
+                .clone()
+                .expect("bundle preparation retained the authorized routing plan"),
             listen_addr: runtime
                 .listen_endpoint
                 .map(|endpoint| endpoint.ip().to_string())
@@ -1738,6 +1739,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         har: args.har,
         key_log: args.key_log,
         client_identity: args.client_certificate.is_some(),
+        proxy_bypass: args.proxy_bypass.clone(),
         sensitive_retention: fragcap::deep_capture::SensitiveRetention::Retain,
         deadlines: fragcap::deep_capture::Deadlines {
             launch: deadlines.launch,
@@ -1811,6 +1813,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             deadlines,
             family: args.proxy_family,
             protocol: selected_protocol,
+            routing: None,
         }),
         events: Box::new(LibraryEventAdapter {
             args,
@@ -1837,6 +1840,36 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             return Err(cli_error_from_library_refusal(refusal));
         }
     };
+
+    let routing = &prepared.plan().routing;
+    let bypass = routing
+        .bypass
+        .as_ref()
+        .expect("implemented routing plan carries bypass policy");
+    let operator_rules = bypass
+        .operator_rules()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let environment_variables = routing
+        .effects
+        .iter()
+        .map(|effect| effect.destination.clone())
+        .collect::<Vec<_>>();
+    emitter.borrow_mut().event(&Event::DeepCaptureRoutingPlan {
+        operator_rules: operator_rules.clone(),
+        infrastructure: bypass.infrastructure(),
+        environment_variables,
+    });
+    emitter.borrow_mut().required_human(&format!(
+        "Deep Capture routing plan\n  proxy bypass rules: {}\n  session infrastructure: {}\n  environment: HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY and lowercase equivalents are plan-owned\n  DNS policy: requested name before resolution; every proxied answer checked on every attempt\n  fallback: none\n",
+        if operator_rules.is_empty() {
+            "none".to_string()
+        } else {
+            operator_rules.join(", ")
+        },
+        bypass.infrastructure(),
+    ));
 
     if let Some(restart) = &restart {
         let preflight_case = selected_launch_case
@@ -1974,7 +2007,9 @@ fn cli_error_from_library_refusal(refusal: fragcap::deep_capture::PreflightRefus
         | "capture-prepare"
         | "bundle-destination"
         | "reachability-tls-options"
-        | "trust-not-authorized" => CliError::usage(refusal.detail),
+        | "trust-not-authorized"
+        | "proxy-bypass-invalid"
+        | "proxy-bypass-infrastructure-collision" => CliError::usage(refusal.detail),
         _ => CliError::failure(refusal.detail),
     }
 }
@@ -1988,6 +2023,7 @@ struct DeepCaptureSession {
     launch_case: CompatibilityLaunchCase,
     address_family: CompatibilityAddressFamily,
     protocol: Option<CompatibilityProtocol>,
+    routing: fragcap::deep_capture::RoutingPlan,
     listen_addr: String,
     listen_port: u16,
     started_at: SystemTime,
@@ -2562,38 +2598,36 @@ fn run_real_capture(
 }
 
 fn run_controlled_target_harness(
-    route: &fragcap::deep_capture::ProxyRoute,
+    route: &fragcap::deep_capture::AppliedRoute,
     calibration: Option<CalibrationPhase>,
     execution_timeout: Duration,
     on_started: impl FnOnce(u32),
 ) -> Result<u32, CliError> {
-    let proxy_url = route.proxy_url();
-    let socks5h_url = route.socks5h_url();
+    let proxy = route.proxy();
     let executable = std::env::var_os("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .ok_or_else(|| CliError::failure("cannot locate the controlled target executable"))?;
     let mut command = std::process::Command::new(executable);
-    let (http_origin, https_origin) = route
+    let (http_origin, https_origin) = proxy
         .controlled_origins()
         .ok_or_else(|| CliError::failure("native controlled protocol lab is unavailable"))?;
+    command.arg("__controlled-target");
+    for (name, value) in route.environment() {
+        command.env(name, value);
+    }
     command
-        .arg("__controlled-target")
-        .env("HTTP_PROXY", proxy_url)
-        .env("HTTPS_PROXY", proxy_url)
-        .env("ALL_PROXY", socks5h_url)
-        .env("NO_PROXY", "")
         .env(
             "FRAGCAP_NATIVE_PROXY_ENDPOINT",
-            route.endpoint().address().to_string(),
+            proxy.endpoint().address().to_string(),
         )
         .env(
             "FRAGCAP_NATIVE_PROXY_AUTHORIZATION",
-            route.proxy_authorization(),
+            proxy.proxy_authorization(),
         )
         .env("FRAGCAP_CONTROLLED_HTTP_ORIGIN", http_origin.to_string())
         .env("FRAGCAP_CONTROLLED_HTTPS_ORIGIN", https_origin.to_string())
-        .env("FRAGCAP_CONTROLLED_CA_DER", encode_hex(route.ca_der()))
+        .env("FRAGCAP_CONTROLLED_CA_DER", encode_hex(proxy.ca_der()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -2644,6 +2678,13 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
             "controlled target did not inherit HTTPS_PROXY",
         ));
     }
+    if std::env::var("http_proxy").as_deref() != Ok(proxy.as_str())
+        || std::env::var("https_proxy").as_deref() != Ok(proxy.as_str())
+    {
+        return Err(CliError::failure(
+            "controlled target did not inherit lowercase HTTP proxy ownership",
+        ));
+    }
     let socks = std::env::var("ALL_PROXY")
         .map_err(|_| CliError::failure("controlled target did not inherit ALL_PROXY"))?;
     if !socks.starts_with("socks5h://fragcap:") {
@@ -2651,12 +2692,22 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
             "controlled target ALL_PROXY is not the authenticated SOCKS5 route",
         ));
     }
-    if std::env::var("NO_PROXY").as_deref() != Ok("") {
+    if std::env::var("all_proxy").as_deref() != Ok(socks.as_str()) {
         return Err(CliError::failure(
-            "controlled target did not inherit the session NO_PROXY value",
+            "controlled target did not inherit lowercase SOCKS proxy ownership",
         ));
     }
     let address = controlled_env_address("FRAGCAP_NATIVE_PROXY_ENDPOINT")?;
+    let expected_no_proxy = address.to_string();
+    let no_proxy = std::env::var("NO_PROXY")
+        .map_err(|_| CliError::failure("controlled target did not inherit NO_PROXY"))?;
+    if std::env::var("no_proxy").as_deref() != Ok(no_proxy.as_str())
+        || !no_proxy.split(',').any(|rule| rule == expected_no_proxy)
+    {
+        return Err(CliError::failure(
+            "controlled target did not inherit the exact session bypass value",
+        ));
+    }
     if !address.ip().is_loopback() {
         return Err(CliError::failure(
             "controlled target proxy endpoint is not loopback",
@@ -3065,6 +3116,30 @@ fn classification_json(value: &fragcap::deep_capture::ProtocolClassification) ->
     })
 }
 
+fn routing_policy_json(plan: &fragcap::deep_capture::RoutingPlan) -> serde_json::Value {
+    let bypass = plan
+        .bypass
+        .as_ref()
+        .expect("implemented routing plan carries bypass policy");
+    json!({
+        "policy_version": 1,
+        "operator_rules": bypass
+            .operator_rules()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "infrastructure": [bypass.infrastructure()],
+        "environment_variables": plan
+            .effects
+            .iter()
+            .map(|effect| effect.destination.as_str())
+            .collect::<Vec<_>>(),
+        "dns_matching": "requested-authority-before-resolution",
+        "resolved_address_policy": "evaluate-every-answer-every-attempt",
+        "fallback": "none",
+    })
+}
+
 fn process_trace_jsonl(
     session_id: &str,
     controlled_process_id: Option<u32>,
@@ -3129,6 +3204,17 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
         "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
         "address_family": ctx.session.address_family.as_str(),
         "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
+        "routing_policy": routing_policy_json(&ctx.session.routing),
+        "routing_decisions": {
+            "authority": "retained-proxy-observations",
+            "proxied": ctx.observations.len(),
+            "bypassed": 0,
+            "infrastructure": 0,
+            "refused": 0,
+            "undetermined": 0,
+            "bypass_proxy_loss": 0,
+            "unobserved_bypass_traffic": "not-inferable-from-proxy-evidence",
+        },
         "calibration": ctx.calibration.map(|phase| json!({
             "phase": phase.as_str(),
             "outcome": ctx.calibration_outcome.map(|outcome| outcome.to_string()),
@@ -3424,6 +3510,17 @@ fn manifest_json(
             "mode": "launch-scoped-env",
             "listen_addr": ctx.session.listen_addr,
             "listen_port": ctx.session.listen_port,
+            "routing_policy": routing_policy_json(&ctx.session.routing),
+            "routing_decisions": {
+                "authority": "retained-proxy-observations",
+                "proxied": ctx.observations.len(),
+                "bypassed": 0,
+                "infrastructure": 0,
+                "refused": 0,
+                "undetermined": 0,
+                "bypass_proxy_loss": 0,
+                "unobserved_bypass_traffic": "not-inferable-from-proxy-evidence",
+            },
         },
         "trust": {
             "state": ctx.trust.state,

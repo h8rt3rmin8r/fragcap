@@ -36,7 +36,7 @@ pub fn matrix() -> Vec<Scenario> {
 pub fn outcome_code(case: CaseKind) -> &'static str {
     match case {
         CaseKind::Positive => "completed",
-        CaseKind::Refusal => "destination-refused",
+        CaseKind::Refusal => "local-destination-refused",
         CaseKind::Malformed => "invalid-authority",
         CaseKind::Timeout => "operation-timeout",
         CaseKind::Cancellation => "cancelled",

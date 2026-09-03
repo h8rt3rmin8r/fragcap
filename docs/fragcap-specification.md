@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.43-draft \
+**Version:** 0.1.45-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -137,6 +137,7 @@ enforcement.
 | 0.1.42-draft | 2026-09-03 | W. Thompson | **Completes native IPv6 parity (issue #315).** Extends sections 13.7, 17.2.1, 19.6, 25, 26.3, and 28.1. One immutable plan now authorizes one exact IPv4 or IPv6 loopback socket, generated IPv6 routes use bracketed authorities, scoped IPv6 literals retain bounded numeric socket indexes, and mapped aliases have one canonical policy and correlation identity. Proxy-owned TCP connection establishment uses a finite 250 ms staggered dual-stack race with one winner and cancelled losers. HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC controlled rows cover IPv6, while Doctor reports exact IPv4 and IPv6 bind readiness independently. S119 adds no dependency or wildcard bind, and Deep Capture remains incomplete until #334. |
 | 0.1.43-draft | 2026-09-03 | W. Thompson | **Makes Deep Capture protocol classification and omission reasons exhaustive (issue #316).** Extends sections 13.7, 19.6, 25, and 28.1. A versioned facade contract separates traffic family, detection state, inspectability, and stable reason for every shipped protocol path. Application records, terminal summaries, compatibility eligibility, and typed manifest omissions retain their separate authorities and reconcile without converting parser, retention, writer, trust, or routing failures into target support claims. S120 adds no dependency, routing behavior, or completion claim. |
 | 0.1.44-draft | 2026-09-03 | W. Thompson | **Completes the native compatibility calibration matrix (issue #317).** Extends sections 13.7, 15, 17.2.1, 19, 25, and 28.1. Every calibration names one exact launch case, routing strategy, loopback family, protocol case, backend and product version, and target version when available. Version-10 storage preserves append-only conflicts and legacy rows, while only the latest exact current applicable routing fact can authorize a session. S121 adds no dependency, bypass behavior, or Deep Capture completion claim. |
+| 0.1.45-draft | 2026-09-03 | W. Thompson | **Adds explicit proxy bypass and local-destination policy (issue #318).** Extends sections 13.7, 17.2.1, 19, 25, and 28.1. Typed canonical rules cover exact DNS, suffixes, IP addresses, CIDRs, ports, and IPv6; the exact listener remains separate session infrastructure; uppercase and lowercase child proxy variables are plan-owned; every proxied DNS answer remains subject to resolved-address policy. Bypass is visible scope rather than proxy loss. S122 adds no dependency, system proxy mutation, transparent fallback, or Deep Capture completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2977,6 +2978,7 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --launch-case <CASE>   Declare the launch case being measured
       --har                  Write HAR when HTTP semantics are observable
       --key-log              Write a proxy-owned analyzer key log
+      --proxy-bypass <RULE>  Add an explicit target bypass rule; repeatable
       --proxy-family <FAMILY> Exact loopback family: ipv4 (default) or ipv6
       --quiet                Suppress progress output
       --silent               Suppress all non-error output
@@ -3004,6 +3006,28 @@ targets whose local compatibility facts do not show scoped proxy routing reachin
 the final client, and it refuses missing CA trust confirmation before mutating
 trust state. It never silently promotes an unknown launch path to system-wide
 proxy settings.
+
+`--proxy-bypass` is the only operator bypass input. Repeated values and
+comma-delimited tokens accept exact ASCII DNS names, leading-dot DNS suffixes,
+IP literals, canonical CIDRs, and optional ports on exact DNS or IP
+authorities. A suffix includes its apex and descendants at a label boundary.
+Rules are canonicalized, deduplicated, and ordered before authorization.
+Wildcard-all, schemes, paths, credentials, ambiguous authorities, invalid
+ports, CIDR host bits, and rules that include the exact selected listener are
+refused before effects.
+
+An empty explicit policy means no target destination bypasses. The plan owns
+uppercase and lowercase HTTP, HTTPS, all-proxy, and no-proxy environment
+variables, so ambient values are never merged or inherited. The exact listener
+is separately identified session infrastructure and can never be an upstream
+target. Controlled loopback origins stay on the proxy path through exact
+session-owned grants; unrelated local and private destinations remain refused.
+Bypass matches a requested DNS authority before resolution. Every proxied DNS
+answer is re-evaluated by the native destination policy on every attempt, with
+no transparent fallback, so mixed answers and rebinding cannot carry earlier
+permission. Plans and bundles expose the canonical policy and routing-decision
+authority. An intentional bypass is scoped exclusion and advances no proxy
+loss counter; traffic absent from proxy evidence is not invented as observed.
 
 Compatibility calibration is the deliberate evidence-producing path for an unknown stored target:
 
@@ -4673,6 +4697,18 @@ legacy and conflicting rows remain append-only history. Explicit stale state or
 an exact mismatch prevents reuse, and the latest exact applicable routing row
 controls eligibility. It closes #317 without changing dependencies, bypass
 policy, raw proxy detail, or the #334 completion gate.
+S122 closes bypass and local-destination correctness over the existing
+child-environment route. One immutable policy parses exact DNS names, DNS
+suffixes, IP literals, CIDRs, optional authority ports, and IPv6 into canonical
+ordered rules. The selected listener is separate session infrastructure,
+controlled origins remain exact proxy-routed grants, and uppercase plus
+lowercase proxy variables are overwritten from the reviewed plan. Bypass
+matches the requested authority before DNS; every proxied answer is checked by
+the existing destination policy on every attempt, so local aliases, mixed
+answers, and rebinding cannot inherit permission. Plan and bundle evidence name
+the policy and routing decisions, and intentional bypass advances no proxy-loss
+counter. It closes #318 and the Native Deep Capture 3 milestone without a
+dependency change or a Deep Capture completion claim before #334.
 
 The required dependency direction is:
 
@@ -4731,8 +4767,9 @@ The protocol and launch matrix is normative:
 | Target process hooks, memory reads, key extraction, interception drivers, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
 
 Protocol classification and omission reasons are exhaustive under S120 and
-#316; proxy bypass and local-destination correctness belong to #318. A protocol not
-named as implemented is omitted explicitly rather than inferred as supported.
+#316. Proxy bypass and local-destination correctness are explicit under S122
+and #318. A protocol not named as implemented is omitted explicitly rather
+than inferred as supported.
 
 The four milestone exit gates are:
 

@@ -265,3 +265,13 @@ when available. Store version 10 preserves legacy and conflicting evidence
 append-only, but only the latest exact current applicable route fact authorizes
 work. Protocol facts require a matching S120 classification. Bypass policy
 remains #318, and Deep Capture remains incomplete until #334.
+
+S122 (`specs/122-proxy-bypass-policy`) follows S121 and closes #318 at the
+explicit bypass and local-destination boundary. Exact DNS, suffix, IP, CIDR,
+port, and IPv6 rules form one canonical immutable policy. The exact listener
+is separate session infrastructure, controlled origins remain proxy-routed,
+and all uppercase and lowercase child proxy variables come from the reviewed
+plan. Requested names match before resolution, while every proxied answer is
+rechecked by the existing destination policy with no transparent fallback.
+Bypass is recorded as scope rather than proxy loss. S122 closes Native Deep
+Capture milestone 3; Deep Capture remains incomplete until #334.

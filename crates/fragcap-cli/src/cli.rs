@@ -493,6 +493,14 @@ pub struct DeepCaptureArgs {
     #[arg(long, value_enum, default_value_t = DeepCaptureProxyFamilyArg::Ipv4)]
     pub proxy_family: DeepCaptureProxyFamilyArg,
 
+    /// Explicit target destinations that may bypass the session proxy.
+    ///
+    /// Repeat the option or separate rules with commas. Supports exact DNS,
+    /// leading-dot DNS suffixes, IP literals, CIDRs, and optional authority
+    /// ports. The complete-bypass wildcard is refused.
+    #[arg(long, value_name = "RULE")]
+    pub proxy_bypass: Vec<String>,
+
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
     pub controlled_target: bool,
@@ -1157,5 +1165,26 @@ mod tests {
             }
             other => panic!("expected two Deep Capture commands, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn deep_capture_collects_explicit_proxy_bypass_inputs() {
+        let cli = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--proxy-bypass",
+            ".example.com,192.0.2.0/24",
+            "--proxy-bypass",
+            "[2001:db8::1]:443",
+        ])
+        .expect("parse");
+        let Some(Command::DeepCapture(args)) = cli.command else {
+            panic!("expected Deep Capture command");
+        };
+        assert_eq!(
+            args.proxy_bypass,
+            [".example.com,192.0.2.0/24", "[2001:db8::1]:443"]
+        );
     }
 }

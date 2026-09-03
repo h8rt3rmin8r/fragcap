@@ -1156,6 +1156,34 @@ all remaining attempts are cancelled before application forwarding begins.
 **See also:** [Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
 [Exact loopback endpoint](capture-and-networking.md#exact-loopback-endpoint)
 
+## Proxy bypass policy
+
+The immutable, canonical set of operator-selected destination rules that may
+leave a managed Deep Capture child without traversing the session proxy. Rules
+cover exact DNS names, DNS suffixes, IP addresses, CIDRs, optional authority
+ports, and IPv6. The policy is shown before authorization and never inherits
+ambient proxy variables.
+
+{: .matters }
+> A bypass is declared scope, not proxy loss. The exact proxy listener is
+> session infrastructure rather than an operator rule, and controlled local
+> origins remain proxy-routed exact grants.
+
+**See also:** [Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration),
+[Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
+[Routing decision](capture-and-networking.md#routing-decision)
+
+## Routing decision
+
+The stable result of evaluating one requested destination against a Deep
+Capture routing plan: proxied, bypassed, session infrastructure, refused, or
+undetermined. A decision names its policy authority and matching rule when one
+exists. Requested DNS names are evaluated before resolution, while every
+proxied address answer is checked separately on every attempt.
+
+**See also:** [Proxy bypass policy](capture-and-networking.md#proxy-bypass-policy),
+[Exact loopback endpoint](capture-and-networking.md#exact-loopback-endpoint)
+
 ## Selection outcome
 
 The complete result of applying specification section 12.1's precedence to an

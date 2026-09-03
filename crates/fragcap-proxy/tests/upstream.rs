@@ -96,12 +96,12 @@ async fn connector_reports_cancellation_as_a_reachable_terminal_stage() {
 fn policy_refuses_listener_and_private_destinations_without_exact_grant() {
     let listener: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let mut policy = DestinationPolicy::new(listener);
-    assert!(!policy.evaluate(listener).allowed);
+    assert_eq!(policy.evaluate(listener).reason, "proxy-listener");
     let origin: SocketAddr = "127.0.0.1:8081".parse().unwrap();
-    assert!(!policy.evaluate(origin).allowed);
+    assert_eq!(policy.evaluate(origin).reason, "local-destination-refused");
     policy.grant_for_test(origin);
-    assert!(policy.evaluate(origin).allowed);
-    assert!(!policy.evaluate(listener).allowed);
+    assert_eq!(policy.evaluate(origin).reason, "controlled-origin-grant");
+    assert_eq!(policy.evaluate(listener).reason, "proxy-listener");
 }
 
 #[tokio::test]

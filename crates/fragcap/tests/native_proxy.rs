@@ -13,6 +13,7 @@ use fragcap::deep_capture::{
 use fragcap::targets::CompatibilityProtocol;
 
 fn plan(session: &str) -> SessionPlan {
+    let endpoint = LoopbackEndpoint::new("127.0.0.1:0".parse().unwrap()).unwrap();
     SessionPlan {
         id: PlanId::new(format!("plan-{session}")),
         session_id: session.to_string(),
@@ -28,9 +29,9 @@ fn plan(session: &str) -> SessionPlan {
             name: "fragcap-native".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
-        endpoint: LoopbackEndpoint::new("127.0.0.1:0".parse().unwrap()).unwrap(),
+        endpoint,
         bundle: PathBuf::from("unused-controlled-bundle"),
-        routing: RoutingPlan::child_environment(),
+        routing: RoutingPlan::child_environment(endpoint, &[]).unwrap(),
         trust_ca: true,
         client_identity: false,
         artifacts: ArtifactRequests {

@@ -153,6 +153,7 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes. |
+| `--proxy-bypass` | open | none | all | Add an explicit target bypass rule. Repeat or comma-separate exact DNS, leading-dot suffix, IP, CIDR, or port-qualified authority rules. Ambient proxy variables are never inherited. |
 | `--proxy-family` | `ipv4`, `ipv6` | `ipv4` | all | Bind the exact loopback family authorized by this session. No wildcard or automatic family fallback is used. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
 | `--trust-ca` | open | `false` | all | Confirm the fragcap-owned CA trust change needed for HTTPS inspection. |
