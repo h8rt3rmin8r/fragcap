@@ -160,6 +160,16 @@ fn forwards_early_hints_and_continue_before_waiting_for_the_request_body() {
     assert_eq!(report.observation.protocol.informational_responses, 2);
     assert_eq!(report.observation.application.len(), 1);
     assert_eq!(report.observation.application[0].status, Some(200));
+    let events = collector.0.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            event.kind,
+            ApplicationEventKind::UpstreamSocket(value)
+                if value.protocol == "http"
+                    && value.peer == address
+                    && value.local.is_ipv4()
+        )
+    }));
 }
 
 #[test]

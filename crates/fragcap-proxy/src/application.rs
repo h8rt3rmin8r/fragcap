@@ -26,6 +26,7 @@ pub enum StreamTerminal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationEventKind {
     ConnectionOpen(ConnectionDescriptor),
+    UpstreamSocket(UpstreamSocketEvent),
     ConnectionTerminal(StreamTerminal),
     TlsNegotiation(TlsNegotiation),
     TlsTerminal(StreamTerminal),
@@ -296,6 +297,13 @@ pub struct ConnectionDescriptor {
     pub transport: &'static str,
     pub client_peer: SocketAddr,
     pub proxy_local: SocketAddr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpstreamSocketEvent {
+    pub protocol: &'static str,
+    pub local: SocketAddr,
+    pub peer: SocketAddr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

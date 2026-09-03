@@ -693,6 +693,14 @@ async fn connection_task(
                 });
             }
         };
+        emit_upstream_socket(
+            &services.application_sink,
+            &config.session_id,
+            connection_id,
+            "https",
+            upstream.local_addr(),
+            upstream.peer_addr(),
+        );
         let upstream_alpn = upstream.alpn_protocol();
         let alpn_matches = match client_alpn.as_deref() {
             Some(b"h2") => upstream_alpn.as_deref() == Some(b"h2"),
@@ -968,6 +976,8 @@ async fn connection_task(
                 let policy = policy.clone();
                 let limits = limits.clone();
                 let tls_client_config = Arc::clone(&tunnel_tls_client_config);
+                let sink = services.application_sink.clone();
+                let upstream_session_id = config.session_id.clone();
                 async move {
                     if requested != expected {
                         return Err(ProtocolError::new(
@@ -977,9 +987,18 @@ async fn connection_task(
                     }
                     match existing {
                         Some(stream) => Ok(stream),
-                        None => {
-                            connect_verified_tls(requested, policy, limits, tls_client_config).await
-                        }
+                        None => connect_verified_tls(requested, policy, limits, tls_client_config)
+                            .await
+                            .inspect(|stream| {
+                                emit_upstream_socket(
+                                    &sink,
+                                    &upstream_session_id,
+                                    connection_id,
+                                    "https",
+                                    stream.local_addr(),
+                                    stream.peer_addr(),
+                                );
+                            }),
                     }
                 }
             },
@@ -1020,6 +1039,8 @@ async fn connection_task(
     let session_id = config.session_id.clone();
     let limits = config.protocol.clone();
     let upstream_budgets = limits.upstream;
+    let upstream_sink = services.application_sink.clone();
+    let upstream_session_id = session_id.clone();
     let run = serve_http(
         stream,
         first,
@@ -1037,9 +1058,21 @@ async fn connection_task(
         true,
         |authority| {
             let policy = policy.clone();
+            let sink = upstream_sink.clone();
+            let session_id = upstream_session_id.clone();
             async move {
                 connect_upstream(&authority, &policy, upstream_budgets)
                     .await
+                    .inspect(|stream| {
+                        emit_upstream_socket(
+                            &sink,
+                            &session_id,
+                            connection_id,
+                            "http",
+                            stream.local_addr(),
+                            stream.peer_addr(),
+                        );
+                    })
                     .map_err(|error| {
                         let mut protocol = ProtocolError::new(error.code, error.detail);
                         protocol.policy_refused =
@@ -1055,6 +1088,33 @@ async fn connection_task(
     } else {
         ConnectionOutcome::Completed(run)
     }
+}
+
+fn emit_upstream_socket(
+    sink: &crate::application::SharedEventSink,
+    session_id: &str,
+    connection_id: u64,
+    protocol: &'static str,
+    local: std::io::Result<std::net::SocketAddr>,
+    peer: std::io::Result<std::net::SocketAddr>,
+) {
+    let (Ok(local), Ok(peer)) = (local, peer) else {
+        return;
+    };
+    crate::application::emit(
+        sink,
+        crate::ApplicationEvent::now(
+            session_id,
+            connection_id,
+            None,
+            None,
+            crate::ApplicationEventKind::UpstreamSocket(crate::UpstreamSocketEvent {
+                protocol,
+                local,
+                peer,
+            }),
+        ),
+    );
 }
 
 fn stamp_observation_window(outcome: &mut ConnectionOutcome, opened_at_ns: u64, closed_at_ns: u64) {

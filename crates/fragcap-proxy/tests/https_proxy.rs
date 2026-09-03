@@ -115,10 +115,12 @@ fn round_trip(
     upstream_roots.add(origin_certificate).unwrap();
     let mut key_log_file = tempfile::tempfile().unwrap();
     let key_log = Arc::new(SessionKeyLog::new(key_log_file.try_clone().unwrap()));
+    let collector = Arc::new(Collector::default());
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
         .with_tls_client_config(tls_client_config_with_roots(upstream_roots).unwrap())
         .with_key_log(Arc::clone(&key_log))
+        .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
         .unwrap();
 
@@ -198,6 +200,17 @@ fn round_trip(
             && facts.version.as_deref() == Some(expected_version)
             && facts.alpn.as_deref() == advertise_http_alpn.then_some(b"http/1.1".as_slice())
     }));
+    let events = collector.0.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            event.kind,
+            ApplicationEventKind::UpstreamSocket(value)
+                if value.protocol == "https"
+                    && value.peer == origin
+                    && value.local.is_ipv4()
+        )
+    }));
+    drop(events);
     key_log_file.rewind().unwrap();
     let mut secrets = String::new();
     key_log_file.read_to_string(&mut secrets).unwrap();

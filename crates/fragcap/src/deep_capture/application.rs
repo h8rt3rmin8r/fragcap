@@ -1039,6 +1039,14 @@ fn event_json(
                 "correlation_reason": "final-reconciliation-pending",
             }),
         ),
+        ApplicationEventKind::UpstreamSocket(value) => (
+            "connection.upstream_socket",
+            json!({
+                "upstream_protocol": value.protocol,
+                "upstream_local": value.local.to_string(),
+                "upstream_peer": value.peer.to_string(),
+            }),
+        ),
         ApplicationEventKind::ConnectionTerminal(outcome) => (
             "connection.terminal",
             json!({"outcome": format!("{outcome:?}").to_ascii_lowercase()}),
@@ -1275,6 +1283,7 @@ fn event_json(
 fn event_type(kind: &ApplicationEventKind) -> &'static str {
     match kind {
         ApplicationEventKind::ConnectionOpen(_) => "connection.open",
+        ApplicationEventKind::UpstreamSocket(_) => "connection.upstream_socket",
         ApplicationEventKind::ConnectionTerminal(_) => "connection.terminal",
         ApplicationEventKind::TlsNegotiation(_) => "tls.negotiation",
         ApplicationEventKind::TlsTerminal(_) => "tls.terminal",

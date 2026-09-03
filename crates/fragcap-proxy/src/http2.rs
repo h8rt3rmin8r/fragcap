@@ -425,6 +425,22 @@ where
             };
         }
     };
+    if let (Ok(local), Ok(peer)) = (upstream.local_addr(), upstream.peer_addr()) {
+        emit(
+            &sink,
+            ApplicationEvent::now(
+                &session_id,
+                connection_id,
+                None,
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::UpstreamSocket(crate::UpstreamSocketEvent {
+                    protocol: "http2",
+                    local,
+                    peer,
+                }),
+            ),
+        );
+    }
     let mut origin_builder = h2::client::Builder::new();
     configure_client(&mut origin_builder, &limits);
     let (origin_sender, origin_connection) =

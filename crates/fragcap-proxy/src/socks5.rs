@@ -939,7 +939,7 @@ async fn serve_udp_association(
                 if quic.as_ref().is_some_and(|gateway| gateway.plan().origin_endpoint() == selected) {
                     accounting.quic_pairs_started = accounting.quic_pairs_started.max(1);
                 }
-                peers.insert(selected);
+                peers.insert(crate::upstream::canonical_address(selected));
                 accounting.socks_udp_peak_peers = accounting.socks_udp_peak_peers.max(peers.len() as u64);
                 accounting.socks_udp_client_forwarded = accounting.socks_udp_client_forwarded.saturating_add(1);
                 accounting.socks_udp_client_bytes = accounting.socks_udp_client_bytes.saturating_add(written as u64);
@@ -1202,10 +1202,12 @@ where
     let selected = candidates
         .iter()
         .copied()
-        .find(|address| peers.contains(address))
+        .find(|address| peers.contains(&crate::upstream::canonical_address(*address)))
         .or_else(|| candidates.first().copied())
         .ok_or(UdpForwardFailure::Resolution)?;
-    if !peers.contains(&selected) && peers.len() >= limits.max_socks_udp_peers {
+    if !peers.contains(&crate::upstream::canonical_address(selected))
+        && peers.len() >= limits.max_socks_udp_peers
+    {
         return Err(UdpForwardFailure::PeerLimit(selected));
     }
     if quic.is_some() || crate::is_quic_initial(payload) {
@@ -1345,7 +1347,7 @@ async fn handle_upstream_datagram(
         );
         return false;
     }
-    if !peers.contains(&source) || client_endpoint.is_none() {
+    if !peers.contains(&crate::upstream::canonical_address(source)) || client_endpoint.is_none() {
         accounting.socks_udp_unsolicited_dropped =
             accounting.socks_udp_unsolicited_dropped.saturating_add(1);
         emit_udp(
@@ -2067,6 +2069,18 @@ mod tests {
         assert_eq!(&encoded[4..20], &Ipv6Addr::LOCALHOST.octets());
         assert_eq!(&encoded[20..22], &4242_u16.to_be_bytes());
         assert_eq!(&encoded[22..], b"reply");
+    }
+
+    #[test]
+    fn udp_peer_ownership_collapses_mapped_and_native_aliases() {
+        let mapped: SocketAddr = "[::ffff:192.0.2.1]:4242".parse().unwrap();
+        let native: SocketAddr = "192.0.2.1:4242".parse().unwrap();
+        let mut peers = BTreeSet::new();
+        peers.insert(crate::upstream::canonical_address(mapped));
+        peers.insert(crate::upstream::canonical_address(native));
+        assert_eq!(peers.len(), 1);
+        assert!(peers.contains(&crate::upstream::canonical_address(mapped)));
+        assert!(peers.contains(&crate::upstream::canonical_address(native)));
     }
 
     #[test]

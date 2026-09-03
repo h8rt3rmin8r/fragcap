@@ -624,30 +624,7 @@ pub async fn resolve_allowed_udp(
     policy: &DestinationPolicy,
     budget: Duration,
 ) -> Result<Vec<SocketAddr>, UpstreamError> {
-    let resolved = resolve_authority(authority, budget).await?;
-    let mut allowed = Vec::new();
-    let mut saw_address = false;
-    for address in resolved.into_iter().take(MAX_RESOLVED_CANDIDATES) {
-        saw_address = true;
-        let decision = policy.evaluate(address);
-        if decision.allowed
-            && !allowed
-                .iter()
-                .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
-        {
-            allowed.push(decision.address);
-        }
-    }
-    if !saw_address {
-        return Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"));
-    }
-    if allowed.is_empty() {
-        return Err(UpstreamError::new(
-            UpstreamStage::Policy,
-            "destination-refused",
-        ));
-    }
-    Ok(allowed)
+    resolve_allowed_candidates(authority, policy, budget).await
 }
 
 pub async fn connect_upstream_cancellable(
@@ -659,34 +636,12 @@ pub async fn connect_upstream_cancellable(
     if cancellation.is_cancelled() {
         return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
     }
-    let addresses = tokio::select! {
+    let allowed = tokio::select! {
         () = cancellation.cancelled() => {
             return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
         }
-        result = resolve_authority(authority, budgets.dns) => result,
+        result = resolve_allowed_candidates(authority, policy, budgets.dns) => result,
     }?;
-    if addresses.is_empty() {
-        return Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"));
-    }
-    let mut allowed = Vec::new();
-    let mut last = None;
-    for address in addresses.into_iter().take(MAX_RESOLVED_CANDIDATES) {
-        let decision = policy.evaluate(address);
-        if !decision.allowed {
-            last = Some(UpstreamError::new(UpstreamStage::Policy, decision.reason));
-            continue;
-        }
-        if !allowed
-            .iter()
-            .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
-        {
-            allowed.push(decision.address);
-        }
-    }
-    if allowed.is_empty() {
-        return Err(last
-            .unwrap_or_else(|| UpstreamError::new(UpstreamStage::Policy, "destination-refused")));
-    }
     let addresses = interleave_families(allowed);
     race_candidates(
         addresses,
@@ -774,12 +729,13 @@ where
     }
 }
 
-async fn resolve_authority(
+async fn resolve_allowed_candidates(
     authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
     budget: Duration,
 ) -> Result<Vec<SocketAddr>, UpstreamError> {
     if let Some(address) = authority.literal_address() {
-        return Ok(vec![address]);
+        return retain_allowed_candidates([address], policy);
     }
     let resolved = timeout(budget, tokio::net::lookup_host(authority.lookup_host()))
         .await
@@ -787,11 +743,46 @@ async fn resolve_authority(
         .map_err(|error| {
             UpstreamError::with_detail(UpstreamStage::Dns, "dns-failed", error.to_string())
         })?;
-    let addresses: Vec<_> = resolved.take(MAX_RESOLVED_CANDIDATES).collect();
-    if addresses.is_empty() {
+    retain_allowed_candidates(resolved, policy)
+}
+
+fn retain_allowed_candidates(
+    resolved: impl IntoIterator<Item = SocketAddr>,
+    policy: &DestinationPolicy,
+) -> Result<Vec<SocketAddr>, UpstreamError> {
+    let mut allowed = Vec::new();
+    let mut saw_address = false;
+    for address in resolved {
+        saw_address = true;
+        let decision = policy.evaluate(address);
+        if !decision.allowed
+            || allowed
+                .iter()
+                .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
+        {
+            continue;
+        }
+        if allowed.len() < MAX_RESOLVED_CANDIDATES {
+            allowed.push(decision.address);
+            continue;
+        }
+        let family_present = allowed
+            .iter()
+            .any(|existing| existing.is_ipv6() == decision.address.is_ipv6());
+        if !family_present {
+            allowed.pop();
+            allowed.push(decision.address);
+        }
+    }
+    if !saw_address {
         Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"))
+    } else if allowed.is_empty() {
+        Err(UpstreamError::new(
+            UpstreamStage::Policy,
+            "destination-refused",
+        ))
     } else {
-        Ok(addresses)
+        Ok(allowed)
     }
 }
 
@@ -829,12 +820,13 @@ fn connect_error(error: std::io::Error) -> UpstreamError {
 #[cfg(test)]
 mod address_tests {
     use std::future::pending;
+    use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::{
-        canonical_address, interleave_families, race_candidates, UpstreamCancellation,
-        UpstreamStage,
+        canonical_address, interleave_families, race_candidates, retain_allowed_candidates,
+        DestinationPolicy, UpstreamCancellation, UpstreamStage, MAX_RESOLVED_CANDIDATES,
     };
 
     #[test]
@@ -862,6 +854,23 @@ mod address_tests {
             canonical_address("[::ffff:192.0.2.1]:443".parse().unwrap()),
             "192.0.2.1:443".parse().unwrap()
         );
+    }
+
+    #[test]
+    fn candidate_cap_retains_a_late_second_family() {
+        let mut resolved = (1..=MAX_RESOLVED_CANDIDATES)
+            .map(|port| format!("[2001:4860:4860::8888]:{port}").parse().unwrap())
+            .collect::<Vec<_>>();
+        let ipv4 = "8.8.8.8:53".parse().unwrap();
+        resolved.push(ipv4);
+        let retained = retain_allowed_candidates(
+            resolved,
+            &DestinationPolicy::new("127.0.0.1:1".parse().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(retained.len(), MAX_RESOLVED_CANDIDATES);
+        assert!(retained.contains(&ipv4));
+        assert!(retained.iter().any(SocketAddr::is_ipv6));
     }
 
     #[tokio::test]
