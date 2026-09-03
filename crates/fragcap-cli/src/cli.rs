@@ -457,8 +457,17 @@ pub struct DeepCaptureArgs {
     pub restart_warm: bool,
 
     /// Run one explicit compatibility calibration phase.
-    #[arg(long, value_enum, requires = "launch_case")]
+    #[arg(
+        long,
+        value_enum,
+        requires = "launch_case",
+        requires = "calibration_protocol"
+    )]
     pub calibrate: Option<DeepCaptureCalibrationArg>,
+
+    /// Exact routing or protocol case whose evidence may be appended.
+    #[arg(long, value_enum, requires = "calibrate")]
+    pub calibration_protocol: Option<DeepCaptureCalibrationProtocolArg>,
 
     /// Declare the launch case whose compatibility is being measured.
     #[arg(long, value_enum, requires = "calibrate")]
@@ -522,6 +531,25 @@ pub enum DeepCaptureCalibrationArg {
     Reachability,
     /// Measure TLS trust behavior after reachability has been established.
     Tls,
+}
+
+/// Exact protocol dimension for one compatibility calibration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DeepCaptureCalibrationProtocolArg {
+    Routing,
+    Http1,
+    Https,
+    Http2,
+    Websocket,
+    Sse,
+    Grpc,
+    GenericTcp,
+    NonHttpTls,
+    Socks5Tcp,
+    Socks5Udp,
+    GenericUdp,
+    Quic,
+    Http3,
 }
 
 /// Exact loopback address family for one Deep Capture session.

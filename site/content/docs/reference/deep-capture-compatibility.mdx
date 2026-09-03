@@ -102,7 +102,7 @@ Compatibility calibration is the supported, explicit path from unknown local evi
 First close the selected target and, for a Steam launch, close Steam. Then measure scoped proxy reachability without changing certificate trust. This example uses the Steam launch case:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate reachability --launch-case steam-protocol-cold
+fragcap deep-capture sample-target --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
 ```
 
 For an eligible stored direct target, use `--launch-case direct-exe-cold` instead. Warm Steam and direct-executable targets are refused before side effects.
@@ -112,7 +112,7 @@ fragcap displays the target, phase, launch case, loopback proxy action, bundle d
 Review the new rows with `fragcap targets show sample-target`. If current evidence for the same launch case says `proxy-routing = reached-client`, a separate TLS phase can measure CA acceptance and inspectability:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
+fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold --trust-ca
 ```
 
 Use the same exact cold launch case in both phases.

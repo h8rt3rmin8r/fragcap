@@ -65,9 +65,13 @@
 //! key-specific value vocabularies closed where the value domain is known: the
 //! store can record `unknown`, but it cannot record an out-of-vocabulary guess.
 //! The migration from version 8 is one additive `CREATE TABLE`.
+//!
+//! Version 10 (slice S121) adds nullable routing-strategy, address-family, and
+//! protocol-family columns to `deep_capture_facts`. NULL remains the exact state
+//! of a pre-S121 row, so migration preserves history without inventing a case.
 
 /// The schema version this build writes and understands.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The complete DDL for the current schema version, applied inside one
 /// transaction to a fresh store.
@@ -200,6 +204,17 @@ CREATE TABLE deep_capture_facts (
     proxy_backend    TEXT CHECK (proxy_backend IS NULL OR length(proxy_backend) > 0),
     proxy_backend_version TEXT,
     proxy_mode       TEXT CHECK (proxy_mode IS NULL OR length(proxy_mode) > 0),
+    routing_strategy TEXT CHECK (routing_strategy IS NULL OR routing_strategy IN
+                       ('child-environment', 'command-arguments',
+                        'target-configuration', 'http-proxy', 'socks',
+                        'protocol-specific')),
+    address_family   TEXT CHECK (address_family IS NULL OR address_family IN
+                       ('ipv4', 'ipv6')),
+    protocol_family  TEXT CHECK (protocol_family IS NULL OR protocol_family IN
+                       ('routing', 'http1', 'https', 'http2', 'websocket', 'sse',
+                        'grpc', 'generic-tcp', 'non-http-tls', 'socks5-tcp',
+                        'socks5-udp', 'generic-udp', 'quic', 'http3',
+                        'not-applicable')),
     final_owner_executable TEXT
                        CHECK (final_owner_executable IS NULL OR length(final_owner_executable) > 0),
     final_owner_handoff INTEGER NOT NULL DEFAULT 0 CHECK (final_owner_handoff IN (0, 1)),
@@ -237,6 +252,21 @@ CREATE TABLE deep_capture_facts (
                                'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'))
     )
 );
+";
+
+/// Add exact calibration-case dimensions without rewriting existing evidence.
+pub const MIGRATE_9_TO_10: &str = "\
+ALTER TABLE deep_capture_facts ADD COLUMN routing_strategy TEXT
+    CHECK (routing_strategy IS NULL OR routing_strategy IN
+        ('child-environment', 'command-arguments', 'target-configuration',
+         'http-proxy', 'socks', 'protocol-specific'));
+ALTER TABLE deep_capture_facts ADD COLUMN address_family TEXT
+    CHECK (address_family IS NULL OR address_family IN ('ipv4', 'ipv6'));
+ALTER TABLE deep_capture_facts ADD COLUMN protocol_family TEXT
+    CHECK (protocol_family IS NULL OR protocol_family IN
+        ('routing', 'http1', 'https', 'http2', 'websocket', 'sse', 'grpc',
+         'generic-tcp', 'non-http-tls', 'socks5-tcp', 'socks5-udp',
+         'generic-udp', 'quic', 'http3', 'not-applicable'));
 ";
 
 /// The additive migration from schema version 8 to version 9: create the Deep

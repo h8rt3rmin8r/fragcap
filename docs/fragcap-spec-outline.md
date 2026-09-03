@@ -219,7 +219,7 @@ from the original brief.
 
 ## 15. Targets And Compatibility Evidence
 
-The single local target store, source and fidelity model, resolution order, discovery signatures, and append-only Deep Capture compatibility facts. Unknown targets can produce initial evidence only through an explicit compatibility calibration, while `targets show` remains read-only and never selects an aggregate verdict.
+The single local target store, source and fidelity model, resolution order, discovery signatures, and append-only Deep Capture compatibility facts. Compatibility calibration and reuse are exact over launch, route, address family, protocol, backend and product versions, and available target version; legacy and conflicting rows remain visible history. Unknown targets can produce initial evidence only through an explicit compatibility calibration, while `targets show` remains read-only and never selects an aggregate verdict.
 
 ## 16. Steam Integration
 

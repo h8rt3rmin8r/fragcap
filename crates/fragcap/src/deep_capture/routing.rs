@@ -329,6 +329,7 @@ mod tests {
                 launch_case: LaunchCase::DirectExeCold,
             },
             mode: SessionMode::Capture,
+            calibration_protocol: None,
             controlled: false,
             proxy_backend: BackendDescriptor {
                 name: "test".to_string(),

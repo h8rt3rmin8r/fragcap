@@ -184,13 +184,13 @@ If the detail view reports `unknown`, stale or conflicting routing facts, or evi
 Reachability calibration displays its complete plan before confirmation and never changes certificate trust:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate reachability --launch-case steam-protocol-cold
+fragcap deep-capture sample-target --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
 ```
 
 Review the resulting rows with `fragcap targets show sample-target`. When current same-case evidence says `proxy-routing = reached-client`, measure TLS behavior separately:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
+fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold --trust-ca
 ```
 
 Review the target again before ordinary Deep Capture. Calibration outcomes and fact rows preserve uncertainty; they do not create an aggregate compatibility verdict.

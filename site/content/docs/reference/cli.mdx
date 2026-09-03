@@ -137,7 +137,8 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--bundle` | open | none | all | Select the session bundle directory. The fallback is a new directory under `FRAGCAP_SESSION_DIR`, then `%APPDATA%\fragcap\sessions`. |
-| `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case`. |
+| `--calibrate` | `reachability`, `tls` | none | all | Run one explicit compatibility calibration phase. Requires `--launch-case` and `--calibration-protocol`. |
+| `--calibration-protocol` | `routing`, `http1`, `https`, `http2`, `websocket`, `sse`, `grpc`, `generic-tcp`, `non-http-tls`, `socks5-tcp`, `socks5-udp`, `generic-udp`, `quic`, `http3` | none | all | Select the exact case to measure. Reachability requires `routing`; TLS requires one concrete protocol. |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store. |
 | `-d`, `--duration` | open | none | all | Stop after a duration measured from arm. |
 | `--har` | open | `false` | all | Write an HTTP-oriented projection when HTTP semantics are observable. |

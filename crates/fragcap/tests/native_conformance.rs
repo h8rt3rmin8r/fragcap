@@ -11,6 +11,10 @@ use fragcap::deep_capture::{
     LifecycleStreamStatus, LifecycleWriter, ResourceJournal, ResourceKind, ResourceState,
     ResourceTransition,
 };
+use fragcap::targets::{
+    CompatibilityAddressFamily, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityRoutingStrategy,
+};
 use serde_json::{json, Value};
 
 #[test]
@@ -213,4 +217,50 @@ fn committed_conformance_report_has_no_required_skip_state() {
         .unwrap()
         .iter()
         .all(|row| row["status"] == "pass"));
+}
+
+#[test]
+fn native_calibration_matrix_names_every_supported_case_without_duplicates() {
+    let launches = [
+        CompatibilityLaunchCase::SteamProtocolCold,
+        CompatibilityLaunchCase::DirectExeCold,
+        CompatibilityLaunchCase::PublisherLauncherCold,
+    ];
+    let families = [
+        CompatibilityAddressFamily::Ipv4,
+        CompatibilityAddressFamily::Ipv6,
+    ];
+    let protocols = [
+        CompatibilityProtocol::Routing,
+        CompatibilityProtocol::Http1,
+        CompatibilityProtocol::Https,
+        CompatibilityProtocol::Http2,
+        CompatibilityProtocol::WebSocket,
+        CompatibilityProtocol::Sse,
+        CompatibilityProtocol::Grpc,
+        CompatibilityProtocol::GenericTcp,
+        CompatibilityProtocol::NonHttpTls,
+        CompatibilityProtocol::Socks5Tcp,
+        CompatibilityProtocol::Socks5Udp,
+        CompatibilityProtocol::GenericUdp,
+        CompatibilityProtocol::Quic,
+        CompatibilityProtocol::Http3,
+    ];
+    let mut rows = BTreeSet::new();
+    for launch in launches {
+        for family in families {
+            for protocol in protocols {
+                assert!(rows.insert((
+                    launch.as_str(),
+                    CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+                    family.as_str(),
+                    protocol.as_str(),
+                )));
+            }
+        }
+    }
+    assert_eq!(
+        rows.len(),
+        launches.len() * families.len() * protocols.len()
+    );
 }

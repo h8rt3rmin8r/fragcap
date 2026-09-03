@@ -136,6 +136,7 @@ enforcement.
 | 0.1.41-draft | 2026-09-03 | W. Thompson | **Adds scoped QUIC and HTTP/3 inspection (issue #314).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated target-scoped UDP routes admit immutable QUIC connection pairs under the session authority and independently verified upstream TLS. Exact-pinned Quinn and Hyperium HTTP/3 provide TLS 1.3, ALPN-selected HTTP/3, finite transport ownership, and bounded connection, stream, datagram, metadata, and body evidence. Unknown ALPN, zero round-trip application data, and active migration are refused without transparent fallback. Unrouted QUIC remains packet-only, IPv6 parity remains #315, and Deep Capture remains incomplete until #334. |
 | 0.1.42-draft | 2026-09-03 | W. Thompson | **Completes native IPv6 parity (issue #315).** Extends sections 13.7, 17.2.1, 19.6, 25, 26.3, and 28.1. One immutable plan now authorizes one exact IPv4 or IPv6 loopback socket, generated IPv6 routes use bracketed authorities, scoped IPv6 literals retain bounded numeric socket indexes, and mapped aliases have one canonical policy and correlation identity. Proxy-owned TCP connection establishment uses a finite 250 ms staggered dual-stack race with one winner and cancelled losers. HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC controlled rows cover IPv6, while Doctor reports exact IPv4 and IPv6 bind readiness independently. S119 adds no dependency or wildcard bind, and Deep Capture remains incomplete until #334. |
 | 0.1.43-draft | 2026-09-03 | W. Thompson | **Makes Deep Capture protocol classification and omission reasons exhaustive (issue #316).** Extends sections 13.7, 19.6, 25, and 28.1. A versioned facade contract separates traffic family, detection state, inspectability, and stable reason for every shipped protocol path. Application records, terminal summaries, compatibility eligibility, and typed manifest omissions retain their separate authorities and reconcile without converting parser, retention, writer, trust, or routing failures into target support claims. S120 adds no dependency, routing behavior, or completion claim. |
+| 0.1.44-draft | 2026-09-03 | W. Thompson | **Completes the native compatibility calibration matrix (issue #317).** Extends sections 13.7, 15, 17.2.1, 19, 25, and 28.1. Every calibration names one exact launch case, routing strategy, loopback family, protocol case, backend and product version, and target version when available. Version-10 storage preserves append-only conflicts and legacy rows, while only the latest exact current applicable routing fact can authorize a session. S121 adds no dependency, bypass behavior, or Deep Capture completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2708,7 +2709,7 @@ and title metadata never create compatibility facts or an aggregate compatible
 or incompatible verdict. Free-form notes and final executable names remain out
 of this display because they can carry local details unrelated to the verdict.
 
-An unknown target can produce local facts only through an explicitly selected compatibility calibration. One invocation measures one stored target, one declared launch case, and either scoped proxy reachability or TLS behavior. Reachability never changes certificate trust. TLS is a separate invocation and is refused before side effects unless a current `proxy-routing=reached-client` row exists for the same target and launch case. Routing to the final client does not prove how proxy configuration propagated through a launcher, so `proxy-propagation=confirmed` is written only from independent non-invasive evidence such as a controlled target reporting its own environment. Repeated, conflicting, partial, and negative observations remain individual rows or phase outcomes rather than an aggregate title verdict.
+An unknown target can produce local facts only through an explicitly selected compatibility calibration. One invocation measures one stored target, one declared launch case, one target-scoped routing strategy, one loopback address family, and either routing or one exact shipped protocol family. Reachability never changes certificate trust. TLS is a separate invocation and is refused before side effects unless the latest applicable `proxy-routing=reached-client` row exactly matches the target, launch case, routing strategy, address family, backend and version, product version, and current target version when that version is available. Protocol-specific facts must additionally match the selected protocol; route facts store explicit protocol inapplicability. Legacy rows with absent case dimensions remain readable history but cannot authorize work. Routing to the final client does not prove how proxy configuration propagated through a launcher, so `proxy-propagation=confirmed` is written only from independent non-invasive evidence such as a controlled target reporting its own environment. Repeated, conflicting, partial, negative, stale, and mismatched observations remain individual rows or phase outcomes rather than an aggregate title verdict.
 
 The transition away from profile files is staged: the fidelity-ordered store read,
 the entry model, the handle and identifier scheme, and the selector ship in S051.
@@ -2971,6 +2972,8 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --yes                  Pre-confirm Deep Capture prompts
       --restart-warm         Wait for normal shutdown and prepare a new cold launch
       --calibrate <PHASE>    Measure compatibility: reachability or tls
+      --calibration-protocol <PROTOCOL>
+                             Exact routing or shipped protocol case to measure
       --launch-case <CASE>   Declare the launch case being measured
       --har                  Write HAR when HTTP semantics are observable
       --key-log              Write a proxy-owned analyzer key log
@@ -3005,11 +3008,11 @@ proxy settings.
 Compatibility calibration is the deliberate evidence-producing path for an unknown stored target:
 
 ```text
-fragcap deep-capture <SELECTOR> --launch --calibrate reachability --launch-case steam-protocol-cold
-fragcap deep-capture <SELECTOR> --launch --calibrate tls --launch-case steam-protocol-cold --trust-ca
+fragcap deep-capture <SELECTOR> --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
+fragcap deep-capture <SELECTOR> --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold --trust-ca
 ```
 
-The two calibration flags are a pair and are absent from an ordinary Deep Capture invocation. Real calibration supports an exact owned cold Steam platform client, a cold direct-executable, and an exact cold publisher-chain launch. The existing `steam-protocol-cold` compatibility token names the Steam launch case and remains stable, but Deep Capture executes it through the owned root and observe-before-dispatch path. Warm Steam, warm direct executable, warm publisher launcher, a declared-versus-observed case mismatch, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
+The calibration phase, launch case, and protocol flags form one explicit case and are absent from an ordinary Deep Capture invocation. Reachability accepts only `routing`; TLS requires one concrete protocol from the closed shipped classification set. Real calibration supports an exact owned cold Steam platform client, a cold direct-executable, and an exact cold publisher-chain launch over one explicit IPv4 or IPv6 loopback family. The existing `steam-protocol-cold` compatibility token names the Steam launch case and remains stable, but Deep Capture executes it through the owned root and observe-before-dispatch path. Warm Steam, warm direct executable, warm publisher launcher, a declared-versus-observed case mismatch, an unavailable routing strategy, and any unowned path are refused before bundle, proxy, trust, launch, or fact mutation. The controlled verification target may declare its synthetic direct launch case.
 
 After side-effect-free resolution, launch-state validation, bundle validation, and Capture preparation, calibration emits the complete plan in human or structured form. It then requires an interactive affirmative answer or `--yes`. Preconfirmation never suppresses the plan. JSON and noninteractive runs without `--yes` refuse before mutation. Reachability refuses trust, HAR, and key-log options and never constructs a trust manager. TLS requires current same-case final-client routing and explicit trust intent.
 
@@ -4139,6 +4142,8 @@ installed.
 
 Compatibility calibration adds a controlled target path to Tier 1. The target reports its own inherited proxy variables, sends synthetic loopback traffic, and can drive routing, TLS, partial-evidence, and cleanup outcomes through the production bundle and fact-store paths. This proves orchestration and contract behavior without a game account, capture driver, remote service, or real trust-store mutation. It does not prove how a real Steam or publisher launch behaves; that remains a private Tier 3 manual measurement whose public summary must be scrubbed.
 
+The controlled matrix also enumerates every selectable native protocol over both exact loopback families. Positive protocol facts require the retained S120 classification to match the selected case; unrelated traffic, parser failure, truncation, writer loss, stale rows, legacy-incomplete rows, and any single-dimension mismatch cannot promote or authorize compatibility.
+
 **Tier 3, live.** Manual verification against a real game session,
 executed before release. Verifies end-to-end acquisition through the
 launcher chain, attribution accuracy against SC-7, and analyzer
@@ -4660,6 +4665,14 @@ summaries; and permits compatibility facts only from exact eligible outcomes.
 Typed manifest omission reasons retain separate artifact authority. It closes
 #316 without expanding calibration, bypass policy, routing, or Deep Capture
 completion.
+S121 completes calibration and reuse over one exact case: target, launch case,
+target-scoped routing strategy, loopback family, protocol family, native backend
+and version, fragcap version, and target version when available. Store version
+10 adds the route, family, and protocol dimensions without rewriting old facts;
+legacy and conflicting rows remain append-only history. Explicit stale state or
+an exact mismatch prevents reuse, and the latest exact applicable routing row
+controls eligibility. It closes #317 without changing dependencies, bypass
+policy, raw proxy detail, or the #334 completion gate.
 
 The required dependency direction is:
 

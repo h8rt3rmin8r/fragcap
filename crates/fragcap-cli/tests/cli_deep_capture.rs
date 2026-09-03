@@ -13,8 +13,9 @@ use std::sync::{Mutex, OnceLock};
 use common::run;
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
-    resolved_client_launch, ClassificationSource, CompatibilityEvidenceSource, CompatibilityFact,
-    CompatibilityFactKey, CompatibilityLaunchCase, Selection, Store, TargetClassification,
+    resolved_client_launch, ClassificationSource, CompatibilityAddressFamily,
+    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
+    CompatibilityProtocol, CompatibilityRoutingStrategy, Selection, Store, TargetClassification,
     TargetEntry,
 };
 
@@ -53,6 +54,12 @@ fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
                     .expect("compatibility fact");
             let mut fact = fact;
             fact.launch_case = Some(CompatibilityLaunchCase::DirectExeWarm);
+            fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
+            fact.proxy_backend = Some("fragcap-native".to_string());
+            fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
+            fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+            fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
+            fact.protocol = Some(CompatibilityProtocol::NotApplicable);
             store
                 .insert_compatibility_fact(&fact)
                 .expect("insert compatibility fact");
@@ -85,6 +92,7 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--restart-warm",
         "--calibrate",
         "--launch-case",
+        "--calibration-protocol",
         "--har",
         "--key-log",
         "--client-certificate",
@@ -108,6 +116,8 @@ fn warm_restart_cannot_be_combined_with_calibration() {
         "--restart-warm",
         "--calibrate",
         "reachability",
+        "--calibration-protocol",
+        "routing",
         "--launch-case",
         "direct-exe-warm",
     ]);
@@ -126,6 +136,8 @@ fn calibration_arguments_are_paired() {
         "--launch",
         "--calibrate",
         "reachability",
+        "--calibration-protocol",
+        "routing",
     ]);
     assert_eq!(code, 2);
     assert!(err.contains("--launch-case"), "pairing refusal: {err}");
@@ -139,6 +151,33 @@ fn calibration_arguments_are_paired() {
     ]);
     assert_eq!(code, 2);
     assert!(err.contains("--calibrate"), "pairing refusal: {err}");
+}
+
+#[test]
+fn calibration_phase_requires_an_exact_compatible_protocol() {
+    for (phase, protocol, expected) in [
+        (
+            "reachability",
+            "https",
+            "requires --calibration-protocol routing",
+        ),
+        ("tls", "routing", "requires one concrete protocol"),
+    ] {
+        let (code, _out, err) = run(&[
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--calibrate",
+            phase,
+            "--calibration-protocol",
+            protocol,
+            "--launch-case",
+            "direct-exe-cold",
+            "--yes",
+        ]);
+        assert_eq!(code, 2);
+        assert!(err.contains(expected), "phase refusal: {err}");
+    }
 }
 
 #[test]
@@ -178,6 +217,8 @@ fn controlled_calibration_runs_reachability_then_tls() {
         "--launch",
         "--calibrate",
         "reachability",
+        "--calibration-protocol",
+        "routing",
         "--launch-case",
         "direct-exe-warm",
         "--duration",
@@ -203,6 +244,30 @@ fn controlled_calibration_runs_reachability_then_tls() {
         .unwrap();
     assert_eq!(plan["launch_timeout_secs"], 7);
     assert_eq!(plan["observation_timeout_secs"], 5);
+    assert_eq!(plan["routing_strategy"], "child-environment");
+    assert_eq!(plan["address_family"], "ipv4");
+    assert_eq!(plan["protocol"], "routing");
+    assert_eq!(plan["proxy_backend"], "fragcap-native");
+    assert_eq!(plan["proxy_backend_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(plan["fragcap_version"], env!("CARGO_PKG_VERSION"));
+    assert!(plan["target_version"].is_null());
+    let phase_events = reachability_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["event"] == "deep_capture.calibration_phase")
+        .collect::<Vec<_>>();
+    assert_eq!(phase_events.len(), 2);
+    for event in phase_events {
+        assert_eq!(event["target"], "sample-target");
+        assert_eq!(event["launch_case"], "direct-exe-warm");
+        assert_eq!(event["proxy_backend"], "fragcap-native");
+        assert_eq!(event["proxy_backend_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(event["routing_strategy"], "child-environment");
+        assert_eq!(event["address_family"], "ipv4");
+        assert_eq!(event["protocol"], "routing");
+        assert_eq!(event["fragcap_version"], env!("CARGO_PKG_VERSION"));
+        assert!(event["target_version"].is_null());
+    }
     let reachability_manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(reachability_bundle.join("manifest.json")).unwrap())
             .unwrap();
@@ -219,11 +284,19 @@ fn controlled_calibration_runs_reachability_then_tls() {
         compatibility["calibration"]["deadlines_seconds"]["observation"],
         5
     );
+    assert_eq!(compatibility["routing_strategy"], "child-environment");
+    assert_eq!(compatibility["address_family"], "ipv4");
+    assert_eq!(compatibility["protocol"], "routing");
 
     let store = Store::open(&local).unwrap();
     let facts = store.compatibility_facts_for_target(target_id).unwrap();
     assert!(facts.iter().any(|fact| {
         fact.key == CompatibilityFactKey::ProxyRouting && fact.value == "reached-client"
+    }));
+    assert!(facts.iter().all(|fact| {
+        fact.routing_strategy == Some(CompatibilityRoutingStrategy::ChildEnvironment)
+            && fact.address_family == Some(CompatibilityAddressFamily::Ipv4)
+            && fact.protocol.is_some()
     }));
     assert!(facts.iter().any(|fact| {
         fact.key == CompatibilityFactKey::ProxyPropagation && fact.value == "confirmed"
@@ -241,6 +314,8 @@ fn controlled_calibration_runs_reachability_then_tls() {
         "--launch",
         "--calibrate",
         "tls",
+        "--calibration-protocol",
+        "https",
         "--launch-case",
         "direct-exe-warm",
         "--yes",
@@ -274,6 +349,8 @@ fn reachability_calibration_rejects_trust_and_tls_outputs_before_mutation() {
         "--launch",
         "--calibrate",
         "reachability",
+        "--calibration-protocol",
+        "routing",
         "--launch-case",
         "direct-exe-warm",
         "--trust-ca",
@@ -301,6 +378,8 @@ fn tls_calibration_requires_current_same_case_routing_before_mutation() {
         "--launch",
         "--calibrate",
         "tls",
+        "--calibration-protocol",
+        "https",
         "--launch-case",
         "direct-exe-warm",
         "--yes",
@@ -388,6 +467,12 @@ fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources()
     )
     .unwrap();
     fact.launch_case = Some(CompatibilityLaunchCase::DirectExeCold);
+    fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    fact.proxy_backend = Some("fragcap-native".to_string());
+    fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+    fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
+    fact.protocol = Some(CompatibilityProtocol::NotApplicable);
     store.insert_compatibility_fact(&fact).unwrap();
     drop(store);
     let bundle = dir.path().join("bundle");
@@ -823,6 +908,8 @@ fn partial_calibration_persists_the_same_failed_terminal_outcome_it_emits() {
         "--launch",
         "--calibrate",
         "tls",
+        "--calibration-protocol",
+        "https",
         "--launch-case",
         "direct-exe-warm",
         "--yes",

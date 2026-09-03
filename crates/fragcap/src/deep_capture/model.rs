@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use super::{ProtocolClassification, SensitiveRetention};
-use crate::targets::CompatibilityFactKey;
+use crate::targets::{CompatibilityFactKey, CompatibilityProtocol};
 use crate::FlowId;
 
 /// Stable identifier for one immutable prepared plan.
@@ -139,6 +139,8 @@ pub struct SessionConfig {
     pub launch_case: Option<LaunchCase>,
     /// Requested operation.
     pub mode: SessionMode,
+    /// Exact protocol case selected for calibration, if any.
+    pub calibration_protocol: Option<CompatibilityProtocol>,
     /// Whether the committed controlled target adapter is selected.
     pub controlled: bool,
     /// Session bundle destination.
@@ -253,6 +255,8 @@ pub struct SessionPlan {
     pub target: PreparedTarget,
     /// Requested mode.
     pub mode: SessionMode,
+    /// Exact protocol case selected for calibration, if any.
+    pub calibration_protocol: Option<CompatibilityProtocol>,
     /// Whether the committed controlled target adapter is selected.
     pub controlled: bool,
     /// Selected proxy backend descriptor.
@@ -526,6 +530,7 @@ pub struct CompatibilityFact {
     pub value: String,
     pub evidence: String,
     pub phase: CalibrationPhase,
+    pub protocol: CompatibilityProtocol,
     pub final_owner_index: Option<usize>,
 }
 
@@ -535,6 +540,7 @@ pub struct CompatibilityFactCandidate {
     pub key: CompatibilityFactKey,
     pub value: String,
     pub phase: CalibrationPhase,
+    pub protocol: CompatibilityProtocol,
     pub final_owner_index: Option<usize>,
 }
 

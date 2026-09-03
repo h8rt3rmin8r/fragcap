@@ -28,8 +28,9 @@ use fragcap::deep_capture::{
 use fragcap::deep_capture::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
 use fragcap::targets::{
     entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
-    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
-    Selection, Store, TargetEntry,
+    CompatibilityAddressFamily, CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact,
+    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityRoutingStrategy, Selection, Store, TargetEntry,
 };
 #[cfg(test)]
 use fragcap::FlowId;
@@ -42,7 +43,8 @@ use serde_json::json;
 use crate::args::Direction;
 use crate::cli::{
     CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureCalibrationArg,
-    DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, OfflineArgs, ScopeArg,
+    DeepCaptureCalibrationProtocolArg, DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg,
+    OfflineArgs, ScopeArg,
 };
 use crate::commands::{capture, target_resolve};
 use crate::emit::Emitter;
@@ -62,6 +64,49 @@ fn calibration_phase(value: DeepCaptureCalibrationArg) -> CalibrationPhase {
     match value {
         DeepCaptureCalibrationArg::Reachability => CalibrationPhase::Reachability,
         DeepCaptureCalibrationArg::Tls => CalibrationPhase::Tls,
+    }
+}
+
+fn calibration_protocol(value: DeepCaptureCalibrationProtocolArg) -> CompatibilityProtocol {
+    match value {
+        DeepCaptureCalibrationProtocolArg::Routing => CompatibilityProtocol::Routing,
+        DeepCaptureCalibrationProtocolArg::Http1 => CompatibilityProtocol::Http1,
+        DeepCaptureCalibrationProtocolArg::Https => CompatibilityProtocol::Https,
+        DeepCaptureCalibrationProtocolArg::Http2 => CompatibilityProtocol::Http2,
+        DeepCaptureCalibrationProtocolArg::Websocket => CompatibilityProtocol::WebSocket,
+        DeepCaptureCalibrationProtocolArg::Sse => CompatibilityProtocol::Sse,
+        DeepCaptureCalibrationProtocolArg::Grpc => CompatibilityProtocol::Grpc,
+        DeepCaptureCalibrationProtocolArg::GenericTcp => CompatibilityProtocol::GenericTcp,
+        DeepCaptureCalibrationProtocolArg::NonHttpTls => CompatibilityProtocol::NonHttpTls,
+        DeepCaptureCalibrationProtocolArg::Socks5Tcp => CompatibilityProtocol::Socks5Tcp,
+        DeepCaptureCalibrationProtocolArg::Socks5Udp => CompatibilityProtocol::Socks5Udp,
+        DeepCaptureCalibrationProtocolArg::GenericUdp => CompatibilityProtocol::GenericUdp,
+        DeepCaptureCalibrationProtocolArg::Quic => CompatibilityProtocol::Quic,
+        DeepCaptureCalibrationProtocolArg::Http3 => CompatibilityProtocol::Http3,
+    }
+}
+
+fn compatibility_address_family(value: DeepCaptureProxyFamilyArg) -> CompatibilityAddressFamily {
+    match value {
+        DeepCaptureProxyFamilyArg::Ipv4 => CompatibilityAddressFamily::Ipv4,
+        DeepCaptureProxyFamilyArg::Ipv6 => CompatibilityAddressFamily::Ipv6,
+    }
+}
+
+fn current_compatibility_case(
+    launch_case: CompatibilityLaunchCase,
+    family: DeepCaptureProxyFamilyArg,
+    protocol: CompatibilityProtocol,
+) -> CompatibilityCase {
+    CompatibilityCase {
+        launch_case,
+        proxy_backend: "fragcap-native".to_string(),
+        proxy_backend_version: env!("CARGO_PKG_VERSION").to_string(),
+        routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+        address_family: compatibility_address_family(family),
+        protocol,
+        fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
+        target_version: None,
     }
 }
 
@@ -104,6 +149,8 @@ struct CalibrationPlan {
     phase: CalibrationPhase,
     declared_launch_case: CompatibilityLaunchCase,
     observed_launch_case: CompatibilityLaunchCase,
+    protocol: CompatibilityProtocol,
+    address_family: CompatibilityAddressFamily,
     bundle: PathBuf,
     deadlines: CalibrationDeadlines,
 }
@@ -152,6 +199,14 @@ impl CalibrationPlan {
             declared_launch_case: self.declared_launch_case.as_str().to_string(),
             observed_launch_case: self.observed_launch_case.as_str().to_string(),
             proxy_backend: "fragcap-native".to_string(),
+            proxy_backend_version: env!("CARGO_PKG_VERSION").to_string(),
+            routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment
+                .as_str()
+                .to_string(),
+            address_family: self.address_family.as_str().to_string(),
+            protocol: self.protocol.as_str().to_string(),
+            fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
+            target_version: None,
             bundle: self.bundle.display().to_string(),
             trust_action: if self.phase == CalibrationPhase::Tls {
                 "session-owned current-user CA trust"
@@ -165,11 +220,16 @@ impl CalibrationPlan {
             cleanup_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.cleanup),
         });
         emitter.required_human(&format!(
-            "Compatibility calibration plan\n  target: {}\n  phase: {}\n  launch case: {} (observed {})\n  proxy: loopback only, launch-scoped environment\n  bundle: {}\n  deadlines: launch {}s, observation {}s, shutdown {}s, cleanup {}s\n  trust action: {}\n  facts: append only directly observed rows to the selected target\n  cleanup: proxy process, listener, private CA material, and session trust if created\n  system proxy change: none\n  evidence publication: none\n",
+            "Compatibility calibration plan\n  target: {}\n  phase: {}\n  launch case: {} (observed {})\n  case: route={}, family={}, protocol={}\n  versions: backend=fragcap-native {}, fragcap={}, target=unavailable\n  proxy: loopback only, launch-scoped environment\n  bundle: {}\n  deadlines: launch {}s, observation {}s, shutdown {}s, cleanup {}s\n  trust action: {}\n  facts: append only directly observed rows to the selected target\n  cleanup: proxy process, listener, private CA material, and session trust if created\n  system proxy change: none\n  evidence publication: none\n",
             self.target,
             self.phase.as_str(),
             self.declared_launch_case.as_str(),
             self.observed_launch_case.as_str(),
+            CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+            self.address_family.as_str(),
+            self.protocol.as_str(),
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
             self.bundle.display(),
             CalibrationDeadlines::seconds(self.deadlines.launch),
             CalibrationDeadlines::seconds(self.deadlines.observation),
@@ -572,6 +632,15 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
             self.args.controlled_target,
             &facts,
             target.launch_case,
+            &current_compatibility_case(
+                self.selected_launch_case
+                    .borrow()
+                    .expect("resolved launch case retained"),
+                self.args.proxy_family,
+                config
+                    .calibration_protocol
+                    .unwrap_or(CompatibilityProtocol::Routing),
+            ),
         )?;
         Ok(())
     }
@@ -872,6 +941,7 @@ struct LibraryFactAdapter {
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     controlled: bool,
+    family: DeepCaptureProxyFamilyArg,
 }
 
 impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
@@ -922,6 +992,8 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
                 controlled: self.controlled,
                 final_owner,
                 phase: fact.phase,
+                address_family: compatibility_address_family(self.family),
+                protocol: fact.protocol,
             },
         );
         match result {
@@ -940,6 +1012,8 @@ struct LibraryArtifactAdapter<'e, 'w> {
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     deadlines: CalibrationDeadlines,
+    family: DeepCaptureProxyFamilyArg,
+    protocol: Option<CompatibilityProtocol>,
 }
 
 impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
@@ -1012,6 +1086,8 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             target_id: snapshot.target.id,
             backend,
             launch_case,
+            address_family: compatibility_address_family(self.family),
+            protocol: self.protocol,
             listen_addr: runtime
                 .listen_endpoint
                 .map(|endpoint| endpoint.ip().to_string())
@@ -1033,6 +1109,7 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             .map(|write| FactWriteResult {
                 key: write.fact.kind.clone(),
                 value: write.fact.value.clone(),
+                protocol: write.fact.protocol.as_str().to_string(),
                 status: match write.status {
                     fragcap::deep_capture::FactWriteStatus::Appended => "performed",
                     fragcap::deep_capture::FactWriteStatus::Skipped { .. } => "skipped",
@@ -1265,9 +1342,31 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 });
                 emitter.progress("Deep Capture preflight passed");
                 if let Some(phase) = self.args.calibrate.map(calibration_phase) {
+                    let protocol = self
+                        .args
+                        .calibration_protocol
+                        .map(calibration_protocol)
+                        .expect("calibration protocol validated");
+                    let launch_case = self
+                        .selected_launch_case
+                        .borrow()
+                        .expect("calibration launch case retained");
                     emitter.event(&Event::DeepCaptureCalibrationPhase {
                         session_id: Some(plan.session_id.clone()),
+                        target: target.handle.clone(),
                         phase: phase.as_str().to_string(),
+                        launch_case: launch_case.as_str().to_string(),
+                        proxy_backend: plan.proxy_backend.name.clone(),
+                        proxy_backend_version: plan.proxy_backend.version.clone(),
+                        routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment
+                            .as_str()
+                            .to_string(),
+                        address_family: compatibility_address_family(self.args.proxy_family)
+                            .as_str()
+                            .to_string(),
+                        protocol: protocol.as_str().to_string(),
+                        fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
+                        target_version: None,
                         stage: "confirmed".to_string(),
                         status: "started".to_string(),
                         reason: "operator confirmed the displayed calibration plan".to_string(),
@@ -1364,7 +1463,47 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     );
                     emitter.event(&Event::DeepCaptureCalibrationPhase {
                         session_id: Some(report.session_id.clone()),
+                        target: self
+                            .selected
+                            .borrow()
+                            .as_ref()
+                            .expect("terminal target retained")
+                            .handle
+                            .clone(),
                         phase: phase.as_str().to_string(),
+                        launch_case: self
+                            .selected_launch_case
+                            .borrow()
+                            .expect("terminal launch case retained")
+                            .as_str()
+                            .to_string(),
+                        proxy_backend: runtime
+                            .backend
+                            .as_ref()
+                            .expect("terminal backend retained")
+                            .name
+                            .clone(),
+                        proxy_backend_version: runtime
+                            .backend
+                            .as_ref()
+                            .expect("terminal backend retained")
+                            .version
+                            .clone(),
+                        routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment
+                            .as_str()
+                            .to_string(),
+                        address_family: compatibility_address_family(self.args.proxy_family)
+                            .as_str()
+                            .to_string(),
+                        protocol: self
+                            .args
+                            .calibration_protocol
+                            .map(calibration_protocol)
+                            .expect("calibration protocol validated")
+                            .as_str()
+                            .to_string(),
+                        fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
+                        target_version: None,
                         stage: "complete".to_string(),
                         status: outcome.to_string(),
                         reason: calibration_outcome_reason(phase, outcome).to_string(),
@@ -1513,6 +1652,26 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         ));
     }
     let calibration = args.calibrate.map(calibration_phase);
+    let selected_protocol = args.calibration_protocol.map(calibration_protocol);
+    if calibration.is_some() && selected_protocol.is_none() {
+        return Err(CliError::usage(
+            "compatibility calibration requires --calibration-protocol",
+        ));
+    }
+    if calibration == Some(CalibrationPhase::Reachability)
+        && selected_protocol != Some(CompatibilityProtocol::Routing)
+    {
+        return Err(CliError::usage(
+            "reachability calibration requires --calibration-protocol routing",
+        ));
+    }
+    if calibration == Some(CalibrationPhase::Tls)
+        && selected_protocol == Some(CompatibilityProtocol::Routing)
+    {
+        return Err(CliError::usage(
+            "TLS calibration requires one concrete protocol, not routing",
+        ));
+    }
     let deadlines = CalibrationDeadlines::from_args(args);
     if calibration == Some(CalibrationPhase::Reachability)
         && (args.trust_ca || args.har || args.key_log)
@@ -1566,6 +1725,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             .map(CompatibilityLaunchCase::from)
             .map(library_launch_case),
         mode,
+        calibration_protocol: selected_protocol,
         controlled: args.controlled_target,
         bundle: bundle.clone(),
         trust_ca: calibration != Some(CalibrationPhase::Reachability)
@@ -1636,6 +1796,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             controlled: args.controlled_target,
+            family: args.proxy_family,
         }),
         artifacts: Box::new(LibraryArtifactAdapter {
             emitter: Rc::clone(&emitter),
@@ -1643,6 +1804,8 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             selected_launch_case: Rc::clone(&selected_launch_case),
             runtime: Rc::clone(&runtime),
             deadlines,
+            family: args.proxy_family,
+            protocol: selected_protocol,
         }),
         events: Box::new(LibraryEventAdapter {
             args,
@@ -1765,6 +1928,8 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
                 .map(CompatibilityLaunchCase::from)
                 .expect("clap requires launch-case with calibration"),
             observed_launch_case,
+            protocol: selected_protocol.expect("calibration protocol validated"),
+            address_family: compatibility_address_family(args.proxy_family),
             bundle: bundle.clone(),
             deadlines,
         };
@@ -1816,6 +1981,8 @@ struct DeepCaptureSession {
     target_id: i64,
     backend: ProxyBackend,
     launch_case: CompatibilityLaunchCase,
+    address_family: CompatibilityAddressFamily,
+    protocol: Option<CompatibilityProtocol>,
     listen_addr: String,
     listen_port: u16,
     started_at: SystemTime,
@@ -2954,6 +3121,9 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
         "launch_case": ctx.session.launch_case.as_str(),
         "proxy_backend": ctx.session.backend.name,
         "proxy_backend_version": ctx.session.backend.version,
+        "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+        "address_family": ctx.session.address_family.as_str(),
+        "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
         "calibration": ctx.calibration.map(|phase| json!({
             "phase": phase.as_str(),
             "outcome": ctx.calibration_outcome.map(|outcome| outcome.to_string()),
@@ -2975,6 +3145,9 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
         "fact_writes": ctx.fact_writes.iter().map(|write| json!({
             "key": write.key,
             "value": write.value,
+            "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+            "address_family": ctx.session.address_family.as_str(),
+            "protocol": write.protocol,
             "status": write.status,
             "reason": write.reason,
         })).collect::<Vec<_>>(),
@@ -3256,6 +3429,14 @@ fn manifest_json(
             "case": ctx.session.launch_case.as_str(),
             "scoped_proxy": true,
         },
+        "calibration": ctx.calibration.map(|phase| json!({
+            "phase": phase.as_str(),
+            "routing_strategy": CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
+            "address_family": ctx.session.address_family.as_str(),
+            "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
+            "fragcap_version": env!("CARGO_PKG_VERSION"),
+            "target_version": serde_json::Value::Null,
+        })),
         "artifacts": artifacts,
         "omissions": omissions,
         "correlation": {
@@ -3434,6 +3615,7 @@ fn application_completeness(
 struct FactWriteResult {
     key: String,
     value: String,
+    protocol: String,
     status: String,
     reason: Option<String>,
 }
@@ -3457,6 +3639,9 @@ fn insert_fact(
     fact.proxy_backend = Some(ctx.backend.name.clone());
     fact.proxy_backend_version = Some(ctx.backend.version.clone());
     fact.proxy_mode = Some("launch-scoped-env".to_string());
+    fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+    fact.address_family = Some(ctx.address_family);
+    fact.protocol = Some(ctx.protocol);
     fact.final_owner_executable = ctx
         .final_owner
         .and_then(|owner| owner.process_image.clone());
@@ -3486,6 +3671,8 @@ struct FactContext<'a> {
     controlled: bool,
     final_owner: Option<&'a Observation>,
     phase: CalibrationPhase,
+    address_family: CompatibilityAddressFamily,
+    protocol: CompatibilityProtocol,
 }
 
 fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<(), CliError> {
@@ -3886,6 +4073,12 @@ mod tests {
                 CompatibilityFact::new(1, key, value, CompatibilityEvidenceSource::UserConfirmed)
                     .unwrap();
             fact.launch_case = Some(launch_case);
+            fact.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
+            fact.proxy_backend = Some("fragcap-native".to_string());
+            fact.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
+            fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+            fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
+            fact.protocol = Some(CompatibilityProtocol::NotApplicable);
             fact.stale = stale;
             fact
         })
@@ -3895,12 +4088,18 @@ mod tests {
     #[test]
     fn compatibility_preflight_requires_the_exact_current_launch_case() {
         let selected = CompatibilityLaunchCase::SteamProtocolCold;
+        let current = current_compatibility_case(
+            selected,
+            DeepCaptureProxyFamilyArg::Ipv4,
+            CompatibilityProtocol::Https,
+        );
         let validate = |facts: &[CompatibilityFact]| {
             fragcap::deep_capture::validate_compatibility_prerequisites(
                 fragcap::deep_capture::SessionMode::TlsCalibration,
                 false,
                 facts,
                 library_launch_case(selected),
+                &current,
             )
         };
         assert!(validate(&routing_facts(selected, false)).is_ok());
@@ -3920,6 +4119,12 @@ mod tests {
         )
         .unwrap();
         latest.launch_case = Some(selected);
+        latest.fragcap_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        latest.proxy_backend = Some("fragcap-native".to_string());
+        latest.proxy_backend_version = Some(env!("CARGO_PKG_VERSION").to_string());
+        latest.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        latest.address_family = Some(CompatibilityAddressFamily::Ipv4);
+        latest.protocol = Some(CompatibilityProtocol::NotApplicable);
         superseded.push(latest);
         assert!(validate(&superseded).is_err());
     }
@@ -3939,11 +4144,17 @@ mod tests {
     #[test]
     fn compatibility_policy_accepts_exact_cold_managed_launches() {
         let validate = |launch_case| {
+            let current = current_compatibility_case(
+                launch_case,
+                DeepCaptureProxyFamilyArg::Ipv4,
+                CompatibilityProtocol::Https,
+            );
             fragcap::deep_capture::validate_compatibility_prerequisites(
                 fragcap::deep_capture::SessionMode::Capture,
                 false,
                 &routing_facts(launch_case, false),
                 library_launch_case(launch_case),
+                &current,
             )
         };
         assert!(validate(CompatibilityLaunchCase::SteamProtocolCold).is_ok());
@@ -3969,11 +4180,17 @@ mod tests {
             fragcap::deep_capture::SessionMode::ReachabilityCalibration,
             fragcap::deep_capture::SessionMode::TlsCalibration,
         ] {
+            let current = current_compatibility_case(
+                CompatibilityLaunchCase::DirectExeCold,
+                DeepCaptureProxyFamilyArg::Ipv4,
+                CompatibilityProtocol::Https,
+            );
             let result = fragcap::deep_capture::validate_compatibility_prerequisites(
                 mode,
                 false,
                 &routing_facts(CompatibilityLaunchCase::DirectExeCold, false),
                 fragcap::deep_capture::LaunchCase::DirectExeCold,
+                &current,
             );
             assert!(
                 result.is_ok(),
