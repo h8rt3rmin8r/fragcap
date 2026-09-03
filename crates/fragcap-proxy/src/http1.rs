@@ -16,6 +16,71 @@ use crate::{
     ProtocolLimits, ProtocolVersion, ProxyAuthorizationError, ProxyObservation, SessionCapability,
 };
 
+pub(crate) fn prefix_is_http_request(prefix: &[u8]) -> bool {
+    let Some(method_end) = prefix.iter().position(|byte| *byte == b' ') else {
+        return false;
+    };
+    if method_end == 0 || !prefix[..method_end].iter().copied().all(is_token_byte) {
+        return false;
+    }
+    let target = &prefix[method_end + 1..];
+    let Some(target_end) = target.iter().position(|byte| *byte == b' ') else {
+        return false;
+    };
+    if target_end == 0 {
+        return false;
+    }
+    let version = &target[target_end + 1..];
+    version.starts_with(b"HTTP/1.0\r\n") || version.starts_with(b"HTTP/1.1\r\n")
+}
+
+pub(crate) fn prefix_can_be_http_request(prefix: &[u8]) -> bool {
+    let Some(method_end) = prefix.iter().position(|byte| *byte == b' ') else {
+        return prefix.iter().copied().all(is_token_byte);
+    };
+    if method_end == 0 || !prefix[..method_end].iter().copied().all(is_token_byte) {
+        return false;
+    }
+    let target = &prefix[method_end + 1..];
+    let Some(target_end) = target.iter().position(|byte| *byte == b' ') else {
+        return target
+            .iter()
+            .all(|byte| !byte.is_ascii_control() && *byte != b' ');
+    };
+    if target_end == 0
+        || !target[..target_end]
+            .iter()
+            .all(|byte| !byte.is_ascii_control() && *byte != b' ')
+    {
+        return false;
+    }
+    let version = &target[target_end + 1..];
+    [b"HTTP/1.0\r\n".as_slice(), b"HTTP/1.1\r\n"]
+        .iter()
+        .any(|expected| expected.starts_with(version) || version.starts_with(expected))
+}
+
+fn is_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolError {
     pub code: &'static str,

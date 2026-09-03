@@ -15,9 +15,11 @@ proxy-resolved domains, with bounded byte-transparent relay and typed tunnel
 metadata. S115 adds authenticated UDP ASSOCIATE with control-channel lifetime,
 immutable client endpoint pinning, fixed family sockets, bounded exact peer
 mappings, policy-checked proxy DNS, explicit fragmentation refusal,
-metadata-only events, and complete drop accounting. Later milestones own
-generic TCP and UDP payload semantics, broader transports, launch coverage,
-richer artifacts, and final completion.
+metadata-only events, and complete drop accounting. S116 adds bounded
+directional generic TCP chunks with plaintext, opaque TLS, and intercepted TLS
+provenance while retaining the existing HTTP and refusal boundaries. Later
+milestones own generic UDP payload semantics, broader transports, launch
+coverage, richer artifacts, and final completion.
 
 This crate never configures an ambient system proxy and never reaches inside a
 target process.

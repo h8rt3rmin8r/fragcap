@@ -339,7 +339,10 @@ bounded byte-transparent relay, and typed tunnel evidence on the shared native
 listener. S115 adds authenticated, control-owned UDP ASSOCIATE with immutable
 client endpoint pinning, fixed family sockets, bounded exact peer mappings,
 policy-checked proxy DNS, explicit fragmentation refusal, and metadata-only
-loss accounting. Generic TCP and generic UDP payload semantics remain deferred.
+loss accounting. S116 adds bounded directional generic TCP and non-HTTP TLS
+chunks with explicit plaintext, opaque encrypted, or intercepted decrypted
+provenance, keeps HTTP routing intact, and records exact retention loss without
+guessing application semantics. Generic UDP payload semantics remain deferred.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

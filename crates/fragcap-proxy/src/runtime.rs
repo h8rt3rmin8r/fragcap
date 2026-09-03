@@ -7,7 +7,10 @@ use std::sync::{mpsc as std_mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant as StdInstant};
 
-use tokio::io::AsyncWriteExt;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, watch, Mutex, OwnedSemaphorePermit, Semaphore};
@@ -19,6 +22,7 @@ use crate::http1::{
 };
 use crate::tls::{
     accept_client_tls, client_server_config, connect_verified_tls, upstream_client_config_for_alpn,
+    upstream_client_config_without_alpn,
 };
 use crate::{connect_upstream, ProtocolError};
 use crate::{
@@ -423,6 +427,7 @@ async fn connection_task(
                 peer,
                 local,
                 sink: &services.application_sink,
+                body_resources: services.body_resources.clone(),
                 buffer_bytes: config.per_connection_buffer_bytes(),
             },
         )
@@ -619,13 +624,8 @@ async fn connection_task(
             client_tls.get_ref().1.protocol_version(),
             client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec),
         );
-        let client_alpn = client_tls
-            .get_ref()
-            .1
-            .alpn_protocol()
-            .unwrap_or(b"http/1.1")
-            .to_vec();
-        let selected_protocol = match crate::protocol::negotiated_protocol(Some(&client_alpn)) {
+        let client_alpn = client_tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+        let selected_protocol = match crate::protocol::negotiated_protocol(client_alpn.as_deref()) {
             Ok(protocol) => protocol,
             Err(code) => {
                 return ConnectionOutcome::Failed(HttpRun {
@@ -650,9 +650,11 @@ async fn connection_task(
                 });
             }
         };
-        let upstream_config =
-            upstream_client_config_for_alpn(&services.tls_client_config, client_alpn.clone());
-        let upstream = match crate::upstream::connect_tls_over_upstream(
+        let upstream_config = client_alpn.as_ref().map_or_else(
+            || upstream_client_config_without_alpn(&services.tls_client_config),
+            |alpn| upstream_client_config_for_alpn(&services.tls_client_config, alpn.clone()),
+        );
+        let mut upstream = match crate::upstream::connect_tls_over_upstream(
             &authority,
             upstream,
             config.protocol.upstream,
@@ -682,10 +684,16 @@ async fn connection_task(
                 });
             }
         };
-        let upstream_alpn = upstream
-            .alpn_protocol()
-            .unwrap_or_else(|| b"http/1.1".to_vec());
-        if client_alpn != upstream_alpn {
+        let upstream_alpn = upstream.alpn_protocol();
+        let alpn_matches = match client_alpn.as_deref() {
+            Some(b"h2") => upstream_alpn.as_deref() == Some(b"h2"),
+            Some(b"http/1.1") => {
+                matches!(upstream_alpn.as_deref(), Some(b"http/1.1") | None)
+            }
+            None => upstream_alpn.is_none(),
+            Some(_) => false,
+        };
+        if !alpn_matches {
             return ConnectionOutcome::Failed(HttpRun {
                 observations: vec![connect_observation(
                     &config.session_id,
@@ -789,6 +797,109 @@ async fn connection_task(
                 ConnectionOutcome::Completed(run)
             };
         }
+        let no_alpn = client_alpn.is_none();
+        let (is_http, prefix) = if no_alpn {
+            read_protocol_prefix(
+                &mut client_tls,
+                config
+                    .protocol
+                    .header_timeout
+                    .min(Duration::from_millis(25)),
+                config.protocol.max_header_bytes,
+            )
+            .await
+        } else {
+            (true, Vec::new())
+        };
+        let mut client_tls = PrefixedIo::new(prefix, client_tls);
+        if no_alpn && !is_http {
+            let generic = crate::relay_generic(
+                &mut client_tls,
+                &mut upstream,
+                crate::GenericRelayContext {
+                    limits: config.protocol_limits(),
+                    shutdown: &mut shutdown,
+                    session_id: &config.session_id,
+                    connection_id,
+                    sink: &services.application_sink,
+                    body_resources: services.body_resources.clone(),
+                    buffer_bytes: config.per_connection_buffer_bytes(),
+                    provenance: crate::GenericStreamProvenance::TlsDecrypted,
+                },
+            )
+            .await;
+            let failure = generic.error.map(|error| match error {
+                crate::GenericRelayFailure::IdleTimeout => {
+                    ProtocolError::timeout("generic-tls-idle-timeout")
+                }
+                crate::GenericRelayFailure::OperationTimeout => {
+                    ProtocolError::timeout("generic-tls-operation-timeout")
+                }
+                crate::GenericRelayFailure::Cancelled => {
+                    ProtocolError::new("generic-tls-cancelled", "generic stream cancelled")
+                }
+                crate::GenericRelayFailure::Transport(error) => {
+                    ProtocolError::new("generic-tls-transport-failed", error.to_string())
+                }
+            });
+            let report = generic.report;
+            let mut accounting = crate::ProtocolAccounting {
+                requests: 1,
+                responses: 1,
+                connect_requests: 1,
+                client_tls_completed: 1,
+                upstream_tls_completed: 1,
+                generic_streams_tls_intercepted: 1,
+                generic_stream_bytes_observed: report.observed_bytes,
+                generic_stream_bytes_retained: report.retained_bytes,
+                generic_stream_bytes_omitted: report.omitted_bytes,
+                ..Default::default()
+            };
+            accounting.timed_out = u64::from(failure.as_ref().is_some_and(|error| error.timed_out));
+            let run = HttpRun {
+                observations: vec![
+                    connect_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &first,
+                        None,
+                    ),
+                    tls_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        client_tls_facts,
+                        None,
+                    ),
+                    tls_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        upstream_tls,
+                        None,
+                    ),
+                    generic_tls_observation(
+                        &config.session_id,
+                        connection_id,
+                        peer,
+                        local,
+                        &authority,
+                        failure.as_ref().map(|error| error.code),
+                    ),
+                ],
+                accounting,
+                failure,
+            };
+            return if run.failure.is_some() {
+                ConnectionOutcome::Failed(run)
+            } else {
+                ConnectionOutcome::Completed(run)
+            };
+        }
         let inner = match read_request(&mut client_tls, config.protocol_limits()).await {
             Ok(Some(request)) if !request.is_connect() => request,
             Ok(Some(_)) => {
@@ -823,8 +934,10 @@ async fn connection_task(
         let mut first_upstream = Some(upstream);
         let limits = config.protocol.clone();
         let session_id = config.session_id.clone();
-        let tunnel_tls_client_config =
-            upstream_client_config_for_alpn(&services.tls_client_config, client_alpn);
+        let tunnel_tls_client_config = client_alpn.as_ref().map_or_else(
+            || upstream_client_config_without_alpn(&services.tls_client_config),
+            |alpn| upstream_client_config_for_alpn(&services.tls_client_config, alpn.clone()),
+        );
         let mut run = serve_http(
             client_tls,
             inner,
@@ -980,6 +1093,145 @@ async fn has_http2_preface(stream: &TcpStream, budget: Duration) -> bool {
     }
 }
 
+async fn read_protocol_prefix<S>(
+    stream: &mut S,
+    budget: Duration,
+    max_bytes: usize,
+) -> (bool, Vec<u8>)
+where
+    S: AsyncRead + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut prefix = Vec::new();
+    let mut buffer = [0_u8; 256];
+    while prefix.len() < max_bytes {
+        let remaining = max_bytes - prefix.len();
+        let read_capacity = remaining.min(buffer.len());
+        let read = match tokio::time::timeout_at(
+            deadline,
+            stream.read(&mut buffer[..read_capacity]),
+        )
+        .await
+        {
+            Ok(Ok(read)) => read,
+            Ok(Err(_)) | Err(_) => break,
+        };
+        if read == 0 {
+            break;
+        }
+        prefix.extend_from_slice(&buffer[..read]);
+        if crate::http1::prefix_is_http_request(&prefix) {
+            return (true, prefix);
+        }
+        if !crate::http1::prefix_can_be_http_request(&prefix) {
+            break;
+        }
+    }
+    (false, prefix)
+}
+
+struct PrefixedIo<S> {
+    prefix: Vec<u8>,
+    offset: usize,
+    inner: S,
+}
+
+impl<S> PrefixedIo<S> {
+    fn new(prefix: Vec<u8>, inner: S) -> Self {
+        Self {
+            prefix,
+            offset: 0,
+            inner,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for PrefixedIo<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        target: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.offset < this.prefix.len() {
+            let count = target.remaining().min(this.prefix.len() - this.offset);
+            target.put_slice(&this.prefix[this.offset..this.offset + count]);
+            this.offset += count;
+            Poll::Ready(Ok(()))
+        } else {
+            Pin::new(&mut this.inner).poll_read(context, target)
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedIo<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+    }
+}
+
+fn stream_terminal(outcome: &ConnectionOutcome) -> crate::StreamTerminal {
+    match outcome {
+        ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
+        ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
+        ConnectionOutcome::PreAuthenticationFailed(run)
+            if run
+                .failure
+                .as_ref()
+                .is_some_and(|error| error.code == "connection-cancelled") =>
+        {
+            crate::StreamTerminal::Shutdown
+        }
+        ConnectionOutcome::PreAuthenticationFailed(run)
+            if run.failure.as_ref().is_some_and(|error| error.timed_out) =>
+        {
+            crate::StreamTerminal::IdleTimeout
+        }
+        ConnectionOutcome::PreAuthenticationFailed(_) => crate::StreamTerminal::ProtocolError,
+        ConnectionOutcome::Failed(run)
+            if run.failure.as_ref().is_some_and(|error| error.timed_out) =>
+        {
+            crate::StreamTerminal::IdleTimeout
+        }
+        ConnectionOutcome::Failed(run)
+            if run.failure.as_ref().is_some_and(|error| {
+                matches!(error.code, "connection-cancelled" | "generic-tls-cancelled")
+            }) =>
+        {
+            crate::StreamTerminal::Shutdown
+        }
+        ConnectionOutcome::Failed(run)
+            if run.failure.as_ref().is_some_and(|error| {
+                matches!(
+                    error.code,
+                    "socks-forward-failed" | "generic-tls-transport-failed"
+                )
+            }) =>
+        {
+            crate::StreamTerminal::TransportError
+        }
+        ConnectionOutcome::Failed(_) => crate::StreamTerminal::ProtocolError,
+    }
+}
+
 fn connect_observation(
     session_id: &str,
     connection_id: u64,
@@ -1047,6 +1299,34 @@ fn tls_observation(
         reason: reason.map(ToOwned::to_owned),
         tls: Some(tls),
         transformations: Vec::new(),
+    }
+}
+
+fn generic_tls_observation(
+    session_id: &str,
+    connection_id: u64,
+    peer: std::net::SocketAddr,
+    local: std::net::SocketAddr,
+    authority: &crate::DestinationAuthority,
+    reason: Option<&str>,
+) -> crate::ProxyObservation {
+    crate::ProxyObservation {
+        session_id: session_id.to_string(),
+        connection_id,
+        request_ordinal: 1,
+        client_peer: peer,
+        proxy_local: local,
+        timestamp_ns: wall_clock_ns(),
+        connection_opened_at_ns: 0,
+        connection_closed_at_ns: 0,
+        protocol: "tls-protocol-unknown".to_string(),
+        method: None,
+        url: Some(authority.lookup_host()),
+        status: None,
+        inspectability: "protocol-unknown",
+        reason: reason.map(ToOwned::to_owned),
+        tls: None,
+        transformations: vec!["tls-decrypted"],
     }
 }
 
@@ -1172,17 +1452,7 @@ async fn run(
                                         opened_at_ns,
                                         closed_at_ns,
                                     );
-                                    let terminal = match &outcome {
-                                        ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
-                                        ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
-                                        ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.code == "connection-cancelled") => crate::StreamTerminal::Shutdown,
-                                        ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
-                                        ConnectionOutcome::PreAuthenticationFailed(_) => crate::StreamTerminal::ProtocolError,
-                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
-                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.code == "connection-cancelled") => crate::StreamTerminal::Shutdown,
-                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.code == "socks-forward-failed") => crate::StreamTerminal::TransportError,
-                                        ConnectionOutcome::Failed(_) => crate::StreamTerminal::ProtocolError,
-                                    };
+                                    let terminal = stream_terminal(&outcome);
                                     crate::application::emit(
                                         &terminal_sink,
                                         crate::ApplicationEvent::now(
@@ -1260,6 +1530,8 @@ fn sync_application_accounting(
     observation.protocol.application_events_dropped = accounting.dropped_events;
     observation.protocol.body_bytes_queue_dropped = accounting.body_bytes_queue_dropped;
     observation.protocol.streaming_bytes_queue_dropped = accounting.streaming_bytes_queue_dropped;
+    observation.protocol.generic_stream_bytes_queue_dropped =
+        accounting.generic_stream_bytes_queue_dropped;
 }
 
 async fn drain_tasks(
@@ -1445,6 +1717,34 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .streaming_bytes_queue_dropped
         .saturating_add(source.streaming_bytes_queue_dropped);
+    observation.protocol.generic_streams_plain = observation
+        .protocol
+        .generic_streams_plain
+        .saturating_add(source.generic_streams_plain);
+    observation.protocol.generic_streams_tls_opaque = observation
+        .protocol
+        .generic_streams_tls_opaque
+        .saturating_add(source.generic_streams_tls_opaque);
+    observation.protocol.generic_streams_tls_intercepted = observation
+        .protocol
+        .generic_streams_tls_intercepted
+        .saturating_add(source.generic_streams_tls_intercepted);
+    observation.protocol.generic_stream_bytes_observed = observation
+        .protocol
+        .generic_stream_bytes_observed
+        .saturating_add(source.generic_stream_bytes_observed);
+    observation.protocol.generic_stream_bytes_retained = observation
+        .protocol
+        .generic_stream_bytes_retained
+        .saturating_add(source.generic_stream_bytes_retained);
+    observation.protocol.generic_stream_bytes_omitted = observation
+        .protocol
+        .generic_stream_bytes_omitted
+        .saturating_add(source.generic_stream_bytes_omitted);
+    observation.protocol.generic_stream_bytes_queue_dropped = observation
+        .protocol
+        .generic_stream_bytes_queue_dropped
+        .saturating_add(source.generic_stream_bytes_queue_dropped);
     observation.protocol.application_events_accepted = observation
         .protocol
         .application_events_accepted
@@ -1717,6 +2017,25 @@ mod tests {
             accounting: Default::default(),
             failure: None,
         })
+    }
+
+    #[test]
+    fn generic_tls_failures_map_to_transport_lifecycle_terminals() {
+        let failed = |code| {
+            ConnectionOutcome::Failed(HttpRun {
+                observations: Vec::new(),
+                accounting: Default::default(),
+                failure: Some(ProtocolError::new(code, "controlled failure")),
+            })
+        };
+        assert_eq!(
+            stream_terminal(&failed("generic-tls-cancelled")),
+            crate::StreamTerminal::Shutdown
+        );
+        assert_eq!(
+            stream_terminal(&failed("generic-tls-transport-failed")),
+            crate::StreamTerminal::TransportError
+        );
     }
 
     #[test]

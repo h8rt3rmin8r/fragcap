@@ -40,7 +40,67 @@ pub enum ApplicationEventKind {
     SocksConnect(SocksConnectEvent),
     SocksTransfer(SocksTransferEvent),
     SocksUdp(SocksUdpEvent),
+    GenericStreamChunk(GenericStreamChunk),
     Error { code: &'static str },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericStreamDirection {
+    ClientToUpstream,
+    UpstreamToClient,
+}
+
+impl GenericStreamDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientToUpstream => "client-to-upstream",
+            Self::UpstreamToClient => "upstream-to-client",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericStreamProvenance {
+    TcpPlaintext,
+    TlsEncrypted,
+    TlsDecrypted,
+}
+
+impl GenericStreamProvenance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TcpPlaintext => "tcp-plaintext",
+            Self::TlsEncrypted => "tls-encrypted",
+            Self::TlsDecrypted => "tls-decrypted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericStreamOutcome {
+    Complete,
+    IntentionallyOmitted,
+    RetentionLimit,
+}
+
+impl GenericStreamOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::IntentionallyOmitted => "intentionally-omitted",
+            Self::RetentionLimit => "retention-limit",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericStreamChunk {
+    pub direction: GenericStreamDirection,
+    pub provenance: GenericStreamProvenance,
+    pub offset: u64,
+    pub observed_len: u64,
+    pub bytes: bytes::Bytes,
+    pub outcome: GenericStreamOutcome,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +211,7 @@ pub struct ApplicationSinkAccounting {
     pub dropped_events: u64,
     pub body_bytes_queue_dropped: u64,
     pub streaming_bytes_queue_dropped: u64,
+    pub generic_stream_bytes_queue_dropped: u64,
 }
 
 pub trait ApplicationEventSink: Send + Sync {
@@ -206,6 +267,9 @@ impl ApplicationEventSink for FanoutApplicationEventSink {
                 total.streaming_bytes_queue_dropped = total
                     .streaming_bytes_queue_dropped
                     .saturating_add(value.streaming_bytes_queue_dropped);
+                total.generic_stream_bytes_queue_dropped = total
+                    .generic_stream_bytes_queue_dropped
+                    .saturating_add(value.generic_stream_bytes_queue_dropped);
                 total
             })
     }

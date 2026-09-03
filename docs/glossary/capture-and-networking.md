@@ -1019,6 +1019,18 @@ it does not retain generic UDP payload evidence.
 [Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
 [Capture scope](capture-and-networking.md#capture-scope)
 
+## Generic stream evidence
+
+Bounded directional byte chunks from an approved TCP tunnel for which fragcap
+assigns no application message, field, request, response, or schema meaning.
+Each chunk records timing, connection correlation, direction, offset, observed
+and retained sizes, retention outcome, and whether the bytes are TCP plaintext,
+opaque TLS ciphertext, or proxy-decrypted TLS plaintext. Evidence retention is
+independent from byte forwarding.
+
+**See also:** [SOCKS5 CONNECT](capture-and-networking.md#socks5-connect),
+[Deep Capture session capability](capture-and-networking.md#deep-capture-session-capability)
+
 ## Proxy-owned DNS
 
 Name resolution performed by the proxy after an authenticated client supplies a

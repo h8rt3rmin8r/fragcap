@@ -485,6 +485,7 @@ fn proxy_event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::SocksConnect(_) => "proxy.socks5-connect",
         ApplicationEventKind::SocksTransfer(_) => "proxy.socks5-transfer",
         ApplicationEventKind::SocksUdp(_) => "proxy.socks5-udp",
+        ApplicationEventKind::GenericStreamChunk(_) => "proxy.generic-stream-chunk",
         ApplicationEventKind::Error { .. } => "proxy.error",
     }
 }
@@ -518,6 +519,14 @@ fn proxy_event_detail(kind: &ApplicationEventKind) -> Value {
             "payload_bytes": value.payload_bytes,
             "active_peers": value.active_peers,
             "payload_retained": false,
+        }),
+        ApplicationEventKind::GenericStreamChunk(value) => json!({
+            "direction": value.direction.as_str(),
+            "provenance": value.provenance.as_str(),
+            "offset": value.offset,
+            "observed_len": value.observed_len,
+            "retained_len": value.bytes.len(),
+            "outcome": value.outcome.as_str(),
         }),
         ApplicationEventKind::Error { code } => json!({"code": code}),
         _ => json!({"kind": format!("{kind:?}")}),

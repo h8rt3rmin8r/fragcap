@@ -72,6 +72,12 @@ pub(crate) fn upstream_client_config_for_alpn(
     Arc::new(config)
 }
 
+pub(crate) fn upstream_client_config_without_alpn(base: &Arc<ClientConfig>) -> Arc<ClientConfig> {
+    let mut config = (**base).clone();
+    config.alpn_protocols.clear();
+    Arc::new(config)
+}
+
 pub(crate) async fn accept_client_tls(
     stream: TcpStream,
     authority: &DestinationAuthority,

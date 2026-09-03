@@ -52,6 +52,7 @@ struct WriterAccount {
     body_bytes_queue_dropped: AtomicU64,
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
+    generic_stream_bytes_queue_dropped: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
     body_queue_loss_overflow_records: AtomicU64,
     body_queue_loss_overflow_observed_bytes: AtomicU64,
@@ -77,6 +78,11 @@ struct BodyDropTotals {
 
 impl WriterAccount {
     fn record_queue_drop(&self, event: &ApplicationEvent) {
+        if let ApplicationEventKind::GenericStreamChunk(value) = &event.kind {
+            self.generic_stream_bytes_queue_dropped
+                .fetch_add(value.observed_len, Ordering::Relaxed);
+            return;
+        }
         if let ApplicationEventKind::Streaming(value) = &event.kind {
             let bytes = match value {
                 fragcap_proxy::StreamingEvent::WebSocketFrame(value) => value.wire_payload.len(),
@@ -219,6 +225,10 @@ impl ApplicationEventSink for ChannelSink {
             streaming_bytes_queue_dropped: self
                 .account
                 .streaming_bytes_queue_dropped
+                .load(Ordering::Acquire),
+            generic_stream_bytes_queue_dropped: self
+                .account
+                .generic_stream_bytes_queue_dropped
                 .load(Ordering::Acquire),
         }
     }
@@ -368,6 +378,10 @@ fn writer_loop(
     let mut streaming_retained = 0_u64;
     let mut streaming_truncated = 0_u64;
     let mut streaming_by_outcome = BTreeMap::<String, u64>::new();
+    let mut generic_observed = 0_u64;
+    let mut generic_retained = 0_u64;
+    let mut generic_omitted = 0_u64;
+    let mut generic_by_outcome = BTreeMap::<String, u64>::new();
     for event in receiver {
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
@@ -390,6 +404,15 @@ fn writer_loop(
                     streaming_truncated.saturating_add(observed.saturating_sub(retained));
                 *streaming_by_outcome.entry(outcome.to_string()).or_default() += 1;
             }
+        }
+        if let ApplicationEventKind::GenericStreamChunk(value) = &event.kind {
+            generic_observed = generic_observed.saturating_add(value.observed_len);
+            generic_retained = generic_retained.saturating_add(value.bytes.len() as u64);
+            generic_omitted = generic_omitted
+                .saturating_add(value.observed_len.saturating_sub(value.bytes.len() as u64));
+            *generic_by_outcome
+                .entry(value.outcome.as_str().to_string())
+                .or_default() += 1;
         }
         sequence = sequence.saturating_add(1);
         // Packet capture and proxy observation run concurrently. Publishing a
@@ -472,6 +495,9 @@ fn writer_loop(
     let streaming_bytes_queue_dropped = account
         .streaming_bytes_queue_dropped
         .load(Ordering::Acquire);
+    let generic_stream_bytes_queue_dropped = account
+        .generic_stream_bytes_queue_dropped
+        .load(Ordering::Acquire);
     let body_retained_bytes_queue_dropped = account
         .body_retained_bytes_queue_dropped
         .load(Ordering::Acquire);
@@ -517,6 +543,7 @@ fn writer_loop(
                 "body_bytes_queue_dropped": body_bytes_queue_dropped,
                 "body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped,
                 "streaming_bytes_queue_dropped": streaming_bytes_queue_dropped,
+                "generic_stream_bytes_queue_dropped": generic_stream_bytes_queue_dropped,
                 "body_losses": body_queue_losses,
                 "body_loss_identity_overflow": {
                     "dropped_records": body_queue_loss_overflow_records,
@@ -556,6 +583,11 @@ fn writer_loop(
             ,"streaming_bytes_retained": streaming_retained
             ,"streaming_bytes_truncated": streaming_truncated
             ,"streaming_records_by_outcome": streaming_by_outcome
+            ,"generic_stream_bytes_observed": generic_observed
+            ,"generic_stream_bytes_retained": generic_retained
+            ,"generic_stream_bytes_omitted": generic_omitted
+            ,"generic_stream_bytes_queue_dropped": generic_stream_bytes_queue_dropped
+            ,"generic_stream_records_by_outcome": generic_by_outcome
             ,"correlation_connections_by_state": correlation_counts
             ,"correlation_connections_total": correlation_counts.values().sum::<u64>()
             ,"correlation_connections_unretained": unretained_connections
@@ -570,10 +602,9 @@ fn header_record(session_id: &str) -> Value {
         "session_id": session_id,
         "sequence": 0,
         "event_time_ns": 0,
-        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "tcp-metadata"],
+        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "generic-stream"],
         "non_exports": {
-            "tcp-payload": "deferred-issue-312",
-            "udp": "deferred-issues-311-and-313",
+            "udp-payload": "deferred-issue-313",
             "quic": "deferred-issue-314"
         }
     })
@@ -744,6 +775,30 @@ fn event_json(
                 "payload_retained": false,
             }),
         ),
+        ApplicationEventKind::GenericStreamChunk(value) => {
+            let mut detail = json!({
+                "direction": value.direction.as_str(),
+                "provenance": value.provenance.as_str(),
+                "offset": value.offset,
+                "observed_len": value.observed_len,
+                "retained_len": value.bytes.len(),
+                "outcome": value.outcome.as_str(),
+                "inspectability": match value.provenance {
+                    fragcap_proxy::GenericStreamProvenance::TlsEncrypted => "opaque",
+                    fragcap_proxy::GenericStreamProvenance::TcpPlaintext
+                    | fragcap_proxy::GenericStreamProvenance::TlsDecrypted => "protocol-unknown",
+                },
+            });
+            if !value.bytes.is_empty() {
+                let object = detail.as_object_mut().expect("generic detail is an object");
+                object.insert("payload_encoding".to_string(), json!("base64"));
+                object.insert(
+                    "payload".to_string(),
+                    json!(base64::engine::general_purpose::STANDARD.encode(value.bytes)),
+                );
+            }
+            ("generic.stream_chunk", detail)
+        }
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
@@ -770,6 +825,7 @@ fn event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::SocksConnect(_) => "socks5.connect",
         ApplicationEventKind::SocksTransfer(_) => "socks5.transfer",
         ApplicationEventKind::SocksUdp(_) => "socks5.udp",
+        ApplicationEventKind::GenericStreamChunk(_) => "generic.stream_chunk",
         ApplicationEventKind::Error { .. } => "application.error",
     }
 }
@@ -1118,6 +1174,11 @@ fn trailer_reconciles(records: &[Value]) -> bool {
     let mut streaming_retained = 0_u64;
     let mut streaming_truncated = 0_u64;
     let mut streaming_by_outcome = BTreeMap::<String, u64>::new();
+    let mut generic_queue_dropped = 0_u64;
+    let mut generic_observed = 0_u64;
+    let mut generic_retained = 0_u64;
+    let mut generic_omitted = 0_u64;
+    let mut generic_by_outcome = BTreeMap::<String, u64>::new();
     let mut correlation_total = 0_u64;
     let mut correlation_by_state = BTreeMap::<String, u64>::new();
     for record in records.iter().skip(1).take(records.len().saturating_sub(2)) {
@@ -1146,6 +1207,12 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             streaming_queue_dropped = streaming_queue_dropped.saturating_add(
                 record
                     .get("streaming_bytes_queue_dropped")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            generic_queue_dropped = generic_queue_dropped.saturating_add(
+                record
+                    .get("generic_stream_bytes_queue_dropped")
                     .and_then(Value::as_u64)
                     .unwrap_or(0),
             );
@@ -1199,6 +1266,24 @@ fn trailer_reconciles(records: &[Value]) -> bool {
                 .unwrap_or("unknown");
             *streaming_by_outcome.entry(outcome.to_string()).or_default() += 1;
         }
+        if kind == "generic.stream_chunk" {
+            let observed = record
+                .get("observed_len")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let retained = record
+                .get("retained_len")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            generic_observed = generic_observed.saturating_add(observed);
+            generic_retained = generic_retained.saturating_add(retained);
+            generic_omitted = generic_omitted.saturating_add(observed.saturating_sub(retained));
+            let outcome = record
+                .get("outcome")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            *generic_by_outcome.entry(outcome.to_string()).or_default() += 1;
+        }
     }
     trailer.get("writer_status").and_then(Value::as_str) == Some("complete")
         && trailer.get("writer_failures").and_then(Value::as_u64) == Some(0)
@@ -1243,6 +1328,31 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             .cloned()
             .unwrap_or_else(|| json!({}))
             == json!(streaming_by_outcome)
+        && trailer
+            .get("generic_stream_bytes_queue_dropped")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_queue_dropped
+        && trailer
+            .get("generic_stream_bytes_observed")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_observed
+        && trailer
+            .get("generic_stream_bytes_retained")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_retained
+        && trailer
+            .get("generic_stream_bytes_omitted")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_omitted
+        && trailer
+            .get("generic_stream_records_by_outcome")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            == json!(generic_by_outcome)
         && trailer
             .get("correlation_connections_total")
             .and_then(Value::as_u64)
