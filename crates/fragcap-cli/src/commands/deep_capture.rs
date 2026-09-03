@@ -3372,10 +3372,7 @@ fn manifest_json(
         true,
     );
     process_artifact["finalization"] = json!(process_trace.finalization);
-    process_artifact["completeness"] = json!(match process_trace.completeness {
-        "unavailable" => "partial",
-        value => value,
-    });
+    process_artifact["completeness"] = json!(process_trace.completeness);
     process_artifact["loss"] = if process_trace.events_lost == 0
         && process_trace.buffers_lost == 0
         && process_trace.unparseable_events == 0

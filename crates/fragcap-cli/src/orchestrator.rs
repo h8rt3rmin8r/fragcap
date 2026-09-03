@@ -986,6 +986,7 @@ fn capture_live(
     }
     let _ = packet_forward.join();
     let _ = event_forward.join();
+    drain_queued_process_evidence(&merged_rx, process_evidence);
 
     if (fire_interrupt || interrupt.load(Ordering::Relaxed)) && is_active(&session) {
         session.on_interrupt();
@@ -1130,6 +1131,18 @@ fn forward_process_events(rx: Receiver<ProcessEvent>, merged_tx: mpsc::Sender<Dr
         }
     }
     let _ = merged_tx.send(DriverMsg::WatcherLost);
+}
+
+#[cfg(all(feature = "etw", windows))]
+fn drain_queued_process_evidence(
+    rx: &Receiver<DriverMsg>,
+    process_evidence: &mut CaptureProcessEvidence,
+) {
+    while let Ok(message) = rx.try_recv() {
+        if let DriverMsg::Proc(event) = message {
+            process_evidence.observe(&event);
+        }
+    }
 }
 
 /// Everything the live status display needs across a run: which terminal
@@ -1591,9 +1604,13 @@ fn build_summary(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "etw", windows))]
+    use super::{drain_queued_process_evidence, forward_process_events, DriverMsg};
     use super::{final_exit, process_terminal_state, PlatformDispatchGate};
     #[cfg(all(feature = "etw", windows))]
-    use super::{forward_process_events, DriverMsg};
+    use fragcap::deep_capture::CaptureProcessEvidence;
+    #[cfg(all(feature = "etw", windows))]
+    use fragcap::{ProcessEvent, Timestamp};
     use fragcap::{StageId, StopReason};
     use std::sync::Arc;
 
@@ -1607,6 +1624,33 @@ mod tests {
         forward_process_events(event_rx, merged_tx);
 
         assert!(matches!(merged_rx.recv(), Ok(DriverMsg::WatcherLost)));
+    }
+
+    #[cfg(all(feature = "etw", windows))]
+    #[test]
+    fn queued_process_events_are_retained_after_the_terminal_decision() {
+        let (merged_tx, merged_rx) = std::sync::mpsc::channel();
+        merged_tx
+            .send(DriverMsg::Packet(1, Timestamp::from_nanos(1)))
+            .unwrap();
+        merged_tx
+            .send(DriverMsg::Proc(ProcessEvent::started(
+                9,
+                1,
+                "parent.exe",
+                "parent",
+                Timestamp::from_nanos(4),
+            )))
+            .unwrap();
+        merged_tx.send(DriverMsg::WatcherLost).unwrap();
+        drop(merged_tx);
+        let mut evidence = CaptureProcessEvidence::default();
+
+        drain_queued_process_evidence(&merged_rx, &mut evidence);
+
+        assert_eq!(evidence.events.len(), 1);
+        assert_eq!(evidence.events[0].pid(), 9);
+        assert_eq!(evidence.events_unretained, 0);
     }
 
     #[test]

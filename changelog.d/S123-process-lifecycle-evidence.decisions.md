@@ -9,3 +9,5 @@ ownership comes exclusively from the existing packet flow registry. Kernel
 event loss, buffer loss, ignored rundown, retention overflow, missing exits,
 and unresolved joins remain explicit. S123 adds no process handle, memory
 right, second attribution pass, dependency, or Deep Capture completion claim.
+Manifest version 2 now admits `unavailable` as an artifact completeness value
+so a produced trace with no lifecycle authority is not mislabeled as partial.

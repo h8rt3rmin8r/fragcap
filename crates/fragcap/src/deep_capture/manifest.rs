@@ -336,7 +336,15 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
             )
             || !matches!(
                 completeness,
-                Some("complete" | "partial" | "truncated" | "failed" | "omitted" | "pending")
+                Some(
+                    "complete"
+                        | "partial"
+                        | "truncated"
+                        | "failed"
+                        | "omitted"
+                        | "pending"
+                        | "unavailable"
+                )
             )
             || !matches!(finalization, Some("complete" | "incomplete" | "failed"))
         {
@@ -639,5 +647,22 @@ mod tests {
         let mut value = original;
         value["artifacts"][0]["unexpected"] = Value::Bool(true);
         assert!(ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn version_two_preserves_unavailable_artifact_completeness() {
+        let mut value: Value = serde_json::from_slice(include_bytes!(
+            "../../../../docs/schema/examples/deep-capture-manifest-v2-complete.json"
+        ))
+        .unwrap();
+        value["state"] = Value::String("partial".to_string());
+        value["artifacts"][0]["completeness"] = Value::String("unavailable".to_string());
+
+        let document = ManifestDocument::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+
+        assert_eq!(
+            document.value()["artifacts"][0]["completeness"],
+            "unavailable"
+        );
     }
 }

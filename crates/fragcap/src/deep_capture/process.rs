@@ -124,13 +124,16 @@ struct Instance {
     created: Option<Timestamp>,
     exited: Option<Timestamp>,
     snapshot: bool,
+    creation_observed: bool,
 }
 
 impl Instance {
     fn id(&self) -> String {
-        match self.created {
-            Some(at) => format!("process-{}-{}", self.pid, at.as_nanos()),
-            None => format!("snapshot-{}", self.pid),
+        match (self.snapshot, self.created) {
+            (true, Some(at)) => format!("snapshot-{}-{}", self.pid, at.as_nanos()),
+            (true, None) => format!("snapshot-{}", self.pid),
+            (false, Some(at)) => format!("process-{}-{}", self.pid, at.as_nanos()),
+            (false, None) => unreachable!("creation events always carry a timestamp"),
         }
     }
 
@@ -156,6 +159,23 @@ fn push_record(output: &mut String, records: &mut u64, mut value: Value, sequenc
 /// Reconcile and serialize process evidence without acquiring a new authority.
 pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
     let evidence = input.evidence;
+    let mut instances = evidence
+        .startup_snapshot
+        .iter()
+        .map(|record| Instance {
+            pid: record.pid,
+            parent: record.parent,
+            image: record.image.to_string(),
+            command_line: match &record.command_line {
+                CommandLine::Observed(value) => Some(value.to_string()),
+                CommandLine::Unavailable => None,
+            },
+            created: record.started.or(evidence.snapshot_at),
+            exited: None,
+            snapshot: true,
+            creation_observed: record.started.is_some(),
+        })
+        .collect::<Vec<_>>();
     let mut starts = evidence.events.clone();
     starts.sort_by_key(|event| {
         (
@@ -164,7 +184,6 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             matches!(event, ProcessEvent::Exited { .. }),
         )
     });
-    let mut instances = Vec::<Instance>::new();
     for event in &starts {
         match event {
             ProcessEvent::Started {
@@ -184,6 +203,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 created: Some(*at),
                 exited: None,
                 snapshot: false,
+                creation_observed: true,
             }),
             ProcessEvent::Exited { pid, at } => {
                 if let Some(instance) = instances
@@ -217,22 +237,6 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             if let Some(attribution) = &observation.attribution {
                 seeds.insert(attribution.pid);
             }
-        }
-    }
-    for record in &evidence.startup_snapshot {
-        if seeds.contains(&record.pid) && !instances.iter().any(|item| item.pid == record.pid) {
-            instances.push(Instance {
-                pid: record.pid,
-                parent: record.parent,
-                image: record.image.to_string(),
-                command_line: match &record.command_line {
-                    CommandLine::Observed(value) => Some(value.to_string()),
-                    CommandLine::Unavailable => None,
-                },
-                created: record.started,
-                exited: None,
-                snapshot: true,
-            });
         }
     }
     loop {
@@ -281,6 +285,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         sequence,
     );
     sequence += 1;
+    let mut timeline = Vec::<(Option<Timestamp>, u8, u32, String, Value)>::new();
 
     for instance in &instances {
         let parent_id = instance
@@ -291,14 +296,16 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 .entry("parent-instance-unavailable")
                 .or_default() += 1;
         }
-        if instance.snapshot && instance.created.is_none() {
+        if instance.snapshot && !instance.creation_observed {
             *limitations
                 .entry("snapshot-creation-unavailable")
                 .or_default() += 1;
         }
-        push_record(
-            &mut output,
-            &mut records,
+        timeline.push((
+            instance.created,
+            0,
+            instance.pid,
+            instance.id(),
             json!({
                 "type": if instance.snapshot { "process.snapshot" } else { "process.started" },
                 "session_id": input.session_id, "pid": instance.pid, "parent_pid": instance.parent,
@@ -307,9 +314,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 "at_nanos": instance.created.map(Timestamp::as_nanos),
                 "ancestry_authority": if instance.snapshot { "query-snapshot" } else { "creation-event" }
             }),
-            sequence,
-        );
-        sequence += 1;
+        ));
     }
 
     let mut stage_transitions = evidence.stage_transitions.clone();
@@ -327,17 +332,21 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         if instance.is_none() {
             *limitations.entry("stage-instance-unavailable").or_default() += 1;
         }
-        push_record(
-            &mut output,
-            &mut records,
+        timeline.push((
+            Some(transition.at),
+            if transition.kind == StageTransitionKind::Matched {
+                1
+            } else {
+                3
+            },
+            transition.pid,
+            format!("{}:{:?}", transition.role, transition.stage),
             json!({
                 "type": transition.kind.as_str(), "session_id": input.session_id, "pid": transition.pid,
                 "process_instance_id": instance.map(Instance::id), "role": transition.role,
                 "stage": transition.stage, "at_nanos": transition.at.as_nanos(), "authority": "managed-stage-binding"
             }),
-            sequence,
-        );
-        sequence += 1;
+        ));
     }
 
     let mut flow_owner_intervals = 0_u64;
@@ -396,9 +405,11 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 end = candidate.timestamp;
                 next += 1;
             }
-            push_record(
-                &mut output,
-                &mut records,
+            timeline.push((
+                Some(observation.timestamp),
+                2,
+                attribution.pid,
+                flow.id.to_string(),
                 json!({
                     "type": "socket-owner.interval", "session_id": input.session_id,
                     "flow_id": flow.id.to_string(), "from_nanos": observation.timestamp.as_nanos(),
@@ -407,9 +418,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                     "role": attribution.role.as_deref(), "stage": attribution.stage.as_ref().map(|stage| stage.as_str()),
                     "fidelity": format!("{:?}", attribution.fidelity).to_ascii_lowercase()
                 }),
-                sequence,
-            );
-            sequence += 1;
+            ));
             flow_owner_intervals += 1;
             cursor = next;
         }
@@ -425,19 +434,30 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
 
     for instance in &instances {
         if let Some(at) = instance.exited {
-            push_record(
-                &mut output,
-                &mut records,
+            timeline.push((
+                Some(at),
+                4,
+                instance.pid,
+                instance.id(),
                 json!({
                     "type": "process.exited", "session_id": input.session_id, "pid": instance.pid,
                     "process_instance_id": instance.id(), "at_nanos": at.as_nanos()
                 }),
-                sequence,
-            );
-            sequence += 1;
+            ));
         } else {
             *limitations.entry("process-exit-unobserved").or_default() += 1;
         }
+    }
+    timeline.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    for (_, _, _, _, record) in timeline {
+        push_record(&mut output, &mut records, record, sequence);
+        sequence += 1;
     }
     let watcher = evidence.watcher_report.unwrap_or_default();
     let kernel_events_lost = watcher
@@ -571,7 +591,7 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use fragcap_core::{Attribution, Fidelity, FlowId, FlowObservation};
+    use fragcap_core::{Attribution, Fidelity, FlowId, FlowObservation, ProcessRecord};
 
     #[test]
     fn pid_reuse_produces_distinct_instances_and_a_trailer() {
@@ -602,6 +622,52 @@ mod tests {
         assert!(trace.jsonl.contains("process-7-10"));
         assert!(trace.jsonl.contains("process-7-30"));
         assert!(read_process_trace(&trace.jsonl).is_some());
+    }
+
+    #[test]
+    fn startup_snapshot_lifetime_survives_later_pid_reuse() {
+        let evidence = CaptureProcessEvidence {
+            startup_snapshot: vec![ProcessRecord::new(7, 1, "original.exe")],
+            snapshot_at: Some(Timestamp::from_nanos(10)),
+            launch_pid: Some(7),
+            events: vec![
+                ProcessEvent::Exited {
+                    pid: 7,
+                    at: Timestamp::from_nanos(20),
+                },
+                ProcessEvent::started(7, 1, "reused.exe", "reused", Timestamp::from_nanos(30)),
+                ProcessEvent::Exited {
+                    pid: 7,
+                    at: Timestamp::from_nanos(40),
+                },
+            ],
+            terminal_state: "complete".to_string(),
+            ..CaptureProcessEvidence::default()
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        let records = trace
+            .jsonl
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(records.iter().any(|record| {
+            record["type"] == "process.exited"
+                && record["at_nanos"] == 20
+                && record["process_instance_id"] == "snapshot-7-10"
+        }));
+        assert!(records.iter().any(|record| {
+            record["type"] == "process.exited"
+                && record["at_nanos"] == 40
+                && record["process_instance_id"] == "process-7-30"
+        }));
     }
 
     #[test]
@@ -755,6 +821,59 @@ mod tests {
             .jsonl
         };
         assert_eq!(build(&forward), build(&reverse));
+    }
+
+    #[test]
+    fn lifecycle_sequence_is_globally_ordered_by_event_time() {
+        let evidence = CaptureProcessEvidence {
+            launch_pid: Some(1),
+            events: vec![
+                ProcessEvent::started(2, 1, "client.exe", "client", Timestamp::from_nanos(100)),
+                ProcessEvent::started(1, 0, "launcher.exe", "launcher", Timestamp::from_nanos(10)),
+                ProcessEvent::Exited {
+                    pid: 1,
+                    at: Timestamp::from_nanos(30),
+                },
+                ProcessEvent::Exited {
+                    pid: 2,
+                    at: Timestamp::from_nanos(110),
+                },
+            ],
+            stage_transitions: vec![
+                StageTransition {
+                    kind: StageTransitionKind::Matched,
+                    pid: 1,
+                    role: "launcher".to_string(),
+                    stage: Some("launcher".to_string()),
+                    at: Timestamp::from_nanos(20),
+                },
+                StageTransition {
+                    kind: StageTransitionKind::Matched,
+                    pid: 2,
+                    role: "client".to_string(),
+                    stage: Some("client".to_string()),
+                    at: Timestamp::from_nanos(105),
+                },
+            ],
+            terminal_state: "complete".to_string(),
+            ..CaptureProcessEvidence::default()
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "publisher",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        let instants = trace
+            .jsonl
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter_map(|record| record["at_nanos"].as_i64())
+            .collect::<Vec<_>>();
+        assert!(instants.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     #[test]

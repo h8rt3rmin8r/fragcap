@@ -75,3 +75,6 @@ Required fields:
 - `finalization`: `complete`
 
 A reader treats a missing trailer, duplicate trailer, malformed line, or record after the trailer as not orderly finalized.
+
+Manifest version 2 preserves the trailer's `unavailable` completeness value
+verbatim for a produced trace with no lifecycle authority.
