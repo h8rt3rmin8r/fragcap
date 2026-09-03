@@ -4416,6 +4416,11 @@ terminal journals and retained artifacts are healthy history. Scan bounds,
 malformed records, unreadable paths, unsupported versions, and insufficient
 ownership remain explicit limitations and block only Deep Capture.
 
+Each native check identifier is derived from the retained session and resource
+identity, never from its position in the inventory. Adding or removing another
+finding therefore cannot rename an unresolved resource in machine output or in
+a verdict's `blocking_checks` list.
+
 An active session is proven by an opaque generation-specific synchronization
 lease held for the session adapter lifetime. The recorded PID is diagnostic and
 cannot establish liveness by itself, so PID reuse cannot transfer ownership.
@@ -4433,6 +4438,13 @@ normalized SHA-1 thumbprint recorded by the session; subject, issuer, and
 friendly names are never ownership evidence. Installer, archive, offline smoke,
 upgrade, repair, uninstall, artifact-content, and artifact-size validation
 remain packaging work under issue #329.
+
+A legacy owner record has no generation lease and cannot prove liveness from its
+PID. A complete terminal journal is safe to retire automatically. Any other
+legacy record blocks startup until the operator explicitly confirms Doctor's
+exact recovery action. That action replays only the recorded journal plan and
+retires only the exact owner record; it does not broaden legacy evidence into
+authority over unrelated files or processes.
 
 Compatibility calibration progress names confirmation, proxy readiness, managed launch, observation, fact persistence, finalization, and cleanup. Human output and structured events carry the same phase and terminal outcome without requiring a machine consumer to parse prose. Every refusal names the missing precondition and states that no calibration effects were applied.
 
@@ -4747,7 +4759,9 @@ inventory projects the existing resource journal, manifest, trust, artifact,
 and session-owner authorities into explicit health and recovery findings. A
 generation-specific session lease replaces PID-only ownership, separate Capture
 and Deep Capture verdicts derive from one report, and confirmed repair reuses
-only the exact journal recovery plan. Packaging validation remains #329, and
+only the exact journal recovery plan. Legacy owners require terminal journal
+proof or explicit repair confirmation, and native check identifiers derive from
+session and resource identity. Packaging validation remains #329, and
 Deep Capture remains incomplete until #334.
 
 The required dependency direction is:

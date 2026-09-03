@@ -17,6 +17,12 @@ creation time would require a process handle or weaker snapshot inference. A
 marker file survives crashes and cannot prove liveness. An unlocked token file
 has the same problem.
 
+Legacy owner records have no generation lease. A complete terminal journal is
+safe to retire automatically because it proves there is no live obligation.
+Every other legacy record remains unproven at startup and becomes actionable
+only through Doctor's existing explicit confirmation gate. Confirmed repair
+replays only its exact journal plan and retires only its exact owner record.
+
 ## R2: Inventory authority and bounds
 
 **Decision**: Use one read-only scanner with explicit depth, entry, session,
@@ -79,9 +85,11 @@ single global verdict hides which workflow is usable.
 
 ## R6: Repair authority
 
-**Decision**: Offers contain the exact existing journal recovery action and are
-executed only after the current confirmation gate by the existing recovery
-implementation. Re-run the inventory afterward.
+**Decision**: Offers contain the exact existing journal recovery action or
+exact legacy owner-record retirement and are executed only after the current
+confirmation gate by the existing recovery implementation. Re-run the
+inventory afterward. Native check identity is derived from session and
+resource identity rather than its changing list position.
 
 **Rationale**: Doctor must not invent a cleanup policy. Exact actions already
 exist for trust and process-scoped obligations, while ambiguous artifact and

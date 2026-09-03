@@ -573,9 +573,11 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
     inventory
         .findings
         .iter()
-        .enumerate()
-        .map(|(index, finding)| {
-            let name = format!("native resource {:03}", index + 1);
+        .map(|finding| {
+            let name = format!(
+                "native resource {}/{}",
+                finding.session_id, finding.resource_id
+            );
             let detail = format!(
                 "session={} resource={} kind={} state={} health={} authority={}: {}",
                 finding.session_id,
@@ -592,6 +594,7 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                 }
                 super::residue::ResidueHealth::Stale
                 | super::residue::ResidueHealth::CleanupFailed
+                | super::residue::ResidueHealth::Unknown
                     if finding.recoverable =>
                 {
                     Check::fail_action(
@@ -1126,13 +1129,45 @@ mod tests {
         let checks = deep_capture(&inputs);
         let check = checks
             .iter()
-            .find(|check| check.name == "native resource 001")
+            .find(|check| check.name == "native resource old/proxy")
             .unwrap();
         assert_eq!(check.status, Status::Fail);
         assert_eq!(
             check.action.as_ref().map(|action| action.kind),
             Some(ActionKind::CleanupDeepCapture)
         );
+    }
+
+    #[test]
+    fn native_resource_check_identity_does_not_depend_on_list_position() {
+        let finding =
+            |session_id: &str, resource_id: &str| crate::doctor::residue::ResourceFinding {
+                session_id: session_id.to_string(),
+                bundle: std::path::PathBuf::from(format!("C:\\sessions\\{session_id}")),
+                resource_id: resource_id.to_string(),
+                kind: "proxy".to_string(),
+                state: "applied".to_string(),
+                health: crate::doctor::residue::ResidueHealth::Stale,
+                recoverable: true,
+                ownership_authority: "resource-journal".to_string(),
+                detail: "exact journal recovery action is available".to_string(),
+            };
+        let mut inventory = crate::doctor::residue::NativeResidueInventory::default();
+        inventory.findings.push(finding("stable", "proxy"));
+        let before = native_residue_checks(&inventory)
+            .into_iter()
+            .next()
+            .expect("check")
+            .name;
+        inventory.findings.insert(0, finding("earlier", "route"));
+        let after = native_residue_checks(&inventory)
+            .into_iter()
+            .find(|check| check.name.contains("stable/proxy"))
+            .expect("stable check")
+            .name;
+
+        assert_eq!(before, "native resource stable/proxy");
+        assert_eq!(after, before);
     }
 
     #[test]

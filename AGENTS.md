@@ -519,7 +519,10 @@ session-generation synchronization lease replaces PID-only liveness, so reuse
 cannot transfer ownership and no process handle is introduced. Human and JSON
 reports derive separate Capture and Deep Capture verdicts from one check set.
 Confirmed repair reuses only the existing exact journal recovery plan and no
-longer deletes recognized historical sidecars by filename. S124 adds one
+longer deletes recognized historical sidecars by filename. Legacy owners
+require terminal journal proof or explicit repair confirmation, and native
+check identifiers derive from session and resource identity rather than list
+position. S124 adds one
 already-resolved `windows-sys` feature but no dependency or lockfile package;
 packaging validation remains #329 and Deep Capture remains incomplete until
 #334.

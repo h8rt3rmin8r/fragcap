@@ -89,6 +89,13 @@ pub(crate) struct SessionOwner {
     pub(crate) registry_path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OwnerActivity {
+    Active,
+    Inactive,
+    LegacyUnproven,
+}
+
 /// A generation-specific owner proof retained for the exact session lifetime.
 #[derive(Debug)]
 pub(crate) struct SessionOwnerLease {
@@ -282,7 +289,19 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
     for owner in &owners {
         match owner_is_active(owner) {
             Ok(active) => {
-                owner_states.insert(owner.bundle.clone(), active);
+                owner_states.insert(
+                    owner.bundle.clone(),
+                    if active {
+                        OwnerActivity::Active
+                    } else {
+                        OwnerActivity::Inactive
+                    },
+                );
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::Unsupported && owner.lease_id.is_none() =>
+            {
+                owner_states.insert(owner.bundle.clone(), OwnerActivity::LegacyUnproven);
             }
             Err(error) => inventory.limitations.push(format!(
                 "owner-lease-undetermined for {}: {error}",
@@ -316,7 +335,10 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
     for journal in journals {
         let bundle = journal.parent().unwrap_or(root).to_path_buf();
         journal_bundles.insert(bundle.clone());
-        let active = owner_states.get(&bundle).copied().unwrap_or(false);
+        let owner_activity = owner_states
+            .get(&bundle)
+            .copied()
+            .unwrap_or(OwnerActivity::Inactive);
         match fragcap::deep_capture::read_resource_journal(&journal) {
             Ok(prefix) if prefix.status == JournalStatus::UnknownVersion => {
                 push_finding(
@@ -343,8 +365,10 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                         .any(|action| action.resource_id == transition.resource_id);
                     let health = if transition.state.terminal() {
                         ResidueHealth::Healthy
-                    } else if active {
+                    } else if owner_activity == OwnerActivity::Active {
                         ResidueHealth::Active
+                    } else if owner_activity == OwnerActivity::LegacyUnproven {
+                        ResidueHealth::Unknown
                     } else if matches!(
                         transition.state,
                         ResourceState::Failed | ResourceState::TimedOut
@@ -364,7 +388,12 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                             health,
                             recoverable,
                             ownership_authority: "resource-journal".to_string(),
-                            detail: if recoverable {
+                            detail: if recoverable
+                                && owner_activity == OwnerActivity::LegacyUnproven
+                            {
+                                "exact journal recovery requires explicit operator confirmation because legacy ownership has no generation lease"
+                                    .to_string()
+                            } else if recoverable {
                                 "exact journal recovery action is available".to_string()
                             } else if transition.state.terminal() {
                                 "resource reached a terminal journal state".to_string()
@@ -384,12 +413,14 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                             resource_id: "journal".to_string(),
                             kind: "journal".to_string(),
                             state: "crash-prefix".to_string(),
-                            health: if active {
+                            health: if owner_activity == OwnerActivity::Active {
                                 ResidueHealth::Active
+                            } else if owner_activity == OwnerActivity::LegacyUnproven {
+                                ResidueHealth::Unknown
                             } else {
                                 ResidueHealth::Stale
                             },
-                            recoverable: false,
+                            recoverable: owner_activity == OwnerActivity::LegacyUnproven,
                             ownership_authority: "resource-journal".to_string(),
                             detail: "journal has no resource transition to recover".to_string(),
                         },
@@ -427,13 +458,16 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
             .max_by_key(|bundle| bundle.components().count())
             .cloned()
             .unwrap_or_else(|| path.parent().unwrap_or(root).to_path_buf());
-        let active = owner_states.get(&bundle).copied().unwrap_or(false);
+        let owner_activity = owner_states
+            .get(&bundle)
+            .copied()
+            .unwrap_or(OwnerActivity::Inactive);
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("unknown");
         let has_journal = journal_bundles.contains(&bundle);
-        let (health, state, detail) = if active {
+        let (health, state, detail) = if owner_activity == OwnerActivity::Active {
             (
                 ResidueHealth::Active,
                 "present",
@@ -444,6 +478,12 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                 ResidueHealth::Healthy,
                 "complete",
                 "completed manifest is retained historical evidence",
+            )
+        } else if owner_activity == OwnerActivity::LegacyUnproven {
+            (
+                ResidueHealth::Unknown,
+                "legacy-owner-unproven",
+                "artifact belongs to a legacy owner with no generation lease",
             )
         } else if has_journal {
             (
@@ -490,7 +530,10 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
     }
     for owner in owners {
         if !journal_bundles.contains(&owner.bundle) {
-            let active = owner_states.get(&owner.bundle).copied().unwrap_or(false);
+            let owner_activity = owner_states
+                .get(&owner.bundle)
+                .copied()
+                .unwrap_or(OwnerActivity::Inactive);
             push_finding(
                 &mut inventory,
                 ResourceFinding {
@@ -503,19 +546,31 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
                     bundle: owner.bundle.clone(),
                     resource_id: "session-owner".to_string(),
                     kind: "owner".to_string(),
-                    state: if active { "held" } else { "abandoned" }.to_string(),
-                    health: if active {
-                        ResidueHealth::Active
-                    } else {
-                        ResidueHealth::Stale
+                    state: match owner_activity {
+                        OwnerActivity::Active => "held",
+                        OwnerActivity::Inactive => "abandoned",
+                        OwnerActivity::LegacyUnproven => "legacy-unproven",
+                    }
+                    .to_string(),
+                    health: match owner_activity {
+                        OwnerActivity::Active => ResidueHealth::Active,
+                        OwnerActivity::Inactive => ResidueHealth::Stale,
+                        OwnerActivity::LegacyUnproven => ResidueHealth::Unknown,
                     },
-                    recoverable: !active,
+                    recoverable: owner_activity != OwnerActivity::Active,
                     ownership_authority: "session-owner-record".to_string(),
-                    detail: if active {
-                        "active session owner has not created its resource journal yet".to_string()
-                    } else {
-                        "abandoned owner registration can be retired exactly".to_string()
-                    },
+                    detail: match owner_activity {
+                        OwnerActivity::Active => {
+                            "active session owner has not created its resource journal yet"
+                        }
+                        OwnerActivity::Inactive => {
+                            "abandoned owner registration can be retired exactly"
+                        }
+                        OwnerActivity::LegacyUnproven => {
+                            "legacy owner registration requires explicit operator confirmation"
+                        }
+                    }
+                    .to_string(),
                 },
             );
         }

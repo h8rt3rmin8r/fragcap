@@ -13,7 +13,8 @@ bundle includes packet capture.
 
 - `mode`: stable mode identifier.
 - `ready`: true only when every applicable check is non-failing.
-- `blocking_checks`: ordered stable check identifiers.
+- `blocking_checks`: ordered stable check identifiers. Native identifiers use
+  session and resource identity rather than an ordinal.
 
 ## SessionOwnerRecord
 
@@ -45,7 +46,8 @@ never does.
 - `session_id`, `bundle`, resource identity, kind, and latest lifecycle state.
 - `ownership`: lease, journal, manifest, or insufficient.
 - `health`: absent, healthy, active, stale, cleanup-failed, unknown, unsupported.
-- `recovery`: none, exact action, or stable refusal.
+- `recovery`: none, exact action, explicit-confirmation legacy action, or stable
+  refusal.
 - `detail`: bounded non-secret operator explanation.
 
 ## InventoryLimitation

@@ -508,7 +508,7 @@ fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
     let keylog = report
         .checks
         .iter()
-        .find(|check| check.section == "Deep Capture" && check.name == "native resource 001")
+        .find(|check| check.section == "Deep Capture" && check.name == "native resource s1/trust")
         .unwrap();
     assert_eq!(keylog.status, Status::Fail);
     assert_eq!(
@@ -519,7 +519,7 @@ fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
     assert!(
         json.lines().any(|line| {
             line.contains("\"section\":\"Deep Capture\"")
-                && line.contains("\"name\":\"native resource 001\"")
+                && line.contains("\"name\":\"native resource s1/trust\"")
                 && line.contains("\"status\":\"fail\"")
         }),
         "Deep Capture residue is present in machine output: {json}"

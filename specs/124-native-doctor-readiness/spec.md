@@ -100,6 +100,7 @@ An operator can request Doctor fixes and receive one confirmation-gated action o
 - **FR-020**: Tests MUST cover every readiness combination and residue state without a game, account, Internet service, elevation, capture driver, real trust mutation, or unrelated process cleanup.
 - **FR-021**: Documentation MUST describe the native Doctor authority and the runtime-versus-packaging boundary without declaring Deep Capture complete before issue #334.
 - **FR-022**: S124 MUST NOT claim installer, archive, offline release smoke, artifact-size, upgrade, repair, uninstall, supply-chain, Windows integration, or final completion work owned by issues #323 through #334.
+- **FR-023**: A legacy owner record without a generation lease MUST remain unproven during startup. Terminal journal evidence MAY retire it automatically; otherwise only an explicit confirmed Doctor repair MAY replay its exact journal plan and retire its exact owner record.
 
 ### Key Entities
 
@@ -116,8 +117,8 @@ An operator can request Doctor fixes and receive one confirmation-gated action o
 
 - **SC-001**: One hundred percent of readiness-matrix cases produce independent Capture and Deep Capture verdicts that agree between human and machine-readable output.
 - **SC-002**: One hundred percent of controlled journal resource states map to exactly one healthy, active, stale, cleanup-failed, unknown, or unsupported finding with no false clean result.
-- **SC-003**: Zero active, ambiguous, out-of-root, or unrelated resources are offered for cleanup across the controlled recovery matrix.
-- **SC-004**: One hundred percent of exact recoverable resource actions originate from the shared journal or manifest authority and retain their performed, refused, skipped, or failed outcome.
+- **SC-003**: Zero generation-proven active, out-of-root, or unrelated resources are offered for cleanup across the controlled recovery matrix. Legacy unproven ownership requires an explicit confirmation before exact recovery.
+- **SC-004**: One hundred percent of exact recoverable resource actions originate from the shared journal or session-owner authority and retain their performed, refused, skipped, or failed outcome.
 - **SC-005**: Every injected scan error and finite-bound overflow produces a stable visible limitation, and none is reported as absence.
 - **SC-006**: Human output remains within the existing 80-column contract and JSON remains one valid record per line with stable identities.
 - **SC-007**: A read-only Doctor run causes zero filesystem, trust-store, routing, listener, or process-control mutations.

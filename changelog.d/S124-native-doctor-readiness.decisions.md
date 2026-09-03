@@ -9,3 +9,9 @@ manifests are not deletion authority, so healthy retained evidence remains.
 Wrong-store, mismatched, malformed, active, and ambiguous state stays visible
 instead of triggering broad cleanup. Packaging and archive validation remain
 issue #329.
+
+Legacy owner records have no generation lease. A complete terminal journal is
+retired automatically; any other legacy record remains unproven at startup and
+requires confirmed Doctor repair before its exact journal plan and exact owner
+record can be retired. Native check names use session and resource identity,
+not list position.
