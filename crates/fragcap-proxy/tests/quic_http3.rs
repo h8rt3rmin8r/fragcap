@@ -246,6 +246,8 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
             handlers.spawn(async move {
                 let (request, mut stream) = resolver.resolve_request().await.unwrap();
                 assert!(request.uri().path().starts_with("/through-proxy/"));
+                let early_response = request.uri().path().ends_with("/one");
+                let mut response_sent = false;
                 let mut body = Vec::new();
                 while let Some(mut data) = stream.recv_data().await.unwrap() {
                     while data.has_remaining() {
@@ -253,13 +255,22 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
                         let length = data.chunk().len();
                         data.advance(length);
                     }
+                    if early_response && !response_sent {
+                        stream
+                            .send_response(Response::builder().status(202).body(()).unwrap())
+                            .await
+                            .unwrap();
+                        response_sent = true;
+                    }
                 }
                 let request_trailers = stream.recv_trailers().await.unwrap().unwrap();
                 assert_eq!(request_trailers["x-request-proof"], "observed");
-                stream
-                    .send_response(Response::builder().status(202).body(()).unwrap())
-                    .await
-                    .unwrap();
+                if !response_sent {
+                    stream
+                        .send_response(Response::builder().status(202).body(()).unwrap())
+                        .await
+                        .unwrap();
+                }
                 stream.send_data(Bytes::from(body)).await.unwrap();
                 let mut response_trailers = HeaderMap::new();
                 response_trailers.insert("x-response-proof", HeaderValue::from_static("observed"));
@@ -361,15 +372,29 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
                 )
                 .await
                 .unwrap();
+            let split = payload.len() / 2;
             stream
-                .send_data(Bytes::copy_from_slice(payload.as_bytes()))
+                .send_data(Bytes::copy_from_slice(&payload.as_bytes()[..split]))
+                .await
+                .unwrap();
+            let response = if path == "one" {
+                Some(stream.recv_response().await.unwrap())
+            } else {
+                None
+            };
+            stream
+                .send_data(Bytes::copy_from_slice(&payload.as_bytes()[split..]))
                 .await
                 .unwrap();
             let mut request_trailers = HeaderMap::new();
             request_trailers.insert("x-request-proof", HeaderValue::from_static("observed"));
             stream.send_trailers(request_trailers).await.unwrap();
             stream.finish().await.unwrap();
-            assert_eq!(stream.recv_response().await.unwrap().status(), 202);
+            let response = match response {
+                Some(response) => response,
+                None => stream.recv_response().await.unwrap(),
+            };
+            assert_eq!(response.status(), 202);
             let mut echoed = Vec::new();
             while let Some(mut data) = stream.recv_data().await.unwrap() {
                 while data.has_remaining() {
@@ -396,8 +421,13 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
             .unwrap(),
         Bytes::from_static(b"scoped-datagram")
     );
-    connection.close(0_u32.into(), b"done");
-    driver_task.abort();
+    drop(sender);
+    let close = tokio::time::timeout(Duration::from_secs(2), driver_task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(close.is_h3_no_error());
+    client.wait_idle().await;
     stop.store(true, Ordering::Relaxed);
     shuttle_task.join().unwrap();
     drop(control);
@@ -439,11 +469,16 @@ fn scoped_plan_refuses_endpoint_migration_and_origin_changes() {
     let origin = "127.0.0.1:4433".parse().unwrap();
     let plan = QuicInspectionPlan::new("session", 7, client, origin, &authority, true).unwrap();
     assert_eq!(
-        plan.admits("127.0.0.1:50001".parse().unwrap(), origin),
+        plan.admits("127.0.0.1:50001".parse().unwrap(), origin, &authority),
         Err(QuicRefusalCode::MigrationRefused)
     );
     assert_eq!(
-        plan.admits(client, "127.0.0.1:4434".parse().unwrap()),
+        plan.admits(client, "127.0.0.1:4434".parse().unwrap(), &authority),
+        Err(QuicRefusalCode::OriginChanged)
+    );
+    let alias = DestinationAuthority::parse("127.0.0.1:443").unwrap();
+    assert_eq!(
+        plan.admits(client, origin, &alias),
         Err(QuicRefusalCode::OriginChanged)
     );
 }

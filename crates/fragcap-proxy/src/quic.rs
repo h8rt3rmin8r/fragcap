@@ -167,8 +167,9 @@ impl QuicAssociationGateway {
         &self,
         client: SocketAddr,
         origin: SocketAddr,
+        authority: &DestinationAuthority,
     ) -> Result<(), QuicRefusalCode> {
-        self.plan.admits(client, origin)
+        self.plan.admits(client, origin, authority)
     }
 
     pub(crate) async fn send(&self, payload: &[u8]) -> Result<usize, QuicGatewayIoError> {
@@ -360,6 +361,7 @@ async fn proxy_http3(
         let resolver = match server.accept().await {
             Ok(Some(value)) => value,
             Ok(None) => break,
+            Err(error) if error.is_h3_no_error() => break,
             Err(_) => return Err(QuicRefusalCode::Http3ProtocolFailed),
         };
         if admitted >= limits.max_requests_per_connection {
@@ -372,7 +374,7 @@ async fn proxy_http3(
         let stream_sink = sink.clone();
         requests.spawn(async move {
             let started_at = Instant::now();
-            let (request, mut client_stream) = resolver
+            let (request, client_stream) = resolver
                 .resolve_request()
                 .await
                 .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
@@ -398,141 +400,157 @@ async fn proxy_http3(
                 )
                 .await,
             );
-            let mut origin_stream = sender
-                .send_request(request)
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            while let Some(mut data) = client_stream
-                .recv_data()
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
-            {
-                let bytes = copy_buf(&mut data);
-                let sent = origin_stream.send_data(bytes.clone()).await;
-                let event = stream_observer.lock().await.stream(
-                    QuicDirection::ClientToUpstream,
-                    stream_id,
-                    "http3-request",
-                    &bytes,
-                    &stream_limits,
-                    if sent.is_ok() {
-                        "forwarded"
-                    } else {
-                        "transport-failed"
-                    },
-                );
-                emit_stream_observed(&stream_sink, event);
-                sent.map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            }
-            if let Some(trailers) = client_stream
-                .recv_trailers()
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
-            {
-                emit_observed(
-                    &stream_sink,
-                    trailer_event(&stream_observer, stream_id, &trailers).await,
-                );
-                origin_stream
-                    .send_trailers(trailers)
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-                origin_stream
-                    .finish()
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            } else {
-                origin_stream
-                    .finish()
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            }
-            let request_sent_at = Instant::now();
-            let response = origin_stream
-                .recv_response()
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            let response_event = {
-                let mut observer = stream_observer.lock().await;
-                observer.http3_metadata();
-                ApplicationEvent::now(
-                    observer.plan.session_id(),
-                    observer.plan.association_id(),
-                    Some(stream_id),
-                    Some(ProtocolVersion::Http3),
-                    ApplicationEventKind::Metadata(response_metadata(&response)),
-                )
+            let origin_stream = match sender.send_request(request).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let terminal = http3_stream_terminal(error);
+                    emit_http3_terminal(&stream_observer, &stream_sink, stream_id, terminal).await;
+                    return Err(QuicRefusalCode::Http3ProtocolFailed);
+                }
             };
-            emit_observed(&stream_sink, response_event);
-            let response_head_at = Instant::now();
-            client_stream
-                .send_response(response)
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            while let Some(mut data) = origin_stream
-                .recv_data()
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
-            {
-                let bytes = copy_buf(&mut data);
-                let sent = client_stream.send_data(bytes.clone()).await;
-                let event = stream_observer.lock().await.stream(
-                    QuicDirection::UpstreamToClient,
-                    stream_id,
-                    "http3-response",
-                    &bytes,
-                    &stream_limits,
-                    if sent.is_ok() {
-                        "forwarded"
-                    } else {
-                        "transport-failed"
-                    },
-                );
-                emit_stream_observed(&stream_sink, event);
-                sent.map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            }
-            if let Some(trailers) = origin_stream
-                .recv_trailers()
-                .await
-                .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
-            {
+            let (mut client_send, mut client_recv) = client_stream.split();
+            let (mut origin_send, mut origin_recv) = origin_stream.split();
+
+            let request_observer = Arc::clone(&stream_observer);
+            let request_sink = stream_sink.clone();
+            let request_limits = stream_limits.clone();
+            let request_forward = async move {
+                while let Some(mut data) = client_recv
+                    .recv_data()
+                    .await
+                    .map_err(http3_stream_terminal)?
+                {
+                    let bytes = copy_buf(&mut data);
+                    let sent = origin_send.send_data(bytes.clone()).await;
+                    let event = request_observer.lock().await.stream(
+                        QuicDirection::ClientToUpstream,
+                        stream_id,
+                        "http3-request",
+                        &bytes,
+                        &request_limits,
+                        if sent.is_ok() {
+                            "forwarded"
+                        } else {
+                            "transport-failed"
+                        },
+                    );
+                    emit_stream_observed(&request_sink, event);
+                    sent.map_err(http3_stream_terminal)?;
+                }
+                if let Some(trailers) = client_recv
+                    .recv_trailers()
+                    .await
+                    .map_err(http3_stream_terminal)?
+                {
+                    emit_observed(
+                        &request_sink,
+                        trailer_event(&request_observer, stream_id, &trailers).await,
+                    );
+                    origin_send
+                        .send_trailers(trailers)
+                        .await
+                        .map_err(http3_stream_terminal)?;
+                }
+                origin_send.finish().await.map_err(http3_stream_terminal)?;
+                Ok::<Instant, crate::StreamTerminal>(Instant::now())
+            };
+
+            let response_observer = Arc::clone(&stream_observer);
+            let response_sink = stream_sink.clone();
+            let response_limits = stream_limits.clone();
+            let response_forward = async move {
+                let response = origin_recv
+                    .recv_response()
+                    .await
+                    .map_err(http3_stream_terminal)?;
+                let response_event = {
+                    let mut observer = response_observer.lock().await;
+                    observer.http3_metadata();
+                    ApplicationEvent::now(
+                        observer.plan.session_id(),
+                        observer.plan.association_id(),
+                        Some(stream_id),
+                        Some(ProtocolVersion::Http3),
+                        ApplicationEventKind::Metadata(response_metadata(&response)),
+                    )
+                };
+                emit_observed(&response_sink, response_event);
+                let response_head_at = Instant::now();
+                client_send
+                    .send_response(response)
+                    .await
+                    .map_err(http3_stream_terminal)?;
+                while let Some(mut data) = origin_recv
+                    .recv_data()
+                    .await
+                    .map_err(http3_stream_terminal)?
+                {
+                    let bytes = copy_buf(&mut data);
+                    let sent = client_send.send_data(bytes.clone()).await;
+                    let event = response_observer.lock().await.stream(
+                        QuicDirection::UpstreamToClient,
+                        stream_id,
+                        "http3-response",
+                        &bytes,
+                        &response_limits,
+                        if sent.is_ok() {
+                            "forwarded"
+                        } else {
+                            "transport-failed"
+                        },
+                    );
+                    emit_stream_observed(&response_sink, event);
+                    sent.map_err(http3_stream_terminal)?;
+                }
+                if let Some(trailers) = origin_recv
+                    .recv_trailers()
+                    .await
+                    .map_err(http3_stream_terminal)?
+                {
+                    emit_observed(
+                        &response_sink,
+                        trailer_event(&response_observer, stream_id, &trailers).await,
+                    );
+                    client_send
+                        .send_trailers(trailers)
+                        .await
+                        .map_err(http3_stream_terminal)?;
+                }
+                client_send.finish().await.map_err(http3_stream_terminal)?;
+                Ok::<(Instant, Instant), crate::StreamTerminal>((response_head_at, Instant::now()))
+            };
+
+            let (request_sent_at, (response_head_at, completed_at)) =
+                match tokio::try_join!(request_forward, response_forward) {
+                    Ok(value) => value,
+                    Err(terminal) => {
+                        emit_http3_terminal(&stream_observer, &stream_sink, stream_id, terminal)
+                            .await;
+                        return Err(QuicRefusalCode::Http3ProtocolFailed);
+                    }
+                };
+            stream_observer.lock().await.http3_complete();
+            if response_head_at >= request_sent_at {
                 emit_observed(
                     &stream_sink,
-                    trailer_event(&stream_observer, stream_id, &trailers).await,
+                    http3_event(
+                        &stream_observer,
+                        stream_id,
+                        ApplicationEventKind::HttpTiming(HttpTiming {
+                            send_ns: duration_ns(
+                                request_sent_at.saturating_duration_since(started_at),
+                            ),
+                            wait_ns: duration_ns(
+                                response_head_at.saturating_duration_since(request_sent_at),
+                            ),
+                            receive_ns: duration_ns(
+                                completed_at.saturating_duration_since(response_head_at),
+                            ),
+                        }),
+                    )
+                    .await,
                 );
-                client_stream
-                    .send_trailers(trailers)
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-                client_stream
-                    .finish()
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
-            } else {
-                client_stream
-                    .finish()
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
             }
-            stream_observer.lock().await.http3_complete();
-            let completed_at = Instant::now();
-            emit_observed(
-                &stream_sink,
-                http3_event(
-                    &stream_observer,
-                    stream_id,
-                    ApplicationEventKind::HttpTiming(HttpTiming {
-                        send_ns: duration_ns(request_sent_at.saturating_duration_since(started_at)),
-                        wait_ns: duration_ns(
-                            response_head_at.saturating_duration_since(request_sent_at),
-                        ),
-                        receive_ns: duration_ns(
-                            completed_at.saturating_duration_since(response_head_at),
-                        ),
-                    }),
-                )
-                .await,
-            );
             emit_observed(
                 &stream_sink,
                 http3_event(
@@ -567,6 +585,31 @@ async fn http3_event(
         Some(ProtocolVersion::Http3),
         kind,
     )
+}
+
+fn http3_stream_terminal(error: h3::error::StreamError) -> crate::StreamTerminal {
+    match error {
+        h3::error::StreamError::RemoteTerminate { .. } => crate::StreamTerminal::Reset,
+        _ => crate::StreamTerminal::ProtocolError,
+    }
+}
+
+async fn emit_http3_terminal(
+    observer: &Arc<tokio::sync::Mutex<QuicEvidenceObserver>>,
+    sink: &application::SharedEventSink,
+    stream_id: u64,
+    terminal: crate::StreamTerminal,
+) {
+    observer.lock().await.http3_terminal(terminal);
+    emit_observed(
+        sink,
+        http3_event(
+            observer,
+            stream_id,
+            ApplicationEventKind::HttpStreamTerminal(terminal),
+        )
+        .await,
+    );
 }
 
 async fn trailer_event(
@@ -646,12 +689,26 @@ fn spawn_datagram_pump(
                 emit_observed(&sink, event);
                 break;
             }
-            let event = observer
-                .lock()
-                .await
-                .datagram(direction, &bytes, &limits, "forwarded");
+            let sent = destination.send_datagram_wait(bytes.clone()).await;
+            let event = {
+                let mut observer = observer.lock().await;
+                if sent.is_err() {
+                    observer.accounting.quic_transport_losses =
+                        observer.accounting.quic_transport_losses.saturating_add(1);
+                }
+                observer.datagram(
+                    direction,
+                    &bytes,
+                    &limits,
+                    if sent.is_ok() {
+                        "forwarded"
+                    } else {
+                        "transport-failed"
+                    },
+                )
+            };
             emit_observed(&sink, event);
-            if destination.send_datagram_wait(bytes).await.is_err() {
+            if sent.is_err() {
                 break;
             }
         }
@@ -757,6 +814,7 @@ pub struct QuicInspectionPlan {
     association_id: u64,
     client_endpoint: SocketAddr,
     origin_endpoint: SocketAddr,
+    authority: DestinationAuthority,
     server_name: String,
 }
 
@@ -783,6 +841,7 @@ impl QuicInspectionPlan {
             association_id,
             client_endpoint,
             origin_endpoint,
+            authority: authority.clone(),
             server_name: server_name.to_string(),
         })
     }
@@ -806,11 +865,16 @@ impl QuicInspectionPlan {
         &self.server_name
     }
 
-    pub fn admits(&self, client: SocketAddr, origin: SocketAddr) -> Result<(), QuicRefusalCode> {
+    pub fn admits(
+        &self,
+        client: SocketAddr,
+        origin: SocketAddr,
+        authority: &DestinationAuthority,
+    ) -> Result<(), QuicRefusalCode> {
         if client != self.client_endpoint {
             return Err(QuicRefusalCode::MigrationRefused);
         }
-        if origin != self.origin_endpoint {
+        if origin != self.origin_endpoint || authority != &self.authority {
             return Err(QuicRefusalCode::OriginChanged);
         }
         Ok(())
@@ -940,6 +1004,13 @@ impl QuicEvidenceObserver {
     fn http3_complete(&mut self) {
         self.accounting.http3_streams_completed =
             self.accounting.http3_streams_completed.saturating_add(1);
+    }
+
+    fn http3_terminal(&mut self, terminal: crate::StreamTerminal) {
+        self.accounting.http3_streams_reset = self
+            .accounting
+            .http3_streams_reset
+            .saturating_add(u64::from(terminal == crate::StreamTerminal::Reset));
     }
 
     pub fn connection(
@@ -1189,11 +1260,11 @@ mod tests {
         let plan =
             QuicInspectionPlan::new("s", 1, address(1), address(2), &authority(), true).unwrap();
         assert_eq!(
-            plan.admits(address(3), address(2)),
+            plan.admits(address(3), address(2), &authority()),
             Err(QuicRefusalCode::MigrationRefused)
         );
         assert_eq!(
-            plan.admits(address(1), address(4)),
+            plan.admits(address(1), address(4), &authority()),
             Err(QuicRefusalCode::OriginChanged)
         );
     }
@@ -1289,6 +1360,16 @@ mod tests {
         assert_eq!(event.terminal, "capacity-dropped");
         assert_eq!(observer.accounting.quic_datagrams_capacity_dropped, 1);
         assert_eq!(observer.accounting.quic_datagram_bytes_omitted, 9);
+    }
+
+    #[test]
+    fn reset_terminal_advances_http3_reset_accounting() {
+        let plan =
+            QuicInspectionPlan::new("s", 1, address(1), address(2), &authority(), true).unwrap();
+        let mut observer = QuicEvidenceObserver::new(plan);
+        observer.http3_terminal(crate::StreamTerminal::Reset);
+        observer.http3_terminal(crate::StreamTerminal::TransportError);
+        assert_eq!(observer.accounting.http3_streams_reset, 1);
     }
 
     #[test]

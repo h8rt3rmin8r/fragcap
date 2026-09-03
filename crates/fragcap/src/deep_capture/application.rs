@@ -569,10 +569,6 @@ fn writer_loop(
                 .entry(value.outcome.as_str().to_string())
                 .or_default() += 1;
         }
-        let generic_udp_storage_measure = match &event.kind {
-            ApplicationEventKind::GenericUdpDatagram(value) => Some(value.observed_len),
-            _ => None,
-        };
         if let ApplicationEventKind::GenericUdpDatagram(value) = &event.kind {
             generic_udp_observed_datagrams = generic_udp_observed_datagrams.saturating_add(1);
             generic_udp_observed_bytes =
@@ -612,6 +608,7 @@ fn writer_loop(
         // Packet capture and proxy observation run concurrently. Publishing a
         // live answer here would make identity depend on scheduling, so event
         // records remain explicitly deferred until final reconciliation.
+        let storage_event = event.clone();
         let value = event_json(event, sequence, ApplicationCorrelation::default());
         match write_record(&mut writer, &value) {
             Ok(()) => {
@@ -623,14 +620,7 @@ fn writer_loop(
             Err(error) => {
                 account.failures.fetch_add(1, Ordering::Relaxed);
                 retired.store(true, Ordering::Release);
-                if let Some(observed_len) = generic_udp_storage_measure {
-                    account
-                        .generic_udp_datagrams_storage_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    account
-                        .generic_udp_bytes_storage_dropped
-                        .fetch_add(observed_len, Ordering::Relaxed);
-                }
+                account.record_storage_drop(&storage_event);
                 account.dropped.fetch_add(1, Ordering::Relaxed);
                 // Synchronize with any producer that passed the retired check,
                 // close the sole sender, then drain every event that had
@@ -2030,7 +2020,7 @@ mod tests {
     }
 
     #[test]
-    fn write_failure_drains_and_counts_every_buffered_udp_datagram() {
+    fn write_failure_counts_the_triggering_and_buffered_quic_records() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("read-only.jsonl");
         drop(File::create(&path).unwrap());
@@ -2045,26 +2035,45 @@ mod tests {
             account: Arc::clone(&account),
             connections: Arc::new(Mutex::new(BTreeMap::new())),
         };
-        for sequence in 0..2 {
-            assert_eq!(
-                sink.try_emit(ApplicationEvent::now(
-                    "session",
-                    7,
-                    None,
-                    None,
-                    ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
-                        direction: fragcap_proxy::GenericUdpDirection::ClientToUpstream,
-                        sequence,
-                        client_endpoint: "127.0.0.1:41000".parse().unwrap(),
-                        remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
-                        observed_len: 4,
-                        bytes: bytes::Bytes::from_static(b"data"),
-                        outcome: fragcap_proxy::GenericUdpOutcome::Complete,
-                    },),
-                )),
-                EventDisposition::Accepted
-            );
-        }
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                7,
+                Some(0),
+                Some(ProtocolVersion::Http3),
+                ApplicationEventKind::QuicStream(fragcap_proxy::QuicStreamEvent {
+                    pair_id: 9,
+                    direction: fragcap_proxy::QuicDirection::ClientToUpstream,
+                    stream_id: 0,
+                    stream_kind: "http3-request",
+                    sequence: 0,
+                    offset: 0,
+                    observed_len: 4,
+                    bytes: bytes::Bytes::from_static(b"data"),
+                    outcome: fragcap_proxy::GenericStreamOutcome::Complete,
+                    terminal: "forwarded",
+                }),
+            )),
+            EventDisposition::Accepted
+        );
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session",
+                7,
+                None,
+                None,
+                ApplicationEventKind::QuicDatagram(fragcap_proxy::QuicDatagramEvent {
+                    pair_id: 9,
+                    direction: fragcap_proxy::QuicDirection::ClientToUpstream,
+                    sequence: 0,
+                    observed_len: 4,
+                    bytes: bytes::Bytes::from_static(b"data"),
+                    outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                    terminal: "forwarded",
+                }),
+            )),
+            EventDisposition::Accepted
+        );
 
         assert!(writer_loop(
             file,
@@ -2083,15 +2092,21 @@ mod tests {
         assert_eq!(account.dropped.load(Ordering::Acquire), 2);
         assert_eq!(
             account
-                .generic_udp_datagrams_storage_dropped
+                .quic_stream_bytes_storage_dropped
                 .load(Ordering::Acquire),
-            2
+            4
         );
         assert_eq!(
             account
-                .generic_udp_bytes_storage_dropped
+                .quic_datagrams_storage_dropped
                 .load(Ordering::Acquire),
-            8
+            1
+        );
+        assert_eq!(
+            account
+                .quic_datagram_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            4
         );
     }
 

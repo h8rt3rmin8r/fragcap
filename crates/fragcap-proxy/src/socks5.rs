@@ -1043,13 +1043,9 @@ async fn serve_udp_association(
     if let Some(gateway) = quic.take() {
         let report = gateway.close().await;
         merge_quic_accounting(&mut accounting, report.accounting);
-        accounting.quic_pairs_completed =
-            accounting
-                .quic_pairs_completed
-                .saturating_add(u64::from(!matches!(
-                    report.terminal,
-                    Some(QuicGatewayTerminal::Refused(_))
-                )));
+        accounting.quic_pairs_completed = accounting.quic_pairs_completed.saturating_add(
+            u64::from(report.terminal == Some(QuicGatewayTerminal::Complete)),
+        );
     }
     peers.clear();
     drop(upstream_v6);
@@ -1236,7 +1232,7 @@ where
         }
         let gateway = quic.as_ref().expect("gateway was initialized");
         gateway
-            .admits(quic_context.client, selected)
+            .admits(quic_context.client, selected, authority)
             .map_err(|code| UdpForwardFailure::Quic(selected, code))?;
         let send = timeout(limits.upstream.write, gateway.send(payload)).await;
         return match send {
