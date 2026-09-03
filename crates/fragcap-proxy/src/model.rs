@@ -409,6 +409,7 @@ pub struct ProtocolAccounting {
     pub socks_udp_oversized_dropped: u64,
     pub socks_udp_unsolicited_dropped: u64,
     pub socks_udp_transport_dropped: u64,
+    pub socks_udp_owner_dropped: u64,
     pub socks_udp_client_bytes: u64,
     pub socks_udp_upstream_bytes: u64,
     pub socks_udp_peak_peers: u64,

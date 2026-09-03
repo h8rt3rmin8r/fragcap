@@ -396,9 +396,14 @@ async fn read_request(
     budget: Duration,
 ) -> Result<SocksRequest, SocksFailure> {
     let deadline = Instant::now() + budget;
-    let mut head = [0_u8; 4];
-    read_exact_until(stream, &mut head, deadline, "socks-request-head").await?;
-    let command = head[1];
+    let mut prefix = [0_u8; 2];
+    read_exact_until(stream, &mut prefix, deadline, "socks-request-prefix").await?;
+    let command = prefix[1];
+    let mut suffix = [0_u8; 2];
+    read_exact_until(stream, &mut suffix, deadline, "socks-request-head")
+        .await
+        .map_err(|failure| failure.for_request_command(command))?;
+    let head = [prefix[0], prefix[1], suffix[0], suffix[1]];
     let result = async {
         if head[0] != SOCKS_VERSION || head[2] != 0 {
             return Err(SocksFailure::reply(
@@ -679,6 +684,7 @@ async fn serve_udp_association(
                     biased;
                     _ = shutdown.changed() => OwnerBound::Shutdown,
                     result = control.read(&mut control_byte) => OwnerBound::Control(result),
+                    _ = &mut idle => OwnerBound::Idle,
                     result = forward_client_datagram(
                         &datagram.authority,
                         datagram.payload,
@@ -690,16 +696,40 @@ async fn serve_udp_association(
                     ) => OwnerBound::Completed(result),
                 };
                 let (selected, written) = match forwarding {
-                    OwnerBound::Shutdown => break Err(SocksFailure::cancelled()),
-                    OwnerBound::Control(Ok(0)) => break Ok("control-closed"),
-                    OwnerBound::Control(Ok(_)) => break Err(SocksFailure::new(
-                        "socks-udp-control-data-unexpected",
-                        "UDP association control connection carried unexpected data",
-                    )),
-                    OwnerBound::Control(Err(error)) => break Err(SocksFailure::new(
-                        "socks-udp-control-read-failed",
-                        error.to_string(),
-                    )),
+                    OwnerBound::Shutdown => {
+                        record_udp_owner_drop(
+                            &mut accounting, sink, session_id, connection_id,
+                            "cancellation", address_type, payload_len, peers.len(),
+                        );
+                        break Err(SocksFailure::cancelled());
+                    }
+                    OwnerBound::Idle => {
+                        record_udp_owner_drop(
+                            &mut accounting, sink, session_id, connection_id,
+                            "timeout", address_type, payload_len, peers.len(),
+                        );
+                        break Err(SocksFailure::timeout(
+                            "socks-udp-idle-timeout",
+                            SocksReplyCode::TtlExpired,
+                        ));
+                    }
+                    OwnerBound::Control(result) => {
+                        record_udp_owner_drop(
+                            &mut accounting, sink, session_id, connection_id,
+                            "control-revoked", address_type, payload_len, peers.len(),
+                        );
+                        match result {
+                            Ok(0) => break Ok("control-closed"),
+                            Ok(_) => break Err(SocksFailure::new(
+                                "socks-udp-control-data-unexpected",
+                                "UDP association control connection carried unexpected data",
+                            )),
+                            Err(error) => break Err(SocksFailure::new(
+                                "socks-udp-control-read-failed",
+                                error.to_string(),
+                            )),
+                        }
+                    }
                     OwnerBound::Completed(Ok(value)) => value,
                     OwnerBound::Completed(Err(UdpForwardFailure::Policy)) => {
                         accounting.socks_udp_policy_dropped = accounting.socks_udp_policy_dropped.saturating_add(1);
@@ -709,6 +739,12 @@ async fn serve_udp_association(
                     OwnerBound::Completed(Err(UdpForwardFailure::Resolution)) => {
                         accounting.socks_udp_resolution_dropped = accounting.socks_udp_resolution_dropped.saturating_add(1);
                         emit_udp(sink, session_id, connection_id, "drop", "resolution-failed", Some(address_type), None, payload_len as u64, peers.len());
+                        continue;
+                    }
+                    OwnerBound::Completed(Err(UdpForwardFailure::DnsTimeout)) => {
+                        accounting.socks_udp_resolution_dropped = accounting.socks_udp_resolution_dropped.saturating_add(1);
+                        accounting.timed_out = accounting.timed_out.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "timeout", Some(address_type), None, payload_len as u64, peers.len());
                         continue;
                     }
                     OwnerBound::Completed(Err(UdpForwardFailure::Ipv6Unavailable(selected))) => {
@@ -815,12 +851,14 @@ async fn serve_udp_association(
 enum OwnerBound<T> {
     Completed(T),
     Shutdown,
+    Idle,
     Control(io::Result<usize>),
 }
 
 enum UdpForwardFailure {
     Policy,
     Resolution,
+    DnsTimeout,
     Ipv6Unavailable(SocketAddr),
     PeerLimit(SocketAddr),
     Transport(SocketAddr),
@@ -837,12 +875,10 @@ async fn forward_client_datagram(
 ) -> Result<(SocketAddr, usize), UdpForwardFailure> {
     let candidates = crate::resolve_allowed_udp(authority, policy, limits.upstream.dns)
         .await
-        .map_err(|error| {
-            if error.stage == UpstreamStage::Policy {
-                UdpForwardFailure::Policy
-            } else {
-                UdpForwardFailure::Resolution
-            }
+        .map_err(|error| match (error.stage, error.code) {
+            (UpstreamStage::Policy, _) => UdpForwardFailure::Policy,
+            (_, "dns-timeout") => UdpForwardFailure::DnsTimeout,
+            _ => UdpForwardFailure::Resolution,
         })?;
     let selected = candidates
         .iter()
@@ -1104,6 +1140,34 @@ fn address_type(address: SocketAddr) -> SocksAddressType {
         SocketAddr::V4(_) => SocksAddressType::Ipv4,
         SocketAddr::V6(_) => SocksAddressType::Ipv6,
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "owner revocation must update accounting and emit the matching loss fact together"
+)]
+fn record_udp_owner_drop(
+    accounting: &mut ProtocolAccounting,
+    sink: &crate::application::SharedEventSink,
+    session_id: &str,
+    connection_id: u64,
+    outcome: &'static str,
+    address_type: SocksAddressType,
+    payload_bytes: usize,
+    active_peers: usize,
+) {
+    accounting.socks_udp_owner_dropped = accounting.socks_udp_owner_dropped.saturating_add(1);
+    emit_udp(
+        sink,
+        session_id,
+        connection_id,
+        "drop",
+        outcome,
+        Some(address_type),
+        None,
+        payload_bytes as u64,
+        active_peers,
+    );
 }
 
 #[expect(

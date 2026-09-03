@@ -1577,6 +1577,10 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .socks_udp_transport_dropped
         .saturating_add(source.socks_udp_transport_dropped);
+    observation.protocol.socks_udp_owner_dropped = observation
+        .protocol
+        .socks_udp_owner_dropped
+        .saturating_add(source.socks_udp_owner_dropped);
     observation.protocol.socks_udp_client_bytes = observation
         .protocol
         .socks_udp_client_bytes
