@@ -769,8 +769,23 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         }));
 
     let process_trace = std::fs::read_to_string(bundle.join("process-trace.jsonl")).unwrap();
-    assert!(process_trace.contains("controlled-harness.exited"));
-    let process_event: serde_json::Value = serde_json::from_str(process_trace.trim()).unwrap();
+    let process_records: Vec<serde_json::Value> = process_trace
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        process_records.first().unwrap()["type"],
+        "process-trace.header"
+    );
+    assert_eq!(
+        process_records.last().unwrap()["type"],
+        "process-trace.trailer"
+    );
+    assert_eq!(process_records.last().unwrap()["finalization"], "complete");
+    let process_event = process_records
+        .iter()
+        .find(|record| record["type"] == "process.started")
+        .expect("controlled process start");
     let child_pid = process_event["pid"].as_u64().expect("controlled child PID");
     assert!(child_pid > 0);
     assert_ne!(child_pid, u64::from(std::process::id()));
@@ -778,6 +793,14 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         .iter()
         .filter(|record| record["process_id"].as_u64().is_some())
         .all(|record| record["process_id"] == child_pid));
+    let process_artifact = manifest["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["role"] == "process-trace")
+        .unwrap();
+    assert_eq!(process_artifact["finalization"], "complete");
+    assert_eq!(process_artifact["completeness"], "complete");
 
     let cleanup: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("cleanup.json")).unwrap()).unwrap();
@@ -926,6 +949,14 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
 
     assert_eq!(code, 1, "partial session must preserve the target failure");
     assert!(err.contains("\"status\":\"partial\""), "events:\n{err}");
+    assert!(
+        bundle.join("manifest.json").is_file(),
+        "manifest missing; files: {:?}; events:\n{err}",
+        std::fs::read_dir(&bundle)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>()
+    );
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["state"], "partial");

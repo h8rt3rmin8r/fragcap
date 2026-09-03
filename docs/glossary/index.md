@@ -153,6 +153,8 @@ the owning category page.
 - [PID recycling](process-and-attribution.md#pid-recycling)
 - [Pipeline](capture-and-networking.md#pipeline)
 - [Platform walker](process-and-attribution.md#platform-walker)
+- [Process instance](capture-and-networking.md#process-instance)
+- [Process lifecycle stream](capture-and-networking.md#process-lifecycle-stream)
 - [Process node](process-and-attribution.md#process-node)
 - [Process tree](process-and-attribution.md#process-tree)
 - [Process watcher](process-and-attribution.md#process-watcher)

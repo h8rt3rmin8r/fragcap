@@ -695,8 +695,9 @@ impl fragcap::deep_capture::SessionClock for LibraryClockAdapter {
 
 #[derive(Default)]
 struct LibraryRuntime {
-    controlled_process_id: Option<u32>,
-    process_events: Vec<String>,
+    process_evidence: Option<fragcap::deep_capture::CaptureProcessEvidence>,
+    flow_summaries: Vec<fragcap::FlowSummary>,
+    globally_unretained_flow_observations: u64,
     interrupted: bool,
     backend: Option<ProxyBackend>,
     trust: Option<TrustOutcome>,
@@ -867,10 +868,14 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
             };
             let runtime = Rc::clone(&self.runtime);
             let context = self.observation_context.clone();
-            run_controlled_target_harness(route, phase, budget.remaining(), move |process_id| {
-                runtime.borrow_mut().controlled_process_id = Some(process_id);
-                context.record_controlled_process_id(process_id);
-            })
+            let process_id = run_controlled_target_harness(
+                route,
+                phase,
+                budget.remaining(),
+                move |process_id| {
+                    context.record_controlled_process_id(process_id);
+                },
+            )
             .map_err(|error| {
                 library_stage_failure(
                     fragcap::deep_capture::Stage::Capture,
@@ -878,6 +883,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                     error,
                 )
             })?;
+            runtime.borrow_mut().process_evidence = Some(controlled_process_evidence(process_id));
             return Ok(fragcap::deep_capture::CaptureRunResult {
                 observations: Vec::new(),
                 interrupted: false,
@@ -899,15 +905,18 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                     error,
                 )
             })?;
-        let (result, process_events, interrupted) = run_real_capture(
+        let registry = self.observation_context.flow_registry();
+        let (result, process_evidence, interrupted) = run_real_capture(
             &capture_args,
             prepared,
-            self.observation_context.flow_registry(),
+            Arc::clone(&registry),
             &mut self.emitter.borrow_mut(),
         );
         {
             let mut runtime = self.runtime.borrow_mut();
-            runtime.process_events = process_events;
+            runtime.process_evidence = Some(process_evidence);
+            runtime.flow_summaries = registry.summaries();
+            runtime.globally_unretained_flow_observations = registry.globally_unretained();
             runtime.interrupted = interrupted;
         }
         result.map_err(|error| {
@@ -1163,8 +1172,9 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             observations: &snapshot.observations,
             trust: &trust,
             session_state,
-            controlled_process_id: runtime.controlled_process_id,
-            process_events: &runtime.process_events,
+            process_evidence: runtime.process_evidence.as_ref(),
+            flow_summaries: &runtime.flow_summaries,
+            globally_unretained_flow_observations: runtime.globally_unretained_flow_observations,
             calibration,
             calibration_outcome: outcome,
             deadlines: self.deadlines,
@@ -2572,8 +2582,11 @@ fn run_real_capture(
     prepared: capture::PreparedCapture,
     flow_registry: Arc<FlowRegistry>,
     emitter: &mut Emitter,
-) -> (Result<(), CliError>, Vec<String>, bool) {
-    emitter.begin_event_capture();
+) -> (
+    Result<(), CliError>,
+    fragcap::deep_capture::CaptureProcessEvidence,
+    bool,
+) {
     let result = capture::run_prepared_with_flow_registry(
         capture_args,
         emitter,
@@ -2583,6 +2596,10 @@ fn run_real_capture(
     let interrupted = result
         .as_ref()
         .is_ok_and(|outcome| outcome.stop_reason == Some(StopReason::Interrupt));
+    let process_evidence = result
+        .as_ref()
+        .map(|outcome| outcome.process_evidence.clone())
+        .unwrap_or_default();
     let result = result.and_then(|outcome| {
         if outcome.exit == Exit::SUCCESS {
             Ok(())
@@ -2593,8 +2610,47 @@ fn run_real_capture(
             )))
         }
     });
-    let process_events = emitter.take_captured_events();
-    (result, process_events, interrupted)
+    (result, process_evidence, interrupted)
+}
+
+fn controlled_process_evidence(process_id: u32) -> fragcap::deep_capture::CaptureProcessEvidence {
+    let started = Timestamp::from_nanos(1);
+    let exited = Timestamp::from_nanos(2);
+    fragcap::deep_capture::CaptureProcessEvidence {
+        launch_pid: Some(process_id),
+        events: vec![
+            fragcap::ProcessEvent::started(
+                process_id,
+                0,
+                "client.exe",
+                "controlled-target",
+                started,
+            ),
+            fragcap::ProcessEvent::Exited {
+                pid: process_id,
+                at: exited,
+            },
+        ],
+        stage_transitions: vec![
+            fragcap::deep_capture::StageTransition {
+                kind: fragcap::deep_capture::StageTransitionKind::Matched,
+                pid: process_id,
+                role: "client".to_string(),
+                stage: Some("client".to_string()),
+                at: started,
+            },
+            fragcap::deep_capture::StageTransition {
+                kind: fragcap::deep_capture::StageTransitionKind::Exited,
+                pid: process_id,
+                role: "client".to_string(),
+                stage: Some("client".to_string()),
+                at: exited,
+            },
+        ],
+        terminal_state: "complete".to_string(),
+        stop_reason: Some("controlled-target-exited".to_string()),
+        ..fragcap::deep_capture::CaptureProcessEvidence::default()
+    }
 }
 
 fn run_controlled_target_harness(
@@ -2784,8 +2840,9 @@ struct BundleContext<'a> {
     observations: &'a [Observation],
     trust: &'a TrustOutcome,
     session_state: &'a str,
-    controlled_process_id: Option<u32>,
-    process_events: &'a [String],
+    process_evidence: Option<&'a fragcap::deep_capture::CaptureProcessEvidence>,
+    flow_summaries: &'a [fragcap::FlowSummary],
+    globally_unretained_flow_observations: u64,
     calibration: Option<CalibrationPhase>,
     calibration_outcome: Option<CalibrationOutcome>,
     deadlines: CalibrationDeadlines,
@@ -2832,18 +2889,26 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
             Err(_) => har_omission_reason = ManifestOmissionReason::ProjectionFailed,
         }
     }
+    let unavailable_evidence = fragcap::deep_capture::CaptureProcessEvidence::default();
+    let process_trace =
+        fragcap::deep_capture::build_process_trace(fragcap::deep_capture::ProcessTraceInput {
+            session_id: &ctx.session.session_id,
+            target_id: ctx.session.target.id,
+            target_handle: &ctx.session.target.handle,
+            launch_case: ctx.session.launch_case.as_str(),
+            evidence: ctx.process_evidence.unwrap_or(&unavailable_evidence),
+            flows: ctx.flow_summaries,
+            globally_unretained_flow_observations: ctx.globally_unretained_flow_observations,
+        });
     write_file(
         ctx.session.bundle.join("process-trace.jsonl"),
-        process_trace_jsonl(
-            &ctx.session.session_id,
-            ctx.controlled_process_id,
-            ctx.process_events,
-        )
-        .as_bytes(),
+        process_trace.jsonl.as_bytes(),
     )?;
+    let process_trace_summary = fragcap::deep_capture::read_process_trace(&process_trace.jsonl)
+        .ok_or_else(|| CliError::failure("written process trace has no valid final trailer"))?;
     write_file(
         ctx.session.bundle.join("compatibility.json"),
-        compatibility_json(ctx)?.as_bytes(),
+        compatibility_json(ctx, &process_trace_summary)?.as_bytes(),
     )?;
     let key_log_path = ctx.session.bundle.join("tls-keylog.log");
     let key_log_produced = key_log_path
@@ -2870,6 +2935,7 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
         har_omission_reason,
         key_log_produced,
         packet_truth_produced,
+        &process_trace_summary,
     )?;
     fragcap::deep_capture::publish_final(&ctx.session.bundle, manifest.as_bytes())
         .map_err(|error| CliError::failure(format!("cannot publish final manifest: {error}")))?;
@@ -3171,58 +3237,10 @@ fn routing_decisions_json(observations: &[Observation]) -> serde_json::Value {
     })
 }
 
-fn process_trace_jsonl(
-    session_id: &str,
-    controlled_process_id: Option<u32>,
-    captured_events: &[String],
-) -> String {
-    if let Some(process_id) = controlled_process_id {
-        return json!({
-            "session_id": session_id,
-            "event": "controlled-harness.exited",
-            "pid": process_id,
-            "process": "client.exe",
-            "role": "client",
-            "reason": "deterministic placeholder child completed"
-        })
-        .to_string()
-            + "\n";
-    }
-    let mut output = String::new();
-    for line in captured_events {
-        let Ok(mut event) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let Some(kind) = event.get("event").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        if !matches!(kind, "stage.matched" | "stage.exited") {
-            continue;
-        }
-        if let Some(object) = event.as_object_mut() {
-            object.insert("session_id".to_string(), json!(session_id));
-        }
-        output.push_str(&event.to_string());
-        output.push('\n');
-    }
-    if output.is_empty() {
-        output.push_str(
-            &json!({
-            "session_id": session_id,
-            "event": "process-trace.unavailable",
-            "pid": serde_json::Value::Null,
-            "process": serde_json::Value::Null,
-            "role": "unknown",
-            "reason": "no stage lifecycle event was observed; packet attribution remains authoritative"
-        })
-            .to_string(),
-        );
-        output.push('\n');
-    }
-    output
-}
-
-fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
+fn compatibility_json(
+    ctx: &BundleContext<'_>,
+    process_trace: &fragcap::deep_capture::ProcessTraceSummary,
+) -> Result<String, CliError> {
     serde_json::to_string_pretty(&json!({
         "session_id": ctx.session.session_id,
         "target": {
@@ -3237,6 +3255,15 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
         "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
         "routing_policy": routing_policy_json(&ctx.session.routing),
         "routing_decisions": routing_decisions_json(ctx.observations),
+        "process_trace": {
+            "finalization": process_trace.finalization,
+            "completeness": process_trace.completeness,
+            "process_instances": process_trace.process_instances,
+            "flow_owner_intervals": process_trace.flow_owner_intervals,
+            "limitations": process_trace.limitations,
+            "unparseable_events": process_trace.unparseable_events,
+            "unresolved_flow_owners": process_trace.unresolved_flow_owners,
+        },
         "calibration": ctx.calibration.map(|phase| json!({
             "phase": phase.as_str(),
             "outcome": ctx.calibration_outcome.map(|outcome| outcome.to_string()),
@@ -3298,6 +3325,7 @@ fn cleanup_json(session_id: &str, cleanup: &CleanupReport) -> Result<String, Cli
     .map_err(|e| CliError::failure(e.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn manifest_json(
     ctx: &BundleContext<'_>,
     cleanup: &CleanupReport,
@@ -3306,6 +3334,7 @@ fn manifest_json(
     har_omission_reason: ManifestOmissionReason,
     key_log_produced: bool,
     packet_truth_produced: bool,
+    process_trace: &fragcap::deep_capture::ProcessTraceSummary,
 ) -> Result<String, CliError> {
     let key_log_cleanup_failed = cleanup
         .resources
@@ -3334,6 +3363,33 @@ fn manifest_json(
         &mut application_artifact,
         &ctx.session.bundle.join("application.jsonl"),
     );
+    let mut process_artifact = artifact(
+        "process-trace",
+        "process-trace.jsonl",
+        "process-events",
+        "sensitive",
+        "application/x-ndjson",
+        true,
+    );
+    process_artifact["finalization"] = json!(process_trace.finalization);
+    process_artifact["completeness"] = json!(match process_trace.completeness {
+        "unavailable" => "partial",
+        value => value,
+    });
+    process_artifact["loss"] = if process_trace.events_lost == 0
+        && process_trace.buffers_lost == 0
+        && process_trace.unparseable_events == 0
+        && process_trace.events_unretained == 0
+    {
+        json!({"state":"none"})
+    } else {
+        json!({"state":"observed","events_lost":process_trace.events_lost,"buffers_lost":process_trace.buffers_lost,"unparseable_events":process_trace.unparseable_events,"events_unretained":process_trace.events_unretained})
+    };
+    process_artifact["correlation"] = json!({
+        "state": if process_trace.completeness == "complete" && process_trace.unresolved_flow_owners == 0 && process_trace.flow_owner_intervals > 0 { "complete" } else if process_trace.flow_owner_intervals > 0 { "partial" } else { "unavailable" },
+        "flow_owner_intervals": process_trace.flow_owner_intervals,
+        "unresolved_flow_owners": process_trace.unresolved_flow_owners,
+    });
     let mut artifacts = vec![
         application_artifact,
         artifact(
@@ -3360,14 +3416,7 @@ fn manifest_json(
             "application/x-ndjson",
             true,
         ),
-        artifact(
-            "process-trace",
-            "process-trace.jsonl",
-            "process-events",
-            "sensitive",
-            "application/x-ndjson",
-            true,
-        ),
+        process_artifact,
         artifact(
             "compatibility",
             "compatibility.json",
@@ -4210,30 +4259,6 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("flow correlation unavailable"));
-    }
-
-    #[test]
-    fn real_process_sidecar_reports_unavailable_instead_of_a_placeholder_process() {
-        let output = process_trace_jsonl("session", None, &[]);
-        let value: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
-        assert_eq!(value["event"], "process-trace.unavailable");
-        assert!(value["pid"].is_null());
-        assert!(value["process"].is_null());
-    }
-
-    #[test]
-    fn real_process_sidecar_copies_observed_stage_lifecycle() {
-        let event = Event::StageMatched {
-            role: "client".to_string(),
-            pid: 7,
-            process: "client.exe".to_string(),
-        }
-        .render(UNIX_EPOCH);
-        let output = process_trace_jsonl("session", None, &[event]);
-        let value: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
-        assert_eq!(value["event"], "stage.matched");
-        assert_eq!(value["session_id"], "session");
-        assert_eq!(value["pid"], 7);
     }
 
     #[test]

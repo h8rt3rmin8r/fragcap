@@ -138,6 +138,7 @@ enforcement.
 | 0.1.43-draft | 2026-09-03 | W. Thompson | **Makes Deep Capture protocol classification and omission reasons exhaustive (issue #316).** Extends sections 13.7, 19.6, 25, and 28.1. A versioned facade contract separates traffic family, detection state, inspectability, and stable reason for every shipped protocol path. Application records, terminal summaries, compatibility eligibility, and typed manifest omissions retain their separate authorities and reconcile without converting parser, retention, writer, trust, or routing failures into target support claims. S120 adds no dependency, routing behavior, or completion claim. |
 | 0.1.44-draft | 2026-09-03 | W. Thompson | **Completes the native compatibility calibration matrix (issue #317).** Extends sections 13.7, 15, 17.2.1, 19, 25, and 28.1. Every calibration names one exact launch case, routing strategy, loopback family, protocol case, backend and product version, and target version when available. Version-10 storage preserves append-only conflicts and legacy rows, while only the latest exact current applicable routing fact can authorize a session. S121 adds no dependency, bypass behavior, or Deep Capture completion claim. |
 | 0.1.45-draft | 2026-09-03 | W. Thompson | **Adds explicit proxy bypass and local-destination policy (issue #318).** Extends sections 13.7, 17.2.1, 19, 25, and 28.1. Typed canonical rules cover DNS domains, IP addresses, CIDRs, ports, and IPv6; bare and leading-dot DNS inputs both include descendants so conventional `NO_PROXY` clients cannot broaden an exact-name claim; the exact listener remains separate session infrastructure; uppercase and lowercase child proxy variables are plan-owned; every proxied DNS answer remains subject to resolved-address policy. Bypass is visible scope rather than proxy loss. S122 adds no dependency, system proxy mutation, transparent fallback, or Deep Capture completion claim. |
+| 0.1.46-draft | 2026-09-03 | W. Thompson | **Completes native process lifecycle evidence (issue #319).** Extends sections 10, 13.7, 19, 25, and 28.1. A bounded capture report joins managed launch receipts, ETW starts and exits, query-only snapshots, declared stage transitions, packet-derived socket ownership, watcher loss, and terminal state. PID plus observed creation time defines an instance; missing authority remains explicit; the versioned process trace trailer drives compatibility and manifest truth. S123 adds no target handle, second attribution path, dependency, or Deep Capture completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4714,6 +4715,21 @@ dependency change or a Deep Capture completion claim before #334.
 Bare and leading-dot DNS inputs deliberately have the same apex-and-descendant
 meaning because conventional `NO_PROXY` consumers can otherwise widen a bare
 exact-name rule beyond the reviewed policy.
+
+S123 closes complete process lifecycle evidence over the existing managed
+launch, process watcher, stage binding, and packet attribution authorities.
+The capture driver retains raw process events under a finite cap while the
+session is active. Final reconciliation selects launch, stage, flow-owner, and
+ancestor-relevant process instances, identifies each observed lifetime by PID
+plus creation event time, and leaves snapshot ancestry visibly query-only.
+Socket-owner intervals reuse the flow registry's session-local identifier and
+attribution rather than asking the socket table for a later answer. The
+newline-framed trace remains readable without its final line, but only one
+reconciling trailer authorizes orderly finalization. Kernel event loss, buffer
+loss, ignored rundown, bounded retention loss, and unresolved ownership remain
+separate. Compatibility and manifest claims derive from that trailer. It
+closes #319 without a target handle, memory right, new dependency, or Deep
+Capture completion claim.
 
 The required dependency direction is:
 

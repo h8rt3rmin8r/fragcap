@@ -1185,6 +1185,25 @@ proxied address answer is checked separately on every attempt.
 **See also:** [Proxy bypass policy](capture-and-networking.md#proxy-bypass-policy),
 [Exact loopback endpoint](capture-and-networking.md#exact-loopback-endpoint)
 
+## Process instance
+
+One observed operating-system process lifetime. An ETW-observed instance is
+identified by its PID and creation event time, which prevents a later reuse of
+the same PID from inheriting an earlier stage or socket owner. A query-only
+snapshot can describe a limited instance but cannot claim creation-time
+ancestry or invent a start instant.
+
+## Process lifecycle stream
+
+The sensitive, versioned `process-trace.jsonl` artifact that reconciles managed
+launch, relevant process creation and exit, stage binding, packet-derived
+socket ownership, terminal state, and every known process-evidence limitation.
+Complete lines remain readable after interruption. Only one valid trailer can
+claim orderly finalization, and bundle metadata derives its process claims from
+that trailer.
+
+**See also:** [Process instance](capture-and-networking.md#process-instance)
+
 ## Selection outcome
 
 The complete result of applying specification section 12.1's precedence to an

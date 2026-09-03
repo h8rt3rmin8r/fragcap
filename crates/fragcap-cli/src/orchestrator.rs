@@ -34,6 +34,7 @@ use fragcap::core::CaptureStats;
 // The stamper's active_endpoints (profiled-filtered, slice 015) is read for the
 // filter-narrowed event; the trait brings the method into scope.
 use fragcap::core::FlowAttributor;
+use fragcap::deep_capture::{CaptureProcessEvidence, StageTransition, StageTransitionKind};
 use fragcap::{
     BindingPublisher, CaptureScope, CaptureSession, GateHandle, LiveStats, Pipeline,
     PipelineConfig, PipelineReport, ProcessEvent, Profile, SessionGate, SessionState, StopHandle,
@@ -88,6 +89,8 @@ pub struct CaptureOutcome {
     /// The terminal session reason, retained for composed commands that need to
     /// distinguish a clean operator interruption from ordinary completion.
     pub stop_reason: Option<StopReason>,
+    /// Bounded process authority observed by this run.
+    pub process_evidence: CaptureProcessEvidence,
 }
 
 impl CaptureOutcome {
@@ -98,6 +101,7 @@ impl CaptureOutcome {
             exit,
             observed_holder: None,
             stop_reason: None,
+            process_evidence: CaptureProcessEvidence::default(),
         }
     }
 }
@@ -122,6 +126,11 @@ pub fn capture(
 ) -> Result<CaptureOutcome, CliError> {
     let mut session = CaptureSession::new_scoped(profile, config.session_config(), allowed_roles);
     session.attach(ARMED_AT);
+    let mut process_evidence = CaptureProcessEvidence {
+        startup_snapshot: components.startup_snapshot.clone(),
+        snapshot_at: components.snapshot_at,
+        ..CaptureProcessEvidence::default()
+    };
 
     // Attach-to-running (section 15.7): fold the startup snapshot the watcher took
     // at arm, so a target already running when the session armed acquires now,
@@ -132,6 +141,15 @@ pub fn capture(
             &components.startup_snapshot,
             components.snapshot_at.unwrap_or(ARMED_AT),
         );
+        for (pid, role, stage) in session.role_bindings() {
+            process_evidence.stage_transitions.push(StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid,
+                role: role.map_or_else(String::new, |value| value.to_string()),
+                stage: stage.map(|value| value.as_str().to_string()),
+                at: components.snapshot_at.unwrap_or(ARMED_AT),
+            });
+        }
     }
 
     let interface_names = config.interface_names();
@@ -185,6 +203,7 @@ pub fn capture(
             interrupt,
             fire_interrupt,
             sink_failure_is_clean,
+            &mut process_evidence,
         ),
         #[cfg(all(feature = "etw", windows))]
         EventStream::Live(rx) => capture_live(
@@ -196,6 +215,7 @@ pub fn capture(
             interrupt,
             fire_interrupt,
             sink_failure_is_clean,
+            &mut process_evidence,
         ),
     }
 }
@@ -236,6 +256,22 @@ fn final_exit(
     }
 }
 
+fn process_terminal_state(stop_reason: Option<StopReason>) -> &'static str {
+    match stop_reason {
+        Some(StopReason::Interrupt) => "partial",
+        Some(
+            StopReason::AcquisitionTimeout
+            | StopReason::AmbiguousStageMatch
+            | StopReason::PlatformExitedBeforeClient
+            | StopReason::EscapedPlatformClient
+            | StopReason::PlatformDispatchFailed
+            | StopReason::PlatformStartFailed
+            | StopReason::ProcessWatcherLost,
+        ) => "failed",
+        _ => "complete",
+    }
+}
+
 /// The offline, deterministic two-phase driver.
 ///
 /// Acquisition folds the pre-collected timeline until a terminal stage matches,
@@ -253,6 +289,7 @@ fn capture_prerecorded(
     interrupt: &AtomicBool,
     fire_interrupt: bool,
     sink_failure_is_clean: bool,
+    process_evidence: &mut CaptureProcessEvidence,
 ) -> Result<CaptureOutcome, CliError> {
     // The pid to role map, so a new binding is detected as a match and an exit
     // of a bound pid is detected as a stage exit.
@@ -264,7 +301,7 @@ fn capture_prerecorded(
     while cursor < events.len() && session.state() != SessionState::Capturing {
         let event = events[cursor].clone();
         cursor += 1;
-        apply_event(event, &mut session, &mut bound, emitter);
+        apply_event(event, &mut session, &mut bound, emitter, process_evidence);
         publisher.publish(session.role_bindings());
     }
 
@@ -279,7 +316,13 @@ fn capture_prerecorded(
         }
         let summary = build_summary(false, &session, &CaptureStats::default(), None);
         emitter.summary(&summary);
-        return Ok(CaptureOutcome::bare(Exit::FAILURE));
+        let mut outcome = CaptureOutcome::bare(Exit::FAILURE);
+        process_evidence.terminal_state = "failed".to_string();
+        process_evidence.stop_reason = session
+            .stop_reason()
+            .map(|reason| format!("{reason:?}").to_ascii_lowercase());
+        outcome.process_evidence = process_evidence.clone();
+        return Ok(outcome);
     }
 
     publisher.publish(session.role_bindings());
@@ -339,6 +382,7 @@ fn capture_prerecorded(
         interrupt,
         &stop,
         &mut narration,
+        process_evidence,
     );
 
     let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
@@ -348,7 +392,7 @@ fn capture_prerecorded(
     // Fold the events past the last packet (the exits that decide the stop
     // reason a script implies).
     for event in pending {
-        apply_event(event, &mut session, &mut bound, emitter);
+        apply_event(event, &mut session, &mut bound, emitter, process_evidence);
         publisher.publish(session.role_bindings());
     }
 
@@ -366,6 +410,11 @@ fn capture_prerecorded(
     // (specification FR-005a). Not a usage error. For an extcap capture, the
     // analyzer closing its FIFO is the defined clean stop, so that end is a
     // success (the summary still carries the accounting).
+    process_evidence.terminal_state = process_terminal_state(summary.stop_reason).to_string();
+    process_evidence.stop_reason = summary
+        .stop_reason
+        .map(|reason| format!("{reason:?}").to_ascii_lowercase());
+    process_evidence.watcher_ended = summary.stop_reason == Some(StopReason::ProcessWatcherLost);
     Ok(CaptureOutcome {
         exit: final_exit(
             !report.sink_failures.is_empty(),
@@ -374,6 +423,7 @@ fn capture_prerecorded(
         ),
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
+        process_evidence: process_evidence.clone(),
     })
 }
 
@@ -493,13 +543,14 @@ fn drive(
     interrupt: &AtomicBool,
     stop: &StopHandle,
     narration: &mut FilterNarration,
+    process_evidence: &mut CaptureProcessEvidence,
 ) {
     let mut folded = 0usize;
     while let Ok((len, ts)) = rx.recv() {
         while folded < pending.len() && pending[folded].at().as_nanos() <= ts.as_nanos() {
             let event = pending[folded].clone();
             folded += 1;
-            apply_event(event, session, bound, emitter);
+            apply_event(event, session, bound, emitter, process_evidence);
             publisher.publish(session.role_bindings());
         }
         session.on_packet(len);
@@ -593,6 +644,7 @@ fn capture_live(
     interrupt: &AtomicBool,
     fire_interrupt: bool,
     sink_failure_is_clean: bool,
+    process_evidence: &mut CaptureProcessEvidence,
 ) -> Result<CaptureOutcome, CliError> {
     use std::time::{Duration, Instant};
 
@@ -676,6 +728,7 @@ fn capture_live(
         emitter.progress(&format!("launching {description}"));
         match request.execute() {
             Ok(receipt) => {
+                process_evidence.launch_pid = receipt.process_id();
                 if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
                     platform_dispatch.arm(receipt.process_id());
                 }
@@ -746,7 +799,7 @@ fn capture_live(
             Ok(event) => {
                 let event_at = event.at();
                 record_bound_image(&event, &mut bound_images);
-                apply_event(event, &mut session, &mut bound, emitter);
+                apply_event(event, &mut session, &mut bound, emitter, process_evidence);
                 let bindings = session.role_bindings();
                 publisher.publish(bindings.clone());
                 if is_active(&session) && platform_dispatch.observe(&bindings) {
@@ -782,7 +835,11 @@ fn capture_live(
         // the gate's tallies and surface in the summary. Dropping the watcher
         // ends the live receiver.
         stop.stop();
-        let _ = components.watcher.take();
+        if let Some(watcher) = components.watcher.take() {
+            process_evidence.unparseable_events = watcher.unparsed_events();
+            process_evidence.watcher_report = Some(watcher.report());
+            process_evidence.rundown_ignored = watcher.rundown_ignored();
+        }
         let report: PipelineReport = handle.join().expect("the pipeline thread did not panic");
         emit_stream_reports(&stream_reports, emitter);
         emit_ring_report(&ring_evicted, emitter);
@@ -805,13 +862,20 @@ fn capture_live(
         // A clean operator interrupt exits zero; every other way of capturing
         // nothing (timeout, duration, disconnect) is the target-never-acquired
         // failure that exits one. Nothing was captured, so nothing was observed.
-        return Ok(CaptureOutcome::bare(
-            if session.stop_reason() == Some(StopReason::Interrupt) {
+        process_evidence.watcher_ended =
+            session.stop_reason() == Some(StopReason::ProcessWatcherLost);
+        process_evidence.terminal_state = "failed".to_string();
+        process_evidence.stop_reason = session
+            .stop_reason()
+            .map(|reason| format!("{reason:?}").to_ascii_lowercase());
+        let mut outcome =
+            CaptureOutcome::bare(if session.stop_reason() == Some(StopReason::Interrupt) {
                 Exit::SUCCESS
             } else {
                 Exit::FAILURE
-            },
-        ));
+            });
+        outcome.process_evidence = process_evidence.clone();
+        return Ok(outcome);
     }
 
     // Acquired: open the window from the acquiring event's capture instant, so a
@@ -896,6 +960,7 @@ fn capture_live(
         tick,
         &mut narration,
         &mut display,
+        process_evidence,
     );
 
     // The pipeline observed the stop and returns; its tee channel closes and the
@@ -914,7 +979,11 @@ fn capture_live(
     // Dropping the watcher stops its ETW session, which disconnects the live
     // receiver and ends the event forwarder. Done before joining so the join
     // cannot block on a watcher that is still alive.
-    let _ = components.watcher.take();
+    if let Some(watcher) = components.watcher.take() {
+        process_evidence.unparseable_events = watcher.unparsed_events();
+        process_evidence.watcher_report = Some(watcher.report());
+        process_evidence.rundown_ignored = watcher.rundown_ignored();
+    }
     let _ = packet_forward.join();
     let _ = event_forward.join();
 
@@ -926,6 +995,11 @@ fn capture_live(
     let summary = build_summary(true, &session, &report.stats, Some(&gate_handle));
     emitter.summary(&summary);
 
+    process_evidence.terminal_state = process_terminal_state(summary.stop_reason).to_string();
+    process_evidence.stop_reason = summary
+        .stop_reason
+        .map(|reason| format!("{reason:?}").to_ascii_lowercase());
+    process_evidence.watcher_ended = summary.stop_reason == Some(StopReason::ProcessWatcherLost);
     Ok(CaptureOutcome {
         exit: final_exit(
             !report.sink_failures.is_empty(),
@@ -934,6 +1008,7 @@ fn capture_live(
         ),
         observed_holder: report.stats.dominant_holder(),
         stop_reason: summary.stop_reason,
+        process_evidence: process_evidence.clone(),
     })
 }
 
@@ -963,6 +1038,7 @@ fn drive_live(
     tick: std::time::Duration,
     narration: &mut FilterNarration,
     display: &mut LiveStatusDisplay,
+    process_evidence: &mut CaptureProcessEvidence,
 ) {
     loop {
         let now = std::time::Instant::now();
@@ -987,7 +1063,7 @@ fn drive_live(
                 let event_at = event.at();
                 let was_active = is_active(session);
                 record_bound_image(&event, bound_images);
-                apply_event(event, session, bound, emitter);
+                apply_event(event, session, bound, emitter, process_evidence);
                 publisher.publish(session.role_bindings());
                 if was_active && !is_active(session) {
                     gate_handle.close_at(event_at);
@@ -1265,7 +1341,10 @@ fn apply_event(
     session: &mut CaptureSession,
     bound: &mut HashMap<u32, String>,
     emitter: &mut Emitter,
+    process_evidence: &mut CaptureProcessEvidence,
 ) {
+    process_evidence.observe(&event);
+    let event_at = event.at();
     let exited_pid = match &event {
         ProcessEvent::Exited { pid, .. } => Some(*pid),
         _ => None,
@@ -1274,14 +1353,26 @@ fn apply_event(
 
     session.on_process_event(event);
 
-    let current: HashMap<u32, String> = session
-        .role_bindings()
-        .into_iter()
+    let bindings = session.role_bindings();
+    let current: HashMap<u32, String> = bindings
+        .iter()
+        .cloned()
         .map(|(pid, role, _)| (pid, role.map(|r| r.to_string()).unwrap_or_default()))
         .collect();
 
     for (pid, role) in &current {
         if !bound.contains_key(pid) {
+            let stage = bindings
+                .iter()
+                .find(|(bound_pid, _, _)| bound_pid == pid)
+                .and_then(|(_, _, stage)| stage.as_ref().map(|value| value.as_str().to_string()));
+            process_evidence.stage_transitions.push(StageTransition {
+                kind: StageTransitionKind::Matched,
+                pid: *pid,
+                role: role.clone(),
+                stage,
+                at: event_at,
+            });
             emitter.event(&Event::StageMatched {
                 role: role.clone(),
                 pid: *pid,
@@ -1293,6 +1384,21 @@ fn apply_event(
 
     if let Some(pid) = exited_pid {
         if let Some(role) = bound.get(&pid) {
+            let stage = process_evidence
+                .stage_transitions
+                .iter()
+                .rev()
+                .find(|transition| {
+                    transition.kind == StageTransitionKind::Matched && transition.pid == pid
+                })
+                .and_then(|transition| transition.stage.clone());
+            process_evidence.stage_transitions.push(StageTransition {
+                kind: StageTransitionKind::Exited,
+                pid,
+                role: role.clone(),
+                stage,
+                at: event_at,
+            });
             emitter.event(&Event::StageExited {
                 role: role.clone(),
                 pid,
@@ -1485,7 +1591,7 @@ fn build_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::{final_exit, PlatformDispatchGate};
+    use super::{final_exit, process_terminal_state, PlatformDispatchGate};
     #[cfg(all(feature = "etw", windows))]
     use super::{forward_process_events, DriverMsg};
     use fragcap::{StageId, StopReason};
@@ -1558,6 +1664,19 @@ mod tests {
         assert_eq!(
             final_exit(false, false, Some(StopReason::AmbiguousStageMatch)).code(),
             1
+        );
+    }
+
+    #[test]
+    fn process_terminal_truth_distinguishes_interrupt_and_watcher_loss() {
+        assert_eq!(process_terminal_state(None), "complete");
+        assert_eq!(
+            process_terminal_state(Some(StopReason::Interrupt)),
+            "partial"
+        );
+        assert_eq!(
+            process_terminal_state(Some(StopReason::ProcessWatcherLost)),
+            "failed"
         );
     }
 }

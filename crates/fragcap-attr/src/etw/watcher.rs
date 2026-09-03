@@ -126,6 +126,15 @@ impl EtwWatcher {
         self.fanout.rundown_ignored.load(Ordering::Relaxed)
     }
 
+    /// Events received from ETW but refused by the bounded parser.
+    ///
+    /// [`Self::report`] includes these in `events_lost` for backward
+    /// compatibility. Lifecycle evidence reads this value as well so parser
+    /// loss remains distinguishable from kernel-reported event loss.
+    pub fn unparsed_events(&self) -> u64 {
+        self.fanout.unparsed.load(Ordering::Relaxed)
+    }
+
     /// Stop, and report what was observed.
     pub fn stop(mut self) -> WatcherReport {
         let mut report = self.report();
