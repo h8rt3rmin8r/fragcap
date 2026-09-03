@@ -152,6 +152,7 @@ pub struct GenericUdpDatagram {
 pub struct UdpSocketError {
     pub direction: GenericUdpDirection,
     pub operation: &'static str,
+    pub failure_code: &'static str,
     pub endpoint: Option<SocketAddr>,
     pub error_kind: &'static str,
     pub visibility: &'static str,

@@ -195,7 +195,7 @@ impl WriterAccount {
 }
 
 struct ChannelSink {
-    sender: Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>,
+    sender: Arc<Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>>,
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
     connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
@@ -375,11 +375,12 @@ impl ApplicationArtifactLease {
         let session_id = session_id.into();
         write_record(&mut file, &header_record(&session_id))?;
         let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
+        let sender = Arc::new(Mutex::new(Some(sender)));
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = Arc::new(ChannelSink {
-            sender: Mutex::new(Some(sender)),
+            sender: Arc::clone(&sender),
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::clone(&connections),
@@ -392,6 +393,7 @@ impl ApplicationArtifactLease {
                     file,
                     &session_id,
                     receiver,
+                    sender,
                     retired,
                     worker_account,
                     connections,
@@ -437,10 +439,15 @@ impl Drop for ApplicationArtifactLease {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the writer must own both queue endpoints to reconcile accepted events after failure"
+)]
 fn writer_loop(
     file: File,
     session_id: &str,
     receiver: mpsc::Receiver<ApplicationEvent>,
+    sender: Arc<Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>>,
     retired: Arc<AtomicBool>,
     account: Arc<WriterAccount>,
     connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
@@ -466,7 +473,7 @@ fn writer_loop(
     let mut generic_udp_omitted_bytes = 0_u64;
     let mut generic_udp_truncated_datagrams = 0_u64;
     let mut generic_udp_by_outcome = BTreeMap::<String, u64>::new();
-    for event in receiver {
+    while let Ok(event) = receiver.recv() {
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
         if let ApplicationEventKind::Body(segment) = &event.kind {
@@ -530,6 +537,8 @@ fn writer_loop(
                     .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
             }
             Err(error) => {
+                account.failures.fetch_add(1, Ordering::Relaxed);
+                retired.store(true, Ordering::Release);
                 if let Some(observed_len) = generic_udp_storage_measure {
                     account
                         .generic_udp_datagrams_storage_dropped
@@ -538,8 +547,15 @@ fn writer_loop(
                         .generic_udp_bytes_storage_dropped
                         .fetch_add(observed_len, Ordering::Relaxed);
                 }
-                account.failures.fetch_add(1, Ordering::Relaxed);
-                retired.store(true, Ordering::Release);
+                account.dropped.fetch_add(1, Ordering::Relaxed);
+                // Synchronize with any producer that passed the retired check,
+                // close the sole sender, then drain every event that had
+                // already been accepted into the bounded queue.
+                drop(sender.lock().expect("application sender lock").take());
+                while let Ok(pending) = receiver.recv() {
+                    account.record_storage_drop(&pending);
+                    account.dropped.fetch_add(1, Ordering::Relaxed);
+                }
                 return Err(error);
             }
         }
@@ -1031,6 +1047,7 @@ fn event_json(
             json!({
                 "direction": value.direction.as_str(),
                 "operation": value.operation,
+                "failure_code": value.failure_code,
                 "endpoint": value.endpoint.map(|address| address.to_string()),
                 "error_kind": value.error_kind,
                 "visibility": value.visibility,
@@ -1764,7 +1781,7 @@ mod tests {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let account = Arc::new(WriterAccount::default());
         let sink = ChannelSink {
-            sender: Mutex::new(Some(sender)),
+            sender: Arc::new(Mutex::new(Some(sender))),
             retired: Arc::new(AtomicBool::new(true)),
             account: Arc::clone(&account),
             connections: Arc::new(Mutex::new(BTreeMap::new())),
@@ -1791,6 +1808,72 @@ mod tests {
     }
 
     #[test]
+    fn write_failure_drains_and_counts_every_buffered_udp_datagram() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("read-only.jsonl");
+        drop(File::create(&path).unwrap());
+        let file = OpenOptions::new().read(true).open(&path).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let sender = Arc::new(Mutex::new(Some(sender)));
+        let retired = Arc::new(AtomicBool::new(false));
+        let account = Arc::new(WriterAccount::default());
+        let sink = ChannelSink {
+            sender: Arc::clone(&sender),
+            retired: Arc::clone(&retired),
+            account: Arc::clone(&account),
+            connections: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        for sequence in 0..2 {
+            assert_eq!(
+                sink.try_emit(ApplicationEvent::now(
+                    "session",
+                    7,
+                    None,
+                    None,
+                    ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                        direction: fragcap_proxy::GenericUdpDirection::ClientToUpstream,
+                        sequence,
+                        client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                        remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
+                        observed_len: 4,
+                        bytes: bytes::Bytes::from_static(b"data"),
+                        outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                    },),
+                )),
+                EventDisposition::Accepted
+            );
+        }
+
+        assert!(writer_loop(
+            file,
+            "session",
+            receiver,
+            sender,
+            Arc::clone(&retired),
+            Arc::clone(&account),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(|_| ApplicationCorrelation::default()),
+        )
+        .is_err());
+        assert!(retired.load(Ordering::Acquire));
+        assert_eq!(account.accepted.load(Ordering::Acquire), 2);
+        assert_eq!(account.written.load(Ordering::Acquire), 0);
+        assert_eq!(account.dropped.load(Ordering::Acquire), 2);
+        assert_eq!(
+            account
+                .generic_udp_datagrams_storage_dropped
+                .load(Ordering::Acquire),
+            2
+        );
+        assert_eq!(
+            account
+                .generic_udp_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            8
+        );
+    }
+
+    #[test]
     fn queue_pressure_cannot_erase_a_connection_descriptor() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("application.jsonl");
@@ -1805,7 +1888,7 @@ mod tests {
         let account = Arc::new(WriterAccount::default());
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = ChannelSink {
-            sender: Mutex::new(Some(sender)),
+            sender: Arc::new(Mutex::new(Some(sender))),
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::clone(&connections),
@@ -1845,11 +1928,13 @@ mod tests {
             )),
             EventDisposition::QueueFull
         );
+        let sender = Arc::clone(&sink.sender);
         drop(sink.sender.lock().unwrap().take());
         writer_loop(
             file,
             "session",
             receiver,
+            sender,
             retired,
             account,
             connections,
@@ -1886,7 +1971,7 @@ mod tests {
         let account = Arc::new(WriterAccount::default());
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = ChannelSink {
-            sender: Mutex::new(Some(sender)),
+            sender: Arc::new(Mutex::new(Some(sender))),
             retired: Arc::clone(&retired),
             account: Arc::clone(&account),
             connections: Arc::clone(&connections),
@@ -1914,11 +1999,13 @@ mod tests {
                 .load(Ordering::Acquire),
             1
         );
+        let sender = Arc::clone(&sink.sender);
         drop(sink.sender.lock().unwrap().take());
         writer_loop(
             file,
             "session",
             receiver,
+            sender,
             retired,
             account,
             connections,

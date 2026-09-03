@@ -683,7 +683,8 @@ async fn serve_udp_association(
                     Err(error) => {
                         emit_udp_socket_error(
                             sink, session_id, connection_id, GenericUdpDirection::ClientToUpstream,
-                            "receive", None, io_kind(error.kind()), &mut accounting,
+                            "receive", "socks-udp-client-read-failed", None,
+                            io_kind(error.kind()), &mut accounting,
                         );
                         break Err(SocksFailure::new("socks-udp-client-read-failed", error.to_string()));
                     }
@@ -812,7 +813,8 @@ async fn serve_udp_association(
                         accounting.socks_udp_transport_dropped = accounting.socks_udp_transport_dropped.saturating_add(1);
                         emit_udp_socket_error(
                             sink, session_id, connection_id, GenericUdpDirection::ClientToUpstream,
-                            "send", Some(selected), kind, &mut accounting,
+                            "send", "socks-udp-upstream-send-failed", Some(selected), kind,
+                            &mut accounting,
                         );
                         emit_udp(sink, session_id, connection_id, "drop", "transport-failed", Some(address_type), Some(selected), payload_len as u64, peers.len());
                         continue;
@@ -842,7 +844,8 @@ async fn serve_udp_association(
                     Err(error) => {
                         emit_udp_socket_error(
                             sink, session_id, connection_id, GenericUdpDirection::UpstreamToClient,
-                            "receive", None, io_kind(error.kind()), &mut accounting,
+                            "receive", "socks-udp-ipv4-read-failed", None,
+                            io_kind(error.kind()), &mut accounting,
                         );
                         break Err(SocksFailure::new("socks-udp-ipv4-read-failed", error.to_string()));
                     }
@@ -871,7 +874,8 @@ async fn serve_udp_association(
                     Err(error) => {
                         emit_udp_socket_error(
                             sink, session_id, connection_id, GenericUdpDirection::UpstreamToClient,
-                            "receive", None, io_kind(error.kind()), &mut accounting,
+                            "receive", "socks-udp-ipv6-read-failed", None,
+                            io_kind(error.kind()), &mut accounting,
                         );
                         break Err(SocksFailure::new("socks-udp-ipv6-read-failed", error.to_string()));
                     }
@@ -979,20 +983,12 @@ where
     if !peers.contains(&selected) && peers.len() >= limits.max_socks_udp_peers {
         return Err(UdpForwardFailure::PeerLimit(selected));
     }
-    observe(selected);
-    let send = match selected {
-        SocketAddr::V4(_) => {
-            timeout(
-                limits.upstream.write,
-                upstream_v4.send_to(payload, selected),
-            )
-            .await
-        }
-        SocketAddr::V6(_) => {
-            let socket = upstream_v6.ok_or(UdpForwardFailure::Ipv6Unavailable(selected))?;
-            timeout(limits.upstream.write, socket.send_to(payload, selected)).await
-        }
+    let socket = match selected {
+        SocketAddr::V4(_) => upstream_v4,
+        SocketAddr::V6(_) => upstream_v6.ok_or(UdpForwardFailure::Ipv6Unavailable(selected))?,
     };
+    observe(selected);
+    let send = timeout(limits.upstream.write, socket.send_to(payload, selected)).await;
     match send {
         Ok(Ok(written)) if written == payload.len() => Ok((selected, written)),
         Ok(Ok(_)) => Err(UdpForwardFailure::ShortWrite(selected)),
@@ -1130,6 +1126,7 @@ async fn handle_upstream_datagram(
                     connection_id,
                     GenericUdpDirection::UpstreamToClient,
                     "send",
+                    "socks-udp-client-send-failed",
                     Some(client_endpoint),
                     io_kind(error.kind()),
                     accounting,
@@ -1165,6 +1162,7 @@ fn emit_udp_socket_error(
     connection_id: u64,
     direction: GenericUdpDirection,
     operation: &'static str,
+    failure_code: &'static str,
     endpoint: Option<SocketAddr>,
     error_kind: &'static str,
     accounting: &mut ProtocolAccounting,
@@ -1180,6 +1178,7 @@ fn emit_udp_socket_error(
             ApplicationEventKind::UdpSocketError(UdpSocketError {
                 direction,
                 operation,
+                failure_code,
                 endpoint,
                 error_kind,
                 visibility: "platform-observed",
@@ -1806,7 +1805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepted_udp_is_observed_before_transport_availability() {
+    async fn unavailable_ipv6_transport_is_refused_before_observation() {
         let selected: SocketAddr = "[::1]:9".parse().unwrap();
         let authority = DestinationAuthority::parse("[::1]:9").unwrap();
         let upstream_v4 = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1830,6 +1829,6 @@ mod tests {
             result,
             Err(UdpForwardFailure::Ipv6Unavailable(address)) if address == selected
         ));
-        assert_eq!(observed, Some(selected));
+        assert_eq!(observed, None);
     }
 }

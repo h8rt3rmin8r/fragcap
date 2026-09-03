@@ -542,6 +542,7 @@ fn proxy_event_detail(kind: &ApplicationEventKind) -> Value {
         ApplicationEventKind::UdpSocketError(value) => json!({
             "direction": value.direction.as_str(),
             "operation": value.operation,
+            "failure_code": value.failure_code,
             "endpoint": value.endpoint.map(|address| address.to_string()),
             "error_kind": value.error_kind,
             "visibility": value.visibility,
