@@ -153,30 +153,25 @@ pub struct BypassPolicy {
 }
 
 impl BypassPolicy {
+    /// Validate endpoint-independent syntax before reserving a listener.
+    pub fn validate_inputs(inputs: &[String]) -> Result<(), PreflightRefusal> {
+        parse_bypass_inputs(inputs).map(|_| ())
+    }
+
     pub fn parse(listener: SocketAddr, inputs: &[String]) -> Result<Self, PreflightRefusal> {
         let listener = canonical_socket(listener);
-        let mut rules = BTreeSet::new();
-        for input in inputs {
-            for token in input.split(',') {
-                if token.trim().is_empty() {
-                    return Err(PreflightRefusal::new(
-                        "proxy-bypass-invalid",
-                        "proxy bypass contains an empty rule",
-                    ));
-                }
-                let rule = BypassRule::parse(token.trim())?;
-                if rule.matches(&listener.ip().to_string(), listener.port()) {
-                    return Err(PreflightRefusal::new(
-                        "proxy-bypass-infrastructure-collision",
-                        format!("rule {rule} includes the session proxy listener"),
-                    ));
-                }
-                rules.insert(rule);
+        let rules = parse_bypass_inputs(inputs)?;
+        for rule in &rules {
+            if rule.matches(&listener.ip().to_string(), listener.port()) {
+                return Err(PreflightRefusal::new(
+                    "proxy-bypass-infrastructure-collision",
+                    format!("rule {rule} includes the session proxy listener"),
+                ));
             }
         }
         Ok(Self {
             listener,
-            operator_rules: rules.into_iter().collect(),
+            operator_rules: rules,
         })
     }
 
@@ -231,6 +226,22 @@ impl BypassPolicy {
     }
 }
 
+fn parse_bypass_inputs(inputs: &[String]) -> Result<Vec<BypassRule>, PreflightRefusal> {
+    let mut rules = BTreeSet::new();
+    for input in inputs {
+        for token in input.split(',') {
+            if token.trim().is_empty() {
+                return Err(PreflightRefusal::new(
+                    "proxy-bypass-invalid",
+                    "proxy bypass contains an empty rule",
+                ));
+            }
+            rules.insert(BypassRule::parse(token.trim())?);
+        }
+    }
+    Ok(rules.into_iter().collect())
+}
+
 fn parse_bypass_rule(value: &str) -> Result<BypassRule, String> {
     if value == "*" {
         return Err("the complete-bypass wildcard is forbidden".to_string());
@@ -265,7 +276,7 @@ fn parse_bypass_rule(value: &str) -> Result<BypassRule, String> {
             port,
         });
     }
-    let dns = canonical_dns(raw_host.trim_start_matches('.'))?;
+    let dns = canonical_dns(raw_host.strip_prefix('.').unwrap_or(raw_host))?;
     Ok(BypassRule {
         host: BypassHost::DnsSuffix(dns),
         port,
@@ -726,6 +737,7 @@ mod tests {
             "user@example.com",
             "example..com",
             "example.com:0",
+            "..example.com",
             "192.0.2.1/24",
             "[2001:db8::1]",
         ] {

@@ -36,7 +36,7 @@
 - [x] CHK019 Can parser correctness be measured across input-order permutations? [Measurability, SC-001]
 - [x] CHK020 Can pre-effect refusal and environment isolation be demonstrated objectively? [Measurability, SC-002, SC-003]
 - [x] CHK021 Can local correctness and rebinding resistance be demonstrated without remote services? [Measurability, SC-004, SC-005]
-- [x] CHK022 Can decision conservation and zero bypass loss be computed exactly? [Measurability, SC-006]
+- [x] CHK022 Can observable decision conservation, unavailable bypass truth, and zero bypass loss be computed exactly? [Measurability, SC-006]
 - [x] CHK023 Can dependency neutrality and repository health be checked mechanically? [Measurability, SC-007]
 
 ## Notes

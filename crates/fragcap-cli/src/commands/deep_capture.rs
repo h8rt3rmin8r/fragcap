@@ -3150,13 +3150,19 @@ fn routing_decisions_json(observations: &[Observation]) -> serde_json::Value {
             None => proxied += 1,
             Some("proxy-listener") => infrastructure += 1,
             Some("destination-refused" | "local-destination-refused") => refused += 1,
+            Some("http" | "tls" | "tcp-opaque" | "udp-association")
+                if observation.protocol == "socks5" =>
+            {
+                proxied += 1;
+            }
             Some(_) => undetermined += 1,
         }
     }
     json!({
         "authority": "retained-proxy-observations",
         "proxied": proxied,
-        "bypassed": 0,
+        "bypassed": serde_json::Value::Null,
+        "bypassed_state": "unavailable-without-localized-packet-destination",
         "infrastructure": infrastructure,
         "refused": refused,
         "undetermined": undetermined,
@@ -3950,8 +3956,24 @@ mod tests {
         assert_eq!(summary["refused"], 1);
         assert_eq!(summary["infrastructure"], 1);
         assert_eq!(summary["undetermined"], 1);
-        assert_eq!(summary["bypassed"], 0);
+        assert!(summary["bypassed"].is_null());
+        assert_eq!(
+            summary["bypassed_state"],
+            "unavailable-without-localized-packet-destination"
+        );
         assert_eq!(summary["bypass_proxy_loss"], 0);
+    }
+
+    #[test]
+    fn successful_socks_observations_are_proxied_routes() {
+        for reason in ["http", "tls", "tcp-opaque", "udp-association"] {
+            let mut value = observation();
+            value.protocol = "socks5".to_string();
+            value.reason = Some(reason.to_string());
+            let summary = routing_decisions_json(&[value]);
+            assert_eq!(summary["proxied"], 1, "reason {reason}");
+            assert_eq!(summary["undetermined"], 0, "reason {reason}");
+        }
     }
 
     #[test]

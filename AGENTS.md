@@ -496,6 +496,10 @@ Capture milestone 3, and leaves Deep Capture incomplete until #334.
 Bare and leading-dot DNS inputs intentionally share domain-boundary semantics;
 this supersedes S122's initial exact-name distinction because conventional
 `NO_PROXY` clients can broaden a bare domain to its descendants.
+Proxy-retained evidence classifies successful, refused, and infrastructure
+routes from their terminal outcome. Its bypass count is explicitly unavailable
+until packet evidence localizes a direct destination; it is never reported as
+a factual zero from proxy silence.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

@@ -12,3 +12,8 @@ Conventional `NO_PROXY` consumers can treat a bare domain as including its
 descendants, so the typed policy now assigns that same domain-boundary meaning
 to bare and leading-dot inputs instead of authorizing a narrower rule than the
 child can enforce.
+
+Proxy-retained evidence cannot see traffic that went direct. Its bypass count
+is therefore null with an explicit unavailable state, while successful,
+refused, infrastructure, and undetermined proxy outcomes reconcile from each
+retained terminal observation. Proxy silence is never converted into zero.

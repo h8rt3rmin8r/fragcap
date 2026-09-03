@@ -274,5 +274,6 @@ is separate session infrastructure, controlled origins remain proxy-routed,
 and all uppercase and lowercase child proxy variables come from the reviewed
 plan. Requested names match before resolution, while every proxied answer is
 rechecked by the existing destination policy with no transparent fallback.
-Bypass is recorded as scope rather than proxy loss. S122 closes Native Deep
-Capture milestone 3; Deep Capture remains incomplete until #334.
+Bypass is recorded as scope rather than proxy loss; proxy-only evidence marks
+the direct bypass count unavailable instead of inferring zero. S122 closes
+Native Deep Capture milestone 3; Deep Capture remains incomplete until #334.

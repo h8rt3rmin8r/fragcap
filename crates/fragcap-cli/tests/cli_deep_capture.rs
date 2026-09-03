@@ -294,6 +294,11 @@ fn controlled_calibration_runs_reachability_then_tls() {
         reachability_manifest["proxy"]["routing_decisions"]["bypass_proxy_loss"],
         0
     );
+    assert!(reachability_manifest["proxy"]["routing_decisions"]["bypassed"].is_null());
+    assert_eq!(
+        reachability_manifest["proxy"]["routing_decisions"]["bypassed_state"],
+        "unavailable-without-localized-packet-destination"
+    );
     let compatibility: serde_json::Value = serde_json::from_slice(
         &std::fs::read(reachability_bundle.join("compatibility.json")).unwrap(),
     )
@@ -314,6 +319,7 @@ fn controlled_calibration_runs_reachability_then_tls() {
         serde_json::json!([".example.invalid", "192.0.2.0/24"])
     );
     assert_eq!(compatibility["routing_decisions"]["bypass_proxy_loss"], 0);
+    assert!(compatibility["routing_decisions"]["bypassed"].is_null());
 
     let store = Store::open(&local).unwrap();
     let facts = store.compatibility_facts_for_target(target_id).unwrap();

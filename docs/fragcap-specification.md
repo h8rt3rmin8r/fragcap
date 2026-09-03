@@ -4707,7 +4707,9 @@ matches the requested authority before DNS; every proxied answer is checked by
 the existing destination policy on every attempt, so local aliases, mixed
 answers, and rebinding cannot inherit permission. Plan and bundle evidence name
 the policy and routing decisions, and intentional bypass advances no proxy-loss
-counter. It closes #318 and the Native Deep Capture 3 milestone without a
+counter. Proxy-retained evidence cannot observe direct bypass traffic, so its
+bypass count is explicitly unavailable rather than a zero inferred from
+silence. It closes #318 and the Native Deep Capture 3 milestone without a
 dependency change or a Deep Capture completion claim before #334.
 Bare and leading-dot DNS inputs deliberately have the same apex-and-descendant
 meaning because conventional `NO_PROXY` consumers can otherwise widen a bare

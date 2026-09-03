@@ -25,7 +25,12 @@ Each localized record exposes:
 
 ## Summary
 
-The summary exposes counts for all five outcomes. Their sum reconciles the authority's localized decisions and explicitly unlocalized observations. It does not claim that traffic absent from both proxy and packet/process evidence was observed.
+The summary exposes numeric counts for outcomes visible to its declared
+authority. An outcome outside that authority is null with a stable unavailable
+state. Numeric outcomes reconcile the authority's retained observations. The
+summary does not claim that traffic absent from proxy or localized packet and
+process evidence was observed; in particular, proxy-only evidence cannot infer
+a direct bypass count from silence.
 
 ## Compatibility
 

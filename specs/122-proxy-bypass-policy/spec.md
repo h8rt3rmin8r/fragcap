@@ -48,11 +48,11 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 
 **Why this priority**: Treating intended bypass as loss makes accounting misleading, while omitting it makes scope changes invisible.
 
-**Independent Test**: Plan, route evidence, compatibility artifact, and manifest agree on policy identity and decision counts; matched bypasses are scoped decisions and advance no proxy-loss counter.
+**Independent Test**: Plan, route evidence, compatibility artifact, and manifest agree on policy identity and observable decision counts; direct bypasses remain scoped decisions, never proxy loss, and proxy-only evidence marks their count unavailable instead of inventing zero.
 
 **Acceptance Scenarios**:
 
-1. **Given** a destination matching one explicit rule, **When** evidence is reconciled, **Then** it records the canonical rule, requested destination, bypass outcome, and `operator-policy` authority without incrementing proxy loss.
+1. **Given** a destination matching one explicit rule, **When** a caller has localized destination evidence, **Then** policy evaluation returns the canonical rule, bypass outcome, and `operator-policy` authority without incrementing proxy loss; proxy-only bundle evidence marks the direct count unavailable.
 2. **Given** a proxied DNS name whose answers include a local or private address, **When** the proxy resolves it, **Then** each answer is rechecked by the destination policy and the connection refuses without transparent fallback.
 3. **Given** incomplete packet, process, or destination evidence, **When** the bundle finalizes, **Then** the policy remains visible and the undecidable observation is reported separately from bypassed, proxied, refused, and lost traffic.
 
@@ -83,9 +83,9 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 - **FR-009**: Bypass matching MUST evaluate the requested DNS authority before resolution; any destination that remains proxied MUST re-evaluate every resolved address through the existing destination policy on every connection attempt.
 - **FR-010**: DNS rebinding, mixed public/private answers, and answer-order changes MUST NOT convert a refused local destination into an allowed proxy destination or transparent bypass.
 - **FR-011**: The preauthorization plan MUST display canonical operator rules, built-in infrastructure exclusions, environment ownership, matching semantics, and the no-fallback rule.
-- **FR-012**: Route evidence and bundle metadata MUST distinguish `proxied`, `bypassed`, `infrastructure`, `refused`, and `undetermined` outcomes with stable reasons and decision authority.
-- **FR-013**: An intentional bypass MUST be counted as a scoped routing decision and MUST NOT increment proxy queue, transport, protocol, or storage loss.
-- **FR-014**: Decision accounting MUST reconcile all localized decisions plus explicitly unlocalized observations without double-counting one destination.
+- **FR-012**: Route evidence and bundle metadata MUST distinguish `proxied`, `bypassed`, `infrastructure`, `refused`, and `undetermined` outcomes with stable reasons and decision authority. An outcome not observable by that evidence authority MUST be explicitly unavailable rather than zero.
+- **FR-013**: An intentional bypass localized by destination evidence MUST be a scoped routing decision and MUST NOT increment proxy queue, transport, protocol, or storage loss. Proxy-only evidence MUST NOT infer a direct bypass count from silence.
+- **FR-014**: Decision accounting MUST reconcile all outcomes observable by its declared authority plus explicitly unlocalized observations without double-counting one destination.
 - **FR-015**: Malformed policy, infrastructure collision, and unsupported projection MUST refuse before external effects.
 - **FR-016**: Security tests MUST cover bare and leading-dot DNS boundaries, ports, IPv4 and IPv6 CIDRs, mapped addresses, listener aliases, localhost aliases, private ranges, mixed DNS answers, rebinding, inherited environment, duplicates, and malformed rules.
 - **FR-017**: S122 MUST update the master specification, outline, roadmap, glossary, changelog fragments, and agent context without claiming Deep Capture feature completion before issue #334.
@@ -107,7 +107,7 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 - **SC-003**: Ambient uppercase and lowercase proxy variables influence zero managed-child routing values across the controlled environment matrix.
 - **SC-004**: Listener aliases and all tested local/private destinations produce no unintended upstream connection, while each controlled origin remains exactly proxy-routed.
 - **SC-005**: Mixed-answer and rebinding tests refuse every non-public ungranted answer regardless of DNS order or earlier answers.
-- **SC-006**: For every controlled evidence case, proxied plus bypassed plus infrastructure plus refused plus undetermined decisions reconcile to the number of localized and explicitly unlocalized observations, and bypassed decisions add zero proxy loss.
+- **SC-006**: For every controlled evidence case, all decision counts observable by the declared authority reconcile to its retained observations, unavailable outcomes are named, and bypass adds zero proxy loss.
 - **SC-007**: All repository verification gates pass with no new dependency or lockfile package.
 
 ## Clarifications

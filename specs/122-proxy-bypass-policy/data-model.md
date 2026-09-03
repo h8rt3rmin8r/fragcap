@@ -80,12 +80,11 @@ Conserved count projection.
 
 Fields:
 
-- proxied
-- bypassed
-- infrastructure
-- refused
-- undetermined
+- proxied, infrastructure, refused, and undetermined counts when visible
+- bypassed count when localized destination evidence exists, otherwise null
+- a stable unavailable state for any count outside the evidence authority
 
 Invariant:
 
-The sum equals all localized decisions plus explicitly unlocalized observations in the summary authority.
+The numeric outcomes equal all observations visible to the declared summary
+authority. A direct bypass absent from proxy evidence is unavailable, not zero.

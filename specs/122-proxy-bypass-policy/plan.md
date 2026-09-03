@@ -120,7 +120,7 @@ Bypass matches the requested canonical hostname before resolution. If no bypass 
 
 ### 2026-09-03: Bypass is scope, not loss
 
-An intended bypass is recorded by rule and authority where destination evidence exists. It advances neither proxy loss nor refusal. Evidence that cannot be localized remains an explicit undetermined count rather than an inferred bypass.
+An intended bypass is recorded by rule and authority where localized destination evidence exists. It advances neither proxy loss nor refusal. Proxy-only evidence marks the bypass count unavailable rather than inferring zero; retained proxy failures remain explicit refused or undetermined outcomes.
 
 ## Complexity Tracking
 

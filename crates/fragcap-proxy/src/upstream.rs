@@ -776,13 +776,22 @@ fn retain_allowed_candidates(
 ) -> Result<Vec<SocketAddr>, UpstreamError> {
     let mut allowed = Vec::new();
     let mut saw_address = false;
+    let mut refusal_reason = None;
+    let mut mixed_refusals = false;
     for address in resolved {
         saw_address = true;
         let decision = policy.evaluate(address);
-        if !decision.allowed
-            || allowed
-                .iter()
-                .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
+        if !decision.allowed {
+            if refusal_reason.is_some_and(|reason| reason != decision.reason) {
+                mixed_refusals = true;
+            } else {
+                refusal_reason = Some(decision.reason);
+            }
+            continue;
+        }
+        if allowed
+            .iter()
+            .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
         {
             continue;
         }
@@ -803,7 +812,11 @@ fn retain_allowed_candidates(
     } else if allowed.is_empty() {
         Err(UpstreamError::new(
             UpstreamStage::Policy,
-            "destination-refused",
+            if mixed_refusals {
+                "destination-refused"
+            } else {
+                refusal_reason.unwrap_or("destination-refused")
+            },
         ))
     } else {
         Ok(allowed)
@@ -849,9 +862,11 @@ mod address_tests {
     use std::time::Duration;
 
     use super::{
-        canonical_address, interleave_families, race_candidates, retain_allowed_candidates,
-        DestinationPolicy, UpstreamCancellation, UpstreamStage, MAX_RESOLVED_CANDIDATES,
+        canonical_address, interleave_families, race_candidates, resolve_allowed_candidates,
+        retain_allowed_candidates, DestinationPolicy, UpstreamCancellation, UpstreamStage,
+        MAX_RESOLVED_CANDIDATES,
     };
+    use crate::DestinationAuthority;
 
     #[test]
     fn candidate_order_interleaves_families_from_the_resolver_preference() {
@@ -924,6 +939,19 @@ mod address_tests {
             policy.evaluate("127.0.0.2:443".parse().unwrap()).reason,
             "local-destination-refused"
         );
+    }
+
+    #[tokio::test]
+    async fn an_exact_listener_refusal_survives_resolution() {
+        let listener = "127.0.0.1:8080".parse().unwrap();
+        let error = resolve_allowed_candidates(
+            &DestinationAuthority::parse("127.0.0.1:8080").unwrap(),
+            &DestinationPolicy::new(listener),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "proxy-listener");
     }
 
     #[tokio::test]

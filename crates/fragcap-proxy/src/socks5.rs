@@ -2013,12 +2013,16 @@ fn failed_with_observation(
     failure: SocksFailure,
     observation: impl Into<Option<ProxyObservation>>,
 ) -> HttpRun {
+    let mut observation = observation.into();
+    if let Some(observation) = &mut observation {
+        observation.reason = Some(failure.code.to_string());
+    }
     let mut error = ProtocolError::new(failure.code, failure.detail);
     error.authentication_refused = failure.authentication_refused;
     error.policy_refused = failure.policy_refused;
     error.timed_out = failure.timed_out;
     HttpRun {
-        observations: observation.into().into_iter().collect(),
+        observations: observation.into_iter().collect(),
         accounting,
         failure: Some(error),
     }
@@ -2027,6 +2031,27 @@ fn failed_with_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_socks_observation_retains_the_terminal_failure_code() {
+        let value = observation(
+            "session",
+            1,
+            "127.0.0.1:1000".parse().unwrap(),
+            "127.0.0.1:1080".parse().unwrap(),
+            "example.com:443",
+            "tls",
+        );
+        let run = failed_with_observation(
+            ProtocolAccounting::default(),
+            SocksFailure::new("socks-forward-failed", "failed"),
+            value,
+        );
+        assert_eq!(
+            run.observations[0].reason.as_deref(),
+            Some("socks-forward-failed")
+        );
+    }
 
     #[test]
     fn udp_frames_cover_address_forms_and_refuse_fragmentation() {
