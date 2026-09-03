@@ -10,9 +10,110 @@ use fragcap::deep_capture::{
 };
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, BodyDirection, BodyOutcome, BodyRepresentation,
-    BodySegment, GrpcMessage, MetadataBlock, MetadataField, MetadataKind, ProtocolVersion,
-    StreamingEvent, StreamingOutcome,
+    BodySegment, GenericStreamChunk, GenericStreamDirection, GenericStreamOutcome,
+    GenericStreamProvenance, GrpcMessage, MetadataBlock, MetadataField, MetadataKind,
+    ProtocolVersion, StreamingEvent, StreamingOutcome,
 };
+
+#[test]
+fn generic_stream_chunks_preserve_provenance_and_omission() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("generic.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-116", 8).unwrap();
+    let sink = lease.sink();
+    for chunk in [
+        GenericStreamChunk {
+            direction: GenericStreamDirection::ClientToUpstream,
+            provenance: GenericStreamProvenance::TlsDecrypted,
+            offset: 0,
+            observed_len: 3,
+            bytes: Bytes::from_static(b"abc"),
+            outcome: GenericStreamOutcome::Complete,
+        },
+        GenericStreamChunk {
+            direction: GenericStreamDirection::UpstreamToClient,
+            provenance: GenericStreamProvenance::TlsDecrypted,
+            offset: 0,
+            observed_len: 5,
+            bytes: Bytes::new(),
+            outcome: GenericStreamOutcome::RetentionLimit,
+        },
+    ] {
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session-116",
+                7,
+                None,
+                None,
+                ApplicationEventKind::GenericStreamChunk(chunk),
+            )),
+            fragcap_proxy::EventDisposition::Accepted
+        );
+    }
+    drop(sink);
+    lease.finish().unwrap();
+    let complete = read_application_prefix(&path).unwrap();
+    assert_eq!(complete.status, ApplicationStreamStatus::Complete);
+    let chunks = complete
+        .records
+        .iter()
+        .filter(|record| record["type"] == "generic.stream_chunk")
+        .collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0]["provenance"], "tls-decrypted");
+    assert_eq!(chunks[0]["payload"], "YWJj");
+    assert_eq!(chunks[1]["outcome"], "retention-limit");
+    assert!(chunks[1].get("payload").is_none());
+    let trailer = complete.records.last().unwrap();
+    assert_eq!(trailer["generic_stream_bytes_observed"], 8);
+    assert_eq!(trailer["generic_stream_bytes_retained"], 3);
+    assert_eq!(trailer["generic_stream_bytes_omitted"], 5);
+}
+
+#[test]
+fn generic_stream_queue_pressure_counts_observed_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("generic-pressure.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-116-pressure", 1).unwrap();
+    let sink = lease.sink();
+    let mut queue_full = 0_u64;
+    for offset in 0..10_000 {
+        let disposition = sink.try_emit(ApplicationEvent::now(
+            "session-116-pressure",
+            9,
+            None,
+            None,
+            ApplicationEventKind::GenericStreamChunk(GenericStreamChunk {
+                direction: GenericStreamDirection::ClientToUpstream,
+                provenance: GenericStreamProvenance::TcpPlaintext,
+                offset: offset * 8,
+                observed_len: 8,
+                bytes: Bytes::from_static(b"pressure"),
+                outcome: GenericStreamOutcome::Complete,
+            }),
+        ));
+        queue_full += u64::from(disposition == fragcap_proxy::EventDisposition::QueueFull);
+    }
+    assert!(queue_full > 0);
+    assert_eq!(
+        sink.accounting().generic_stream_bytes_queue_dropped,
+        queue_full * 8
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    let gap = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "application.gap")
+        .unwrap();
+    assert_eq!(gap["generic_stream_bytes_queue_dropped"], queue_full * 8);
+    assert_eq!(
+        stream.records.last().unwrap()["generic_stream_bytes_queue_dropped"],
+        queue_full * 8
+    );
+}
 
 #[test]
 fn version_two_stream_is_live_binary_safe_and_trailer_complete() {

@@ -208,3 +208,13 @@ contacted peers may reply, fragmentation is explicitly unsupported, and all
 drops and terminal cleanup are counted. Generic TCP and non-HTTP TLS semantics
 remain #312, generic UDP payload evidence remains #313, and Deep Capture remains
 incomplete until #334.
+
+S116 (`specs/116-generic-tcp-tls`) follows S115 and closes #312 at the generic
+TCP and non-HTTP TLS evidence boundary. Authenticated SOCKS5 CONNECT retains
+bounded directional plaintext or opaque encrypted chunks. Trusted no-ALPN HTTP
+CONNECT can retain protocol-unknown decrypted chunks after the existing
+client-facing session authority and independently verified upstream TLS both
+succeed. HTTP protocol selection remains unchanged, forwarding is independent
+from evidence retention, and interception failure never downgrades silently.
+Generic UDP payload evidence remains #313, and Deep Capture remains incomplete
+until #334.

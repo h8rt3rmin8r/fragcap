@@ -2,14 +2,25 @@
 
 use std::io::{Read, Seek, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fragcap_proxy::{
-    tls_client_config_with_roots, tls_client_config_with_roots_and_identity, ClientIdentity,
-    DestinationPolicy, NativeProxyBackend, NativeProxyConfig, SessionKeyLog,
+    tls_client_config_with_roots, tls_client_config_with_roots_and_identity, ApplicationEvent,
+    ApplicationEventKind, ApplicationEventSink, ClientIdentity, DestinationPolicy,
+    EventDisposition, NativeProxyBackend, NativeProxyConfig, SessionKeyLog,
 };
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+
+#[derive(Default)]
+struct Collector(Mutex<Vec<ApplicationEvent>>);
+
+impl ApplicationEventSink for Collector {
+    fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+        self.0.lock().unwrap().push(event);
+        EventDisposition::Accepted
+    }
+}
 
 fn read_head(stream: &mut impl Read) -> Vec<u8> {
     let mut head = Vec::new();
@@ -81,7 +92,11 @@ fn failing_tls_origin() -> (
     (address, certificate, task)
 }
 
-fn round_trip(version: &'static rustls::SupportedProtocolVersion, session: &str) {
+fn round_trip(
+    version: &'static rustls::SupportedProtocolVersion,
+    session: &str,
+    advertise_http_alpn: bool,
+) {
     let (origin, origin_certificate, server) = tls_origin(version);
     let config = NativeProxyConfig::new(
         "127.0.0.1:0".parse().unwrap(),
@@ -131,7 +146,9 @@ fn round_trip(version: &'static rustls::SupportedProtocolVersion, session: &str)
         .unwrap()
         .with_root_certificates(client_roots)
         .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    if advertise_http_alpn {
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    }
     let connection = rustls::ClientConnection::new(
         Arc::new(client_config),
         ServerName::try_from("localhost").unwrap().to_owned(),
@@ -171,7 +188,7 @@ fn round_trip(version: &'static rustls::SupportedProtocolVersion, session: &str)
     assert!(boundaries.iter().all(|facts| {
         facts.requested_identity == format!("localhost:{}", origin.port())
             && facts.version.as_deref() == Some(expected_version)
-            && facts.alpn.as_deref() == Some(b"http/1.1".as_slice())
+            && facts.alpn.as_deref() == advertise_http_alpn.then_some(b"http/1.1".as_slice())
     }));
     key_log_file.rewind().unwrap();
     let mut secrets = String::new();
@@ -197,12 +214,124 @@ fn round_trip(version: &'static rustls::SupportedProtocolVersion, session: &str)
 
 #[test]
 fn tls12_connect_performs_two_verified_boundaries_and_relays_http() {
-    round_trip(&rustls::version::TLS12, "s104-https-tls12");
+    round_trip(&rustls::version::TLS12, "s104-https-tls12", true);
 }
 
 #[test]
 fn tls13_connect_performs_two_verified_boundaries_and_relays_http() {
-    round_trip(&rustls::version::TLS13, "s104-https-tls13");
+    round_trip(&rustls::version::TLS13, "s104-https-tls13", true);
+}
+
+#[test]
+fn no_alpn_http_prefix_retains_the_http_engine() {
+    round_trip(&rustls::version::TLS13, "s116-no-alpn-http", false);
+}
+
+#[test]
+fn no_alpn_connect_records_protocol_unknown_decrypted_chunks() {
+    let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let origin_certificate = CertificateDer::from(generated.cert);
+    let private = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let origin_config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![origin_certificate.clone()], private.into())
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(origin_config)).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, tcp);
+        let mut request = [0_u8; 5];
+        tls.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"\x01game");
+        tls.write_all(b"\x02reply").unwrap();
+        tls.flush().unwrap();
+    });
+
+    let config = NativeProxyConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        8,
+        16 * 1024,
+        Duration::from_secs(2),
+    )
+    .unwrap()
+    .with_session_id("s116-generic-tls")
+    .unwrap();
+    let mut policy = DestinationPolicy::new(config.listen());
+    policy.grant_for_test(origin);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(origin_certificate).unwrap();
+    let collector = Arc::new(Collector::default());
+    let mut lease = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_tls_client_config(tls_client_config_with_roots(roots).unwrap())
+        .with_application_event_sink(collector.clone())
+        .start(Duration::from_secs(2))
+        .unwrap();
+    let mut tcp = TcpStream::connect(lease.endpoint()).unwrap();
+    let authorization = lease.capability_proof().proxy_authorization();
+    write!(
+        tcp,
+        "CONNECT localhost:{} HTTP/1.1\r\nHost: localhost:{}\r\nProxy-Authorization: {}\r\n\r\n",
+        origin.port(),
+        origin.port(),
+        authorization.as_str(),
+    )
+    .unwrap();
+    assert_eq!(
+        read_head(&mut tcp),
+        b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    );
+    let mut client_roots = rustls::RootCertStore::empty();
+    client_roots
+        .add(CertificateDer::from(lease.ca_der().to_vec()))
+        .unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let client_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(client_roots)
+        .with_no_client_auth();
+    let connection = rustls::ClientConnection::new(
+        Arc::new(client_config),
+        ServerName::try_from("localhost").unwrap().to_owned(),
+    )
+    .unwrap();
+    let mut tls = rustls::StreamOwned::new(connection, tcp);
+    tls.write_all(b"\x01game").unwrap();
+    tls.flush().unwrap();
+    let mut response = [0_u8; 6];
+    tls.read_exact(&mut response).unwrap();
+    assert_eq!(&response, b"\x02reply");
+    drop(tls);
+    server.join().unwrap();
+
+    let report = lease.cleanup(Duration::from_secs(2));
+    assert_eq!(
+        report.observation.protocol.generic_streams_tls_intercepted,
+        1
+    );
+    assert_eq!(
+        report.observation.protocol.generic_stream_bytes_observed,
+        11
+    );
+    assert!(report.observation.application.iter().any(|observation| {
+        observation.protocol == "tls-protocol-unknown"
+            && observation.inspectability == "protocol-unknown"
+    }));
+    let events = collector.0.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            ApplicationEventKind::GenericStreamChunk(chunk)
+                if chunk.provenance == fragcap_proxy::GenericStreamProvenance::TlsDecrypted
+                    && chunk.bytes.as_ref() == b"\x01game"
+        )
+    }));
 }
 
 #[test]

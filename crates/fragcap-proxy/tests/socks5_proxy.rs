@@ -116,7 +116,8 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
         assert_eq!(request, b"opaque request");
         stream.write_all(b"opaque response").unwrap();
     });
-    let mut lease = start_proxy(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with(address, ProtocolLimits::default(), Some(collector.clone()));
     let endpoint = lease.endpoint();
     let password = lease.capability_proof().proxy_password();
     let mut client = TcpStream::connect(endpoint).unwrap();
@@ -136,6 +137,24 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
     assert_eq!(report.observation.protocol.socks_tcp_opaque, 1);
     assert_eq!(report.observation.protocol.socks_client_bytes, 14);
     assert_eq!(report.observation.protocol.socks_upstream_bytes, 15);
+    assert_eq!(report.observation.protocol.generic_streams_plain, 1);
+    assert_eq!(
+        report.observation.protocol.generic_stream_bytes_observed,
+        29
+    );
+    assert_eq!(
+        report.observation.protocol.generic_stream_bytes_retained,
+        29
+    );
+    assert!(collector.0.lock().unwrap().iter().any(|event| {
+        matches!(
+            &event.kind,
+            ApplicationEventKind::GenericStreamChunk(chunk)
+                if chunk.provenance == fragcap_proxy::GenericStreamProvenance::TcpPlaintext
+                    && chunk.direction == fragcap_proxy::GenericStreamDirection::ClientToUpstream
+                    && chunk.bytes.as_ref() == b"opaque request"
+        )
+    }));
 }
 
 #[test]
@@ -208,7 +227,8 @@ fn tls_prefix_is_classified_without_consuming_it() {
         stream.read_exact(&mut received).unwrap();
         assert_eq!(received, payload);
     });
-    let mut lease = start_proxy(address);
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy_with(address, ProtocolLimits::default(), Some(collector.clone()));
     let password = lease.capability_proof().proxy_password();
     let mut client = TcpStream::connect(lease.endpoint()).unwrap();
     client
@@ -222,6 +242,15 @@ fn tls_prefix_is_classified_without_consuming_it() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.socks_tls, 1);
     assert_eq!(report.observation.protocol.socks_client_bytes, 7);
+    assert_eq!(report.observation.protocol.generic_streams_tls_opaque, 1);
+    assert!(collector.0.lock().unwrap().iter().any(|event| {
+        matches!(
+            &event.kind,
+            ApplicationEventKind::GenericStreamChunk(chunk)
+                if chunk.provenance == fragcap_proxy::GenericStreamProvenance::TlsEncrypted
+                    && chunk.bytes.as_ref() == payload
+        )
+    }));
 }
 
 #[test]

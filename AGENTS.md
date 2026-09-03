@@ -420,6 +420,17 @@ cancelled outcomes remain counted. Evidence is metadata-only, generic UDP
 payload truth remains #313, and Deep Capture remains incomplete until #334.
 S115 adds no dependency or lockfile package.
 
+S116 closes #312 at the generic TCP and non-HTTP TLS evidence boundary.
+Authenticated SOCKS5 CONNECT now retains bounded directional plaintext or
+opaque encrypted chunks, while trusted no-ALPN HTTP CONNECT can retain
+protocol-unknown decrypted chunks after client-facing session-CA TLS and
+separately verified upstream TLS both succeed. HTTP ALPN and recognizable
+HTTP/1.1 retain the existing protocol engines. Forwarding remains independent
+from retention, every omitted byte and queue loss is counted, and failed trust,
+pinning, client-auth, protocol, or transport boundaries never silently
+downgrade. S116 adds no dependency or lockfile package, generic UDP remains
+#313, and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

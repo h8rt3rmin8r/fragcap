@@ -131,6 +131,7 @@ enforcement.
 | 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds authenticated native SOCKS5 TCP routing (issue #310).** Extends sections 17.2.1, 19, 25, and 28.1. The shared loopback listener accepts only RFC 1929 username/password credentials bound to the current session capability, supports bounded CONNECT for IPv4, IPv6, and proxy-resolved domain destinations under the existing upstream policy, preserves full-duplex bytes and half-close, and records typed negotiation, destination, classification, transfer, and terminal evidence. UDP ASSOCIATE and generic TCP payload semantics remain deferred, and Deep Capture remains incomplete until #334. |
 | 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds the explicit warm-to-cold Deep Capture workflow (issue #309).** Extends sections 17.2.1, 26, 28, and 29. A selected bounded workflow reports identity-uncertain warm image observations, waits while the operator uses normal application shutdown, freshly resolves and prepares the cold launch, and requires a second authorization before effects. fragcap performs no process-control action or force-kill fallback. |
 | 0.1.38-draft | 2026-09-02 | W. Thompson | **Adds scoped SOCKS5 UDP association (issue #311).** Extends sections 19, 25, and 28.1. One authenticated TCP control connection owns one finite UDP relay with immutable client endpoint pinning, proxy-owned domain resolution, existing destination policy, fixed family sockets, bounded exact contacted-peer mappings, reply-source validation, explicit fragmentation refusal, metadata-only evidence, loss conservation, and terminal cleanup. Generic UDP payload evidence remains #313, and Deep Capture remains incomplete until #334. |
+| 0.1.39-draft | 2026-09-02 | W. Thompson | **Adds bounded generic TCP and non-HTTP TLS evidence (issue #312).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated SOCKS5 tunnels retain bounded directional plaintext or encrypted chunks with explicit provenance, while trusted no-ALPN CONNECT tunnels may terminate under the session authority and retain protocol-unknown decrypted chunks after separately verified upstream TLS. Forwarding remains independent from retention, HTTP keeps its existing engines, and trust, pinning, client-auth, protocol, and transport failures never silently downgrade. Generic UDP remains #313, and Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3480,10 +3481,10 @@ support is exact:
 | WebSocket | Packets and attribution | Verified HTTP/1.1 upgrades and RFC 8441 streams retain bounded raw frames, masking and fragmentation facts, derived messages, and negotiated per-message compression outcomes |
 | Server-Sent Events | Packets and attribution | Identity `text/event-stream` responses retain bounded incremental fields, comments, events, and reconnect metadata while raw body bytes remain authoritative |
 | gRPC | Packets and attribution | HTTP/2 gRPC calls retain method and metadata plus bounded opaque message envelopes, compression flags, and terminal status; protobuf fields are not inferred without schemas |
-| Non-HTTP TLS | Encrypted packets and attribution | Metadata-only proxy observation; no custom application dissection |
+| Non-HTTP TLS | Encrypted packets and attribution | SOCKS routing retains bounded opaque encrypted chunks; trusted no-ALPN CONNECT may retain bounded decrypted protocol-unknown chunks after two verified TLS boundaries, with no custom application dissection |
 | QUIC | UDP packets and attribution | Unsupported by the current HTTP proxy path; no QUIC routing or decryption claim |
 | UDP | Packets, attribution, and payload bytes unless disabled | Unsupported by the current proxy path; no generic UDP proxy inspection |
-| Plaintext | Packets, attribution, and payload bytes unless disabled | Plaintext HTTP follows the HTTP row; arbitrary plaintext protocols have no generic application dissector |
+| Plaintext | Packets, attribution, and payload bytes unless disabled | Plaintext HTTP follows the HTTP row; authenticated SOCKS5 TCP retains bounded directional protocol-unknown chunks without a custom dissector |
 
 The `full` inspectability fact means that the proxy observed supported HTTP
 semantics for that run. Metadata fidelity and body retention outcomes are
@@ -4578,6 +4579,14 @@ spoofed, unsolicited, refused, saturated, failed, timed-out, and cancelled
 outcomes are counted. Evidence retains endpoint and length metadata without UDP
 payloads or inferred remote endpoints. It closes #311 while generic UDP payload
 truth remains #313.
+S116 adds bounded generic TCP evidence to authenticated SOCKS5 CONNECT and
+distinguishes plaintext from byte-transparent encrypted TLS provenance. Trusted
+HTTP CONNECT sessions with no negotiated HTTP protocol use the existing session
+authority and independently verified upstream TLS, then retain decrypted chunks
+as protocol-unknown evidence. HTTP ALPN and recognizable HTTP/1.1 remain with
+the existing HTTP engines. Retention never gates forwarding, and failed trust,
+pinning, client-auth, protocol, or transport boundaries do not silently
+downgrade. It closes #312 while generic UDP remains #313.
 
 The required dependency direction is:
 
@@ -4622,7 +4631,7 @@ The protocol and launch matrix is normative:
 | WebSocket | Native HTTP/1.1 and RFC 8441 frame and message evidence | S106, #295 |
 | SSE | Native incremental identity event-stream fields and events | S106, #298 |
 | gRPC | Native HTTP/2 opaque envelopes, compression flags, and status | S106, #299 |
-| Generic TCP and non-HTTP TLS | SOCKS-routed connections carry metadata-only classification and byte counts; payload semantics remain unavailable | #312 |
+| Generic TCP and non-HTTP TLS | Bounded directional plaintext, opaque encrypted, or intercepted decrypted chunks with exact provenance and no custom semantic inference | S116, #312 |
 | SOCKS5 TCP | Native session-authenticated CONNECT for IPv4, IPv6, and proxy-resolved domains | S114, #310 |
 | SOCKS5 UDP ASSOCIATE | Native control-owned relay for IPv4, IPv6, and proxy-resolved domains with endpoint pinning, exact peer validation, finite mappings, and metadata-only loss accounting | S115, #311 |
 | Generic UDP | Packet truth only | #313 |

@@ -83,6 +83,7 @@ the owning category page.
 - [Fragment identity](capture-and-networking.md#fragment-identity)
 - [Fragment identity table](capture-and-networking.md#fragment-identity-table)
 - [Game profile](platform-and-distribution.md#game-profile)
+- [Generic stream evidence](capture-and-networking.md#generic-stream-evidence)
 - [Golden file](file-and-wire-formats.md#golden-file)
 - [Handle](process-and-attribution.md#handle)
 - [HAR](file-and-wire-formats.md#har)
