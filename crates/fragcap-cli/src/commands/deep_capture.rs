@@ -1019,6 +1019,7 @@ struct LibraryArtifactAdapter<'e, 'w> {
     family: DeepCaptureProxyFamilyArg,
     protocol: Option<CompatibilityProtocol>,
     routing: Option<fragcap::deep_capture::RoutingPlan>,
+    owner_lease: Option<crate::doctor::residue::SessionOwnerLease>,
 }
 
 impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
@@ -1037,7 +1038,10 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         fragcap::deep_capture::prepare_bundle(&plan.bundle)
             .and_then(|()| {
                 if let Some(root) = paths::deep_capture_session_dir() {
-                    crate::doctor::fix::register_session_owner(&root, &plan.bundle)?;
+                    self.owner_lease = Some(crate::doctor::fix::register_session_owner(
+                        &root,
+                        &plan.bundle,
+                    )?);
                 }
                 Ok(())
             })
@@ -1824,6 +1828,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             family: args.proxy_family,
             protocol: selected_protocol,
             routing: None,
+            owner_lease: None,
         }),
         events: Box::new(LibraryEventAdapter {
             args,

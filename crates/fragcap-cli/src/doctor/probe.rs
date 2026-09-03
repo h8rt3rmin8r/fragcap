@@ -329,6 +329,24 @@ fn read_target_entry_count() -> Option<usize> {
 fn deep_capture_probe() -> DeepCaptureInputs {
     let session_dir = crate::paths::deep_capture_session_dir();
     let session_dir_present = session_dir.as_ref().is_some_and(|p| p.is_dir());
+    #[cfg(windows)]
+    let native_residue = super::residue::inventory(session_dir.as_deref());
+    #[cfg(not(windows))]
+    let mut native_residue = super::residue::inventory(session_dir.as_deref());
+    #[cfg(not(windows))]
+    native_residue
+        .findings
+        .push(super::residue::ResourceFinding {
+            session_id: "platform".to_string(),
+            bundle: std::path::PathBuf::new(),
+            resource_id: "native-runtime".to_string(),
+            kind: "runtime".to_string(),
+            state: "unsupported".to_string(),
+            health: super::residue::ResidueHealth::Unsupported,
+            recoverable: false,
+            ownership_authority: "platform".to_string(),
+            detail: "native Deep Capture is available only on Windows".to_string(),
+        });
     let scan = scan_deep_capture_root(session_dir.as_deref());
     let (proxy_backend, proxy_backend_error) = proxy_backend_status();
     let ca = if scan.errors.is_empty() {
@@ -345,11 +363,7 @@ fn deep_capture_probe() -> DeepCaptureInputs {
         ipv6_loopback: loopback_readiness("[::1]:0"),
         analyzer_keylog_configured: std::env::var_os("SSLKEYLOGFILE").is_some(),
         ca,
-        occupied_proxy_ports: None,
-        orphaned_proxy_processes: None,
-        stale_manifests: scan.stale_manifests,
-        stale_tls_key_logs: scan.stale_tls_key_logs,
-        sensitive_artifacts: scan.sensitive_artifacts,
+        native_residue,
     }
 }
 
@@ -633,7 +647,7 @@ fn observed_store(thumbprint: &str, inventory: &CaInventory) -> Option<String> {
     }
 }
 
-#[cfg(any(test, windows))]
+#[cfg(test)]
 fn cleanup_targets(
     identities: &[OwnedCaIdentity],
     inventory: &CaInventory,
@@ -710,32 +724,6 @@ fn probe_ca(manifests: &[PathBuf]) -> DeepCaptureCa {
     }
 }
 
-#[cfg(windows)]
-pub(crate) fn ca_cleanup_targets(root: &std::path::Path) -> Result<Vec<(String, String)>, String> {
-    let scan = scan_deep_capture_residue(root);
-    if !scan.errors.is_empty() {
-        return Err(scan.errors.join("; "));
-    }
-    let identities = manifest_ca_identities(&scan.manifests)?;
-    if identities.is_empty() {
-        return Ok(Vec::new());
-    }
-    let inventory = read_ca_inventory()?;
-    Ok(cleanup_targets(&identities, &inventory))
-}
-
-#[cfg(not(windows))]
-pub(crate) fn ca_cleanup_targets(root: &std::path::Path) -> Result<Vec<(String, String)>, String> {
-    let scan = scan_deep_capture_residue(root);
-    if !scan.errors.is_empty() {
-        return Err(scan.errors.join("; "));
-    }
-    if manifest_ca_identities(&scan.manifests)?.is_empty() {
-        return Ok(Vec::new());
-    }
-    Err("Windows certificate stores are unavailable on this platform".to_string())
-}
-
 pub(crate) fn manifest_declared_artifacts(
     manifest: &std::path::Path,
     stale_tls_key_logs: &mut Vec<PathBuf>,
@@ -780,14 +768,6 @@ pub(crate) fn manifest_declared_artifacts(
             _ => {}
         }
     }
-}
-
-pub(crate) fn manifest_declared_cleanup_paths(manifest: &std::path::Path) -> Vec<PathBuf> {
-    let mut tls = Vec::new();
-    let mut sensitive = Vec::new();
-    manifest_declared_artifacts(manifest, &mut tls, &mut sensitive);
-    tls.extend(sensitive);
-    tls
 }
 
 fn safe_manifest_relative_path(path: &str) -> Option<PathBuf> {
