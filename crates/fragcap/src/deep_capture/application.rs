@@ -1319,7 +1319,9 @@ fn classification_json(value: &ProtocolClassification) -> Value {
 }
 
 fn application_event_classification(event: &ApplicationEvent) -> ProtocolClassification {
-    use fragcap_proxy::{GenericStreamOutcome, GenericStreamProvenance, GenericUdpOutcome};
+    use fragcap_proxy::{
+        GenericStreamOutcome, GenericStreamProvenance, GenericUdpOutcome, StreamingOutcome,
+    };
 
     let identified = |family, inspectability, reason| {
         if family == TrafficFamily::Unknown {
@@ -1356,7 +1358,39 @@ fn application_event_classification(event: &ApplicationEvent) -> ProtocolClassif
                 | fragcap_proxy::StreamingEvent::GrpcMessage(_)
                 | fragcap_proxy::StreamingEvent::GrpcTerminal { .. } => TrafficFamily::Grpc,
             };
-            identified(family, InspectabilityState::Full, None)
+            match streaming_event_outcome(value) {
+                None | Some(StreamingOutcome::Complete) => {
+                    identified(family, InspectabilityState::Full, None)
+                }
+                Some(StreamingOutcome::IntentionallyOmitted) => {
+                    identified(family, InspectabilityState::MetadataOnly, None)
+                }
+                Some(StreamingOutcome::Malformed | StreamingOutcome::InvalidUtf8) => {
+                    ProtocolClassification::new(
+                        family,
+                        DetectionState::Failed,
+                        InspectabilityState::MetadataOnly,
+                        Some(ClassificationReason::ParserFailed),
+                    )
+                    .expect("streaming parser failure classification is valid")
+                }
+                Some(StreamingOutcome::UnsupportedCompression) => ProtocolClassification::new(
+                    family,
+                    DetectionState::Unsupported,
+                    InspectabilityState::Unavailable,
+                    Some(ClassificationReason::UnsupportedVersion),
+                )
+                .expect("unsupported streaming classification is valid"),
+                Some(
+                    StreamingOutcome::Partial
+                    | StreamingOutcome::Limit
+                    | StreamingOutcome::Cancelled,
+                ) => identified(
+                    family,
+                    InspectabilityState::MetadataOnly,
+                    Some(ClassificationReason::Truncated),
+                ),
+            }
         }
         ApplicationEventKind::Body(value) => {
             let family = protocol_family();
@@ -1532,6 +1566,23 @@ fn application_event_classification(event: &ApplicationEvent) -> ProtocolClassif
             None,
         )
         .expect("unknown application classification is valid"),
+    }
+}
+
+fn streaming_event_outcome(
+    event: &fragcap_proxy::StreamingEvent,
+) -> Option<fragcap_proxy::StreamingOutcome> {
+    use fragcap_proxy::StreamingEvent;
+    match event {
+        StreamingEvent::WebSocketFrame(value) => Some(value.outcome),
+        StreamingEvent::WebSocketMessage(value) => Some(value.outcome),
+        StreamingEvent::WebSocketTerminal { outcome, .. }
+        | StreamingEvent::SseTerminal { outcome }
+        | StreamingEvent::GrpcTerminal { outcome, .. } => Some(*outcome),
+        StreamingEvent::SseField(value) => Some(value.outcome),
+        StreamingEvent::SseEvent(value) => Some(value.outcome),
+        StreamingEvent::GrpcMessage(value) => Some(value.outcome),
+        StreamingEvent::GrpcCall { .. } => None,
     }
 }
 
@@ -2273,7 +2324,39 @@ fn trailer_reconciles(records: &[Value]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fragcap_proxy::{ApplicationEvent, ApplicationEventKind, StreamTerminal};
+    use fragcap_proxy::{
+        ApplicationEvent, ApplicationEventKind, BodyDirection, ProtocolVersion, StreamTerminal,
+        StreamingEvent, StreamingOutcome,
+    };
+
+    #[test]
+    fn streaming_failures_and_limits_are_not_classified_as_full() {
+        let classification = |outcome| {
+            application_event_classification(&ApplicationEvent::now(
+                "session",
+                7,
+                Some(1),
+                Some(ProtocolVersion::Http11),
+                ApplicationEventKind::Streaming(StreamingEvent::WebSocketTerminal {
+                    direction: BodyDirection::Response,
+                    outcome,
+                }),
+            ))
+        };
+
+        let malformed = classification(StreamingOutcome::Malformed);
+        assert_eq!(malformed.detection(), DetectionState::Failed);
+        assert_eq!(
+            malformed.inspectability(),
+            InspectabilityState::MetadataOnly
+        );
+        assert_eq!(malformed.reason(), Some(ClassificationReason::ParserFailed));
+
+        let limited = classification(StreamingOutcome::Limit);
+        assert_eq!(limited.detection(), DetectionState::Identified);
+        assert_eq!(limited.inspectability(), InspectabilityState::MetadataOnly);
+        assert_eq!(limited.reason(), Some(ClassificationReason::Truncated));
+    }
 
     #[test]
     fn generic_udp_queue_loss_identity_is_bounded_with_exact_overflow() {

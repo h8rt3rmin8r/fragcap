@@ -214,6 +214,18 @@ fn native_reason_mapping_preserves_required_distinctions() {
             Some("http-protocol-failed"),
             "parser-failed",
         ),
+        (
+            "http",
+            "metadata-only",
+            Some("http-response-head-invalid"),
+            "parser-failed",
+        ),
+        (
+            "http",
+            "metadata-only",
+            Some("http-response-head-incomplete"),
+            "parser-failed",
+        ),
         ("http", "full", Some("retention-limit"), "truncated"),
         (
             "http",

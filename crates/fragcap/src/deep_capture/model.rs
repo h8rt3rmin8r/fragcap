@@ -629,6 +629,8 @@ pub struct TerminalSnapshot {
     pub artifacts: ArtifactRequests,
     pub outcome: SessionOutcome,
     pub observations: Vec<CompatibilityObservation>,
+    /// Proxy observations discarded before the retained collection was produced.
+    pub classification_records_lost: u64,
     pub route_verification: Option<super::RouteVerification>,
     pub failures: Vec<StageFailure>,
     pub fact_writes: Vec<FactWriteResult>,
@@ -644,7 +646,7 @@ impl TerminalSnapshot {
             self.observations
                 .iter()
                 .map(|observation| &observation.classification),
-            0,
+            self.classification_records_lost,
         )
     }
 }

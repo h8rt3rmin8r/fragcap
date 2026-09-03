@@ -159,7 +159,12 @@ impl ClassificationReason {
             Some(Self::ClientAuthRequired)
         } else if value.contains("unsupported-version") || value.contains("alpn-unsupported") {
             Some(Self::UnsupportedVersion)
-        } else if value.contains("parse") || value.contains("protocol-failed") {
+        } else if value.contains("parse")
+            || value.contains("protocol-failed")
+            || is_http_parser_failure(value)
+            || ((value.starts_with("websocket-") || value.starts_with("grpc-"))
+                && (value.contains("invalid") || value.contains("malformed")))
+        {
             Some(Self::ParserFailed)
         } else if value.contains("retention-limit") || value == "truncated" {
             Some(Self::Truncated)
@@ -171,6 +176,28 @@ impl ClassificationReason {
             None
         }
     }
+}
+
+fn is_http_parser_failure(value: &str) -> bool {
+    value.starts_with("http-")
+        && [
+            "-head-",
+            "-header-",
+            "-line-",
+            "authority-missing",
+            "body-early-eof",
+            "chunk-",
+            "content-length-",
+            "framing-",
+            "host-",
+            "method-",
+            "status-",
+            "target-",
+            "transfer-coding-",
+            "version-",
+        ]
+        .iter()
+        .any(|fragment| value.contains(fragment))
 }
 
 /// Invalid combination of otherwise known classification labels.

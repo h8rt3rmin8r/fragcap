@@ -446,6 +446,7 @@ impl ProxyBackend for NativeProxyAdapter {
             application_artifact: application_artifact.take(),
             proxy_lifecycle: proxy_lifecycle.take(),
             key_log,
+            observations_lost: 0,
         }))
     }
 }
@@ -458,6 +459,7 @@ struct NativeProxyLease {
     application_artifact: Option<super::ApplicationArtifactLease>,
     proxy_lifecycle: Option<super::ProxyLifecycleLease>,
     key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
+    observations_lost: u64,
 }
 
 impl ProxyLease for NativeProxyLease {
@@ -488,6 +490,7 @@ impl ProxyLease for NativeProxyLease {
             .lease
             .observation(budget.remaining())
             .map_err(|error| StageFailure::new(Stage::Observe, error.code, error.detail))?;
+        self.observations_lost = observation.protocol.observations_dropped_oldest;
         Ok(observation
             .application
             .into_iter()
@@ -558,6 +561,10 @@ impl ProxyLease for NativeProxyLease {
                 }
             })
             .collect())
+    }
+
+    fn observations_lost(&self) -> u64 {
+        self.observations_lost
     }
 
     fn stop(&mut self, budget: Budget) -> CleanupResult {
