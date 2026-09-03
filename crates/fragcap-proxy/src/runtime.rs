@@ -828,12 +828,17 @@ async fn connection_task(
                 },
             )
             .await;
-            let failure = generic.error.map(|error| {
-                if error.kind() == std::io::ErrorKind::TimedOut {
+            let failure = generic.error.map(|error| match error {
+                crate::GenericRelayFailure::IdleTimeout => {
                     ProtocolError::timeout("generic-tls-idle-timeout")
-                } else if error.kind() == std::io::ErrorKind::Interrupted {
-                    ProtocolError::new("generic-tls-cancelled", error.to_string())
-                } else {
+                }
+                crate::GenericRelayFailure::OperationTimeout => {
+                    ProtocolError::timeout("generic-tls-operation-timeout")
+                }
+                crate::GenericRelayFailure::Cancelled => {
+                    ProtocolError::new("generic-tls-cancelled", "generic stream cancelled")
+                }
+                crate::GenericRelayFailure::Transport(error) => {
                     ProtocolError::new("generic-tls-transport-failed", error.to_string())
                 }
             });

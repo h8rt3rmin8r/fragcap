@@ -339,12 +339,18 @@ pub(crate) async fn serve_socks5(
             failure: None,
         },
         Some(error) => {
-            let failure = if error.kind() == io::ErrorKind::TimedOut {
-                SocksFailure::timeout("socks-forward-timeout", SocksReplyCode::TtlExpired)
-            } else if error.kind() == io::ErrorKind::Interrupted {
-                SocksFailure::cancelled()
-            } else {
-                SocksFailure::new("socks-forward-failed", error.to_string())
+            let failure = match error {
+                crate::GenericRelayFailure::IdleTimeout => {
+                    SocksFailure::timeout("socks-forward-timeout", SocksReplyCode::TtlExpired)
+                }
+                crate::GenericRelayFailure::OperationTimeout => SocksFailure::timeout(
+                    "socks-forward-operation-timeout",
+                    SocksReplyCode::TtlExpired,
+                ),
+                crate::GenericRelayFailure::Cancelled => SocksFailure::cancelled(),
+                crate::GenericRelayFailure::Transport(error) => {
+                    SocksFailure::new("socks-forward-failed", error.to_string())
+                }
             };
             accounting.timed_out = u64::from(failure.timed_out);
             failed_with_observation(

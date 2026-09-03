@@ -42,7 +42,26 @@ pub(crate) struct GenericRelayContext<'a> {
 #[derive(Debug)]
 pub(crate) struct GenericRelayRun {
     pub report: GenericRelayReport,
-    pub error: Option<io::Error>,
+    pub error: Option<GenericRelayFailure>,
+}
+
+#[derive(Debug)]
+pub(crate) enum GenericRelayFailure {
+    Cancelled,
+    IdleTimeout,
+    OperationTimeout,
+    Transport(io::Error),
+}
+
+impl std::fmt::Display for GenericRelayFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("generic stream cancelled"),
+            Self::IdleTimeout => formatter.write_str("generic stream idle timeout"),
+            Self::OperationTimeout => formatter.write_str("generic stream I/O timed out"),
+            Self::Transport(error) => error.fmt(formatter),
+        }
+    }
 }
 
 pub(crate) async fn relay_generic<C, U>(
@@ -114,10 +133,10 @@ where
     let result = loop {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => break Err(io::Error::new(io::ErrorKind::Interrupted, "generic stream cancelled")),
+            _ = shutdown.changed() => break Err(GenericRelayFailure::Cancelled),
             _ = activity.notified() => idle.as_mut().reset(Instant::now() + limits.idle_timeout),
             result = &mut relay => break result,
-            _ = &mut idle => break Err(io::Error::new(io::ErrorKind::TimedOut, "generic stream idle timeout")),
+            _ = &mut idle => break Err(GenericRelayFailure::IdleTimeout),
         }
     };
     let observed_bytes = observed.load(Ordering::Relaxed);
@@ -220,7 +239,7 @@ async fn relay_bidirectional<C, U>(
     activity: &Notify,
     client_emitter: &ChunkEmitter<'_>,
     upstream_emitter: &ChunkEmitter<'_>,
-) -> io::Result<()>
+) -> Result<(), GenericRelayFailure>
 where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
@@ -264,7 +283,7 @@ async fn relay_direction<R, W>(
     transferred: &AtomicU64,
     activity: &Notify,
     emitter: &ChunkEmitter<'_>,
-) -> io::Result<()>
+) -> Result<(), GenericRelayFailure>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -282,10 +301,10 @@ where
         while written < read {
             let count = timed_io(write_timeout, writer.write(&buffer[written..read])).await?;
             if count == 0 {
-                return Err(io::Error::new(
+                return Err(GenericRelayFailure::Transport(io::Error::new(
                     io::ErrorKind::WriteZero,
                     "generic relay write made no progress",
-                ));
+                )));
             }
             written += count;
             transferred.fetch_add(count as u64, Ordering::Relaxed);
@@ -297,12 +316,13 @@ where
 async fn timed_io<T>(
     budget: Option<Duration>,
     operation: impl Future<Output = io::Result<T>>,
-) -> io::Result<T> {
+) -> Result<T, GenericRelayFailure> {
     match budget {
         Some(budget) => timeout(budget, operation)
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "generic relay I/O timed out"))?,
-        None => operation.await,
+            .map_err(|_| GenericRelayFailure::OperationTimeout)?
+            .map_err(GenericRelayFailure::Transport),
+        None => operation.await.map_err(GenericRelayFailure::Transport),
     }
 }
 
@@ -390,5 +410,16 @@ mod tests {
             }
             assert_eq!(expected, 8);
         }
+    }
+
+    #[tokio::test]
+    async fn operation_timeout_is_distinct_from_the_idle_clock() {
+        let error = timed_io(
+            Some(Duration::ZERO),
+            std::future::pending::<io::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, GenericRelayFailure::OperationTimeout));
     }
 }
