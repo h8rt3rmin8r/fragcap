@@ -1160,8 +1160,9 @@ all remaining attempts are cancelled before application forwarding begins.
 
 The immutable, canonical set of operator-selected destination rules that may
 leave a managed Deep Capture child without traversing the session proxy. Rules
-cover exact DNS names, DNS suffixes, IP addresses, CIDRs, optional authority
-ports, and IPv6. The policy is shown before authorization and never inherits
+cover DNS domains, IP addresses, CIDRs, optional authority ports, and IPv6.
+Bare and leading-dot domains both include descendants at a label boundary. The
+policy is shown before authorization and never inherits
 ambient proxy variables.
 
 {: .matters }

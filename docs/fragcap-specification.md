@@ -137,7 +137,7 @@ enforcement.
 | 0.1.42-draft | 2026-09-03 | W. Thompson | **Completes native IPv6 parity (issue #315).** Extends sections 13.7, 17.2.1, 19.6, 25, 26.3, and 28.1. One immutable plan now authorizes one exact IPv4 or IPv6 loopback socket, generated IPv6 routes use bracketed authorities, scoped IPv6 literals retain bounded numeric socket indexes, and mapped aliases have one canonical policy and correlation identity. Proxy-owned TCP connection establishment uses a finite 250 ms staggered dual-stack race with one winner and cancelled losers. HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC controlled rows cover IPv6, while Doctor reports exact IPv4 and IPv6 bind readiness independently. S119 adds no dependency or wildcard bind, and Deep Capture remains incomplete until #334. |
 | 0.1.43-draft | 2026-09-03 | W. Thompson | **Makes Deep Capture protocol classification and omission reasons exhaustive (issue #316).** Extends sections 13.7, 19.6, 25, and 28.1. A versioned facade contract separates traffic family, detection state, inspectability, and stable reason for every shipped protocol path. Application records, terminal summaries, compatibility eligibility, and typed manifest omissions retain their separate authorities and reconcile without converting parser, retention, writer, trust, or routing failures into target support claims. S120 adds no dependency, routing behavior, or completion claim. |
 | 0.1.44-draft | 2026-09-03 | W. Thompson | **Completes the native compatibility calibration matrix (issue #317).** Extends sections 13.7, 15, 17.2.1, 19, 25, and 28.1. Every calibration names one exact launch case, routing strategy, loopback family, protocol case, backend and product version, and target version when available. Version-10 storage preserves append-only conflicts and legacy rows, while only the latest exact current applicable routing fact can authorize a session. S121 adds no dependency, bypass behavior, or Deep Capture completion claim. |
-| 0.1.45-draft | 2026-09-03 | W. Thompson | **Adds explicit proxy bypass and local-destination policy (issue #318).** Extends sections 13.7, 17.2.1, 19, 25, and 28.1. Typed canonical rules cover exact DNS, suffixes, IP addresses, CIDRs, ports, and IPv6; the exact listener remains separate session infrastructure; uppercase and lowercase child proxy variables are plan-owned; every proxied DNS answer remains subject to resolved-address policy. Bypass is visible scope rather than proxy loss. S122 adds no dependency, system proxy mutation, transparent fallback, or Deep Capture completion claim. |
+| 0.1.45-draft | 2026-09-03 | W. Thompson | **Adds explicit proxy bypass and local-destination policy (issue #318).** Extends sections 13.7, 17.2.1, 19, 25, and 28.1. Typed canonical rules cover DNS domains, IP addresses, CIDRs, ports, and IPv6; bare and leading-dot DNS inputs both include descendants so conventional `NO_PROXY` clients cannot broaden an exact-name claim; the exact listener remains separate session infrastructure; uppercase and lowercase child proxy variables are plan-owned; every proxied DNS answer remains subject to resolved-address policy. Bypass is visible scope rather than proxy loss. S122 adds no dependency, system proxy mutation, transparent fallback, or Deep Capture completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3008,9 +3008,9 @@ trust state. It never silently promotes an unknown launch path to system-wide
 proxy settings.
 
 `--proxy-bypass` is the only operator bypass input. Repeated values and
-comma-delimited tokens accept exact ASCII DNS names, leading-dot DNS suffixes,
-IP literals, canonical CIDRs, and optional ports on exact DNS or IP
-authorities. A suffix includes its apex and descendants at a label boundary.
+comma-delimited tokens accept ASCII DNS domains, IP literals, canonical CIDRs,
+and optional ports on DNS or IP authorities. Bare and leading-dot DNS inputs
+share one domain-boundary meaning that includes the apex and descendants.
 Rules are canonicalized, deduplicated, and ordered before authorization.
 Wildcard-all, schemes, paths, credentials, ambiguous authorities, invalid
 ports, CIDR host bits, and rules that include the exact selected listener are
@@ -4698,8 +4698,8 @@ an exact mismatch prevents reuse, and the latest exact applicable routing row
 controls eligibility. It closes #317 without changing dependencies, bypass
 policy, raw proxy detail, or the #334 completion gate.
 S122 closes bypass and local-destination correctness over the existing
-child-environment route. One immutable policy parses exact DNS names, DNS
-suffixes, IP literals, CIDRs, optional authority ports, and IPv6 into canonical
+child-environment route. One immutable policy parses DNS domains, IP literals,
+CIDRs, optional authority ports, and IPv6 into canonical
 ordered rules. The selected listener is separate session infrastructure,
 controlled origins remain exact proxy-routed grants, and uppercase plus
 lowercase proxy variables are overwritten from the reviewed plan. Bypass
@@ -4709,6 +4709,9 @@ answers, and rebinding cannot inherit permission. Plan and bundle evidence name
 the policy and routing decisions, and intentional bypass advances no proxy-loss
 counter. It closes #318 and the Native Deep Capture 3 milestone without a
 dependency change or a Deep Capture completion claim before #334.
+Bare and leading-dot DNS inputs deliberately have the same apex-and-descendant
+meaning because conventional `NO_PROXY` consumers can otherwise widen a bare
+exact-name rule beyond the reviewed policy.
 
 The required dependency direction is:
 

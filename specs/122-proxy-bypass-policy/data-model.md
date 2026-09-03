@@ -6,7 +6,7 @@ Immutable normalized predicate.
 
 Fields:
 
-- kind: exact DNS, DNS suffix, IP, or CIDR
+- kind: DNS domain, IP, or CIDR
 - canonical host or network
 - prefix length for CIDR
 - optional exact port for DNS and IP rules
@@ -15,7 +15,7 @@ Fields:
 Invariants:
 
 - DNS is lowercase ASCII with valid labels and no trailing root dot.
-- Suffix matching occurs only at DNS label boundaries and includes the apex.
+- DNS matching occurs only at label boundaries and includes the apex and descendants for both bare and leading-dot input.
 - IP aliases use one canonical identity.
 - CIDR contains no host bits and has no port.
 - Port is nonzero.

@@ -100,11 +100,11 @@ crates/fragcap-cli/tests/
 
 ### 2026-09-03: Conventional input with closed interpretation
 
-Accept conventional comma-delimited or repeated `NO_PROXY`-style tokens: exact DNS, leading-dot DNS suffix, IP literal, CIDR, and optional port on exact DNS or IP authority. Reject `*`, schemes, paths, credentials, empty tokens, ambiguous unbracketed IPv6 ports, and CIDR host bits. The parser, not a target library, defines canonical identity and evidence meaning.
+Accept conventional comma-delimited or repeated `NO_PROXY`-style tokens: bare or leading-dot DNS domain, IP literal, CIDR, and optional port on DNS or IP authority. Bare and leading-dot DNS inputs both mean the apex and descendants at a label boundary. Reject `*`, schemes, paths, credentials, empty tokens, ambiguous unbracketed IPv6 ports, and CIDR host bits. The parser, not a target library, defines canonical identity and evidence meaning.
 
-### 2026-09-03: Suffix includes apex
+### 2026-09-03: DNS domains include apex and descendants
 
-A leading-dot rule matches both its apex and descendants at a DNS label boundary. Similar textual suffixes do not match. This is deterministic and avoids the incompatible apex behavior found across client libraries.
+Bare and leading-dot rules share one canonical form that matches the apex and descendants at a DNS label boundary. Similar textual suffixes do not match. This supersedes the initial exact-name distinction after review showed that conventional clients can broaden bare names to descendants.
 
 ### 2026-09-03: Infrastructure is built in but not operator policy
 

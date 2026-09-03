@@ -59,7 +59,6 @@ pub enum RouteValueSource {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum BypassHost {
-    ExactDns(String),
     DnsSuffix(String),
     Ip(IpAddr),
     Cidr { network: IpAddr, prefix: u8 },
@@ -86,9 +85,6 @@ impl BypassRule {
             return false;
         }
         match &self.host {
-            BypassHost::ExactDns(expected) => {
-                canonical_dns(host).is_ok_and(|host| &host == expected)
-            }
             BypassHost::DnsSuffix(expected) => canonical_dns(host).is_ok_and(|host| {
                 host == *expected
                     || host
@@ -110,7 +106,6 @@ impl BypassRule {
 impl fmt::Display for BypassRule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let host = match &self.host {
-            BypassHost::ExactDns(value) => value.clone(),
             BypassHost::DnsSuffix(value) => format!(".{value}"),
             BypassHost::Ip(IpAddr::V4(value)) => value.to_string(),
             BypassHost::Ip(IpAddr::V6(value)) if self.port.is_some() => format!("[{value}]"),
@@ -270,14 +265,9 @@ fn parse_bypass_rule(value: &str) -> Result<BypassRule, String> {
             port,
         });
     }
-    let suffix = raw_host.starts_with('.');
     let dns = canonical_dns(raw_host.trim_start_matches('.'))?;
     Ok(BypassRule {
-        host: if suffix {
-            BypassHost::DnsSuffix(dns)
-        } else {
-            BypassHost::ExactDns(dns)
-        },
+        host: BypassHost::DnsSuffix(dns),
         port,
     })
 }
@@ -686,7 +676,7 @@ mod tests {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             vec![
-                "example.com",
+                ".example.com",
                 ".example.net",
                 "[2001:db8::1]:443",
                 "192.0.2.0/24"
@@ -705,6 +695,7 @@ mod tests {
             ("example.com", 80),
             ("A.Example.com.", 443),
             ("api.test", 443),
+            ("sub.api.test", 443),
             ("192.0.2.99", 53),
             ("2001:db8::99", 53),
         ] {
@@ -803,7 +794,7 @@ mod tests {
         assert_eq!(environment["HTTPS_PROXY"], environment["https_proxy"]);
         assert_eq!(environment["ALL_PROXY"], environment["all_proxy"]);
         assert_eq!(environment["NO_PROXY"], environment["no_proxy"]);
-        assert_eq!(environment["NO_PROXY"], "example.com,127.0.0.1:8080");
+        assert_eq!(environment["NO_PROXY"], ".example.com,127.0.0.1:8080");
     }
 
     fn session(routing: RoutingPlan) -> SessionPlan {

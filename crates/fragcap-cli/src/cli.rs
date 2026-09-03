@@ -495,9 +495,9 @@ pub struct DeepCaptureArgs {
 
     /// Explicit target destinations that may bypass the session proxy.
     ///
-    /// Repeat the option or separate rules with commas. Supports exact DNS,
-    /// leading-dot DNS suffixes, IP literals, CIDRs, and optional authority
-    /// ports. The complete-bypass wildcard is refused.
+    /// Repeat the option or separate rules with commas. Supports DNS domains,
+    /// IP literals, CIDRs, and optional authority ports. Bare and leading-dot
+    /// DNS inputs both include descendants. The complete-bypass wildcard is refused.
     #[arg(long, value_name = "RULE")]
     pub proxy_bypass: Vec<String>,
 

@@ -6,7 +6,7 @@
 cargo test -p fragcap --test deep_capture_routing
 ```
 
-Expected: exact DNS, suffix, IP, CIDR, port, IPv6, canonical ordering, listener infrastructure, and environment ownership tests pass.
+Expected: bare and leading-dot DNS domains, IP, CIDR, port, IPv6, canonical ordering, listener infrastructure, and environment ownership tests pass.
 
 ## Proxy destination safety tests
 

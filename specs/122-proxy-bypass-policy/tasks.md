@@ -13,7 +13,7 @@
 
 ## Phase 2: Foundational Typed Policy
 
-- [X] T005 Add failing parser tests for exact DNS, suffix, IP, CIDR, port, IPv6, mapped aliases, duplicates, canonical order, and malformed inputs in `crates/fragcap/src/deep_capture/routing.rs`
+- [X] T005 Add failing parser tests for bare and leading-dot DNS domains, IP, CIDR, port, IPv6, mapped aliases, duplicates, canonical order, and malformed inputs in `crates/fragcap/src/deep_capture/routing.rs`
 - [X] T006 Add failing matcher tests for apex/suffix boundaries, ports, CIDRs, requested-name matching, listener aliases, and controlled-origin separation
 - [X] T007 Implement immutable `BypassRule`, `BypassPolicy`, requested destination, canonicalization, deterministic parsing, matching, and projection in `crates/fragcap/src/deep_capture/routing.rs`
 - [X] T008 Run focused facade routing tests

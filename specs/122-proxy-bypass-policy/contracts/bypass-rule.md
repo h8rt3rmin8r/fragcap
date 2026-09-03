@@ -4,9 +4,9 @@
 
 | Input | Meaning | Canonical form |
 | --- | --- | --- |
-| `Example.COM.` | Exact DNS, any port | `example.com` |
-| `.Example.COM` | DNS suffix including apex, any port | `.example.com` |
-| `example.com:443` | Exact DNS, port 443 | `example.com:443` |
+| `Example.COM.` | DNS domain including apex and descendants, any port | `.example.com` |
+| `.Example.COM` | Same DNS domain semantics | `.example.com` |
+| `example.com:443` | DNS domain including descendants, port 443 | `.example.com:443` |
 | `192.0.2.10` | Exact IPv4, any port | `192.0.2.10` |
 | `192.0.2.10:443` | Exact IPv4, port 443 | `192.0.2.10:443` |
 | `2001:db8::10` | Exact IPv6, any port | `2001:db8::10` |
@@ -32,7 +32,7 @@ Repeated CLI values and comma-delimited tokens are flattened before parsing. Emp
 
 - DNS comparison is ASCII case-insensitive after canonicalization.
 - One trailing root dot is ignored.
-- `.example.com` matches `example.com` and `a.example.com`, not `notexample.com`.
+- `example.com` and `.example.com` both match `example.com` and `a.example.com`, not `notexample.com`.
 - Qualified ports match only the named port.
 - IP and CIDR use canonical address identity, including IPv4-mapped IPv6 normalization.
 - First-input order has no semantic effect; canonical specificity ordering determines the matching rule reported in evidence.

@@ -16,7 +16,7 @@ An authorized operator can declare which target destinations may bypass the sess
 
 **Why this priority**: An ambiguous or inherited bypass list can leak target traffic outside inspection or route unrelated traffic into the proxy.
 
-**Independent Test**: Exact domains, suffixes, IP addresses, CIDRs, ports, and IPv6 rules normalize deterministically; malformed or ambiguous rules refuse before effects; and the managed child receives only the reviewed proxy and bypass environment.
+**Independent Test**: DNS domains, IP addresses, CIDRs, ports, and IPv6 rules normalize deterministically; malformed or ambiguous rules refuse before effects; and the managed child receives only the reviewed proxy and bypass environment.
 
 **Acceptance Scenarios**:
 
@@ -59,7 +59,7 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 ### Edge Cases
 
 - Domain matching is ASCII case-insensitive and ignores one trailing DNS root dot, while malformed empty labels and non-ASCII names refuse.
-- A suffix rule matches its apex and descendants but not a merely similar name.
+- A bare or leading-dot DNS rule matches its apex and descendants at a label boundary but not a merely similar name.
 - A port-qualified rule matches only that port; an unqualified rule matches every valid port.
 - IPv4-mapped IPv6 addresses have one canonical IPv4 identity.
 - CIDR host bits are rejected rather than silently normalized.
@@ -72,7 +72,7 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST represent bypass policy as immutable typed rules for exact DNS names, DNS suffixes, IP addresses, CIDR networks, optional ports where meaningful, and both IPv4 and IPv6.
+- **FR-001**: The system MUST represent bypass policy as immutable typed rules for DNS domains, IP addresses, CIDR networks, optional ports where meaningful, and both IPv4 and IPv6. Bare and leading-dot DNS inputs MUST share apex-and-descendant domain-boundary semantics so target clients cannot broaden a narrower exact-name claim.
 - **FR-002**: Rule parsing MUST be deterministic, reject ambiguous or unsafe syntax, canonicalize case and address aliases, reject CIDR host bits, remove duplicates, and produce stable ordering independent of input order.
 - **FR-003**: The complete-bypass wildcard MUST be refused because it defeats target-scoped inspection.
 - **FR-004**: Empty explicit operator policy MUST mean no target destination bypasses; ambient proxy and bypass environment MUST NOT widen or narrow the plan.
@@ -87,14 +87,14 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 - **FR-013**: An intentional bypass MUST be counted as a scoped routing decision and MUST NOT increment proxy queue, transport, protocol, or storage loss.
 - **FR-014**: Decision accounting MUST reconcile all localized decisions plus explicitly unlocalized observations without double-counting one destination.
 - **FR-015**: Malformed policy, infrastructure collision, and unsupported projection MUST refuse before external effects.
-- **FR-016**: Security tests MUST cover exact and suffix DNS boundaries, ports, IPv4 and IPv6 CIDRs, mapped addresses, listener aliases, localhost aliases, private ranges, mixed DNS answers, rebinding, inherited environment, duplicates, and malformed rules.
+- **FR-016**: Security tests MUST cover bare and leading-dot DNS boundaries, ports, IPv4 and IPv6 CIDRs, mapped addresses, listener aliases, localhost aliases, private ranges, mixed DNS answers, rebinding, inherited environment, duplicates, and malformed rules.
 - **FR-017**: S122 MUST update the master specification, outline, roadmap, glossary, changelog fragments, and agent context without claiming Deep Capture feature completion before issue #334.
 - **FR-018**: S122 MUST add no target process access, system proxy mutation, silent trust mutation, transparent fallback, dependency, or lockfile package.
 
 ### Key Entities
 
 - **Bypass Policy**: The immutable, canonical collection of explicit operator rules plus separately identified session infrastructure exclusions.
-- **Bypass Rule**: One typed exact-domain, domain-suffix, IP, or CIDR predicate with optional port applicability.
+- **Bypass Rule**: One typed DNS-domain, IP, or CIDR predicate with optional port applicability.
 - **Routing Decision**: One stable classification of a requested destination as proxied, bypassed, infrastructure, refused, or undetermined, including authority and reason.
 - **Controlled Origin Grant**: One exact session-owned local socket that remains proxy-routed and is authorized only inside the native proxy destination policy.
 
@@ -115,7 +115,7 @@ An operator can distinguish traffic intentionally excluded by the reviewed bypas
 ### Session 2026-09-03
 
 - Q: Does an empty policy inherit the operator's `NO_PROXY`? -> A: No. Empty means no operator-selected target bypasses; every supported proxy variable is owned by the plan.
-- Q: Does a suffix rule include the apex? -> A: Yes. `.example.com` matches `example.com` and its descendants, but not `notexample.com`.
+- Q: Do bare and leading-dot DNS rules differ? -> A: No. Both match the apex and descendants at a label boundary because conventional `NO_PROXY` consumers can broaden bare domains that way.
 - Q: Are all local destinations automatically bypassed? -> A: No. Only exact listener infrastructure and explicit operator rules bypass; other local destinations are refused unless they are exact controlled-origin proxy grants.
 - Q: When is a DNS bypass decision made? -> A: Against the canonical requested hostname before resolution; proxied answers are independently policy-checked on every attempt.
 - Q: Does a bypass count as packet or proxy loss? -> A: No. It is a visible scoped routing decision with separate accounting.

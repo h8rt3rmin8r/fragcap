@@ -267,8 +267,9 @@ work. Protocol facts require a matching S120 classification. Bypass policy
 remains #318, and Deep Capture remains incomplete until #334.
 
 S122 (`specs/122-proxy-bypass-policy`) follows S121 and closes #318 at the
-explicit bypass and local-destination boundary. Exact DNS, suffix, IP, CIDR,
-port, and IPv6 rules form one canonical immutable policy. The exact listener
+explicit bypass and local-destination boundary. DNS-domain, IP, CIDR, port,
+and IPv6 rules form one canonical immutable policy. Bare and leading-dot DNS
+inputs both include descendants at a label boundary. The exact listener
 is separate session infrastructure, controlled origins remain proxy-routed,
 and all uppercase and lowercase child proxy variables come from the reviewed
 plan. Requested names match before resolution, while every proxied answer is

@@ -10,9 +10,8 @@ Decision: extend those authorities rather than add a second proxy implementation
 
 Decision: support repeated or comma-separated conventional tokens with a closed interpretation:
 
-- `example.com` for exact DNS;
-- `.example.com` for DNS suffix including the apex;
-- `example.com:443` for port-qualified exact DNS;
+- `example.com` or `.example.com` for a DNS domain including the apex and descendants;
+- `example.com:443` for a port-qualified DNS domain;
 - `192.0.2.10` and `192.0.2.10:443` for IPv4;
 - `2001:db8::10` and `[2001:db8::10]:443` for IPv6;
 - `192.0.2.0/24` and `2001:db8::/32` for CIDR.
@@ -26,7 +25,7 @@ Rejected alternatives:
 
 ## Normalization and matching
 
-Decision: lowercase ASCII DNS, strip one trailing root dot, validate labels, canonicalize mapped IPv6 to IPv4, require canonical CIDR network addresses, validate nonzero ports, deduplicate, and sort by canonical text. Exact DNS compares a whole name. Suffix compares the apex or a dot-delimited descendant. IP and CIDR compare canonical address bytes. A port qualifier adds an exact port predicate.
+Decision: lowercase ASCII DNS, strip one trailing root dot, validate labels, canonicalize mapped IPv6 to IPv4, require canonical CIDR network addresses, validate nonzero ports, deduplicate, and sort by canonical text. Bare and leading-dot DNS inputs share one canonical domain form matching the apex or a dot-delimited descendant. This deliberately supersedes the initial exact-name distinction because common conventional consumers broaden a bare domain to descendants. IP and CIDR compare canonical address bytes. A port qualifier adds an exact port predicate.
 
 Unicode hostnames are refused because the repository has no IDNA authority and silently inventing one would make scope client-dependent.
 

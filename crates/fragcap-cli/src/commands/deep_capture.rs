@@ -3140,6 +3140,31 @@ fn routing_policy_json(plan: &fragcap::deep_capture::RoutingPlan) -> serde_json:
     })
 }
 
+fn routing_decisions_json(observations: &[Observation]) -> serde_json::Value {
+    let mut proxied = 0_u64;
+    let mut infrastructure = 0_u64;
+    let mut refused = 0_u64;
+    let mut undetermined = 0_u64;
+    for observation in observations {
+        match observation.reason.as_deref() {
+            None => proxied += 1,
+            Some("proxy-listener") => infrastructure += 1,
+            Some("destination-refused" | "local-destination-refused") => refused += 1,
+            Some(_) => undetermined += 1,
+        }
+    }
+    json!({
+        "authority": "retained-proxy-observations",
+        "proxied": proxied,
+        "bypassed": 0,
+        "infrastructure": infrastructure,
+        "refused": refused,
+        "undetermined": undetermined,
+        "bypass_proxy_loss": 0,
+        "unobserved_bypass_traffic": "not-inferable-from-proxy-evidence",
+    })
+}
+
 fn process_trace_jsonl(
     session_id: &str,
     controlled_process_id: Option<u32>,
@@ -3205,16 +3230,7 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
         "address_family": ctx.session.address_family.as_str(),
         "protocol": ctx.session.protocol.map(CompatibilityProtocol::as_str),
         "routing_policy": routing_policy_json(&ctx.session.routing),
-        "routing_decisions": {
-            "authority": "retained-proxy-observations",
-            "proxied": ctx.observations.len(),
-            "bypassed": 0,
-            "infrastructure": 0,
-            "refused": 0,
-            "undetermined": 0,
-            "bypass_proxy_loss": 0,
-            "unobserved_bypass_traffic": "not-inferable-from-proxy-evidence",
-        },
+        "routing_decisions": routing_decisions_json(ctx.observations),
         "calibration": ctx.calibration.map(|phase| json!({
             "phase": phase.as_str(),
             "outcome": ctx.calibration_outcome.map(|outcome| outcome.to_string()),
@@ -3511,16 +3527,7 @@ fn manifest_json(
             "listen_addr": ctx.session.listen_addr,
             "listen_port": ctx.session.listen_port,
             "routing_policy": routing_policy_json(&ctx.session.routing),
-            "routing_decisions": {
-                "authority": "retained-proxy-observations",
-                "proxied": ctx.observations.len(),
-                "bypassed": 0,
-                "infrastructure": 0,
-                "refused": 0,
-                "undetermined": 0,
-                "bypass_proxy_loss": 0,
-                "unobserved_bypass_traffic": "not-inferable-from-proxy-evidence",
-            },
+            "routing_decisions": routing_decisions_json(ctx.observations),
         },
         "trust": {
             "state": ctx.trust.state,
@@ -3926,6 +3933,25 @@ mod tests {
             )
             .unwrap(),
         }
+    }
+
+    #[test]
+    fn routing_summary_classifies_retained_terminal_outcomes() {
+        let successful = observation();
+        let mut refused = observation();
+        refused.reason = Some("local-destination-refused".to_string());
+        let mut infrastructure = observation();
+        infrastructure.reason = Some("proxy-listener".to_string());
+        let mut unknown_failure = observation();
+        unknown_failure.reason = Some("connect-timeout".to_string());
+        let summary =
+            routing_decisions_json(&[successful, refused, infrastructure, unknown_failure]);
+        assert_eq!(summary["proxied"], 1);
+        assert_eq!(summary["refused"], 1);
+        assert_eq!(summary["infrastructure"], 1);
+        assert_eq!(summary["undetermined"], 1);
+        assert_eq!(summary["bypassed"], 0);
+        assert_eq!(summary["bypass_proxy_loss"], 0);
     }
 
     #[test]

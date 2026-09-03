@@ -6,3 +6,9 @@ again by local-destination policy on every attempt. Wildcard-all, malformed,
 ambiguous, and listener-colliding rules refuse before effects. S122 adds no
 dependency, system proxy mutation, transparent fallback, or Deep Capture
 completion claim.
+
+The initial exact-versus-suffix DNS distinction was removed after review.
+Conventional `NO_PROXY` consumers can treat a bare domain as including its
+descendants, so the typed policy now assigns that same domain-boundary meaning
+to bare and leading-dot inputs instead of authorizing a narrower rule than the
+child can enforce.

@@ -14,7 +14,7 @@
 
 ## Requirement Clarity
 
-- [x] CHK006 Is suffix apex behavior defined without wildcard ambiguity? [Clarity, Clarifications]
+- [x] CHK006 Are bare and leading-dot apex-and-descendant semantics defined without wildcard ambiguity? [Clarity, Clarifications]
 - [x] CHK007 Is empty explicit policy distinguished from inherited policy? [Clarity, FR-004]
 - [x] CHK008 Is requested-name matching separated from post-resolution address policy? [Clarity, FR-009]
 - [x] CHK009 Is intentional bypass distinguished from every loss class? [Clarity, FR-013]
