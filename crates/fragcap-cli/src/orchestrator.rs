@@ -142,13 +142,16 @@ pub fn capture(
             components.snapshot_at.unwrap_or(ARMED_AT),
         );
         for (pid, role, stage) in session.role_bindings() {
-            process_evidence.stage_transitions.push(StageTransition {
-                kind: StageTransitionKind::Matched,
-                pid,
-                role: role.map_or_else(String::new, |value| value.to_string()),
-                stage: stage.map(|value| value.as_str().to_string()),
-                at: components.snapshot_at.unwrap_or(ARMED_AT),
-            });
+            process_evidence.observe_stage(
+                StageTransition {
+                    kind: StageTransitionKind::Matched,
+                    pid,
+                    role: role.map_or_else(String::new, |value| value.to_string()),
+                    stage: stage.map(|value| value.as_str().to_string()),
+                    at: components.snapshot_at.unwrap_or(ARMED_AT),
+                },
+                true,
+            );
         }
     }
 
@@ -293,7 +296,11 @@ fn capture_prerecorded(
 ) -> Result<CaptureOutcome, CliError> {
     // The pid to role map, so a new binding is detected as a match and an exit
     // of a bound pid is detected as a stage exit.
-    let mut bound: HashMap<u32, String> = HashMap::new();
+    let mut bound: HashMap<u32, String> = session
+        .role_bindings()
+        .into_iter()
+        .filter_map(|(pid, role, _)| role.map(|role| (pid, role.to_string())))
+        .collect();
     let publisher = components.publisher.clone();
 
     // Acquisition: fold events until a non-service stage acquires the target.
@@ -729,6 +736,7 @@ fn capture_live(
         match request.execute() {
             Ok(receipt) => {
                 process_evidence.launch_pid = receipt.process_id();
+                process_evidence.launch_at = wall_timestamp();
                 if matches!(request, fragcap::managed_launch::ManagedLaunch::Platform(_)) {
                     platform_dispatch.arm(receipt.process_id());
                 }
@@ -1335,6 +1343,14 @@ fn elapsed_ts(started: std::time::Instant) -> Timestamp {
     Timestamp::from_nanos(ARMED_AT.as_nanos() + started.elapsed().as_nanos() as i64)
 }
 
+#[cfg(all(feature = "etw", windows))]
+fn wall_timestamp() -> Option<Timestamp> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| Timestamp::from_nanos(i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX)))
+}
+
 /// Record a started process's image name by pid, for the live status
 /// display's header line (slice S069). A no-op for any other event kind
 /// (`image_name` returns an empty string for one, which is never recorded).
@@ -1356,7 +1372,7 @@ fn apply_event(
     emitter: &mut Emitter,
     process_evidence: &mut CaptureProcessEvidence,
 ) {
-    process_evidence.observe(&event);
+    let source_retained = process_evidence.observe(&event);
     let event_at = event.at();
     let exited_pid = match &event {
         ProcessEvent::Exited { pid, .. } => Some(*pid),
@@ -1379,13 +1395,16 @@ fn apply_event(
                 .iter()
                 .find(|(bound_pid, _, _)| bound_pid == pid)
                 .and_then(|(_, _, stage)| stage.as_ref().map(|value| value.as_str().to_string()));
-            process_evidence.stage_transitions.push(StageTransition {
-                kind: StageTransitionKind::Matched,
-                pid: *pid,
-                role: role.clone(),
-                stage,
-                at: event_at,
-            });
+            process_evidence.observe_stage(
+                StageTransition {
+                    kind: StageTransitionKind::Matched,
+                    pid: *pid,
+                    role: role.clone(),
+                    stage,
+                    at: event_at,
+                },
+                source_retained,
+            );
             emitter.event(&Event::StageMatched {
                 role: role.clone(),
                 pid: *pid,
@@ -1405,13 +1424,16 @@ fn apply_event(
                     transition.kind == StageTransitionKind::Matched && transition.pid == pid
                 })
                 .and_then(|transition| transition.stage.clone());
-            process_evidence.stage_transitions.push(StageTransition {
-                kind: StageTransitionKind::Exited,
-                pid,
-                role: role.clone(),
-                stage,
-                at: event_at,
-            });
+            process_evidence.observe_stage(
+                StageTransition {
+                    kind: StageTransitionKind::Exited,
+                    pid,
+                    role: role.clone(),
+                    stage,
+                    at: event_at,
+                },
+                source_retained,
+            );
             emitter.event(&Event::StageExited {
                 role: role.clone(),
                 pid,

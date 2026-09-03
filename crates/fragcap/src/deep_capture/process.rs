@@ -45,7 +45,9 @@ pub struct CaptureProcessEvidence {
     pub events: Vec<ProcessEvent>,
     pub events_unretained: u64,
     pub launch_pid: Option<u32>,
+    pub launch_at: Option<Timestamp>,
     pub stage_transitions: Vec<StageTransition>,
+    pub stage_transitions_unretained: u64,
     pub watcher_report: Option<WatcherReport>,
     pub unparseable_events: u64,
     pub rundown_ignored: u64,
@@ -63,7 +65,9 @@ impl Default for CaptureProcessEvidence {
             events: Vec::new(),
             events_unretained: 0,
             launch_pid: None,
+            launch_at: None,
             stage_transitions: Vec::new(),
+            stage_transitions_unretained: 0,
             watcher_report: None,
             unparseable_events: 0,
             rundown_ignored: 0,
@@ -75,11 +79,21 @@ impl Default for CaptureProcessEvidence {
 }
 
 impl CaptureProcessEvidence {
-    pub fn observe(&mut self, event: &ProcessEvent) {
+    pub fn observe(&mut self, event: &ProcessEvent) -> bool {
         if self.events.len() < self.event_limit {
             self.events.push(event.clone());
+            true
         } else {
             self.events_unretained = self.events_unretained.saturating_add(1);
+            false
+        }
+    }
+
+    pub fn observe_stage(&mut self, transition: StageTransition, source_retained: bool) {
+        if source_retained && self.stage_transitions.len() < self.event_limit {
+            self.stage_transitions.push(transition);
+        } else {
+            self.stage_transitions_unretained = self.stage_transitions_unretained.saturating_add(1);
         }
     }
 }
@@ -107,6 +121,7 @@ pub struct ProcessTraceSummary {
     pub buffers_lost: u64,
     pub rundown_ignored: u64,
     pub events_unretained: u64,
+    pub stage_transitions_unretained: u64,
     pub unresolved_flow_owners: u64,
 }
 
@@ -147,6 +162,14 @@ fn instance_at(instances: &[Instance], pid: u32, at: Timestamp) -> Option<&Insta
         .iter()
         .filter(|instance| instance.pid == pid && instance.covers(at))
         .max_by_key(|instance| instance.created)
+}
+
+fn image_basename(value: &str) -> &str {
+    value.rsplit(['\\', '/']).next().unwrap_or(value)
+}
+
+fn same_image(left: &str, right: &str) -> bool {
+    image_basename(left).eq_ignore_ascii_case(image_basename(right))
 }
 
 fn push_record(output: &mut String, records: &mut u64, mut value: Value, sequence: u64) {
@@ -192,19 +215,47 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
                 image,
                 command_line,
                 at,
-            } => instances.push(Instance {
-                pid: *pid,
-                parent: *parent,
-                image: image.to_string(),
-                command_line: match command_line {
+            } => {
+                let command_line = match command_line {
                     CommandLine::Observed(value) => Some(value.to_string()),
                     CommandLine::Unavailable => None,
-                },
-                created: Some(*at),
-                exited: None,
-                snapshot: false,
-                creation_observed: true,
-            }),
+                };
+                let overlapping_snapshot = evidence.snapshot_at.is_some_and(|taken| *at <= taken)
+                    && instances.iter().any(|instance| {
+                        instance.snapshot
+                            && instance.pid == *pid
+                            && instance.exited.is_none()
+                            && same_image(&instance.image, image)
+                    });
+                if overlapping_snapshot {
+                    let instance = instances
+                        .iter_mut()
+                        .find(|instance| {
+                            instance.snapshot
+                                && instance.pid == *pid
+                                && instance.exited.is_none()
+                                && same_image(&instance.image, image)
+                        })
+                        .expect("the overlapping snapshot was just found");
+                    instance.parent = *parent;
+                    instance.image = image.to_string();
+                    instance.command_line = command_line;
+                    instance.created = Some(*at);
+                    instance.snapshot = false;
+                    instance.creation_observed = true;
+                } else {
+                    instances.push(Instance {
+                        pid: *pid,
+                        parent: *parent,
+                        image: image.to_string(),
+                        command_line,
+                        created: Some(*at),
+                        exited: None,
+                        snapshot: false,
+                        creation_observed: true,
+                    });
+                }
+            }
             ProcessEvent::Exited { pid, at } => {
                 if let Some(instance) = instances
                     .iter_mut()
@@ -242,7 +293,10 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
     loop {
         let before = seeds.len();
         for instance in &instances {
-            if seeds.contains(&instance.pid) && instance.parent != 0 {
+            if seeds.contains(&instance.pid)
+                && Some(instance.pid) != evidence.launch_pid
+                && instance.parent != 0
+            {
                 seeds.insert(instance.parent);
             }
         }
@@ -273,14 +327,22 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
     let mut limitations = BTreeMap::<&'static str, u64>::new();
     if evidence.launch_pid.is_none() {
         limitations.insert("launch-pid-unavailable", 1);
+    } else if evidence.launch_at.is_none()
+        || evidence
+            .launch_pid
+            .zip(evidence.launch_at)
+            .and_then(|(pid, at)| instance_at(&instances, pid, at))
+            .is_none()
+    {
+        limitations.insert("launch-generation-unavailable", 1);
     }
     push_record(
         &mut output,
         &mut records,
         json!({
             "type": "launch.receipt", "session_id": input.session_id, "pid": evidence.launch_pid,
-            "process_instance_id": evidence.launch_pid.and_then(|pid| instances.iter().find(|item| item.pid == pid).map(Instance::id)),
-            "at_nanos": Value::Null
+            "process_instance_id": evidence.launch_pid.and_then(|pid| evidence.launch_at.and_then(|at| instance_at(&instances, pid, at).map(Instance::id))),
+            "at_nanos": evidence.launch_at.map(Timestamp::as_nanos)
         }),
         sequence,
     );
@@ -291,7 +353,8 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         let parent_id = instance
             .created
             .and_then(|at| instance_at(&instances, instance.parent, at).map(Instance::id));
-        if instance.parent != 0 && parent_id.is_none() {
+        if instance.parent != 0 && parent_id.is_none() && Some(instance.pid) != evidence.launch_pid
+        {
             *limitations
                 .entry("parent-instance-unavailable")
                 .or_default() += 1;
@@ -478,6 +541,12 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
     if evidence.events_unretained > 0 {
         limitations.insert("event-retention-overflow", evidence.events_unretained);
     }
+    if evidence.stage_transitions_unretained > 0 {
+        limitations.insert(
+            "stage-transition-retention-overflow",
+            evidence.stage_transitions_unretained,
+        );
+    }
     for (reason, count) in &limitations {
         push_record(
             &mut output,
@@ -520,6 +589,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
         buffers_lost: watcher.buffers_lost,
         rundown_ignored: evidence.rundown_ignored,
         events_unretained: evidence.events_unretained,
+        stage_transitions_unretained: evidence.stage_transitions_unretained,
         unresolved_flow_owners,
     };
     push_record(
@@ -532,6 +602,7 @@ pub fn build_process_trace(input: ProcessTraceInput<'_>) -> ProcessTrace {
             "events_lost": summary.events_lost, "buffers_lost": summary.buffers_lost,
             "unparseable_events": summary.unparseable_events,
             "rundown_ignored": summary.rundown_ignored, "events_unretained": summary.events_unretained,
+            "stage_transitions_unretained": summary.stage_transitions_unretained,
             "unresolved_flow_owners": summary.unresolved_flow_owners,
             "terminal_state": evidence.terminal_state, "stop_reason": evidence.stop_reason,
             "completeness": summary.completeness, "finalization": summary.finalization
@@ -583,6 +654,7 @@ pub fn read_process_trace(value: &str) -> Option<ProcessTraceSummary> {
         buffers_lost: last["buffers_lost"].as_u64()?,
         rundown_ignored: last["rundown_ignored"].as_u64()?,
         events_unretained: last["events_unretained"].as_u64()?,
+        stage_transitions_unretained: last["stage_transitions_unretained"].as_u64()?,
         unresolved_flow_owners: last["unresolved_flow_owners"].as_u64()?,
     })
 }
@@ -630,6 +702,7 @@ mod tests {
             startup_snapshot: vec![ProcessRecord::new(7, 1, "original.exe")],
             snapshot_at: Some(Timestamp::from_nanos(10)),
             launch_pid: Some(7),
+            launch_at: Some(Timestamp::from_nanos(35)),
             events: vec![
                 ProcessEvent::Exited {
                     pid: 7,
@@ -668,6 +741,71 @@ mod tests {
                 && record["at_nanos"] == 40
                 && record["process_instance_id"] == "process-7-30"
         }));
+        assert!(records.iter().any(|record| {
+            record["type"] == "launch.receipt" && record["process_instance_id"] == "process-7-30"
+        }));
+    }
+
+    #[test]
+    fn overlapping_snapshot_and_start_are_one_observed_instance() {
+        let evidence = CaptureProcessEvidence {
+            startup_snapshot: vec![ProcessRecord::new(7, 1, "client.exe")],
+            snapshot_at: Some(Timestamp::from_nanos(10)),
+            launch_pid: Some(7),
+            launch_at: Some(Timestamp::from_nanos(12)),
+            events: vec![ProcessEvent::started(
+                7,
+                1,
+                "C:\\game\\client.exe",
+                "client",
+                Timestamp::from_nanos(5),
+            )],
+            terminal_state: "complete".to_string(),
+            ..CaptureProcessEvidence::default()
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        assert_eq!(trace.summary.process_instances, 1);
+        assert!(trace.jsonl.contains("process-7-5"));
+        assert!(!trace.jsonl.contains("snapshot-7-10"));
+    }
+
+    #[test]
+    fn ancestry_stops_at_the_managed_launch_root() {
+        let evidence = CaptureProcessEvidence {
+            startup_snapshot: vec![ProcessRecord::new(99, 0, "fragcap.exe")],
+            snapshot_at: Some(Timestamp::from_nanos(1)),
+            launch_pid: Some(7),
+            launch_at: Some(Timestamp::from_nanos(12)),
+            events: vec![ProcessEvent::started(
+                7,
+                99,
+                "client.exe",
+                "client",
+                Timestamp::from_nanos(10),
+            )],
+            terminal_state: "complete".to_string(),
+            ..CaptureProcessEvidence::default()
+        };
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        assert_eq!(trace.summary.process_instances, 1);
+        assert!(!trace.jsonl.contains("fragcap.exe"));
+        assert!(!trace.jsonl.contains("parent-instance-unavailable"));
     }
 
     #[test]
@@ -697,6 +835,38 @@ mod tests {
         ));
         assert_eq!(evidence.events.len(), 1);
         assert_eq!(evidence.events_unretained, 1);
+    }
+
+    #[test]
+    fn stage_transition_retention_is_bounded_and_counted() {
+        let mut evidence = CaptureProcessEvidence {
+            event_limit: 1,
+            ..CaptureProcessEvidence::default()
+        };
+        let transition = |pid| StageTransition {
+            kind: StageTransitionKind::Matched,
+            pid,
+            role: "client".to_string(),
+            stage: Some("client".to_string()),
+            at: Timestamp::from_nanos(i64::from(pid)),
+        };
+        evidence.observe_stage(transition(1), true);
+        evidence.observe_stage(transition(2), true);
+        evidence.observe_stage(transition(3), false);
+
+        assert_eq!(evidence.stage_transitions.len(), 1);
+        assert_eq!(evidence.stage_transitions_unretained, 2);
+        let trace = build_process_trace(ProcessTraceInput {
+            session_id: "s",
+            target_id: Some(1),
+            target_handle: "t",
+            launch_case: "direct",
+            evidence: &evidence,
+            flows: &[],
+            globally_unretained_flow_observations: 0,
+        });
+        assert_eq!(trace.summary.stage_transitions_unretained, 2);
+        assert!(trace.jsonl.contains("stage-transition-retention-overflow"));
     }
 
     #[test]
@@ -904,6 +1074,7 @@ mod tests {
     fn watcher_loss_classes_remain_separate_and_partial() {
         let evidence = CaptureProcessEvidence {
             launch_pid: Some(1),
+            launch_at: Some(Timestamp::from_nanos(2)),
             events: vec![ProcessEvent::started(
                 1,
                 0,
@@ -939,6 +1110,7 @@ mod tests {
     fn capture_wide_packet_loss_survives_an_empty_flow_snapshot() {
         let evidence = CaptureProcessEvidence {
             launch_pid: Some(1),
+            launch_at: Some(Timestamp::from_nanos(2)),
             events: vec![ProcessEvent::started(
                 1,
                 0,

@@ -37,6 +37,7 @@ Every record carries `session_id`, `sequence`, and its observed or derived event
 ## Stable limitation reasons
 
 - `launch-pid-unavailable`
+- `launch-generation-unavailable`
 - `snapshot-creation-unavailable`
 - `parent-instance-unavailable`
 - `process-instance-unavailable`
@@ -50,6 +51,7 @@ Every record carries `session_id`, `sequence`, and its observed or derived event
 - `watcher-buffer-loss`
 - `watcher-ended`
 - `event-retention-overflow`
+- `stage-transition-retention-overflow`
 - `unsupported-launch-authority`
 
 ## Trailer
@@ -68,6 +70,7 @@ Required fields:
 - `buffers_lost`
 - `rundown_ignored`
 - `events_unretained`
+- `stage_transitions_unretained`
 - `unresolved_flow_owners`
 - `terminal_state`
 - `stop_reason`

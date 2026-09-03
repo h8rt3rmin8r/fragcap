@@ -11,3 +11,6 @@ and unresolved joins remain explicit. S123 adds no process handle, memory
 right, second attribution pass, dependency, or Deep Capture completion claim.
 Manifest version 2 now admits `unavailable` as an artifact completeness value
 so a produced trace with no lifecycle authority is not mislabeled as partial.
+The receipt wall instant selects the launched PID generation, ancestor expansion
+stops at that owned root, a matching snapshot and creation event become one
+instance, and stage transitions share the raw event bound with explicit overflow.

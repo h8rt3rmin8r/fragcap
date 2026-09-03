@@ -2618,6 +2618,7 @@ fn controlled_process_evidence(process_id: u32) -> fragcap::deep_capture::Captur
     let exited = Timestamp::from_nanos(2);
     fragcap::deep_capture::CaptureProcessEvidence {
         launch_pid: Some(process_id),
+        launch_at: Some(started),
         events: vec![
             fragcap::ProcessEvent::started(
                 process_id,
@@ -3262,6 +3263,7 @@ fn compatibility_json(
             "flow_owner_intervals": process_trace.flow_owner_intervals,
             "limitations": process_trace.limitations,
             "unparseable_events": process_trace.unparseable_events,
+            "stage_transitions_unretained": process_trace.stage_transitions_unretained,
             "unresolved_flow_owners": process_trace.unresolved_flow_owners,
         },
         "calibration": ctx.calibration.map(|phase| json!({
@@ -3377,10 +3379,11 @@ fn manifest_json(
         && process_trace.buffers_lost == 0
         && process_trace.unparseable_events == 0
         && process_trace.events_unretained == 0
+        && process_trace.stage_transitions_unretained == 0
     {
         json!({"state":"none"})
     } else {
-        json!({"state":"observed","events_lost":process_trace.events_lost,"buffers_lost":process_trace.buffers_lost,"unparseable_events":process_trace.unparseable_events,"events_unretained":process_trace.events_unretained})
+        json!({"state":"observed","events_lost":process_trace.events_lost,"buffers_lost":process_trace.buffers_lost,"unparseable_events":process_trace.unparseable_events,"events_unretained":process_trace.events_unretained,"stage_transitions_unretained":process_trace.stage_transitions_unretained})
     };
     process_artifact["correlation"] = json!({
         "state": if process_trace.completeness == "complete" && process_trace.unresolved_flow_owners == 0 && process_trace.flow_owner_intervals > 0 { "complete" } else if process_trace.flow_owner_intervals > 0 { "partial" } else { "unavailable" },
