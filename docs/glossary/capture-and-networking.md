@@ -1012,11 +1012,30 @@ policy-approved destinations, and accepts replies only from exact remote peers
 that association previously contacted. Control close, timeout, cancellation,
 or cleanup releases its sockets and mappings.
 
-The association records destination and length metadata plus every loss class;
-it does not retain generic UDP payload evidence.
+The association records destination and length metadata plus every loss class.
+For accepted routed datagrams, generic UDP evidence retains one exact boundary
+with direction, sequence, endpoints, timing, and a bounded payload prefix.
 
 **See also:** [SOCKS5](capture-and-networking.md#socks5),
 [Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
+[Capture scope](capture-and-networking.md#capture-scope)
+
+## Generic UDP evidence
+
+One bounded application record for each accepted datagram entering an
+authenticated SOCKS5 UDP association. The record names direction, independent
+directional sequence, pinned client, exact selected or observed remote endpoint,
+timestamp, observed and retained lengths, and retention outcome. Duplicate and
+reordered datagrams remain distinct. Forwarding always uses the complete
+payload, even when evidence is omitted, truncated, queue-dropped, or cannot be
+stored.
+
+Socket errors record only the local platform result and do not infer ICMP type,
+delivery, or absence. UDP that does not traverse the association remains
+packet-only.
+
+**See also:** [SOCKS5 UDP association](capture-and-networking.md#socks5-udp-association),
+[Generic stream evidence](capture-and-networking.md#generic-stream-evidence),
 [Capture scope](capture-and-networking.md#capture-scope)
 
 ## Generic stream evidence

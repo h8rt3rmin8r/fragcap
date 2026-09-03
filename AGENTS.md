@@ -431,6 +431,17 @@ pinning, client-auth, protocol, or transport boundaries never silently
 downgrade. S116 adds no dependency or lockfile package, generic UDP remains
 #313, and Deep Capture remains incomplete until #334.
 
+S117 closes #313 at the generic UDP evidence boundary. Every accepted ingress
+datagram on an authenticated S115 association remains one typed application
+record with exact direction, independent sequence, pinned client, selected or
+observed peer, timestamp, observed length, bounded retained prefix, and
+retention outcome. Forwarding uses the complete payload independently from
+capture policy, retention, queue admission, and storage. Queue loss, bounded
+identity overflow, and platform-observed socket errors remain explicit without
+inferring ICMP facts. Unrouted UDP remains packet-only, QUIC remains #314, and
+Deep Capture remains incomplete until #334. S117 adds no dependency or lockfile
+package.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

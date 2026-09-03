@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::future::pending;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -16,9 +17,10 @@ use tokio::time::{timeout, Instant};
 use crate::http1::{HttpRun, ProtocolError};
 use crate::{
     connect_upstream, ApplicationEvent, ApplicationEventKind, DestinationAuthority,
-    DestinationPolicy, ProtocolAccounting, ProtocolLimits, ProxyObservation, SessionCapability,
-    SocksClassification, SocksConnectEvent, SocksNegotiationEvent, SocksTransferEvent,
-    SocksUdpEvent, UpstreamError, UpstreamStage,
+    DestinationPolicy, GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome,
+    ProtocolAccounting, ProtocolLimits, ProxyObservation, SessionCapability, SocksClassification,
+    SocksConnectEvent, SocksNegotiationEvent, SocksTransferEvent, SocksUdpEvent, UdpSocketError,
+    UpstreamError, UpstreamStage,
 };
 
 const SOCKS_VERSION: u8 = 5;
@@ -197,6 +199,7 @@ pub(crate) async fn serve_socks5(
                     peer,
                     local,
                     sink,
+                    body_resources,
                 },
                 accounting,
             )
@@ -541,6 +544,7 @@ struct UdpAssociationContext<'a> {
     peer: SocketAddr,
     local: SocketAddr,
     sink: &'a crate::application::SharedEventSink,
+    body_resources: crate::body::SessionBodyResources,
 }
 
 async fn serve_udp_association(
@@ -558,6 +562,7 @@ async fn serve_udp_association(
         peer,
         local,
         sink,
+        body_resources,
     } = context;
     let claimed = request.client_endpoint.map(|address| {
         if address.ip().is_unspecified() {
@@ -653,6 +658,7 @@ async fn serve_udp_association(
     let mut upstream_v6_buffer = vec![0_u8; upstream_capacity];
     let mut client_endpoint = claimed.filter(|value| value.port() != 0);
     let mut peers = BTreeSet::new();
+    let mut datagrams = GenericUdpObserver::new(body_resources);
     let idle = tokio::time::sleep(limits.idle_timeout);
     tokio::pin!(idle);
     let terminal = loop {
@@ -674,7 +680,13 @@ async fn serve_udp_association(
             result = relay.recv_from(&mut client_buffer) => {
                 let (read, source) = match result {
                     Ok(value) => value,
-                    Err(error) => break Err(SocksFailure::new("socks-udp-client-read-failed", error.to_string())),
+                    Err(error) => {
+                        emit_udp_socket_error(
+                            sink, session_id, connection_id, GenericUdpDirection::ClientToUpstream,
+                            "receive", None, io_kind(error.kind()), &mut accounting,
+                        );
+                        break Err(SocksFailure::new("socks-udp-client-read-failed", error.to_string()));
+                    }
                 };
                 accounting.socks_udp_client_datagrams = accounting.socks_udp_client_datagrams.saturating_add(1);
                 if normalize_ip(source.ip()) != normalize_ip(peer.ip())
@@ -784,8 +796,12 @@ async fn serve_udp_association(
                         emit_udp(sink, session_id, connection_id, "drop", "peer-limit", Some(address_type), Some(selected), payload_len as u64, peers.len());
                         continue;
                     }
-                    OwnerBound::Completed(Err(UdpForwardFailure::Transport(selected))) => {
+                    OwnerBound::Completed(Err(UdpForwardFailure::Transport(selected, operation, kind))) => {
                         accounting.socks_udp_transport_dropped = accounting.socks_udp_transport_dropped.saturating_add(1);
+                        emit_udp_socket_error(
+                            sink, session_id, connection_id, GenericUdpDirection::ClientToUpstream,
+                            operation, Some(selected), kind, &mut accounting,
+                        );
                         emit_udp(sink, session_id, connection_id, "drop", "transport-failed", Some(address_type), Some(selected), payload_len as u64, peers.len());
                         continue;
                     }
@@ -794,13 +810,31 @@ async fn serve_udp_association(
                 accounting.socks_udp_peak_peers = accounting.socks_udp_peak_peers.max(peers.len() as u64);
                 accounting.socks_udp_client_forwarded = accounting.socks_udp_client_forwarded.saturating_add(1);
                 accounting.socks_udp_client_bytes = accounting.socks_udp_client_bytes.saturating_add(written as u64);
+                let client = client_endpoint.expect("accepted client endpoint is pinned");
+                datagrams.observe(
+                    GenericUdpDirection::ClientToUpstream,
+                    client,
+                    selected,
+                    datagram.payload,
+                    limits,
+                    sink,
+                    session_id,
+                    connection_id,
+                    &mut accounting,
+                );
                 emit_udp(sink, session_id, connection_id, "datagram", "forwarded", Some(address_type), Some(selected), written as u64, peers.len());
                 idle.as_mut().reset(Instant::now() + limits.idle_timeout);
             },
             result = upstream_v4.recv_from(&mut upstream_v4_buffer) => {
                 let (read, source) = match result {
                     Ok(value) => value,
-                    Err(error) => break Err(SocksFailure::new("socks-udp-ipv4-read-failed", error.to_string())),
+                    Err(error) => {
+                        emit_udp_socket_error(
+                            sink, session_id, connection_id, GenericUdpDirection::UpstreamToClient,
+                            "receive", None, io_kind(error.kind()), &mut accounting,
+                        );
+                        break Err(SocksFailure::new("socks-udp-ipv4-read-failed", error.to_string()));
+                    }
                 };
                 if handle_upstream_datagram(
                     &upstream_v4_buffer[..read],
@@ -813,6 +847,7 @@ async fn serve_udp_association(
                         sink,
                         session_id,
                         connection_id,
+                        datagrams: &mut datagrams,
                     },
                     &mut accounting,
                 ).await {
@@ -822,7 +857,13 @@ async fn serve_udp_association(
             result = recv_optional(upstream_v6.as_ref(), &mut upstream_v6_buffer) => {
                 let (read, source) = match result {
                     Ok(value) => value,
-                    Err(error) => break Err(SocksFailure::new("socks-udp-ipv6-read-failed", error.to_string())),
+                    Err(error) => {
+                        emit_udp_socket_error(
+                            sink, session_id, connection_id, GenericUdpDirection::UpstreamToClient,
+                            "receive", None, io_kind(error.kind()), &mut accounting,
+                        );
+                        break Err(SocksFailure::new("socks-udp-ipv6-read-failed", error.to_string()));
+                    }
                 };
                 if handle_upstream_datagram(
                     &upstream_v6_buffer[..read],
@@ -835,6 +876,7 @@ async fn serve_udp_association(
                         sink,
                         session_id,
                         connection_id,
+                        datagrams: &mut datagrams,
                     },
                     &mut accounting,
                 ).await {
@@ -888,7 +930,7 @@ enum UdpForwardFailure {
     DnsTimeout,
     Ipv6Unavailable(SocketAddr),
     PeerLimit(SocketAddr),
-    Transport(SocketAddr),
+    Transport(SocketAddr, &'static str, &'static str),
 }
 
 async fn forward_client_datagram(
@@ -931,7 +973,13 @@ async fn forward_client_datagram(
     };
     match send {
         Ok(Ok(written)) if written == payload.len() => Ok((selected, written)),
-        _ => Err(UdpForwardFailure::Transport(selected)),
+        Ok(Ok(_)) => Err(UdpForwardFailure::Transport(selected, "send", "write-zero")),
+        Ok(Err(error)) => Err(UdpForwardFailure::Transport(
+            selected,
+            "send",
+            io_kind(error.kind()),
+        )),
+        Err(_) => Err(UdpForwardFailure::Transport(selected, "send", "timed-out")),
     }
 }
 
@@ -962,6 +1010,7 @@ struct UdpReplyContext<'a> {
     sink: &'a crate::application::SharedEventSink,
     session_id: &'a str,
     connection_id: u64,
+    datagrams: &'a mut GenericUdpObserver,
 }
 
 async fn handle_upstream_datagram(
@@ -978,6 +1027,7 @@ async fn handle_upstream_datagram(
         sink,
         session_id,
         connection_id,
+        datagrams,
     } = context;
     accounting.socks_udp_upstream_datagrams =
         accounting.socks_udp_upstream_datagrams.saturating_add(1);
@@ -1015,18 +1065,29 @@ async fn handle_upstream_datagram(
     }
     let mut framed = encode_udp_response(source, payload);
     let client_endpoint = client_endpoint.expect("checked above");
-    match timeout(
+    let send = timeout(
         limits.upstream.write,
         relay.send_to(&framed, client_endpoint),
     )
-    .await
-    {
+    .await;
+    match send {
         Ok(Ok(written)) if written == framed.len() => {
             accounting.socks_udp_upstream_forwarded =
                 accounting.socks_udp_upstream_forwarded.saturating_add(1);
             accounting.socks_udp_upstream_bytes = accounting
                 .socks_udp_upstream_bytes
                 .saturating_add(payload.len() as u64);
+            datagrams.observe(
+                GenericUdpDirection::UpstreamToClient,
+                client_endpoint,
+                source,
+                payload,
+                limits,
+                sink,
+                session_id,
+                connection_id,
+                accounting,
+            );
             emit_udp(
                 sink,
                 session_id,
@@ -1041,9 +1102,24 @@ async fn handle_upstream_datagram(
             framed.fill(0);
             return true;
         }
-        _ => {
+        outcome => {
             accounting.socks_udp_transport_dropped =
                 accounting.socks_udp_transport_dropped.saturating_add(1);
+            let error_kind = match outcome {
+                Ok(Ok(_)) => "write-zero",
+                Ok(Err(error)) => io_kind(error.kind()),
+                Err(_) => "timed-out",
+            };
+            emit_udp_socket_error(
+                sink,
+                session_id,
+                connection_id,
+                GenericUdpDirection::UpstreamToClient,
+                "send",
+                Some(client_endpoint),
+                error_kind,
+                accounting,
+            );
             emit_udp(
                 sink,
                 session_id,
@@ -1059,6 +1135,174 @@ async fn handle_upstream_datagram(
     }
     framed.fill(0);
     false
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "socket error provenance and its accounting must be emitted atomically"
+)]
+fn emit_udp_socket_error(
+    sink: &crate::application::SharedEventSink,
+    session_id: &str,
+    connection_id: u64,
+    direction: GenericUdpDirection,
+    operation: &'static str,
+    endpoint: Option<SocketAddr>,
+    error_kind: &'static str,
+    accounting: &mut ProtocolAccounting,
+) {
+    accounting.generic_udp_socket_errors = accounting.generic_udp_socket_errors.saturating_add(1);
+    crate::application::emit(
+        sink,
+        ApplicationEvent::now(
+            session_id,
+            connection_id,
+            None,
+            None,
+            ApplicationEventKind::UdpSocketError(UdpSocketError {
+                direction,
+                operation,
+                endpoint,
+                error_kind,
+                visibility: "platform-observed",
+            }),
+        ),
+    );
+}
+
+fn io_kind(kind: io::ErrorKind) -> &'static str {
+    match kind {
+        io::ErrorKind::NotFound => "not-found",
+        io::ErrorKind::PermissionDenied => "permission-denied",
+        io::ErrorKind::ConnectionRefused => "connection-refused",
+        io::ErrorKind::ConnectionReset => "connection-reset",
+        io::ErrorKind::HostUnreachable => "host-unreachable",
+        io::ErrorKind::NetworkUnreachable => "network-unreachable",
+        io::ErrorKind::ConnectionAborted => "connection-aborted",
+        io::ErrorKind::NotConnected => "not-connected",
+        io::ErrorKind::AddrInUse => "address-in-use",
+        io::ErrorKind::AddrNotAvailable => "address-unavailable",
+        io::ErrorKind::NetworkDown => "network-down",
+        io::ErrorKind::BrokenPipe => "broken-pipe",
+        io::ErrorKind::AlreadyExists => "already-exists",
+        io::ErrorKind::WouldBlock => "would-block",
+        io::ErrorKind::InvalidInput => "invalid-input",
+        io::ErrorKind::InvalidData => "invalid-data",
+        io::ErrorKind::TimedOut => "timed-out",
+        io::ErrorKind::WriteZero => "write-zero",
+        io::ErrorKind::Interrupted => "interrupted",
+        io::ErrorKind::Unsupported => "unsupported",
+        io::ErrorKind::UnexpectedEof => "unexpected-eof",
+        io::ErrorKind::OutOfMemory => "out-of-memory",
+        _ => "other",
+    }
+}
+
+struct GenericUdpObserver {
+    client_sequence: u64,
+    upstream_sequence: u64,
+    connection_retained: AtomicU64,
+    session_resources: crate::body::SessionBodyResources,
+}
+
+impl GenericUdpObserver {
+    fn new(session_resources: crate::body::SessionBodyResources) -> Self {
+        Self {
+            client_sequence: 0,
+            upstream_sequence: 0,
+            connection_retained: AtomicU64::new(0),
+            session_resources,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "datagram identity, retention, emission, and accounting must remain one operation"
+    )]
+    fn observe(
+        &mut self,
+        direction: GenericUdpDirection,
+        client_endpoint: SocketAddr,
+        remote_endpoint: SocketAddr,
+        payload: &[u8],
+        limits: &ProtocolLimits,
+        sink: &crate::application::SharedEventSink,
+        session_id: &str,
+        connection_id: u64,
+        accounting: &mut ProtocolAccounting,
+    ) {
+        let sequence = match direction {
+            GenericUdpDirection::ClientToUpstream => {
+                let value = self.client_sequence;
+                self.client_sequence = self.client_sequence.saturating_add(1);
+                value
+            }
+            GenericUdpDirection::UpstreamToClient => {
+                let value = self.upstream_sequence;
+                self.upstream_sequence = self.upstream_sequence.saturating_add(1);
+                value
+            }
+        };
+        let retained_len = if limits.capture_payloads {
+            let connection_grant = crate::body::claim_retention(
+                &self.connection_retained,
+                limits.max_body_bytes,
+                payload.len(),
+            );
+            let session_grant = crate::body::claim_retention(
+                &self.session_resources.retained,
+                limits.max_session_body_bytes,
+                connection_grant,
+            );
+            if session_grant < connection_grant {
+                self.connection_retained
+                    .fetch_sub((connection_grant - session_grant) as u64, Ordering::Relaxed);
+            }
+            session_grant
+        } else {
+            0
+        };
+        let outcome = if !limits.capture_payloads {
+            GenericUdpOutcome::IntentionallyOmitted
+        } else if retained_len < payload.len() {
+            GenericUdpOutcome::RetentionLimit
+        } else {
+            GenericUdpOutcome::Complete
+        };
+        accounting.generic_udp_datagrams_observed =
+            accounting.generic_udp_datagrams_observed.saturating_add(1);
+        accounting.generic_udp_bytes_observed = accounting
+            .generic_udp_bytes_observed
+            .saturating_add(payload.len() as u64);
+        accounting.generic_udp_bytes_retained = accounting
+            .generic_udp_bytes_retained
+            .saturating_add(retained_len as u64);
+        accounting.generic_udp_bytes_omitted = accounting
+            .generic_udp_bytes_omitted
+            .saturating_add(payload.len().saturating_sub(retained_len) as u64);
+        if outcome == GenericUdpOutcome::RetentionLimit {
+            accounting.generic_udp_datagrams_truncated =
+                accounting.generic_udp_datagrams_truncated.saturating_add(1);
+        }
+        crate::application::emit(
+            sink,
+            ApplicationEvent::now(
+                session_id,
+                connection_id,
+                None,
+                None,
+                ApplicationEventKind::GenericUdpDatagram(GenericUdpDatagram {
+                    direction,
+                    sequence,
+                    client_endpoint,
+                    remote_endpoint,
+                    observed_len: payload.len() as u64,
+                    bytes: bytes::Bytes::copy_from_slice(&payload[..retained_len]),
+                    outcome,
+                }),
+            ),
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -1530,5 +1774,12 @@ mod tests {
         assert_eq!(&encoded[4..20], &Ipv6Addr::LOCALHOST.octets());
         assert_eq!(&encoded[20..22], &4242_u16.to_be_bytes());
         assert_eq!(&encoded[22..], b"reply");
+    }
+
+    #[test]
+    fn udp_socket_error_kinds_never_claim_icmp_details() {
+        assert_eq!(io_kind(io::ErrorKind::HostUnreachable), "host-unreachable");
+        assert_eq!(io_kind(io::ErrorKind::ConnectionReset), "connection-reset");
+        assert_eq!(io_kind(io::ErrorKind::Other), "other");
     }
 }

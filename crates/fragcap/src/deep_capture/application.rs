@@ -27,6 +27,10 @@ const MAX_CONNECTION_WINDOWS: usize = 8;
 const MAX_BODY_QUEUE_LOSS_KEYS: usize = 4_096;
 #[cfg(test)]
 const MAX_BODY_QUEUE_LOSS_KEYS: usize = 8;
+#[cfg(not(test))]
+const MAX_UDP_QUEUE_LOSS_KEYS: usize = 4_096;
+#[cfg(test)]
+const MAX_UDP_QUEUE_LOSS_KEYS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationStreamStatus {
@@ -53,6 +57,13 @@ struct WriterAccount {
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
     generic_stream_bytes_queue_dropped: AtomicU64,
+    generic_udp_datagrams_queue_dropped: AtomicU64,
+    generic_udp_bytes_queue_dropped: AtomicU64,
+    generic_udp_datagrams_storage_dropped: AtomicU64,
+    generic_udp_bytes_storage_dropped: AtomicU64,
+    generic_udp_queue_losses: Mutex<BTreeMap<UdpDropKey, DatagramDropTotals>>,
+    generic_udp_queue_loss_overflow_datagrams: AtomicU64,
+    generic_udp_queue_loss_overflow_bytes: AtomicU64,
     body_queue_losses: Mutex<BTreeMap<BodyDropKey, BodyDropTotals>>,
     body_queue_loss_overflow_records: AtomicU64,
     body_queue_loss_overflow_observed_bytes: AtomicU64,
@@ -76,8 +87,56 @@ struct BodyDropTotals {
     retained_bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct UdpDropKey {
+    connection_id: u64,
+    direction: &'static str,
+    remote_endpoint: std::net::SocketAddr,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DatagramDropTotals {
+    datagrams: u64,
+    observed_bytes: u64,
+}
+
 impl WriterAccount {
+    fn record_storage_drop(&self, event: &ApplicationEvent) {
+        if let ApplicationEventKind::GenericUdpDatagram(value) = &event.kind {
+            self.generic_udp_datagrams_storage_dropped
+                .fetch_add(1, Ordering::Relaxed);
+            self.generic_udp_bytes_storage_dropped
+                .fetch_add(value.observed_len, Ordering::Relaxed);
+        }
+    }
+
     fn record_queue_drop(&self, event: &ApplicationEvent) {
+        if let ApplicationEventKind::GenericUdpDatagram(value) = &event.kind {
+            self.generic_udp_datagrams_queue_dropped
+                .fetch_add(1, Ordering::Relaxed);
+            self.generic_udp_bytes_queue_dropped
+                .fetch_add(value.observed_len, Ordering::Relaxed);
+            let key = UdpDropKey {
+                connection_id: event.connection_id,
+                direction: value.direction.as_str(),
+                remote_endpoint: value.remote_endpoint,
+            };
+            let mut losses = self
+                .generic_udp_queue_losses
+                .lock()
+                .expect("generic UDP queue loss lock");
+            if !losses.contains_key(&key) && losses.len() >= MAX_UDP_QUEUE_LOSS_KEYS {
+                self.generic_udp_queue_loss_overflow_datagrams
+                    .fetch_add(1, Ordering::Relaxed);
+                self.generic_udp_queue_loss_overflow_bytes
+                    .fetch_add(value.observed_len, Ordering::Relaxed);
+                return;
+            }
+            let totals = losses.entry(key).or_default();
+            totals.datagrams = totals.datagrams.saturating_add(1);
+            totals.observed_bytes = totals.observed_bytes.saturating_add(value.observed_len);
+            return;
+        }
         if let ApplicationEventKind::GenericStreamChunk(value) = &event.kind {
             self.generic_stream_bytes_queue_dropped
                 .fetch_add(value.observed_len, Ordering::Relaxed);
@@ -188,11 +247,13 @@ impl ApplicationEventSink for ChannelSink {
             }
         }
         if self.retired.load(Ordering::Acquire) {
+            self.account.record_storage_drop(&event);
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::Retired;
         }
         let sender = self.sender.lock().expect("application sender lock");
         let Some(sender) = sender.as_ref() else {
+            self.account.record_storage_drop(&event);
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::Retired;
         };
@@ -206,7 +267,8 @@ impl ApplicationEventSink for ChannelSink {
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::QueueFull
             }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
+            Err(mpsc::TrySendError::Disconnected(event)) => {
+                self.account.record_storage_drop(&event);
                 self.retired.store(true, Ordering::Release);
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::Retired
@@ -229,6 +291,22 @@ impl ApplicationEventSink for ChannelSink {
             generic_stream_bytes_queue_dropped: self
                 .account
                 .generic_stream_bytes_queue_dropped
+                .load(Ordering::Acquire),
+            generic_udp_datagrams_queue_dropped: self
+                .account
+                .generic_udp_datagrams_queue_dropped
+                .load(Ordering::Acquire),
+            generic_udp_bytes_queue_dropped: self
+                .account
+                .generic_udp_bytes_queue_dropped
+                .load(Ordering::Acquire),
+            generic_udp_datagrams_storage_dropped: self
+                .account
+                .generic_udp_datagrams_storage_dropped
+                .load(Ordering::Acquire),
+            generic_udp_bytes_storage_dropped: self
+                .account
+                .generic_udp_bytes_storage_dropped
                 .load(Ordering::Acquire),
         }
     }
@@ -382,6 +460,12 @@ fn writer_loop(
     let mut generic_retained = 0_u64;
     let mut generic_omitted = 0_u64;
     let mut generic_by_outcome = BTreeMap::<String, u64>::new();
+    let mut generic_udp_observed_datagrams = 0_u64;
+    let mut generic_udp_observed_bytes = 0_u64;
+    let mut generic_udp_retained_bytes = 0_u64;
+    let mut generic_udp_omitted_bytes = 0_u64;
+    let mut generic_udp_truncated_datagrams = 0_u64;
+    let mut generic_udp_by_outcome = BTreeMap::<String, u64>::new();
     for event in receiver {
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
@@ -414,6 +498,25 @@ fn writer_loop(
                 .entry(value.outcome.as_str().to_string())
                 .or_default() += 1;
         }
+        let generic_udp_storage_measure = match &event.kind {
+            ApplicationEventKind::GenericUdpDatagram(value) => Some(value.observed_len),
+            _ => None,
+        };
+        if let ApplicationEventKind::GenericUdpDatagram(value) = &event.kind {
+            generic_udp_observed_datagrams = generic_udp_observed_datagrams.saturating_add(1);
+            generic_udp_observed_bytes =
+                generic_udp_observed_bytes.saturating_add(value.observed_len);
+            generic_udp_retained_bytes =
+                generic_udp_retained_bytes.saturating_add(value.bytes.len() as u64);
+            generic_udp_omitted_bytes = generic_udp_omitted_bytes
+                .saturating_add(value.observed_len.saturating_sub(value.bytes.len() as u64));
+            if value.outcome == fragcap_proxy::GenericUdpOutcome::RetentionLimit {
+                generic_udp_truncated_datagrams = generic_udp_truncated_datagrams.saturating_add(1);
+            }
+            *generic_udp_by_outcome
+                .entry(value.outcome.as_str().to_string())
+                .or_default() += 1;
+        }
         sequence = sequence.saturating_add(1);
         // Packet capture and proxy observation run concurrently. Publishing a
         // live answer here would make identity depend on scheduling, so event
@@ -427,6 +530,14 @@ fn writer_loop(
                     .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
             }
             Err(error) => {
+                if let Some(observed_len) = generic_udp_storage_measure {
+                    account
+                        .generic_udp_datagrams_storage_dropped
+                        .fetch_add(1, Ordering::Relaxed);
+                    account
+                        .generic_udp_bytes_storage_dropped
+                        .fetch_add(observed_len, Ordering::Relaxed);
+                }
                 account.failures.fetch_add(1, Ordering::Relaxed);
                 retired.store(true, Ordering::Release);
                 return Err(error);
@@ -498,6 +609,40 @@ fn writer_loop(
     let generic_stream_bytes_queue_dropped = account
         .generic_stream_bytes_queue_dropped
         .load(Ordering::Acquire);
+    let generic_udp_datagrams_queue_dropped = account
+        .generic_udp_datagrams_queue_dropped
+        .load(Ordering::Acquire);
+    let generic_udp_bytes_queue_dropped = account
+        .generic_udp_bytes_queue_dropped
+        .load(Ordering::Acquire);
+    let generic_udp_datagrams_storage_dropped = account
+        .generic_udp_datagrams_storage_dropped
+        .load(Ordering::Acquire);
+    let generic_udp_bytes_storage_dropped = account
+        .generic_udp_bytes_storage_dropped
+        .load(Ordering::Acquire);
+    let generic_udp_queue_losses = account
+        .generic_udp_queue_losses
+        .lock()
+        .expect("generic UDP queue loss lock")
+        .iter()
+        .map(|(key, totals)| {
+            json!({
+                "proxy_connection_id": key.connection_id,
+                "direction": key.direction,
+                "remote_endpoint": key.remote_endpoint.to_string(),
+                "outcome": "queue-dropped",
+                "dropped_datagrams": totals.datagrams,
+                "observed_bytes": totals.observed_bytes,
+            })
+        })
+        .collect::<Vec<_>>();
+    let generic_udp_queue_loss_overflow_datagrams = account
+        .generic_udp_queue_loss_overflow_datagrams
+        .load(Ordering::Acquire);
+    let generic_udp_queue_loss_overflow_bytes = account
+        .generic_udp_queue_loss_overflow_bytes
+        .load(Ordering::Acquire);
     let body_retained_bytes_queue_dropped = account
         .body_retained_bytes_queue_dropped
         .load(Ordering::Acquire);
@@ -544,6 +689,16 @@ fn writer_loop(
                 "body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped,
                 "streaming_bytes_queue_dropped": streaming_bytes_queue_dropped,
                 "generic_stream_bytes_queue_dropped": generic_stream_bytes_queue_dropped,
+                "generic_udp_datagrams_queue_dropped": generic_udp_datagrams_queue_dropped,
+                "generic_udp_bytes_queue_dropped": generic_udp_bytes_queue_dropped,
+                "generic_udp_datagrams_storage_dropped": generic_udp_datagrams_storage_dropped,
+                "generic_udp_bytes_storage_dropped": generic_udp_bytes_storage_dropped,
+                "generic_udp_losses": generic_udp_queue_losses,
+                "generic_udp_loss_identity_overflow": {
+                    "dropped_datagrams": generic_udp_queue_loss_overflow_datagrams,
+                    "observed_bytes": generic_udp_queue_loss_overflow_bytes,
+                    "reason": "localized-generic-udp-loss-identity-bound",
+                },
                 "body_losses": body_queue_losses,
                 "body_loss_identity_overflow": {
                     "dropped_records": body_queue_loss_overflow_records,
@@ -555,44 +710,93 @@ fn writer_loop(
         )?;
     }
     sequence = sequence.saturating_add(1);
-    write_record(
-        &mut writer,
-        &json!({
-            "type": "application.trailer",
-            "schema_version": SCHEMA_VERSION,
-            "session_id": session_id,
-            "sequence": sequence,
-            "event_time_ns": 0,
-            "writer_status": "complete",
-            "accepted_records": account.accepted.load(Ordering::Acquire),
-            "written_records": account.written.load(Ordering::Acquire),
-            "dropped_records": dropped,
-            "serialized_bytes": account.serialized_bytes.load(Ordering::Acquire),
-            "writer_failures": account.failures.load(Ordering::Acquire)
-            ,"records_by_type": records_by_type
-            ,"body_bytes_observed": body_observed
-            ,"body_bytes_retained": body_retained
-            ,"body_bytes_truncated": body_truncated
-            ,"body_bytes_queue_dropped": body_bytes_queue_dropped
-            ,"body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped
-            ,"body_loss_identity_overflow_records": body_queue_loss_overflow_records
-            ,"body_loss_identity_overflow_observed_bytes": body_queue_loss_overflow_observed_bytes
-            ,"body_loss_identity_overflow_retained_bytes": body_queue_loss_overflow_retained_bytes
-            ,"streaming_bytes_queue_dropped": streaming_bytes_queue_dropped
-            ,"streaming_bytes_observed": streaming_observed
-            ,"streaming_bytes_retained": streaming_retained
-            ,"streaming_bytes_truncated": streaming_truncated
-            ,"streaming_records_by_outcome": streaming_by_outcome
-            ,"generic_stream_bytes_observed": generic_observed
-            ,"generic_stream_bytes_retained": generic_retained
-            ,"generic_stream_bytes_omitted": generic_omitted
-            ,"generic_stream_bytes_queue_dropped": generic_stream_bytes_queue_dropped
-            ,"generic_stream_records_by_outcome": generic_by_outcome
-            ,"correlation_connections_by_state": correlation_counts
-            ,"correlation_connections_total": correlation_counts.values().sum::<u64>()
-            ,"correlation_connections_unretained": unretained_connections
-        }),
-    )
+    let mut trailer = json!({
+        "type": "application.trailer",
+        "schema_version": SCHEMA_VERSION,
+        "session_id": session_id,
+        "sequence": sequence,
+        "event_time_ns": 0,
+        "writer_status": "complete",
+        "accepted_records": account.accepted.load(Ordering::Acquire),
+        "written_records": account.written.load(Ordering::Acquire),
+        "dropped_records": dropped,
+        "serialized_bytes": account.serialized_bytes.load(Ordering::Acquire),
+        "writer_failures": account.failures.load(Ordering::Acquire)
+        ,"records_by_type": records_by_type
+        ,"body_bytes_observed": body_observed
+        ,"body_bytes_retained": body_retained
+        ,"body_bytes_truncated": body_truncated
+        ,"body_bytes_queue_dropped": body_bytes_queue_dropped
+        ,"body_retained_bytes_queue_dropped": body_retained_bytes_queue_dropped
+        ,"body_loss_identity_overflow_records": body_queue_loss_overflow_records
+        ,"body_loss_identity_overflow_observed_bytes": body_queue_loss_overflow_observed_bytes
+        ,"body_loss_identity_overflow_retained_bytes": body_queue_loss_overflow_retained_bytes
+        ,"streaming_bytes_queue_dropped": streaming_bytes_queue_dropped
+        ,"streaming_bytes_observed": streaming_observed
+        ,"streaming_bytes_retained": streaming_retained
+        ,"streaming_bytes_truncated": streaming_truncated
+        ,"streaming_records_by_outcome": streaming_by_outcome
+        ,"generic_stream_bytes_observed": generic_observed
+        ,"generic_stream_bytes_retained": generic_retained
+        ,"generic_stream_bytes_omitted": generic_omitted
+        ,"generic_stream_bytes_queue_dropped": generic_stream_bytes_queue_dropped
+        ,"generic_stream_records_by_outcome": generic_by_outcome
+        ,"correlation_connections_by_state": correlation_counts
+        ,"correlation_connections_total": correlation_counts.values().sum::<u64>()
+        ,"correlation_connections_unretained": unretained_connections
+    });
+    let object = trailer
+        .as_object_mut()
+        .expect("application trailer is an object");
+    object.insert(
+        "generic_udp_datagrams_observed".to_string(),
+        json!(generic_udp_observed_datagrams),
+    );
+    object.insert(
+        "generic_udp_bytes_observed".to_string(),
+        json!(generic_udp_observed_bytes),
+    );
+    object.insert(
+        "generic_udp_bytes_retained".to_string(),
+        json!(generic_udp_retained_bytes),
+    );
+    object.insert(
+        "generic_udp_bytes_omitted".to_string(),
+        json!(generic_udp_omitted_bytes),
+    );
+    object.insert(
+        "generic_udp_datagrams_truncated".to_string(),
+        json!(generic_udp_truncated_datagrams),
+    );
+    object.insert(
+        "generic_udp_datagrams_queue_dropped".to_string(),
+        json!(generic_udp_datagrams_queue_dropped),
+    );
+    object.insert(
+        "generic_udp_bytes_queue_dropped".to_string(),
+        json!(generic_udp_bytes_queue_dropped),
+    );
+    object.insert(
+        "generic_udp_datagrams_storage_dropped".to_string(),
+        json!(generic_udp_datagrams_storage_dropped),
+    );
+    object.insert(
+        "generic_udp_bytes_storage_dropped".to_string(),
+        json!(generic_udp_bytes_storage_dropped),
+    );
+    object.insert(
+        "generic_udp_loss_identity_overflow_datagrams".to_string(),
+        json!(generic_udp_queue_loss_overflow_datagrams),
+    );
+    object.insert(
+        "generic_udp_loss_identity_overflow_bytes".to_string(),
+        json!(generic_udp_queue_loss_overflow_bytes),
+    );
+    object.insert(
+        "generic_udp_records_by_outcome".to_string(),
+        json!(generic_udp_by_outcome),
+    );
+    write_record(&mut writer, &trailer)
 }
 
 fn header_record(session_id: &str) -> Value {
@@ -602,10 +806,10 @@ fn header_record(session_id: &str) -> Value {
         "session_id": session_id,
         "sequence": 0,
         "event_time_ns": 0,
-        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "generic-stream"],
+        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "generic-stream", "generic-udp"],
         "non_exports": {
-            "udp-payload": "deferred-issue-313",
-            "quic": "deferred-issue-314"
+            "quic": "deferred-issue-314",
+            "unrouted-udp": "packet-only-unsupported"
         }
     })
 }
@@ -799,6 +1003,40 @@ fn event_json(
             }
             ("generic.stream_chunk", detail)
         }
+        ApplicationEventKind::GenericUdpDatagram(value) => {
+            let mut detail = json!({
+                "direction": value.direction.as_str(),
+                "datagram_sequence": value.sequence,
+                "client_endpoint": value.client_endpoint.to_string(),
+                "remote_endpoint": value.remote_endpoint.to_string(),
+                "observed_len": value.observed_len,
+                "retained_len": value.bytes.len(),
+                "outcome": value.outcome.as_str(),
+                "inspectability": "protocol-unknown",
+            });
+            if !value.bytes.is_empty() {
+                let object = detail
+                    .as_object_mut()
+                    .expect("generic UDP detail is an object");
+                object.insert("payload_encoding".to_string(), json!("base64"));
+                object.insert(
+                    "payload".to_string(),
+                    json!(base64::engine::general_purpose::STANDARD.encode(value.bytes)),
+                );
+            }
+            ("generic.udp_datagram", detail)
+        }
+        ApplicationEventKind::UdpSocketError(value) => (
+            "generic.udp_socket_error",
+            json!({
+                "direction": value.direction.as_str(),
+                "operation": value.operation,
+                "endpoint": value.endpoint.map(|address| address.to_string()),
+                "error_kind": value.error_kind,
+                "visibility": value.visibility,
+                "icmp": "unavailable",
+            }),
+        ),
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
@@ -826,6 +1064,8 @@ fn event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::SocksTransfer(_) => "socks5.transfer",
         ApplicationEventKind::SocksUdp(_) => "socks5.udp",
         ApplicationEventKind::GenericStreamChunk(_) => "generic.stream_chunk",
+        ApplicationEventKind::GenericUdpDatagram(_) => "generic.udp_datagram",
+        ApplicationEventKind::UdpSocketError(_) => "generic.udp_socket_error",
         ApplicationEventKind::Error { .. } => "application.error",
     }
 }
@@ -1179,6 +1419,16 @@ fn trailer_reconciles(records: &[Value]) -> bool {
     let mut generic_retained = 0_u64;
     let mut generic_omitted = 0_u64;
     let mut generic_by_outcome = BTreeMap::<String, u64>::new();
+    let mut generic_udp_queue_dropped_datagrams = 0_u64;
+    let mut generic_udp_queue_dropped_bytes = 0_u64;
+    let mut generic_udp_storage_dropped_datagrams = 0_u64;
+    let mut generic_udp_storage_dropped_bytes = 0_u64;
+    let mut generic_udp_observed_datagrams = 0_u64;
+    let mut generic_udp_observed_bytes = 0_u64;
+    let mut generic_udp_retained_bytes = 0_u64;
+    let mut generic_udp_omitted_bytes = 0_u64;
+    let mut generic_udp_truncated_datagrams = 0_u64;
+    let mut generic_udp_by_outcome = BTreeMap::<String, u64>::new();
     let mut correlation_total = 0_u64;
     let mut correlation_by_state = BTreeMap::<String, u64>::new();
     for record in records.iter().skip(1).take(records.len().saturating_sub(2)) {
@@ -1213,6 +1463,32 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             generic_queue_dropped = generic_queue_dropped.saturating_add(
                 record
                     .get("generic_stream_bytes_queue_dropped")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            generic_udp_queue_dropped_datagrams = generic_udp_queue_dropped_datagrams
+                .saturating_add(
+                    record
+                        .get("generic_udp_datagrams_queue_dropped")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+            generic_udp_queue_dropped_bytes = generic_udp_queue_dropped_bytes.saturating_add(
+                record
+                    .get("generic_udp_bytes_queue_dropped")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            generic_udp_storage_dropped_datagrams = generic_udp_storage_dropped_datagrams
+                .saturating_add(
+                    record
+                        .get("generic_udp_datagrams_storage_dropped")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+            generic_udp_storage_dropped_bytes = generic_udp_storage_dropped_bytes.saturating_add(
+                record
+                    .get("generic_udp_bytes_storage_dropped")
                     .and_then(Value::as_u64)
                     .unwrap_or(0),
             );
@@ -1284,6 +1560,31 @@ fn trailer_reconciles(records: &[Value]) -> bool {
                 .unwrap_or("unknown");
             *generic_by_outcome.entry(outcome.to_string()).or_default() += 1;
         }
+        if kind == "generic.udp_datagram" {
+            let observed = record
+                .get("observed_len")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let retained = record
+                .get("retained_len")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            generic_udp_observed_datagrams = generic_udp_observed_datagrams.saturating_add(1);
+            generic_udp_observed_bytes = generic_udp_observed_bytes.saturating_add(observed);
+            generic_udp_retained_bytes = generic_udp_retained_bytes.saturating_add(retained);
+            generic_udp_omitted_bytes =
+                generic_udp_omitted_bytes.saturating_add(observed.saturating_sub(retained));
+            let outcome = record
+                .get("outcome")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if outcome == "retention-limit" {
+                generic_udp_truncated_datagrams = generic_udp_truncated_datagrams.saturating_add(1);
+            }
+            *generic_udp_by_outcome
+                .entry(outcome.to_string())
+                .or_default() += 1;
+        }
     }
     trailer.get("writer_status").and_then(Value::as_str) == Some("complete")
         && trailer.get("writer_failures").and_then(Value::as_u64) == Some(0)
@@ -1354,6 +1655,56 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             .unwrap_or_else(|| json!({}))
             == json!(generic_by_outcome)
         && trailer
+            .get("generic_udp_datagrams_observed")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_observed_datagrams
+        && trailer
+            .get("generic_udp_bytes_observed")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_observed_bytes
+        && trailer
+            .get("generic_udp_bytes_retained")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_retained_bytes
+        && trailer
+            .get("generic_udp_bytes_omitted")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_omitted_bytes
+        && trailer
+            .get("generic_udp_datagrams_truncated")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_truncated_datagrams
+        && trailer
+            .get("generic_udp_datagrams_queue_dropped")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_queue_dropped_datagrams
+        && trailer
+            .get("generic_udp_bytes_queue_dropped")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_queue_dropped_bytes
+        && trailer
+            .get("generic_udp_datagrams_storage_dropped")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_storage_dropped_datagrams
+        && trailer
+            .get("generic_udp_bytes_storage_dropped")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == generic_udp_storage_dropped_bytes
+        && trailer
+            .get("generic_udp_records_by_outcome")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            == json!(generic_udp_by_outcome)
+        && trailer
             .get("correlation_connections_total")
             .and_then(Value::as_u64)
             .unwrap_or(0)
@@ -1369,6 +1720,75 @@ fn trailer_reconciles(records: &[Value]) -> bool {
 mod tests {
     use super::*;
     use fragcap_proxy::{ApplicationEvent, ApplicationEventKind, StreamTerminal};
+
+    #[test]
+    fn generic_udp_queue_loss_identity_is_bounded_with_exact_overflow() {
+        let account = WriterAccount::default();
+        for port in 42_000..42_000 + MAX_UDP_QUEUE_LOSS_KEYS as u16 + 1 {
+            account.record_queue_drop(&ApplicationEvent::now(
+                "session",
+                7,
+                None,
+                None,
+                ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                    direction: fragcap_proxy::GenericUdpDirection::ClientToUpstream,
+                    sequence: u64::from(port),
+                    client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                    remote_endpoint: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                    observed_len: 4,
+                    bytes: bytes::Bytes::from_static(b"data"),
+                    outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+                }),
+            ));
+        }
+        assert_eq!(
+            account.generic_udp_queue_losses.lock().unwrap().len(),
+            MAX_UDP_QUEUE_LOSS_KEYS
+        );
+        assert_eq!(
+            account
+                .generic_udp_queue_loss_overflow_datagrams
+                .load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            account
+                .generic_udp_queue_loss_overflow_bytes
+                .load(Ordering::Acquire),
+            4
+        );
+    }
+
+    #[test]
+    fn retired_writer_counts_generic_udp_storage_loss() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let account = Arc::new(WriterAccount::default());
+        let sink = ChannelSink {
+            sender: Mutex::new(Some(sender)),
+            retired: Arc::new(AtomicBool::new(true)),
+            account: Arc::clone(&account),
+            connections: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        let disposition = sink.try_emit(ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::GenericUdpDatagram(fragcap_proxy::GenericUdpDatagram {
+                direction: fragcap_proxy::GenericUdpDirection::UpstreamToClient,
+                sequence: 0,
+                client_endpoint: "127.0.0.1:41000".parse().unwrap(),
+                remote_endpoint: "127.0.0.1:42000".parse().unwrap(),
+                observed_len: 4,
+                bytes: bytes::Bytes::from_static(b"data"),
+                outcome: fragcap_proxy::GenericUdpOutcome::Complete,
+            }),
+        ));
+        assert_eq!(disposition, EventDisposition::Retired);
+        let accounting = sink.accounting();
+        assert_eq!(accounting.generic_udp_datagrams_storage_dropped, 1);
+        assert_eq!(accounting.generic_udp_bytes_storage_dropped, 4);
+    }
 
     #[test]
     fn queue_pressure_cannot_erase_a_connection_descriptor() {

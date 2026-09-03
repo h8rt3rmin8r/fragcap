@@ -486,6 +486,8 @@ fn proxy_event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::SocksTransfer(_) => "proxy.socks5-transfer",
         ApplicationEventKind::SocksUdp(_) => "proxy.socks5-udp",
         ApplicationEventKind::GenericStreamChunk(_) => "proxy.generic-stream-chunk",
+        ApplicationEventKind::GenericUdpDatagram(_) => "proxy.generic-udp-datagram",
+        ApplicationEventKind::UdpSocketError(_) => "proxy.generic-udp-socket-error",
         ApplicationEventKind::Error { .. } => "proxy.error",
     }
 }
@@ -527,6 +529,23 @@ fn proxy_event_detail(kind: &ApplicationEventKind) -> Value {
             "observed_len": value.observed_len,
             "retained_len": value.bytes.len(),
             "outcome": value.outcome.as_str(),
+        }),
+        ApplicationEventKind::GenericUdpDatagram(value) => json!({
+            "direction": value.direction.as_str(),
+            "datagram_sequence": value.sequence,
+            "client_endpoint": value.client_endpoint.to_string(),
+            "remote_endpoint": value.remote_endpoint.to_string(),
+            "observed_len": value.observed_len,
+            "retained_len": value.bytes.len(),
+            "outcome": value.outcome.as_str(),
+        }),
+        ApplicationEventKind::UdpSocketError(value) => json!({
+            "direction": value.direction.as_str(),
+            "operation": value.operation,
+            "endpoint": value.endpoint.map(|address| address.to_string()),
+            "error_kind": value.error_kind,
+            "visibility": value.visibility,
+            "icmp": "unavailable",
         }),
         ApplicationEventKind::Error { code } => json!({"code": code}),
         _ => json!({"kind": format!("{kind:?}")}),

@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, ApplicationEventSink, DestinationPolicy,
-    EventDisposition, NativeProxyBackend, NativeProxyConfig, ProtocolLimits,
+    EventDisposition, GenericUdpDirection, GenericUdpOutcome, NativeProxyBackend,
+    NativeProxyConfig, ProtocolLimits,
 };
 
 #[derive(Default)]
@@ -184,11 +185,44 @@ fn authenticated_association_relays_ipv4_and_proxy_resolved_domain() {
     assert_eq!(report.observation.protocol.socks_udp_client_forwarded, 2);
     assert_eq!(report.observation.protocol.socks_udp_upstream_forwarded, 2);
     assert_eq!(report.observation.protocol.socks_udp_peak_peers, 1);
-    assert!(collector.0.lock().unwrap().iter().any(|event| matches!(
+    let events = collector.0.lock().unwrap();
+    assert!(events.iter().any(|event| matches!(
         &event.kind,
         ApplicationEventKind::SocksUdp(value)
             if value.action == "terminal" && value.active_peers == 0
     )));
+    let datagrams = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ApplicationEventKind::GenericUdpDatagram(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(datagrams.len(), 4);
+    assert_eq!(
+        datagrams[0].direction,
+        GenericUdpDirection::ClientToUpstream
+    );
+    assert_eq!(datagrams[0].sequence, 0);
+    assert_eq!(&datagrams[0].bytes[..], b"literal");
+    assert_eq!(
+        datagrams[1].direction,
+        GenericUdpDirection::UpstreamToClient
+    );
+    assert_eq!(datagrams[1].sequence, 0);
+    assert_eq!(&datagrams[1].bytes[..], b"literal");
+    assert_eq!(datagrams[2].sequence, 1);
+    assert_eq!(datagrams[3].sequence, 1);
+    assert!(datagrams
+        .iter()
+        .all(|value| value.outcome == GenericUdpOutcome::Complete));
+    assert_eq!(
+        report.observation.protocol.generic_udp_datagrams_observed,
+        4
+    );
+    assert_eq!(report.observation.protocol.generic_udp_bytes_observed, 26);
+    assert_eq!(report.observation.protocol.generic_udp_bytes_retained, 26);
+    assert_eq!(report.observation.protocol.generic_udp_bytes_omitted, 0);
 }
 
 #[test]
@@ -233,6 +267,203 @@ fn association_relays_ipv6_when_loopback_is_available() {
     let report = lease.cleanup(Duration::from_secs(2));
     assert_eq!(report.observation.protocol.socks_udp_client_forwarded, 1);
     assert_eq!(report.observation.protocol.socks_udp_upstream_forwarded, 1);
+}
+
+#[test]
+fn retention_limits_preserve_one_record_and_complete_forwarding() {
+    let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+    origin
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut buffer = [0_u8; 64];
+        let (read, source) = origin.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"abcdefgh");
+        origin.send_to(&buffer[..read], source).unwrap();
+    });
+    let limits = ProtocolLimits {
+        max_body_bytes: 5,
+        max_session_body_bytes: 5,
+        ..ProtocolLimits::default()
+    };
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy(&[origin_address], limits, Arc::clone(&collector));
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut control = TcpStream::connect(lease.endpoint()).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut control,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    let relay = associate(&mut control, Some(client.local_addr().unwrap()));
+    client
+        .send_to(&ipv4_frame(origin_address, b"abcdefgh"), relay)
+        .unwrap();
+    let mut response = [0_u8; 64];
+    let (read, _) = client.recv_from(&mut response).unwrap();
+    assert_eq!(response_payload(&response[..read]), b"abcdefgh");
+    drop(control);
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    let events = collector.0.lock().unwrap();
+    let datagrams = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ApplicationEventKind::GenericUdpDatagram(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(datagrams.len(), 2);
+    assert_eq!(&datagrams[0].bytes[..], b"abcde");
+    assert!(datagrams[1].bytes.is_empty());
+    assert!(datagrams
+        .iter()
+        .all(|value| value.outcome == GenericUdpOutcome::RetentionLimit));
+    assert_eq!(
+        report.observation.protocol.generic_udp_datagrams_observed,
+        2
+    );
+    assert_eq!(report.observation.protocol.generic_udp_bytes_observed, 16);
+    assert_eq!(report.observation.protocol.generic_udp_bytes_retained, 5);
+    assert_eq!(report.observation.protocol.generic_udp_bytes_omitted, 11);
+    assert_eq!(
+        report.observation.protocol.generic_udp_datagrams_truncated,
+        2
+    );
+}
+
+#[test]
+fn duplicate_and_reordered_datagrams_remain_distinct() {
+    let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+    origin
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut buffer = [0_u8; 32];
+        let (first_read, source) = origin.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..first_read], b"same");
+        let (second_read, second_source) = origin.recv_from(&mut buffer).unwrap();
+        assert_eq!(second_source, source);
+        assert_eq!(&buffer[..second_read], b"same");
+        origin.send_to(b"second", source).unwrap();
+        origin.send_to(b"first", source).unwrap();
+    });
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy(
+        &[origin_address],
+        ProtocolLimits::default(),
+        Arc::clone(&collector),
+    );
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut control = TcpStream::connect(lease.endpoint()).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut control,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    let relay = associate(&mut control, Some(client.local_addr().unwrap()));
+    let frame = ipv4_frame(origin_address, b"same");
+    client.send_to(&frame, relay).unwrap();
+    client.send_to(&frame, relay).unwrap();
+    let mut response = [0_u8; 64];
+    let (read, _) = client.recv_from(&mut response).unwrap();
+    assert_eq!(response_payload(&response[..read]), b"second");
+    let (read, _) = client.recv_from(&mut response).unwrap();
+    assert_eq!(response_payload(&response[..read]), b"first");
+    drop(control);
+    server.join().unwrap();
+    let _ = lease.cleanup(Duration::from_secs(2));
+    let events = collector.0.lock().unwrap();
+    let datagrams = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ApplicationEventKind::GenericUdpDatagram(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let client_records = datagrams
+        .iter()
+        .copied()
+        .filter(|value| value.direction == GenericUdpDirection::ClientToUpstream)
+        .collect::<Vec<_>>();
+    let upstream_records = datagrams
+        .iter()
+        .copied()
+        .filter(|value| value.direction == GenericUdpDirection::UpstreamToClient)
+        .collect::<Vec<_>>();
+    assert_eq!(client_records.len(), 2);
+    assert_eq!(client_records[0].sequence, 0);
+    assert_eq!(client_records[1].sequence, 1);
+    assert_eq!(&client_records[0].bytes[..], b"same");
+    assert_eq!(&client_records[1].bytes[..], b"same");
+    assert_eq!(&upstream_records[0].bytes[..], b"second");
+    assert_eq!(&upstream_records[1].bytes[..], b"first");
+}
+
+#[test]
+fn disabled_payload_capture_keeps_metadata_and_forwarding() {
+    let origin = UdpSocket::bind("127.0.0.1:0").unwrap();
+    origin
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut buffer = [0_u8; 32];
+        let (read, source) = origin.recv_from(&mut buffer).unwrap();
+        origin.send_to(&buffer[..read], source).unwrap();
+    });
+    let limits = ProtocolLimits {
+        capture_payloads: false,
+        ..ProtocolLimits::default()
+    };
+    let collector = Arc::new(Collector::default());
+    let mut lease = start_proxy(&[origin_address], limits, Arc::clone(&collector));
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut control = TcpStream::connect(lease.endpoint()).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    authenticate(
+        &mut control,
+        lease.capability_proof().proxy_password().as_bytes(),
+    );
+    let relay = associate(&mut control, Some(client.local_addr().unwrap()));
+    client
+        .send_to(&ipv4_frame(origin_address, b"opaque"), relay)
+        .unwrap();
+    let mut response = [0_u8; 64];
+    let (read, _) = client.recv_from(&mut response).unwrap();
+    assert_eq!(response_payload(&response[..read]), b"opaque");
+    drop(control);
+    server.join().unwrap();
+    let report = lease.cleanup(Duration::from_secs(2));
+    let events = collector.0.lock().unwrap();
+    assert!(events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ApplicationEventKind::GenericUdpDatagram(value) => Some(value),
+            _ => None,
+        })
+        .all(|value| value.bytes.is_empty()
+            && value.outcome == GenericUdpOutcome::IntentionallyOmitted));
+    assert_eq!(report.observation.protocol.generic_udp_bytes_observed, 12);
+    assert_eq!(report.observation.protocol.generic_udp_bytes_retained, 0);
+    assert_eq!(report.observation.protocol.generic_udp_bytes_omitted, 12);
 }
 
 #[test]

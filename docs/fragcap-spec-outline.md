@@ -342,7 +342,10 @@ policy-checked proxy DNS, explicit fragmentation refusal, and metadata-only
 loss accounting. S116 adds bounded directional generic TCP and non-HTTP TLS
 chunks with explicit plaintext, opaque encrypted, or intercepted decrypted
 provenance, keeps HTTP routing intact, and records exact retention loss without
-guessing application semantics. Generic UDP payload semantics remain deferred.
+guessing application semantics. S117 adds one bounded record per routed generic
+UDP datagram with exact direction, endpoints, sequence, timing, payload
+retention outcome, and evidence-loss accounting. Unrouted UDP remains
+packet-only, and QUIC semantics remain deferred.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

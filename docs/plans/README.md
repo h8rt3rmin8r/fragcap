@@ -218,3 +218,13 @@ succeed. HTTP protocol selection remains unchanged, forwarding is independent
 from evidence retention, and interception failure never downgrades silently.
 Generic UDP payload evidence remains #313, and Deep Capture remains incomplete
 until #334.
+
+S117 (`specs/117-generic-udp-observations`) follows S116 and closes #313 at the
+generic UDP evidence boundary. Each accepted ingress on an authenticated S115
+association produces one exact directional datagram record with independent
+sequence, timestamp, endpoints, observed length, bounded retained prefix, and
+retention outcome. Complete forwarding remains independent from capture policy,
+retention, queue admission, and storage. Queue loss, bounded identity overflow,
+and platform-observed socket errors are explicit without inferred ICMP facts.
+Unrouted UDP remains packet-only, QUIC and HTTP/3 remain #314, and Deep Capture
+remains incomplete until #334.

@@ -1532,6 +1532,14 @@ fn sync_application_accounting(
     observation.protocol.streaming_bytes_queue_dropped = accounting.streaming_bytes_queue_dropped;
     observation.protocol.generic_stream_bytes_queue_dropped =
         accounting.generic_stream_bytes_queue_dropped;
+    observation.protocol.generic_udp_datagrams_queue_dropped =
+        accounting.generic_udp_datagrams_queue_dropped;
+    observation.protocol.generic_udp_bytes_queue_dropped =
+        accounting.generic_udp_bytes_queue_dropped;
+    observation.protocol.generic_udp_datagrams_storage_dropped =
+        accounting.generic_udp_datagrams_storage_dropped;
+    observation.protocol.generic_udp_bytes_storage_dropped =
+        accounting.generic_udp_bytes_storage_dropped;
 }
 
 async fn drain_tasks(
@@ -1745,6 +1753,46 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .generic_stream_bytes_queue_dropped
         .saturating_add(source.generic_stream_bytes_queue_dropped);
+    observation.protocol.generic_udp_datagrams_observed = observation
+        .protocol
+        .generic_udp_datagrams_observed
+        .saturating_add(source.generic_udp_datagrams_observed);
+    observation.protocol.generic_udp_bytes_observed = observation
+        .protocol
+        .generic_udp_bytes_observed
+        .saturating_add(source.generic_udp_bytes_observed);
+    observation.protocol.generic_udp_bytes_retained = observation
+        .protocol
+        .generic_udp_bytes_retained
+        .saturating_add(source.generic_udp_bytes_retained);
+    observation.protocol.generic_udp_bytes_omitted = observation
+        .protocol
+        .generic_udp_bytes_omitted
+        .saturating_add(source.generic_udp_bytes_omitted);
+    observation.protocol.generic_udp_datagrams_truncated = observation
+        .protocol
+        .generic_udp_datagrams_truncated
+        .saturating_add(source.generic_udp_datagrams_truncated);
+    observation.protocol.generic_udp_datagrams_queue_dropped = observation
+        .protocol
+        .generic_udp_datagrams_queue_dropped
+        .saturating_add(source.generic_udp_datagrams_queue_dropped);
+    observation.protocol.generic_udp_bytes_queue_dropped = observation
+        .protocol
+        .generic_udp_bytes_queue_dropped
+        .saturating_add(source.generic_udp_bytes_queue_dropped);
+    observation.protocol.generic_udp_datagrams_storage_dropped = observation
+        .protocol
+        .generic_udp_datagrams_storage_dropped
+        .saturating_add(source.generic_udp_datagrams_storage_dropped);
+    observation.protocol.generic_udp_bytes_storage_dropped = observation
+        .protocol
+        .generic_udp_bytes_storage_dropped
+        .saturating_add(source.generic_udp_bytes_storage_dropped);
+    observation.protocol.generic_udp_socket_errors = observation
+        .protocol
+        .generic_udp_socket_errors
+        .saturating_add(source.generic_udp_socket_errors);
     observation.protocol.application_events_accepted = observation
         .protocol
         .application_events_accepted
