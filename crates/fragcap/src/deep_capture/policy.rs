@@ -453,6 +453,16 @@ pub fn terminal_calibration_outcome(
         match phase {
             CalibrationPhase::Reachability => calibration_outcome(phase, observations),
             CalibrationPhase::Tls => {
+                // A phase-level failure has no protocol family to match. Preserve
+                // it before selecting protocol-derived observations, otherwise an
+                // exact protocol calibration would turn "proxy-not-reached" into
+                // an inconclusive empty evidence set.
+                if observations
+                    .iter()
+                    .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+                {
+                    return CalibrationOutcome::ProxyNotReached;
+                }
                 let matching = observations
                     .iter()
                     .filter(|observation| {
@@ -606,6 +616,30 @@ mod launch_case_tests {
                     | CompatibilityFactKey::TlsTrustBehavior
             )
         }));
+    }
+
+    #[test]
+    fn selected_protocol_preserves_protocol_neutral_proxy_failure() {
+        let mut observation = correlated_client_observation();
+        observation.classification = ProtocolClassification::new(
+            TrafficFamily::Unknown,
+            DetectionState::Unknown,
+            InspectabilityState::Unavailable,
+            None,
+        )
+        .unwrap();
+        observation.reason = Some("proxy-not-reached".into());
+
+        assert_eq!(
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Http2,
+                &[observation],
+                false,
+                false,
+            ),
+            CalibrationOutcome::ProxyNotReached
+        );
     }
 
     #[test]
