@@ -236,7 +236,9 @@ fn tls_prefix_is_classified_without_consuming_it() {
         .unwrap();
     authenticate(&mut client, password.as_bytes());
     connect_ipv4(&mut client, address);
-    client.write_all(&payload).unwrap();
+    client.write_all(&payload[..1]).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    client.write_all(&payload[1..]).unwrap();
     client.shutdown(Shutdown::Write).unwrap();
     server.join().unwrap();
     let report = lease.cleanup(Duration::from_secs(2));

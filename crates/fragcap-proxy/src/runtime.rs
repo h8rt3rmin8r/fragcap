@@ -7,7 +7,10 @@ use std::sync::{mpsc as std_mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant as StdInstant};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, watch, Mutex, OwnedSemaphorePermit, Semaphore};
@@ -579,7 +582,7 @@ async fn connection_task(
                 }
             }
         };
-        let client_tls =
+        let mut client_tls =
             match accept_client_tls(stream, &authority, server_config, config.protocol_limits())
                 .await
             {
@@ -795,11 +798,21 @@ async fn connection_task(
             };
         }
         let no_alpn = client_alpn.is_none();
-        let mut client_tls =
-            BufReader::with_capacity(config.protocol.max_event_chunk_bytes, client_tls);
-        if no_alpn
-            && !buffered_prefix_is_http(&mut client_tls, config.protocol.header_timeout).await
-        {
+        let (is_http, prefix) = if no_alpn {
+            read_protocol_prefix(
+                &mut client_tls,
+                config
+                    .protocol
+                    .header_timeout
+                    .min(Duration::from_millis(25)),
+                config.protocol.max_header_bytes,
+            )
+            .await
+        } else {
+            (true, Vec::new())
+        };
+        let mut client_tls = PrefixedIo::new(prefix, client_tls);
+        if no_alpn && !is_http {
             let generic = crate::relay_generic(
                 &mut client_tls,
                 &mut upstream,
@@ -1075,26 +1088,143 @@ async fn has_http2_preface(stream: &TcpStream, budget: Duration) -> bool {
     }
 }
 
-async fn buffered_prefix_is_http<S>(stream: &mut S, budget: Duration) -> bool
+async fn read_protocol_prefix<S>(
+    stream: &mut S,
+    budget: Duration,
+    max_bytes: usize,
+) -> (bool, Vec<u8>)
 where
-    S: tokio::io::AsyncBufRead + Unpin,
+    S: AsyncRead + Unpin,
 {
-    let prefix = match timeout(budget.min(Duration::from_millis(25)), stream.fill_buf()).await {
-        Ok(Ok(prefix)) => prefix,
-        Ok(Err(_)) | Err(_) => return false,
-    };
-    [
-        b"GET ".as_slice(),
-        b"POST ",
-        b"PUT ",
-        b"HEAD ",
-        b"PATCH ",
-        b"DELETE ",
-        b"OPTIONS ",
-        b"CONNECT ",
-    ]
-    .iter()
-    .any(|method| prefix.len() >= method.len() && prefix.starts_with(method))
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut prefix = Vec::new();
+    let mut buffer = [0_u8; 256];
+    while prefix.len() < max_bytes {
+        let remaining = max_bytes - prefix.len();
+        let read_capacity = remaining.min(buffer.len());
+        let read = match tokio::time::timeout_at(
+            deadline,
+            stream.read(&mut buffer[..read_capacity]),
+        )
+        .await
+        {
+            Ok(Ok(read)) => read,
+            Ok(Err(_)) | Err(_) => break,
+        };
+        if read == 0 {
+            break;
+        }
+        prefix.extend_from_slice(&buffer[..read]);
+        if crate::http1::prefix_is_http_request(&prefix) {
+            return (true, prefix);
+        }
+        if !crate::http1::prefix_can_be_http_request(&prefix) {
+            break;
+        }
+    }
+    (false, prefix)
+}
+
+struct PrefixedIo<S> {
+    prefix: Vec<u8>,
+    offset: usize,
+    inner: S,
+}
+
+impl<S> PrefixedIo<S> {
+    fn new(prefix: Vec<u8>, inner: S) -> Self {
+        Self {
+            prefix,
+            offset: 0,
+            inner,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for PrefixedIo<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        target: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.offset < this.prefix.len() {
+            let count = target.remaining().min(this.prefix.len() - this.offset);
+            target.put_slice(&this.prefix[this.offset..this.offset + count]);
+            this.offset += count;
+            Poll::Ready(Ok(()))
+        } else {
+            Pin::new(&mut this.inner).poll_read(context, target)
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedIo<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+    }
+}
+
+fn stream_terminal(outcome: &ConnectionOutcome) -> crate::StreamTerminal {
+    match outcome {
+        ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
+        ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
+        ConnectionOutcome::PreAuthenticationFailed(run)
+            if run
+                .failure
+                .as_ref()
+                .is_some_and(|error| error.code == "connection-cancelled") =>
+        {
+            crate::StreamTerminal::Shutdown
+        }
+        ConnectionOutcome::PreAuthenticationFailed(run)
+            if run.failure.as_ref().is_some_and(|error| error.timed_out) =>
+        {
+            crate::StreamTerminal::IdleTimeout
+        }
+        ConnectionOutcome::PreAuthenticationFailed(_) => crate::StreamTerminal::ProtocolError,
+        ConnectionOutcome::Failed(run)
+            if run.failure.as_ref().is_some_and(|error| error.timed_out) =>
+        {
+            crate::StreamTerminal::IdleTimeout
+        }
+        ConnectionOutcome::Failed(run)
+            if run.failure.as_ref().is_some_and(|error| {
+                matches!(error.code, "connection-cancelled" | "generic-tls-cancelled")
+            }) =>
+        {
+            crate::StreamTerminal::Shutdown
+        }
+        ConnectionOutcome::Failed(run)
+            if run.failure.as_ref().is_some_and(|error| {
+                matches!(
+                    error.code,
+                    "socks-forward-failed" | "generic-tls-transport-failed"
+                )
+            }) =>
+        {
+            crate::StreamTerminal::TransportError
+        }
+        ConnectionOutcome::Failed(_) => crate::StreamTerminal::ProtocolError,
+    }
 }
 
 fn connect_observation(
@@ -1317,17 +1447,7 @@ async fn run(
                                         opened_at_ns,
                                         closed_at_ns,
                                     );
-                                    let terminal = match &outcome {
-                                        ConnectionOutcome::Completed(_) => crate::StreamTerminal::Complete,
-                                        ConnectionOutcome::AuthenticationRefused(_) => crate::StreamTerminal::Refused,
-                                        ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.code == "connection-cancelled") => crate::StreamTerminal::Shutdown,
-                                        ConnectionOutcome::PreAuthenticationFailed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
-                                        ConnectionOutcome::PreAuthenticationFailed(_) => crate::StreamTerminal::ProtocolError,
-                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.timed_out) => crate::StreamTerminal::IdleTimeout,
-                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.code == "connection-cancelled") => crate::StreamTerminal::Shutdown,
-                                        ConnectionOutcome::Failed(run) if run.failure.as_ref().is_some_and(|error| error.code == "socks-forward-failed") => crate::StreamTerminal::TransportError,
-                                        ConnectionOutcome::Failed(_) => crate::StreamTerminal::ProtocolError,
-                                    };
+                                    let terminal = stream_terminal(&outcome);
                                     crate::application::emit(
                                         &terminal_sink,
                                         crate::ApplicationEvent::now(
@@ -1892,6 +2012,25 @@ mod tests {
             accounting: Default::default(),
             failure: None,
         })
+    }
+
+    #[test]
+    fn generic_tls_failures_map_to_transport_lifecycle_terminals() {
+        let failed = |code| {
+            ConnectionOutcome::Failed(HttpRun {
+                observations: Vec::new(),
+                accounting: Default::default(),
+                failure: Some(ProtocolError::new(code, "controlled failure")),
+            })
+        };
+        assert_eq!(
+            stream_terminal(&failed("generic-tls-cancelled")),
+            crate::StreamTerminal::Shutdown
+        );
+        assert_eq!(
+            stream_terminal(&failed("generic-tls-transport-failed")),
+            crate::StreamTerminal::TransportError
+        );
     }
 
     #[test]

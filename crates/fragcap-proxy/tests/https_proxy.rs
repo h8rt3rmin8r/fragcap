@@ -34,6 +34,7 @@ fn read_head(stream: &mut impl Read) -> Vec<u8> {
 
 fn tls_origin(
     version: &'static rustls::SupportedProtocolVersion,
+    method: &'static str,
 ) -> (
     SocketAddr,
     CertificateDer<'static>,
@@ -57,7 +58,7 @@ fn tls_origin(
         let connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
         let mut tls = rustls::StreamOwned::new(connection, tcp);
         let request = String::from_utf8(read_head(&mut tls)).unwrap();
-        assert!(request.starts_with("GET /secure HTTP/1.1\r\n"));
+        assert!(request.starts_with(&format!("{method} /secure HTTP/1.1\r\n")));
         tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSECURE")
             .unwrap();
         tls.flush().unwrap();
@@ -96,8 +97,9 @@ fn round_trip(
     version: &'static rustls::SupportedProtocolVersion,
     session: &str,
     advertise_http_alpn: bool,
+    method: &'static str,
 ) {
-    let (origin, origin_certificate, server) = tls_origin(version);
+    let (origin, origin_certificate, server) = tls_origin(version, method);
     let config = NativeProxyConfig::new(
         "127.0.0.1:0".parse().unwrap(),
         8,
@@ -157,7 +159,8 @@ fn round_trip(
     let mut tls = rustls::StreamOwned::new(connection, tcp);
     write!(
         tls,
-        "GET /secure HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        "{} /secure HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        method,
         origin.port(),
     )
     .unwrap();
@@ -214,17 +217,22 @@ fn round_trip(
 
 #[test]
 fn tls12_connect_performs_two_verified_boundaries_and_relays_http() {
-    round_trip(&rustls::version::TLS12, "s104-https-tls12", true);
+    round_trip(&rustls::version::TLS12, "s104-https-tls12", true, "GET");
 }
 
 #[test]
 fn tls13_connect_performs_two_verified_boundaries_and_relays_http() {
-    round_trip(&rustls::version::TLS13, "s104-https-tls13", true);
+    round_trip(&rustls::version::TLS13, "s104-https-tls13", true, "GET");
 }
 
 #[test]
 fn no_alpn_http_prefix_retains_the_http_engine() {
-    round_trip(&rustls::version::TLS13, "s116-no-alpn-http", false);
+    round_trip(
+        &rustls::version::TLS13,
+        "s116-no-alpn-http",
+        false,
+        "PROPFIND",
+    );
 }
 
 #[test]

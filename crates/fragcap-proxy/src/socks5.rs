@@ -1295,31 +1295,30 @@ async fn write_reply(
 }
 
 async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassification {
-    let mut bytes = [0_u8; 8];
-    let read = timeout(budget, stream.peek(&mut bytes))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or(0);
-    let prefix = &bytes[..read];
-    if [
-        b"GET ".as_slice(),
-        b"POST ",
-        b"PUT ",
-        b"HEAD ",
-        b"PATCH ",
-        b"DELETE ",
-        b"OPTIONS ",
-        b"CONNECT ",
-    ]
-    .iter()
-    .any(|method| prefix.len() >= method.len() && prefix.starts_with(method))
-    {
-        SocksClassification::Http
-    } else if prefix.len() >= 3 && prefix[0] == 0x16 && prefix[1] == 0x03 {
-        SocksClassification::Tls
-    } else {
-        SocksClassification::OpaqueTcp
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut bytes = [0_u8; 256];
+    loop {
+        let read = match tokio::time::timeout_at(deadline, stream.peek(&mut bytes)).await {
+            Ok(Ok(read)) => read,
+            Ok(Err(_)) | Err(_) => return SocksClassification::OpaqueTcp,
+        };
+        let prefix = &bytes[..read];
+        if crate::http1::prefix_is_http_request(prefix) {
+            return SocksClassification::Http;
+        }
+        if prefix.len() >= 3 && prefix[0] == 0x16 && prefix[1] == 0x03 {
+            return SocksClassification::Tls;
+        }
+        if !(crate::http1::prefix_can_be_http_request(prefix)
+            || prefix == [0x16]
+            || prefix == [0x16, 0x03])
+        {
+            return SocksClassification::OpaqueTcp;
+        }
+        if read == 0 || read == bytes.len() || tokio::time::Instant::now() >= deadline {
+            return SocksClassification::OpaqueTcp;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
