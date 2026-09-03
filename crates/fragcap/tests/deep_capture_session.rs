@@ -33,9 +33,10 @@ impl TargetResolver for Targets {
     }
 }
 
-struct Endpoint;
+struct Endpoint(Ledger);
 impl EndpointAllocator for Endpoint {
     fn select(&mut self) -> Result<LoopbackEndpoint, PreflightRefusal> {
+        self.0.borrow_mut().push("endpoint.select".into());
         Ok(LoopbackEndpoint::new("127.0.0.1:31337".parse().unwrap()).unwrap())
     }
 }
@@ -571,6 +572,7 @@ fn config() -> SessionConfig {
         har: true,
         key_log: false,
         client_identity: false,
+        proxy_bypass: Vec::new(),
         sensitive_retention: SensitiveRetention::Retain,
         deadlines: Deadlines::default(),
     }
@@ -579,7 +581,7 @@ fn config() -> SessionConfig {
 fn adapters(ledger: &Ledger) -> AdapterSet<'_> {
     AdapterSet {
         targets: Box::new(Targets(ledger.clone())),
-        endpoints: Box::new(Endpoint),
+        endpoints: Box::new(Endpoint(ledger.clone())),
         clock: Box::new(Clock),
         identifiers: Box::new(Ids(VecDeque::from(["session-1".into(), "plan-1".into()]))),
         proxy: Box::new(Proxy(ledger.clone())),
@@ -591,6 +593,17 @@ fn adapters(ledger: &Ledger) -> AdapterSet<'_> {
         artifacts: Box::new(Artifacts(ledger.clone())),
         events: Box::new(Events(ledger.clone())),
     }
+}
+
+#[test]
+fn malformed_bypass_refuses_before_listener_selection() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    let mut invalid = config();
+    invalid.proxy_bypass = vec!["*".to_string()];
+    let refusal = DeepCapture::preflight(invalid, &mut environment).unwrap_err();
+    assert_eq!(refusal.code, "proxy-bypass-invalid");
+    assert!(!ledger.borrow().iter().any(|call| call == "endpoint.select"));
 }
 
 #[test]

@@ -32,9 +32,10 @@ impl DeepCapture {
         }
         adapters.targets.validate_compatibility(&target, &config)?;
         adapters.artifacts.validate_destination(&config.bundle)?;
+        BypassPolicy::validate_inputs(&config.proxy_bypass)?;
         let endpoint = adapters.endpoints.select()?;
         let capture = adapters.capture.prepare(&config, &target, endpoint)?;
-        let routing = RoutingPlan::child_environment();
+        let routing = RoutingPlan::child_environment(endpoint, &config.proxy_bypass)?;
         adapters.routing.prepare(&target, &routing)?;
         let session_id = adapters.identifiers.next_id("session")?;
         let plan_id = PlanId::new(adapters.identifiers.next_id("plan")?);

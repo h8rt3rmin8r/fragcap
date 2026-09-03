@@ -76,6 +76,12 @@ pub enum Event {
         proxy_backend: String,
         trust_state: String,
     },
+    /// The exact target-scoped routing and bypass plan, emitted before authorization.
+    DeepCaptureRoutingPlan {
+        operator_rules: Vec<String>,
+        infrastructure: String,
+        environment_variables: Vec<String>,
+    },
     /// A complete compatibility calibration plan, emitted before confirmation.
     DeepCaptureCalibrationPlan {
         target: String,
@@ -236,6 +242,7 @@ impl Event {
             Event::StreamConsumer { .. } => "stream.consumer",
             Event::RingEvicted { .. } => "ring.evicted",
             Event::DeepCapturePreflight { .. } => "deep_capture.preflight",
+            Event::DeepCaptureRoutingPlan { .. } => "deep_capture.routing_plan",
             Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
@@ -355,6 +362,29 @@ impl Event {
                 write_json_string(proxy_backend, &mut line);
                 line.push_str(",\"trust_state\":");
                 write_json_string(trust_state, &mut line);
+            }
+            Event::DeepCaptureRoutingPlan {
+                operator_rules,
+                infrastructure,
+                environment_variables,
+            } => {
+                line.push_str(",\"policy_version\":1,\"operator_rules\":[");
+                for (index, rule) in operator_rules.iter().enumerate() {
+                    if index > 0 {
+                        line.push(',');
+                    }
+                    write_json_string(rule, &mut line);
+                }
+                line.push_str("],\"infrastructure\":");
+                write_json_string(infrastructure, &mut line);
+                line.push_str(",\"environment_variables\":[");
+                for (index, variable) in environment_variables.iter().enumerate() {
+                    if index > 0 {
+                        line.push(',');
+                    }
+                    write_json_string(variable, &mut line);
+                }
+                line.push_str("],\"dns_matching\":\"requested-authority-before-resolution\",\"resolved_address_policy\":\"evaluate-every-answer-every-attempt\",\"fallback\":\"none\"");
             }
             Event::DeepCaptureCalibrationPlan {
                 target,

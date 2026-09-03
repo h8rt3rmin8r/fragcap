@@ -153,6 +153,8 @@ pub struct SessionConfig {
     pub key_log: bool,
     /// Whether an explicit operator-owned upstream client identity is configured.
     pub client_identity: bool,
+    /// Explicit operator-owned proxy bypass rule inputs.
+    pub proxy_bypass: Vec<String>,
     /// Lifecycle policy for sensitive bundle artifacts.
     pub sensitive_retention: SensitiveRetention,
     /// Requested lifecycle deadlines.

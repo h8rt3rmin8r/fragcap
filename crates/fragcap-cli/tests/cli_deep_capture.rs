@@ -97,6 +97,7 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--key-log",
         "--client-certificate",
         "--client-private-key",
+        "--proxy-bypass",
     ] {
         assert!(
             out.contains(required),
@@ -226,6 +227,8 @@ fn controlled_calibration_runs_reachability_then_tls() {
         "--wait",
         "7s",
         "--yes",
+        "--proxy-bypass",
+        ".example.invalid,192.0.2.0/24",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -235,6 +238,17 @@ fn controlled_calibration_runs_reachability_then_tls() {
     assert_eq!(code, 0, "reachability events:\n{reachability_events}");
     assert!(out.is_empty());
     assert!(reachability_events.contains("deep_capture.calibration_plan"));
+    let routing_plan: serde_json::Value = reachability_events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["event"] == "deep_capture.routing_plan")
+        .unwrap();
+    assert_eq!(routing_plan["policy_version"], 1);
+    assert_eq!(
+        routing_plan["operator_rules"],
+        serde_json::json!([".example.invalid", "192.0.2.0/24"])
+    );
+    assert_eq!(routing_plan["fallback"], "none");
     assert!(reachability_events.contains("\"status\":\"reached-client\""));
     assert!(!reachability_events.contains("deep_capture.trust"));
     let plan: serde_json::Value = reachability_events
@@ -272,6 +286,19 @@ fn controlled_calibration_runs_reachability_then_tls() {
         serde_json::from_slice(&std::fs::read(reachability_bundle.join("manifest.json")).unwrap())
             .unwrap();
     assert_eq!(reachability_manifest["trust"]["state"], "not-requested");
+    assert_eq!(
+        reachability_manifest["proxy"]["routing_policy"]["operator_rules"],
+        serde_json::json!([".example.invalid", "192.0.2.0/24"])
+    );
+    assert_eq!(
+        reachability_manifest["proxy"]["routing_decisions"]["bypass_proxy_loss"],
+        0
+    );
+    assert!(reachability_manifest["proxy"]["routing_decisions"]["bypassed"].is_null());
+    assert_eq!(
+        reachability_manifest["proxy"]["routing_decisions"]["bypassed_state"],
+        "unavailable-without-localized-packet-destination"
+    );
     let compatibility: serde_json::Value = serde_json::from_slice(
         &std::fs::read(reachability_bundle.join("compatibility.json")).unwrap(),
     )
@@ -287,6 +314,12 @@ fn controlled_calibration_runs_reachability_then_tls() {
     assert_eq!(compatibility["routing_strategy"], "child-environment");
     assert_eq!(compatibility["address_family"], "ipv4");
     assert_eq!(compatibility["protocol"], "routing");
+    assert_eq!(
+        compatibility["routing_policy"]["operator_rules"],
+        serde_json::json!([".example.invalid", "192.0.2.0/24"])
+    );
+    assert_eq!(compatibility["routing_decisions"]["bypass_proxy_loss"], 0);
+    assert!(compatibility["routing_decisions"]["bypassed"].is_null());
 
     let store = Store::open(&local).unwrap();
     let facts = store.compatibility_facts_for_target(target_id).unwrap();
@@ -335,6 +368,36 @@ fn controlled_calibration_runs_reachability_then_tls() {
     assert!(facts.iter().any(|fact| {
         fact.key == CompatibilityFactKey::TlsTrustBehavior && fact.value == "accepts-local-ca"
     }));
+}
+
+#[test]
+fn malformed_proxy_bypass_refuses_before_session_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--calibrate",
+        "reachability",
+        "--calibration-protocol",
+        "routing",
+        "--launch-case",
+        "direct-exe-warm",
+        "--yes",
+        "--proxy-bypass",
+        "*",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("complete-bypass wildcard"), "refusal: {err}");
+    assert!(!bundle.exists());
 }
 
 #[test]

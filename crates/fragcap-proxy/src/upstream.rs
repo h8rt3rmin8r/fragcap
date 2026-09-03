@@ -217,16 +217,19 @@ impl DestinationPolicy {
 
     pub fn evaluate(&self, address: SocketAddr) -> DestinationDecision {
         let normalized = canonical_address(address);
-        let allowed = normalized != self.listener
-            && (self.exact_grants.contains(&normalized) || public_address(normalized.ip()));
+        let (allowed, reason) = if normalized == self.listener {
+            (false, "proxy-listener")
+        } else if self.exact_grants.contains(&normalized) {
+            (true, "controlled-origin-grant")
+        } else if public_address(normalized.ip()) {
+            (true, "public-destination")
+        } else {
+            (false, "local-destination-refused")
+        };
         DestinationDecision {
             address,
             allowed,
-            reason: if allowed {
-                "allowed"
-            } else {
-                "destination-refused"
-            },
+            reason,
         }
     }
 }
@@ -773,13 +776,22 @@ fn retain_allowed_candidates(
 ) -> Result<Vec<SocketAddr>, UpstreamError> {
     let mut allowed = Vec::new();
     let mut saw_address = false;
+    let mut refusal_reason = None;
+    let mut mixed_refusals = false;
     for address in resolved {
         saw_address = true;
         let decision = policy.evaluate(address);
-        if !decision.allowed
-            || allowed
-                .iter()
-                .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
+        if !decision.allowed {
+            if refusal_reason.is_some_and(|reason| reason != decision.reason) {
+                mixed_refusals = true;
+            } else {
+                refusal_reason = Some(decision.reason);
+            }
+            continue;
+        }
+        if allowed
+            .iter()
+            .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
         {
             continue;
         }
@@ -800,7 +812,11 @@ fn retain_allowed_candidates(
     } else if allowed.is_empty() {
         Err(UpstreamError::new(
             UpstreamStage::Policy,
-            "destination-refused",
+            if mixed_refusals {
+                "destination-refused"
+            } else {
+                refusal_reason.unwrap_or("destination-refused")
+            },
         ))
     } else {
         Ok(allowed)
@@ -846,9 +862,11 @@ mod address_tests {
     use std::time::Duration;
 
     use super::{
-        canonical_address, interleave_families, race_candidates, retain_allowed_candidates,
-        DestinationPolicy, UpstreamCancellation, UpstreamStage, MAX_RESOLVED_CANDIDATES,
+        canonical_address, interleave_families, race_candidates, resolve_allowed_candidates,
+        retain_allowed_candidates, DestinationPolicy, UpstreamCancellation, UpstreamStage,
+        MAX_RESOLVED_CANDIDATES,
     };
+    use crate::DestinationAuthority;
 
     #[test]
     fn candidate_order_interleaves_families_from_the_resolver_preference() {
@@ -892,6 +910,48 @@ mod address_tests {
         assert_eq!(retained.len(), MAX_RESOLVED_CANDIDATES);
         assert!(retained.contains(&ipv4));
         assert!(retained.iter().any(SocketAddr::is_ipv6));
+    }
+
+    #[test]
+    fn every_mixed_dns_answer_is_rechecked_without_local_fallback() {
+        let listener = "127.0.0.1:8080".parse().unwrap();
+        let policy = DestinationPolicy::new(listener);
+        let allowed = retain_allowed_candidates(
+            vec![
+                listener,
+                "10.0.0.1:443".parse().unwrap(),
+                "8.8.8.8:443".parse().unwrap(),
+                "[::1]:443".parse().unwrap(),
+                "[2606:4700:4700::1111]:443".parse().unwrap(),
+            ],
+            &policy,
+        )
+        .unwrap();
+        assert_eq!(
+            allowed,
+            vec![
+                "8.8.8.8:443".parse::<SocketAddr>().unwrap(),
+                "[2606:4700:4700::1111]:443".parse::<SocketAddr>().unwrap(),
+            ]
+        );
+        assert_eq!(policy.evaluate(listener).reason, "proxy-listener");
+        assert_eq!(
+            policy.evaluate("127.0.0.2:443".parse().unwrap()).reason,
+            "local-destination-refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exact_listener_refusal_survives_resolution() {
+        let listener = "127.0.0.1:8080".parse().unwrap();
+        let error = resolve_allowed_candidates(
+            &DestinationAuthority::parse("127.0.0.1:8080").unwrap(),
+            &DestinationPolicy::new(listener),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "proxy-listener");
     }
 
     #[tokio::test]

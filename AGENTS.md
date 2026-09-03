@@ -483,6 +483,24 @@ applicable routing row authorizes a prepared case, while protocol facts require
 the matching S120 classification. S121 adds no dependency or lockfile package;
 bypass policy remains #318 and Deep Capture remains incomplete until #334.
 
+S122 closes #318 at the proxy-bypass and local-destination correctness
+boundary. One immutable facade policy parses and canonicalizes DNS-domain,
+IP, CIDR, port, and IPv6 rules; the selected listener is separate
+session infrastructure; and controlled origins remain exact proxy-routed
+grants. Uppercase and lowercase child proxy variables are fully plan-owned.
+Bypass matches requested authorities before DNS, while every proxied answer is
+rechecked by the native destination policy on every attempt. Plan and bundle
+evidence expose policy identity, and intentional bypass is scope rather than
+proxy loss. S122 adds no dependency or lockfile package, closes Native Deep
+Capture milestone 3, and leaves Deep Capture incomplete until #334.
+Bare and leading-dot DNS inputs intentionally share domain-boundary semantics;
+this supersedes S122's initial exact-name distinction because conventional
+`NO_PROXY` clients can broaden a bare domain to its descendants.
+Proxy-retained evidence classifies successful, refused, and infrastructure
+routes from their terminal outcome. Its bypass count is explicitly unavailable
+until packet evidence localizes a direct destination; it is never reported as
+a factual zero from proxy silence.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
