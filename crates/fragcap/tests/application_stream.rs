@@ -12,9 +12,99 @@ use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, BodyDirection, BodyOutcome, BodyRepresentation,
     BodySegment, GenericStreamChunk, GenericStreamDirection, GenericStreamOutcome,
     GenericStreamProvenance, GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome,
-    GrpcMessage, MetadataBlock, MetadataField, MetadataKind, ProtocolVersion, StreamingEvent,
-    StreamingOutcome, UdpSocketError,
+    GrpcMessage, MetadataBlock, MetadataField, MetadataKind, ProtocolVersion, QuicDirection,
+    QuicStreamEvent, StreamingEvent, StreamingOutcome, UdpSocketError,
 };
+
+#[test]
+fn http3_streams_are_versioned_and_reconciled() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("quic-http3.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-118", 8).unwrap();
+    let sink = lease.sink();
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
+            "session-118",
+            11,
+            Some(4),
+            Some(ProtocolVersion::Http3),
+            ApplicationEventKind::QuicStream(QuicStreamEvent {
+                pair_id: 3,
+                direction: QuicDirection::ClientToUpstream,
+                stream_id: 4,
+                stream_kind: "http3-request",
+                sequence: 0,
+                offset: 0,
+                observed_len: 5,
+                bytes: Bytes::from_static(b"abc"),
+                outcome: GenericStreamOutcome::RetentionLimit,
+                terminal: "forwarded",
+            }),
+        )),
+        fragcap_proxy::EventDisposition::Accepted,
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    assert!(stream.records[0]["exports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "http3"));
+    let event = stream
+        .records
+        .iter()
+        .find(|value| value["type"] == "quic.stream")
+        .unwrap();
+    assert_eq!(event["protocol"], "h3");
+    assert_eq!(event["payload"], "YWJj");
+    let trailer = stream.records.last().unwrap();
+    assert_eq!(trailer["quic_stream_bytes_observed"], 5);
+    assert_eq!(trailer["quic_stream_bytes_retained"], 3);
+    assert_eq!(trailer["quic_stream_bytes_omitted"], 2);
+}
+
+#[test]
+fn quic_stream_queue_pressure_is_counted() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("quic-pressure.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-118-pressure", 1).unwrap();
+    let sink = lease.sink();
+    let mut queue_full = 0_u64;
+    for sequence in 0..10_000 {
+        let disposition = sink.try_emit(ApplicationEvent::now(
+            "session-118-pressure",
+            12,
+            Some(8),
+            Some(ProtocolVersion::Http3),
+            ApplicationEventKind::QuicStream(QuicStreamEvent {
+                pair_id: 4,
+                direction: QuicDirection::UpstreamToClient,
+                stream_id: 8,
+                stream_kind: "http3-response",
+                sequence,
+                offset: sequence * 8,
+                observed_len: 8,
+                bytes: Bytes::from_static(b"pressure"),
+                outcome: GenericStreamOutcome::Complete,
+                terminal: "forwarded",
+            }),
+        ));
+        queue_full += u64::from(disposition == fragcap_proxy::EventDisposition::QueueFull);
+    }
+    assert!(queue_full > 0);
+    assert_eq!(
+        sink.accounting().quic_stream_bytes_queue_dropped,
+        queue_full * 8
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    let trailer = stream.records.last().unwrap();
+    assert_eq!(trailer["quic_stream_bytes_queue_dropped"], queue_full * 8);
+}
 
 #[test]
 fn generic_udp_datagrams_preserve_boundaries_payloads_and_omission() {

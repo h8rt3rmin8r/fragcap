@@ -203,6 +203,9 @@ impl NativeProxyBackend {
             body_resources: crate::body::SessionBodyResources::new(
                 self.config.protocol.max_concurrent_decoders,
             ),
+            quic_slots: Arc::new(tokio::sync::Semaphore::new(
+                self.config.protocol.max_quic_connections,
+            )),
         };
         let worker = thread::Builder::new()
             .name("fragcap-native-proxy".to_string())
@@ -388,6 +391,7 @@ struct RuntimeServices {
     application_sink: crate::application::SharedEventSink,
     key_log: Option<Arc<crate::SessionKeyLog>>,
     body_resources: crate::body::SessionBodyResources,
+    quic_slots: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone, Copy)]
@@ -429,6 +433,11 @@ async fn connection_task(
                 sink: &services.application_sink,
                 body_resources: services.body_resources.clone(),
                 buffer_bytes: config.per_connection_buffer_bytes(),
+                certificate_authority: Arc::clone(&services.certificate_authority),
+                leaf_cache: Arc::clone(&services.leaf_cache),
+                tls_client_config: Arc::clone(&services.tls_client_config),
+                key_log: services.key_log.clone(),
+                quic_slots: Arc::clone(&services.quic_slots),
             },
         )
         .await;
@@ -1540,6 +1549,16 @@ fn sync_application_accounting(
         accounting.generic_udp_datagrams_storage_dropped;
     observation.protocol.generic_udp_bytes_storage_dropped =
         accounting.generic_udp_bytes_storage_dropped;
+    observation.protocol.quic_stream_bytes_queue_dropped =
+        accounting.quic_stream_bytes_queue_dropped;
+    observation.protocol.quic_datagrams_queue_dropped = accounting.quic_datagrams_queue_dropped;
+    observation.protocol.quic_datagram_bytes_queue_dropped =
+        accounting.quic_datagram_bytes_queue_dropped;
+    observation.protocol.quic_stream_bytes_storage_dropped =
+        accounting.quic_stream_bytes_storage_dropped;
+    observation.protocol.quic_datagrams_storage_dropped = accounting.quic_datagrams_storage_dropped;
+    observation.protocol.quic_datagram_bytes_storage_dropped =
+        accounting.quic_datagram_bytes_storage_dropped;
 }
 
 async fn drain_tasks(
@@ -1793,6 +1812,102 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .generic_udp_socket_errors
         .saturating_add(source.generic_udp_socket_errors);
+    observation.protocol.quic_pairs_started = observation
+        .protocol
+        .quic_pairs_started
+        .saturating_add(source.quic_pairs_started);
+    observation.protocol.quic_pairs_completed = observation
+        .protocol
+        .quic_pairs_completed
+        .saturating_add(source.quic_pairs_completed);
+    observation.protocol.quic_pairs_refused = observation
+        .protocol
+        .quic_pairs_refused
+        .saturating_add(source.quic_pairs_refused);
+    observation.protocol.quic_streams = observation
+        .protocol
+        .quic_streams
+        .saturating_add(source.quic_streams);
+    observation.protocol.quic_stream_bytes_observed = observation
+        .protocol
+        .quic_stream_bytes_observed
+        .saturating_add(source.quic_stream_bytes_observed);
+    observation.protocol.quic_stream_bytes_retained = observation
+        .protocol
+        .quic_stream_bytes_retained
+        .saturating_add(source.quic_stream_bytes_retained);
+    observation.protocol.quic_stream_bytes_omitted = observation
+        .protocol
+        .quic_stream_bytes_omitted
+        .saturating_add(source.quic_stream_bytes_omitted);
+    observation.protocol.quic_datagrams = observation
+        .protocol
+        .quic_datagrams
+        .saturating_add(source.quic_datagrams);
+    observation.protocol.quic_datagram_bytes_observed = observation
+        .protocol
+        .quic_datagram_bytes_observed
+        .saturating_add(source.quic_datagram_bytes_observed);
+    observation.protocol.quic_datagram_bytes_retained = observation
+        .protocol
+        .quic_datagram_bytes_retained
+        .saturating_add(source.quic_datagram_bytes_retained);
+    observation.protocol.quic_datagram_bytes_omitted = observation
+        .protocol
+        .quic_datagram_bytes_omitted
+        .saturating_add(source.quic_datagram_bytes_omitted);
+    observation.protocol.quic_datagrams_capacity_dropped = observation
+        .protocol
+        .quic_datagrams_capacity_dropped
+        .saturating_add(source.quic_datagrams_capacity_dropped);
+    observation.protocol.quic_stream_bytes_queue_dropped = observation
+        .protocol
+        .quic_stream_bytes_queue_dropped
+        .saturating_add(source.quic_stream_bytes_queue_dropped);
+    observation.protocol.quic_datagrams_queue_dropped = observation
+        .protocol
+        .quic_datagrams_queue_dropped
+        .saturating_add(source.quic_datagrams_queue_dropped);
+    observation.protocol.quic_datagram_bytes_queue_dropped = observation
+        .protocol
+        .quic_datagram_bytes_queue_dropped
+        .saturating_add(source.quic_datagram_bytes_queue_dropped);
+    observation.protocol.quic_stream_bytes_storage_dropped = observation
+        .protocol
+        .quic_stream_bytes_storage_dropped
+        .saturating_add(source.quic_stream_bytes_storage_dropped);
+    observation.protocol.quic_datagrams_storage_dropped = observation
+        .protocol
+        .quic_datagrams_storage_dropped
+        .saturating_add(source.quic_datagrams_storage_dropped);
+    observation.protocol.quic_datagram_bytes_storage_dropped = observation
+        .protocol
+        .quic_datagram_bytes_storage_dropped
+        .saturating_add(source.quic_datagram_bytes_storage_dropped);
+    observation.protocol.quic_transport_losses = observation
+        .protocol
+        .quic_transport_losses
+        .saturating_add(source.quic_transport_losses);
+    observation.protocol.quic_zero_rtt_refused = observation
+        .protocol
+        .quic_zero_rtt_refused
+        .saturating_add(source.quic_zero_rtt_refused);
+    observation.protocol.quic_migration_refused = observation
+        .protocol
+        .quic_migration_refused
+        .saturating_add(source.quic_migration_refused);
+    observation.protocol.http3_streams = observation
+        .protocol
+        .http3_streams
+        .saturating_add(source.http3_streams);
+    observation.protocol.http3_streams_completed = observation
+        .protocol
+        .http3_streams_completed
+        .saturating_add(source.http3_streams_completed);
+    observation.protocol.http3_streams_reset = observation
+        .protocol
+        .http3_streams_reset
+        .saturating_add(source.http3_streams_reset);
     observation.protocol.application_events_accepted = observation
         .protocol
         .application_events_accepted

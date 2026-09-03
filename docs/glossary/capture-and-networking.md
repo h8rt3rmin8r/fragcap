@@ -1050,6 +1050,26 @@ independent from byte forwarding.
 **See also:** [SOCKS5 CONNECT](capture-and-networking.md#socks5-connect),
 [Deep Capture session capability](capture-and-networking.md#deep-capture-session-capability)
 
+## Scoped QUIC pair
+
+The two QUIC connections owned by one authenticated Deep Capture route: a
+client-facing TLS 1.3 connection using the current session certificate
+authority, and a separately verified upstream TLS 1.3 connection to one
+immutable policy-approved origin. The pair has one correlation identity while
+each half keeps its own connection identifier, endpoint, TLS, ALPN, and
+terminal facts.
+
+Zero round-trip application data and active migration are refused. Ordinary
+connection identifier rotation without a path change remains part of the same
+logical connection. Negotiated `h3` selects HTTP/3; unknown or absent QUIC
+application protocols are refused without transparent fallback.
+
+**Primary references:** [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000),
+[RFC 9114](https://www.rfc-editor.org/rfc/rfc9114)
+
+**See also:** [Generic UDP evidence](capture-and-networking.md#generic-udp-evidence),
+[Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration)
+
 ## Proxy-owned DNS
 
 Name resolution performed by the proxy after an authenticated client supplies a

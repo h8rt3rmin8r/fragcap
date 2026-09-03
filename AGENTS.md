@@ -442,6 +442,18 @@ inferring ICMP facts. Unrouted UDP remains packet-only, QUIC remains #314, and
 Deep Capture remains incomplete until #334. S117 adds no dependency or lockfile
 package.
 
+S118 closes #314 at the scoped QUIC and HTTP/3 boundary. An authenticated,
+target-owned UDP route admits one immutable pair of client-facing QUIC TLS
+under the session authority and separately verified upstream QUIC TLS. Exact
+ALPN `h3` selects bounded HTTP/3 stream, datagram, metadata, and body handling
+through existing artifact authorities. Unknown ALPN, zero round-trip
+application data, and active migration are refused;
+changed endpoints, trust failures, pinning, and unscopable traffic never
+downgrade to transparent forwarding. S118 promotes Quinn 0.11.11 to runtime and
+adds exact-pinned `h3` 0.0.8 and `h3-quinn` 0.0.10. The lockfile adds those two
+packages plus four futures support packages. IPv6 parity remains #315, and Deep
+Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

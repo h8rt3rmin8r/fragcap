@@ -228,3 +228,12 @@ retention, queue admission, and storage. Queue loss, bounded identity overflow,
 and platform-observed socket errors are explicit without inferred ICMP facts.
 Unrouted UDP remains packet-only, QUIC and HTTP/3 remain #314, and Deep Capture
 remains incomplete until #334.
+
+S118 (`specs/118-quic-http3-inspection`) follows S117 and closes #314 at the
+scoped QUIC and HTTP/3 boundary. Authenticated target-owned UDP routing admits
+one immutable client-facing and upstream QUIC pair with separate TLS identity,
+trust, endpoint, and connection facts. Negotiated `h3` produces bounded HTTP/3
+stream, datagram, metadata, and body evidence through the existing application
+artifact authority. Unknown ALPN, zero round-trip application data, active migration, endpoint changes, trust
+failure, and unrouted traffic remain explicit refusals without fallback. Full
+IPv6 parity remains #315, and Deep Capture remains incomplete until #334.

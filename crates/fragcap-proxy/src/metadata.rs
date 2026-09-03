@@ -6,6 +6,7 @@
 pub enum ProtocolVersion {
     Http11,
     Http2,
+    Http3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +145,17 @@ impl MetadataBlock {
             query,
             cookies,
         }
+    }
+
+    pub fn http3(
+        kind: MetadataKind,
+        pseudo_fields: Vec<MetadataField>,
+        fields: Vec<MetadataField>,
+    ) -> Self {
+        let mut value = Self::http2(kind, pseudo_fields, fields);
+        value.version = ProtocolVersion::Http3;
+        value.unavailable = vec!["qpack-wire-bytes", "compressed-cross-name-order"];
+        value
     }
 }
 

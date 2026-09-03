@@ -171,6 +171,7 @@ the owning category page.
 - [Ring mode](capture-and-networking.md#ring-mode)
 - [Ring window](capture-and-networking.md#ring-window)
 - [Rotation segment](capture-and-networking.md#rotation-segment)
+- [Scoped QUIC pair](capture-and-networking.md#scoped-quic-pair)
 - [Scripted attributor](process-and-attribution.md#scripted-attributor)
 - [Section Header Block](file-and-wire-formats.md#section-header-block)
 - [Seed summary](process-and-attribution.md#seed-summary)

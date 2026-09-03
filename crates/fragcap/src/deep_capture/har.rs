@@ -565,10 +565,10 @@ fn transferred_size(bodies: &Bodies, selected: &[u8]) -> i64 {
     i64::try_from(bytes).unwrap_or(i64::MAX)
 }
 fn har_version(value: Option<&str>) -> &'static str {
-    if value == Some("h2") {
-        "HTTP/2"
-    } else {
-        "HTTP/1.1"
+    match value {
+        Some("h3") => "HTTP/3",
+        Some("h2") => "HTTP/2",
+        _ => "HTTP/1.1",
     }
 }
 fn rfc3339_nanos(nanos: u64) -> String {
@@ -642,6 +642,11 @@ mod tests {
             rfc3339_nanos(1_700_000_000_123_456_789),
             "2023-11-14T22:13:20.123456789Z"
         );
+    }
+
+    #[test]
+    fn http3_protocol_is_not_downgraded_in_har() {
+        assert_eq!(har_version(Some("h3")), "HTTP/3");
     }
 
     #[test]
