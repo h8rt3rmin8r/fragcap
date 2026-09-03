@@ -278,11 +278,10 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
                         .iter()
                         .find(|artifact| artifact.get("path") == Some(path))?
                         .get("role")?;
-                    Some(json!({
-                        "role":role,
-                        "reason":"sharing-excludes-sensitive-artifact",
-                        "severity":"info"
-                    }))
+                    Some(super::manifest_omission(
+                        role.as_str()?,
+                        super::ManifestOmissionReason::SharingExcludedSensitiveArtifact,
+                    ))
                 })
                 .collect::<Vec<_>>();
             let mut shared = manifest.clone();
@@ -312,7 +311,10 @@ pub fn export_share_copy(source: &Path, destination: &Path) -> io::Result<PathBu
                         object.insert("finalization".to_string(), json!("complete"));
                         object.insert(
                             "omission_reason".to_string(),
-                            json!("sharing-excludes-sensitive-artifact"),
+                            json!(
+                                super::ManifestOmissionReason::SharingExcludedSensitiveArtifact
+                                    .as_str()
+                            ),
                         );
                         object.insert("loss".to_string(), json!({"state":"not-applicable"}));
                         object.insert("correlation".to_string(), json!({"state":"not-applicable"}));

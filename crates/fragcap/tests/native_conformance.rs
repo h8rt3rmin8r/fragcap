@@ -22,10 +22,19 @@ fn complete_bundle_authorities_reconcile_from_one_synthetic_session() {
     application.finish().unwrap();
     let application_prefix = read_application_prefix(&application_path).unwrap();
     assert_eq!(application_prefix.status, ApplicationStreamStatus::Complete);
+    assert_eq!(application_prefix.classification_schema_version, Some(1));
+    assert_eq!(
+        application_prefix.classification_status,
+        fragcap::deep_capture::ClassificationStreamStatus::Supported
+    );
     assert!(application_prefix
         .records
         .iter()
         .all(|record| record["session_id"] == SESSION_ID));
+    let trailer = application_prefix.records.last().unwrap();
+    assert_eq!(trailer["classification_schema_version"], 1);
+    assert_eq!(trailer["classified_records"], 0);
+    assert_eq!(trailer["classification_records_lost"], 0);
 
     let har_path = directory.path().join("http.har");
     let har = project_application_har(&application_path)

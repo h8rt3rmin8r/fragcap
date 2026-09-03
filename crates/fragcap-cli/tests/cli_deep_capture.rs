@@ -481,6 +481,17 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
             && err.contains("\"event\":\"deep_capture.complete\""),
         "JSON events include Deep Capture lifecycle:\n{err}"
     );
+    let completion: serde_json::Value = err
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|line: &serde_json::Value| line["event"] == "deep_capture.complete")
+        .unwrap();
+    assert!(completion["inspectable"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert_eq!(completion["unknown"], 0);
+    assert_eq!(completion["failed"], 0);
+    assert_eq!(completion["unclassified_lost"], 0);
 
     for artifact in [
         "manifest.json",
@@ -543,6 +554,25 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         "application.trailer"
     );
     assert_eq!(application_records.first().unwrap()["schema_version"], 2);
+    assert_eq!(
+        application_records.first().unwrap()["classification_schema_version"],
+        1
+    );
+    assert!(application_records[1..application_records.len() - 1]
+        .iter()
+        .filter(|record| record["type"] != "application.correlation")
+        .all(|record| record["classification"]["schema_version"] == 1));
+    assert_eq!(
+        application_records.last().unwrap()["classified_records"],
+        application_records[1..application_records.len() - 1]
+            .iter()
+            .filter(|record| record.get("classification").is_some())
+            .count()
+    );
+    assert_eq!(
+        application_records.last().unwrap()["classification_records_lost"],
+        0
+    );
     assert!(application_records.last().unwrap()["written_records"]
         .as_u64()
         .is_some_and(|records| records > 0));
@@ -663,6 +693,41 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
             key.as_str()
         );
     }
+}
+
+#[test]
+fn controlled_human_summary_reports_shared_classification_counts() {
+    let _environment = controlled_environment().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    seed_target(&local, false);
+    let bundle = dir.path().join("bundle");
+    std::env::set_var(
+        "FRAGCAP_CONTROLLED_TARGET_EXECUTABLE",
+        env!("CARGO_BIN_EXE_fragcap"),
+    );
+
+    let (code, _out, err) = run(&[
+        "deep-capture",
+        "sample-target",
+        "--launch",
+        "--trust-ca",
+        "--controlled-target",
+        "--local-db",
+        local.to_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+    ]);
+    std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
+
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert!(
+        err.contains("Protocol classification: observations=")
+            && err.contains("unknown=0")
+            && err.contains("failed=0")
+            && err.contains("unclassified_lost=0"),
+        "human summary reconciles classification counts:\n{err}"
+    );
 }
 
 #[test]

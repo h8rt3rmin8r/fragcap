@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 use crate::targets::{CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase};
 
 use super::{
-    CalibrationOutcome, CalibrationPhase, CompatibilityFactCandidate, CompatibilityObservation,
-    Inspectability, LaunchCase, PreflightRefusal, SessionMode,
+    CalibrationOutcome, CalibrationPhase, ClassificationReason, CompatibilityFactCandidate,
+    CompatibilityObservation, DetectionState, InspectabilityState, LaunchCase, PreflightRefusal,
+    SessionMode, TrafficFamily,
 };
 
 /// Enforce the shipped Deep Capture compatibility prerequisites for one plan.
@@ -167,8 +168,7 @@ pub fn compatibility_fact_candidates(
                 || (controlled
                     && observation.attribution.as_deref() == Some("controlled-harness")
                     && observation.role.as_deref() == Some("client")
-                    && observation.protocol == "https"
-                    && observation.inspectability == Inspectability::Full)
+                    && classification_proves_tls(&observation.classification))
         })
     {
         push(
@@ -193,20 +193,45 @@ pub fn compatibility_fact_candidates(
         let phase = calibration.unwrap_or(CalibrationPhase::Tls);
         let inspectability: BTreeSet<&str> = observations
             .iter()
-            .map(|observation| observation.inspectability.as_str())
+            .filter(|observation| classification_is_fact_eligible(&observation.classification))
+            .map(|observation| compatibility_inspectability(&observation.classification))
             .collect();
         for value in inspectability {
             push(CompatibilityFactKey::Inspectability, value, phase);
         }
         let protocols: BTreeSet<&str> = observations
             .iter()
-            .map(|observation| observation.protocol.as_str())
+            .filter(|observation| classification_is_fact_eligible(&observation.classification))
+            .map(|observation| compatibility_protocol(&observation.classification))
             .collect();
         for value in protocols {
             push(CompatibilityFactKey::ProtocolBehavior, value, phase);
         }
     }
     facts
+}
+
+fn compatibility_protocol(classification: &super::ProtocolClassification) -> &'static str {
+    match classification.family() {
+        TrafficFamily::Http1 | TrafficFamily::Http2 | TrafficFamily::Sse | TrafficFamily::Grpc => {
+            "http"
+        }
+        TrafficFamily::Https | TrafficFamily::Http3 => "https",
+        TrafficFamily::WebSocket => "websocket",
+        TrafficFamily::NonHttpTls => "non-http-tls",
+        TrafficFamily::Quic => "quic",
+        TrafficFamily::Socks5Udp | TrafficFamily::GenericUdp => "udp",
+        TrafficFamily::GenericTcp | TrafficFamily::Socks5Tcp => "plaintext",
+        TrafficFamily::Unrouted | TrafficFamily::Unknown => "unknown",
+    }
+}
+
+fn compatibility_inspectability(classification: &super::ProtocolClassification) -> &'static str {
+    match classification.inspectability() {
+        InspectabilityState::Full | InspectabilityState::DecryptedUnknown => "full",
+        InspectabilityState::MetadataOnly | InspectabilityState::EncryptedOpaque => "metadata-only",
+        InspectabilityState::PacketOnly | InspectabilityState::Unavailable => "unknown",
+    }
 }
 
 /// Classify retained observations without inventing evidence from silence.
@@ -248,10 +273,9 @@ pub fn calibration_outcome(
                 CalibrationOutcome::ProxyNotReached
             } else if observations.is_empty() {
                 CalibrationOutcome::Inconclusive
-            } else if observations
-                .iter()
-                .all(|observation| observation.inspectability == Inspectability::Unsupported)
-            {
+            } else if observations.iter().all(|observation| {
+                observation.classification.detection() == DetectionState::Unsupported
+            }) {
                 CalibrationOutcome::UnsupportedProtocol
             } else {
                 CalibrationOutcome::Inconclusive
@@ -261,8 +285,7 @@ pub fn calibration_outcome(
             if observations.iter().any(|observation| {
                 observation_proves_final_client_ca_acceptance(observation)
                     || (controlled_harness_client(observation)
-                        && observation.protocol == "https"
-                        && observation.inspectability == Inspectability::Full)
+                        && classification_proves_tls(&observation.classification))
             }) {
                 CalibrationOutcome::LocalCaAccepted
             } else if observations
@@ -277,15 +300,13 @@ pub fn calibration_outcome(
                 CalibrationOutcome::ProxyNotReached
             } else if observations.is_empty() {
                 CalibrationOutcome::Inconclusive
-            } else if observations
-                .iter()
-                .all(|observation| observation.inspectability == Inspectability::Unsupported)
-            {
+            } else if observations.iter().all(|observation| {
+                observation.classification.detection() == DetectionState::Unsupported
+            }) {
                 CalibrationOutcome::UnsupportedProtocol
-            } else if observations
-                .iter()
-                .any(|observation| observation.inspectability == Inspectability::MetadataOnly)
-            {
+            } else if observations.iter().any(|observation| {
+                observation.classification.inspectability() == InspectabilityState::MetadataOnly
+            }) {
                 CalibrationOutcome::MetadataOnly
             } else {
                 CalibrationOutcome::UnknownTrust
@@ -297,6 +318,29 @@ pub fn calibration_outcome(
 fn controlled_harness_client(observation: &CompatibilityObservation) -> bool {
     observation.attribution.as_deref() == Some("controlled-harness")
         && observation.role.as_deref() == Some("client")
+}
+
+fn classification_is_fact_eligible(classification: &super::ProtocolClassification) -> bool {
+    classification.detection() == DetectionState::Identified
+        && !matches!(
+            classification.family(),
+            TrafficFamily::Unknown | TrafficFamily::Unrouted
+        )
+        && !matches!(
+            classification.inspectability(),
+            InspectabilityState::Unavailable | InspectabilityState::PacketOnly
+        )
+        && matches!(
+            classification.reason(),
+            None | Some(ClassificationReason::EncryptedOpaque)
+        )
+}
+
+fn classification_proves_tls(classification: &super::ProtocolClassification) -> bool {
+    classification.detection() == DetectionState::Identified
+        && classification.family() == TrafficFamily::Https
+        && classification.inspectability() == InspectabilityState::Full
+        && classification.reason().is_none()
 }
 
 /// Whether the observation is packet-correlated to the final client role.
@@ -314,8 +358,7 @@ pub fn observation_proves_final_client_ca_acceptance(
     observation: &CompatibilityObservation,
 ) -> bool {
     observation_is_correlated_to_final_client(observation)
-        && observation.protocol == "https"
-        && observation.inspectability == Inspectability::Full
+        && classification_proves_tls(&observation.classification)
 }
 
 /// Fold interruption and operation failure into the evidence-based outcome.
@@ -377,6 +420,9 @@ pub fn compatibility_owner_role(role: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod launch_case_tests {
+    use super::super::{
+        DetectionState, Inspectability, InspectabilityState, ProtocolClassification, TrafficFamily,
+    };
     use super::*;
 
     fn correlated_client_observation() -> CompatibilityObservation {
@@ -400,6 +446,55 @@ mod launch_case_tests {
             url: Some("http://example.invalid/".into()),
             status: Some(200),
             reason: Some("owned final-client flow".into()),
+            classification: ProtocolClassification::new(
+                TrafficFamily::Http1,
+                DetectionState::Identified,
+                InspectabilityState::MetadataOnly,
+                None,
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn processing_failures_never_promote_positive_compatibility_facts() {
+        for reason in [
+            ClassificationReason::ParserFailed,
+            ClassificationReason::Truncated,
+            ClassificationReason::WriterFailed,
+        ] {
+            let mut observation = correlated_client_observation();
+            observation.classification = if reason == ClassificationReason::ParserFailed {
+                ProtocolClassification::new(
+                    TrafficFamily::Http1,
+                    DetectionState::Failed,
+                    InspectabilityState::MetadataOnly,
+                    Some(reason),
+                )
+                .unwrap()
+            } else {
+                ProtocolClassification::new(
+                    TrafficFamily::Http1,
+                    DetectionState::Identified,
+                    InspectabilityState::Full,
+                    Some(reason),
+                )
+                .unwrap()
+            };
+            let facts = compatibility_fact_candidates(
+                LaunchCase::DirectExeCold.as_str(),
+                &[observation],
+                false,
+                Some(CalibrationPhase::Tls),
+            );
+            assert!(!facts.iter().any(|fact| {
+                matches!(
+                    fact.key,
+                    CompatibilityFactKey::ProtocolBehavior
+                        | CompatibilityFactKey::Inspectability
+                        | CompatibilityFactKey::TlsTrustBehavior
+                )
+            }));
         }
     }
 

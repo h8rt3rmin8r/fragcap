@@ -145,6 +145,10 @@ pub enum Event {
         proxy_connection_id: String,
         protocol: String,
         inspectability: String,
+        classification_schema_version: u32,
+        family: String,
+        detection: String,
+        classification_reason: Option<String>,
     },
     /// Deep Capture wrote a bundle artifact.
     DeepCaptureBundle {
@@ -170,6 +174,13 @@ pub enum Event {
         inspectable: u64,
         metadata_only: u64,
         unsupported: u64,
+        unknown: u64,
+        failed: u64,
+        decrypted_unknown: u64,
+        encrypted_opaque: u64,
+        unavailable: u64,
+        classification_reasons: Vec<(String, u64)>,
+        unclassified_lost: u64,
     },
     /// A periodic snapshot of the live counters the human status block also
     /// renders (slice S069), for a `--json` consumer watching a long-running
@@ -499,6 +510,10 @@ impl Event {
                 proxy_connection_id,
                 protocol,
                 inspectability,
+                classification_schema_version,
+                family,
+                detection,
+                classification_reason,
             } => {
                 line.push_str(",\"session_id\":");
                 write_json_string(session_id, &mut line);
@@ -514,6 +529,18 @@ impl Event {
                 write_json_string(protocol, &mut line);
                 line.push_str(",\"inspectability\":");
                 write_json_string(inspectability, &mut line);
+                line.push_str(",\"classification_schema_version\":");
+                line.push_str(&classification_schema_version.to_string());
+                line.push_str(",\"family\":");
+                write_json_string(family, &mut line);
+                line.push_str(",\"detection\":");
+                write_json_string(detection, &mut line);
+                line.push_str(",\"classification_reason\":");
+                if let Some(reason) = classification_reason {
+                    write_json_string(reason, &mut line);
+                } else {
+                    line.push_str("null");
+                }
             }
             Event::DeepCaptureBundle {
                 session_id,
@@ -556,6 +583,13 @@ impl Event {
                 inspectable,
                 metadata_only,
                 unsupported,
+                unknown,
+                failed,
+                decrypted_unknown,
+                encrypted_opaque,
+                unavailable,
+                classification_reasons,
+                unclassified_lost,
             } => {
                 line.push_str(",\"session_id\":");
                 write_json_string(session_id, &mut line);
@@ -571,6 +605,28 @@ impl Event {
                 line.push_str(&metadata_only.to_string());
                 line.push_str(",\"unsupported\":");
                 line.push_str(&unsupported.to_string());
+                line.push_str(",\"unknown\":");
+                line.push_str(&unknown.to_string());
+                line.push_str(",\"failed\":");
+                line.push_str(&failed.to_string());
+                line.push_str(",\"decrypted_unknown\":");
+                line.push_str(&decrypted_unknown.to_string());
+                line.push_str(",\"encrypted_opaque\":");
+                line.push_str(&encrypted_opaque.to_string());
+                line.push_str(",\"unavailable\":");
+                line.push_str(&unavailable.to_string());
+                line.push_str(",\"classification_reasons\":{");
+                for (index, (reason, count)) in classification_reasons.iter().enumerate() {
+                    if index > 0 {
+                        line.push(',');
+                    }
+                    write_json_string(reason, &mut line);
+                    line.push(':');
+                    line.push_str(&count.to_string());
+                }
+                line.push('}');
+                line.push_str(",\"unclassified_lost\":");
+                line.push_str(&unclassified_lost.to_string());
             }
             #[cfg(all(feature = "etw", windows))]
             Event::CaptureProgress {

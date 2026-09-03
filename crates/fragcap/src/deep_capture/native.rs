@@ -24,8 +24,8 @@ pub use fragcap_proxy::{
 
 use super::{
     ApplicationConnectionWindow, BackendDescriptor, Budget, CleanupResult, CleanupStatus,
-    CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint, ProxyBackend,
-    ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
+    CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint,
+    ProtocolClassification, ProxyBackend, ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
 };
 
 /// Finite native runtime limits selected by the library consumer.
@@ -523,6 +523,17 @@ impl ProxyLease for NativeProxyLease {
                         value.connection_closed_at_ns,
                     )
                 };
+                let protocol = match value.protocol.as_str() {
+                    "connect" | "tls" => "https".to_string(),
+                    _ => value.protocol,
+                };
+                let inspectability = Inspectability::from_label(value.inspectability);
+                let reason = value.reason;
+                let classification = ProtocolClassification::from_proxy_evidence(
+                    &protocol,
+                    value.inspectability,
+                    reason.as_deref(),
+                );
                 CompatibilityObservation {
                     flow_id,
                     proxy_connection_id: value.connection_id.to_string(),
@@ -537,15 +548,13 @@ impl ProxyLease for NativeProxyLease {
                     packet_observations_unretained,
                     correlation_state,
                     correlation_reason,
-                    protocol: match value.protocol.as_str() {
-                        "connect" | "tls" => "https".to_string(),
-                        _ => value.protocol,
-                    },
-                    inspectability: Inspectability::from_label(value.inspectability),
+                    protocol,
+                    inspectability,
                     method: value.method,
                     url: value.url,
                     status: value.status,
-                    reason: value.reason,
+                    reason,
+                    classification,
                 }
             })
             .collect())

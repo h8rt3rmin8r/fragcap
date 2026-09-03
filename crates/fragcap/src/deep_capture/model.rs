@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use super::SensitiveRetention;
+use super::{ProtocolClassification, SensitiveRetention};
 use crate::targets::CompatibilityFactKey;
 use crate::FlowId;
 
@@ -515,6 +515,8 @@ pub struct CompatibilityObservation {
     pub url: Option<String>,
     pub status: Option<u16>,
     pub reason: Option<String>,
+    /// Versioned public classification derived from the raw fields above.
+    pub classification: ProtocolClassification,
 }
 
 /// One append-only compatibility fact candidate or result.
@@ -633,6 +635,18 @@ pub struct TerminalSnapshot {
     pub cleanup: Vec<CleanupResult>,
     pub deadlines: Deadlines,
     pub finished_at: SystemTime,
+}
+
+impl TerminalSnapshot {
+    /// Derive the conserved classification projection from retained observations.
+    pub fn classification_summary(&self) -> super::ClassificationSummary {
+        super::ClassificationSummary::from_classifications(
+            self.observations
+                .iter()
+                .map(|observation| &observation.classification),
+            0,
+        )
+    }
 }
 
 /// Authoritative in-memory result of a started or declined session.

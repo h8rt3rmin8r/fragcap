@@ -18,6 +18,11 @@ use fragcap_proxy::{
 };
 use serde_json::{json, Value};
 
+use super::{
+    ClassificationReason, ClassificationSummary, DetectionState, InspectabilityState,
+    ProtocolClassification, TrafficFamily, CLASSIFICATION_SCHEMA_VERSION,
+};
+
 const SCHEMA_VERSION: u64 = 2;
 #[cfg(not(test))]
 const MAX_CONNECTION_WINDOWS: usize = 65_536;
@@ -39,9 +44,18 @@ pub enum ApplicationStreamStatus {
     UnknownVersion,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClassificationStreamStatus {
+    LegacyAbsent,
+    Supported,
+    UnknownVersion,
+}
+
 #[derive(Clone, Debug)]
 pub struct ApplicationPrefix {
     pub schema_version: u64,
+    pub classification_schema_version: Option<u64>,
+    pub classification_status: ClassificationStreamStatus,
     pub records: Vec<Value>,
     pub status: ApplicationStreamStatus,
 }
@@ -537,7 +551,10 @@ fn writer_loop(
     let mut quic_datagrams_capacity_dropped = 0_u64;
     let mut quic_datagram_observed_bytes = 0_u64;
     let mut quic_datagram_retained_bytes = 0_u64;
+    let mut classification_summary = ClassificationSummary::default();
     while let Ok(event) = receiver.recv() {
+        let classification = application_event_classification(&event);
+        classification_summary.record(&classification);
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
         if let ApplicationEventKind::Body(segment) = &event.kind {
@@ -834,6 +851,13 @@ fn writer_loop(
         "dropped_records": dropped,
         "serialized_bytes": account.serialized_bytes.load(Ordering::Acquire),
         "writer_failures": account.failures.load(Ordering::Acquire)
+        ,"classification_schema_version": CLASSIFICATION_SCHEMA_VERSION
+        ,"classified_records": classification_summary.observations
+        ,"classification_records_lost": dropped
+        ,"classifications_by_family": classification_summary.by_family
+        ,"classifications_by_detection": classification_summary.by_detection
+        ,"classifications_by_inspectability": classification_summary.by_inspectability
+        ,"classifications_by_reason": classification_summary.by_reason
         ,"records_by_type": records_by_type
         ,"body_bytes_observed": body_observed
         ,"body_bytes_retained": body_retained
@@ -957,6 +981,7 @@ fn header_record(session_id: &str) -> Value {
     json!({
         "type": "application.header",
         "schema_version": SCHEMA_VERSION,
+        "classification_schema_version": CLASSIFICATION_SCHEMA_VERSION,
         "session_id": session_id,
         "sequence": 0,
         "event_time_ns": 0,
@@ -1005,6 +1030,7 @@ fn event_json(
     sequence: u64,
     correlation: ApplicationCorrelation,
 ) -> Value {
+    let classification = application_event_classification(&event);
     let protocol = event.protocol.map(|value| match value {
         ProtocolVersion::Http11 => "http/1.1",
         ProtocolVersion::Http2 => "h2",
@@ -1018,6 +1044,7 @@ fn event_json(
         "proxy_connection_id": event.connection_id,
         "http_stream_id": event.stream_id,
         "protocol": protocol,
+        "classification": classification_json(&classification),
         "target_id": correlation.target_id,
         "flow_id": correlation.flow_id.map(|id| id.to_string()),
         "process_id": correlation.process_id,
@@ -1279,6 +1306,233 @@ fn event_json(
         object.extend(detail.clone());
     }
     Value::Object(object)
+}
+
+fn classification_json(value: &ProtocolClassification) -> Value {
+    json!({
+        "schema_version": value.schema_version(),
+        "family": value.family().as_str(),
+        "detection": value.detection().as_str(),
+        "inspectability": value.inspectability().as_str(),
+        "reason": value.reason().map(ClassificationReason::as_str),
+    })
+}
+
+fn application_event_classification(event: &ApplicationEvent) -> ProtocolClassification {
+    use fragcap_proxy::{GenericStreamOutcome, GenericStreamProvenance, GenericUdpOutcome};
+
+    let identified = |family, inspectability, reason| {
+        if family == TrafficFamily::Unknown {
+            ProtocolClassification::new(
+                family,
+                DetectionState::Unknown,
+                InspectabilityState::Unavailable,
+                None,
+            )
+            .expect("unknown application event classification is valid")
+        } else {
+            ProtocolClassification::new(family, DetectionState::Identified, inspectability, reason)
+                .expect("application event classification matrix is valid")
+        }
+    };
+    let protocol_family = || match event.protocol {
+        Some(ProtocolVersion::Http11) => TrafficFamily::Http1,
+        Some(ProtocolVersion::Http2) => TrafficFamily::Http2,
+        Some(ProtocolVersion::Http3) => TrafficFamily::Http3,
+        None => TrafficFamily::Unknown,
+    };
+    match &event.kind {
+        ApplicationEventKind::Streaming(value) => {
+            let family = match value {
+                fragcap_proxy::StreamingEvent::WebSocketFrame(_)
+                | fragcap_proxy::StreamingEvent::WebSocketMessage(_)
+                | fragcap_proxy::StreamingEvent::WebSocketTerminal { .. } => {
+                    TrafficFamily::WebSocket
+                }
+                fragcap_proxy::StreamingEvent::SseField(_)
+                | fragcap_proxy::StreamingEvent::SseEvent(_)
+                | fragcap_proxy::StreamingEvent::SseTerminal { .. } => TrafficFamily::Sse,
+                fragcap_proxy::StreamingEvent::GrpcCall { .. }
+                | fragcap_proxy::StreamingEvent::GrpcMessage(_)
+                | fragcap_proxy::StreamingEvent::GrpcTerminal { .. } => TrafficFamily::Grpc,
+            };
+            identified(family, InspectabilityState::Full, None)
+        }
+        ApplicationEventKind::Body(value) => {
+            let family = protocol_family();
+            let reason = match value.outcome {
+                BodyOutcome::RetentionLimit | BodyOutcome::ExpansionLimit => {
+                    Some(ClassificationReason::Truncated)
+                }
+                BodyOutcome::StorageFailed => Some(ClassificationReason::WriterFailed),
+                BodyOutcome::MalformedEncoding => Some(ClassificationReason::ParserFailed),
+                _ => None,
+            };
+            if family == TrafficFamily::Unknown {
+                identified(family, InspectabilityState::Unavailable, None)
+            } else if reason == Some(ClassificationReason::ParserFailed) {
+                ProtocolClassification::new(
+                    family,
+                    DetectionState::Failed,
+                    InspectabilityState::MetadataOnly,
+                    reason,
+                )
+                .expect("body parser classification is valid")
+            } else {
+                identified(family, InspectabilityState::Full, reason)
+            }
+        }
+        ApplicationEventKind::SocksNegotiation(_)
+        | ApplicationEventKind::SocksConnect(_)
+        | ApplicationEventKind::SocksTransfer(_) => identified(
+            TrafficFamily::Socks5Tcp,
+            InspectabilityState::MetadataOnly,
+            None,
+        ),
+        ApplicationEventKind::SocksUdp(_) => identified(
+            TrafficFamily::Socks5Udp,
+            InspectabilityState::MetadataOnly,
+            None,
+        ),
+        ApplicationEventKind::GenericStreamChunk(value) => {
+            let (family, inspectability, reason) = match value.provenance {
+                GenericStreamProvenance::TcpPlaintext => (
+                    TrafficFamily::GenericTcp,
+                    InspectabilityState::DecryptedUnknown,
+                    (value.outcome == GenericStreamOutcome::RetentionLimit)
+                        .then_some(ClassificationReason::Truncated),
+                ),
+                GenericStreamProvenance::TlsDecrypted => (
+                    TrafficFamily::NonHttpTls,
+                    InspectabilityState::DecryptedUnknown,
+                    (value.outcome == GenericStreamOutcome::RetentionLimit)
+                        .then_some(ClassificationReason::Truncated),
+                ),
+                GenericStreamProvenance::TlsEncrypted => (
+                    TrafficFamily::NonHttpTls,
+                    InspectabilityState::EncryptedOpaque,
+                    Some(ClassificationReason::EncryptedOpaque),
+                ),
+            };
+            identified(family, inspectability, reason)
+        }
+        ApplicationEventKind::GenericUdpDatagram(value) => identified(
+            TrafficFamily::GenericUdp,
+            InspectabilityState::MetadataOnly,
+            (value.outcome == GenericUdpOutcome::RetentionLimit)
+                .then_some(ClassificationReason::Truncated),
+        ),
+        ApplicationEventKind::UdpSocketError(_) => identified(
+            TrafficFamily::GenericUdp,
+            InspectabilityState::MetadataOnly,
+            None,
+        ),
+        ApplicationEventKind::QuicConnection(_) => {
+            let family = if event.protocol == Some(ProtocolVersion::Http3) {
+                TrafficFamily::Http3
+            } else {
+                TrafficFamily::Quic
+            };
+            let inspectability = if family == TrafficFamily::Http3 {
+                InspectabilityState::Full
+            } else {
+                InspectabilityState::DecryptedUnknown
+            };
+            identified(family, inspectability, None)
+        }
+        ApplicationEventKind::QuicStream(value) => {
+            let family = if event.protocol == Some(ProtocolVersion::Http3) {
+                TrafficFamily::Http3
+            } else {
+                TrafficFamily::Quic
+            };
+            identified(
+                family,
+                if family == TrafficFamily::Http3 {
+                    InspectabilityState::Full
+                } else {
+                    InspectabilityState::DecryptedUnknown
+                },
+                (value.outcome == GenericStreamOutcome::RetentionLimit)
+                    .then_some(ClassificationReason::Truncated),
+            )
+        }
+        ApplicationEventKind::QuicDatagram(value) => identified(
+            TrafficFamily::Quic,
+            InspectabilityState::DecryptedUnknown,
+            (value.outcome == GenericUdpOutcome::RetentionLimit)
+                .then_some(ClassificationReason::Truncated),
+        ),
+        ApplicationEventKind::QuicRefusal(value) if value.code.contains("alpn-unsupported") => {
+            ProtocolClassification::new(
+                TrafficFamily::Quic,
+                DetectionState::Unsupported,
+                InspectabilityState::Unavailable,
+                Some(ClassificationReason::UnsupportedVersion),
+            )
+            .expect("QUIC unsupported classification is valid")
+        }
+        ApplicationEventKind::QuicRefusal(value) if value.code.contains("protocol-failed") => {
+            ProtocolClassification::new(
+                TrafficFamily::Quic,
+                DetectionState::Failed,
+                InspectabilityState::MetadataOnly,
+                Some(ClassificationReason::ParserFailed),
+            )
+            .expect("QUIC parser classification is valid")
+        }
+        ApplicationEventKind::QuicRefusal(value) => {
+            let reason = ClassificationReason::from_raw(value.code);
+            identified(
+                TrafficFamily::Quic,
+                InspectabilityState::Unavailable,
+                reason,
+            )
+        }
+        ApplicationEventKind::Error { code }
+            if event.protocol.is_some()
+                && (code.contains("parse") || code.contains("protocol")) =>
+        {
+            ProtocolClassification::new(
+                protocol_family(),
+                DetectionState::Failed,
+                InspectabilityState::MetadataOnly,
+                Some(ClassificationReason::ParserFailed),
+            )
+            .expect("known protocol parser classification is valid")
+        }
+        _ if event.protocol.is_some() => {
+            identified(protocol_family(), InspectabilityState::Full, None)
+        }
+        ApplicationEventKind::ConnectionOpen(value) => {
+            let family = TrafficFamily::from_proxy_label(value.transport);
+            if family == TrafficFamily::Unknown {
+                ProtocolClassification::new(
+                    family,
+                    DetectionState::Unknown,
+                    InspectabilityState::Unavailable,
+                    None,
+                )
+                .expect("unknown connection classification is valid")
+            } else {
+                identified(family, InspectabilityState::MetadataOnly, None)
+            }
+        }
+        ApplicationEventKind::TlsNegotiation(_) | ApplicationEventKind::TlsTerminal(_) => {
+            identified(
+                TrafficFamily::NonHttpTls,
+                InspectabilityState::MetadataOnly,
+                None,
+            )
+        }
+        _ => ProtocolClassification::new(
+            TrafficFamily::Unknown,
+            DetectionState::Unknown,
+            InspectabilityState::Unavailable,
+            None,
+        )
+        .expect("unknown application classification is valid"),
+    }
 }
 
 fn event_type(kind: &ApplicationEventKind) -> &'static str {
@@ -1604,6 +1858,16 @@ pub fn read_application_prefix(path: &Path) -> io::Result<ApplicationPrefix> {
             }
         });
     let header_session = first.get("session_id").and_then(Value::as_str);
+    let classification_schema_version = first
+        .get("classification_schema_version")
+        .and_then(Value::as_u64);
+    let classification_status = match classification_schema_version {
+        None => ClassificationStreamStatus::LegacyAbsent,
+        Some(version) if version == u64::from(CLASSIFICATION_SCHEMA_VERSION) => {
+            ClassificationStreamStatus::Supported
+        }
+        Some(_) => ClassificationStreamStatus::UnknownVersion,
+    };
     let valid_v2 = schema_version != 2
         || records.iter().enumerate().all(|(index, record)| {
             record.get("schema_version").and_then(Value::as_u64) == Some(2)
@@ -1631,6 +1895,8 @@ pub fn read_application_prefix(path: &Path) -> io::Result<ApplicationPrefix> {
     };
     Ok(ApplicationPrefix {
         schema_version,
+        classification_schema_version,
+        classification_status,
         records,
         status,
     })
@@ -1671,10 +1937,45 @@ fn trailer_reconciles(records: &[Value]) -> bool {
     let mut generic_udp_by_outcome = BTreeMap::<String, u64>::new();
     let mut correlation_total = 0_u64;
     let mut correlation_by_state = BTreeMap::<String, u64>::new();
+    let classification_version = records
+        .first()
+        .and_then(|record| record["classification_schema_version"].as_u64());
+    let mut classifications_by_family = BTreeMap::<String, u64>::new();
+    let mut classifications_by_detection = BTreeMap::<String, u64>::new();
+    let mut classifications_by_inspectability = BTreeMap::<String, u64>::new();
+    let mut classifications_by_reason = BTreeMap::<String, u64>::new();
+    let mut classified_records = 0_u64;
     for record in records.iter().skip(1).take(records.len().saturating_sub(2)) {
         let Some(kind) = record.get("type").and_then(Value::as_str) else {
             return false;
         };
+        if let Some(classification) = record.get("classification") {
+            let (Some(family), Some(detection), Some(inspectability)) = (
+                classification["family"].as_str(),
+                classification["detection"].as_str(),
+                classification["inspectability"].as_str(),
+            ) else {
+                return false;
+            };
+            if classification["schema_version"].as_u64() != classification_version {
+                return false;
+            }
+            classified_records = classified_records.saturating_add(1);
+            *classifications_by_family
+                .entry(family.to_string())
+                .or_default() += 1;
+            *classifications_by_detection
+                .entry(detection.to_string())
+                .or_default() += 1;
+            *classifications_by_inspectability
+                .entry(inspectability.to_string())
+                .or_default() += 1;
+            if let Some(reason) = classification["reason"].as_str() {
+                *classifications_by_reason
+                    .entry(reason.to_string())
+                    .or_default() += 1;
+            }
+        }
         if kind == "application.gap" {
             dropped = dropped.saturating_add(
                 record
@@ -1833,6 +2134,19 @@ fn trailer_reconciles(records: &[Value]) -> bool {
         && trailer.get("dropped_records").and_then(Value::as_u64) == Some(dropped)
         && trailer.get("serialized_bytes").and_then(Value::as_u64) == Some(serialized_bytes)
         && trailer.get("records_by_type") == Some(&json!(records_by_type))
+        && (classification_version != Some(u64::from(CLASSIFICATION_SCHEMA_VERSION))
+            || (trailer.get("classification_schema_version")
+                == Some(&json!(CLASSIFICATION_SCHEMA_VERSION))
+                && trailer.get("classified_records") == Some(&json!(classified_records))
+                && trailer.get("classification_records_lost") == trailer.get("dropped_records")
+                && trailer.get("classifications_by_family")
+                    == Some(&json!(classifications_by_family))
+                && trailer.get("classifications_by_detection")
+                    == Some(&json!(classifications_by_detection))
+                && trailer.get("classifications_by_inspectability")
+                    == Some(&json!(classifications_by_inspectability))
+                && trailer.get("classifications_by_reason")
+                    == Some(&json!(classifications_by_reason))))
         && trailer.get("body_bytes_observed").and_then(Value::as_u64) == Some(body_observed)
         && trailer.get("body_bytes_retained").and_then(Value::as_u64) == Some(body_retained)
         && trailer.get("body_bytes_truncated").and_then(Value::as_u64) == Some(body_truncated)

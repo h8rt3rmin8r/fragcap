@@ -114,6 +114,13 @@ impl ProxyLease for ProxyRun {
             url: Some("https://example.invalid/".into()),
             status: Some(200),
             reason: Some("controlled final-client flow".into()),
+            classification: ProtocolClassification::new(
+                TrafficFamily::Https,
+                DetectionState::Identified,
+                InspectabilityState::Full,
+                None,
+            )
+            .unwrap(),
         }])
     }
     fn stop(&mut self, _: Budget) -> CleanupResult {

@@ -7,6 +7,7 @@ use std::io::Write;
 use bytes::Bytes;
 use fragcap::deep_capture::{
     read_application_prefix, ApplicationArtifactLease, ApplicationStreamStatus,
+    ClassificationStreamStatus,
 };
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, BodyDirection, BodyOutcome, BodyRepresentation,
@@ -47,22 +48,34 @@ fn http3_streams_are_versioned_and_reconciled() {
     lease.finish().unwrap();
     let stream = read_application_prefix(&path).unwrap();
     assert_eq!(stream.status, ApplicationStreamStatus::Complete);
+    assert_eq!(
+        stream.classification_status,
+        ClassificationStreamStatus::Supported
+    );
     assert!(stream.records[0]["exports"]
         .as_array()
         .unwrap()
         .iter()
         .any(|value| value == "http3"));
+    assert_eq!(stream.records[0]["classification_schema_version"], 1);
     let event = stream
         .records
         .iter()
         .find(|value| value["type"] == "quic.stream")
         .unwrap();
     assert_eq!(event["protocol"], "h3");
+    assert_eq!(event["classification"]["schema_version"], 1);
+    assert_eq!(event["classification"]["family"], "http3");
+    assert_eq!(event["classification"]["detection"], "identified");
+    assert_eq!(event["classification"]["inspectability"], "full");
+    assert_eq!(event["classification"]["reason"], "truncated");
     assert_eq!(event["payload"], "YWJj");
     let trailer = stream.records.last().unwrap();
     assert_eq!(trailer["quic_stream_bytes_observed"], 5);
     assert_eq!(trailer["quic_stream_bytes_retained"], 3);
     assert_eq!(trailer["quic_stream_bytes_omitted"], 2);
+    assert_eq!(trailer["classified_records"], 1);
+    assert_eq!(trailer["classifications_by_family"]["http3"], 1);
 }
 
 #[test]
@@ -180,6 +193,8 @@ fn generic_udp_datagrams_preserve_boundaries_payloads_and_omission() {
     assert_eq!(datagrams[0]["payload"], "AAECAw==");
     assert_eq!(datagrams[1]["retained_len"], 2);
     assert_eq!(datagrams[1]["outcome"], "retention-limit");
+    assert_eq!(datagrams[0]["classification"]["family"], "generic-udp");
+    assert_eq!(datagrams[1]["classification"]["reason"], "truncated");
     let socket_error = complete
         .records
         .iter()
@@ -634,9 +649,28 @@ fn reader_accepts_a_pre_s106_complete_version_two_stream() {
         "\"body_retained_bytes_queue_dropped\":0}\n"
     );
     std::fs::write(&path, text).unwrap();
+    let value = read_application_prefix(&path).unwrap();
+    assert_eq!(value.status, ApplicationStreamStatus::Complete);
     assert_eq!(
-        read_application_prefix(&path).unwrap().status,
-        ApplicationStreamStatus::Complete
+        value.classification_status,
+        ClassificationStreamStatus::LegacyAbsent
+    );
+
+    let future = temp.path().join("future-classification.jsonl");
+    std::fs::write(
+        &future,
+        text.replace(
+            "\"sequence\":0",
+            "\"classification_schema_version\":99,\"sequence\":0",
+        ),
+    )
+    .unwrap();
+    let value = read_application_prefix(&future).unwrap();
+    assert_eq!(value.status, ApplicationStreamStatus::Complete);
+    assert_eq!(value.classification_schema_version, Some(99));
+    assert_eq!(
+        value.classification_status,
+        ClassificationStreamStatus::UnknownVersion
     );
 }
 

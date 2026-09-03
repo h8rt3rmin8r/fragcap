@@ -15,6 +15,7 @@
 mod adapters;
 mod application;
 mod artifacts;
+mod classification;
 mod har;
 mod journal;
 mod lifecycle;
@@ -29,6 +30,7 @@ mod session;
 pub use adapters::*;
 pub use application::*;
 pub use artifacts::*;
+pub use classification::*;
 pub use har::*;
 pub use journal::*;
 pub use lifecycle::*;

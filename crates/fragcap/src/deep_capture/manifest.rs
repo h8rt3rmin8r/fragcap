@@ -13,6 +13,101 @@ pub const MANIFEST_VERSION: u64 = 2;
 pub const MANIFEST_SCHEMA: &str = "https://fragcap.dev/schema/deep-capture-manifest.v2.json";
 pub const MANIFEST_PREFIX: &str = "manifest.prefix.json";
 
+/// Stable artifact-omission reason owned by manifest version 2.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManifestOmissionReason {
+    NotRequested,
+    NotProduced,
+    NotObservable,
+    UnsupportedProtocol,
+    NotRouted,
+    NotReached,
+    CertificatePinned,
+    ClientAuthRequired,
+    UnsupportedVersion,
+    ParserFailed,
+    Truncated,
+    BackendUnavailable,
+    NoHttpSemantics,
+    ProjectionFailed,
+    WriterFailed,
+    SharingExcludedSensitiveArtifact,
+}
+
+impl ManifestOmissionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not-requested",
+            Self::NotProduced => "not-produced",
+            Self::NotObservable => "not-observable",
+            Self::UnsupportedProtocol => "unsupported-protocol",
+            Self::NotRouted => "not-routed",
+            Self::NotReached => "not-reached",
+            Self::CertificatePinned => "certificate-pinned",
+            Self::ClientAuthRequired => "client-auth-required",
+            Self::UnsupportedVersion => "unsupported-version",
+            Self::ParserFailed => "parser-failed",
+            Self::Truncated => "truncated",
+            Self::BackendUnavailable => "backend-unavailable",
+            Self::NoHttpSemantics => "no-http-semantics",
+            Self::ProjectionFailed => "projection-failed",
+            Self::WriterFailed => "writer-failed",
+            Self::SharingExcludedSensitiveArtifact => "sharing-excludes-sensitive-artifact",
+        }
+    }
+
+    pub fn severity(self) -> &'static str {
+        match self {
+            Self::NotRequested
+            | Self::NotObservable
+            | Self::NoHttpSemantics
+            | Self::SharingExcludedSensitiveArtifact => "info",
+            Self::NotProduced
+            | Self::UnsupportedProtocol
+            | Self::NotRouted
+            | Self::NotReached
+            | Self::CertificatePinned
+            | Self::ClientAuthRequired
+            | Self::UnsupportedVersion
+            | Self::Truncated
+            | Self::BackendUnavailable => "warn",
+            Self::ParserFailed | Self::ProjectionFailed | Self::WriterFailed => "error",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "not-requested" => Self::NotRequested,
+            "not-produced" => Self::NotProduced,
+            "not-observable" => Self::NotObservable,
+            "unsupported-protocol" => Self::UnsupportedProtocol,
+            "not-routed" => Self::NotRouted,
+            "not-reached" => Self::NotReached,
+            "certificate-pinned" => Self::CertificatePinned,
+            "client-auth-required" => Self::ClientAuthRequired,
+            "unsupported-version" => Self::UnsupportedVersion,
+            "parser-failed" => Self::ParserFailed,
+            "truncated" => Self::Truncated,
+            "backend-unavailable" => Self::BackendUnavailable,
+            "no-http-semantics" => Self::NoHttpSemantics,
+            "projection-failed" => Self::ProjectionFailed,
+            "writer-failed" => Self::WriterFailed,
+            "sharing-excludes-sensitive-artifact" => Self::SharingExcludedSensitiveArtifact,
+            _ => return None,
+        })
+    }
+}
+
+/// Construct the manifest omission index entry from one typed reason.
+pub fn manifest_omission(role: &str, reason: ManifestOmissionReason) -> Value {
+    serde_json::json!({
+        "role": role,
+        "reason": reason.as_str(),
+        "severity": reason.severity(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManifestVersion {
     LegacyV1,
@@ -266,6 +361,7 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
                 || artifact
                     .get("omission_reason")
                     .and_then(Value::as_str)
+                    .and_then(ManifestOmissionReason::parse)
                     .is_none()
             {
                 return Err(io::Error::new(
@@ -311,15 +407,19 @@ pub fn validate_v2(value: &Value) -> io::Result<()> {
             .and_then(Value::as_str)
             .filter(|role| !role.is_empty())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "omission role missing"))?;
+        let reason = omission
+            .get("reason")
+            .and_then(Value::as_str)
+            .and_then(ManifestOmissionReason::parse);
         if !has_only_keys(omission, &["role", "reason", "severity"])
-            || omission
-                .get("reason")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
+            || reason.is_none()
             || !matches!(
                 omission.get("severity").and_then(Value::as_str),
                 Some("info" | "warn" | "error")
             )
+            || reason.is_some_and(|reason| {
+                omission.get("severity").and_then(Value::as_str) != Some(reason.severity())
+            })
             || !declared_omissions.insert(role.to_string())
         {
             return Err(io::Error::new(
@@ -405,6 +505,18 @@ mod tests {
         assert_eq!(parsed.version(), ManifestVersion::LegacyV1);
         assert_eq!(bytes, before.as_slice());
         assert_eq!(parsed.value()["manifest_version"], 1);
+    }
+
+    #[test]
+    fn omission_reason_owns_stable_text_and_severity() {
+        let parser = manifest_omission("application-jsonl", ManifestOmissionReason::ParserFailed);
+        assert_eq!(parser["reason"], "parser-failed");
+        assert_eq!(parser["severity"], "error");
+        let unrouted = manifest_omission("application-jsonl", ManifestOmissionReason::NotRouted);
+        assert_eq!(unrouted["reason"], "not-routed");
+        assert_eq!(unrouted["severity"], "warn");
+        let unrequested = manifest_omission("har", ManifestOmissionReason::NotRequested);
+        assert_eq!(unrequested["severity"], "info");
     }
 
     #[test]
