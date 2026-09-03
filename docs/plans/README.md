@@ -197,5 +197,14 @@ first Native Deep Capture 3 transport-coverage slice. The shared native listener
 admits SOCKS5 TCP only through the current session capability, owns domain
 resolution and destination policy, relays bounded full-duplex bytes with
 half-close, and records typed correlated metadata without claiming generic TCP
-payload semantics. UDP ASSOCIATE remains #311, generic TCP and non-HTTP TLS
-semantics remain #312, and Deep Capture remains incomplete until #334.
+payload semantics.
+
+S115 (`specs/115-socks5-udp-associate`) follows S114 and closes #311 at the
+scoped UDP association boundary. One authenticated TCP control connection owns
+one finite relay, an immutable declared or once-learned client endpoint, fixed
+IPv4 and IPv6 upstream sockets, and bounded exact contacted-peer mappings.
+Every destination passes existing policy after proxy-owned resolution, only
+contacted peers may reply, fragmentation is explicitly unsupported, and all
+drops and terminal cleanup are counted. Generic TCP and non-HTTP TLS semantics
+remain #312, generic UDP payload evidence remains #313, and Deep Capture remains
+incomplete until #334.

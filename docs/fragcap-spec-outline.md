@@ -336,8 +336,11 @@ propagation. S113 adds the explicit bounded warm-to-cold close-and-retry workflo
 with fresh preparation and authorization and no process-control action. S114
 adds session-authenticated SOCKS5 TCP CONNECT, proxy-owned domain resolution,
 bounded byte-transparent relay, and typed tunnel evidence on the shared native
-listener. UDP ASSOCIATE and generic TCP payload semantics remain deferred. Broader
-launch and transport coverage,
+listener. S115 adds authenticated, control-owned UDP ASSOCIATE with immutable
+client endpoint pinning, fixed family sockets, bounded exact peer mappings,
+policy-checked proxy DNS, explicit fragmentation refusal, and metadata-only
+loss accounting. Generic TCP and generic UDP payload semantics remain deferred.
+Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector
 plugins, platform integrations, and analysis tooling remain deferred.

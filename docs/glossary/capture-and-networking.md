@@ -997,11 +997,27 @@ connection for an IPv4, IPv6, or domain destination. Success is reported only
 after the upstream exists. The resulting relay preserves bytes and half-close
 under finite buffers, deadlines, and session cancellation.
 
-UDP ASSOCIATE and BIND are not part of this contract.
+BIND is not part of this contract.
 
 **See also:** [SOCKS5](capture-and-networking.md#socks5),
 [Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
 [Backpressure](capture-and-networking.md#backpressure)
+
+## SOCKS5 UDP association
+
+The authenticated SOCKS5 command that creates one bounded UDP relay owned by
+the requesting TCP control connection. fragcap pins the TCP peer IP and a
+declared or once-learned UDP port, forwards only unfragmented datagrams to
+policy-approved destinations, and accepts replies only from exact remote peers
+that association previously contacted. Control close, timeout, cancellation,
+or cleanup releases its sockets and mappings.
+
+The association records destination and length metadata plus every loss class;
+it does not retain generic UDP payload evidence.
+
+**See also:** [SOCKS5](capture-and-networking.md#socks5),
+[Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
+[Capture scope](capture-and-networking.md#capture-scope)
 
 ## Proxy-owned DNS
 

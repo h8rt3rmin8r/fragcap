@@ -12,8 +12,12 @@ zlib-deflate, and Brotli derivations. S106 adds wire-preserving WebSocket,
 incremental Server-Sent Events, and schema-free gRPC envelope observation.
 S114 adds session-authenticated SOCKS5 TCP CONNECT for IPv4, IPv6, and
 proxy-resolved domains, with bounded byte-transparent relay and typed tunnel
-metadata. Later milestones own UDP ASSOCIATE, generic TCP payload semantics,
-broader transports, launch coverage, richer artifacts, and final completion.
+metadata. S115 adds authenticated UDP ASSOCIATE with control-channel lifetime,
+immutable client endpoint pinning, fixed family sockets, bounded exact peer
+mappings, policy-checked proxy DNS, explicit fragmentation refusal,
+metadata-only events, and complete drop accounting. Later milestones own
+generic TCP and UDP payload semantics, broader transports, launch coverage,
+richer artifacts, and final completion.
 
 This crate never configures an ambient system proxy and never reaches inside a
 target process.

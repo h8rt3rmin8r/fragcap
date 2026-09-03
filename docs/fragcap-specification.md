@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.37-draft \
+**Version:** 0.1.38-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -130,6 +130,7 @@ enforcement.
 | 0.1.36-draft | 2026-09-01 | W. Thompson | **Adds cold platform-client ownership (issue #308).** Extends sections 16.4, 17.2.1, and 28.1. Deep Capture prepares an exact Steam root and retained title dispatch, starts the cold root with child-scoped routing, waits until the exact created process binds to the platform role, and then dispatches the selected title once. Terminal ownership requires the declared client beneath that platform ancestry. Warm, escaped, exited, failed, ambiguous, and timed-out paths remain named non-success outcomes. Routing and propagation remain separate evidence, ordinary Capture keeps Steam protocol launch, and Deep Capture remains incomplete until #334. |
 | 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds authenticated native SOCKS5 TCP routing (issue #310).** Extends sections 17.2.1, 19, 25, and 28.1. The shared loopback listener accepts only RFC 1929 username/password credentials bound to the current session capability, supports bounded CONNECT for IPv4, IPv6, and proxy-resolved domain destinations under the existing upstream policy, preserves full-duplex bytes and half-close, and records typed negotiation, destination, classification, transfer, and terminal evidence. UDP ASSOCIATE and generic TCP payload semantics remain deferred, and Deep Capture remains incomplete until #334. |
 | 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds the explicit warm-to-cold Deep Capture workflow (issue #309).** Extends sections 17.2.1, 26, 28, and 29. A selected bounded workflow reports identity-uncertain warm image observations, waits while the operator uses normal application shutdown, freshly resolves and prepares the cold launch, and requires a second authorization before effects. fragcap performs no process-control action or force-kill fallback. |
+| 0.1.38-draft | 2026-09-02 | W. Thompson | **Adds scoped SOCKS5 UDP association (issue #311).** Extends sections 19, 25, and 28.1. One authenticated TCP control connection owns one finite UDP relay with immutable client endpoint pinning, proxy-owned domain resolution, existing destination policy, fixed family sockets, bounded exact contacted-peer mappings, reply-source validation, explicit fragmentation refusal, metadata-only evidence, loss conservation, and terminal cleanup. Generic UDP payload evidence remains #313, and Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4566,7 +4567,17 @@ and bounded byte-transparent relay preserves half-close. Typed application and
 lifecycle evidence records negotiation, address form, DNS ownership,
 classification, byte counts, and terminal outcome without retaining the secret
 or claiming generic TCP payload semantics. It closes #310 while UDP ASSOCIATE
-remains #311 and generic TCP and non-HTTP TLS semantics remain #312.
+was completed by S115, while generic TCP and non-HTTP TLS semantics remain #312.
+S115 adds UDP ASSOCIATE under the same authenticated control connection. The
+TCP peer IP and declared or once-learned UDP port form an immutable client
+identity. Fixed IPv4 and IPv6 upstream sockets forward unfragmented datagrams
+only to policy-approved destinations, and replies are admitted only from exact
+peers previously contacted by that association. Datagram size, peer count,
+idle lifetime, sockets, and retained state are finite. Fragmented, malformed,
+spoofed, unsolicited, refused, saturated, failed, timed-out, and cancelled
+outcomes are counted. Evidence retains endpoint and length metadata without UDP
+payloads or inferred remote endpoints. It closes #311 while generic UDP payload
+truth remains #313.
 
 The required dependency direction is:
 
@@ -4613,7 +4624,7 @@ The protocol and launch matrix is normative:
 | gRPC | Native HTTP/2 opaque envelopes, compression flags, and status | S106, #299 |
 | Generic TCP and non-HTTP TLS | SOCKS-routed connections carry metadata-only classification and byte counts; payload semantics remain unavailable | #312 |
 | SOCKS5 TCP | Native session-authenticated CONNECT for IPv4, IPv6, and proxy-resolved domains | S114, #310 |
-| SOCKS5 UDP ASSOCIATE | Not implemented | #311 |
+| SOCKS5 UDP ASSOCIATE | Native control-owned relay for IPv4, IPv6, and proxy-resolved domains with endpoint pinning, exact peer validation, finite mappings, and metadata-only loss accounting | S115, #311 |
 | Generic UDP | Packet truth only | #313 |
 | QUIC and HTTP/3 | Packet truth only, no decryption | #314 |
 | IPv6 | No complete native parity claim | #315 |

@@ -39,6 +39,7 @@ pub enum ApplicationEventKind {
     SocksNegotiation(SocksNegotiationEvent),
     SocksConnect(SocksConnectEvent),
     SocksTransfer(SocksTransferEvent),
+    SocksUdp(SocksUdpEvent),
     Error { code: &'static str },
 }
 
@@ -77,6 +78,16 @@ pub struct SocksConnectEvent {
 pub struct SocksTransferEvent {
     pub client_to_upstream_bytes: u64,
     pub upstream_to_client_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SocksUdpEvent {
+    pub action: &'static str,
+    pub outcome: &'static str,
+    pub address_type: Option<&'static str>,
+    pub remote: Option<SocketAddr>,
+    pub payload_bytes: u64,
+    pub active_peers: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

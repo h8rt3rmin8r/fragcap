@@ -523,6 +523,38 @@ pub async fn connect_upstream(
     connect_upstream_cancellable(authority, policy, budgets, &UpstreamCancellation::default()).await
 }
 
+pub async fn resolve_allowed_udp(
+    authority: &DestinationAuthority,
+    policy: &DestinationPolicy,
+    budget: Duration,
+) -> Result<Vec<SocketAddr>, UpstreamError> {
+    let resolved = timeout(budget, tokio::net::lookup_host(authority.lookup_host()))
+        .await
+        .map_err(|_| UpstreamError::new(UpstreamStage::Dns, "dns-timeout"))?
+        .map_err(|error| {
+            UpstreamError::with_detail(UpstreamStage::Dns, "dns-failed", error.to_string())
+        })?;
+    let mut allowed = Vec::new();
+    let mut saw_address = false;
+    for address in resolved {
+        saw_address = true;
+        let decision = policy.evaluate(address);
+        if decision.allowed && !allowed.contains(&decision.address) {
+            allowed.push(decision.address);
+        }
+    }
+    if !saw_address {
+        return Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"));
+    }
+    if allowed.is_empty() {
+        return Err(UpstreamError::new(
+            UpstreamStage::Policy,
+            "destination-refused",
+        ));
+    }
+    Ok(allowed)
+}
+
 pub async fn connect_upstream_cancellable(
     authority: &DestinationAuthority,
     policy: &DestinationPolicy,

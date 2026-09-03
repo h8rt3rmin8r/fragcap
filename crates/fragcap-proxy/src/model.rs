@@ -116,6 +116,8 @@ pub struct ProtocolLimits {
     pub max_sse_line_bytes: usize,
     pub max_sse_event_bytes: usize,
     pub max_grpc_message_bytes: usize,
+    pub max_socks_udp_datagram_bytes: usize,
+    pub max_socks_udp_peers: usize,
     pub header_timeout: Duration,
     pub idle_timeout: Duration,
     pub tls_handshake_timeout: Duration,
@@ -152,6 +154,8 @@ impl Default for ProtocolLimits {
             max_sse_line_bytes: 64 * 1024,
             max_sse_event_bytes: 1024 * 1024,
             max_grpc_message_bytes: 32 * 1024 * 1024,
+            max_socks_udp_datagram_bytes: 65_507,
+            max_socks_udp_peers: 256,
             header_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(60),
             tls_handshake_timeout: Duration::from_secs(10),
@@ -195,6 +199,11 @@ impl ProtocolLimits {
             ("max-sse-line-bytes", self.max_sse_line_bytes),
             ("max-sse-event-bytes", self.max_sse_event_bytes),
             ("max-grpc-message-bytes", self.max_grpc_message_bytes),
+            (
+                "max-socks-udp-datagram-bytes",
+                self.max_socks_udp_datagram_bytes,
+            ),
+            ("max-socks-udp-peers", self.max_socks_udp_peers),
         ];
         if let Some((name, _)) = nonzero.into_iter().find(|(_, value)| *value == 0) {
             return Err(ConfigError::new(
@@ -206,6 +215,12 @@ impl ProtocolLimits {
             return Err(ConfigError::new(
                 "zero-protocol-limit",
                 "body retention limits must be non-zero",
+            ));
+        }
+        if !(23..=65_507).contains(&self.max_socks_udp_datagram_bytes) {
+            return Err(ConfigError::new(
+                "socks-udp-datagram-limit-invalid",
+                "max-socks-udp-datagram-bytes must be between 23 and 65507",
             ));
         }
         if self.max_concurrent_streams > u32::MAX as usize
@@ -378,6 +393,26 @@ pub struct ProtocolAccounting {
     pub socks_tcp_opaque: u64,
     pub socks_client_bytes: u64,
     pub socks_upstream_bytes: u64,
+    pub socks_udp_associate_requested: u64,
+    pub socks_udp_associate_succeeded: u64,
+    pub socks_udp_associate_refused: u64,
+    pub socks_udp_client_datagrams: u64,
+    pub socks_udp_client_forwarded: u64,
+    pub socks_udp_upstream_datagrams: u64,
+    pub socks_udp_upstream_forwarded: u64,
+    pub socks_udp_malformed_dropped: u64,
+    pub socks_udp_fragment_dropped: u64,
+    pub socks_udp_source_dropped: u64,
+    pub socks_udp_policy_dropped: u64,
+    pub socks_udp_resolution_dropped: u64,
+    pub socks_udp_peer_limit_dropped: u64,
+    pub socks_udp_oversized_dropped: u64,
+    pub socks_udp_unsolicited_dropped: u64,
+    pub socks_udp_transport_dropped: u64,
+    pub socks_udp_owner_dropped: u64,
+    pub socks_udp_client_bytes: u64,
+    pub socks_udp_upstream_bytes: u64,
+    pub socks_udp_peak_peers: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
