@@ -15,7 +15,8 @@ use fragcap_proxy::{
     ProtocolLimits, QuicInspectionPlan, QuicRefusalCode, SessionCertificateAuthority,
 };
 use h3_quinn::Connection;
-use hyper::{Request, Response};
+use hyper::header::HeaderValue;
+use hyper::{HeaderMap, Request, Response};
 use quinn::Endpoint;
 use rustls::RootCertStore;
 
@@ -253,11 +254,16 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
                         data.advance(length);
                     }
                 }
+                let request_trailers = stream.recv_trailers().await.unwrap().unwrap();
+                assert_eq!(request_trailers["x-request-proof"], "observed");
                 stream
                     .send_response(Response::builder().status(202).body(()).unwrap())
                     .await
                     .unwrap();
                 stream.send_data(Bytes::from(body)).await.unwrap();
+                let mut response_trailers = HeaderMap::new();
+                response_trailers.insert("x-response-proof", HeaderValue::from_static("observed"));
+                stream.send_trailers(response_trailers).await.unwrap();
                 stream.finish().await.unwrap();
             });
         }
@@ -359,6 +365,9 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
                 .send_data(Bytes::copy_from_slice(payload.as_bytes()))
                 .await
                 .unwrap();
+            let mut request_trailers = HeaderMap::new();
+            request_trailers.insert("x-request-proof", HeaderValue::from_static("observed"));
+            stream.send_trailers(request_trailers).await.unwrap();
             stream.finish().await.unwrap();
             assert_eq!(stream.recv_response().await.unwrap().status(), 202);
             let mut echoed = Vec::new();
@@ -369,6 +378,8 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
                     data.advance(length);
                 }
             }
+            let response_trailers = stream.recv_trailers().await.unwrap().unwrap();
+            assert_eq!(response_trailers["x-response-proof"], "observed");
             assert_eq!(echoed, payload.as_bytes());
         });
     }
@@ -403,6 +414,13 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
         .iter()
         .any(|event| matches!(event.kind, ApplicationEventKind::QuicConnection(_))));
     assert!(events.iter().any(|event| matches!(event.kind, ApplicationEventKind::Metadata(ref block) if block.version == fragcap_proxy::ProtocolVersion::Http3)));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, ApplicationEventKind::Metadata(ref block) if block.kind == fragcap_proxy::MetadataKind::Trailers))
+            .count(),
+        4
+    );
     assert!(events
         .iter()
         .any(|event| matches!(event.kind, ApplicationEventKind::QuicStream(_))));

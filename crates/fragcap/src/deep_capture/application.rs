@@ -534,6 +534,7 @@ fn writer_loop(
     let mut quic_stream_observed_bytes = 0_u64;
     let mut quic_stream_retained_bytes = 0_u64;
     let mut quic_datagrams_observed = 0_u64;
+    let mut quic_datagrams_capacity_dropped = 0_u64;
     let mut quic_datagram_observed_bytes = 0_u64;
     let mut quic_datagram_retained_bytes = 0_u64;
     while let Ok(event) = receiver.recv() {
@@ -596,6 +597,10 @@ fn writer_loop(
             }
             ApplicationEventKind::QuicDatagram(value) => {
                 quic_datagrams_observed = quic_datagrams_observed.saturating_add(1);
+                if value.terminal == "capacity-dropped" {
+                    quic_datagrams_capacity_dropped =
+                        quic_datagrams_capacity_dropped.saturating_add(1);
+                }
                 quic_datagram_observed_bytes =
                     quic_datagram_observed_bytes.saturating_add(value.observed_len);
                 quic_datagram_retained_bytes =
@@ -886,6 +891,10 @@ fn writer_loop(
         (
             "quic_datagram_bytes_omitted",
             quic_datagram_observed_bytes.saturating_sub(quic_datagram_retained_bytes),
+        ),
+        (
+            "quic_datagrams_capacity_dropped",
+            quic_datagrams_capacity_dropped,
         ),
         ("quic_datagrams_queue_dropped", quic_datagrams_queue_dropped),
         (

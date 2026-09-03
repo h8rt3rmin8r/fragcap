@@ -412,6 +412,7 @@ pub struct ProtocolAccounting {
     pub quic_datagram_bytes_observed: u64,
     pub quic_datagram_bytes_retained: u64,
     pub quic_datagram_bytes_omitted: u64,
+    pub quic_datagrams_capacity_dropped: u64,
     pub quic_stream_bytes_queue_dropped: u64,
     pub quic_datagrams_queue_dropped: u64,
     pub quic_datagram_bytes_queue_dropped: u64,

@@ -1856,6 +1856,10 @@ fn merge_protocol(observation: &mut RuntimeObservation, run: HttpRun, max_observ
         .protocol
         .quic_datagram_bytes_omitted
         .saturating_add(source.quic_datagram_bytes_omitted);
+    observation.protocol.quic_datagrams_capacity_dropped = observation
+        .protocol
+        .quic_datagrams_capacity_dropped
+        .saturating_add(source.quic_datagrams_capacity_dropped);
     observation.protocol.quic_stream_bytes_queue_dropped = observation
         .protocol
         .quic_stream_bytes_queue_dropped

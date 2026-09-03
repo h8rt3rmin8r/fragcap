@@ -2,7 +2,7 @@
 
 //! Scoped QUIC configuration, identity, and bounded application observation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -73,7 +73,24 @@ pub(crate) struct QuicAssociationGateway {
     server_address: SocketAddr,
     task: Option<JoinHandle<()>>,
     observer: Arc<tokio::sync::Mutex<QuicEvidenceObserver>>,
+    terminal: tokio::sync::watch::Receiver<Option<QuicGatewayTerminal>>,
     _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QuicGatewayTerminal {
+    Complete,
+    Refused(QuicRefusalCode),
+}
+
+pub(crate) enum QuicGatewayIoError {
+    Terminal(QuicGatewayTerminal),
+    Io(io::Error),
+}
+
+pub(crate) struct QuicGatewayReport {
+    pub accounting: ProtocolAccounting,
+    pub terminal: Option<QuicGatewayTerminal>,
 }
 
 impl QuicAssociationGateway {
@@ -114,18 +131,23 @@ impl QuicAssociationGateway {
             QuicEvidenceObserver::new(plan.clone()).with_session_retention(session_retained),
         ));
         let task_observer = Arc::clone(&observer);
+        let (terminal_tx, terminal) = tokio::sync::watch::channel(None);
         let task = tokio::spawn(async move {
             let run_observer = Arc::clone(&task_observer);
-            if let Err(code) = run_pair(
-                server,
+            let result = run_pair(
+                &server,
                 task_plan.clone(),
                 upstream_tls,
                 limits,
                 sink.clone(),
                 run_observer,
             )
-            .await
-            {
+            .await;
+            let outcome = result.map_or_else(QuicGatewayTerminal::Refused, |_| {
+                QuicGatewayTerminal::Complete
+            });
+            terminal_tx.send_replace(Some(outcome));
+            if let QuicGatewayTerminal::Refused(code) = outcome {
                 let event = task_observer.lock().await.record_refusal(code);
                 application::emit(&sink, event);
             }
@@ -136,6 +158,7 @@ impl QuicAssociationGateway {
             server_address,
             task: Some(task),
             observer,
+            terminal,
             _permit: permit,
         })
     }
@@ -148,17 +171,51 @@ impl QuicAssociationGateway {
         self.plan.admits(client, origin)
     }
 
-    pub(crate) async fn send(&self, payload: &[u8]) -> io::Result<usize> {
-        self.bridge.send_to(payload, self.server_address).await
+    pub(crate) async fn send(&self, payload: &[u8]) -> Result<usize, QuicGatewayIoError> {
+        let mut terminal = self.terminal.clone();
+        if let Some(outcome) = *terminal.borrow() {
+            return Err(QuicGatewayIoError::Terminal(outcome));
+        }
+        tokio::select! {
+            biased;
+            changed = terminal.changed() => match changed {
+                Ok(()) => Err(QuicGatewayIoError::Terminal(
+                    (*terminal.borrow()).unwrap_or(QuicGatewayTerminal::Refused(
+                        QuicRefusalCode::TransportFailed,
+                    )),
+                )),
+                Err(_) => Err(QuicGatewayIoError::Terminal(
+                    QuicGatewayTerminal::Refused(QuicRefusalCode::TransportFailed),
+                )),
+            },
+            result = self.bridge.send_to(payload, self.server_address) => {
+                result.map_err(QuicGatewayIoError::Io)
+            }
+        }
     }
 
-    pub(crate) async fn recv(&self, payload: &mut [u8]) -> io::Result<usize> {
-        let (read, source) = self.bridge.recv_from(payload).await?;
+    pub(crate) async fn recv(&self, payload: &mut [u8]) -> Result<usize, QuicGatewayIoError> {
+        let mut terminal = self.terminal.clone();
+        let result = tokio::select! {
+            biased;
+            changed = terminal.changed() => match changed {
+                Ok(()) => return Err(QuicGatewayIoError::Terminal(
+                    (*terminal.borrow()).unwrap_or(QuicGatewayTerminal::Refused(
+                        QuicRefusalCode::TransportFailed,
+                    )),
+                )),
+                Err(_) => return Err(QuicGatewayIoError::Terminal(
+                    QuicGatewayTerminal::Refused(QuicRefusalCode::TransportFailed),
+                )),
+            },
+            result = self.bridge.recv_from(payload) => result,
+        };
+        let (read, source) = result.map_err(QuicGatewayIoError::Io)?;
         if source != self.server_address {
-            return Err(io::Error::new(
+            return Err(QuicGatewayIoError::Io(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "unexpected QUIC bridge peer",
-            ));
+            )));
         }
         Ok(read)
     }
@@ -167,12 +224,15 @@ impl QuicAssociationGateway {
         &self.plan
     }
 
-    pub(crate) async fn close(mut self) -> ProtocolAccounting {
+    pub(crate) async fn close(mut self) -> QuicGatewayReport {
         if let Some(task) = self.task.take() {
             task.abort();
             let _ = task.await;
         }
-        self.observer.lock().await.accounting
+        QuicGatewayReport {
+            accounting: self.observer.lock().await.accounting,
+            terminal: *self.terminal.borrow(),
+        }
     }
 }
 
@@ -192,7 +252,7 @@ fn loopback_for(ip: IpAddr, port: u16) -> SocketAddr {
 }
 
 async fn run_pair(
-    server: Endpoint,
+    server: &Endpoint,
     plan: QuicInspectionPlan,
     upstream_tls: Arc<rustls::ClientConfig>,
     limits: ProtocolLimits,
@@ -348,27 +408,37 @@ async fn proxy_http3(
                 .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
             {
                 let bytes = copy_buf(&mut data);
+                let sent = origin_stream.send_data(bytes.clone()).await;
                 let event = stream_observer.lock().await.stream(
                     QuicDirection::ClientToUpstream,
                     stream_id,
                     "http3-request",
                     &bytes,
                     &stream_limits,
-                    "forwarded",
+                    if sent.is_ok() {
+                        "forwarded"
+                    } else {
+                        "transport-failed"
+                    },
                 );
                 emit_stream_observed(&stream_sink, event);
-                origin_stream
-                    .send_data(bytes)
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
+                sent.map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
             }
             if let Some(trailers) = client_stream
                 .recv_trailers()
                 .await
                 .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
             {
+                emit_observed(
+                    &stream_sink,
+                    trailer_event(&stream_observer, stream_id, &trailers).await,
+                );
                 origin_stream
                     .send_trailers(trailers)
+                    .await
+                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
+                origin_stream
+                    .finish()
                     .await
                     .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
             } else {
@@ -384,7 +454,7 @@ async fn proxy_http3(
                 .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
             let response_event = {
                 let mut observer = stream_observer.lock().await;
-                observer.http3_response();
+                observer.http3_metadata();
                 ApplicationEvent::now(
                     observer.plan.session_id(),
                     observer.plan.association_id(),
@@ -405,27 +475,37 @@ async fn proxy_http3(
                 .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
             {
                 let bytes = copy_buf(&mut data);
+                let sent = client_stream.send_data(bytes.clone()).await;
                 let event = stream_observer.lock().await.stream(
                     QuicDirection::UpstreamToClient,
                     stream_id,
                     "http3-response",
                     &bytes,
                     &stream_limits,
-                    "forwarded",
+                    if sent.is_ok() {
+                        "forwarded"
+                    } else {
+                        "transport-failed"
+                    },
                 );
                 emit_stream_observed(&stream_sink, event);
-                client_stream
-                    .send_data(bytes)
-                    .await
-                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
+                sent.map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
             }
             if let Some(trailers) = origin_stream
                 .recv_trailers()
                 .await
                 .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?
             {
+                emit_observed(
+                    &stream_sink,
+                    trailer_event(&stream_observer, stream_id, &trailers).await,
+                );
                 client_stream
                     .send_trailers(trailers)
+                    .await
+                    .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
+                client_stream
+                    .finish()
                     .await
                     .map_err(|_| QuicRefusalCode::Http3ProtocolFailed)?;
             } else {
@@ -489,6 +569,26 @@ async fn http3_event(
     )
 }
 
+async fn trailer_event(
+    observer: &Arc<tokio::sync::Mutex<QuicEvidenceObserver>>,
+    stream_id: u64,
+    trailers: &hyper::HeaderMap,
+) -> ApplicationEvent {
+    let mut observer = observer.lock().await;
+    observer.http3_metadata();
+    ApplicationEvent::now(
+        observer.plan.session_id(),
+        observer.plan.association_id(),
+        Some(stream_id),
+        Some(ProtocolVersion::Http3),
+        ApplicationEventKind::Metadata(MetadataBlock::http3(
+            MetadataKind::Trailers,
+            Vec::new(),
+            crate::metadata::fields_from_header_map(trailers),
+        )),
+    )
+}
+
 fn emit_stream_observed(sink: &application::SharedEventSink, event: ApplicationEvent) {
     let ApplicationEventKind::QuicStream(value) = &event.kind else {
         emit_observed(sink, event);
@@ -539,6 +639,11 @@ fn spawn_datagram_pump(
             };
             let sequence = count.fetch_add(1, Ordering::Relaxed);
             if sequence >= limits.max_quic_datagrams as u64 {
+                let event = observer
+                    .lock()
+                    .await
+                    .datagram_capacity_drop(direction, sequence, &bytes);
+                emit_observed(&sink, event);
                 break;
             }
             let event = observer
@@ -794,8 +899,7 @@ pub struct QuicEvidenceObserver {
     plan: QuicInspectionPlan,
     client_sequence: u64,
     upstream_sequence: u64,
-    client_offset: u64,
-    upstream_offset: u64,
+    stream_offsets: BTreeMap<u64, [u64; 2]>,
     retained: u64,
     session_retained: Option<Arc<AtomicU64>>,
     seen_streams: BTreeSet<u64>,
@@ -808,8 +912,7 @@ impl QuicEvidenceObserver {
             plan,
             client_sequence: 0,
             upstream_sequence: 0,
-            client_offset: 0,
-            upstream_offset: 0,
+            stream_offsets: BTreeMap::new(),
             retained: 0,
             session_retained: None,
             seen_streams: BTreeSet::new(),
@@ -830,7 +933,7 @@ impl QuicEvidenceObserver {
         }
     }
 
-    fn http3_response(&mut self) {
+    fn http3_metadata(&mut self) {
         self.accounting.metadata_blocks = self.accounting.metadata_blocks.saturating_add(1);
     }
 
@@ -907,10 +1010,11 @@ impl QuicEvidenceObserver {
         terminal: &'static str,
     ) -> ApplicationEvent {
         let sequence = self.next(direction);
-        let offset = match direction {
-            QuicDirection::ClientToUpstream => &mut self.client_offset,
-            QuicDirection::UpstreamToClient => &mut self.upstream_offset,
-        };
+        let offsets = self.stream_offsets.entry(stream_id).or_default();
+        let offset = &mut offsets[match direction {
+            QuicDirection::ClientToUpstream => 0,
+            QuicDirection::UpstreamToClient => 1,
+        }];
         let start_offset = *offset;
         *offset = offset.saturating_add(payload.len() as u64);
         let retained = self.claim(payload.len(), limits);
@@ -981,6 +1085,42 @@ impl QuicEvidenceObserver {
                 bytes: Bytes::copy_from_slice(&payload[..retained]),
                 outcome: datagram_outcome(payload.len(), retained, limits.capture_payloads),
                 terminal,
+            }),
+        )
+    }
+
+    fn datagram_capacity_drop(
+        &mut self,
+        direction: QuicDirection,
+        sequence: u64,
+        payload: &[u8],
+    ) -> ApplicationEvent {
+        self.accounting.quic_datagrams = self.accounting.quic_datagrams.saturating_add(1);
+        self.accounting.quic_datagram_bytes_observed = self
+            .accounting
+            .quic_datagram_bytes_observed
+            .saturating_add(payload.len() as u64);
+        self.accounting.quic_datagram_bytes_omitted = self
+            .accounting
+            .quic_datagram_bytes_omitted
+            .saturating_add(payload.len() as u64);
+        self.accounting.quic_datagrams_capacity_dropped = self
+            .accounting
+            .quic_datagrams_capacity_dropped
+            .saturating_add(1);
+        ApplicationEvent::now(
+            self.plan.session_id(),
+            self.plan.association_id(),
+            None,
+            None,
+            ApplicationEventKind::QuicDatagram(QuicDatagramEvent {
+                pair_id: self.plan.pair_id(),
+                direction,
+                sequence,
+                observed_len: payload.len() as u64,
+                bytes: Bytes::new(),
+                outcome: GenericUdpOutcome::RetentionLimit,
+                terminal: "capacity-dropped",
             }),
         )
     }
@@ -1089,6 +1229,66 @@ mod tests {
         assert_eq!(second.sequence, 0);
         assert!(second.bytes.is_empty());
         assert_eq!(second.outcome, GenericUdpOutcome::RetentionLimit);
+    }
+
+    #[test]
+    fn stream_offsets_are_independent_per_stream_and_direction() {
+        let plan =
+            QuicInspectionPlan::new("s", 1, address(1), address(2), &authority(), true).unwrap();
+        let mut observer = QuicEvidenceObserver::new(plan);
+        let limits = ProtocolLimits::default();
+        let first = observer.stream(
+            QuicDirection::ClientToUpstream,
+            0,
+            "http3-request",
+            b"first",
+            &limits,
+            "forwarded",
+        );
+        let second = observer.stream(
+            QuicDirection::ClientToUpstream,
+            4,
+            "http3-request",
+            b"second",
+            &limits,
+            "forwarded",
+        );
+        let response = observer.stream(
+            QuicDirection::UpstreamToClient,
+            0,
+            "http3-response",
+            b"response",
+            &limits,
+            "forwarded",
+        );
+        let ApplicationEventKind::QuicStream(first) = first.kind else {
+            panic!()
+        };
+        let ApplicationEventKind::QuicStream(second) = second.kind else {
+            panic!()
+        };
+        let ApplicationEventKind::QuicStream(response) = response.kind else {
+            panic!()
+        };
+        assert_eq!((first.offset, second.offset, response.offset), (0, 0, 0));
+    }
+
+    #[test]
+    fn datagram_capacity_drop_is_explicit_and_accounted() {
+        let plan =
+            QuicInspectionPlan::new("s", 1, address(1), address(2), &authority(), true).unwrap();
+        let mut observer = QuicEvidenceObserver::new(plan);
+        let event =
+            observer.datagram_capacity_drop(QuicDirection::ClientToUpstream, 7, b"discarded");
+        let ApplicationEventKind::QuicDatagram(event) = event.kind else {
+            panic!()
+        };
+        assert_eq!(event.sequence, 7);
+        assert_eq!(event.observed_len, 9);
+        assert!(event.bytes.is_empty());
+        assert_eq!(event.terminal, "capacity-dropped");
+        assert_eq!(observer.accounting.quic_datagrams_capacity_dropped, 1);
+        assert_eq!(observer.accounting.quic_datagram_bytes_omitted, 9);
     }
 
     #[test]

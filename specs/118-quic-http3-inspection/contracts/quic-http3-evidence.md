@@ -58,7 +58,7 @@ For each pair:
 ```text
 accepted stream bytes = forwarded stream bytes + transport-failed stream bytes
 observed stream bytes = retained stream bytes + omitted stream bytes
-accepted datagrams = forwarded datagrams + refused datagrams + transport-failed datagrams
+accepted datagrams = forwarded datagrams + refused datagrams + capacity-dropped datagrams + transport-failed datagrams
 observed evidence events = persisted events + queue-dropped events + storage-dropped events
 ```
 

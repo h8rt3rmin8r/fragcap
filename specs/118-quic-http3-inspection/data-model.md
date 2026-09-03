@@ -69,7 +69,7 @@ The existing application transaction model remains authoritative. HTTP/3 adds tr
 
 ## QuicLoss
 
-- `authority`: connection, stream, datagram, event queue, storage, or retention
+- `authority`: connection, stream, datagram, event queue, storage, or retention; lifetime-capacity datagram drops are counted separately from transport failures
 - `direction`, `pair_id`, connection identity, and stream identity when localized
 - exact lost units and bytes
 - stable reason

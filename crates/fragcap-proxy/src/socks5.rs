@@ -19,9 +19,9 @@ use crate::{
     connect_upstream, ApplicationEvent, ApplicationEventKind, DestinationAuthority,
     DestinationPolicy, GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome,
     ProtocolAccounting, ProtocolLimits, ProxyObservation, QuicAssociationGateway,
-    QuicInspectionPlan, QuicRefusalCode, SessionCapability, SocksClassification, SocksConnectEvent,
-    SocksNegotiationEvent, SocksTransferEvent, SocksUdpEvent, UdpSocketError, UpstreamError,
-    UpstreamStage,
+    QuicGatewayIoError, QuicGatewayTerminal, QuicInspectionPlan, QuicRefusalCode,
+    SessionCapability, SocksClassification, SocksConnectEvent, SocksNegotiationEvent,
+    SocksTransferEvent, SocksUdpEvent, UdpSocketError, UpstreamError, UpstreamStage,
 };
 
 const SOCKS_VERSION: u8 = 5;
@@ -911,6 +911,20 @@ async fn serve_udp_association(
                         }
                         continue;
                     }
+                    OwnerBound::Completed(Err(UdpForwardFailure::QuicTerminal(selected, outcome))) => {
+                        let code = match outcome {
+                            QuicGatewayTerminal::Complete => "quic-complete",
+                            QuicGatewayTerminal::Refused(code) => code.as_str(),
+                        };
+                        emit_udp(sink, session_id, connection_id, "drop", code, Some(address_type), Some(selected), payload_len as u64, peers.len());
+                        break match outcome {
+                            QuicGatewayTerminal::Complete => Ok("quic-complete"),
+                            QuicGatewayTerminal::Refused(code) => Err(SocksFailure::new(
+                                code.as_str(),
+                                "QUIC inspection route reached its terminal state",
+                            )),
+                        };
+                    }
                 };
                 if quic.as_ref().is_some_and(|gateway| gateway.plan().origin_endpoint() == selected) {
                     accounting.quic_pairs_started = accounting.quic_pairs_started.max(1);
@@ -985,7 +999,16 @@ async fn serve_udp_association(
             result = recv_quic_optional(quic.as_ref(), &mut quic_buffer) => {
                 let read = match result {
                     Ok(value) => value,
-                    Err(error) => {
+                    Err(QuicGatewayIoError::Terminal(QuicGatewayTerminal::Complete)) => {
+                        break Ok("quic-complete");
+                    }
+                    Err(QuicGatewayIoError::Terminal(QuicGatewayTerminal::Refused(code))) => {
+                        break Err(SocksFailure::new(
+                            code.as_str(),
+                            "QUIC inspection route reached its terminal state",
+                        ));
+                    }
+                    Err(QuicGatewayIoError::Io(error)) => {
                         accounting.quic_transport_losses = accounting.quic_transport_losses.saturating_add(1);
                         emit_udp_socket_error(
                             sink, session_id, connection_id, GenericUdpDirection::UpstreamToClient,
@@ -1018,8 +1041,15 @@ async fn serve_udp_association(
         }
     };
     if let Some(gateway) = quic.take() {
-        merge_quic_accounting(&mut accounting, gateway.close().await);
-        accounting.quic_pairs_completed = accounting.quic_pairs_completed.saturating_add(1);
+        let report = gateway.close().await;
+        merge_quic_accounting(&mut accounting, report.accounting);
+        accounting.quic_pairs_completed =
+            accounting
+                .quic_pairs_completed
+                .saturating_add(u64::from(!matches!(
+                    report.terminal,
+                    Some(QuicGatewayTerminal::Refused(_))
+                )));
     }
     peers.clear();
     drop(upstream_v6);
@@ -1078,6 +1108,9 @@ fn merge_quic_accounting(accounting: &mut ProtocolAccounting, source: ProtocolAc
     accounting.quic_datagram_bytes_omitted = accounting
         .quic_datagram_bytes_omitted
         .saturating_add(source.quic_datagram_bytes_omitted);
+    accounting.quic_datagrams_capacity_dropped = accounting
+        .quic_datagrams_capacity_dropped
+        .saturating_add(source.quic_datagrams_capacity_dropped);
     accounting.quic_transport_losses = accounting
         .quic_transport_losses
         .saturating_add(source.quic_transport_losses);
@@ -1118,6 +1151,7 @@ enum UdpForwardFailure {
     WriteTimeout(SocketAddr),
     ShortWrite(SocketAddr),
     Quic(SocketAddr, QuicRefusalCode),
+    QuicTerminal(SocketAddr, QuicGatewayTerminal),
 }
 
 struct QuicRouteContext<'a> {
@@ -1208,7 +1242,12 @@ where
         return match send {
             Ok(Ok(written)) if written == payload.len() => Ok((selected, written)),
             Ok(Ok(_)) => Err(UdpForwardFailure::ShortWrite(selected)),
-            Ok(Err(error)) => Err(UdpForwardFailure::Socket(selected, io_kind(error.kind()))),
+            Ok(Err(QuicGatewayIoError::Terminal(outcome))) => {
+                Err(UdpForwardFailure::QuicTerminal(selected, outcome))
+            }
+            Ok(Err(QuicGatewayIoError::Io(error))) => {
+                Err(UdpForwardFailure::Socket(selected, io_kind(error.kind())))
+            }
             Err(_) => Err(UdpForwardFailure::WriteTimeout(selected)),
         };
     }
@@ -1248,7 +1287,7 @@ async fn recv_optional(
 async fn recv_quic_optional(
     gateway: Option<&QuicAssociationGateway>,
     buffer: &mut [u8],
-) -> io::Result<usize> {
+) -> Result<usize, QuicGatewayIoError> {
     match gateway {
         Some(gateway) => gateway.recv(buffer).await,
         None => pending().await,
