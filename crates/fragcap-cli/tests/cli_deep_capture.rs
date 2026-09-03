@@ -489,9 +489,6 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     assert!(completion["inspectable"]
         .as_u64()
         .is_some_and(|count| count > 0));
-    assert_eq!(completion["unknown"], 0);
-    assert_eq!(completion["failed"], 0);
-    assert_eq!(completion["unclassified_lost"], 0);
 
     for artifact in [
         "manifest.json",
@@ -571,7 +568,18 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
     );
     assert_eq!(
         application_records.last().unwrap()["classification_records_lost"],
-        0
+        completion["unclassified_lost"]
+    );
+    assert_eq!(
+        application_records.last().unwrap()["classifications_by_detection"]["unknown"],
+        completion["unknown"]
+    );
+    assert_eq!(
+        application_records.last().unwrap()["classifications_by_detection"]
+            .get("failed")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        completion["failed"].as_u64().unwrap()
     );
     assert!(application_records.last().unwrap()["written_records"]
         .as_u64()
@@ -721,11 +729,21 @@ fn controlled_human_summary_reports_shared_classification_counts() {
     std::env::remove_var("FRAGCAP_CONTROLLED_TARGET_EXECUTABLE");
 
     assert_eq!(code, 0, "stderr:\n{err}");
+    let application = std::fs::read_to_string(bundle.join("application.jsonl")).unwrap();
+    let lost =
+        serde_json::from_str::<serde_json::Value>(application.lines().last().unwrap()).unwrap();
+    let unknown = lost["classifications_by_detection"]["unknown"]
+        .as_u64()
+        .unwrap_or(0);
+    let failed = lost["classifications_by_detection"]["failed"]
+        .as_u64()
+        .unwrap_or(0);
+    let lost = lost["classification_records_lost"].as_u64().unwrap();
     assert!(
         err.contains("Protocol classification: observations=")
-            && err.contains("unknown=0")
-            && err.contains("failed=0")
-            && err.contains("unclassified_lost=0"),
+            && err.contains(&format!("unknown={unknown}"))
+            && err.contains(&format!("failed={failed}"))
+            && err.contains(&format!("unclassified_lost={lost}")),
         "human summary reconciles classification counts:\n{err}"
     );
 }

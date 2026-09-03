@@ -631,6 +631,8 @@ pub struct TerminalSnapshot {
     pub observations: Vec<CompatibilityObservation>,
     /// Proxy observations discarded before the retained collection was produced.
     pub classification_records_lost: u64,
+    /// Reconciled classification authority from the application artifact.
+    pub application_classification_summary: Option<super::ClassificationSummary>,
     pub route_verification: Option<super::RouteVerification>,
     pub failures: Vec<StageFailure>,
     pub fact_writes: Vec<FactWriteResult>,
@@ -642,12 +644,16 @@ pub struct TerminalSnapshot {
 impl TerminalSnapshot {
     /// Derive the conserved classification projection from retained observations.
     pub fn classification_summary(&self) -> super::ClassificationSummary {
-        super::ClassificationSummary::from_classifications(
-            self.observations
-                .iter()
-                .map(|observation| &observation.classification),
-            self.classification_records_lost,
-        )
+        self.application_classification_summary
+            .clone()
+            .unwrap_or_else(|| {
+                super::ClassificationSummary::from_classifications(
+                    self.observations
+                        .iter()
+                        .map(|observation| &observation.classification),
+                    self.classification_records_lost,
+                )
+            })
     }
 }
 

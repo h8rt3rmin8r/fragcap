@@ -208,6 +208,7 @@ fn native_reason_mapping_preserves_required_distinctions() {
             Some("quic-alpn-unsupported"),
             "unsupported-version",
         ),
+        ("socks5", "metadata-only", Some("udp-association"), "none"),
         (
             "http",
             "metadata-only",
@@ -238,10 +239,15 @@ fn native_reason_mapping_preserves_required_distinctions() {
     for (protocol, inspectability, raw_reason, expected) in cases {
         let value =
             ProtocolClassification::from_proxy_evidence(protocol, inspectability, raw_reason);
-        assert_eq!(
-            value.reason().map(ClassificationReason::as_str),
-            Some(expected)
-        );
+        if expected == "none" {
+            assert_eq!(value.family(), TrafficFamily::Socks5Udp);
+            assert_eq!(value.reason(), None);
+        } else {
+            assert_eq!(
+                value.reason().map(ClassificationReason::as_str),
+                Some(expected)
+            );
+        }
     }
 }
 

@@ -23,8 +23,8 @@ pub use fragcap_proxy::{
 };
 
 use super::{
-    ApplicationConnectionWindow, BackendDescriptor, Budget, CleanupResult, CleanupStatus,
-    CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint,
+    ApplicationConnectionWindow, BackendDescriptor, Budget, ClassificationSummary, CleanupResult,
+    CleanupStatus, CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint,
     ProtocolClassification, ProxyBackend, ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
 };
 
@@ -447,6 +447,7 @@ impl ProxyBackend for NativeProxyAdapter {
             proxy_lifecycle: proxy_lifecycle.take(),
             key_log,
             observations_lost: 0,
+            application_classification_summary: None,
         }))
     }
 }
@@ -460,6 +461,7 @@ struct NativeProxyLease {
     proxy_lifecycle: Option<super::ProxyLifecycleLease>,
     key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
     observations_lost: u64,
+    application_classification_summary: Option<ClassificationSummary>,
 }
 
 impl ProxyLease for NativeProxyLease {
@@ -567,14 +569,22 @@ impl ProxyLease for NativeProxyLease {
         self.observations_lost
     }
 
+    fn application_classification_summary(&self) -> Option<ClassificationSummary> {
+        self.application_classification_summary.clone()
+    }
+
     fn stop(&mut self, budget: Budget) -> CleanupResult {
         let report = self.lease.stop(budget.remaining());
+        self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut result = cleanup_result("native-proxy-listener", &report);
         if report.is_clean() {
             if let Some(artifact) = self.application_artifact.as_mut() {
+                artifact.add_classification_loss(self.observations_lost);
                 if let Err(error) = artifact.finish() {
                     result.status = CleanupStatus::Failed;
                     result.reason = format!("application writer failed: {error}");
+                } else {
+                    self.application_classification_summary = artifact.classification_summary();
                 }
             }
             if let Some(lifecycle) = self.proxy_lifecycle.as_mut() {

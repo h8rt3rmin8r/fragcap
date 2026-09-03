@@ -383,7 +383,13 @@ impl ProtocolClassification {
 
     /// Classify one raw native proxy observation while retaining its raw labels elsewhere.
     pub fn from_proxy_evidence(protocol: &str, inspectability: &str, reason: Option<&str>) -> Self {
-        let family = TrafficFamily::from_proxy_label(protocol);
+        let family = if matches!(protocol, "socks5" | "socks5-connect")
+            && reason == Some("udp-association")
+        {
+            TrafficFamily::Socks5Udp
+        } else {
+            TrafficFamily::from_proxy_label(protocol)
+        };
         let stable_reason = reason.and_then(ClassificationReason::from_raw);
         let detection = if stable_reason == Some(ClassificationReason::UnsupportedVersion) {
             DetectionState::Unsupported

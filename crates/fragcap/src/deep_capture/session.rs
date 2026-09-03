@@ -88,6 +88,7 @@ impl PreparedSession {
             launch: None,
             observations: Vec::new(),
             classification_records_lost: 0,
+            application_classification_summary: None,
             failures: Vec::new(),
             fact_writes: Vec::new(),
             cleanup: Vec::new(),
@@ -117,6 +118,7 @@ pub struct DeepCaptureSession<'a> {
     launch: Option<Box<dyn LaunchLease>>,
     observations: Vec<CompatibilityObservation>,
     classification_records_lost: u64,
+    application_classification_summary: Option<ClassificationSummary>,
     failures: Vec<StageFailure>,
     fact_writes: Vec<FactWriteResult>,
     cleanup: Vec<CleanupResult>,
@@ -601,6 +603,8 @@ impl DeepCaptureSession<'_> {
                     self.classification_records_lost = self
                         .classification_records_lost
                         .saturating_add(proxy.observations_lost());
+                    self.application_classification_summary =
+                        proxy.application_classification_summary();
                     self.extend_observations(observations);
                 }
                 Err(error) => self.failures.push(error),
@@ -1121,6 +1125,7 @@ impl DeepCaptureSession<'_> {
             outcome,
             observations: self.observations.clone(),
             classification_records_lost: self.classification_records_lost,
+            application_classification_summary: self.application_classification_summary.clone(),
             route_verification: self.route_verification.clone(),
             failures: self.failures.clone(),
             fact_writes: self.fact_writes.clone(),

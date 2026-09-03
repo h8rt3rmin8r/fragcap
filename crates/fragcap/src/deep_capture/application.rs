@@ -90,6 +90,7 @@ struct WriterAccount {
     body_queue_loss_overflow_retained_bytes: AtomicU64,
     connection_windows_unretained: AtomicU64,
     first_unretained_connection_id: AtomicU64,
+    external_classification_records_lost: AtomicU64,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -388,6 +389,7 @@ pub struct ApplicationArtifactLease {
     path: PathBuf,
     sink: Arc<ChannelSink>,
     worker: Option<JoinHandle<io::Result<()>>>,
+    classification_summary: Arc<Mutex<Option<ClassificationSummary>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -451,6 +453,7 @@ impl ApplicationArtifactLease {
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
+        let classification_summary = Arc::new(Mutex::new(None));
         let sink = Arc::new(ChannelSink {
             sender: Arc::clone(&sender),
             retired: Arc::clone(&retired),
@@ -458,6 +461,7 @@ impl ApplicationArtifactLease {
             connections: Arc::clone(&connections),
         });
         let worker_account = Arc::clone(&account);
+        let worker_classification_summary = Arc::clone(&classification_summary);
         let worker = std::thread::Builder::new()
             .name("fragcap-application-writer".to_string())
             .spawn(move || {
@@ -470,12 +474,14 @@ impl ApplicationArtifactLease {
                     worker_account,
                     connections,
                     correlation,
+                    worker_classification_summary,
                 )
             })?;
         Ok(Self {
             path,
             sink,
             worker: Some(worker),
+            classification_summary,
         })
     }
 
@@ -485,6 +491,20 @@ impl ApplicationArtifactLease {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn add_classification_loss(&self, count: u64) {
+        self.sink
+            .account
+            .external_classification_records_lost
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub fn classification_summary(&self) -> Option<ClassificationSummary> {
+        self.classification_summary
+            .lock()
+            .expect("application classification summary lock")
+            .clone()
     }
 
     pub fn finish(&mut self) -> io::Result<()> {
@@ -524,6 +544,7 @@ fn writer_loop(
     account: Arc<WriterAccount>,
     connections: Arc<Mutex<BTreeMap<u64, ApplicationConnectionWindow>>>,
     correlation: Arc<dyn Fn(&ApplicationConnectionWindow) -> ApplicationCorrelation + Send + Sync>,
+    reconciled_classification_summary: Arc<Mutex<Option<ClassificationSummary>>>,
 ) -> io::Result<()> {
     let mut writer = BufWriter::new(file);
     let mut sequence = 0_u64;
@@ -839,6 +860,11 @@ fn writer_loop(
         )?;
     }
     sequence = sequence.saturating_add(1);
+    let proxy_observations_dropped_oldest = account
+        .external_classification_records_lost
+        .load(Ordering::Acquire);
+    classification_summary.unclassified_lost =
+        dropped.saturating_add(proxy_observations_dropped_oldest);
     let mut trailer = json!({
         "type": "application.trailer",
         "schema_version": SCHEMA_VERSION,
@@ -853,7 +879,8 @@ fn writer_loop(
         "writer_failures": account.failures.load(Ordering::Acquire)
         ,"classification_schema_version": CLASSIFICATION_SCHEMA_VERSION
         ,"classified_records": classification_summary.observations
-        ,"classification_records_lost": dropped
+        ,"classification_records_lost": classification_summary.unclassified_lost
+        ,"proxy_observations_dropped_oldest": proxy_observations_dropped_oldest
         ,"classifications_by_family": classification_summary.by_family
         ,"classifications_by_detection": classification_summary.by_detection
         ,"classifications_by_inspectability": classification_summary.by_inspectability
@@ -974,7 +1001,11 @@ fn writer_loop(
         "generic_udp_records_by_outcome".to_string(),
         json!(generic_udp_by_outcome),
     );
-    write_record(&mut writer, &trailer)
+    write_record(&mut writer, &trailer)?;
+    *reconciled_classification_summary
+        .lock()
+        .expect("application classification summary lock") = Some(classification_summary);
+    Ok(())
 }
 
 fn header_record(session_id: &str) -> Value {
@@ -1523,6 +1554,23 @@ fn application_event_classification(event: &ApplicationEvent) -> ProtocolClassif
                 reason,
             )
         }
+        ApplicationEventKind::HttpStreamTerminal(outcome) => match outcome {
+            fragcap_proxy::StreamTerminal::Complete => {
+                identified(protocol_family(), InspectabilityState::Full, None)
+            }
+            fragcap_proxy::StreamTerminal::ProtocolError => ProtocolClassification::new(
+                protocol_family(),
+                DetectionState::Failed,
+                InspectabilityState::MetadataOnly,
+                Some(ClassificationReason::ParserFailed),
+            )
+            .expect("HTTP protocol terminal classification is valid"),
+            _ => identified(
+                protocol_family(),
+                InspectabilityState::MetadataOnly,
+                Some(ClassificationReason::Truncated),
+            ),
+        },
         ApplicationEventKind::Error { code }
             if event.protocol.is_some()
                 && (code.contains("parse") || code.contains("protocol")) =>
@@ -2000,6 +2048,9 @@ fn trailer_reconciles(records: &[Value]) -> bool {
         let Some(kind) = record.get("type").and_then(Value::as_str) else {
             return false;
         };
+        let classification_required = classification_version
+            == Some(u64::from(CLASSIFICATION_SCHEMA_VERSION))
+            && !matches!(kind, "application.correlation" | "application.gap");
         if let Some(classification) = record.get("classification") {
             let (Some(family), Some(detection), Some(inspectability)) = (
                 classification["family"].as_str(),
@@ -2026,6 +2077,8 @@ fn trailer_reconciles(records: &[Value]) -> bool {
                     .entry(reason.to_string())
                     .or_default() += 1;
             }
+        } else if classification_required {
+            return false;
         }
         if kind == "application.gap" {
             dropped = dropped.saturating_add(
@@ -2189,7 +2242,17 @@ fn trailer_reconciles(records: &[Value]) -> bool {
             || (trailer.get("classification_schema_version")
                 == Some(&json!(CLASSIFICATION_SCHEMA_VERSION))
                 && trailer.get("classified_records") == Some(&json!(classified_records))
-                && trailer.get("classification_records_lost") == trailer.get("dropped_records")
+                && trailer
+                    .get("classification_records_lost")
+                    .and_then(Value::as_u64)
+                    == Some(
+                        dropped.saturating_add(
+                            trailer
+                                .get("proxy_observations_dropped_oldest")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        ),
+                    )
                 && trailer.get("classifications_by_family")
                     == Some(&json!(classifications_by_family))
                 && trailer.get("classifications_by_detection")
@@ -2356,6 +2419,29 @@ mod tests {
         assert_eq!(limited.detection(), DetectionState::Identified);
         assert_eq!(limited.inspectability(), InspectabilityState::MetadataOnly);
         assert_eq!(limited.reason(), Some(ClassificationReason::Truncated));
+
+        let protocol_error = application_event_classification(&ApplicationEvent::now(
+            "session",
+            7,
+            Some(1),
+            Some(ProtocolVersion::Http2),
+            ApplicationEventKind::HttpStreamTerminal(StreamTerminal::ProtocolError),
+        ));
+        assert_eq!(protocol_error.detection(), DetectionState::Failed);
+        assert_eq!(
+            protocol_error.reason(),
+            Some(ClassificationReason::ParserFailed)
+        );
+
+        let reset = application_event_classification(&ApplicationEvent::now(
+            "session",
+            7,
+            Some(1),
+            Some(ProtocolVersion::Http3),
+            ApplicationEventKind::HttpStreamTerminal(StreamTerminal::Reset),
+        ));
+        assert_eq!(reset.inspectability(), InspectabilityState::MetadataOnly);
+        assert_eq!(reset.reason(), Some(ClassificationReason::Truncated));
     }
 
     #[test]
@@ -2492,6 +2578,7 @@ mod tests {
             Arc::clone(&account),
             Arc::new(Mutex::new(BTreeMap::new())),
             Arc::new(|_| ApplicationCorrelation::default()),
+            Arc::new(Mutex::new(None)),
         )
         .is_err());
         assert!(retired.load(Ordering::Acquire));
@@ -2588,6 +2675,7 @@ mod tests {
                 reason: Some("packet-evidence-unavailable".to_string()),
                 ..ApplicationCorrelation::default()
             }),
+            Arc::new(Mutex::new(None)),
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
@@ -2659,6 +2747,7 @@ mod tests {
                 reason: Some("packet-evidence-unavailable".to_string()),
                 ..ApplicationCorrelation::default()
             }),
+            Arc::new(Mutex::new(None)),
         )
         .unwrap();
         let prefix = read_application_prefix(&path).unwrap();
