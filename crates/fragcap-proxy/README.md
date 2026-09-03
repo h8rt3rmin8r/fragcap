@@ -27,5 +27,13 @@ length, retained prefix, retention outcome, queue loss, and platform-observed
 socket errors remain explicit. Forwarding always uses the complete payload,
 unrouted UDP remains packet-only, and no application or ICMP meaning is inferred.
 
+S118 promotes the existing Quinn transport and adds Hyperium HTTP/3 for scoped
+QUIC inspection. Each admitted connection is one immutable pair of
+client-facing session-authority TLS and independently verified upstream TLS.
+Negotiated `h3` selects bounded HTTP/3 streams, datagrams, metadata, bodies,
+timings, and terminals. Unknown ALPN, zero round-trip application data, active
+migration, changed endpoints, trust failures, and unscopable routes are refused
+without transparent fallback.
+
 This crate never configures an ambient system proxy and never reaches inside a
 target process.

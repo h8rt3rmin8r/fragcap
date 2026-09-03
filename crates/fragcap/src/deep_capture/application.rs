@@ -61,6 +61,12 @@ struct WriterAccount {
     generic_udp_bytes_queue_dropped: AtomicU64,
     generic_udp_datagrams_storage_dropped: AtomicU64,
     generic_udp_bytes_storage_dropped: AtomicU64,
+    quic_stream_bytes_queue_dropped: AtomicU64,
+    quic_datagrams_queue_dropped: AtomicU64,
+    quic_datagram_bytes_queue_dropped: AtomicU64,
+    quic_stream_bytes_storage_dropped: AtomicU64,
+    quic_datagrams_storage_dropped: AtomicU64,
+    quic_datagram_bytes_storage_dropped: AtomicU64,
     generic_udp_queue_losses: Mutex<BTreeMap<UdpDropKey, DatagramDropTotals>>,
     generic_udp_queue_loss_overflow_datagrams: AtomicU64,
     generic_udp_queue_loss_overflow_bytes: AtomicU64,
@@ -108,6 +114,19 @@ impl WriterAccount {
             self.generic_udp_bytes_storage_dropped
                 .fetch_add(value.observed_len, Ordering::Relaxed);
         }
+        match &event.kind {
+            ApplicationEventKind::QuicStream(value) => {
+                self.quic_stream_bytes_storage_dropped
+                    .fetch_add(value.observed_len, Ordering::Relaxed);
+            }
+            ApplicationEventKind::QuicDatagram(value) => {
+                self.quic_datagrams_storage_dropped
+                    .fetch_add(1, Ordering::Relaxed);
+                self.quic_datagram_bytes_storage_dropped
+                    .fetch_add(value.observed_len, Ordering::Relaxed);
+            }
+            _ => {}
+        }
     }
 
     fn record_queue_drop(&self, event: &ApplicationEvent) {
@@ -136,6 +155,21 @@ impl WriterAccount {
             totals.datagrams = totals.datagrams.saturating_add(1);
             totals.observed_bytes = totals.observed_bytes.saturating_add(value.observed_len);
             return;
+        }
+        match &event.kind {
+            ApplicationEventKind::QuicStream(value) => {
+                self.quic_stream_bytes_queue_dropped
+                    .fetch_add(value.observed_len, Ordering::Relaxed);
+                return;
+            }
+            ApplicationEventKind::QuicDatagram(value) => {
+                self.quic_datagrams_queue_dropped
+                    .fetch_add(1, Ordering::Relaxed);
+                self.quic_datagram_bytes_queue_dropped
+                    .fetch_add(value.observed_len, Ordering::Relaxed);
+                return;
+            }
+            _ => {}
         }
         if let ApplicationEventKind::GenericStreamChunk(value) = &event.kind {
             self.generic_stream_bytes_queue_dropped
@@ -308,6 +342,30 @@ impl ApplicationEventSink for ChannelSink {
                 .account
                 .generic_udp_bytes_storage_dropped
                 .load(Ordering::Acquire),
+            quic_stream_bytes_queue_dropped: self
+                .account
+                .quic_stream_bytes_queue_dropped
+                .load(Ordering::Acquire),
+            quic_datagrams_queue_dropped: self
+                .account
+                .quic_datagrams_queue_dropped
+                .load(Ordering::Acquire),
+            quic_datagram_bytes_queue_dropped: self
+                .account
+                .quic_datagram_bytes_queue_dropped
+                .load(Ordering::Acquire),
+            quic_stream_bytes_storage_dropped: self
+                .account
+                .quic_stream_bytes_storage_dropped
+                .load(Ordering::Acquire),
+            quic_datagrams_storage_dropped: self
+                .account
+                .quic_datagrams_storage_dropped
+                .load(Ordering::Acquire),
+            quic_datagram_bytes_storage_dropped: self
+                .account
+                .quic_datagram_bytes_storage_dropped
+                .load(Ordering::Acquire),
         }
     }
 }
@@ -473,6 +531,11 @@ fn writer_loop(
     let mut generic_udp_omitted_bytes = 0_u64;
     let mut generic_udp_truncated_datagrams = 0_u64;
     let mut generic_udp_by_outcome = BTreeMap::<String, u64>::new();
+    let mut quic_stream_observed_bytes = 0_u64;
+    let mut quic_stream_retained_bytes = 0_u64;
+    let mut quic_datagrams_observed = 0_u64;
+    let mut quic_datagram_observed_bytes = 0_u64;
+    let mut quic_datagram_retained_bytes = 0_u64;
     while let Ok(event) = receiver.recv() {
         let record_type = event_type(&event.kind).to_string();
         *records_by_type.entry(record_type).or_default() += 1;
@@ -523,6 +586,22 @@ fn writer_loop(
             *generic_udp_by_outcome
                 .entry(value.outcome.as_str().to_string())
                 .or_default() += 1;
+        }
+        match &event.kind {
+            ApplicationEventKind::QuicStream(value) => {
+                quic_stream_observed_bytes =
+                    quic_stream_observed_bytes.saturating_add(value.observed_len);
+                quic_stream_retained_bytes =
+                    quic_stream_retained_bytes.saturating_add(value.bytes.len() as u64);
+            }
+            ApplicationEventKind::QuicDatagram(value) => {
+                quic_datagrams_observed = quic_datagrams_observed.saturating_add(1);
+                quic_datagram_observed_bytes =
+                    quic_datagram_observed_bytes.saturating_add(value.observed_len);
+                quic_datagram_retained_bytes =
+                    quic_datagram_retained_bytes.saturating_add(value.bytes.len() as u64);
+            }
+            _ => {}
         }
         sequence = sequence.saturating_add(1);
         // Packet capture and proxy observation run concurrently. Publishing a
@@ -637,6 +716,22 @@ fn writer_loop(
     let generic_udp_bytes_storage_dropped = account
         .generic_udp_bytes_storage_dropped
         .load(Ordering::Acquire);
+    let quic_stream_bytes_queue_dropped = account
+        .quic_stream_bytes_queue_dropped
+        .load(Ordering::Acquire);
+    let quic_datagrams_queue_dropped = account.quic_datagrams_queue_dropped.load(Ordering::Acquire);
+    let quic_datagram_bytes_queue_dropped = account
+        .quic_datagram_bytes_queue_dropped
+        .load(Ordering::Acquire);
+    let quic_stream_bytes_storage_dropped = account
+        .quic_stream_bytes_storage_dropped
+        .load(Ordering::Acquire);
+    let quic_datagrams_storage_dropped = account
+        .quic_datagrams_storage_dropped
+        .load(Ordering::Acquire);
+    let quic_datagram_bytes_storage_dropped = account
+        .quic_datagram_bytes_storage_dropped
+        .load(Ordering::Acquire);
     let generic_udp_queue_losses = account
         .generic_udp_queue_losses
         .lock()
@@ -709,6 +804,12 @@ fn writer_loop(
                 "generic_udp_bytes_queue_dropped": generic_udp_bytes_queue_dropped,
                 "generic_udp_datagrams_storage_dropped": generic_udp_datagrams_storage_dropped,
                 "generic_udp_bytes_storage_dropped": generic_udp_bytes_storage_dropped,
+                "quic_stream_bytes_queue_dropped": quic_stream_bytes_queue_dropped,
+                "quic_datagrams_queue_dropped": quic_datagrams_queue_dropped,
+                "quic_datagram_bytes_queue_dropped": quic_datagram_bytes_queue_dropped,
+                "quic_stream_bytes_storage_dropped": quic_stream_bytes_storage_dropped,
+                "quic_datagrams_storage_dropped": quic_datagrams_storage_dropped,
+                "quic_datagram_bytes_storage_dropped": quic_datagram_bytes_storage_dropped,
                 "generic_udp_losses": generic_udp_queue_losses,
                 "generic_udp_loss_identity_overflow": {
                     "dropped_datagrams": generic_udp_queue_loss_overflow_datagrams,
@@ -764,6 +865,44 @@ fn writer_loop(
     let object = trailer
         .as_object_mut()
         .expect("application trailer is an object");
+    for (name, value) in [
+        ("quic_stream_bytes_observed", quic_stream_observed_bytes),
+        ("quic_stream_bytes_retained", quic_stream_retained_bytes),
+        (
+            "quic_stream_bytes_omitted",
+            quic_stream_observed_bytes.saturating_sub(quic_stream_retained_bytes),
+        ),
+        (
+            "quic_stream_bytes_queue_dropped",
+            quic_stream_bytes_queue_dropped,
+        ),
+        (
+            "quic_stream_bytes_storage_dropped",
+            quic_stream_bytes_storage_dropped,
+        ),
+        ("quic_datagrams_observed", quic_datagrams_observed),
+        ("quic_datagram_bytes_observed", quic_datagram_observed_bytes),
+        ("quic_datagram_bytes_retained", quic_datagram_retained_bytes),
+        (
+            "quic_datagram_bytes_omitted",
+            quic_datagram_observed_bytes.saturating_sub(quic_datagram_retained_bytes),
+        ),
+        ("quic_datagrams_queue_dropped", quic_datagrams_queue_dropped),
+        (
+            "quic_datagram_bytes_queue_dropped",
+            quic_datagram_bytes_queue_dropped,
+        ),
+        (
+            "quic_datagrams_storage_dropped",
+            quic_datagrams_storage_dropped,
+        ),
+        (
+            "quic_datagram_bytes_storage_dropped",
+            quic_datagram_bytes_storage_dropped,
+        ),
+    ] {
+        object.insert(name.to_string(), json!(value));
+    }
     object.insert(
         "generic_udp_datagrams_observed".to_string(),
         json!(generic_udp_observed_datagrams),
@@ -822,10 +961,10 @@ fn header_record(session_id: &str) -> Value {
         "session_id": session_id,
         "sequence": 0,
         "event_time_ns": 0,
-        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "generic-stream", "generic-udp"],
+        "exports": ["connection", "tls", "http", "metadata", "body", "transformation", "websocket", "sse", "grpc", "socks5", "generic-stream", "generic-udp", "quic", "http3"],
         "non_exports": {
-            "quic": "deferred-issue-314",
-            "unrouted-udp": "packet-only-unsupported"
+            "unrouted-udp": "packet-only-unsupported",
+            "unknown-quic-alpn": "explicitly-refused"
         }
     })
 }
@@ -870,6 +1009,7 @@ fn event_json(
     let protocol = event.protocol.map(|value| match value {
         ProtocolVersion::Http11 => "http/1.1",
         ProtocolVersion::Http2 => "h2",
+        ProtocolVersion::Http3 => "h3",
     });
     let common = json!({
         "schema_version": SCHEMA_VERSION,
@@ -1054,6 +1194,75 @@ fn event_json(
                 "icmp": "unavailable",
             }),
         ),
+        ApplicationEventKind::QuicConnection(value) => (
+            "quic.connection",
+            json!({
+                "pair_id": value.pair_id,
+                "half": value.half.as_str(),
+                "connection_identity": format!("{}-{}", value.pair_id, value.half.as_str()),
+                "peer": value.peer.to_string(),
+                "origin": value.origin.to_string(),
+                "server_name": value.server_name,
+                "alpn_encoding": "base64",
+                "alpn": value.alpn.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+                "zero_rtt": value.zero_rtt,
+                "migration": value.migration,
+                "outcome": value.outcome,
+            }),
+        ),
+        ApplicationEventKind::QuicStream(value) => {
+            let mut detail = json!({
+                "pair_id": value.pair_id,
+                "direction": value.direction.as_str(),
+                "quic_stream_id": value.stream_id,
+                "stream_kind": value.stream_kind,
+                "stream_sequence": value.sequence,
+                "offset": value.offset,
+                "observed_len": value.observed_len,
+                "retained_len": value.bytes.len(),
+                "outcome": value.outcome.as_str(),
+                "terminal": value.terminal,
+                "inspectability": "protocol-unknown",
+            });
+            if !value.bytes.is_empty() {
+                let object = detail
+                    .as_object_mut()
+                    .expect("QUIC stream detail is an object");
+                object.insert("payload_encoding".to_string(), json!("base64"));
+                object.insert(
+                    "payload".to_string(),
+                    json!(base64::engine::general_purpose::STANDARD.encode(value.bytes)),
+                );
+            }
+            ("quic.stream", detail)
+        }
+        ApplicationEventKind::QuicDatagram(value) => {
+            let mut detail = json!({
+                "pair_id": value.pair_id,
+                "direction": value.direction.as_str(),
+                "datagram_sequence": value.sequence,
+                "observed_len": value.observed_len,
+                "retained_len": value.bytes.len(),
+                "outcome": value.outcome.as_str(),
+                "terminal": value.terminal,
+                "inspectability": "protocol-unknown",
+            });
+            if !value.bytes.is_empty() {
+                let object = detail
+                    .as_object_mut()
+                    .expect("QUIC datagram detail is an object");
+                object.insert("payload_encoding".to_string(), json!("base64"));
+                object.insert(
+                    "payload".to_string(),
+                    json!(base64::engine::general_purpose::STANDARD.encode(value.bytes)),
+                );
+            }
+            ("quic.datagram", detail)
+        }
+        ApplicationEventKind::QuicRefusal(value) => (
+            "quic.refusal",
+            json!({"pair_id": value.pair_id, "code": value.code, "transparent_fallback": false}),
+        ),
         ApplicationEventKind::Error { code } => ("application.error", json!({"code": code})),
     };
     object.insert("type".to_string(), Value::String(kind.to_string()));
@@ -1083,6 +1292,10 @@ fn event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::GenericStreamChunk(_) => "generic.stream_chunk",
         ApplicationEventKind::GenericUdpDatagram(_) => "generic.udp_datagram",
         ApplicationEventKind::UdpSocketError(_) => "generic.udp_socket_error",
+        ApplicationEventKind::QuicConnection(_) => "quic.connection",
+        ApplicationEventKind::QuicStream(_) => "quic.stream",
+        ApplicationEventKind::QuicDatagram(_) => "quic.datagram",
+        ApplicationEventKind::QuicRefusal(_) => "quic.refusal",
         ApplicationEventKind::Error { .. } => "application.error",
     }
 }

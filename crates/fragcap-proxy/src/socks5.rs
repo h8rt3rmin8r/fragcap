@@ -18,9 +18,10 @@ use crate::http1::{HttpRun, ProtocolError};
 use crate::{
     connect_upstream, ApplicationEvent, ApplicationEventKind, DestinationAuthority,
     DestinationPolicy, GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome,
-    ProtocolAccounting, ProtocolLimits, ProxyObservation, SessionCapability, SocksClassification,
-    SocksConnectEvent, SocksNegotiationEvent, SocksTransferEvent, SocksUdpEvent, UdpSocketError,
-    UpstreamError, UpstreamStage,
+    ProtocolAccounting, ProtocolLimits, ProxyObservation, QuicAssociationGateway,
+    QuicInspectionPlan, QuicRefusalCode, SessionCapability, SocksClassification, SocksConnectEvent,
+    SocksNegotiationEvent, SocksTransferEvent, SocksUdpEvent, UdpSocketError, UpstreamError,
+    UpstreamStage,
 };
 
 const SOCKS_VERSION: u8 = 5;
@@ -88,6 +89,11 @@ pub(crate) struct SocksConnectionContext<'a> {
     pub sink: &'a crate::application::SharedEventSink,
     pub body_resources: crate::body::SessionBodyResources,
     pub buffer_bytes: usize,
+    pub certificate_authority: std::sync::Arc<crate::SessionCertificateAuthority>,
+    pub leaf_cache: std::sync::Arc<tokio::sync::Mutex<crate::LeafCache>>,
+    pub tls_client_config: std::sync::Arc<rustls::ClientConfig>,
+    pub key_log: Option<std::sync::Arc<crate::SessionKeyLog>>,
+    pub quic_slots: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 pub(crate) async fn is_socks5(stream: &TcpStream, budget: Duration) -> bool {
@@ -111,6 +117,11 @@ pub(crate) async fn serve_socks5(
         sink,
         body_resources,
         buffer_bytes,
+        certificate_authority,
+        leaf_cache,
+        tls_client_config,
+        key_log,
+        quic_slots,
     } = context;
     let mut accounting = ProtocolAccounting {
         socks_negotiations: 1,
@@ -200,6 +211,11 @@ pub(crate) async fn serve_socks5(
                     local,
                     sink,
                     body_resources,
+                    certificate_authority,
+                    leaf_cache,
+                    tls_client_config,
+                    key_log,
+                    quic_slots,
                 },
                 accounting,
             )
@@ -545,6 +561,11 @@ struct UdpAssociationContext<'a> {
     local: SocketAddr,
     sink: &'a crate::application::SharedEventSink,
     body_resources: crate::body::SessionBodyResources,
+    certificate_authority: std::sync::Arc<crate::SessionCertificateAuthority>,
+    leaf_cache: std::sync::Arc<tokio::sync::Mutex<crate::LeafCache>>,
+    tls_client_config: std::sync::Arc<rustls::ClientConfig>,
+    key_log: Option<std::sync::Arc<crate::SessionKeyLog>>,
+    quic_slots: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 async fn serve_udp_association(
@@ -563,6 +584,11 @@ async fn serve_udp_association(
         local,
         sink,
         body_resources,
+        certificate_authority,
+        leaf_cache,
+        tls_client_config,
+        key_log,
+        quic_slots,
     } = context;
     let claimed = request.client_endpoint.map(|address| {
         if address.ip().is_unspecified() {
@@ -658,6 +684,9 @@ async fn serve_udp_association(
     let mut upstream_v6_buffer = vec![0_u8; upstream_capacity];
     let mut client_endpoint = claimed.filter(|value| value.port() != 0);
     let mut peers = BTreeSet::new();
+    let mut quic = None;
+    let mut quic_buffer = vec![0_u8; upstream_capacity];
+    let quic_session_retained = std::sync::Arc::clone(&body_resources.retained);
     let mut datagrams = GenericUdpObserver::new(body_resources);
     let idle = tokio::time::sleep(limits.idle_timeout);
     tokio::pin!(idle);
@@ -695,6 +724,19 @@ async fn serve_udp_association(
                 {
                     accounting.socks_udp_source_dropped = accounting.socks_udp_source_dropped.saturating_add(1);
                     emit_udp(sink, session_id, connection_id, "drop", "client-source-refused", None, Some(source), 0, peers.len());
+                    if let Some(gateway) = quic.as_ref() {
+                        accounting.quic_pairs_refused = accounting.quic_pairs_refused.saturating_add(1);
+                        accounting.quic_migration_refused = accounting.quic_migration_refused.saturating_add(1);
+                        crate::application::emit(
+                            sink,
+                            crate::QuicEvidenceObserver::new(gateway.plan().clone())
+                                .refusal(QuicRefusalCode::MigrationRefused),
+                        );
+                        break Err(SocksFailure::new(
+                            QuicRefusalCode::MigrationRefused.as_str(),
+                            "QUIC client endpoint changed after admission",
+                        ));
+                    }
                     continue;
                 }
                 if read > limits.max_socks_udp_datagram_bytes {
@@ -734,6 +776,19 @@ async fn serve_udp_association(
                         &upstream_v4,
                         upstream_v6.as_ref(),
                         &peers,
+                        &mut quic,
+                        Some(QuicRouteContext {
+                            session_id,
+                            association_id: connection_id,
+                            client,
+                            certificate_authority: &certificate_authority,
+                            leaf_cache: &leaf_cache,
+                            tls_client_config: &tls_client_config,
+                            key_log: key_log.as_ref(),
+                            sink,
+                            session_retained: &quic_session_retained,
+                            quic_slots: &quic_slots,
+                        }),
                         |selected| datagrams.observe(
                             GenericUdpDirection::ClientToUpstream,
                             client,
@@ -830,7 +885,36 @@ async fn serve_udp_association(
                         emit_udp(sink, session_id, connection_id, "drop", "transport-failed", Some(address_type), Some(selected), payload_len as u64, peers.len());
                         continue;
                     }
+                    OwnerBound::Completed(Err(UdpForwardFailure::Quic(selected, code))) => {
+                        accounting.quic_pairs_refused = accounting.quic_pairs_refused.saturating_add(1);
+                        accounting.quic_zero_rtt_refused = accounting.quic_zero_rtt_refused
+                            .saturating_add(u64::from(code == QuicRefusalCode::ZeroRttRefused));
+                        accounting.quic_migration_refused = accounting.quic_migration_refused
+                            .saturating_add(u64::from(code == QuicRefusalCode::MigrationRefused));
+                        let event = quic.as_ref().map_or_else(
+                            || ApplicationEvent::now(
+                                session_id, connection_id, None, None,
+                                ApplicationEventKind::QuicRefusal(crate::QuicRefusalEvent {
+                                    pair_id: None,
+                                    code: code.as_str(),
+                                }),
+                            ),
+                            |gateway| crate::QuicEvidenceObserver::new(gateway.plan().clone()).refusal(code),
+                        );
+                        crate::application::emit(sink, event);
+                        emit_udp(sink, session_id, connection_id, "drop", code.as_str(), Some(address_type), Some(selected), payload_len as u64, peers.len());
+                        if matches!(code, QuicRefusalCode::OriginChanged | QuicRefusalCode::MigrationRefused) {
+                            break Err(SocksFailure::new(
+                                code.as_str(),
+                                "QUIC route changed after immutable admission",
+                            ));
+                        }
+                        continue;
+                    }
                 };
+                if quic.as_ref().is_some_and(|gateway| gateway.plan().origin_endpoint() == selected) {
+                    accounting.quic_pairs_started = accounting.quic_pairs_started.max(1);
+                }
                 peers.insert(selected);
                 accounting.socks_udp_peak_peers = accounting.socks_udp_peak_peers.max(peers.len() as u64);
                 accounting.socks_udp_client_forwarded = accounting.socks_udp_client_forwarded.saturating_add(1);
@@ -898,9 +982,45 @@ async fn serve_udp_association(
                     idle.as_mut().reset(Instant::now() + limits.idle_timeout);
                 }
             },
+            result = recv_quic_optional(quic.as_ref(), &mut quic_buffer) => {
+                let read = match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        accounting.quic_transport_losses = accounting.quic_transport_losses.saturating_add(1);
+                        emit_udp_socket_error(
+                            sink, session_id, connection_id, GenericUdpDirection::UpstreamToClient,
+                            "receive", "quic-bridge-read-failed", None,
+                            io_kind(error.kind()), &mut accounting,
+                        );
+                        break Err(SocksFailure::new("quic-bridge-read-failed", error.to_string()));
+                    }
+                };
+                let origin = quic.as_ref().expect("QUIC receive requires a gateway").plan().origin_endpoint();
+                if handle_upstream_datagram(
+                    &quic_buffer[..read],
+                    origin,
+                    UdpReplyContext {
+                        relay: &relay,
+                        client_endpoint,
+                        peers: &peers,
+                        limits,
+                        sink,
+                        session_id,
+                        connection_id,
+                        datagrams: &mut datagrams,
+                    },
+                    &mut accounting,
+                ).await {
+                    idle.as_mut().reset(Instant::now() + limits.idle_timeout);
+                }
+            },
             _ = &mut idle => break Err(SocksFailure::timeout("socks-udp-idle-timeout", SocksReplyCode::TtlExpired)),
         }
     };
+    if let Some(gateway) = quic.take() {
+        merge_quic_accounting(&mut accounting, gateway.close().await);
+        accounting.quic_pairs_completed = accounting.quic_pairs_completed.saturating_add(1);
+    }
     peers.clear();
     drop(upstream_v6);
     drop(upstream_v4);
@@ -932,6 +1052,55 @@ async fn serve_udp_association(
     }
 }
 
+fn merge_quic_accounting(accounting: &mut ProtocolAccounting, source: ProtocolAccounting) {
+    accounting.quic_pairs_refused = accounting
+        .quic_pairs_refused
+        .saturating_add(source.quic_pairs_refused);
+    accounting.quic_streams = accounting.quic_streams.saturating_add(source.quic_streams);
+    accounting.quic_stream_bytes_observed = accounting
+        .quic_stream_bytes_observed
+        .saturating_add(source.quic_stream_bytes_observed);
+    accounting.quic_stream_bytes_retained = accounting
+        .quic_stream_bytes_retained
+        .saturating_add(source.quic_stream_bytes_retained);
+    accounting.quic_stream_bytes_omitted = accounting
+        .quic_stream_bytes_omitted
+        .saturating_add(source.quic_stream_bytes_omitted);
+    accounting.quic_datagrams = accounting
+        .quic_datagrams
+        .saturating_add(source.quic_datagrams);
+    accounting.quic_datagram_bytes_observed = accounting
+        .quic_datagram_bytes_observed
+        .saturating_add(source.quic_datagram_bytes_observed);
+    accounting.quic_datagram_bytes_retained = accounting
+        .quic_datagram_bytes_retained
+        .saturating_add(source.quic_datagram_bytes_retained);
+    accounting.quic_datagram_bytes_omitted = accounting
+        .quic_datagram_bytes_omitted
+        .saturating_add(source.quic_datagram_bytes_omitted);
+    accounting.quic_transport_losses = accounting
+        .quic_transport_losses
+        .saturating_add(source.quic_transport_losses);
+    accounting.quic_zero_rtt_refused = accounting
+        .quic_zero_rtt_refused
+        .saturating_add(source.quic_zero_rtt_refused);
+    accounting.quic_migration_refused = accounting
+        .quic_migration_refused
+        .saturating_add(source.quic_migration_refused);
+    accounting.metadata_blocks = accounting
+        .metadata_blocks
+        .saturating_add(source.metadata_blocks);
+    accounting.http3_streams = accounting
+        .http3_streams
+        .saturating_add(source.http3_streams);
+    accounting.http3_streams_completed = accounting
+        .http3_streams_completed
+        .saturating_add(source.http3_streams_completed);
+    accounting.http3_streams_reset = accounting
+        .http3_streams_reset
+        .saturating_add(source.http3_streams_reset);
+}
+
 enum OwnerBound<T> {
     Completed(T),
     Shutdown,
@@ -948,6 +1117,20 @@ enum UdpForwardFailure {
     Socket(SocketAddr, &'static str),
     WriteTimeout(SocketAddr),
     ShortWrite(SocketAddr),
+    Quic(SocketAddr, QuicRefusalCode),
+}
+
+struct QuicRouteContext<'a> {
+    session_id: &'a str,
+    association_id: u64,
+    client: SocketAddr,
+    certificate_authority: &'a std::sync::Arc<crate::SessionCertificateAuthority>,
+    leaf_cache: &'a std::sync::Arc<tokio::sync::Mutex<crate::LeafCache>>,
+    tls_client_config: &'a std::sync::Arc<rustls::ClientConfig>,
+    key_log: Option<&'a std::sync::Arc<crate::SessionKeyLog>>,
+    sink: &'a crate::application::SharedEventSink,
+    session_retained: &'a std::sync::Arc<AtomicU64>,
+    quic_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 #[expect(
@@ -962,6 +1145,8 @@ async fn forward_client_datagram<F>(
     upstream_v4: &UdpSocket,
     upstream_v6: Option<&UdpSocket>,
     peers: &BTreeSet<SocketAddr>,
+    quic: &mut Option<QuicAssociationGateway>,
+    quic_context: Option<QuicRouteContext<'_>>,
     observe: F,
 ) -> Result<(SocketAddr, usize), UdpForwardFailure>
 where
@@ -982,6 +1167,50 @@ where
         .ok_or(UdpForwardFailure::Resolution)?;
     if !peers.contains(&selected) && peers.len() >= limits.max_socks_udp_peers {
         return Err(UdpForwardFailure::PeerLimit(selected));
+    }
+    if quic.is_some() || crate::is_quic_initial(payload) {
+        observe(selected);
+        let quic_context = quic_context.ok_or(UdpForwardFailure::Quic(
+            selected,
+            QuicRefusalCode::RouteUnscoped,
+        ))?;
+        if quic.is_none() {
+            let plan = QuicInspectionPlan::new(
+                quic_context.session_id,
+                quic_context.association_id,
+                quic_context.client,
+                selected,
+                authority,
+                true,
+            )
+            .map_err(|code| UdpForwardFailure::Quic(selected, code))?;
+            let gateway = QuicAssociationGateway::start(
+                plan,
+                authority.clone(),
+                std::sync::Arc::clone(quic_context.certificate_authority),
+                std::sync::Arc::clone(quic_context.leaf_cache),
+                std::sync::Arc::clone(quic_context.tls_client_config),
+                quic_context.key_log.cloned(),
+                limits.clone(),
+                quic_context.sink.clone(),
+                std::sync::Arc::clone(quic_context.session_retained),
+                std::sync::Arc::clone(quic_context.quic_slots),
+            )
+            .await
+            .map_err(|code| UdpForwardFailure::Quic(selected, code))?;
+            *quic = Some(gateway);
+        }
+        let gateway = quic.as_ref().expect("gateway was initialized");
+        gateway
+            .admits(quic_context.client, selected)
+            .map_err(|code| UdpForwardFailure::Quic(selected, code))?;
+        let send = timeout(limits.upstream.write, gateway.send(payload)).await;
+        return match send {
+            Ok(Ok(written)) if written == payload.len() => Ok((selected, written)),
+            Ok(Ok(_)) => Err(UdpForwardFailure::ShortWrite(selected)),
+            Ok(Err(error)) => Err(UdpForwardFailure::Socket(selected, io_kind(error.kind()))),
+            Err(_) => Err(UdpForwardFailure::WriteTimeout(selected)),
+        };
     }
     let socket = match selected {
         SocketAddr::V4(_) => upstream_v4,
@@ -1012,6 +1241,16 @@ async fn recv_optional(
 ) -> io::Result<(usize, SocketAddr)> {
     match socket {
         Some(socket) => socket.recv_from(buffer).await,
+        None => pending().await,
+    }
+}
+
+async fn recv_quic_optional(
+    gateway: Option<&QuicAssociationGateway>,
+    buffer: &mut [u8],
+) -> io::Result<usize> {
+    match gateway {
+        Some(gateway) => gateway.recv(buffer).await,
         None => pending().await,
     }
 }
@@ -1821,6 +2060,8 @@ mod tests {
             &upstream_v4,
             None,
             &BTreeSet::new(),
+            &mut None,
+            None,
             |remote| observed = Some(remote),
         )
         .await;

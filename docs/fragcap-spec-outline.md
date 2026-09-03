@@ -345,7 +345,11 @@ provenance, keeps HTTP routing intact, and records exact retention loss without
 guessing application semantics. S117 adds one bounded record per routed generic
 UDP datagram with exact direction, endpoints, sequence, timing, payload
 retention outcome, and evidence-loss accounting. Unrouted UDP remains
-packet-only, and QUIC semantics remain deferred.
+packet-only. S118 adds immutable scoped QUIC connection pairs, separate client
+and upstream TLS identities, bounded stream and datagram evidence, and
+ALPN-selected HTTP/3 metadata and bodies. Zero round-trip data, active
+migration, route changes, trust failures, and unrouted QUIC remain explicit
+refusals or omissions.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

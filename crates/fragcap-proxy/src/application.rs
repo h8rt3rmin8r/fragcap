@@ -43,7 +43,85 @@ pub enum ApplicationEventKind {
     GenericStreamChunk(GenericStreamChunk),
     GenericUdpDatagram(GenericUdpDatagram),
     UdpSocketError(UdpSocketError),
+    QuicConnection(QuicConnectionEvent),
+    QuicStream(QuicStreamEvent),
+    QuicDatagram(QuicDatagramEvent),
+    QuicRefusal(QuicRefusalEvent),
     Error { code: &'static str },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuicHalf {
+    Client,
+    Upstream,
+}
+
+impl QuicHalf {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Upstream => "upstream",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuicDirection {
+    ClientToUpstream,
+    UpstreamToClient,
+}
+
+impl QuicDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientToUpstream => "client-to-upstream",
+            Self::UpstreamToClient => "upstream-to-client",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuicConnectionEvent {
+    pub pair_id: u64,
+    pub half: QuicHalf,
+    pub peer: SocketAddr,
+    pub origin: SocketAddr,
+    pub server_name: String,
+    pub alpn: Option<Vec<u8>>,
+    pub zero_rtt: &'static str,
+    pub migration: &'static str,
+    pub outcome: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuicStreamEvent {
+    pub pair_id: u64,
+    pub direction: QuicDirection,
+    pub stream_id: u64,
+    pub stream_kind: &'static str,
+    pub sequence: u64,
+    pub offset: u64,
+    pub observed_len: u64,
+    pub bytes: bytes::Bytes,
+    pub outcome: GenericStreamOutcome,
+    pub terminal: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuicDatagramEvent {
+    pub pair_id: u64,
+    pub direction: QuicDirection,
+    pub sequence: u64,
+    pub observed_len: u64,
+    pub bytes: bytes::Bytes,
+    pub outcome: GenericUdpOutcome,
+    pub terminal: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuicRefusalEvent {
+    pub pair_id: Option<u64>,
+    pub code: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,6 +349,12 @@ pub struct ApplicationSinkAccounting {
     pub generic_udp_bytes_queue_dropped: u64,
     pub generic_udp_datagrams_storage_dropped: u64,
     pub generic_udp_bytes_storage_dropped: u64,
+    pub quic_stream_bytes_queue_dropped: u64,
+    pub quic_datagrams_queue_dropped: u64,
+    pub quic_datagram_bytes_queue_dropped: u64,
+    pub quic_stream_bytes_storage_dropped: u64,
+    pub quic_datagrams_storage_dropped: u64,
+    pub quic_datagram_bytes_storage_dropped: u64,
 }
 
 pub trait ApplicationEventSink: Send + Sync {
@@ -341,6 +425,24 @@ impl ApplicationEventSink for FanoutApplicationEventSink {
                 total.generic_udp_bytes_storage_dropped = total
                     .generic_udp_bytes_storage_dropped
                     .saturating_add(value.generic_udp_bytes_storage_dropped);
+                total.quic_stream_bytes_queue_dropped = total
+                    .quic_stream_bytes_queue_dropped
+                    .saturating_add(value.quic_stream_bytes_queue_dropped);
+                total.quic_datagrams_queue_dropped = total
+                    .quic_datagrams_queue_dropped
+                    .saturating_add(value.quic_datagrams_queue_dropped);
+                total.quic_datagram_bytes_queue_dropped = total
+                    .quic_datagram_bytes_queue_dropped
+                    .saturating_add(value.quic_datagram_bytes_queue_dropped);
+                total.quic_stream_bytes_storage_dropped = total
+                    .quic_stream_bytes_storage_dropped
+                    .saturating_add(value.quic_stream_bytes_storage_dropped);
+                total.quic_datagrams_storage_dropped = total
+                    .quic_datagrams_storage_dropped
+                    .saturating_add(value.quic_datagrams_storage_dropped);
+                total.quic_datagram_bytes_storage_dropped = total
+                    .quic_datagram_bytes_storage_dropped
+                    .saturating_add(value.quic_datagram_bytes_storage_dropped);
                 total
             })
     }

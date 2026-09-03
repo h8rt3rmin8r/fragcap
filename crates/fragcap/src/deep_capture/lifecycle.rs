@@ -488,6 +488,10 @@ fn proxy_event_type(kind: &ApplicationEventKind) -> &'static str {
         ApplicationEventKind::GenericStreamChunk(_) => "proxy.generic-stream-chunk",
         ApplicationEventKind::GenericUdpDatagram(_) => "proxy.generic-udp-datagram",
         ApplicationEventKind::UdpSocketError(_) => "proxy.generic-udp-socket-error",
+        ApplicationEventKind::QuicConnection(_) => "proxy.quic-connection",
+        ApplicationEventKind::QuicStream(_) => "proxy.quic-stream",
+        ApplicationEventKind::QuicDatagram(_) => "proxy.quic-datagram",
+        ApplicationEventKind::QuicRefusal(_) => "proxy.quic-refusal",
         ApplicationEventKind::Error { .. } => "proxy.error",
     }
 }

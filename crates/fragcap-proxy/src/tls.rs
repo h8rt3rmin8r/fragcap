@@ -25,7 +25,7 @@ impl ResolvesServerCert for FixedCertificate {
     }
 }
 
-fn client_server_config_with_alpn(
+pub(crate) fn client_server_config_with_alpn(
     leaf: Arc<CertifiedKey>,
     alpn_protocols: Vec<Vec<u8>>,
     key_log: Option<Arc<SessionKeyLog>>,
