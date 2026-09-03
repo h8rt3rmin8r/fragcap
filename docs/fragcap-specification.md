@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.42-draft \
+**Version:** 0.1.43-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -135,6 +135,7 @@ enforcement.
 | 0.1.40-draft | 2026-09-03 | W. Thompson | **Adds bounded generic UDP datagram evidence (issue #313).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated SOCKS5 UDP associations retain one exact application record per accepted ingress datagram with direction, independent sequence, endpoints, timestamp, observed length, bounded payload prefix, and retention outcome. Forwarding remains complete and independent from evidence retention and storage. Queue loss, bounded identity overflow, and platform-observed socket errors are explicit without inferring ICMP facts. Unrouted UDP remains packet-only, QUIC remains #314, and Deep Capture remains incomplete until #334. |
 | 0.1.41-draft | 2026-09-03 | W. Thompson | **Adds scoped QUIC and HTTP/3 inspection (issue #314).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated target-scoped UDP routes admit immutable QUIC connection pairs under the session authority and independently verified upstream TLS. Exact-pinned Quinn and Hyperium HTTP/3 provide TLS 1.3, ALPN-selected HTTP/3, finite transport ownership, and bounded connection, stream, datagram, metadata, and body evidence. Unknown ALPN, zero round-trip application data, and active migration are refused without transparent fallback. Unrouted QUIC remains packet-only, IPv6 parity remains #315, and Deep Capture remains incomplete until #334. |
 | 0.1.42-draft | 2026-09-03 | W. Thompson | **Completes native IPv6 parity (issue #315).** Extends sections 13.7, 17.2.1, 19.6, 25, 26.3, and 28.1. One immutable plan now authorizes one exact IPv4 or IPv6 loopback socket, generated IPv6 routes use bracketed authorities, scoped IPv6 literals retain bounded numeric socket indexes, and mapped aliases have one canonical policy and correlation identity. Proxy-owned TCP connection establishment uses a finite 250 ms staggered dual-stack race with one winner and cancelled losers. HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC controlled rows cover IPv6, while Doctor reports exact IPv4 and IPv6 bind readiness independently. S119 adds no dependency or wildcard bind, and Deep Capture remains incomplete until #334. |
+| 0.1.43-draft | 2026-09-03 | W. Thompson | **Makes Deep Capture protocol classification and omission reasons exhaustive (issue #316).** Extends sections 13.7, 19.6, 25, and 28.1. A versioned facade contract separates traffic family, detection state, inspectability, and stable reason for every shipped protocol path. Application records, terminal summaries, compatibility eligibility, and typed manifest omissions retain their separate authorities and reconcile without converting parser, retention, writer, trust, or routing failures into target support claims. S120 adds no dependency, routing behavior, or completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1864,6 +1865,18 @@ The `.fcapng` file remains packet truth. It owns packet bytes, packet timestamps
 
 Application JSON Lines version 2 is the canonical machine-readable application event stream for proxy observations. It is opened before proxy traffic, appended and flushed during the session through a bounded nonblocking queue, and begins with a schema header distinct from the product version. Complete newline-framed records remain a readable prefix after interruption. Exactly one reconciling trailer marks orderly writer completion; its absence cannot be interpreted as success. Each application record carries every available structured correlation anchor: `session_id`, target id or stable target handle, `flow_id`, proxy connection id, HTTP stream id where applicable, process id when known, role when known, attribution state, protocol, scope, loss state, and event time. Unknown values are not invented. The packet side of the join remains the `flow_id` annotation in section 13.3.
 
+Every applicable application record also carries protocol classification schema
+version 1. Classification has four independent fields: traffic family,
+detection state, inspectability state, and an optional stable reason. Detection
+distinguishes `identified`, `unknown`, `unsupported`, and `failed`.
+Inspectability distinguishes `full`, `metadata-only`, `decrypted-unknown`,
+`encrypted-opaque`, `packet-only`, and `unavailable`. Stable reasons distinguish
+`not-routed`, `not-reached`, `encrypted-opaque`, `certificate-pinned`,
+`client-auth-required`, `unsupported-version`, `parser-failed`, `truncated`, and
+`writer-failed`. Raw transport, TLS, parser, retention, queue, and writer detail
+remains in its owning record. The trailer counts every retained classification
+on each axis and separately reports records lost before classification.
+
 HTTP metadata records retain HTTP/1.1 field order, name casing, duplicates, empty values, informational blocks, and trailers. HTTP/2 records retain typed pseudo-fields, binary-safe regular values, duplicate value order exposed by the protocol engine, and explicit provenance that original HPACK bytes and compressed cross-name order are unavailable. Body records are bounded ordered segments. Raw observed bytes are authoritative; transfer and gzip, zlib-wrapped deflate, or Brotli decoding are separate derived transformations with exact completion or failure outcomes. Forwarding capacity is independent from evidence-retention capacity, so a valid large or indefinite stream is not refused merely because its artifact is truncated.
 
 Generic TCP records retain bounded directional chunks with byte offsets and
@@ -1915,7 +1928,17 @@ sidecars. The manifest declares the proxy chronology, cleanup chronology, cleanu
 summary, journal, finalization, completeness, loss, correlation, and omissions as
 separate roles.
 
-Expected artifacts that are not produced are recorded as manifest omissions with reasons, such as `not-requested`, `not-observable`, `unsupported-protocol`, `proxy-not-reached`, `certificate-pinned`, `backend-unavailable`, or `writer-failed`. A Deep Capture session that could only provide metadata remains useful, but it must say which application artifacts were unavailable and why.
+Expected artifacts that are not produced are recorded as typed manifest
+omissions. The closed vocabulary is `not-requested`, `not-produced`,
+`not-observable`, `unsupported-protocol`, `not-routed`, `not-reached`,
+`certificate-pinned`, `client-auth-required`, `unsupported-version`,
+`parser-failed`, `truncated`, `backend-unavailable`, `no-http-semantics`,
+`projection-failed`, and `writer-failed`. Omission severity is derived from that
+type and cannot disagree with it. Share-copy transformation additionally uses
+`sharing-excludes-sensitive-artifact`, the existing explicit reason for material
+deliberately removed from a shareable copy. A Deep Capture session that could only provide
+metadata remains useful, but it must say which application artifacts were
+unavailable and why.
 
 The manifest state is `complete`, `partial`, or `failed`. A capture or proxy
 failure does not discard observations already collected: cleanup runs first,
@@ -3497,7 +3520,7 @@ support is exact:
 | Server-Sent Events | Packets and attribution | Identity `text/event-stream` responses retain bounded incremental fields, comments, events, and reconnect metadata while raw body bytes remain authoritative |
 | gRPC | Packets and attribution | HTTP/2 gRPC calls retain method and metadata plus bounded opaque message envelopes, compression flags, and terminal status; protobuf fields are not inferred without schemas |
 | Non-HTTP TLS | Encrypted packets and attribution | SOCKS routing retains bounded opaque encrypted chunks; trusted no-ALPN CONNECT may retain bounded decrypted protocol-unknown chunks after two verified TLS boundaries, with no custom application dissection |
-| QUIC | UDP packets and attribution | Unsupported by the current HTTP proxy path; no QUIC routing or decryption claim |
+| QUIC and HTTP/3 | UDP packets and attribution | Authenticated target-scoped QUIC uses separate client-facing session-authority and verified upstream TLS 1.3 connections; exact `h3` retains bounded HTTP/3 streams, datagrams, metadata, bodies, and timing, while unknown ALPN, zero round-trip application data, and active migration are refused |
 | UDP | Packets, attribution, and payload bytes unless disabled | Authenticated SOCKS5 UDP associations retain bounded, boundary-faithful datagrams with exact observed endpoints, direction, sequence, timing, and loss; unrouted UDP remains packet-only |
 | Plaintext | Packets, attribution, and payload bytes unless disabled | Plaintext HTTP follows the HTTP row; authenticated SOCKS5 TCP retains bounded directional protocol-unknown chunks without a custom dissector |
 
@@ -4630,6 +4653,13 @@ proxy-owned TCP resolution uses a finite 250 millisecond staggered race with
 one selected peer and cancelled losers. Doctor probes exact IPv4 and IPv6
 loopback binds independently. It closes #315 without a wildcard listener or
 Deep Capture completion claim.
+S120 adds one facade-owned classification schema over every shipped protocol
+path. It separates family, detection, inspectability, and stable reason; retains
+raw proxy and artifact evidence; derives conserved application and CLI
+summaries; and permits compatibility facts only from exact eligible outcomes.
+Typed manifest omission reasons retain separate artifact authority. It closes
+#316 without expanding calibration, bypass policy, routing, or Deep Capture
+completion.
 
 The required dependency direction is:
 
@@ -4651,6 +4681,7 @@ Every existing or planned output has one owner:
 | --- | --- |
 | `capture.fcapng` packet truth | Existing Capture pipeline |
 | Versioned bundle manifest and authority | S108, #335 |
+| Versioned protocol classification and omission vocabulary | S120, #316 |
 | Complete `application.jsonl` | S105, #301 |
 | Truthful HAR 1.2 projection | S108, #302 |
 | Proxy-owned TLS key log | S107, #300 |
@@ -4686,8 +4717,8 @@ The protocol and launch matrix is normative:
 | Warm client | Explicit bounded operator-owned close-and-retry, otherwise refused | S113, #309 |
 | Target process hooks, memory reads, key extraction, interception drivers, pinning bypass, silent global proxying | Permanently refused | Constitution P-1, no implementation issue |
 
-Protocol classification and omission reasons become exhaustive under #316;
-proxy bypass and local-destination correctness belong to #318. A protocol not
+Protocol classification and omission reasons are exhaustive under S120 and
+#316; proxy bypass and local-destination correctness belong to #318. A protocol not
 named as implemented is omitted explicitly rather than inferred as supported.
 
 The four milestone exit gates are:

@@ -70,8 +70,18 @@ fn public_native_adapter_runs_real_controlled_http_and_tls_without_leaking_route
     let observations = lease
         .observations(Budget::new(Duration::from_secs(1)))
         .unwrap();
-    assert!(observations.iter().any(|item| item.protocol == "http"));
-    assert!(observations.iter().any(|item| item.protocol == "https"));
+    let http = observations
+        .iter()
+        .find(|item| item.protocol == "http")
+        .unwrap();
+    assert_eq!(http.classification.family().as_str(), "http1");
+    assert_eq!(http.classification.detection().as_str(), "identified");
+    let https = observations
+        .iter()
+        .find(|item| item.protocol == "https" && item.inspectability.as_str() == "full")
+        .unwrap();
+    assert_eq!(https.classification.family().as_str(), "https");
+    assert_eq!(https.classification.inspectability().as_str(), "full");
     assert!(lease
         .cleanup(Budget::new(Duration::from_secs(2)))
         .iter()

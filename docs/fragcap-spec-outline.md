@@ -355,6 +355,11 @@ endpoint per authorized session, bracketed IPv6 routes, bounded numeric scoped
 literals, mapped-address canonical ownership, finite staggered dual-stack TCP
 selection, IPv6 coverage for HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC, and
 independent Doctor readiness for both loopback families.
+S120 adds a versioned exhaustive protocol-classification contract across the
+current matrix, with separate family, detection, inspectability, and stable
+reason axes. Application records and CLI summaries reconcile from retained
+classifications, compatibility promotion requires exact eligible evidence, and
+typed manifest omissions retain artifact authority independently.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

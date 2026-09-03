@@ -21,7 +21,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fragcap::deep_capture::{calibration_outcome, observation_proves_final_client_ca_acceptance};
 use fragcap::deep_capture::{
     calibration_outcome_reason, terminal_calibration_outcome, CalibrationOutcome, CalibrationPhase,
-    CompatibilityObservation as Observation, Inspectability,
+    ClassificationSummary, CompatibilityObservation as Observation, Inspectability,
+    ManifestOmissionReason,
 };
 #[cfg(windows)]
 use fragcap::deep_capture::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
@@ -1342,9 +1343,17 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 proxy_connection_id: observation.proxy_connection_id.clone(),
                 protocol: observation.protocol.clone(),
                 inspectability: observation.inspectability.as_str().to_string(),
+                classification_schema_version: observation.classification.schema_version(),
+                family: observation.classification.family().as_str().to_string(),
+                detection: observation.classification.detection().as_str().to_string(),
+                classification_reason: observation
+                    .classification
+                    .reason()
+                    .map(|reason| reason.as_str().to_string()),
             }),
             fragcap::deep_capture::DeepCaptureEvent::Cleanup { .. } => {}
             fragcap::deep_capture::DeepCaptureEvent::Terminal { report, .. } => {
+                let classification_summary = report.classification_summary();
                 if let Some(phase) = self.args.calibrate.map(calibration_phase) {
                     let runtime = self.runtime.borrow();
                     let outcome = terminal_calibration_outcome(
@@ -1383,22 +1392,73 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     manifest: "manifest.json".to_string(),
                     status: status.to_string(),
                     cleanup_status: cleanup_status.to_string(),
-                    inspectable: report
-                        .observations
+                    inspectable: *classification_summary
+                        .by_inspectability
+                        .get("full")
+                        .unwrap_or(&0),
+                    metadata_only: *classification_summary
+                        .by_inspectability
+                        .get("metadata-only")
+                        .unwrap_or(&0),
+                    unsupported: *classification_summary
+                        .by_detection
+                        .get("unsupported")
+                        .unwrap_or(&0),
+                    unknown: *classification_summary
+                        .by_detection
+                        .get("unknown")
+                        .unwrap_or(&0),
+                    failed: *classification_summary
+                        .by_detection
+                        .get("failed")
+                        .unwrap_or(&0),
+                    decrypted_unknown: *classification_summary
+                        .by_inspectability
+                        .get("decrypted-unknown")
+                        .unwrap_or(&0),
+                    encrypted_opaque: *classification_summary
+                        .by_inspectability
+                        .get("encrypted-opaque")
+                        .unwrap_or(&0),
+                    unavailable: *classification_summary
+                        .by_inspectability
+                        .get("unavailable")
+                        .unwrap_or(&0),
+                    classification_reasons: classification_summary
+                        .by_reason
                         .iter()
-                        .filter(|value| value.inspectability == Inspectability::Full)
-                        .count() as u64,
-                    metadata_only: report
-                        .observations
-                        .iter()
-                        .filter(|value| value.inspectability == Inspectability::MetadataOnly)
-                        .count() as u64,
-                    unsupported: report
-                        .observations
-                        .iter()
-                        .filter(|value| value.inspectability == Inspectability::Unsupported)
-                        .count() as u64,
+                        .map(|(reason, count)| ((*reason).to_string(), *count))
+                        .collect(),
+                    unclassified_lost: classification_summary.unclassified_lost,
                 });
+                let reasons = if classification_summary.by_reason.is_empty() {
+                    "none".to_string()
+                } else {
+                    classification_summary
+                        .by_reason
+                        .iter()
+                        .map(|(reason, count)| format!("{reason}={count}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                emitter.progress(&format!(
+                    "Protocol classification: observations={}, identified={}, unknown={}, unsupported={}, failed={}, unclassified_lost={}, reasons={reasons}",
+                    classification_summary.observations,
+                    classification_summary
+                        .by_detection
+                        .get("identified")
+                        .unwrap_or(&0),
+                    classification_summary
+                        .by_detection
+                        .get("unknown")
+                        .unwrap_or(&0),
+                    classification_summary
+                        .by_detection
+                        .get("unsupported")
+                        .unwrap_or(&0),
+                    classification_summary.by_detection.get("failed").unwrap_or(&0),
+                    classification_summary.unclassified_lost,
+                ));
                 if report
                     .failures
                     .iter()
@@ -2535,18 +2595,18 @@ fn write_bundle(ctx: &BundleContext<'_>, emitter: &mut Emitter) -> Result<(), Cl
     }
     let mut har_produced = false;
     let mut har_partial = false;
-    let mut har_omission_reason = "not-requested";
+    let mut har_omission_reason = ManifestOmissionReason::NotRequested;
     if ctx.har_requested {
         match fragcap::deep_capture::project_application_har(&application) {
             Ok(projection) if projection.standard_entries + projection.partial_entries > 0 => {
                 har_partial = projection.partial_entries > 0;
                 match projection.publish(&ctx.session.bundle.join("http.har")) {
                     Ok(_) => har_produced = true,
-                    Err(_) => har_omission_reason = "writer-failed",
+                    Err(_) => har_omission_reason = ManifestOmissionReason::WriterFailed,
                 }
             }
-            Ok(_) => har_omission_reason = "no-http-semantics",
-            Err(_) => har_omission_reason = "projection-failed",
+            Ok(_) => har_omission_reason = ManifestOmissionReason::NoHttpSemantics,
+            Err(_) => har_omission_reason = ManifestOmissionReason::ProjectionFailed,
         }
     }
     write_file(
@@ -2737,12 +2797,19 @@ fn application_jsonl(
     observations: &[Observation],
     writer_status: &str,
 ) -> String {
+    let summary = ClassificationSummary::from_classifications(
+        observations
+            .iter()
+            .map(|observation| &observation.classification),
+        0,
+    );
     let mut out = String::new();
     out.push_str(
         &json!({
             "type": "application.header",
             "session_id": session_id,
             "manifest_version": 1,
+            "classification_schema_version": fragcap::deep_capture::CLASSIFICATION_SCHEMA_VERSION,
         })
         .to_string(),
     );
@@ -2777,6 +2844,7 @@ fn application_jsonl(
             "direction": "outbound",
             "protocol": observation.protocol,
             "inspectability": observation.inspectability.as_str(),
+            "classification": classification_json(&observation.classification),
             "process_id": observation.process_id,
             "process_image": observation.process_image,
             "role": observation.role,
@@ -2801,11 +2869,28 @@ fn application_jsonl(
             "session_id": session_id,
             "records": observations.len(),
             "writer_status": writer_status,
+            "classification_schema_version": fragcap::deep_capture::CLASSIFICATION_SCHEMA_VERSION,
+            "classified_records": summary.observations,
+            "classification_records_lost": summary.unclassified_lost,
+            "classifications_by_family": summary.by_family,
+            "classifications_by_detection": summary.by_detection,
+            "classifications_by_inspectability": summary.by_inspectability,
+            "classifications_by_reason": summary.by_reason,
         })
         .to_string(),
     );
     out.push('\n');
     out
+}
+
+fn classification_json(value: &fragcap::deep_capture::ProtocolClassification) -> serde_json::Value {
+    json!({
+        "schema_version": value.schema_version(),
+        "family": value.family().as_str(),
+        "detection": value.detection().as_str(),
+        "inspectability": value.inspectability().as_str(),
+        "reason": value.reason().map(|reason| reason.as_str()),
+    })
 }
 
 fn process_trace_jsonl(
@@ -2907,6 +2992,7 @@ fn compatibility_json(ctx: &BundleContext<'_>) -> Result<String, CliError> {
                 "correlation_reason": o.correlation_reason,
                 "protocol": o.protocol,
                 "inspectability": o.inspectability.as_str(),
+                "classification": classification_json(&o.classification),
             })
         }).collect::<Vec<_>>(),
     }))
@@ -2931,7 +3017,7 @@ fn manifest_json(
     cleanup: &CleanupReport,
     har_produced: bool,
     har_partial: bool,
-    har_omission_reason: &str,
+    har_omission_reason: ManifestOmissionReason,
     key_log_produced: bool,
     packet_truth_produced: bool,
 ) -> Result<String, CliError> {
@@ -3034,7 +3120,10 @@ fn manifest_json(
         packet_artifact["loss"] = json!({"state":"reported-in-artifact"});
         artifacts.insert(0, packet_artifact);
     } else {
-        omissions.push(json!({"role":"pcapng","reason":"writer-failed","severity":"error"}));
+        omissions.push(fragcap::deep_capture::manifest_omission(
+            "pcapng",
+            ManifestOmissionReason::WriterFailed,
+        ));
         artifacts.push(omitted_artifact(
             "pcapng",
             "packet-truth",
@@ -3058,17 +3147,23 @@ fn manifest_json(
         }
         artifacts.push(har);
     } else if ctx.har_requested {
-        omissions.push(json!({"role":"har","reason":har_omission_reason,"severity":if har_omission_reason == "no-http-semantics" {"info"} else {"error"}}));
+        omissions.push(fragcap::deep_capture::manifest_omission(
+            "har",
+            har_omission_reason,
+        ));
         artifacts.push(omitted_artifact(
             "har",
             "http-projection",
             "sensitive",
             "application/json",
             false,
-            har_omission_reason,
+            har_omission_reason.as_str(),
         ));
     } else {
-        omissions.push(json!({"role":"har","reason":"not-requested","severity":"info"}));
+        omissions.push(fragcap::deep_capture::manifest_omission(
+            "har",
+            ManifestOmissionReason::NotRequested,
+        ));
         artifacts.push(omitted_artifact(
             "har",
             "http-projection",
@@ -3088,17 +3183,23 @@ fn manifest_json(
             false,
         ));
     } else if ctx.key_log_requested {
-        omissions.push(json!({"role":"tls-key-log","reason":"not-produced","severity":"warn"}));
+        omissions.push(fragcap::deep_capture::manifest_omission(
+            "tls-key-log",
+            ManifestOmissionReason::NotProduced,
+        ));
         artifacts.push(omitted_artifact(
             "tls-key-log",
             "analyzer-aid",
             "secret-adjacent",
             "text/plain",
             false,
-            "writer-failed",
+            ManifestOmissionReason::NotProduced.as_str(),
         ));
     } else {
-        omissions.push(json!({"role":"tls-key-log","reason":"not-requested","severity":"info"}));
+        omissions.push(fragcap::deep_capture::manifest_omission(
+            "tls-key-log",
+            ManifestOmissionReason::NotRequested,
+        ));
         artifacts.push(omitted_artifact(
             "tls-key-log",
             "analyzer-aid",
@@ -3528,6 +3629,13 @@ mod tests {
             url: Some("https://127.0.0.1/controlled".to_string()),
             status: Some(200),
             reason: None,
+            classification: fragcap::deep_capture::ProtocolClassification::new(
+                fragcap::deep_capture::TrafficFamily::Https,
+                fragcap::deep_capture::DetectionState::Identified,
+                fragcap::deep_capture::InspectabilityState::Full,
+                None,
+            )
+            .unwrap(),
         }
     }
 
@@ -3588,6 +3696,13 @@ mod tests {
         let mut pinned = client.clone();
         pinned.inspectability = Inspectability::Inconclusive;
         pinned.reason = Some("certificate-pinned".to_string());
+        pinned.classification = fragcap::deep_capture::ProtocolClassification::new(
+            fragcap::deep_capture::TrafficFamily::Https,
+            fragcap::deep_capture::DetectionState::Identified,
+            fragcap::deep_capture::InspectabilityState::Unavailable,
+            Some(fragcap::deep_capture::ClassificationReason::CertificatePinned),
+        )
+        .unwrap();
         assert_eq!(
             calibration_outcome(CalibrationPhase::Tls, &[pinned]),
             CalibrationOutcome::CertificatePinned
@@ -3595,6 +3710,13 @@ mod tests {
         let mut metadata = client.clone();
         metadata.inspectability = Inspectability::MetadataOnly;
         metadata.protocol = "non-http-tls".to_string();
+        metadata.classification = fragcap::deep_capture::ProtocolClassification::new(
+            fragcap::deep_capture::TrafficFamily::NonHttpTls,
+            fragcap::deep_capture::DetectionState::Identified,
+            fragcap::deep_capture::InspectabilityState::MetadataOnly,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             calibration_outcome(CalibrationPhase::Tls, &[metadata]),
             CalibrationOutcome::MetadataOnly
@@ -3602,6 +3724,13 @@ mod tests {
         let mut unsupported = client;
         unsupported.inspectability = Inspectability::Unsupported;
         unsupported.protocol = "quic".to_string();
+        unsupported.classification = fragcap::deep_capture::ProtocolClassification::new(
+            fragcap::deep_capture::TrafficFamily::Quic,
+            fragcap::deep_capture::DetectionState::Unsupported,
+            fragcap::deep_capture::InspectabilityState::Unavailable,
+            Some(fragcap::deep_capture::ClassificationReason::UnsupportedVersion),
+        )
+        .unwrap();
         assert_eq!(
             calibration_outcome(CalibrationPhase::Tls, &[unsupported]),
             CalibrationOutcome::UnsupportedProtocol

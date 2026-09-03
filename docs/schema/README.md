@@ -6,6 +6,11 @@ This directory holds the published copies of fragcap's JSON Schemas
 including artifact authority, sensitivity, finalization, completeness, loss,
 correlation, and explicit omissions. Each published schema is byte-identical to
 its embedded copy; drift fails a workspace test.
+`deep-capture-classification.v1.json` publishes the additive classification
+object carried by application records, compatibility evidence, and CLI events.
+It keeps traffic family, detection state, inspectability, and stable reason as
+separate axes. Semantic combinations are validated by the facade because JSON
+Schema alone cannot express the complete evidence matrix clearly.
 Committed complete, partial, crash-prefix, and legacy examples live under
 `examples/` and are parsed by the same versioned reader used for bundles.
 Manifest version 2 also distinguishes `proxy-lifecycle`,

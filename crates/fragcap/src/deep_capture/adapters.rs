@@ -47,6 +47,14 @@ pub trait ProxyLease {
         &mut self,
         budget: Budget,
     ) -> Result<Vec<CompatibilityObservation>, StageFailure>;
+    /// Observations discarded by bounded proxy retention before collection.
+    fn observations_lost(&self) -> u64 {
+        0
+    }
+    /// Reconciled application-stream classification authority, when produced.
+    fn application_classification_summary(&self) -> Option<super::ClassificationSummary> {
+        None
+    }
     fn stop(&mut self, budget: Budget) -> CleanupResult;
     fn cleanup(&mut self, budget: Budget) -> Vec<CleanupResult>;
 }

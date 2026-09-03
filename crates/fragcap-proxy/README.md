@@ -44,3 +44,9 @@ and bounded numeric scope indexes reach exact socket addresses, mapped aliases
 share one canonical policy identity, and proxy-owned TCP candidates use one
 finite staggered race with a sole selected peer. The controlled lab exercises
 IPv6 HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC without wildcard listening.
+
+S120 leaves raw protocol authority in this crate and adds the exhaustive public
+classification contract in the `fragcap` facade. Raw transport, TLS, parser,
+retention, queue, and writer facts remain unchanged; facade classification and
+artifact summaries derive from them without feeding policy back into proxy
+forwarding.

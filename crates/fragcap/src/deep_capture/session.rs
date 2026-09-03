@@ -87,6 +87,8 @@ impl PreparedSession {
             routing: None,
             launch: None,
             observations: Vec::new(),
+            classification_records_lost: 0,
+            application_classification_summary: None,
             failures: Vec::new(),
             fact_writes: Vec::new(),
             cleanup: Vec::new(),
@@ -115,6 +117,8 @@ pub struct DeepCaptureSession<'a> {
     routing: Option<Box<dyn RoutingLease>>,
     launch: Option<Box<dyn LaunchLease>>,
     observations: Vec<CompatibilityObservation>,
+    classification_records_lost: u64,
+    application_classification_summary: Option<ClassificationSummary>,
     failures: Vec<StageFailure>,
     fact_writes: Vec<FactWriteResult>,
     cleanup: Vec<CleanupResult>,
@@ -595,7 +599,14 @@ impl DeepCaptureSession<'_> {
                     .saturating_sub(elapsed.saturating_sub(observation_started)),
             );
             match proxy.observations(budget) {
-                Ok(observations) => self.extend_observations(observations),
+                Ok(observations) => {
+                    self.classification_records_lost = self
+                        .classification_records_lost
+                        .saturating_add(proxy.observations_lost());
+                    self.application_classification_summary =
+                        proxy.application_classification_summary();
+                    self.extend_observations(observations);
+                }
                 Err(error) => self.failures.push(error),
             }
             if self.deadline_expired(observation_started, self.plan.deadlines.observation)
@@ -1113,6 +1124,8 @@ impl DeepCaptureSession<'_> {
             artifacts: self.plan.artifacts,
             outcome,
             observations: self.observations.clone(),
+            classification_records_lost: self.classification_records_lost,
+            application_classification_summary: self.application_classification_summary.clone(),
             route_verification: self.route_verification.clone(),
             failures: self.failures.clone(),
             fact_writes: self.fact_writes.clone(),

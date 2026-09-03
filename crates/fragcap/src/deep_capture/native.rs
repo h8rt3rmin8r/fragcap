@@ -23,9 +23,9 @@ pub use fragcap_proxy::{
 };
 
 use super::{
-    ApplicationConnectionWindow, BackendDescriptor, Budget, CleanupResult, CleanupStatus,
-    CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint, ProxyBackend,
-    ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
+    ApplicationConnectionWindow, BackendDescriptor, Budget, ClassificationSummary, CleanupResult,
+    CleanupStatus, CompatibilityObservation, CorrelationState, Inspectability, LoopbackEndpoint,
+    ProtocolClassification, ProxyBackend, ProxyLease, ProxyRoute, SessionPlan, Stage, StageFailure,
 };
 
 /// Finite native runtime limits selected by the library consumer.
@@ -446,6 +446,8 @@ impl ProxyBackend for NativeProxyAdapter {
             application_artifact: application_artifact.take(),
             proxy_lifecycle: proxy_lifecycle.take(),
             key_log,
+            observations_lost: 0,
+            application_classification_summary: None,
         }))
     }
 }
@@ -458,6 +460,8 @@ struct NativeProxyLease {
     application_artifact: Option<super::ApplicationArtifactLease>,
     proxy_lifecycle: Option<super::ProxyLifecycleLease>,
     key_log: Option<Arc<fragcap_proxy::SessionKeyLog>>,
+    observations_lost: u64,
+    application_classification_summary: Option<ClassificationSummary>,
 }
 
 impl ProxyLease for NativeProxyLease {
@@ -488,6 +492,7 @@ impl ProxyLease for NativeProxyLease {
             .lease
             .observation(budget.remaining())
             .map_err(|error| StageFailure::new(Stage::Observe, error.code, error.detail))?;
+        self.observations_lost = observation.protocol.observations_dropped_oldest;
         Ok(observation
             .application
             .into_iter()
@@ -523,6 +528,17 @@ impl ProxyLease for NativeProxyLease {
                         value.connection_closed_at_ns,
                     )
                 };
+                let protocol = match value.protocol.as_str() {
+                    "connect" | "tls" => "https".to_string(),
+                    _ => value.protocol,
+                };
+                let inspectability = Inspectability::from_label(value.inspectability);
+                let reason = value.reason;
+                let classification = ProtocolClassification::from_proxy_evidence(
+                    &protocol,
+                    value.inspectability,
+                    reason.as_deref(),
+                );
                 CompatibilityObservation {
                     flow_id,
                     proxy_connection_id: value.connection_id.to_string(),
@@ -537,28 +553,38 @@ impl ProxyLease for NativeProxyLease {
                     packet_observations_unretained,
                     correlation_state,
                     correlation_reason,
-                    protocol: match value.protocol.as_str() {
-                        "connect" | "tls" => "https".to_string(),
-                        _ => value.protocol,
-                    },
-                    inspectability: Inspectability::from_label(value.inspectability),
+                    protocol,
+                    inspectability,
                     method: value.method,
                     url: value.url,
                     status: value.status,
-                    reason: value.reason,
+                    reason,
+                    classification,
                 }
             })
             .collect())
     }
 
+    fn observations_lost(&self) -> u64 {
+        self.observations_lost
+    }
+
+    fn application_classification_summary(&self) -> Option<ClassificationSummary> {
+        self.application_classification_summary.clone()
+    }
+
     fn stop(&mut self, budget: Budget) -> CleanupResult {
         let report = self.lease.stop(budget.remaining());
+        self.observations_lost = report.observation.protocol.observations_dropped_oldest;
         let mut result = cleanup_result("native-proxy-listener", &report);
         if report.is_clean() {
             if let Some(artifact) = self.application_artifact.as_mut() {
+                artifact.add_classification_loss(self.observations_lost);
                 if let Err(error) = artifact.finish() {
                     result.status = CleanupStatus::Failed;
                     result.reason = format!("application writer failed: {error}");
+                } else {
+                    self.application_classification_summary = artifact.classification_summary();
                 }
             }
             if let Some(lifecycle) = self.proxy_lifecycle.as_mut() {

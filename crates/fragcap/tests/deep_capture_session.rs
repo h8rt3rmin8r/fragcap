@@ -114,7 +114,30 @@ impl ProxyLease for ProxyRun {
             url: Some("https://example.invalid/".into()),
             status: Some(200),
             reason: Some("controlled final-client flow".into()),
+            classification: ProtocolClassification::new(
+                TrafficFamily::Https,
+                DetectionState::Identified,
+                InspectabilityState::Full,
+                None,
+            )
+            .unwrap(),
         }])
+    }
+    fn observations_lost(&self) -> u64 {
+        2
+    }
+    fn application_classification_summary(&self) -> Option<ClassificationSummary> {
+        let classification = ProtocolClassification::new(
+            TrafficFamily::Http2,
+            DetectionState::Identified,
+            InspectabilityState::Full,
+            None,
+        )
+        .unwrap();
+        Some(ClassificationSummary::from_classifications(
+            [&classification],
+            4,
+        ))
     }
     fn stop(&mut self, _: Budget) -> CleanupResult {
         self.0.borrow_mut().push("proxy.stop".into());
@@ -589,6 +612,14 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
 
     assert!(report.is_complete());
     assert_eq!(report.snapshot.observations.len(), 1);
+    let classification = report.snapshot.classification_summary();
+    assert_eq!(classification.observations, 1);
+    assert_eq!(classification.unclassified_lost, 4);
+    assert_eq!(classification.by_family.get("http2"), Some(&1));
+    assert_eq!(
+        classification.observations + classification.unclassified_lost,
+        5
+    );
     assert_eq!(report.snapshot.fact_writes.len(), 5);
     assert_eq!(report.snapshot.cleanup.len(), 6);
     assert_eq!(report.snapshot.artifacts, prepared_artifact_requests());

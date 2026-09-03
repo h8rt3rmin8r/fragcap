@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use super::SensitiveRetention;
+use super::{ProtocolClassification, SensitiveRetention};
 use crate::targets::CompatibilityFactKey;
 use crate::FlowId;
 
@@ -515,6 +515,8 @@ pub struct CompatibilityObservation {
     pub url: Option<String>,
     pub status: Option<u16>,
     pub reason: Option<String>,
+    /// Versioned public classification derived from the raw fields above.
+    pub classification: ProtocolClassification,
 }
 
 /// One append-only compatibility fact candidate or result.
@@ -627,12 +629,32 @@ pub struct TerminalSnapshot {
     pub artifacts: ArtifactRequests,
     pub outcome: SessionOutcome,
     pub observations: Vec<CompatibilityObservation>,
+    /// Proxy observations discarded before the retained collection was produced.
+    pub classification_records_lost: u64,
+    /// Reconciled classification authority from the application artifact.
+    pub application_classification_summary: Option<super::ClassificationSummary>,
     pub route_verification: Option<super::RouteVerification>,
     pub failures: Vec<StageFailure>,
     pub fact_writes: Vec<FactWriteResult>,
     pub cleanup: Vec<CleanupResult>,
     pub deadlines: Deadlines,
     pub finished_at: SystemTime,
+}
+
+impl TerminalSnapshot {
+    /// Derive the conserved classification projection from retained observations.
+    pub fn classification_summary(&self) -> super::ClassificationSummary {
+        self.application_classification_summary
+            .clone()
+            .unwrap_or_else(|| {
+                super::ClassificationSummary::from_classifications(
+                    self.observations
+                        .iter()
+                        .map(|observation| &observation.classification),
+                    self.classification_records_lost,
+                )
+            })
+    }
 }
 
 /// Authoritative in-memory result of a started or declined session.

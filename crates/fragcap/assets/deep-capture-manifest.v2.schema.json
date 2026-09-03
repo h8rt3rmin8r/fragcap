@@ -25,7 +25,7 @@
         "properties": {
           "role": {"type": "string", "minLength": 1},
           "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)[^\\\\\\u0000-\\u001F\\u007F]+$"},
-          "omission_reason": {"type": "string", "minLength": 1},
+          "omission_reason": {"enum": ["not-requested", "not-produced", "not-observable", "unsupported-protocol", "not-routed", "not-reached", "certificate-pinned", "client-auth-required", "unsupported-version", "parser-failed", "truncated", "backend-unavailable", "no-http-semantics", "projection-failed", "writer-failed", "sharing-excludes-sensitive-artifact"]},
           "authority": {
             "type": "object",
             "additionalProperties": false,
@@ -58,7 +58,7 @@
         "required": ["role", "reason", "severity"],
         "properties": {
           "role": {"type": "string", "minLength": 1},
-          "reason": {"type": "string", "minLength": 1},
+          "reason": {"enum": ["not-requested", "not-produced", "not-observable", "unsupported-protocol", "not-routed", "not-reached", "certificate-pinned", "client-auth-required", "unsupported-version", "parser-failed", "truncated", "backend-unavailable", "no-http-semantics", "projection-failed", "writer-failed", "sharing-excludes-sensitive-artifact"]},
           "severity": {"enum": ["info", "warn", "error"]}
         }
       }

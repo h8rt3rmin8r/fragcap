@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fragcap.dev/schema/deep-capture-classification.v1.json",
+  "title": "fragcap Deep Capture protocol classification version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "family", "detection", "inspectability", "reason"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "family": {"enum": ["http1", "https", "http2", "websocket", "sse", "grpc", "generic-tcp", "non-http-tls", "socks5-tcp", "socks5-udp", "generic-udp", "quic", "http3", "unrouted", "unknown"]},
+    "detection": {"enum": ["identified", "unknown", "unsupported", "failed"]},
+    "inspectability": {"enum": ["full", "metadata-only", "decrypted-unknown", "encrypted-opaque", "packet-only", "unavailable"]},
+    "reason": {
+      "oneOf": [
+        {"type": "null"},
+        {"enum": ["not-routed", "not-reached", "encrypted-opaque", "certificate-pinned", "client-auth-required", "unsupported-version", "parser-failed", "truncated", "writer-failed"]}
+      ]
+    }
+  }
+}

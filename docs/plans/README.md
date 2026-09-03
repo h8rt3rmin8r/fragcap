@@ -247,3 +247,12 @@ peer evidence apply across HTTP, HTTPS, SOCKS, TCP, UDP, QUIC, artifacts, and
 correlation. Doctor probes IPv4 and IPv6 loopback readiness separately. No
 wildcard bind or hidden family fallback is introduced, and Deep Capture remains
 incomplete until #334.
+
+S120 (`specs/120-protocol-classification`) follows S119 and closes #316 at the
+exhaustive evidence-classification boundary. One versioned facade contract
+separates traffic family, detection, inspectability, and stable reason across
+every shipped protocol path. Application records and terminal output reconcile
+from retained classifications, typed manifest omissions retain their own
+artifact authority, and only exact eligible classifications may create
+compatibility facts. Calibration expansion remains #317, bypass policy remains
+#318, and Deep Capture remains incomplete until #334.

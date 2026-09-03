@@ -1,0 +1,2 @@
+<!-- spec-impact: 13.7, 19.6, 25, 28.1 -->
+- **2026-09-03, S120:** Raw protocol evidence remains owned by the native proxy while the facade owns the versioned public classification. Traffic family, detection, inspectability, and reason remain independent axes; application and CLI summaries derive from retained classifications, and compatibility facts require exact eligible evidence. Parser, retention, writer, trust, routing, and artifact outcomes retain their own authorities (#316).

@@ -233,6 +233,46 @@ event.
 **See also:** [Session bundle](file-and-wire-formats.md#session-bundle),
 [Lifecycle event](command-line-and-diagnostics.md#lifecycle-event)
 
+## Protocol classification
+
+The facade-owned, schema-versioned interpretation of one retained Deep Capture
+observation. It records a traffic family, detection state, inspectability state,
+and optional stable outcome reason while leaving detailed transport, TLS,
+parser, retention, and writer evidence in the records that own those facts.
+
+**See also:** [Raw proxy observation](capture-and-networking.md#raw-proxy-observation),
+[Detection state](capture-and-networking.md#detection-state),
+[Inspectability state](capture-and-networking.md#inspectability-state),
+[Outcome reason](capture-and-networking.md#outcome-reason)
+
+## Detection state
+
+The classification axis that says whether a traffic family was identified,
+remained unknown, was identified as deliberately unsupported, or failed during
+supported processing. These values are distinct and cannot be inferred from
+one another.
+
+**See also:** [Protocol classification](capture-and-networking.md#protocol-classification)
+
+## Inspectability state
+
+The highest evidence boundary actually observed for classified traffic: full
+application semantics, metadata only, decrypted protocol-unknown bytes,
+encrypted opaque bytes, packet-only evidence, or unavailable application
+evidence. It is independent from forwarding success and body retention.
+
+**See also:** [Protocol classification](capture-and-networking.md#protocol-classification)
+
+## Outcome reason
+
+A stable category explaining why protocol or artifact evidence is limited,
+such as not routed, not reached, certificate pinned, parser failed, truncated,
+or writer failed. The category supports reconciliation but never replaces the
+raw detailed record or becomes a target compatibility verdict by itself.
+
+**See also:** [Protocol classification](capture-and-networking.md#protocol-classification),
+[Compatibility calibration](capture-and-networking.md#compatibility-calibration)
+
 ## Local inspection proxy
 
 A proxy process started by fragcap on the local machine to receive selected
