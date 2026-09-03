@@ -341,6 +341,8 @@ fn deep_capture_probe() -> DeepCaptureInputs {
         session_dir_present,
         proxy_backend,
         proxy_backend_error,
+        ipv4_loopback: loopback_readiness("127.0.0.1:0"),
+        ipv6_loopback: loopback_readiness("[::1]:0"),
         analyzer_keylog_configured: std::env::var_os("SSLKEYLOGFILE").is_some(),
         ca,
         occupied_proxy_ports: None,
@@ -348,6 +350,16 @@ fn deep_capture_probe() -> DeepCaptureInputs {
         stale_manifests: scan.stale_manifests,
         stale_tls_key_logs: scan.stale_tls_key_logs,
         sensitive_artifacts: scan.sensitive_artifacts,
+    }
+}
+
+fn loopback_readiness(address: &str) -> super::LoopbackReadiness {
+    match std::net::TcpListener::bind(address) {
+        Ok(listener) => {
+            drop(listener);
+            super::LoopbackReadiness::Ready
+        }
+        Err(error) => super::LoopbackReadiness::Unavailable(error.to_string()),
     }
 }
 

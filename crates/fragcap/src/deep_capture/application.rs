@@ -1107,6 +1107,7 @@ fn event_json(
             "socks5.connect",
             json!({
                 "authority": value.authority,
+                "selected_peer": value.selected_peer.map(|address| address.to_string()),
                 "address_type": value.address_type,
                 "dns_owner": value.dns_owner,
                 "outcome": value.outcome,

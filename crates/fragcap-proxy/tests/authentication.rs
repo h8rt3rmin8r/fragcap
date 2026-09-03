@@ -82,6 +82,27 @@ fn capability_uses_the_same_secret_for_a_redacted_socks5h_route() {
 }
 
 #[test]
+fn capability_urls_bracket_an_exact_ipv6_listener() {
+    let proof = SessionCapability::generate().unwrap().proof();
+    let endpoint = "[::1]:3210".parse().unwrap();
+    assert!(proof.proxy_url(endpoint).ends_with("@[::1]:3210"));
+    assert!(proof.socks5h_url(endpoint).ends_with("@[::1]:3210"));
+}
+
+#[test]
+fn native_listener_binds_exact_ipv6_loopback_when_available() {
+    let endpoint: SocketAddr = "[::1]:0".parse().unwrap();
+    let config = NativeProxyConfig::new(endpoint, 1, 64, Duration::from_secs(1)).unwrap();
+    let mut backend = NativeProxyBackend::new(config);
+    let Ok(mut lease) = backend.start(Duration::from_secs(1)) else {
+        return;
+    };
+    assert_eq!(lease.endpoint().ip(), endpoint.ip());
+    assert!(lease.endpoint().is_ipv6());
+    assert!(lease.cleanup(Duration::from_secs(1)).is_clean());
+}
+
+#[test]
 fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
     let config = NativeProxyConfig::new(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),

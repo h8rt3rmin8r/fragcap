@@ -237,3 +237,13 @@ stream, datagram, metadata, and body evidence through the existing application
 artifact authority. Unknown ALPN, zero round-trip application data, active migration, endpoint changes, trust
 failure, and unrouted traffic remain explicit refusals without fallback. Full
 IPv6 parity remains #315, and Deep Capture remains incomplete until #334.
+
+S119 (`specs/119-ipv6-parity`) follows S118 and closes #315 at the complete
+address-family boundary. One immutable session plan authorizes one exact IPv4
+or IPv6 loopback socket, with IPv4 as the compatibility default and explicit
+IPv6 selection. Bracketed and scoped IPv6 authorities, mapped-address canonical
+identity, finite 250 millisecond staggered TCP selection, and exact selected
+peer evidence apply across HTTP, HTTPS, SOCKS, TCP, UDP, QUIC, artifacts, and
+correlation. Doctor probes IPv4 and IPv6 loopback readiness separately. No
+wildcard bind or hidden family fallback is introduced, and Deep Capture remains
+incomplete until #334.

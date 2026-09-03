@@ -18,11 +18,24 @@ fn authority_parser_preserves_names_and_rejects_ambiguity() {
     assert_eq!(named.port(), 443);
     let ipv6 = DestinationAuthority::parse("[::1]:8443").unwrap();
     assert_eq!(ipv6.host(), &AuthorityHost::Ip("::1".parse().unwrap()));
+    assert_eq!(ipv6.scope_id(), None);
+    let scoped = DestinationAuthority::parse("[fe80::1%7]:8443").unwrap();
+    assert_eq!(
+        scoped.host(),
+        &AuthorityHost::Ip("fe80::1".parse().unwrap())
+    );
+    assert_eq!(scoped.scope_id(), Some(7));
+    assert_eq!(scoped.lookup_host(), "[fe80::1]:8443");
+    let encoded_scope = DestinationAuthority::parse("[fe80::1%257]:8443").unwrap();
+    assert_eq!(encoded_scope.scope_id(), Some(7));
     for bad in [
         "example.invalid",
         "user@example.invalid:80",
         "*.invalid:80",
-        "[fe80::1%3]:80",
+        "[fe80::1%eth0]:80",
+        "[fe80::1%0]:80",
+        "[2001:db8::1%3]:80",
+        "[::1%3]:80",
     ] {
         assert!(DestinationAuthority::parse(bad).is_err(), "{bad}");
     }
@@ -97,10 +110,50 @@ async fn connector_uses_exact_grant_and_bounded_io() {
     let mut stream = connect_upstream(&authority, &policy, budgets)
         .await
         .unwrap();
+    assert_eq!(stream.peer_addr().unwrap(), origin);
     stream.write_all(b"test").await.unwrap();
     let mut response = [0_u8; 4];
     stream.read(&mut response).await.unwrap();
     assert_eq!(&response, b"test");
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn ipv6_literal_connects_to_the_exact_selected_peer() {
+    let Ok(listener) = TcpListener::bind("[::1]:0").await else {
+        return;
+    };
+    let origin = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut stream, peer) = listener.accept().await.unwrap();
+        assert!(peer.is_ipv6());
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut bytes = [0_u8; 4];
+        stream.read_exact(&mut bytes).await.unwrap();
+        stream.write_all(&bytes).await.unwrap();
+    });
+    let authority = DestinationAuthority::parse(&origin.to_string()).unwrap();
+    let mut policy = DestinationPolicy::new("[::1]:9".parse().unwrap());
+    policy.grant_for_test(origin);
+    let second = Duration::from_secs(1);
+    let mut stream = connect_upstream(
+        &authority,
+        &policy,
+        UpstreamBudgets {
+            dns: second,
+            connect: second,
+            read: second,
+            write: second,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream.peer_addr().unwrap(), origin);
+    assert!(stream.local_addr().unwrap().is_ipv6());
+    stream.write_all(b"ipv6").await.unwrap();
+    let mut response = [0_u8; 4];
+    stream.read(&mut response).await.unwrap();
+    assert_eq!(&response, b"ipv6");
     task.await.unwrap();
 }
 
@@ -164,7 +217,7 @@ async fn tls_connector_verifies_the_chain_and_requested_identity() {
     let authority = DestinationAuthority::parse(&address.to_string()).unwrap();
     let mut policy = DestinationPolicy::new("127.0.0.1:9".parse().unwrap());
     policy.grant_for_test(address);
-    connect_tls_upstream(
+    let stream = connect_tls_upstream(
         &authority,
         &policy,
         budgets,
@@ -172,6 +225,8 @@ async fn tls_connector_verifies_the_chain_and_requested_identity() {
     )
     .await
     .unwrap();
+    assert_eq!(stream.peer_addr().unwrap(), address);
+    assert_eq!(stream.local_addr().unwrap().is_ipv4(), address.is_ipv4());
     task.await.unwrap();
 
     let (address, certificate, task) = origin().await;

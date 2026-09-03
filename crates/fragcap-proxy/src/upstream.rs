@@ -2,7 +2,8 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,11 @@ use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::Notify;
+use tokio::task::JoinSet;
 use tokio::time::{timeout, Instant};
+
+const MAX_RESOLVED_CANDIDATES: usize = 32;
+const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum AuthorityHost {
@@ -27,11 +32,21 @@ pub enum AuthorityHost {
 pub struct DestinationAuthority {
     host: AuthorityHost,
     port: u16,
+    scope_id: Option<u32>,
 }
 
 impl DestinationAuthority {
     pub fn parse(value: &str) -> Result<Self, UpstreamError> {
-        if value.contains('@') || value.contains("%25") || value.contains('%') {
+        if value.contains('@') {
+            return Err(UpstreamError::new(
+                UpstreamStage::Authority,
+                "invalid-authority",
+            ));
+        }
+        if value.starts_with('[') {
+            return Self::parse_bracketed_ipv6(value);
+        }
+        if value.contains('%') {
             return Err(UpstreamError::new(
                 UpstreamStage::Authority,
                 "invalid-authority",
@@ -51,7 +66,59 @@ impl DestinationAuthority {
             Err(_) if valid_dns_name(raw_host) => AuthorityHost::Dns(raw_host.to_ascii_lowercase()),
             Err(_) => return Err(UpstreamError::new(UpstreamStage::Authority, "invalid-host")),
         };
-        Ok(Self { host, port })
+        Ok(Self {
+            host,
+            port,
+            scope_id: None,
+        })
+    }
+
+    fn parse_bracketed_ipv6(value: &str) -> Result<Self, UpstreamError> {
+        let close = value
+            .find(']')
+            .ok_or_else(|| UpstreamError::new(UpstreamStage::Authority, "invalid-authority"))?;
+        let port = value
+            .get(close + 1..)
+            .and_then(|tail| tail.strip_prefix(':'))
+            .and_then(|port| port.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+            .ok_or_else(|| UpstreamError::new(UpstreamStage::Authority, "invalid-port"))?;
+        let literal = &value[1..close];
+        let (address, scope_id) = match literal
+            .split_once("%25")
+            .or_else(|| literal.split_once('%'))
+        {
+            Some((address, scope)) => {
+                let ip = address
+                    .parse::<std::net::Ipv6Addr>()
+                    .map_err(|_| UpstreamError::new(UpstreamStage::Authority, "invalid-host"))?;
+                let scope_id = scope
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| *value != 0)
+                    .ok_or_else(|| {
+                        UpstreamError::new(UpstreamStage::Authority, "invalid-scope-id")
+                    })?;
+                if !(ip.is_unicast_link_local() || ip.is_multicast()) {
+                    return Err(UpstreamError::new(
+                        UpstreamStage::Authority,
+                        "scope-not-applicable",
+                    ));
+                }
+                (ip, Some(scope_id))
+            }
+            None => (
+                literal
+                    .parse::<std::net::Ipv6Addr>()
+                    .map_err(|_| UpstreamError::new(UpstreamStage::Authority, "invalid-host"))?,
+                None,
+            ),
+        };
+        Ok(Self {
+            host: AuthorityHost::Ip(IpAddr::V6(address)),
+            port,
+            scope_id,
+        })
     }
 
     pub fn host(&self) -> &AuthorityHost {
@@ -60,6 +127,23 @@ impl DestinationAuthority {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    pub fn scope_id(&self) -> Option<u32> {
+        self.scope_id
+    }
+
+    fn literal_address(&self) -> Option<SocketAddr> {
+        match self.host {
+            AuthorityHost::Ip(IpAddr::V4(ip)) => Some(SocketAddr::new(ip.into(), self.port)),
+            AuthorityHost::Ip(IpAddr::V6(ip)) => Some(SocketAddr::V6(SocketAddrV6::new(
+                ip,
+                self.port,
+                0,
+                self.scope_id.unwrap_or(0),
+            ))),
+            AuthorityHost::Dns(_) => None,
+        }
     }
 
     pub fn lookup_host(&self) -> String {
@@ -98,20 +182,20 @@ pub struct DestinationPolicy {
 impl DestinationPolicy {
     pub fn new(listener: SocketAddr) -> Self {
         Self {
-            listener: normalize_address(listener),
+            listener: canonical_address(listener),
             exact_grants: BTreeSet::new(),
         }
     }
 
     pub fn grant_for_test(&mut self, address: SocketAddr) {
-        let address = normalize_address(address);
+        let address = canonical_address(address);
         if address != self.listener {
             self.exact_grants.insert(address);
         }
     }
 
     pub fn evaluate(&self, address: SocketAddr) -> DestinationDecision {
-        let normalized = normalize_address(address);
+        let normalized = canonical_address(address);
         let allowed = normalized != self.listener
             && (self.exact_grants.contains(&normalized) || public_address(normalized.ip()));
         DestinationDecision {
@@ -126,7 +210,7 @@ impl DestinationPolicy {
     }
 }
 
-fn normalize_address(address: SocketAddr) -> SocketAddr {
+pub(crate) fn canonical_address(address: SocketAddr) -> SocketAddr {
     match address {
         SocketAddr::V6(address) => address
             .ip()
@@ -436,6 +520,14 @@ impl AsyncWrite for BoundedTlsUpstreamStream {
 }
 
 impl BoundedTlsUpstreamStream {
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.get_ref().0.local_addr()
+    }
+
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.get_ref().0.peer_addr()
+    }
+
     pub(crate) fn protocol_version(&self) -> Option<rustls::ProtocolVersion> {
         self.stream.get_ref().1.protocol_version()
     }
@@ -466,6 +558,10 @@ impl BoundedTlsUpstreamStream {
 impl BoundedUpstreamStream {
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.stream.local_addr()
+    }
+
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.peer_addr()
     }
 
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, UpstreamError> {
@@ -528,18 +624,17 @@ pub async fn resolve_allowed_udp(
     policy: &DestinationPolicy,
     budget: Duration,
 ) -> Result<Vec<SocketAddr>, UpstreamError> {
-    let resolved = timeout(budget, tokio::net::lookup_host(authority.lookup_host()))
-        .await
-        .map_err(|_| UpstreamError::new(UpstreamStage::Dns, "dns-timeout"))?
-        .map_err(|error| {
-            UpstreamError::with_detail(UpstreamStage::Dns, "dns-failed", error.to_string())
-        })?;
+    let resolved = resolve_authority(authority, budget).await?;
     let mut allowed = Vec::new();
     let mut saw_address = false;
-    for address in resolved {
+    for address in resolved.into_iter().take(MAX_RESOLVED_CANDIDATES) {
         saw_address = true;
         let decision = policy.evaluate(address);
-        if decision.allowed && !allowed.contains(&decision.address) {
+        if decision.allowed
+            && !allowed
+                .iter()
+                .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
+        {
             allowed.push(decision.address);
         }
     }
@@ -564,65 +659,259 @@ pub async fn connect_upstream_cancellable(
     if cancellation.is_cancelled() {
         return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
     }
-    let resolved = tokio::select! {
+    let addresses = tokio::select! {
         () = cancellation.cancelled() => {
             return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
         }
-        result = timeout(budgets.dns, tokio::net::lookup_host(authority.lookup_host())) => result,
-    }
-    .map_err(|_| UpstreamError::new(UpstreamStage::Dns, "dns-timeout"))?
-    .map_err(|error| {
-        UpstreamError::with_detail(UpstreamStage::Dns, "dns-failed", error.to_string())
-    })?;
-    let addresses: Vec<_> = resolved.collect();
+        result = resolve_authority(authority, budgets.dns) => result,
+    }?;
     if addresses.is_empty() {
         return Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"));
     }
+    let mut allowed = Vec::new();
     let mut last = None;
-    let deadline = Instant::now() + budgets.connect;
-    for address in addresses {
-        if cancellation.is_cancelled() {
-            return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
-        }
+    for address in addresses.into_iter().take(MAX_RESOLVED_CANDIDATES) {
         let decision = policy.evaluate(address);
         if !decision.allowed {
             last = Some(UpstreamError::new(UpstreamStage::Policy, decision.reason));
             continue;
         }
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Err(UpstreamError::new(UpstreamStage::Tcp, "connect-timeout"));
-        };
-        let attempt = tokio::select! {
-            () = cancellation.cancelled() => {
-                return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
-            }
-            result = timeout(remaining, TcpStream::connect(address)) => result,
-        };
-        match attempt {
-            Ok(Ok(stream)) => {
-                return Ok(BoundedUpstreamStream {
-                    stream,
-                    read_budget: budgets.read,
-                    write_budget: budgets.write,
-                })
-            }
-            Ok(Err(error)) => {
-                let code = match error.kind() {
-                    std::io::ErrorKind::ConnectionRefused => "connection-refused",
-                    std::io::ErrorKind::NetworkUnreachable => "network-unreachable",
-                    std::io::ErrorKind::HostUnreachable => "host-unreachable",
-                    _ => "connect-failed",
-                };
-                last = Some(UpstreamError::with_detail(
-                    UpstreamStage::Tcp,
-                    code,
-                    error.to_string(),
-                ))
-            }
-            Err(_) => last = Some(UpstreamError::new(UpstreamStage::Tcp, "connect-timeout")),
+        if !allowed
+            .iter()
+            .any(|existing| canonical_address(*existing) == canonical_address(decision.address))
+        {
+            allowed.push(decision.address);
         }
     }
-    Err(last.unwrap_or_else(|| UpstreamError::new(UpstreamStage::Policy, "destination-refused")))
+    if allowed.is_empty() {
+        return Err(last
+            .unwrap_or_else(|| UpstreamError::new(UpstreamStage::Policy, "destination-refused")));
+    }
+    let addresses = interleave_families(allowed);
+    race_candidates(
+        addresses,
+        budgets.connect,
+        CONNECTION_ATTEMPT_DELAY,
+        cancellation,
+        TcpStream::connect,
+    )
+    .await
+    .map(|stream| BoundedUpstreamStream {
+        stream,
+        read_budget: budgets.read,
+        write_budget: budgets.write,
+    })
+}
+
+async fn race_candidates<T, Connect, Attempt>(
+    addresses: Vec<SocketAddr>,
+    budget: Duration,
+    attempt_delay: Duration,
+    cancellation: &UpstreamCancellation,
+    connect: Connect,
+) -> Result<T, UpstreamError>
+where
+    T: Send + 'static,
+    Connect: Fn(SocketAddr) -> Attempt + Clone + Send + 'static,
+    Attempt: Future<Output = std::io::Result<T>> + Send + 'static,
+{
+    let mut attempts = JoinSet::new();
+    let mut failures = Vec::new();
+    let mut last = None;
+    for (index, address) in addresses.into_iter().enumerate() {
+        let connect = connect.clone();
+        attempts.spawn(async move {
+            tokio::time::sleep(attempt_delay.saturating_mul(index as u32)).await;
+            (index, connect(address).await)
+        });
+    }
+    let deadline = Instant::now() + budget;
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            attempts.abort_all();
+            while attempts.join_next().await.is_some() {}
+            return Err(UpstreamError::new(UpstreamStage::Tcp, "connect-timeout"));
+        };
+        let joined = tokio::select! {
+            () = cancellation.cancelled() => {
+                attempts.abort_all();
+                while attempts.join_next().await.is_some() {}
+                return Err(UpstreamError::new(UpstreamStage::Cancelled, "cancelled"));
+            }
+            result = timeout(remaining, attempts.join_next()) => result,
+        };
+        match joined {
+            Ok(Some(Ok((_index, Ok(stream))))) => {
+                attempts.abort_all();
+                while attempts.join_next().await.is_some() {}
+                return Ok(stream);
+            }
+            Ok(Some(Ok((index, Err(error))))) => {
+                failures.push((index, connect_error(error)));
+            }
+            Ok(Some(Err(error))) => {
+                last = Some(UpstreamError::with_detail(
+                    UpstreamStage::Tcp,
+                    "connect-task-failed",
+                    error.to_string(),
+                ));
+            }
+            Ok(None) => {
+                failures.sort_by_key(|(index, _)| *index);
+                return Err(failures
+                    .into_iter()
+                    .next()
+                    .map(|(_, error)| error)
+                    .or(last)
+                    .unwrap_or_else(|| UpstreamError::new(UpstreamStage::Tcp, "connect-failed")));
+            }
+            Err(_) => {
+                attempts.abort_all();
+                while attempts.join_next().await.is_some() {}
+                return Err(UpstreamError::new(UpstreamStage::Tcp, "connect-timeout"));
+            }
+        }
+    }
+}
+
+async fn resolve_authority(
+    authority: &DestinationAuthority,
+    budget: Duration,
+) -> Result<Vec<SocketAddr>, UpstreamError> {
+    if let Some(address) = authority.literal_address() {
+        return Ok(vec![address]);
+    }
+    let resolved = timeout(budget, tokio::net::lookup_host(authority.lookup_host()))
+        .await
+        .map_err(|_| UpstreamError::new(UpstreamStage::Dns, "dns-timeout"))?
+        .map_err(|error| {
+            UpstreamError::with_detail(UpstreamStage::Dns, "dns-failed", error.to_string())
+        })?;
+    let addresses: Vec<_> = resolved.take(MAX_RESOLVED_CANDIDATES).collect();
+    if addresses.is_empty() {
+        Err(UpstreamError::new(UpstreamStage::Dns, "dns-empty"))
+    } else {
+        Ok(addresses)
+    }
+}
+
+fn interleave_families(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let prefer_v6 = addresses.first().is_some_and(SocketAddr::is_ipv6);
+    let (v6, v4): (Vec<_>, Vec<_>) = addresses.into_iter().partition(SocketAddr::is_ipv6);
+    let mut v6 = v6.into_iter();
+    let mut v4 = v4.into_iter();
+    let mut ordered = Vec::new();
+    loop {
+        let pair = if prefer_v6 {
+            (v6.next(), v4.next())
+        } else {
+            (v4.next(), v6.next())
+        };
+        if pair.0.is_none() && pair.1.is_none() {
+            break;
+        }
+        ordered.extend(pair.0);
+        ordered.extend(pair.1);
+    }
+    ordered
+}
+
+fn connect_error(error: std::io::Error) -> UpstreamError {
+    let code = match error.kind() {
+        std::io::ErrorKind::ConnectionRefused => "connection-refused",
+        std::io::ErrorKind::NetworkUnreachable => "network-unreachable",
+        std::io::ErrorKind::HostUnreachable => "host-unreachable",
+        _ => "connect-failed",
+    };
+    UpstreamError::with_detail(UpstreamStage::Tcp, code, error.to_string())
+}
+
+#[cfg(test)]
+mod address_tests {
+    use std::future::pending;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::{
+        canonical_address, interleave_families, race_candidates, UpstreamCancellation,
+        UpstreamStage,
+    };
+
+    #[test]
+    fn candidate_order_interleaves_families_from_the_resolver_preference() {
+        let addresses = vec![
+            "[2001:db8::1]:443".parse().unwrap(),
+            "[2001:db8::2]:443".parse().unwrap(),
+            "192.0.2.1:443".parse().unwrap(),
+            "192.0.2.2:443".parse().unwrap(),
+        ];
+        assert_eq!(
+            interleave_families(addresses),
+            vec![
+                "[2001:db8::1]:443".parse().unwrap(),
+                "192.0.2.1:443".parse().unwrap(),
+                "[2001:db8::2]:443".parse().unwrap(),
+                "192.0.2.2:443".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mapped_and_native_ipv4_have_one_canonical_peer_identity() {
+        assert_eq!(
+            canonical_address("[::ffff:192.0.2.1]:443".parse().unwrap()),
+            "192.0.2.1:443".parse().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn one_hundred_staggered_races_return_one_winner_and_drain_losers() {
+        let addresses = vec![
+            "[2001:db8::1]:1".parse().unwrap(),
+            "192.0.2.1:2".parse().unwrap(),
+            "[2001:db8::2]:3".parse().unwrap(),
+        ];
+        for _ in 0..100 {
+            let starts = Arc::new(Mutex::new(Vec::new()));
+            let observed = Arc::clone(&starts);
+            let winner = race_candidates(
+                addresses.clone(),
+                Duration::from_millis(500),
+                Duration::from_millis(50),
+                &UpstreamCancellation::default(),
+                move |address| {
+                    let observed = Arc::clone(&observed);
+                    async move {
+                        observed.lock().unwrap().push(address.port());
+                        if address.port() == 2 {
+                            Ok(address)
+                        } else {
+                            pending().await
+                        }
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(winner.port(), 2);
+            assert_eq!(*starts.lock().unwrap(), vec![1, 2]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_race_timeout_drains_every_pending_attempt() {
+        let error = race_candidates(
+            vec!["192.0.2.1:1".parse().unwrap()],
+            Duration::from_millis(5),
+            Duration::ZERO,
+            &UpstreamCancellation::default(),
+            |_address| pending::<std::io::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.stage, UpstreamStage::Tcp);
+        assert_eq!(error.code, "connect-timeout");
+    }
 }
 
 pub fn native_tls_client_config() -> Result<Arc<ClientConfig>, UpstreamError> {

@@ -252,6 +252,18 @@ fn loopback_for(ip: IpAddr, port: u16) -> SocketAddr {
     }
 }
 
+fn client_endpoint_for(ip: IpAddr) -> Result<Endpoint, QuicRefusalCode> {
+    let socket = std::net::UdpSocket::bind(loopback_for(ip, 0))
+        .map_err(|_| QuicRefusalCode::TransportFailed)?;
+    Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        socket,
+        quinn::default_runtime().ok_or(QuicRefusalCode::TransportFailed)?,
+    )
+    .map_err(|_| QuicRefusalCode::TransportFailed)
+}
+
 async fn run_pair(
     server: &Endpoint,
     plan: QuicInspectionPlan,
@@ -280,8 +292,7 @@ async fn run_pair(
         return Err(QuicRefusalCode::AlpnUnsupported);
     }
 
-    let mut upstream = Endpoint::client(loopback_for(plan.origin_endpoint().ip(), 0))
-        .map_err(|_| QuicRefusalCode::TransportFailed)?;
+    let mut upstream = client_endpoint_for(plan.origin_endpoint().ip())?;
     upstream.set_default_client_config(build_quic_client_config(&upstream_tls, &limits)?);
     let connecting = upstream
         .connect(plan.origin_endpoint(), plan.server_name())
@@ -871,10 +882,15 @@ impl QuicInspectionPlan {
         origin: SocketAddr,
         authority: &DestinationAuthority,
     ) -> Result<(), QuicRefusalCode> {
-        if client != self.client_endpoint {
+        if crate::upstream::canonical_address(client)
+            != crate::upstream::canonical_address(self.client_endpoint)
+        {
             return Err(QuicRefusalCode::MigrationRefused);
         }
-        if origin != self.origin_endpoint || authority != &self.authority {
+        if crate::upstream::canonical_address(origin)
+            != crate::upstream::canonical_address(self.origin_endpoint)
+            || authority != &self.authority
+        {
             return Err(QuicRefusalCode::OriginChanged);
         }
         Ok(())

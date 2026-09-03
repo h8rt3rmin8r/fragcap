@@ -30,6 +30,8 @@ Integration
 
 Deep Capture
   proxy backend          ok    fragcap-native 0.8.0
+  IPv4 loopback listener ok    exact ephemeral bind to 127.0.0.1 succeeded
+  IPv6 loopback listener ok    exact ephemeral bind to ::1 succeeded
   local CA trust         ok    no fragcap Deep Capture CA trust found
   analyzer key log       ok    TLS key-log path is visible to this session
   proxy ports            ok    no stale Deep Capture proxy ports found

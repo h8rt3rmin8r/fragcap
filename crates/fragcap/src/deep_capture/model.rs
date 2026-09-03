@@ -293,8 +293,56 @@ impl Authorization {
 /// A loopback-only proxy endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoopbackEndpoint {
-    /// TCP port on 127.0.0.1.
-    pub port: u16,
+    address: SocketAddr,
+}
+
+impl LoopbackEndpoint {
+    /// Construct one exact loopback endpoint.
+    pub fn new(address: SocketAddr) -> Result<Self, PreflightRefusal> {
+        let mapped = matches!(
+            address.ip(),
+            std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()
+        );
+        if mapped || !address.ip().is_loopback() {
+            return Err(PreflightRefusal::new(
+                "non-loopback-endpoint",
+                "Deep Capture endpoints must use an exact loopback address",
+            ));
+        }
+        Ok(Self { address })
+    }
+
+    /// Return the exact authorized socket address.
+    pub fn address(self) -> SocketAddr {
+        self.address
+    }
+
+    /// Return the authorized port.
+    pub fn port(self) -> u16 {
+        self.address.port()
+    }
+}
+
+#[cfg(test)]
+mod loopback_endpoint_tests {
+    use super::LoopbackEndpoint;
+
+    #[test]
+    fn exact_ipv4_and_ipv6_loopback_are_the_only_valid_families() {
+        for valid in ["127.0.0.1:8080", "[::1]:8080"] {
+            let address = valid.parse().unwrap();
+            assert_eq!(LoopbackEndpoint::new(address).unwrap().address(), address);
+        }
+        for invalid in [
+            "0.0.0.0:8080",
+            "[::]:8080",
+            "192.0.2.1:8080",
+            "[::ffff:127.0.0.1]:8080",
+        ] {
+            let refusal = LoopbackEndpoint::new(invalid.parse().unwrap()).unwrap_err();
+            assert_eq!(refusal.code, "non-loopback-endpoint");
+        }
+    }
 }
 
 /// Selected proxy implementation.

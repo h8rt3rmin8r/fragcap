@@ -152,6 +152,7 @@ fragcap deep-capture sample-target --launch --trust-ca --har --key-log
 | `--max-bytes` | open | none | all | Stop after a byte count. |
 | `--max-packets` | open | none | all | Stop after this many captured packets. |
 | `--no-payload` | open | `false` | all | Write packet metadata without payload bytes. |
+| `--proxy-family` | `ipv4`, `ipv6` | `ipv4` | all | Bind the exact loopback family authorized by this session. No wildcard or automatic family fallback is used. |
 | `--target` | open | none | all | Explicit form of the stored-target selector. |
 | `--trust-ca` | open | `false` | all | Confirm the fragcap-owned CA trust change needed for HTTPS inspection. |
 | `--restart-warm` | open | `false` | all | Wait while the operator closes a warm application normally, then freshly prepare and authorize the cold launch. Conflicts with calibration. |

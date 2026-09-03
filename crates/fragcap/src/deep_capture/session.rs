@@ -203,7 +203,7 @@ impl DeepCaptureSession<'_> {
             }
         }
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
-        let proxy_target = format!("127.0.0.1:{}", self.plan.endpoint.port);
+        let proxy_target = self.plan.endpoint.address().to_string();
         if !self.record_resource(
             "proxy-listener",
             ResourceKind::Proxy,
@@ -558,7 +558,7 @@ impl DeepCaptureSession<'_> {
                     .shutdown
                     .saturating_sub(elapsed.saturating_sub(started)),
             );
-            let proxy_target = format!("127.0.0.1:{}", self.plan.endpoint.port);
+            let proxy_target = self.plan.endpoint.address().to_string();
             self.record_resource(
                 "proxy-listener",
                 ResourceKind::Proxy,
@@ -810,7 +810,7 @@ impl DeepCaptureSession<'_> {
             });
         }
         if let Some(mut proxy) = self.proxy.take() {
-            let target = format!("127.0.0.1:{}", self.plan.endpoint.port);
+            let target = self.plan.endpoint.address().to_string();
             self.record_resource(
                 "proxy-runtime",
                 ResourceKind::Proxy,

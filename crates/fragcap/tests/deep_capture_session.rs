@@ -36,7 +36,7 @@ impl TargetResolver for Targets {
 struct Endpoint;
 impl EndpointAllocator for Endpoint {
     fn select(&mut self) -> Result<LoopbackEndpoint, PreflightRefusal> {
-        Ok(LoopbackEndpoint { port: 31_337 })
+        Ok(LoopbackEndpoint::new("127.0.0.1:31337".parse().unwrap()).unwrap())
     }
 }
 
@@ -229,7 +229,7 @@ impl LaunchAdapter for Launch {
         route: &AppliedRoute,
         _: Budget,
     ) -> Result<Box<dyn LaunchLease>, StageFailure> {
-        assert_eq!(route.proxy().endpoint().port, 31_337);
+        assert_eq!(route.proxy().endpoint().port(), 31_337);
         self.0.borrow_mut().push("launch.start".into());
         Ok(Box::new(LaunchRun(self.0.clone())))
     }
@@ -518,7 +518,7 @@ fn released(resource: &str) -> CleanupResult {
 
 fn test_route() -> ProxyRoute {
     ProxyRoute::new(
-        LoopbackEndpoint { port: 31_337 },
+        LoopbackEndpoint::new("127.0.0.1:31337".parse().unwrap()).unwrap(),
         (
             "http://fragcap:test@127.0.0.1:31337".to_string().into(),
             "socks5h://fragcap:test@127.0.0.1:31337".to_string().into(),

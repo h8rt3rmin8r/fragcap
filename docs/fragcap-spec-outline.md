@@ -350,6 +350,11 @@ and upstream TLS identities, bounded stream and datagram evidence, and
 ALPN-selected HTTP/3 metadata and bodies. Zero round-trip data, active
 migration, route changes, trust failures, and unrouted QUIC remain explicit
 refusals or omissions.
+S119 completes address-family parity with one exact IPv4 or IPv6 loopback
+endpoint per authorized session, bracketed IPv6 routes, bounded numeric scoped
+literals, mapped-address canonical ownership, finite staggered dual-stack TCP
+selection, IPv6 coverage for HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC, and
+independent Doctor readiness for both loopback families.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

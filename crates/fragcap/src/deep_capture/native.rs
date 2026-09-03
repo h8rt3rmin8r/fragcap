@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -166,7 +166,7 @@ impl ProxyBackend for NativeProxyAdapter {
                 "the authorized plan and configured upstream client identity differ",
             ));
         }
-        let endpoint = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), plan.endpoint.port);
+        let endpoint = plan.endpoint.address();
         let protocol = fragcap_proxy::ProtocolLimits {
             capture_payloads: self.capture_payloads,
             ..fragcap_proxy::ProtocolLimits::default()
@@ -259,7 +259,7 @@ impl ProxyBackend for NativeProxyAdapter {
                     path,
                     &plan.session_id,
                     4_096,
-                    format!("127.0.0.1:{}", plan.endpoint.port),
+                    plan.endpoint.address().to_string(),
                 )
                 .map_err(|error| {
                     StageFailure::new(
@@ -378,9 +378,8 @@ impl ProxyLease for NativeProxyLease {
     fn route(&self) -> Result<ProxyRoute, StageFailure> {
         let endpoint = self.lease.endpoint();
         Ok(ProxyRoute::new(
-            LoopbackEndpoint {
-                port: endpoint.port(),
-            },
+            LoopbackEndpoint::new(endpoint)
+                .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?,
             (
                 self.lease.proxy_url(),
                 self.lease.capability_proof().socks5h_url(endpoint),

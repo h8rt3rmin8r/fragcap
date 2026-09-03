@@ -253,6 +253,7 @@ pub(crate) async fn serve_socks5(
                 request.address_type,
                 "refused",
                 None,
+                None,
             );
             return failed_with_observation(
                 accounting,
@@ -269,6 +270,7 @@ pub(crate) async fn serve_socks5(
         }
     };
     let bound = upstream.local_addr().ok();
+    let selected_peer = upstream.peer_addr().ok();
     if let Err(error) = write_reply(&mut client, SocksReplyCode::Succeeded, bound).await {
         accounting.socks_connect_refused = 1;
         return failed(
@@ -295,6 +297,7 @@ pub(crate) async fn serve_socks5(
         request.address_type,
         "connected",
         Some(classification),
+        selected_peer,
     );
     let provenance = match classification {
         SocksClassification::Tls => crate::GenericStreamProvenance::TlsEncrypted,
@@ -594,10 +597,13 @@ async fn serve_udp_association(
         if address.ip().is_unspecified() {
             SocketAddr::new(peer.ip(), address.port())
         } else {
-            normalize_socket(address)
+            crate::upstream::canonical_address(address)
         }
     });
-    if claimed.is_some_and(|address| normalize_ip(address.ip()) != normalize_ip(peer.ip())) {
+    if claimed.is_some_and(|address| {
+        crate::upstream::canonical_address(address).ip()
+            != crate::upstream::canonical_address(peer).ip()
+    }) {
         accounting.socks_udp_associate_refused = 1;
         let failure = SocksFailure::reply(
             "socks-udp-client-address-refused",
@@ -719,8 +725,12 @@ async fn serve_udp_association(
                     }
                 };
                 accounting.socks_udp_client_datagrams = accounting.socks_udp_client_datagrams.saturating_add(1);
-                if normalize_ip(source.ip()) != normalize_ip(peer.ip())
-                    || client_endpoint.is_some_and(|expected| normalize_socket(expected) != normalize_socket(source))
+                if crate::upstream::canonical_address(source).ip()
+                    != crate::upstream::canonical_address(peer).ip()
+                    || client_endpoint.is_some_and(|expected| {
+                        crate::upstream::canonical_address(expected)
+                            != crate::upstream::canonical_address(source)
+                    })
                 {
                     accounting.socks_udp_source_dropped = accounting.socks_udp_source_dropped.saturating_add(1);
                     emit_udp(sink, session_id, connection_id, "drop", "client-source-refused", None, Some(source), 0, peers.len());
@@ -1683,20 +1693,6 @@ fn encode_udp_response(source: SocketAddr, payload: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn normalize_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(ip) => ip
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(ip)),
-        ip => ip,
-    }
-}
-
-fn normalize_socket(address: SocketAddr) -> SocketAddr {
-    SocketAddr::new(normalize_ip(address.ip()), address.port())
-}
-
 fn address_type(address: SocketAddr) -> SocksAddressType {
     match address {
         SocketAddr::V4(_) => SocksAddressType::Ipv4,
@@ -1863,6 +1859,10 @@ async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassific
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the event preserves one complete SOCKS connection outcome"
+)]
 fn emit_connect(
     sink: &crate::application::SharedEventSink,
     session_id: &str,
@@ -1871,6 +1871,7 @@ fn emit_connect(
     address_type: SocksAddressType,
     outcome: &'static str,
     classification: Option<SocksClassification>,
+    selected_peer: Option<SocketAddr>,
 ) {
     crate::application::emit(
         sink,
@@ -1881,6 +1882,7 @@ fn emit_connect(
             None,
             ApplicationEventKind::SocksConnect(SocksConnectEvent {
                 authority: authority.to_string(),
+                selected_peer,
                 address_type: address_type.as_str(),
                 dns_owner: if address_type == SocksAddressType::Domain {
                     "proxy"

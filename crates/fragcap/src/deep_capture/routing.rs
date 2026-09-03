@@ -334,7 +334,7 @@ mod tests {
                 name: "test".to_string(),
                 version: "1".to_string(),
             },
-            endpoint: LoopbackEndpoint { port: 8080 },
+            endpoint: LoopbackEndpoint::new("127.0.0.1:8080".parse().unwrap()).unwrap(),
             bundle: PathBuf::from("bundle"),
             routing,
             trust_ca: true,

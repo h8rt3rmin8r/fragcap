@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::io::IsTerminal;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
@@ -41,7 +41,7 @@ use serde_json::json;
 use crate::args::Direction;
 use crate::cli::{
     CaptureArgs, ControlledTargetArgs, DeepCaptureArgs, DeepCaptureCalibrationArg,
-    DeepCaptureLaunchCaseArg, OfflineArgs, ScopeArg,
+    DeepCaptureLaunchCaseArg, DeepCaptureProxyFamilyArg, OfflineArgs, ScopeArg,
 };
 use crate::commands::{capture, target_resolve};
 use crate::emit::Emitter;
@@ -580,15 +580,20 @@ fn library_refusal(code: &'static str, error: CliError) -> fragcap::deep_capture
     fragcap::deep_capture::PreflightRefusal::new(code, error.to_string())
 }
 
-struct LibraryEndpointAdapter;
+struct LibraryEndpointAdapter {
+    family: DeepCaptureProxyFamilyArg,
+}
 
 impl fragcap::deep_capture::EndpointAllocator for LibraryEndpointAdapter {
     fn select(
         &mut self,
     ) -> Result<fragcap::deep_capture::LoopbackEndpoint, fragcap::deep_capture::PreflightRefusal>
     {
-        select_loopback_port()
-            .map(|port| fragcap::deep_capture::LoopbackEndpoint { port })
+        select_loopback_endpoint(self.family)
+            .and_then(|address| {
+                fragcap::deep_capture::LoopbackEndpoint::new(address)
+                    .map_err(|error| CliError::failure(error.detail))
+            })
             .map_err(|error| library_refusal("loopback-endpoint", error))
     }
 }
@@ -630,7 +635,7 @@ struct LibraryRuntime {
     backend: Option<ProxyBackend>,
     trust: Option<TrustOutcome>,
     observations: Vec<Observation>,
-    listen_port: Option<u16>,
+    listen_endpoint: Option<SocketAddr>,
     started_at: Option<SystemTime>,
 }
 
@@ -1010,7 +1015,14 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             target_id: snapshot.target.id,
             backend,
             launch_case,
-            listen_port: runtime.listen_port.unwrap_or_default(),
+            listen_addr: runtime
+                .listen_endpoint
+                .map(|endpoint| endpoint.ip().to_string())
+                .unwrap_or_default(),
+            listen_port: runtime
+                .listen_endpoint
+                .map(|endpoint| endpoint.port())
+                .unwrap_or_default(),
             started_at: runtime.started_at.unwrap_or(snapshot.finished_at),
         };
         let trust = runtime.trust.clone().unwrap_or(TrustOutcome {
@@ -1237,7 +1249,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                         name: plan.proxy_backend.name.clone(),
                         version: plan.proxy_backend.version.clone(),
                     });
-                    runtime.listen_port = Some(plan.endpoint.port);
+                    runtime.listen_endpoint = Some(plan.endpoint.address());
                     runtime.started_at = Some(SystemTime::now());
                 }
                 let target = self
@@ -1275,8 +1287,14 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     session_id: session_id.clone(),
                     backend: backend.name.clone(),
                     version: backend.version.clone(),
-                    listen_addr: "127.0.0.1".to_string(),
-                    listen_port: runtime.listen_port.unwrap_or_default(),
+                    listen_addr: runtime
+                        .listen_endpoint
+                        .map(|endpoint| endpoint.ip().to_string())
+                        .unwrap_or_default(),
+                    listen_port: runtime
+                        .listen_endpoint
+                        .map(|endpoint| endpoint.port())
+                        .unwrap_or_default(),
                 });
                 if self.args.key_log {
                     emitter.event(&Event::DeepCaptureKeyLogReady {
@@ -1521,7 +1539,9 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             selected: Rc::clone(&selected),
             selected_launch_case: Rc::clone(&selected_launch_case),
         }),
-        endpoints: Box::new(LibraryEndpointAdapter),
+        endpoints: Box::new(LibraryEndpointAdapter {
+            family: args.proxy_family,
+        }),
         clock: Box::new(LibraryClockAdapter {
             started: Instant::now(),
         }),
@@ -1737,6 +1757,7 @@ struct DeepCaptureSession {
     target_id: i64,
     backend: ProxyBackend,
     launch_case: CompatibilityLaunchCase,
+    listen_addr: String,
     listen_port: u16,
     started_at: SystemTime,
 }
@@ -2004,12 +2025,15 @@ fn resolve_target(store: &Store, args: &DeepCaptureArgs) -> Result<TargetEntry, 
     }
 }
 
-fn select_loopback_port() -> Result<u16, CliError> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
+fn select_loopback_endpoint(family: DeepCaptureProxyFamilyArg) -> Result<SocketAddr, CliError> {
+    let address = match family {
+        DeepCaptureProxyFamilyArg::Ipv4 => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        DeepCaptureProxyFamilyArg::Ipv6 => SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+    };
+    let listener = TcpListener::bind(address)
         .map_err(|e| CliError::failure(format!("cannot reserve a Deep Capture port: {e}")))?;
     listener
         .local_addr()
-        .map(|addr| addr.port())
         .map_err(|e| CliError::failure(format!("cannot read the reserved proxy port: {e}")))
 }
 
@@ -2335,7 +2359,7 @@ fn run_controlled_target_harness(
         .env("NO_PROXY", "")
         .env(
             "FRAGCAP_NATIVE_PROXY_ENDPOINT",
-            format!("127.0.0.1:{}", route.endpoint().port),
+            route.endpoint().address().to_string(),
         )
         .env(
             "FRAGCAP_NATIVE_PROXY_AUTHORIZATION",
@@ -3125,7 +3149,7 @@ fn manifest_json(
             "backend": ctx.session.backend.name,
             "version": ctx.session.backend.version,
             "mode": "launch-scoped-env",
-            "listen_addr": "127.0.0.1",
+            "listen_addr": ctx.session.listen_addr,
             "listen_port": ctx.session.listen_port,
         },
         "trust": {
