@@ -277,3 +277,13 @@ rechecked by the existing destination policy with no transparent fallback.
 Bypass is recorded as scope rather than proxy loss; proxy-only evidence marks
 the direct bypass count unavailable instead of inferring zero. S122 closes
 Native Deep Capture milestone 3; Deep Capture remains incomplete until #334.
+
+S123 (`specs/123-process-lifecycle-evidence`) follows S122 and closes #319 at
+the complete process lifecycle evidence boundary. Managed launch receipts,
+bounded ETW starts and exits, query-only snapshots, declared stage transitions,
+packet-derived socket ownership, and terminal state reconcile into one
+versioned `process-trace.jsonl` stream. PID plus observed creation time defines
+an instance, so reuse and out-of-order delivery cannot transfer identity.
+Watcher, retention, and unresolved-join loss remain distinct, while the trace
+trailer drives compatibility and manifest truth. Deep Capture remains
+incomplete until #334.

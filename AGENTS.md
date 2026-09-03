@@ -501,6 +501,17 @@ routes from their terminal outcome. Its bypass count is explicitly unavailable
 until packet evidence localizes a direct destination; it is never reported as
 a factual zero from proxy silence.
 
+S123 closes #319 at the complete process lifecycle evidence boundary. The
+shared capture orchestrator retains a bounded report of the startup snapshot,
+managed launch receipt, streamed process starts and exits, declared stage
+transitions, watcher loss, and terminal state. The facade reconciles relevant
+process instances by PID plus observed creation time and derives socket-owner
+intervals only from the existing flow registry. `process-trace.jsonl` is a
+versioned crash-readable stream with one final trailer, and that trailer drives
+compatibility and manifest finalization, completeness, loss, and correlation.
+No target handle, memory right, second attribution mechanism, dependency, or
+Deep Capture completion claim is added.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

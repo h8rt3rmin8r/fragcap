@@ -331,6 +331,28 @@ impl FlowRegistry {
                 global_unretained_observations: self.globally_unretained(),
             })
     }
+
+    /// Snapshot every registered flow in stable session-id order.
+    ///
+    /// The registry's hash-map iteration order is intentionally not evidence.
+    /// Deep Capture consumers use this immutable view when reconciling packet,
+    /// application, and process artifacts after acquisition has stopped.
+    pub fn summaries(&self) -> Vec<FlowSummary> {
+        let state = self.state.lock().expect("flow registry mutex poisoned");
+        let global = self.globally_unretained();
+        let mut summaries = state
+            .flows
+            .values()
+            .map(|flow| FlowSummary {
+                id: flow.id,
+                observations: flow.observations.clone(),
+                unretained_observations: flow.unretained_observations,
+                global_unretained_observations: global,
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by_key(|summary| summary.id.ordinal());
+        summaries
+    }
 }
 
 impl FlowKey {
@@ -429,6 +451,19 @@ mod tests {
             addr("192.0.2.10:30000"),
             addr("198.51.100.5:5055"),
         )
+    }
+
+    #[test]
+    fn all_flow_snapshot_is_ordered_by_session_identifier() {
+        let registry = FlowRegistry::with_history_limit(8);
+        let second = udp();
+        let first = tcp();
+        assert_eq!(registry.assign(second).ordinal(), 1);
+        assert_eq!(registry.assign(first).ordinal(), 2);
+        let summaries = registry.summaries();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].id.ordinal(), 1);
+        assert_eq!(summaries[1].id.ordinal(), 2);
     }
 
     // V-3. The whole point of the type. Asserted for each protocol separately,

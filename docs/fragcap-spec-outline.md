@@ -368,6 +368,11 @@ infrastructure exclusion, complete upper/lowercase child environment ownership,
 per-answer local-destination enforcement, and additive routing-policy evidence.
 It closes Native Deep Capture milestone 3 without claiming Deep Capture
 completion before the final #334 gate.
+S123 adds bounded process lifecycle collection and a versioned process trace.
+Managed launch, ETW creation and exit, query snapshots, stage transitions,
+packet-derived socket ownership, watcher loss, and terminal state reconcile by
+process instance and shared flow identifier. Missing authority weakens the
+trailer and therefore the compatibility and manifest claims.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

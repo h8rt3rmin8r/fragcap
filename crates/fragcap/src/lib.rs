@@ -30,7 +30,8 @@ pub mod core {
     pub use fragcap_core::duration::DurationError;
     pub use fragcap_core::error::{AttrError, SinkError, SourceError};
     pub use fragcap_core::flow::{
-        AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowRegistry, Proto,
+        AttributionKey, Direction, Endpoint, FlowId, FlowKey, FlowObservation, FlowRegistry,
+        FlowSummary, Proto,
     };
     pub use fragcap_core::interface::{
         is_loopback_adapter, select, virtual_verdict, InterfaceId, InterfaceInventory,
