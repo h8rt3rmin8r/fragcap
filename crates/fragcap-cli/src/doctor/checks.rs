@@ -444,6 +444,16 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             Check::warn(DEEP_CAPTURE, "proxy backend", detail)
         }
     });
+    checks.push(loopback_check(
+        "IPv4 loopback listener",
+        "127.0.0.1",
+        &dc.ipv4_loopback,
+    ));
+    checks.push(loopback_check(
+        "IPv6 loopback listener",
+        "::1",
+        &dc.ipv6_loopback,
+    ));
     checks.push(match &dc.ca {
         DeepCaptureCa::Absent => Check::ok(
             DEEP_CAPTURE,
@@ -574,6 +584,30 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
     checks
 }
 
+fn loopback_check(
+    name: &'static str,
+    address: &'static str,
+    readiness: &crate::doctor::LoopbackReadiness,
+) -> Check {
+    match readiness {
+        crate::doctor::LoopbackReadiness::Ready => Check::ok(
+            DEEP_CAPTURE,
+            name,
+            format!("exact ephemeral bind to {address} succeeded"),
+        ),
+        crate::doctor::LoopbackReadiness::Unavailable(reason) => Check::warn(
+            DEEP_CAPTURE,
+            name,
+            format!("exact ephemeral bind to {address} failed: {reason}"),
+        ),
+        crate::doctor::LoopbackReadiness::Undetermined => Check::warn(
+            DEEP_CAPTURE,
+            name,
+            format!("exact loopback bind readiness for {address} is undetermined"),
+        ),
+    }
+}
+
 fn residue_check(
     name: &'static str,
     clean: &'static str,
@@ -613,7 +647,9 @@ fn join_u16(values: &[u16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doctor::{DeepCaptureInputs, IfaceInfo, NpcapInfo, ProxyBackendInfo, Status};
+    use crate::doctor::{
+        DeepCaptureInputs, IfaceInfo, LoopbackReadiness, NpcapInfo, ProxyBackendInfo, Status,
+    };
     use crate::exit::Exit;
 
     fn ready_inputs() -> Inputs {
@@ -667,6 +703,8 @@ mod tests {
                     version: Some("0.8.0".to_string()),
                 }),
                 proxy_backend_error: None,
+                ipv4_loopback: LoopbackReadiness::Ready,
+                ipv6_loopback: LoopbackReadiness::Ready,
                 analyzer_keylog_configured: true,
                 ca: DeepCaptureCa::Absent,
                 occupied_proxy_ports: Some(Vec::new()),

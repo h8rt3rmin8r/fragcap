@@ -26,7 +26,7 @@ fn plan(session: &str) -> SessionPlan {
             name: "fragcap-native".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
-        endpoint: LoopbackEndpoint { port: 0 },
+        endpoint: LoopbackEndpoint::new("127.0.0.1:0".parse().unwrap()).unwrap(),
         bundle: PathBuf::from("unused-controlled-bundle"),
         routing: RoutingPlan::child_environment(),
         trust_ca: true,
@@ -52,9 +52,7 @@ fn public_native_adapter_runs_real_controlled_http_and_tls_without_leaking_route
     assert!(!debug.contains(route.proxy_url()));
     let (http, https) = route.controlled_origins().unwrap();
     run_controlled_native_requests(
-        format!("127.0.0.1:{}", route.endpoint().port)
-            .parse()
-            .unwrap(),
+        route.endpoint().address().to_string().parse().unwrap(),
         route.proxy_authorization(),
         http,
         https,

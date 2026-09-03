@@ -76,6 +76,17 @@ pub struct ProxyBackendInfo {
     pub version: Option<String>,
 }
 
+/// Read-only readiness of one exact Deep Capture loopback family.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoopbackReadiness {
+    /// An ephemeral exact loopback bind succeeded.
+    Ready,
+    /// The operating system refused or could not create the bind.
+    Unavailable(String),
+    /// No implemented probe could determine readiness.
+    Undetermined,
+}
+
 /// What doctor knows about fragcap-owned Deep Capture CA trust.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeepCaptureCa {
@@ -106,6 +117,10 @@ pub struct DeepCaptureInputs {
     pub proxy_backend: Option<ProxyBackendInfo>,
     /// Probe error for the proxy backend, when detection failed after finding it.
     pub proxy_backend_error: Option<String>,
+    /// Exact IPv4 loopback listener readiness.
+    pub ipv4_loopback: LoopbackReadiness,
+    /// Exact IPv6 loopback listener readiness.
+    pub ipv6_loopback: LoopbackReadiness,
     /// Whether analyzer key-log configuration is visible to this process.
     pub analyzer_keylog_configured: bool,
     /// The fragcap-owned CA trust state.

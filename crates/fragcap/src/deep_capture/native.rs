@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -57,6 +57,82 @@ pub struct NativeProxyAdapter {
     key_log_artifact: Option<PathBuf>,
     capture_payloads: bool,
     client_identity: Option<ClientIdentity>,
+    listener_reservation: Option<NativeListenerReservation>,
+}
+
+/// Exact listener ownership retained from endpoint selection through startup.
+#[derive(Clone, Default)]
+pub struct NativeListenerReservation {
+    listener: Arc<Mutex<Option<TcpListener>>>,
+}
+
+impl NativeListenerReservation {
+    /// Bind and retain one exact loopback listener for the pending plan.
+    pub fn reserve(
+        &self,
+        address: SocketAddr,
+    ) -> Result<LoopbackEndpoint, super::PreflightRefusal> {
+        let requested = LoopbackEndpoint::new(address)?;
+        let listener = TcpListener::bind(requested.address()).map_err(|error| {
+            super::PreflightRefusal::new(
+                "listener-reservation-failed",
+                format!("cannot reserve {address}: {error}"),
+            )
+        })?;
+        let endpoint = listener.local_addr().map_err(|error| {
+            super::PreflightRefusal::new(
+                "listener-address-failed",
+                format!("cannot read reserved listener endpoint: {error}"),
+            )
+        })?;
+        let endpoint = LoopbackEndpoint::new(endpoint)?;
+        let mut slot = self.listener.lock().map_err(|_| {
+            super::PreflightRefusal::new(
+                "listener-reservation-poisoned",
+                "the exact listener reservation owner is unavailable",
+            )
+        })?;
+        if slot.is_some() {
+            return Err(super::PreflightRefusal::new(
+                "listener-already-reserved",
+                "the session already owns an exact listener reservation",
+            ));
+        }
+        *slot = Some(listener);
+        Ok(endpoint)
+    }
+
+    fn take(&self, expected: SocketAddr) -> Result<TcpListener, StageFailure> {
+        let mut slot = self.listener.lock().map_err(|_| {
+            StageFailure::new(
+                Stage::ProxyStart,
+                "listener-reservation-poisoned",
+                "the exact listener reservation owner is unavailable",
+            )
+        })?;
+        let listener = slot.take().ok_or_else(|| {
+            StageFailure::new(
+                Stage::ProxyStart,
+                "listener-reservation-missing",
+                "the authorized endpoint no longer has its exact listener reservation",
+            )
+        })?;
+        let actual = listener.local_addr().map_err(|error| {
+            StageFailure::new(
+                Stage::ProxyStart,
+                "listener-address-failed",
+                format!("cannot read reserved listener endpoint: {error}"),
+            )
+        })?;
+        if actual != expected {
+            return Err(StageFailure::new(
+                Stage::ProxyStart,
+                "listener-reservation-mismatch",
+                format!("reserved listener {actual} does not match authorized endpoint {expected}"),
+            ));
+        }
+        Ok(listener)
+    }
 }
 
 /// Session-owned bridge between packet truth and native proxy observations.
@@ -96,6 +172,7 @@ impl NativeProxyAdapter {
             key_log_artifact: None,
             capture_payloads: true,
             client_identity: None,
+            listener_reservation: None,
         }
     }
 
@@ -138,6 +215,12 @@ impl NativeProxyAdapter {
         self.client_identity = Some(identity);
         self
     }
+
+    /// Consume the exact listener retained by endpoint selection at startup.
+    pub fn with_listener_reservation(mut self, reservation: NativeListenerReservation) -> Self {
+        self.listener_reservation = Some(reservation);
+        self
+    }
 }
 
 impl Default for NativeProxyAdapter {
@@ -166,7 +249,7 @@ impl ProxyBackend for NativeProxyAdapter {
                 "the authorized plan and configured upstream client identity differ",
             ));
         }
-        let endpoint = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), plan.endpoint.port);
+        let endpoint = plan.endpoint.address();
         let protocol = fragcap_proxy::ProtocolLimits {
             capture_payloads: self.capture_payloads,
             ..fragcap_proxy::ProtocolLimits::default()
@@ -259,7 +342,7 @@ impl ProxyBackend for NativeProxyAdapter {
                     path,
                     &plan.session_id,
                     4_096,
-                    format!("127.0.0.1:{}", plan.endpoint.port),
+                    plan.endpoint.address().to_string(),
                 )
                 .map_err(|error| {
                     StageFailure::new(
@@ -271,6 +354,9 @@ impl ProxyBackend for NativeProxyAdapter {
             })
             .transpose()?;
         let mut backend = RuntimeBackend::new(config);
+        if let Some(reservation) = &self.listener_reservation {
+            backend = backend.with_reserved_listener(reservation.take(endpoint)?);
+        }
         let key_log = if plan.artifacts.key_log {
             let path = self.key_log_artifact.as_ref().ok_or_else(|| {
                 StageFailure::new(
@@ -378,9 +464,8 @@ impl ProxyLease for NativeProxyLease {
     fn route(&self) -> Result<ProxyRoute, StageFailure> {
         let endpoint = self.lease.endpoint();
         Ok(ProxyRoute::new(
-            LoopbackEndpoint {
-                port: endpoint.port(),
-            },
+            LoopbackEndpoint::new(endpoint)
+                .map_err(|error| StageFailure::new(Stage::ProxyStart, error.code, error.detail))?,
             (
                 self.lease.proxy_url(),
                 self.lease.capability_proof().socks5h_url(endpoint),
@@ -979,6 +1064,16 @@ fn cleanup_result(resource: &str, report: &ShutdownReport) -> CleanupResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_reservation_owns_the_selected_socket_until_consumed() {
+        let reservation = NativeListenerReservation::default();
+        let endpoint = reservation.reserve("127.0.0.1:0".parse().unwrap()).unwrap();
+        assert!(TcpListener::bind(endpoint.address()).is_err());
+
+        let listener = reservation.take(endpoint.address()).unwrap();
+        assert_eq!(listener.local_addr().unwrap(), endpoint.address());
+    }
     use fragcap_core::{Attribution, Timestamp};
 
     #[test]

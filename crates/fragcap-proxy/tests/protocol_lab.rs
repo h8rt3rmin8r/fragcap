@@ -5,8 +5,8 @@ mod protocol_lab_support;
 use std::collections::BTreeSet;
 
 use protocol_lab_support::{
-    execute_scenario, fixture_is_synthetic, matrix, outcome_code, protocol_round_trip, CaseKind,
-    OutputExpectation, CASES, PROTOCOLS,
+    execute_scenario, fixture_is_synthetic, ipv6_required_round_trip, matrix, outcome_code,
+    protocol_round_trip, CaseKind, OutputExpectation, ProtocolFamily, CASES, PROTOCOLS,
 };
 
 #[tokio::test]
@@ -29,6 +29,22 @@ async fn complete_protocol_failure_matrix_is_deterministic_and_conserved() {
             scenario.cleanup == OutputExpectation::ExplicitFailure,
             scenario.case == CaseKind::CleanupFailure
         );
+    }
+}
+
+#[tokio::test]
+async fn required_ipv6_transport_rows_use_real_loopback_endpoints() {
+    let payload = b"fragcap.test/s119/ipv6-transport";
+    for protocol in [
+        ProtocolFamily::Http1,
+        ProtocolFamily::Https,
+        ProtocolFamily::Socks,
+        ProtocolFamily::RawTcp,
+        ProtocolFamily::Udp,
+        ProtocolFamily::Quic,
+    ] {
+        let echoed = ipv6_required_round_trip(protocol, payload).await;
+        assert_eq!(echoed, payload, "{protocol:?}");
     }
 }
 

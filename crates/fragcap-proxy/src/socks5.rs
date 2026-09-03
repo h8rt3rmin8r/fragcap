@@ -253,6 +253,8 @@ pub(crate) async fn serve_socks5(
                 request.address_type,
                 "refused",
                 None,
+                None,
+                None,
             );
             return failed_with_observation(
                 accounting,
@@ -269,6 +271,7 @@ pub(crate) async fn serve_socks5(
         }
     };
     let bound = upstream.local_addr().ok();
+    let selected_peer = upstream.peer_addr().ok();
     if let Err(error) = write_reply(&mut client, SocksReplyCode::Succeeded, bound).await {
         accounting.socks_connect_refused = 1;
         return failed(
@@ -295,6 +298,8 @@ pub(crate) async fn serve_socks5(
         request.address_type,
         "connected",
         Some(classification),
+        bound,
+        selected_peer,
     );
     let provenance = match classification {
         SocksClassification::Tls => crate::GenericStreamProvenance::TlsEncrypted,
@@ -594,10 +599,13 @@ async fn serve_udp_association(
         if address.ip().is_unspecified() {
             SocketAddr::new(peer.ip(), address.port())
         } else {
-            normalize_socket(address)
+            crate::upstream::canonical_address(address)
         }
     });
-    if claimed.is_some_and(|address| normalize_ip(address.ip()) != normalize_ip(peer.ip())) {
+    if claimed.is_some_and(|address| {
+        crate::upstream::canonical_address(address).ip()
+            != crate::upstream::canonical_address(peer).ip()
+    }) {
         accounting.socks_udp_associate_refused = 1;
         let failure = SocksFailure::reply(
             "socks-udp-client-address-refused",
@@ -719,8 +727,12 @@ async fn serve_udp_association(
                     }
                 };
                 accounting.socks_udp_client_datagrams = accounting.socks_udp_client_datagrams.saturating_add(1);
-                if normalize_ip(source.ip()) != normalize_ip(peer.ip())
-                    || client_endpoint.is_some_and(|expected| normalize_socket(expected) != normalize_socket(source))
+                if crate::upstream::canonical_address(source).ip()
+                    != crate::upstream::canonical_address(peer).ip()
+                    || client_endpoint.is_some_and(|expected| {
+                        crate::upstream::canonical_address(expected)
+                            != crate::upstream::canonical_address(source)
+                    })
                 {
                     accounting.socks_udp_source_dropped = accounting.socks_udp_source_dropped.saturating_add(1);
                     emit_udp(sink, session_id, connection_id, "drop", "client-source-refused", None, Some(source), 0, peers.len());
@@ -929,7 +941,7 @@ async fn serve_udp_association(
                 if quic.as_ref().is_some_and(|gateway| gateway.plan().origin_endpoint() == selected) {
                     accounting.quic_pairs_started = accounting.quic_pairs_started.max(1);
                 }
-                peers.insert(selected);
+                peers.insert(crate::upstream::canonical_address(selected));
                 accounting.socks_udp_peak_peers = accounting.socks_udp_peak_peers.max(peers.len() as u64);
                 accounting.socks_udp_client_forwarded = accounting.socks_udp_client_forwarded.saturating_add(1);
                 accounting.socks_udp_client_bytes = accounting.socks_udp_client_bytes.saturating_add(written as u64);
@@ -1192,10 +1204,12 @@ where
     let selected = candidates
         .iter()
         .copied()
-        .find(|address| peers.contains(address))
+        .find(|address| peers.contains(&crate::upstream::canonical_address(*address)))
         .or_else(|| candidates.first().copied())
         .ok_or(UdpForwardFailure::Resolution)?;
-    if !peers.contains(&selected) && peers.len() >= limits.max_socks_udp_peers {
+    if !peers.contains(&crate::upstream::canonical_address(selected))
+        && peers.len() >= limits.max_socks_udp_peers
+    {
         return Err(UdpForwardFailure::PeerLimit(selected));
     }
     if quic.is_some() || crate::is_quic_initial(payload) {
@@ -1335,7 +1349,7 @@ async fn handle_upstream_datagram(
         );
         return false;
     }
-    if !peers.contains(&source) || client_endpoint.is_none() {
+    if !peers.contains(&crate::upstream::canonical_address(source)) || client_endpoint.is_none() {
         accounting.socks_udp_unsolicited_dropped =
             accounting.socks_udp_unsolicited_dropped.saturating_add(1);
         emit_udp(
@@ -1683,20 +1697,6 @@ fn encode_udp_response(source: SocketAddr, payload: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn normalize_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(ip) => ip
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(ip)),
-        ip => ip,
-    }
-}
-
-fn normalize_socket(address: SocketAddr) -> SocketAddr {
-    SocketAddr::new(normalize_ip(address.ip()), address.port())
-}
-
 fn address_type(address: SocketAddr) -> SocksAddressType {
     match address {
         SocketAddr::V4(_) => SocksAddressType::Ipv4,
@@ -1863,6 +1863,10 @@ async fn classify_prefix(stream: &TcpStream, budget: Duration) -> SocksClassific
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the event preserves one complete SOCKS connection outcome"
+)]
 fn emit_connect(
     sink: &crate::application::SharedEventSink,
     session_id: &str,
@@ -1871,6 +1875,8 @@ fn emit_connect(
     address_type: SocksAddressType,
     outcome: &'static str,
     classification: Option<SocksClassification>,
+    upstream_local: Option<SocketAddr>,
+    selected_peer: Option<SocketAddr>,
 ) {
     crate::application::emit(
         sink,
@@ -1881,6 +1887,8 @@ fn emit_connect(
             None,
             ApplicationEventKind::SocksConnect(SocksConnectEvent {
                 authority: authority.to_string(),
+                upstream_local,
+                selected_peer,
                 address_type: address_type.as_str(),
                 dns_owner: if address_type == SocksAddressType::Domain {
                     "proxy"
@@ -2065,6 +2073,18 @@ mod tests {
         assert_eq!(&encoded[4..20], &Ipv6Addr::LOCALHOST.octets());
         assert_eq!(&encoded[20..22], &4242_u16.to_be_bytes());
         assert_eq!(&encoded[22..], b"reply");
+    }
+
+    #[test]
+    fn udp_peer_ownership_collapses_mapped_and_native_aliases() {
+        let mapped: SocketAddr = "[::ffff:192.0.2.1]:4242".parse().unwrap();
+        let native: SocketAddr = "192.0.2.1:4242".parse().unwrap();
+        let mut peers = BTreeSet::new();
+        peers.insert(crate::upstream::canonical_address(mapped));
+        peers.insert(crate::upstream::canonical_address(native));
+        assert_eq!(peers.len(), 1);
+        assert!(peers.contains(&crate::upstream::canonical_address(mapped)));
+        assert!(peers.contains(&crate::upstream::canonical_address(native)));
     }
 
     #[test]

@@ -22,7 +22,7 @@ pub trait TargetResolver {
     ) -> Result<(), PreflightRefusal>;
 }
 
-/// Side-effect-free loopback endpoint selection.
+/// Exact loopback endpoint selection with a session-owned preflight reservation.
 pub trait EndpointAllocator {
     fn select(&mut self) -> Result<LoopbackEndpoint, PreflightRefusal>;
 }

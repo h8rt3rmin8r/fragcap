@@ -425,6 +425,22 @@ where
             };
         }
     };
+    if let (Ok(local), Ok(peer)) = (upstream.local_addr(), upstream.peer_addr()) {
+        emit(
+            &sink,
+            ApplicationEvent::now(
+                &session_id,
+                connection_id,
+                None,
+                Some(ProtocolVersion::Http2),
+                ApplicationEventKind::UpstreamSocket(crate::UpstreamSocketEvent {
+                    protocol: "http2",
+                    local,
+                    peer,
+                }),
+            ),
+        );
+    }
     let mut origin_builder = h2::client::Builder::new();
     configure_client(&mut origin_builder, &limits);
     let (origin_sender, origin_connection) =
@@ -536,7 +552,7 @@ fn validate_tunnel_authority(
             "tunneled HTTP/2 request has no authority",
         )
     })?;
-    let observed = DestinationAuthority::parse(raw.as_str())
+    let observed = DestinationAuthority::parse_uri(raw.as_str())
         .map_err(|error| ProtocolError::new(error.code, error.detail))?;
     if &observed != expected {
         return Err(ProtocolError::new(
@@ -587,7 +603,7 @@ fn authenticate_cleartext_request(
             "HTTP/2 request has no authority",
         )
     })?;
-    let authority = DestinationAuthority::parse(raw.as_str())
+    let authority = DestinationAuthority::parse_uri(raw.as_str())
         .map_err(|error| ProtocolError::new(error.code, error.detail))?;
     if expected.is_some_and(|value| value != &authority) {
         return Err(ProtocolError::new(

@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.41-draft \
+**Version:** 0.1.42-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -134,6 +134,7 @@ enforcement.
 | 0.1.39-draft | 2026-09-02 | W. Thompson | **Adds bounded generic TCP and non-HTTP TLS evidence (issue #312).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated SOCKS5 tunnels retain bounded directional plaintext or encrypted chunks with explicit provenance, while trusted no-ALPN CONNECT tunnels may terminate under the session authority and retain protocol-unknown decrypted chunks after separately verified upstream TLS. Forwarding remains independent from retention, HTTP keeps its existing engines, and trust, pinning, client-auth, protocol, and transport failures never silently downgrade. Generic UDP remains #313, and Deep Capture remains incomplete until #334. |
 | 0.1.40-draft | 2026-09-03 | W. Thompson | **Adds bounded generic UDP datagram evidence (issue #313).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated SOCKS5 UDP associations retain one exact application record per accepted ingress datagram with direction, independent sequence, endpoints, timestamp, observed length, bounded payload prefix, and retention outcome. Forwarding remains complete and independent from evidence retention and storage. Queue loss, bounded identity overflow, and platform-observed socket errors are explicit without inferring ICMP facts. Unrouted UDP remains packet-only, QUIC remains #314, and Deep Capture remains incomplete until #334. |
 | 0.1.41-draft | 2026-09-03 | W. Thompson | **Adds scoped QUIC and HTTP/3 inspection (issue #314).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated target-scoped UDP routes admit immutable QUIC connection pairs under the session authority and independently verified upstream TLS. Exact-pinned Quinn and Hyperium HTTP/3 provide TLS 1.3, ALPN-selected HTTP/3, finite transport ownership, and bounded connection, stream, datagram, metadata, and body evidence. Unknown ALPN, zero round-trip application data, and active migration are refused without transparent fallback. Unrouted QUIC remains packet-only, IPv6 parity remains #315, and Deep Capture remains incomplete until #334. |
+| 0.1.42-draft | 2026-09-03 | W. Thompson | **Completes native IPv6 parity (issue #315).** Extends sections 13.7, 17.2.1, 19.6, 25, 26.3, and 28.1. One immutable plan now authorizes one exact IPv4 or IPv6 loopback socket, generated IPv6 routes use bracketed authorities, scoped IPv6 literals retain bounded numeric socket indexes, and mapped aliases have one canonical policy and correlation identity. Proxy-owned TCP connection establishment uses a finite 250 ms staggered dual-stack race with one winner and cancelled losers. HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC controlled rows cover IPv6, while Doctor reports exact IPv4 and IPv6 bind readiness independently. S119 adds no dependency or wildcard bind, and Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -2950,6 +2951,7 @@ fragcap deep-capture (<SELECTOR> | --target <SELECTOR> | --id <ID>) --launch [OP
       --launch-case <CASE>   Declare the launch case being measured
       --har                  Write HAR when HTTP semantics are observable
       --key-log              Write a proxy-owned analyzer key log
+      --proxy-family <FAMILY> Exact loopback family: ipv4 (default) or ipv6
       --quiet                Suppress progress output
       --silent               Suppress all non-error output
       --json                 Emit structured events on stderr
@@ -4618,6 +4620,16 @@ selects HTTP/3 semantics; unknown or absent ALPN is refused.
 Zero round-trip application data, active migration, changed route endpoints,
 trust failures, and unscopable traffic are refused without transparent
 fallback. It closes #314 while IPv6 parity remains #315.
+S119 completes IPv6 parity across session planning, exact loopback binding,
+authenticated route URLs, destination authority parsing, upstream sockets,
+supported transport handlers, evidence, and correlation. One plan authorizes
+one exact IPv4 or IPv6 loopback socket, with IPv4 retained as the compatibility
+default and IPv6 selected explicitly. Bounded numeric scope indexes remain
+socket-local, mapped aliases have one canonical ownership identity, and
+proxy-owned TCP resolution uses a finite 250 millisecond staggered race with
+one selected peer and cancelled losers. Doctor probes exact IPv4 and IPv6
+loopback binds independently. It closes #315 without a wildcard listener or
+Deep Capture completion claim.
 
 The required dependency direction is:
 
@@ -4667,7 +4679,7 @@ The protocol and launch matrix is normative:
 | SOCKS5 UDP ASSOCIATE | Native control-owned relay for IPv4, IPv6, and proxy-resolved domains with endpoint pinning, exact peer validation, finite mappings, and loss accounting | S115, #311 |
 | Generic UDP | Bounded exact routed datagrams with direction, sequence, endpoints, timing, retention outcomes, and no inferred semantics; unrouted traffic remains packet-only | S117, #313 |
 | QUIC and HTTP/3 | Scoped TLS 1.3 termination and independently verified upstream pairing with bounded ALPN-selected HTTP/3 evidence; 0-RTT, active migration, and unknown ALPN refused | S118, #314 |
-| IPv6 | No complete native parity claim | #315 |
+| IPv6 | Exact family-selected loopback planning and routing, scoped literal handling, mapped-address canonical identity, one-winner dual-stack TCP selection, supported transport evidence, correlation, and separate Doctor readiness | S119, #315 |
 | Cold direct executable | Shipped managed path | Native routing strategy #306 and calibration #317 |
 | Exact cold Steam platform client | Shipped when local facts prove reachability and the created platform root is observed before title dispatch | S112, #308 and calibration #317 |
 | Exact cold publisher launcher chain | Shipped when stored roles and current local facts prove final-client routing | S111, #307 |

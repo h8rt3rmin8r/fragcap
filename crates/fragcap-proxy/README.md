@@ -37,3 +37,10 @@ without transparent fallback.
 
 This crate never configures an ambient system proxy and never reaches inside a
 target process.
+
+S119 carries one exact IPv4 or IPv6 loopback endpoint through authorization,
+bind, authenticated routes, lifecycle, and evidence. Bracketed IPv6 literals
+and bounded numeric scope indexes reach exact socket addresses, mapped aliases
+share one canonical policy identity, and proxy-owned TCP candidates use one
+finite staggered race with a sole selected peer. The controlled lab exercises
+IPv6 HTTP, HTTPS, SOCKS, TCP, UDP, and QUIC without wildcard listening.

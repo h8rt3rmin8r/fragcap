@@ -480,6 +480,10 @@ pub struct DeepCaptureArgs {
     #[arg(long, value_name = "FILE", requires = "client_certificate")]
     pub client_private_key: Option<PathBuf>,
 
+    /// Loopback address family for the scoped native proxy listener.
+    #[arg(long, value_enum, default_value_t = DeepCaptureProxyFamilyArg::Ipv4)]
+    pub proxy_family: DeepCaptureProxyFamilyArg,
+
     /// Run the deterministic controlled target harness.
     #[arg(long, hide = true)]
     pub controlled_target: bool,
@@ -518,6 +522,16 @@ pub enum DeepCaptureCalibrationArg {
     Reachability,
     /// Measure TLS trust behavior after reachability has been established.
     Tls,
+}
+
+/// Exact loopback address family for one Deep Capture session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum DeepCaptureProxyFamilyArg {
+    /// Bind exactly 127.0.0.1.
+    #[default]
+    Ipv4,
+    /// Bind exactly ::1.
+    Ipv6,
 }
 
 /// A declared Deep Capture compatibility launch case.
@@ -1094,6 +1108,26 @@ mod tests {
                 assert!(!args.yes);
             }
             other => panic!("expected doctor command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deep_capture_proxy_family_defaults_to_ipv4_and_accepts_ipv6() {
+        let default = Cli::try_parse_from(["fragcap", "deep-capture", "target"]).expect("parse");
+        let selected = Cli::try_parse_from([
+            "fragcap",
+            "deep-capture",
+            "target",
+            "--proxy-family",
+            "ipv6",
+        ])
+        .expect("parse");
+        match (default.command, selected.command) {
+            (Some(Command::DeepCapture(default)), Some(Command::DeepCapture(selected))) => {
+                assert_eq!(default.proxy_family, DeepCaptureProxyFamilyArg::Ipv4);
+                assert_eq!(selected.proxy_family, DeepCaptureProxyFamilyArg::Ipv6);
+            }
+            other => panic!("expected two Deep Capture commands, got {other:?}"),
         }
     }
 }

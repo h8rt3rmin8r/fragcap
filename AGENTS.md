@@ -454,6 +454,15 @@ adds exact-pinned `h3` 0.0.8 and `h3-quinn` 0.0.10. The lockfile adds those two
 packages plus four futures support packages. IPv6 parity remains #315, and Deep
 Capture remains incomplete until #334.
 
+S119 closes #315 at the complete IPv6 parity boundary. A Deep Capture plan now
+owns one exact IPv4 or IPv6 loopback socket from authorization through bind,
+routing, lifecycle, artifacts, and cleanup. IPv4 remains the compatibility
+default and IPv6 is explicit. Bracketed and scoped IPv6 literals, mapped-address
+canonical ownership, finite staggered dual-stack TCP selection, every supported
+transport path, correlation, and separate Doctor readiness preserve address
+family without wildcard binding or duplicate observations. S119 adds no
+dependency or lockfile package, and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

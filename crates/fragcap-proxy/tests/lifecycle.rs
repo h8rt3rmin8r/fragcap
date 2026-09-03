@@ -56,6 +56,18 @@ fn start_refuses_an_exhausted_budget_and_an_occupied_endpoint() {
 }
 
 #[test]
+fn startup_consumes_the_exact_listener_reserved_before_authorization() {
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = reserved.local_addr().unwrap();
+    let mut backend =
+        NativeProxyBackend::new(config(endpoint.port(), 1)).with_reserved_listener(reserved);
+    let mut lease = backend.start(Duration::from_secs(1)).unwrap();
+
+    assert_eq!(lease.endpoint(), endpoint);
+    assert!(lease.cleanup(Duration::from_secs(1)).is_clean());
+}
+
+#[test]
 fn identity_is_stable_and_claims_native_http_tls() {
     let backend = NativeProxyBackend::new(config(0, 1));
     let identity = backend.identity();

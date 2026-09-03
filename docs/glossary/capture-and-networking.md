@@ -1081,6 +1081,41 @@ before sending the request.
 **See also:** [SOCKS5 CONNECT](capture-and-networking.md#socks5-connect),
 [Capture scope](capture-and-networking.md#capture-scope)
 
+## Exact loopback endpoint
+
+The single IPv4 or IPv6 socket address named by a Deep Capture plan and reused
+unchanged by authorization, listener bind, generated target routes, lifecycle,
+resource journal, evidence, and cleanup. IPv4 is the compatibility default;
+IPv6 is an explicit operator selection. A wildcard or external address is not
+an exact loopback endpoint.
+
+**See also:** [Target-scoped proxy configuration](capture-and-networking.md#target-scoped-proxy-configuration),
+[Wildcard bind address](capture-and-networking.md#wildcard-bind-address)
+
+## Scoped IPv6 literal
+
+An IPv6 link-local or multicast address qualified by a local numeric interface
+index. fragcap retains the bounded index in the socket address used by the
+operating system, but excludes it from TLS identity and application authority
+because the index has meaning only on the local host.
+
+**Primary references:** [RFC 4007](https://www.rfc-editor.org/rfc/rfc4007),
+[RFC 9844](https://www.rfc-editor.org/rfc/rfc9844)
+
+**See also:** [Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns)
+
+## Staggered connection race
+
+A finite proxy-owned set of allowed TCP connection attempts that start 250
+milliseconds apart under one deadline. Candidates are interleaved across
+address families. The first successful socket is the only selected peer, and
+all remaining attempts are cancelled before application forwarding begins.
+
+**Primary reference:** [RFC 8305](https://www.rfc-editor.org/rfc/rfc8305)
+
+**See also:** [Proxy-owned DNS](capture-and-networking.md#proxy-owned-dns),
+[Exact loopback endpoint](capture-and-networking.md#exact-loopback-endpoint)
+
 ## Selection outcome
 
 The complete result of applying specification section 12.1's precedence to an

@@ -36,8 +36,8 @@ pub use manifest::*;
 pub use model::*;
 pub use native::{
     run_controlled_native_requests, CertificateStore, ClientIdentity, NativeCertificateStore,
-    NativeObservationContext, NativeProxyAdapter, NativeProxyLimits, TrustController, TrustError,
-    TrustMutation, TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
+    NativeListenerReservation, NativeObservationContext, NativeProxyAdapter, NativeProxyLimits,
+    TrustController, TrustError, TrustMutation, TrustState, CURRENT_USER_ROOT, LOCAL_MACHINE_ROOT,
 };
 pub use policy::{
     calibration_outcome, calibration_outcome_reason, compatibility_fact_candidates,

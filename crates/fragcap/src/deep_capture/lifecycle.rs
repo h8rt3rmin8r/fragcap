@@ -471,6 +471,7 @@ fn proxy_writer_loop(
 fn proxy_event_type(kind: &ApplicationEventKind) -> &'static str {
     match kind {
         ApplicationEventKind::ConnectionOpen(_) => "proxy.connection-open",
+        ApplicationEventKind::UpstreamSocket(_) => "proxy.upstream-socket",
         ApplicationEventKind::ConnectionTerminal(_) => "proxy.connection-terminal",
         ApplicationEventKind::TlsNegotiation(_) => "proxy.tls-negotiation",
         ApplicationEventKind::TlsTerminal(_) => "proxy.tls-terminal",
@@ -503,11 +504,18 @@ fn proxy_event_detail(kind: &ApplicationEventKind) -> Value {
             "client_peer": value.client_peer.to_string(),
             "proxy_local": value.proxy_local.to_string(),
         }),
+        ApplicationEventKind::UpstreamSocket(value) => json!({
+            "protocol": value.protocol,
+            "upstream_local": value.local.to_string(),
+            "upstream_peer": value.peer.to_string(),
+        }),
         ApplicationEventKind::SocksNegotiation(value) => json!({
             "authenticated": value.authenticated,
         }),
         ApplicationEventKind::SocksConnect(value) => json!({
             "authority": value.authority,
+            "upstream_local": value.upstream_local.map(|address| address.to_string()),
+            "selected_peer": value.selected_peer.map(|address| address.to_string()),
             "address_type": value.address_type,
             "dns_owner": value.dns_owner,
             "outcome": value.outcome,

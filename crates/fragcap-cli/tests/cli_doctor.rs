@@ -10,8 +10,8 @@ mod common;
 
 use fragcap_cli::doctor::action::{offered_actions, ActionKind, Capabilities, ExtcapScope};
 use fragcap_cli::doctor::{
-    checks, DeepCaptureCa, DeepCaptureInputs, IfaceInfo, Inputs, NpcapInfo, Privilege,
-    ProxyBackendInfo, Status, Subsystem,
+    checks, DeepCaptureCa, DeepCaptureInputs, IfaceInfo, Inputs, LoopbackReadiness, NpcapInfo,
+    Privilege, ProxyBackendInfo, Status, Subsystem,
 };
 
 fn ready() -> Inputs {
@@ -65,6 +65,8 @@ fn ready() -> Inputs {
                 version: Some("0.8.0".to_string()),
             }),
             proxy_backend_error: None,
+            ipv4_loopback: LoopbackReadiness::Ready,
+            ipv6_loopback: LoopbackReadiness::Ready,
             analyzer_keylog_configured: true,
             ca: DeepCaptureCa::Absent,
             occupied_proxy_ports: Some(Vec::new()),
@@ -84,6 +86,27 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     assert!(human.contains("Ready to capture."), "{human}");
     common::assert_golden("doctor-ready.txt", human.as_bytes());
     common::assert_golden("doctor-ready.ndjson", report.render_json().as_bytes());
+}
+
+#[test]
+fn loopback_families_are_classified_independently() {
+    let mut inputs = ready();
+    inputs.deep_capture.ipv6_loopback =
+        LoopbackReadiness::Unavailable("address family unavailable".to_string());
+    let report = checks::run(&inputs);
+    let ipv4 = report
+        .checks
+        .iter()
+        .find(|check| check.name == "IPv4 loopback listener")
+        .unwrap();
+    let ipv6 = report
+        .checks
+        .iter()
+        .find(|check| check.name == "IPv6 loopback listener")
+        .unwrap();
+    assert_eq!(ipv4.status, fragcap_cli::doctor::Status::Ok);
+    assert_eq!(ipv6.status, fragcap_cli::doctor::Status::Warn);
+    assert!(ipv6.detail.contains("address family unavailable"));
 }
 
 #[test]

@@ -9,27 +9,43 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use super::ProtocolFamily;
 
+const IPV4_BIND: &str = "127.0.0.1:0";
+const IPV6_BIND: &str = "[::1]:0";
+
 pub async fn protocol_round_trip(protocol: ProtocolFamily, payload: &[u8]) -> Vec<u8> {
     match protocol {
         ProtocolFamily::Http1 => http1_round_trip(payload).await,
-        ProtocolFamily::Https => tls_round_trip(payload, TlsProtocol::Https).await,
+        ProtocolFamily::Https => tls_round_trip(payload, TlsProtocol::Https, IPV4_BIND).await,
         ProtocolFamily::Http2 => h2_round_trip(payload, false).await,
         ProtocolFamily::StreamingHttp => streaming_http_round_trip(payload).await,
         ProtocolFamily::WebSocket => websocket_round_trip(payload).await,
         ProtocolFamily::Grpc => h2_round_trip(payload, true).await,
         ProtocolFamily::RawTcp => raw_tcp_round_trip(payload).await,
-        ProtocolFamily::NonHttpTls => tls_round_trip(payload, TlsProtocol::Binary).await,
+        ProtocolFamily::NonHttpTls => tls_round_trip(payload, TlsProtocol::Binary, IPV4_BIND).await,
         ProtocolFamily::Socks => socks_round_trip(payload).await,
         ProtocolFamily::Udp => udp_round_trip(payload).await,
         ProtocolFamily::Quic => quic_round_trip(payload).await,
     }
 }
 
+pub async fn ipv6_required_round_trip(protocol: ProtocolFamily, payload: &[u8]) -> Vec<u8> {
+    match protocol {
+        ProtocolFamily::Http1 => http1_round_trip_on(payload, IPV6_BIND).await,
+        ProtocolFamily::Https => tls_round_trip(payload, TlsProtocol::Https, IPV6_BIND).await,
+        ProtocolFamily::Socks => socks_round_trip_on(payload, IPV6_BIND).await,
+        ProtocolFamily::RawTcp => raw_tcp_round_trip_on(payload, IPV6_BIND).await,
+        ProtocolFamily::Udp => udp_round_trip_on(payload, IPV6_BIND).await,
+        ProtocolFamily::Quic => quic_round_trip_on(payload, IPV6_BIND).await,
+        _ => panic!("protocol is not an S119 required IPv6 row"),
+    }
+}
+
 async fn tcp_exchange(
+    bind: &'static str,
     request: Vec<u8>,
     handler: impl FnOnce(Vec<u8>) -> Vec<u8> + Send + 'static,
 ) -> Vec<u8> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = TcpListener::bind(bind).await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -49,6 +65,10 @@ async fn tcp_exchange(
 }
 
 async fn http1_round_trip(payload: &[u8]) -> Vec<u8> {
+    http1_round_trip_on(payload, IPV4_BIND).await
+}
+
+async fn http1_round_trip_on(payload: &[u8], bind: &'static str) -> Vec<u8> {
     let mut request = format!(
         "POST /capture HTTP/1.1\r\nHost: fragcap.test\r\nContent-Length: {}\r\n\r\n",
         payload.len()
@@ -56,7 +76,7 @@ async fn http1_round_trip(payload: &[u8]) -> Vec<u8> {
     .into_bytes();
     request.extend_from_slice(payload);
     let expected = payload.to_vec();
-    let response = tcp_exchange(request, move |received| {
+    let response = tcp_exchange(bind, request, move |received| {
         let (head, body) = split_http(&received);
         assert!(head.starts_with(b"POST /capture HTTP/1.1\r\n"));
         assert_eq!(body, expected);
@@ -78,7 +98,7 @@ async fn streaming_http_round_trip(payload: &[u8]) -> Vec<u8> {
     let split = payload.len() / 2;
     let request = chunked_request(&payload[..split], &payload[split..]);
     let expected = payload.to_vec();
-    let response = tcp_exchange(request, move |received| {
+    let response = tcp_exchange(IPV4_BIND, request, move |received| {
         let (head, body) = split_http(&received);
         assert!(head.starts_with(b"POST /stream HTTP/1.1\r\n"));
         assert_eq!(decode_chunks(body), expected);
@@ -138,7 +158,7 @@ async fn websocket_round_trip(payload: &[u8]) -> Vec<u8> {
             .map(|(index, byte)| byte ^ mask[index % 4]),
     );
     let expected = payload.to_vec();
-    let response = tcp_exchange(request, move |received| {
+    let response = tcp_exchange(IPV4_BIND, request, move |received| {
         let boundary = received.windows(4).position(|item| item == b"\r\n\r\n").unwrap() + 4;
         assert!(received.starts_with(b"GET /socket HTTP/1.1\r\n"));
         let frame = &received[boundary..];
@@ -168,10 +188,14 @@ async fn websocket_round_trip(payload: &[u8]) -> Vec<u8> {
 }
 
 async fn raw_tcp_round_trip(payload: &[u8]) -> Vec<u8> {
+    raw_tcp_round_trip_on(payload, IPV4_BIND).await
+}
+
+async fn raw_tcp_round_trip_on(payload: &[u8], bind: &'static str) -> Vec<u8> {
     let mut request = (payload.len() as u32).to_be_bytes().to_vec();
     request.extend_from_slice(payload);
     let expected = payload.to_vec();
-    let response = tcp_exchange(request, move |received| {
+    let response = tcp_exchange(bind, request, move |received| {
         let length = u32::from_be_bytes(received[..4].try_into().unwrap()) as usize;
         assert_eq!(&received[4..4 + length], expected);
         let mut response = (length as u32).to_be_bytes().to_vec();
@@ -184,21 +208,39 @@ async fn raw_tcp_round_trip(payload: &[u8]) -> Vec<u8> {
 }
 
 async fn socks_round_trip(payload: &[u8]) -> Vec<u8> {
-    let mut request = vec![5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80];
+    socks_round_trip_on(payload, IPV4_BIND).await
+}
+
+async fn socks_round_trip_on(payload: &[u8], bind: &'static str) -> Vec<u8> {
+    let destination = if bind == IPV6_BIND {
+        let mut value = vec![5, 1, 0, 4];
+        value.extend_from_slice(&std::net::Ipv6Addr::LOCALHOST.octets());
+        value.extend_from_slice(&80_u16.to_be_bytes());
+        value
+    } else {
+        vec![5, 1, 0, 1, 127, 0, 0, 1, 0, 80]
+    };
+    let mut request = vec![5, 1, 0];
+    request.extend_from_slice(&destination);
     request.extend_from_slice(payload);
     let expected = payload.to_vec();
-    let response = tcp_exchange(request, move |received| {
+    let expected_destination = destination.clone();
+    let response = tcp_exchange(bind, request, move |received| {
         assert_eq!(&received[..3], &[5, 1, 0]);
-        assert_eq!(&received[3..13], &[5, 1, 0, 1, 127, 0, 0, 1, 0, 80]);
-        assert_eq!(&received[13..], expected);
-        let mut response = vec![5, 0, 5, 0, 0, 1, 127, 0, 0, 1, 0, 80];
+        assert_eq!(
+            &received[3..3 + expected_destination.len()],
+            expected_destination
+        );
+        assert_eq!(&received[3 + expected_destination.len()..], expected);
+        let mut response = vec![5, 0];
+        response.extend_from_slice(&expected_destination);
         response.extend_from_slice(&expected);
         response
     })
     .await;
     assert_eq!(&response[..2], &[5, 0]);
-    assert_eq!(&response[2..12], &[5, 0, 0, 1, 127, 0, 0, 1, 0, 80]);
-    response[12..].to_vec()
+    assert_eq!(&response[2..2 + destination.len()], destination);
+    response[2 + destination.len()..].to_vec()
 }
 
 #[derive(Clone, Copy)]
@@ -207,7 +249,7 @@ enum TlsProtocol {
     Binary,
 }
 
-async fn tls_round_trip(payload: &[u8], protocol: TlsProtocol) -> Vec<u8> {
+async fn tls_round_trip(payload: &[u8], protocol: TlsProtocol, bind: &'static str) -> Vec<u8> {
     use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 
     let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
@@ -227,7 +269,7 @@ async fn tls_round_trip(payload: &[u8], protocol: TlsProtocol) -> Vec<u8> {
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = TcpListener::bind(bind).await.unwrap();
     let address = listener.local_addr().unwrap();
     let expected = payload.to_vec();
     let server = tokio::spawn(async move {
@@ -367,8 +409,12 @@ fn split_http(bytes: &[u8]) -> (&[u8], &[u8]) {
 }
 
 pub async fn udp_round_trip(payload: &[u8]) -> Vec<u8> {
-    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    udp_round_trip_on(payload, IPV4_BIND).await
+}
+
+async fn udp_round_trip_on(payload: &[u8], bind: &'static str) -> Vec<u8> {
+    let server = UdpSocket::bind(bind).await.unwrap();
+    let client = UdpSocket::bind(bind).await.unwrap();
     client.connect(server.local_addr().unwrap()).await.unwrap();
     server.connect(client.local_addr().unwrap()).await.unwrap();
     client.send(payload).await.unwrap();
@@ -380,6 +426,10 @@ pub async fn udp_round_trip(payload: &[u8]) -> Vec<u8> {
 }
 
 pub async fn quic_round_trip(payload: &[u8]) -> Vec<u8> {
+    quic_round_trip_on(payload, IPV4_BIND).await
+}
+
+async fn quic_round_trip_on(payload: &[u8], bind: &'static str) -> Vec<u8> {
     use quinn::{ClientConfig, Endpoint, ServerConfig};
     use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
@@ -388,7 +438,7 @@ pub async fn quic_round_trip(payload: &[u8]) -> Vec<u8> {
     let private_key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
     let server_config =
         ServerConfig::with_single_cert(vec![certificate.clone()], private_key.into()).unwrap();
-    let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let server = Endpoint::server(server_config, bind.parse().unwrap()).unwrap();
     let server_address = server.local_addr().unwrap();
     let server_task = tokio::spawn(async move {
         let incoming = server.accept().await.unwrap();
@@ -404,7 +454,18 @@ pub async fn quic_round_trip(payload: &[u8]) -> Vec<u8> {
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add(certificate).unwrap();
-    let mut client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    let mut client = if bind == IPV6_BIND {
+        let socket = std::net::UdpSocket::bind(bind).unwrap();
+        Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            quinn::default_runtime().unwrap(),
+        )
+        .unwrap()
+    } else {
+        Endpoint::client(bind.parse().unwrap()).unwrap()
+    };
     client
         .set_default_client_config(ClientConfig::with_root_certificates(Arc::new(roots)).unwrap());
     let connection = client
