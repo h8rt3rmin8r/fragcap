@@ -561,6 +561,7 @@ fn config() -> SessionConfig {
         target: "controlled-target".into(),
         launch_case: Some(LaunchCase::Controlled),
         mode: SessionMode::TlsCalibration,
+        calibration_protocol: Some(fragcap::targets::CompatibilityProtocol::Https),
         controlled: true,
         bundle: std::env::temp_dir().join(format!(
             "fragcap-deep-capture-session-{}-{bundle_id}",

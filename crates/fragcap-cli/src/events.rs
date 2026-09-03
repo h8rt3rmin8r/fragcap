@@ -83,6 +83,12 @@ pub enum Event {
         declared_launch_case: String,
         observed_launch_case: String,
         proxy_backend: String,
+        proxy_backend_version: String,
+        routing_strategy: String,
+        address_family: String,
+        protocol: String,
+        fragcap_version: String,
+        target_version: Option<String>,
         bundle: String,
         trust_action: String,
         launch_timeout_secs: u64,
@@ -93,7 +99,16 @@ pub enum Event {
     /// A compatibility calibration phase transition or terminal outcome.
     DeepCaptureCalibrationPhase {
         session_id: Option<String>,
+        target: String,
         phase: String,
+        launch_case: String,
+        proxy_backend: String,
+        proxy_backend_version: String,
+        routing_strategy: String,
+        address_family: String,
+        protocol: String,
+        fragcap_version: String,
+        target_version: Option<String>,
         stage: String,
         status: String,
         reason: String,
@@ -347,6 +362,12 @@ impl Event {
                 declared_launch_case,
                 observed_launch_case,
                 proxy_backend,
+                proxy_backend_version,
+                routing_strategy,
+                address_family,
+                protocol,
+                fragcap_version,
+                target_version,
                 bundle,
                 trust_action,
                 launch_timeout_secs,
@@ -364,7 +385,22 @@ impl Event {
                 write_json_string(observed_launch_case, &mut line);
                 line.push_str(",\"proxy_backend\":");
                 write_json_string(proxy_backend, &mut line);
+                line.push_str(",\"proxy_backend_version\":");
+                write_json_string(proxy_backend_version, &mut line);
                 line.push_str(",\"proxy_mode\":\"launch-scoped-env\"");
+                line.push_str(",\"routing_strategy\":");
+                write_json_string(routing_strategy, &mut line);
+                line.push_str(",\"address_family\":");
+                write_json_string(address_family, &mut line);
+                line.push_str(",\"protocol\":");
+                write_json_string(protocol, &mut line);
+                line.push_str(",\"fragcap_version\":");
+                write_json_string(fragcap_version, &mut line);
+                line.push_str(",\"target_version\":");
+                match target_version {
+                    Some(target_version) => write_json_string(target_version, &mut line),
+                    None => line.push_str("null"),
+                }
                 line.push_str(",\"bundle\":");
                 write_json_string(bundle, &mut line);
                 line.push_str(",\"trust_action\":");
@@ -381,7 +417,16 @@ impl Event {
             }
             Event::DeepCaptureCalibrationPhase {
                 session_id,
+                target,
                 phase,
+                launch_case,
+                proxy_backend,
+                proxy_backend_version,
+                routing_strategy,
+                address_family,
+                protocol,
+                fragcap_version,
+                target_version,
                 stage,
                 status,
                 reason,
@@ -391,8 +436,29 @@ impl Event {
                     Some(session_id) => write_json_string(session_id, &mut line),
                     None => line.push_str("null"),
                 }
+                line.push_str(",\"target\":");
+                write_json_string(target, &mut line);
                 line.push_str(",\"phase\":");
                 write_json_string(phase, &mut line);
+                line.push_str(",\"launch_case\":");
+                write_json_string(launch_case, &mut line);
+                line.push_str(",\"proxy_backend\":");
+                write_json_string(proxy_backend, &mut line);
+                line.push_str(",\"proxy_backend_version\":");
+                write_json_string(proxy_backend_version, &mut line);
+                line.push_str(",\"routing_strategy\":");
+                write_json_string(routing_strategy, &mut line);
+                line.push_str(",\"address_family\":");
+                write_json_string(address_family, &mut line);
+                line.push_str(",\"protocol\":");
+                write_json_string(protocol, &mut line);
+                line.push_str(",\"fragcap_version\":");
+                write_json_string(fragcap_version, &mut line);
+                line.push_str(",\"target_version\":");
+                match target_version {
+                    Some(target_version) => write_json_string(target_version, &mut line),
+                    None => line.push_str("null"),
+                }
                 line.push_str(",\"stage\":");
                 write_json_string(stage, &mut line);
                 line.push_str(",\"status\":");
@@ -781,6 +847,12 @@ mod tests {
             declared_launch_case: "direct-exe-warm".to_string(),
             observed_launch_case: "direct-exe-warm".to_string(),
             proxy_backend: "controlled".to_string(),
+            proxy_backend_version: "0.8.0".to_string(),
+            routing_strategy: "child-environment".to_string(),
+            address_family: "ipv4".to_string(),
+            protocol: "routing".to_string(),
+            fragcap_version: "0.8.0".to_string(),
+            target_version: None,
             bundle: "bundle".to_string(),
             trust_action: "none".to_string(),
             launch_timeout_secs: 30,
@@ -794,7 +866,16 @@ mod tests {
 
         let phase = Event::DeepCaptureCalibrationPhase {
             session_id: Some("session-1".to_string()),
+            target: "controlled".to_string(),
             phase: "tls".to_string(),
+            launch_case: "direct-exe-cold".to_string(),
+            proxy_backend: "fragcap-native".to_string(),
+            proxy_backend_version: "0.8.0".to_string(),
+            routing_strategy: "child-environment".to_string(),
+            address_family: "ipv4".to_string(),
+            protocol: "https".to_string(),
+            fragcap_version: "0.8.0".to_string(),
+            target_version: None,
             stage: "complete".to_string(),
             status: "metadata-only".to_string(),
             reason: "observed metadata".to_string(),

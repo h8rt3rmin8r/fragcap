@@ -256,3 +256,12 @@ from retained classifications, typed manifest omissions retain their own
 artifact authority, and only exact eligible classifications may create
 compatibility facts. Calibration expansion remains #317, bypass policy remains
 #318, and Deep Capture remains incomplete until #334.
+
+S121 (`specs/121-native-calibration-matrix`) follows S120 and closes #317 at the
+complete native calibration boundary. Each measurement names one exact launch
+case, target-scoped child-environment route, IPv4 or IPv6 loopback family,
+protocol case, native backend and version, fragcap version, and target version
+when available. Store version 10 preserves legacy and conflicting evidence
+append-only, but only the latest exact current applicable route fact authorizes
+work. Protocol facts require a matching S120 classification. Bypass policy
+remains #318, and Deep Capture remains incomplete until #334.

@@ -473,6 +473,16 @@ unchanged. S120 adds no dependency or lockfile package, calibration remains
 #317, bypass policy remains #318, and Deep Capture remains incomplete until
 #334.
 
+S121 closes #317 at the complete native calibration boundary. One explicit
+measurement is bound to the target, launch case, child-environment route, exact
+IPv4 or IPv6 loopback family, selected routing or protocol case, native backend
+and version, fragcap version, and target version when available. Store version
+10 migrates additively, keeps legacy and conflicting rows append-only, and
+centralizes applicability in `fragcap-targets`. Only the latest exact current
+applicable routing row authorizes a prepared case, while protocol facts require
+the matching S120 classification. S121 adds no dependency or lockfile package;
+bypass policy remains #318 and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

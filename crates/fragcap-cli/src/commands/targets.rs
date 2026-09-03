@@ -1477,6 +1477,15 @@ fn print_compatibility(matrix: &CompatibilityMatrix, out: &mut dyn Write) {
         if let Some(launch_case) = row.launch_case {
             let _ = write!(out, " | launch={}", launch_case.as_str());
         }
+        if let Some(routing) = row.routing_strategy {
+            let _ = write!(out, " | route={}", routing.as_str());
+        }
+        if let Some(family) = row.address_family {
+            let _ = write!(out, " | family={}", family.as_str());
+        }
+        if let Some(protocol) = row.protocol {
+            let _ = write!(out, " | protocol={}", protocol.as_str());
+        }
         let _ = writeln!(
             out,
             " | source={} | freshness={}",
@@ -1540,11 +1549,43 @@ fn exe_stem(exe: &str) -> String {
 mod tests {
     use super::{
         display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
-        hero_listing_with_machine_probe, print_discovery, render_machine_section, render_table,
-        steam_add_metadata, CandidateIdentity, ClassificationSource, DetectionScan, ExeScan,
-        FidelityTier, SteamNonGameExclusions, TargetClassification, TargetEntry,
+        hero_listing_with_machine_probe, print_compatibility, print_discovery,
+        render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
+        ClassificationSource, CompatibilityMatrix, DetectionScan, ExeScan, FidelityTier,
+        SteamNonGameExclusions, TargetClassification, TargetEntry,
     };
     use crate::emit::{Emitter, Format, Verbosity};
+
+    #[test]
+    fn compatibility_detail_renders_complete_and_legacy_case_dimensions() {
+        let mut complete = fragcap::targets::CompatibilityFact::new(
+            1,
+            fragcap::targets::CompatibilityFactKey::ProxyRouting,
+            "reached-client",
+            fragcap::targets::CompatibilityEvidenceSource::ObservedRun,
+        )
+        .unwrap();
+        complete.launch_case = Some(fragcap::targets::CompatibilityLaunchCase::DirectExeCold);
+        complete.routing_strategy =
+            Some(fragcap::targets::CompatibilityRoutingStrategy::ChildEnvironment);
+        complete.address_family = Some(fragcap::targets::CompatibilityAddressFamily::Ipv6);
+        complete.protocol = Some(fragcap::targets::CompatibilityProtocol::NotApplicable);
+        let legacy = fragcap::targets::CompatibilityFact::new(
+            1,
+            fragcap::targets::CompatibilityFactKey::ProxyRouting,
+            "inconclusive",
+            fragcap::targets::CompatibilityEvidenceSource::ImportedCatalog,
+        )
+        .unwrap();
+        let matrix = CompatibilityMatrix::from_facts(&[complete, legacy]);
+        let mut output = Vec::new();
+        print_compatibility(&matrix, &mut output);
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("route=child-environment"));
+        assert!(output.contains("family=ipv6"));
+        assert!(output.contains("protocol=not-applicable"));
+        assert!(output.contains("inconclusive"));
+    }
 
     fn with_emitter<T>(f: impl FnOnce(&mut Vec<u8>, &mut Emitter) -> T) -> (T, String) {
         let mut err = Vec::new();

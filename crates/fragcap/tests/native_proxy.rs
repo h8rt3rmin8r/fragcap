@@ -10,6 +10,7 @@ use fragcap::deep_capture::{
     Deadlines, LaunchCase, LoopbackEndpoint, NativeProxyAdapter, PlanId, PreparedTarget,
     ProxyBackend, RoutingPlan, SessionMode, SessionPlan,
 };
+use fragcap::targets::CompatibilityProtocol;
 
 fn plan(session: &str) -> SessionPlan {
     SessionPlan {
@@ -21,6 +22,7 @@ fn plan(session: &str) -> SessionPlan {
             launch_case: LaunchCase::Controlled,
         },
         mode: SessionMode::TlsCalibration,
+        calibration_protocol: Some(CompatibilityProtocol::Https),
         controlled: true,
         proxy_backend: BackendDescriptor {
             name: "fragcap-native".to_string(),

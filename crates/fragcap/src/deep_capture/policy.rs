@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::targets::{CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase};
+use crate::targets::{
+    latest_applicable_fact, CompatibilityCase, CompatibilityFact, CompatibilityFactKey,
+    CompatibilityLaunchCase, CompatibilityProtocol,
+};
 
 use super::{
     CalibrationOutcome, CalibrationPhase, ClassificationReason, CompatibilityFactCandidate,
@@ -16,6 +19,7 @@ pub fn validate_compatibility_prerequisites(
     controlled: bool,
     facts: &[CompatibilityFact],
     launch_case: LaunchCase,
+    current: &CompatibilityCase,
 ) -> Result<(), PreflightRefusal> {
     if !controlled && mode != SessionMode::Capture {
         require_supported_launch_case(launch_case)?;
@@ -32,10 +36,8 @@ pub fn validate_compatibility_prerequisites(
             "the controlled launch case requires the controlled adapter set",
         ));
     };
-    let routes = facts.iter().rev().find(|fact| {
-        fact.launch_case == Some(stored_case) && fact.key == CompatibilityFactKey::ProxyRouting
-    });
-    if !routes.is_some_and(|fact| !fact.stale && fact.value == "reached-client") {
+    let routes = latest_applicable_fact(facts, CompatibilityFactKey::ProxyRouting, current);
+    if routes.is_none_or(|fact| fact.value != "reached-client") {
         return Err(PreflightRefusal::new(
             "routing-prerequisite",
             format!(
@@ -103,6 +105,7 @@ pub fn compatibility_fact_candidates(
     observations: &[CompatibilityObservation],
     controlled: bool,
     calibration: Option<CalibrationPhase>,
+    selected_protocol: Option<CompatibilityProtocol>,
 ) -> Vec<CompatibilityFactCandidate> {
     let mut facts = Vec::new();
     // A cold Steam launch is rooted in the exact platform process fragcap
@@ -118,17 +121,23 @@ pub fn compatibility_fact_candidates(
             .and_then(compatibility_owner_role)
             == Some("client")
     });
-    let mut push = |key, value: &str, phase| {
+    let mut push = |key, value: &str, phase, protocol| {
         facts.push(CompatibilityFactCandidate {
             key,
             value: value.to_string(),
             phase,
+            protocol,
             final_owner_index,
         });
     };
 
     if let Some(phase) = calibration {
-        push(CompatibilityFactKey::LaunchCase, launch_case, phase);
+        push(
+            CompatibilityFactKey::LaunchCase,
+            launch_case,
+            phase,
+            CompatibilityProtocol::NotApplicable,
+        );
     }
     if !observations.is_empty() && calibration != Some(CalibrationPhase::Tls) {
         let reached_client = observations.iter().any(|observation| {
@@ -146,6 +155,7 @@ pub fn compatibility_fact_candidates(
                 "inconclusive"
             },
             phase,
+            CompatibilityProtocol::NotApplicable,
         );
         push(
             CompatibilityFactKey::ProxyPropagation,
@@ -157,25 +167,40 @@ pub fn compatibility_fact_candidates(
                 "not-confirmed"
             },
             phase,
+            CompatibilityProtocol::NotApplicable,
         );
         for variable in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
-            push(CompatibilityFactKey::ProxyVariableTested, variable, phase);
+            push(
+                CompatibilityFactKey::ProxyVariableTested,
+                variable,
+                phase,
+                CompatibilityProtocol::NotApplicable,
+            );
         }
     }
-    if calibration != Some(CalibrationPhase::Reachability)
-        && observations.iter().any(|observation| {
-            observation_proves_final_client_ca_acceptance(observation)
+    let accepted_protocol = observations.iter().find_map(|observation| {
+        let protocol = compatibility_protocol_family(&observation.classification)?;
+        if selected_protocol.is_none_or(|selected| selected == protocol)
+            && (observation_proves_final_client_ca_acceptance(observation)
                 || (controlled
                     && observation.attribution.as_deref() == Some("controlled-harness")
                     && observation.role.as_deref() == Some("client")
-                    && classification_proves_tls(&observation.classification))
-        })
-    {
-        push(
-            CompatibilityFactKey::TlsTrustBehavior,
-            "accepts-local-ca",
-            calibration.unwrap_or(CalibrationPhase::Tls),
-        );
+                    && classification_proves_tls(&observation.classification)))
+        {
+            Some(protocol)
+        } else {
+            None
+        }
+    });
+    if calibration != Some(CalibrationPhase::Reachability) {
+        if let Some(protocol) = accepted_protocol {
+            push(
+                CompatibilityFactKey::TlsTrustBehavior,
+                "accepts-local-ca",
+                calibration.unwrap_or(CalibrationPhase::Tls),
+                protocol,
+            );
+        }
     }
     let final_roles: BTreeSet<&str> = observations
         .iter()
@@ -187,28 +212,79 @@ pub fn compatibility_fact_candidates(
             CompatibilityFactKey::FinalSocketOwnerRole,
             role,
             calibration.unwrap_or(CalibrationPhase::Reachability),
+            CompatibilityProtocol::NotApplicable,
         );
     }
     if calibration != Some(CalibrationPhase::Reachability) {
         let phase = calibration.unwrap_or(CalibrationPhase::Tls);
-        let inspectability: BTreeSet<&str> = observations
+        let inspectability: BTreeSet<(CompatibilityProtocol, &str)> = observations
             .iter()
-            .filter(|observation| classification_is_fact_eligible(&observation.classification))
-            .map(|observation| compatibility_inspectability(&observation.classification))
+            .filter(|observation| {
+                classification_is_fact_eligible(&observation.classification)
+                    && selected_protocol.is_none_or(|selected| {
+                        compatibility_protocol_family(&observation.classification) == Some(selected)
+                    })
+            })
+            .filter_map(|observation| {
+                compatibility_protocol_family(&observation.classification).map(|protocol| {
+                    (
+                        protocol,
+                        compatibility_inspectability(&observation.classification),
+                    )
+                })
+            })
             .collect();
-        for value in inspectability {
-            push(CompatibilityFactKey::Inspectability, value, phase);
+        for (protocol, value) in inspectability {
+            push(CompatibilityFactKey::Inspectability, value, phase, protocol);
         }
-        let protocols: BTreeSet<&str> = observations
+        let protocols: BTreeSet<(CompatibilityProtocol, &str)> = observations
             .iter()
-            .filter(|observation| classification_is_fact_eligible(&observation.classification))
-            .map(|observation| compatibility_protocol(&observation.classification))
+            .filter(|observation| {
+                classification_is_fact_eligible(&observation.classification)
+                    && selected_protocol.is_none_or(|selected| {
+                        compatibility_protocol_family(&observation.classification) == Some(selected)
+                    })
+            })
+            .filter_map(|observation| {
+                compatibility_protocol_family(&observation.classification).map(|protocol| {
+                    (
+                        protocol,
+                        compatibility_protocol(&observation.classification),
+                    )
+                })
+            })
             .collect();
-        for value in protocols {
-            push(CompatibilityFactKey::ProtocolBehavior, value, phase);
+        for (protocol, value) in protocols {
+            push(
+                CompatibilityFactKey::ProtocolBehavior,
+                value,
+                phase,
+                protocol,
+            );
         }
     }
     facts
+}
+
+fn compatibility_protocol_family(
+    classification: &super::ProtocolClassification,
+) -> Option<CompatibilityProtocol> {
+    Some(match classification.family() {
+        TrafficFamily::Http1 => CompatibilityProtocol::Http1,
+        TrafficFamily::Https => CompatibilityProtocol::Https,
+        TrafficFamily::Http2 => CompatibilityProtocol::Http2,
+        TrafficFamily::WebSocket => CompatibilityProtocol::WebSocket,
+        TrafficFamily::Sse => CompatibilityProtocol::Sse,
+        TrafficFamily::Grpc => CompatibilityProtocol::Grpc,
+        TrafficFamily::GenericTcp => CompatibilityProtocol::GenericTcp,
+        TrafficFamily::NonHttpTls => CompatibilityProtocol::NonHttpTls,
+        TrafficFamily::Socks5Tcp => CompatibilityProtocol::Socks5Tcp,
+        TrafficFamily::Socks5Udp => CompatibilityProtocol::Socks5Udp,
+        TrafficFamily::GenericUdp => CompatibilityProtocol::GenericUdp,
+        TrafficFamily::Quic => CompatibilityProtocol::Quic,
+        TrafficFamily::Http3 => CompatibilityProtocol::Http3,
+        TrafficFamily::Unrouted | TrafficFamily::Unknown => return None,
+    })
 }
 
 fn compatibility_protocol(classification: &super::ProtocolClassification) -> &'static str {
@@ -364,6 +440,7 @@ pub fn observation_proves_final_client_ca_acceptance(
 /// Fold interruption and operation failure into the evidence-based outcome.
 pub fn terminal_calibration_outcome(
     phase: CalibrationPhase,
+    selected_protocol: CompatibilityProtocol,
     observations: &[CompatibilityObservation],
     interrupted: bool,
     failed: bool,
@@ -373,7 +450,30 @@ pub fn terminal_calibration_outcome(
     } else if failed {
         CalibrationOutcome::Failed
     } else {
-        calibration_outcome(phase, observations)
+        match phase {
+            CalibrationPhase::Reachability => calibration_outcome(phase, observations),
+            CalibrationPhase::Tls => {
+                // A phase-level failure has no protocol family to match. Preserve
+                // it before selecting protocol-derived observations, otherwise an
+                // exact protocol calibration would turn "proxy-not-reached" into
+                // an inconclusive empty evidence set.
+                if observations
+                    .iter()
+                    .any(|observation| observation.reason.as_deref() == Some("proxy-not-reached"))
+                {
+                    return CalibrationOutcome::ProxyNotReached;
+                }
+                let matching = observations
+                    .iter()
+                    .filter(|observation| {
+                        compatibility_protocol_family(&observation.classification)
+                            == Some(selected_protocol)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                calibration_outcome(phase, &matching)
+            }
+        }
     }
 }
 
@@ -486,6 +586,7 @@ mod launch_case_tests {
                 &[observation],
                 false,
                 Some(CalibrationPhase::Tls),
+                Some(CompatibilityProtocol::Http1),
             );
             assert!(!facts.iter().any(|fact| {
                 matches!(
@@ -496,6 +597,49 @@ mod launch_case_tests {
                 )
             }));
         }
+    }
+
+    #[test]
+    fn selected_protocol_never_promotes_a_different_identified_family() {
+        let facts = compatibility_fact_candidates(
+            LaunchCase::DirectExeCold.as_str(),
+            &[correlated_client_observation()],
+            false,
+            Some(CalibrationPhase::Tls),
+            Some(CompatibilityProtocol::Http2),
+        );
+        assert!(!facts.iter().any(|fact| {
+            matches!(
+                fact.key,
+                CompatibilityFactKey::ProtocolBehavior
+                    | CompatibilityFactKey::Inspectability
+                    | CompatibilityFactKey::TlsTrustBehavior
+            )
+        }));
+    }
+
+    #[test]
+    fn selected_protocol_preserves_protocol_neutral_proxy_failure() {
+        let mut observation = correlated_client_observation();
+        observation.classification = ProtocolClassification::new(
+            TrafficFamily::Unknown,
+            DetectionState::Unknown,
+            InspectabilityState::Unavailable,
+            None,
+        )
+        .unwrap();
+        observation.reason = Some("proxy-not-reached".into());
+
+        assert_eq!(
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Http2,
+                &[observation],
+                false,
+                false,
+            ),
+            CalibrationOutcome::ProxyNotReached
+        );
     }
 
     #[test]
@@ -510,6 +654,7 @@ mod launch_case_tests {
             &[correlated_client_observation()],
             false,
             Some(CalibrationPhase::Reachability),
+            Some(CompatibilityProtocol::Routing),
         );
         let value = |key| {
             facts
@@ -535,6 +680,7 @@ mod launch_case_tests {
             &[correlated_client_observation()],
             false,
             Some(CalibrationPhase::Reachability),
+            Some(CompatibilityProtocol::Routing),
         );
 
         assert_eq!(

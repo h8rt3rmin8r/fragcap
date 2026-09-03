@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::targets::CompatibilityProtocol;
 
 const MAX_LAUNCH: Duration = Duration::from_secs(120);
 const MAX_OBSERVATION: Duration = Duration::from_secs(300);
@@ -43,6 +44,7 @@ impl DeepCapture {
             session_id,
             target,
             mode: config.mode,
+            calibration_protocol: config.calibration_protocol,
             controlled: config.controlled,
             proxy_backend: adapters.proxy.descriptor(),
             endpoint,
@@ -1230,6 +1232,25 @@ fn validate_config(config: &SessionConfig) -> Result<(), PreflightRefusal> {
             "reachability calibration cannot acquire trust or request TLS artifacts",
         ));
     }
+    match (config.mode, config.calibration_protocol) {
+        (SessionMode::Capture, None) => {}
+        (SessionMode::ReachabilityCalibration, Some(CompatibilityProtocol::Routing)) => {}
+        (SessionMode::TlsCalibration, Some(protocol))
+            if protocol != CompatibilityProtocol::Routing
+                && protocol != CompatibilityProtocol::NotApplicable => {}
+        (SessionMode::Capture, Some(_)) => {
+            return Err(PreflightRefusal::new(
+                "calibration-protocol-unexpected",
+                "ordinary Deep Capture cannot declare a calibration protocol",
+            ));
+        }
+        _ => {
+            return Err(PreflightRefusal::new(
+                "calibration-protocol",
+                "calibration requires one exact phase-appropriate protocol case",
+            ));
+        }
+    }
     if config.mode != SessionMode::ReachabilityCalibration && !config.trust_ca {
         return Err(PreflightRefusal::new(
             "trust-not-authorized",
@@ -1262,6 +1283,7 @@ fn facts_from_observations(
         observations,
         plan.controlled,
         calibration,
+        plan.calibration_protocol,
     )
     .into_iter()
     .map(|candidate| CompatibilityFact {
@@ -1273,6 +1295,7 @@ fn facts_from_observations(
             .and_then(|observation| observation.reason.clone())
             .unwrap_or_else(|| "scrubbed Deep Capture observation".into()),
         phase: candidate.phase,
+        protocol: candidate.protocol,
         final_owner_index: candidate.final_owner_index,
     })
     .collect()

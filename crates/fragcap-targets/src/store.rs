@@ -13,7 +13,9 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::compatibility::{
-    CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey, CompatibilityLaunchCase,
+    CompatibilityAddressFamily, CompatibilityEvidenceSource, CompatibilityFact,
+    CompatibilityFactKey, CompatibilityLaunchCase, CompatibilityProtocol,
+    CompatibilityRoutingStrategy,
 };
 use crate::entry::{ClassificationSource, DetectionScan, TargetClassification, TargetEntry};
 use crate::model::{
@@ -22,7 +24,7 @@ use crate::model::{
 };
 use crate::schema::{
     DDL, MIGRATE_1_TO_2, MIGRATE_2_TO_3, MIGRATE_3_TO_4, MIGRATE_4_TO_5, MIGRATE_5_TO_6,
-    MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9, SCHEMA_VERSION,
+    MIGRATE_6_TO_7, MIGRATE_7_TO_8, MIGRATE_8_TO_9, MIGRATE_9_TO_10, SCHEMA_VERSION,
 };
 use crate::volume::{EligibilityReason, Volume, VolumeEligibility};
 use crate::TargetsError;
@@ -152,6 +154,16 @@ impl Store {
             tx.pragma_update(None, "user_version", 9i64)?;
             tx.commit()?;
             version = 9;
+        }
+
+        if version == 9 {
+            // 9 -> 10: add exact calibration-case dimensions without changing
+            // any existing compatibility row (slice S121).
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_9_TO_10)?;
+            tx.pragma_update(None, "user_version", 10i64)?;
+            tx.commit()?;
+            version = 10;
         }
 
         if version != SCHEMA_VERSION {
@@ -999,10 +1011,11 @@ impl Store {
             "INSERT INTO deep_capture_facts
                 (target_id, fact_key, fact_value, launch_case, evidence_source,
                  observed_at, fragcap_version, target_version, proxy_backend,
-                 proxy_backend_version, proxy_mode, final_owner_executable,
+                 proxy_backend_version, proxy_mode, routing_strategy,
+                 address_family, protocol_family, final_owner_executable,
                  final_owner_handoff, stale, note)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15)",
+                     ?14, ?15, ?16, ?17, ?18)",
             params![
                 fact.target_id,
                 fact.key.as_str(),
@@ -1015,6 +1028,9 @@ impl Store {
                 fact.proxy_backend,
                 fact.proxy_backend_version,
                 fact.proxy_mode,
+                fact.routing_strategy.map(|value| value.as_str()),
+                fact.address_family.map(|value| value.as_str()),
+                fact.protocol.map(|value| value.as_str()),
                 fact.final_owner_executable,
                 if fact.final_owner_handoff { 1i64 } else { 0i64 },
                 if fact.stale { 1i64 } else { 0i64 },
@@ -1045,7 +1061,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, target_id, fact_key, fact_value, launch_case, evidence_source,
                     observed_at, fragcap_version, target_version, proxy_backend,
-                    proxy_backend_version, proxy_mode, final_owner_executable,
+                    proxy_backend_version, proxy_mode, routing_strategy,
+                    address_family, protocol_family, final_owner_executable,
                     final_owner_handoff, stale, note
              FROM deep_capture_facts
              WHERE target_id = ?1
@@ -1350,10 +1367,13 @@ fn read_compatibility_fact_row(
     let proxy_backend: Option<String> = row.get(9)?;
     let proxy_backend_version: Option<String> = row.get(10)?;
     let proxy_mode: Option<String> = row.get(11)?;
-    let final_owner_executable: Option<String> = row.get(12)?;
-    let final_owner_handoff: i64 = row.get(13)?;
-    let stale: i64 = row.get(14)?;
-    let note: Option<String> = row.get(15)?;
+    let routing_strategy: Option<String> = row.get(12)?;
+    let address_family: Option<String> = row.get(13)?;
+    let protocol: Option<String> = row.get(14)?;
+    let final_owner_executable: Option<String> = row.get(15)?;
+    let final_owner_handoff: i64 = row.get(16)?;
+    let stale: i64 = row.get(17)?;
+    let note: Option<String> = row.get(18)?;
 
     Ok((|| {
         let key = CompatibilityFactKey::parse(&key)?;
@@ -1374,6 +1394,18 @@ fn read_compatibility_fact_row(
             proxy_backend,
             proxy_backend_version,
             proxy_mode,
+            routing_strategy: routing_strategy
+                .as_deref()
+                .map(CompatibilityRoutingStrategy::parse)
+                .transpose()?,
+            address_family: address_family
+                .as_deref()
+                .map(CompatibilityAddressFamily::parse)
+                .transpose()?,
+            protocol: protocol
+                .as_deref()
+                .map(CompatibilityProtocol::parse)
+                .transpose()?,
             final_owner_executable,
             final_owner_handoff: final_owner_handoff != 0,
             stale: stale != 0,
@@ -1770,6 +1802,47 @@ mod tests {
     }
 
     #[test]
+    fn a_v9_store_preserves_facts_and_marks_new_case_dimensions_incomplete() {
+        let store = Store::open_in_memory().expect("store");
+        let conn = store.conn;
+        conn.execute_batch(
+            "ALTER TABLE deep_capture_facts DROP COLUMN routing_strategy;
+             ALTER TABLE deep_capture_facts DROP COLUMN address_family;
+             ALTER TABLE deep_capture_facts DROP COLUMN protocol_family;",
+        )
+        .expect("restore v9 shape");
+        conn.pragma_update(None, "user_version", 9_i64)
+            .expect("stamp v9");
+        conn.execute(
+            "INSERT INTO targets
+                (stable_id, handle, name, classification, classification_source, fidelity)
+             VALUES (14, 'v9_target', 'V9 Target', 'game', 'user', 'authored')",
+            [],
+        )
+        .expect("insert target");
+        let target_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO deep_capture_facts
+                (target_id, fact_key, fact_value, launch_case, evidence_source,
+                 fragcap_version, proxy_backend, proxy_backend_version)
+             VALUES (?1, 'proxy-routing', 'reached-client', 'direct-exe-cold',
+                     'observed-run', '0.7.0', 'fragcap-native', '0.7.0')",
+            params![target_id],
+        )
+        .expect("insert v9 fact");
+
+        let store = Store::from_connection(conn).expect("migrate forward");
+        let facts = store
+            .compatibility_facts_for_target(target_id)
+            .expect("facts");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].value, "reached-client");
+        assert_eq!(facts[0].routing_strategy, None);
+        assert_eq!(facts[0].address_family, None);
+        assert_eq!(facts[0].protocol, None);
+    }
+
+    #[test]
     fn folder_name_and_executable_hint_round_trip() {
         let mut store = Store::open_in_memory().expect("store");
         let mut entry = sample_target("t1", None, FidelityTier::Observed);
@@ -1865,6 +1938,9 @@ mod tests {
         fact.proxy_backend = Some("mitmproxy".to_string());
         fact.proxy_backend_version = Some("12.1.0".to_string());
         fact.proxy_mode = Some("explicit-env-proxy".to_string());
+        fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
+        fact.protocol = Some(CompatibilityProtocol::NotApplicable);
         fact.final_owner_executable = Some("client.exe".to_string());
         fact.final_owner_handoff = true;
         fact.note = Some("scrubbed local observation".to_string());
@@ -1896,12 +1972,53 @@ mod tests {
         assert_eq!(facts[0].proxy_backend_version.as_deref(), Some("12.1.0"));
         assert_eq!(facts[0].proxy_mode.as_deref(), Some("explicit-env-proxy"));
         assert_eq!(
+            facts[0].routing_strategy,
+            Some(CompatibilityRoutingStrategy::ChildEnvironment)
+        );
+        assert_eq!(
+            facts[0].address_family,
+            Some(CompatibilityAddressFamily::Ipv4)
+        );
+        assert_eq!(
+            facts[0].protocol,
+            Some(CompatibilityProtocol::NotApplicable)
+        );
+        assert_eq!(
             facts[0].final_owner_executable.as_deref(),
             Some("client.exe")
         );
         assert!(facts[0].final_owner_handoff);
         assert!(!facts[0].stale);
         assert_eq!(facts[0].note.as_deref(), Some("scrubbed local observation"));
+    }
+
+    #[test]
+    fn compatibility_retests_append_conflicting_rows_in_order() {
+        let mut store = Store::open_in_memory().expect("store");
+        let target_id = store
+            .insert_target(&sample_target(
+                "compat_history",
+                Some("steam:220"),
+                FidelityTier::Observed,
+            ))
+            .expect("target");
+        for value in ["reached-client", "inconclusive"] {
+            let fact = CompatibilityFact::new(
+                target_id,
+                CompatibilityFactKey::ProxyRouting,
+                value,
+                CompatibilityEvidenceSource::ObservedRun,
+            )
+            .expect("fact");
+            store.insert_compatibility_fact(&fact).expect("append");
+        }
+        let facts = store
+            .compatibility_facts_for_target(target_id)
+            .expect("history");
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0].value, "reached-client");
+        assert_eq!(facts[1].value, "inconclusive");
+        assert!(facts[0].id < facts[1].id);
     }
 
     #[test]

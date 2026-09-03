@@ -127,6 +127,175 @@ impl CompatibilityLaunchCase {
     }
 }
 
+/// Target-scoped routing strategy used by one observed Deep Capture case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatibilityRoutingStrategy {
+    ChildEnvironment,
+    CommandArguments,
+    TargetConfiguration,
+    HttpProxy,
+    Socks,
+    ProtocolSpecific,
+}
+
+impl CompatibilityRoutingStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChildEnvironment => "child-environment",
+            Self::CommandArguments => "command-arguments",
+            Self::TargetConfiguration => "target-configuration",
+            Self::HttpProxy => "http-proxy",
+            Self::Socks => "socks",
+            Self::ProtocolSpecific => "protocol-specific",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "child-environment" => Ok(Self::ChildEnvironment),
+            "command-arguments" => Ok(Self::CommandArguments),
+            "target-configuration" => Ok(Self::TargetConfiguration),
+            "http-proxy" => Ok(Self::HttpProxy),
+            "socks" => Ok(Self::Socks),
+            "protocol-specific" => Ok(Self::ProtocolSpecific),
+            other => Err(TargetsError::Model(format!(
+                "unknown compatibility routing strategy {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Loopback address family used by one observed Deep Capture case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatibilityAddressFamily {
+    Ipv4,
+    Ipv6,
+}
+
+impl CompatibilityAddressFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ipv4 => "ipv4",
+            Self::Ipv6 => "ipv6",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "ipv4" => Ok(Self::Ipv4),
+            "ipv6" => Ok(Self::Ipv6),
+            other => Err(TargetsError::Model(format!(
+                "unknown compatibility address family {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Protocol dimension attached to one compatibility fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CompatibilityProtocol {
+    Routing,
+    Http1,
+    Https,
+    Http2,
+    WebSocket,
+    Sse,
+    Grpc,
+    GenericTcp,
+    NonHttpTls,
+    Socks5Tcp,
+    Socks5Udp,
+    GenericUdp,
+    Quic,
+    Http3,
+    NotApplicable,
+}
+
+impl CompatibilityProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Routing => "routing",
+            Self::Http1 => "http1",
+            Self::Https => "https",
+            Self::Http2 => "http2",
+            Self::WebSocket => "websocket",
+            Self::Sse => "sse",
+            Self::Grpc => "grpc",
+            Self::GenericTcp => "generic-tcp",
+            Self::NonHttpTls => "non-http-tls",
+            Self::Socks5Tcp => "socks5-tcp",
+            Self::Socks5Udp => "socks5-udp",
+            Self::GenericUdp => "generic-udp",
+            Self::Quic => "quic",
+            Self::Http3 => "http3",
+            Self::NotApplicable => "not-applicable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, TargetsError> {
+        match value {
+            "routing" => Ok(Self::Routing),
+            "http1" => Ok(Self::Http1),
+            "https" => Ok(Self::Https),
+            "http2" => Ok(Self::Http2),
+            "websocket" => Ok(Self::WebSocket),
+            "sse" => Ok(Self::Sse),
+            "grpc" => Ok(Self::Grpc),
+            "generic-tcp" => Ok(Self::GenericTcp),
+            "non-http-tls" => Ok(Self::NonHttpTls),
+            "socks5-tcp" => Ok(Self::Socks5Tcp),
+            "socks5-udp" => Ok(Self::Socks5Udp),
+            "generic-udp" => Ok(Self::GenericUdp),
+            "quic" => Ok(Self::Quic),
+            "http3" => Ok(Self::Http3),
+            "not-applicable" => Ok(Self::NotApplicable),
+            other => Err(TargetsError::Model(format!(
+                "unknown compatibility protocol {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Exact current context against which stored evidence is evaluated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompatibilityCase {
+    pub launch_case: CompatibilityLaunchCase,
+    pub proxy_backend: String,
+    pub proxy_backend_version: String,
+    pub routing_strategy: CompatibilityRoutingStrategy,
+    pub address_family: CompatibilityAddressFamily,
+    pub protocol: CompatibilityProtocol,
+    pub fragcap_version: String,
+    pub target_version: Option<String>,
+}
+
+/// Why one stored fact can or cannot apply to an exact current case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompatibilityApplicability {
+    Applicable,
+    Stale,
+    LegacyIncomplete,
+    Mismatch(&'static str),
+}
+
+impl CompatibilityApplicability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Applicable => "applicable",
+            Self::Stale => "stale",
+            Self::LegacyIncomplete => "legacy-incomplete",
+            Self::Mismatch(_) => "mismatch",
+        }
+    }
+
+    pub fn dimension(self) -> Option<&'static str> {
+        match self {
+            Self::Mismatch(dimension) => Some(dimension),
+            _ => None,
+        }
+    }
+}
+
 /// Where a compatibility fact came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CompatibilityEvidenceSource {
@@ -188,6 +357,12 @@ pub struct CompatibilityFact {
     pub proxy_backend_version: Option<String>,
     /// Proxy mode or configuration family used for the observation.
     pub proxy_mode: Option<String>,
+    /// Target-scoped routing strategy used for this observation.
+    pub routing_strategy: Option<CompatibilityRoutingStrategy>,
+    /// Exact loopback family used for this observation.
+    pub address_family: Option<CompatibilityAddressFamily>,
+    /// Exact protocol family, or explicit inapplicability for route facts.
+    pub protocol: Option<CompatibilityProtocol>,
     /// Executable image observed holding the final sockets, if known.
     pub final_owner_executable: Option<String>,
     /// Whether the final socket owner differed from the initially launched
@@ -222,12 +397,92 @@ impl CompatibilityFact {
             proxy_backend: None,
             proxy_backend_version: None,
             proxy_mode: None,
+            routing_strategy: None,
+            address_family: None,
+            protocol: None,
             final_owner_executable: None,
             final_owner_handoff: false,
             stale: false,
             note: None,
         })
     }
+
+    /// Compare this fact with one exact current case without mutating history.
+    pub fn applicability(&self, current: &CompatibilityCase) -> CompatibilityApplicability {
+        if self.stale || self.evidence_source == CompatibilityEvidenceSource::StaleObservation {
+            return CompatibilityApplicability::Stale;
+        }
+        let Some(launch_case) = self.launch_case else {
+            return CompatibilityApplicability::LegacyIncomplete;
+        };
+        let (
+            Some(backend),
+            Some(backend_version),
+            Some(routing),
+            Some(family),
+            Some(protocol),
+            Some(fragcap_version),
+        ) = (
+            self.proxy_backend.as_deref(),
+            self.proxy_backend_version.as_deref(),
+            self.routing_strategy,
+            self.address_family,
+            self.protocol,
+            self.fragcap_version.as_deref(),
+        )
+        else {
+            return CompatibilityApplicability::LegacyIncomplete;
+        };
+        for (matches, dimension) in [
+            (launch_case == current.launch_case, "launch-case"),
+            (backend == current.proxy_backend, "proxy-backend"),
+            (
+                backend_version == current.proxy_backend_version,
+                "proxy-backend-version",
+            ),
+            (routing == current.routing_strategy, "routing-strategy"),
+            (family == current.address_family, "address-family"),
+            (
+                fragcap_version == current.fragcap_version,
+                "fragcap-version",
+            ),
+        ] {
+            if !matches {
+                return CompatibilityApplicability::Mismatch(dimension);
+            }
+        }
+        match (&self.target_version, &current.target_version) {
+            (None, None) => {}
+            (Some(left), Some(right)) if left == right => {}
+            (None, Some(_)) => return CompatibilityApplicability::LegacyIncomplete,
+            _ => return CompatibilityApplicability::Mismatch("target-version"),
+        }
+        let expected_protocol = if matches!(
+            self.key,
+            CompatibilityFactKey::TlsTrustBehavior
+                | CompatibilityFactKey::ProtocolBehavior
+                | CompatibilityFactKey::Inspectability
+        ) {
+            current.protocol
+        } else {
+            CompatibilityProtocol::NotApplicable
+        };
+        if protocol != expected_protocol {
+            return CompatibilityApplicability::Mismatch("protocol-family");
+        }
+        CompatibilityApplicability::Applicable
+    }
+}
+
+/// Return the latest current fact for one key and exact case.
+pub fn latest_applicable_fact<'a>(
+    facts: &'a [CompatibilityFact],
+    key: CompatibilityFactKey,
+    current: &CompatibilityCase,
+) -> Option<&'a CompatibilityFact> {
+    facts.iter().rev().find(|fact| {
+        fact.key == key && fact.applicability(current) == CompatibilityApplicability::Applicable
+    })
 }
 
 /// The presentation freshness of compatibility evidence.
@@ -266,6 +521,9 @@ pub struct CompatibilityMatrixRow {
     pub launch_case: Option<CompatibilityLaunchCase>,
     /// Where the evidence came from.
     pub evidence_source: CompatibilityEvidenceSource,
+    pub routing_strategy: Option<CompatibilityRoutingStrategy>,
+    pub address_family: Option<CompatibilityAddressFamily>,
+    pub protocol: Option<CompatibilityProtocol>,
     /// Whether the row is current or retained as stale context.
     pub freshness: CompatibilityFreshness,
 }
@@ -280,6 +538,9 @@ impl CompatibilityMatrixRow {
             value: fact.value.clone(),
             launch_case: fact.launch_case,
             evidence_source: fact.evidence_source,
+            routing_strategy: fact.routing_strategy,
+            address_family: fact.address_family,
+            protocol: fact.protocol,
             freshness: if stale {
                 CompatibilityFreshness::Stale
             } else {
@@ -311,6 +572,25 @@ impl CompatibilityMatrixRow {
                 self.evidence_source
                     .as_str()
                     .cmp(other.evidence_source.as_str())
+            })
+            .then_with(|| {
+                self.routing_strategy
+                    .map(CompatibilityRoutingStrategy::as_str)
+                    .cmp(
+                        &other
+                            .routing_strategy
+                            .map(CompatibilityRoutingStrategy::as_str),
+                    )
+            })
+            .then_with(|| {
+                self.address_family
+                    .map(CompatibilityAddressFamily::as_str)
+                    .cmp(&other.address_family.map(CompatibilityAddressFamily::as_str))
+            })
+            .then_with(|| {
+                self.protocol
+                    .map(CompatibilityProtocol::as_str)
+                    .cmp(&other.protocol.map(CompatibilityProtocol::as_str))
             })
             .then_with(|| self.freshness.as_str().cmp(other.freshness.as_str()))
     }
@@ -431,6 +711,194 @@ pub fn validate_fact_value(key: CompatibilityFactKey, value: &str) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exact_case(protocol: CompatibilityProtocol) -> CompatibilityCase {
+        CompatibilityCase {
+            launch_case: CompatibilityLaunchCase::SteamProtocolCold,
+            proxy_backend: "fragcap-native".to_string(),
+            proxy_backend_version: "0.6.0".to_string(),
+            routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment,
+            address_family: CompatibilityAddressFamily::Ipv4,
+            protocol,
+            fragcap_version: "0.6.0".to_string(),
+            target_version: Some("build-a".to_string()),
+        }
+    }
+
+    fn exact_fact(key: CompatibilityFactKey, protocol: CompatibilityProtocol) -> CompatibilityFact {
+        let value = match key {
+            CompatibilityFactKey::ProxyRouting => "reached-client",
+            CompatibilityFactKey::TlsTrustBehavior => "accepts-local-ca",
+            CompatibilityFactKey::ProtocolBehavior => "https",
+            CompatibilityFactKey::Inspectability => "full",
+            _ => "yes",
+        };
+        let mut fact =
+            CompatibilityFact::new(1, key, value, CompatibilityEvidenceSource::ObservedRun)
+                .unwrap();
+        fact.launch_case = Some(CompatibilityLaunchCase::SteamProtocolCold);
+        fact.proxy_backend = Some("fragcap-native".to_string());
+        fact.proxy_backend_version = Some("0.6.0".to_string());
+        fact.routing_strategy = Some(CompatibilityRoutingStrategy::ChildEnvironment);
+        fact.address_family = Some(CompatibilityAddressFamily::Ipv4);
+        fact.protocol = Some(protocol);
+        fact.fragcap_version = Some("0.6.0".to_string());
+        fact.target_version = Some("build-a".to_string());
+        fact
+    }
+
+    #[test]
+    fn calibration_case_tokens_round_trip_closed_sets() {
+        for strategy in [
+            CompatibilityRoutingStrategy::ChildEnvironment,
+            CompatibilityRoutingStrategy::CommandArguments,
+            CompatibilityRoutingStrategy::TargetConfiguration,
+            CompatibilityRoutingStrategy::HttpProxy,
+            CompatibilityRoutingStrategy::Socks,
+            CompatibilityRoutingStrategy::ProtocolSpecific,
+        ] {
+            assert_eq!(
+                CompatibilityRoutingStrategy::parse(strategy.as_str()).unwrap(),
+                strategy
+            );
+        }
+        for family in [
+            CompatibilityAddressFamily::Ipv4,
+            CompatibilityAddressFamily::Ipv6,
+        ] {
+            assert_eq!(
+                CompatibilityAddressFamily::parse(family.as_str()).unwrap(),
+                family
+            );
+        }
+        for protocol in [
+            CompatibilityProtocol::Routing,
+            CompatibilityProtocol::Http1,
+            CompatibilityProtocol::Https,
+            CompatibilityProtocol::Http2,
+            CompatibilityProtocol::WebSocket,
+            CompatibilityProtocol::Sse,
+            CompatibilityProtocol::Grpc,
+            CompatibilityProtocol::GenericTcp,
+            CompatibilityProtocol::NonHttpTls,
+            CompatibilityProtocol::Socks5Tcp,
+            CompatibilityProtocol::Socks5Udp,
+            CompatibilityProtocol::GenericUdp,
+            CompatibilityProtocol::Quic,
+            CompatibilityProtocol::Http3,
+            CompatibilityProtocol::NotApplicable,
+        ] {
+            assert_eq!(
+                CompatibilityProtocol::parse(protocol.as_str()).unwrap(),
+                protocol
+            );
+        }
+    }
+
+    #[test]
+    fn exact_applicability_refuses_every_mismatched_or_incomplete_dimension() {
+        let current = exact_case(CompatibilityProtocol::Https);
+        let base = exact_fact(
+            CompatibilityFactKey::TlsTrustBehavior,
+            CompatibilityProtocol::Https,
+        );
+        assert_eq!(
+            base.applicability(&current),
+            CompatibilityApplicability::Applicable
+        );
+
+        type FactMutation = (&'static str, fn(&mut CompatibilityFact));
+        let mutations: Vec<FactMutation> = vec![
+            ("launch-case", |f| {
+                f.launch_case = Some(CompatibilityLaunchCase::DirectExeCold)
+            }),
+            ("proxy-backend", |f| {
+                f.proxy_backend = Some("other".to_string())
+            }),
+            ("proxy-backend-version", |f| {
+                f.proxy_backend_version = Some("other".to_string())
+            }),
+            ("routing-strategy", |f| {
+                f.routing_strategy = Some(CompatibilityRoutingStrategy::Socks)
+            }),
+            ("address-family", |f| {
+                f.address_family = Some(CompatibilityAddressFamily::Ipv6)
+            }),
+            ("fragcap-version", |f| {
+                f.fragcap_version = Some("other".to_string())
+            }),
+            ("target-version", |f| {
+                f.target_version = Some("other".to_string())
+            }),
+            ("protocol-family", |f| {
+                f.protocol = Some(CompatibilityProtocol::Http2)
+            }),
+        ];
+        for (dimension, mutate) in mutations {
+            let mut fact = base.clone();
+            mutate(&mut fact);
+            assert_eq!(
+                fact.applicability(&current),
+                CompatibilityApplicability::Mismatch(dimension)
+            );
+        }
+
+        let mut legacy = base.clone();
+        legacy.address_family = None;
+        assert_eq!(
+            legacy.applicability(&current),
+            CompatibilityApplicability::LegacyIncomplete
+        );
+        let mut stale = base;
+        stale.stale = true;
+        assert_eq!(
+            stale.applicability(&current),
+            CompatibilityApplicability::Stale
+        );
+    }
+
+    #[test]
+    fn route_facts_use_explicit_protocol_inapplicability() {
+        let current = exact_case(CompatibilityProtocol::Http3);
+        let applicable = exact_fact(
+            CompatibilityFactKey::ProxyRouting,
+            CompatibilityProtocol::NotApplicable,
+        );
+        assert_eq!(
+            applicable.applicability(&current),
+            CompatibilityApplicability::Applicable
+        );
+        let wrong = exact_fact(
+            CompatibilityFactKey::ProxyRouting,
+            CompatibilityProtocol::Routing,
+        );
+        assert_eq!(
+            wrong.applicability(&current),
+            CompatibilityApplicability::Mismatch("protocol-family")
+        );
+    }
+
+    #[test]
+    fn latest_applicable_fact_keeps_conflicts_and_uses_latest_exact_row() {
+        let current = exact_case(CompatibilityProtocol::Https);
+        let mut older = exact_fact(
+            CompatibilityFactKey::TlsTrustBehavior,
+            CompatibilityProtocol::Https,
+        );
+        older.value = "accepts-local-ca".to_string();
+        let mut mismatch = older.clone();
+        mismatch.address_family = Some(CompatibilityAddressFamily::Ipv6);
+        mismatch.value = "rejects-local-ca".to_string();
+        let mut latest = older.clone();
+        latest.value = "rejects-local-ca".to_string();
+        let facts = vec![older, mismatch, latest];
+        assert_eq!(
+            latest_applicable_fact(&facts, CompatibilityFactKey::TlsTrustBehavior, &current)
+                .unwrap()
+                .value,
+            "rejects-local-ca"
+        );
+    }
 
     fn fact(
         id: Option<i64>,

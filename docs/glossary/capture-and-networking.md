@@ -193,9 +193,9 @@ target process.
 
 ## Compatibility calibration
 
-An explicitly confirmed Deep Capture measurement that collects local compatibility evidence for one stored target, one declared launch case, and either proxy reachability or TLS behavior.
+An explicitly confirmed Deep Capture measurement that collects local compatibility evidence for one stored target, one declared launch case, one target-scoped routing strategy, one loopback address family, and either routing or one exact native protocol family.
 
-Reachability calibration runs without a certificate trust change. TLS calibration is a separate phase and is available only after current evidence shows that the same target and launch case reached the final client through the scoped proxy. Each phase writes only directly observed facts to the existing local target store and records its run outcome separately.
+Reachability calibration runs without a certificate trust change. TLS calibration is a separate phase and is available only after exact current evidence shows that the same launch, route, family, backend, product version, and available target version reached the final client through the scoped proxy. Protocol facts also require a matching retained classification. Each phase appends only directly observed facts to the existing local target store and records its run outcome separately; stale, legacy-incomplete, mismatched, and conflicting rows remain visible history.
 
 {: .matters }
 > Calibration is an evidence-producing workflow, not a bypass around ordinary Deep Capture eligibility. Its plan is displayed before confirmation, its effects have finite deadlines, and its local evidence is never published automatically.
