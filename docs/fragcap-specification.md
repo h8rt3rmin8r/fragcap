@@ -132,6 +132,7 @@ enforcement.
 | 0.1.37-draft | 2026-09-01 | W. Thompson | **Adds the explicit warm-to-cold Deep Capture workflow (issue #309).** Extends sections 17.2.1, 26, 28, and 29. A selected bounded workflow reports identity-uncertain warm image observations, waits while the operator uses normal application shutdown, freshly resolves and prepares the cold launch, and requires a second authorization before effects. fragcap performs no process-control action or force-kill fallback. |
 | 0.1.38-draft | 2026-09-02 | W. Thompson | **Adds scoped SOCKS5 UDP association (issue #311).** Extends sections 19, 25, and 28.1. One authenticated TCP control connection owns one finite UDP relay with immutable client endpoint pinning, proxy-owned domain resolution, existing destination policy, fixed family sockets, bounded exact contacted-peer mappings, reply-source validation, explicit fragmentation refusal, metadata-only evidence, loss conservation, and terminal cleanup. Generic UDP payload evidence remains #313, and Deep Capture remains incomplete until #334. |
 | 0.1.39-draft | 2026-09-02 | W. Thompson | **Adds bounded generic TCP and non-HTTP TLS evidence (issue #312).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated SOCKS5 tunnels retain bounded directional plaintext or encrypted chunks with explicit provenance, while trusted no-ALPN CONNECT tunnels may terminate under the session authority and retain protocol-unknown decrypted chunks after separately verified upstream TLS. Forwarding remains independent from retention, HTTP keeps its existing engines, and trust, pinning, client-auth, protocol, and transport failures never silently downgrade. Generic UDP remains #313, and Deep Capture remains incomplete until #334. |
+| 0.1.40-draft | 2026-09-03 | W. Thompson | **Adds bounded generic UDP datagram evidence (issue #313).** Extends sections 13.7, 19.6, 25, and 28.1. Authenticated SOCKS5 UDP associations retain one exact application record per accepted ingress datagram with direction, independent sequence, endpoints, timestamp, observed length, bounded payload prefix, and retention outcome. Forwarding remains complete and independent from evidence retention and storage. Queue loss, bounded identity overflow, and platform-observed socket errors are explicit without inferring ICMP facts. Unrouted UDP remains packet-only, QUIC remains #314, and Deep Capture remains incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -1863,6 +1864,17 @@ Application JSON Lines version 2 is the canonical machine-readable application e
 
 HTTP metadata records retain HTTP/1.1 field order, name casing, duplicates, empty values, informational blocks, and trailers. HTTP/2 records retain typed pseudo-fields, binary-safe regular values, duplicate value order exposed by the protocol engine, and explicit provenance that original HPACK bytes and compressed cross-name order are unavailable. Body records are bounded ordered segments. Raw observed bytes are authoritative; transfer and gzip, zlib-wrapped deflate, or Brotli decoding are separate derived transformations with exact completion or failure outcomes. Forwarding capacity is independent from evidence-retention capacity, so a valid large or indefinite stream is not refused merely because its artifact is truncated.
 
+Generic TCP records retain bounded directional chunks with byte offsets and
+plaintext, encrypted, or decrypted provenance. Generic UDP records retain one
+accepted ingress datagram per record, never a chunked or merged representation.
+Each UDP record names its direction, independent directional sequence, pinned
+client endpoint, exact selected or observed remote endpoint, event time,
+observed length, retained prefix, and retention outcome. Duplicate and reordered
+datagrams remain distinct. Both generic paths use the shared sensitive-data
+budgets, and forwarding remains independent from retention and writer pressure.
+UDP socket errors retain only platform-observed local results without inferring
+ICMP facts. Unrouted UDP remains packet-only.
+
 HAR is an HTTP-oriented projection, not the only application truth and not exclusive to Deep Capture. Capture may produce HAR when HTTP semantics are actually observable, such as plaintext HTTP or an already-decrypted stream. Deep Capture is the expected mode for useful HTTPS HAR output because the proxy can observe HTTP semantics only when the selected target routes through it and accepts the configured local certificate authority.
 
 HAR 1.2 is finalized from a complete application JSON Lines stream, never from
@@ -3483,7 +3495,7 @@ support is exact:
 | gRPC | Packets and attribution | HTTP/2 gRPC calls retain method and metadata plus bounded opaque message envelopes, compression flags, and terminal status; protobuf fields are not inferred without schemas |
 | Non-HTTP TLS | Encrypted packets and attribution | SOCKS routing retains bounded opaque encrypted chunks; trusted no-ALPN CONNECT may retain bounded decrypted protocol-unknown chunks after two verified TLS boundaries, with no custom application dissection |
 | QUIC | UDP packets and attribution | Unsupported by the current HTTP proxy path; no QUIC routing or decryption claim |
-| UDP | Packets, attribution, and payload bytes unless disabled | Unsupported by the current proxy path; no generic UDP proxy inspection |
+| UDP | Packets, attribution, and payload bytes unless disabled | Authenticated SOCKS5 UDP associations retain bounded, boundary-faithful datagrams with exact observed endpoints, direction, sequence, timing, and loss; unrouted UDP remains packet-only |
 | Plaintext | Packets, attribution, and payload bytes unless disabled | Plaintext HTTP follows the HTTP row; authenticated SOCKS5 TCP retains bounded directional protocol-unknown chunks without a custom dissector |
 
 The `full` inspectability fact means that the proxy observed supported HTTP
@@ -4587,6 +4599,15 @@ as protocol-unknown evidence. HTTP ALPN and recognizable HTTP/1.1 remain with
 the existing HTTP engines. Retention never gates forwarding, and failed trust,
 pinning, client-auth, protocol, or transport boundaries do not silently
 downgrade. It closes #312 while generic UDP remains #313.
+S117 adds bounded generic UDP evidence to the authenticated S115 association.
+Each accepted ingress datagram remains one event with exact direction,
+directional sequence, timestamp, pinned client, selected or observed remote
+endpoint, observed length, retained prefix, and retention outcome. Forwarding
+uses the complete payload independently from capture policy, retention limits,
+queue admission, and storage. Queue loss and its bounded identity overflow are
+counted, and socket errors state only what the platform exposed without
+inferring ICMP meaning. Unrouted UDP remains packet-only. It closes #313 while
+QUIC and HTTP/3 remain #314.
 
 The required dependency direction is:
 
@@ -4633,8 +4654,8 @@ The protocol and launch matrix is normative:
 | gRPC | Native HTTP/2 opaque envelopes, compression flags, and status | S106, #299 |
 | Generic TCP and non-HTTP TLS | Bounded directional plaintext, opaque encrypted, or intercepted decrypted chunks with exact provenance and no custom semantic inference | S116, #312 |
 | SOCKS5 TCP | Native session-authenticated CONNECT for IPv4, IPv6, and proxy-resolved domains | S114, #310 |
-| SOCKS5 UDP ASSOCIATE | Native control-owned relay for IPv4, IPv6, and proxy-resolved domains with endpoint pinning, exact peer validation, finite mappings, and metadata-only loss accounting | S115, #311 |
-| Generic UDP | Packet truth only | #313 |
+| SOCKS5 UDP ASSOCIATE | Native control-owned relay for IPv4, IPv6, and proxy-resolved domains with endpoint pinning, exact peer validation, finite mappings, and loss accounting | S115, #311 |
+| Generic UDP | Bounded exact routed datagrams with direction, sequence, endpoints, timing, retention outcomes, and no inferred semantics; unrouted traffic remains packet-only | S117, #313 |
 | QUIC and HTTP/3 | Packet truth only, no decryption | #314 |
 | IPv6 | No complete native parity claim | #315 |
 | Cold direct executable | Shipped managed path | Native routing strategy #306 and calibration #317 |

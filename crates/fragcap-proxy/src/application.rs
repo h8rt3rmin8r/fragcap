@@ -41,6 +41,8 @@ pub enum ApplicationEventKind {
     SocksTransfer(SocksTransferEvent),
     SocksUdp(SocksUdpEvent),
     GenericStreamChunk(GenericStreamChunk),
+    GenericUdpDatagram(GenericUdpDatagram),
+    UdpSocketError(UdpSocketError),
     Error { code: &'static str },
 }
 
@@ -101,6 +103,59 @@ pub struct GenericStreamChunk {
     pub observed_len: u64,
     pub bytes: bytes::Bytes,
     pub outcome: GenericStreamOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericUdpDirection {
+    ClientToUpstream,
+    UpstreamToClient,
+}
+
+impl GenericUdpDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientToUpstream => "client-to-upstream",
+            Self::UpstreamToClient => "upstream-to-client",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenericUdpOutcome {
+    Complete,
+    IntentionallyOmitted,
+    RetentionLimit,
+}
+
+impl GenericUdpOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::IntentionallyOmitted => "intentionally-omitted",
+            Self::RetentionLimit => "retention-limit",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericUdpDatagram {
+    pub direction: GenericUdpDirection,
+    pub sequence: u64,
+    pub client_endpoint: SocketAddr,
+    pub remote_endpoint: SocketAddr,
+    pub observed_len: u64,
+    pub bytes: bytes::Bytes,
+    pub outcome: GenericUdpOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UdpSocketError {
+    pub direction: GenericUdpDirection,
+    pub operation: &'static str,
+    pub failure_code: &'static str,
+    pub endpoint: Option<SocketAddr>,
+    pub error_kind: &'static str,
+    pub visibility: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +267,10 @@ pub struct ApplicationSinkAccounting {
     pub body_bytes_queue_dropped: u64,
     pub streaming_bytes_queue_dropped: u64,
     pub generic_stream_bytes_queue_dropped: u64,
+    pub generic_udp_datagrams_queue_dropped: u64,
+    pub generic_udp_bytes_queue_dropped: u64,
+    pub generic_udp_datagrams_storage_dropped: u64,
+    pub generic_udp_bytes_storage_dropped: u64,
 }
 
 pub trait ApplicationEventSink: Send + Sync {
@@ -270,6 +329,18 @@ impl ApplicationEventSink for FanoutApplicationEventSink {
                 total.generic_stream_bytes_queue_dropped = total
                     .generic_stream_bytes_queue_dropped
                     .saturating_add(value.generic_stream_bytes_queue_dropped);
+                total.generic_udp_datagrams_queue_dropped = total
+                    .generic_udp_datagrams_queue_dropped
+                    .saturating_add(value.generic_udp_datagrams_queue_dropped);
+                total.generic_udp_bytes_queue_dropped = total
+                    .generic_udp_bytes_queue_dropped
+                    .saturating_add(value.generic_udp_bytes_queue_dropped);
+                total.generic_udp_datagrams_storage_dropped = total
+                    .generic_udp_datagrams_storage_dropped
+                    .saturating_add(value.generic_udp_datagrams_storage_dropped);
+                total.generic_udp_bytes_storage_dropped = total
+                    .generic_udp_bytes_storage_dropped
+                    .saturating_add(value.generic_udp_bytes_storage_dropped);
                 total
             })
     }
@@ -310,5 +381,26 @@ mod tests {
             receive_ns: 3,
         };
         assert_eq!(timing.send_ns + timing.wait_ns + timing.receive_ns, 6);
+    }
+
+    #[test]
+    fn generic_udp_keeps_one_boundary_and_exact_endpoints() {
+        let client = "127.0.0.1:41000".parse().unwrap();
+        let remote = "127.0.0.1:42000".parse().unwrap();
+        let datagram = GenericUdpDatagram {
+            direction: GenericUdpDirection::ClientToUpstream,
+            sequence: 3,
+            client_endpoint: client,
+            remote_endpoint: remote,
+            observed_len: 4,
+            bytes: bytes::Bytes::from_static(&[0, 1, 2]),
+            outcome: GenericUdpOutcome::RetentionLimit,
+        };
+        assert_eq!(datagram.observed_len, 4);
+        assert_eq!(datagram.bytes.len(), 3);
+        assert_eq!(datagram.direction.as_str(), "client-to-upstream");
+        assert_eq!(datagram.outcome.as_str(), "retention-limit");
+        assert_eq!(datagram.client_endpoint, client);
+        assert_eq!(datagram.remote_endpoint, remote);
     }
 }

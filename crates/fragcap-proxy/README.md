@@ -18,8 +18,14 @@ mappings, policy-checked proxy DNS, explicit fragmentation refusal,
 metadata-only events, and complete drop accounting. S116 adds bounded
 directional generic TCP chunks with plaintext, opaque TLS, and intercepted TLS
 provenance while retaining the existing HTTP and refusal boundaries. Later
-milestones own generic UDP payload semantics, broader transports, launch
+milestones own broader transports, launch
 coverage, richer artifacts, and final completion.
+
+S117 adds one bounded generic UDP record for each accepted ingress datagram on
+the S115 association. Directional sequence, exact endpoints, timing, observed
+length, retained prefix, retention outcome, queue loss, and platform-observed
+socket errors remain explicit. Forwarding always uses the complete payload,
+unrouted UDP remains packet-only, and no application or ICMP meaning is inferred.
 
 This crate never configures an ambient system proxy and never reaches inside a
 target process.

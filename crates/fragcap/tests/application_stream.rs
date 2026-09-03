@@ -11,9 +11,148 @@ use fragcap::deep_capture::{
 use fragcap_proxy::{
     ApplicationEvent, ApplicationEventKind, BodyDirection, BodyOutcome, BodyRepresentation,
     BodySegment, GenericStreamChunk, GenericStreamDirection, GenericStreamOutcome,
-    GenericStreamProvenance, GrpcMessage, MetadataBlock, MetadataField, MetadataKind,
-    ProtocolVersion, StreamingEvent, StreamingOutcome,
+    GenericStreamProvenance, GenericUdpDatagram, GenericUdpDirection, GenericUdpOutcome,
+    GrpcMessage, MetadataBlock, MetadataField, MetadataKind, ProtocolVersion, StreamingEvent,
+    StreamingOutcome, UdpSocketError,
 };
+
+#[test]
+fn generic_udp_datagrams_preserve_boundaries_payloads_and_omission() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("generic-udp.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-117", 8).unwrap();
+    let sink = lease.sink();
+    let client = "127.0.0.1:41000".parse().unwrap();
+    let remote = "127.0.0.1:42000".parse().unwrap();
+    for datagram in [
+        GenericUdpDatagram {
+            direction: GenericUdpDirection::ClientToUpstream,
+            sequence: 0,
+            client_endpoint: client,
+            remote_endpoint: remote,
+            observed_len: 4,
+            bytes: Bytes::from_static(&[0, 1, 2, 3]),
+            outcome: GenericUdpOutcome::Complete,
+        },
+        GenericUdpDatagram {
+            direction: GenericUdpDirection::UpstreamToClient,
+            sequence: 0,
+            client_endpoint: client,
+            remote_endpoint: remote,
+            observed_len: 5,
+            bytes: Bytes::from_static(b"xy"),
+            outcome: GenericUdpOutcome::RetentionLimit,
+        },
+    ] {
+        assert_eq!(
+            sink.try_emit(ApplicationEvent::now(
+                "session-117",
+                7,
+                None,
+                None,
+                ApplicationEventKind::GenericUdpDatagram(datagram),
+            )),
+            fragcap_proxy::EventDisposition::Accepted
+        );
+    }
+    assert_eq!(
+        sink.try_emit(ApplicationEvent::now(
+            "session-117",
+            7,
+            None,
+            None,
+            ApplicationEventKind::UdpSocketError(UdpSocketError {
+                direction: GenericUdpDirection::UpstreamToClient,
+                operation: "send",
+                failure_code: "socks-udp-client-send-failed",
+                endpoint: Some(client),
+                error_kind: "connection-reset",
+                visibility: "platform-observed",
+            }),
+        )),
+        fragcap_proxy::EventDisposition::Accepted
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let complete = read_application_prefix(&path).unwrap();
+    assert_eq!(
+        complete.status,
+        ApplicationStreamStatus::Complete,
+        "{:?}",
+        complete.records
+    );
+    let datagrams = complete
+        .records
+        .iter()
+        .filter(|record| record["type"] == "generic.udp_datagram")
+        .collect::<Vec<_>>();
+    assert_eq!(datagrams.len(), 2);
+    assert_eq!(datagrams[0]["payload"], "AAECAw==");
+    assert_eq!(datagrams[1]["retained_len"], 2);
+    assert_eq!(datagrams[1]["outcome"], "retention-limit");
+    let socket_error = complete
+        .records
+        .iter()
+        .find(|record| record["type"] == "generic.udp_socket_error")
+        .unwrap();
+    assert_eq!(socket_error["failure_code"], "socks-udp-client-send-failed");
+    let trailer = complete.records.last().unwrap();
+    assert_eq!(trailer["generic_udp_datagrams_observed"], 2);
+    assert_eq!(trailer["generic_udp_bytes_observed"], 9);
+    assert_eq!(trailer["generic_udp_bytes_retained"], 6);
+    assert_eq!(trailer["generic_udp_bytes_omitted"], 3);
+    assert_eq!(trailer["generic_udp_datagrams_truncated"], 1);
+}
+
+#[test]
+fn generic_udp_queue_pressure_counts_datagrams_and_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("generic-udp-pressure.jsonl");
+    let mut lease = ApplicationArtifactLease::open(&path, "session-117-pressure", 1).unwrap();
+    let sink = lease.sink();
+    let client = "127.0.0.1:41000".parse().unwrap();
+    let remote = "127.0.0.1:42000".parse().unwrap();
+    let mut queue_full = 0_u64;
+    for sequence in 0..10_000 {
+        let disposition = sink.try_emit(ApplicationEvent::now(
+            "session-117-pressure",
+            9,
+            None,
+            None,
+            ApplicationEventKind::GenericUdpDatagram(GenericUdpDatagram {
+                direction: GenericUdpDirection::ClientToUpstream,
+                sequence,
+                client_endpoint: client,
+                remote_endpoint: remote,
+                observed_len: 8,
+                bytes: Bytes::from_static(b"datagram"),
+                outcome: GenericUdpOutcome::Complete,
+            }),
+        ));
+        queue_full += u64::from(disposition == fragcap_proxy::EventDisposition::QueueFull);
+    }
+    assert!(queue_full > 0);
+    assert_eq!(
+        sink.accounting().generic_udp_datagrams_queue_dropped,
+        queue_full
+    );
+    assert_eq!(
+        sink.accounting().generic_udp_bytes_queue_dropped,
+        queue_full * 8
+    );
+    drop(sink);
+    lease.finish().unwrap();
+    let stream = read_application_prefix(&path).unwrap();
+    assert_eq!(
+        stream.status,
+        ApplicationStreamStatus::Complete,
+        "{:?}",
+        stream.records
+    );
+    let trailer = stream.records.last().unwrap();
+    assert_eq!(trailer["generic_udp_datagrams_queue_dropped"], queue_full);
+    assert_eq!(trailer["generic_udp_bytes_queue_dropped"], queue_full * 8);
+}
 
 #[test]
 fn generic_stream_chunks_preserve_provenance_and_omission() {
