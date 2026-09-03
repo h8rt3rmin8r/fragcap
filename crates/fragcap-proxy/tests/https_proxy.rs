@@ -165,7 +165,12 @@ fn round_trip(
     )
     .unwrap();
     let mut response = String::new();
-    tls.read_to_string(&mut response).unwrap();
+    if let Err(error) = tls.read_to_string(&mut response) {
+        // HTTP Content-Length proves this fixture's response is complete.
+        // rustls can still report a transport EOF without close_notify after
+        // returning every authenticated application byte.
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof, "{error}");
+    }
     assert!(response.ends_with("SECURE"), "{response}");
     server.join().unwrap();
 
