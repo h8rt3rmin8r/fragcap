@@ -2,7 +2,7 @@
 
 ## Listener Contract
 
-One prepared session authorizes one exact loopback socket. The native runtime must bind that socket or fail. It may not substitute another family, wildcard, port, or interface.
+One prepared session authorizes one exact loopback socket. Preflight retains that socket continuously until the native runtime consumes it. The runtime may not release and rebind, or substitute another family, wildcard, port, or interface.
 
 ## Route Contract
 
@@ -12,7 +12,7 @@ One prepared session authorizes one exact loopback socket. The native runtime mu
 
 ## Authority Contract
 
-Accepted forms include `example.test:443`, `192.0.2.1:443`, `[2001:db8::1]:443`, and scoped local literals with a decimal index. A scope is socket-local and excluded from TLS server name and HTTP authority forwarding.
+Accepted forms include `example.test:443`, `192.0.2.1:443`, `[2001:db8::1]:443`, and scoped local literals with a decimal index. Raw authority-form and URI percent-encoded zone delimiters use distinct parsing contexts, so raw indexes such as `25`, `250`, and `251` retain their exact value. A scope is socket-local and excluded from TLS server name and HTTP authority forwarding.
 
 ## Race Contract
 

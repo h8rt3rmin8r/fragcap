@@ -514,6 +514,7 @@ fn proxy_event_detail(kind: &ApplicationEventKind) -> Value {
         }),
         ApplicationEventKind::SocksConnect(value) => json!({
             "authority": value.authority,
+            "upstream_local": value.upstream_local.map(|address| address.to_string()),
             "selected_peer": value.selected_peer.map(|address| address.to_string()),
             "address_type": value.address_type,
             "dns_owner": value.dns_owner,

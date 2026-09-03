@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::io::IsTerminal;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
@@ -582,6 +582,7 @@ fn library_refusal(code: &'static str, error: CliError) -> fragcap::deep_capture
 
 struct LibraryEndpointAdapter {
     family: DeepCaptureProxyFamilyArg,
+    reservation: fragcap::deep_capture::NativeListenerReservation,
 }
 
 impl fragcap::deep_capture::EndpointAllocator for LibraryEndpointAdapter {
@@ -589,12 +590,7 @@ impl fragcap::deep_capture::EndpointAllocator for LibraryEndpointAdapter {
         &mut self,
     ) -> Result<fragcap::deep_capture::LoopbackEndpoint, fragcap::deep_capture::PreflightRefusal>
     {
-        select_loopback_endpoint(self.family)
-            .and_then(|address| {
-                fragcap::deep_capture::LoopbackEndpoint::new(address)
-                    .map_err(|error| CliError::failure(error.detail))
-            })
-            .map_err(|error| library_refusal("loopback-endpoint", error))
+        self.reservation.reserve(loopback_bind_address(self.family))
     }
 }
 
@@ -1531,6 +1527,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
     let observation_context = fragcap::deep_capture::NativeObservationContext::default();
     let client_identity = load_client_identity(args)?;
+    let listener_reservation = fragcap::deep_capture::NativeListenerReservation::default();
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = fragcap::deep_capture::AdapterSet {
         targets: Box::new(LibraryTargetAdapter {
@@ -1541,6 +1538,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         }),
         endpoints: Box::new(LibraryEndpointAdapter {
             family: args.proxy_family,
+            reservation: listener_reservation.clone(),
         }),
         clock: Box::new(LibraryClockAdapter {
             started: Instant::now(),
@@ -1552,6 +1550,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
                 .with_application_artifact(bundle.join("application.jsonl"))
                 .with_proxy_lifecycle_artifact(bundle.join("proxy.jsonl"))
                 .with_key_log_artifact(bundle.join("tls-keylog.log"))
+                .with_listener_reservation(listener_reservation)
                 .with_payload_capture(!args.no_payload);
             if let Some(identity) = client_identity {
                 proxy = proxy.with_client_identity(identity);
@@ -2025,16 +2024,11 @@ fn resolve_target(store: &Store, args: &DeepCaptureArgs) -> Result<TargetEntry, 
     }
 }
 
-fn select_loopback_endpoint(family: DeepCaptureProxyFamilyArg) -> Result<SocketAddr, CliError> {
-    let address = match family {
+fn loopback_bind_address(family: DeepCaptureProxyFamilyArg) -> SocketAddr {
+    match family {
         DeepCaptureProxyFamilyArg::Ipv4 => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         DeepCaptureProxyFamilyArg::Ipv6 => SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
-    };
-    let listener = TcpListener::bind(address)
-        .map_err(|e| CliError::failure(format!("cannot reserve a Deep Capture port: {e}")))?;
-    listener
-        .local_addr()
-        .map_err(|e| CliError::failure(format!("cannot read the reserved proxy port: {e}")))
+    }
 }
 
 fn require_controlled_target(target: &TargetEntry) -> Result<(), CliError> {

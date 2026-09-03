@@ -262,6 +262,7 @@ pub struct SocksNegotiationEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SocksConnectEvent {
     pub authority: String,
+    pub upstream_local: Option<SocketAddr>,
     pub selected_peer: Option<SocketAddr>,
     pub address_type: &'static str,
     pub dns_owner: &'static str,

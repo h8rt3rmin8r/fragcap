@@ -1354,7 +1354,7 @@ fn request_destination(
                 if scheme == "https" { 443 } else { 80 }
             )
         };
-        let authority = DestinationAuthority::parse(&authority_with_port)
+        let authority = DestinationAuthority::parse_uri(&authority_with_port)
             .map_err(|error| ProtocolError::new(error.code, error.detail))?;
         if let Some((_, host)) = hosts.first() {
             let host = std::str::from_utf8(host)

@@ -20,7 +20,7 @@
 
 ## Decision 3: Preserve Numeric IPv6 Scope As Socket Metadata
 
-**Decision**: Accept a bounded decimal zone on bracketed IPv6 literals, convert it to `SocketAddrV6::scope_id`, and permit it only for link-local or multicast addresses. Do not include the zone in certificate identity. Refuse empty, named, overflowed, or inapplicable zones.
+**Decision**: Accept a bounded decimal zone on bracketed IPv6 literals, convert it to `SocketAddrV6::scope_id`, and permit it only for link-local or multicast addresses. Parse raw authority-form zones and URI percent-encoded zone delimiters through distinct entry points so a raw index beginning with `25` is never rewritten. Do not include the zone in certificate identity. Refuse empty, named, overflowed, or inapplicable zones.
 
 **Rationale**: RFC 4007 defines zone indexes as local interface qualifiers, and current RFC 9844 notes that decimal interface numbers are commonly accepted by operating systems. Keeping the index in the socket value prevents it from being mistaken for globally meaningful authority data. Named interface resolution is host-specific and would require another platform seam.
 

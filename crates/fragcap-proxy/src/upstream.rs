@@ -37,6 +37,20 @@ pub struct DestinationAuthority {
 
 impl DestinationAuthority {
     pub fn parse(value: &str) -> Result<Self, UpstreamError> {
+        Self::parse_with_scope_syntax(value, ScopeSyntax::Raw)
+    }
+
+    /// Parse an authority taken from a URI, where RFC zone delimiters are
+    /// percent encoded. Keeping this separate from raw authority-form parsing
+    /// avoids confusing a raw numeric scope such as `%251` with scope `1`.
+    pub fn parse_uri(value: &str) -> Result<Self, UpstreamError> {
+        Self::parse_with_scope_syntax(value, ScopeSyntax::UriEncoded)
+    }
+
+    fn parse_with_scope_syntax(
+        value: &str,
+        scope_syntax: ScopeSyntax,
+    ) -> Result<Self, UpstreamError> {
         if value.contains('@') {
             return Err(UpstreamError::new(
                 UpstreamStage::Authority,
@@ -44,7 +58,7 @@ impl DestinationAuthority {
             ));
         }
         if value.starts_with('[') {
-            return Self::parse_bracketed_ipv6(value);
+            return Self::parse_bracketed_ipv6(value, scope_syntax);
         }
         if value.contains('%') {
             return Err(UpstreamError::new(
@@ -73,7 +87,7 @@ impl DestinationAuthority {
         })
     }
 
-    fn parse_bracketed_ipv6(value: &str) -> Result<Self, UpstreamError> {
+    fn parse_bracketed_ipv6(value: &str, scope_syntax: ScopeSyntax) -> Result<Self, UpstreamError> {
         let close = value
             .find(']')
             .ok_or_else(|| UpstreamError::new(UpstreamStage::Authority, "invalid-authority"))?;
@@ -84,10 +98,11 @@ impl DestinationAuthority {
             .filter(|port| *port != 0)
             .ok_or_else(|| UpstreamError::new(UpstreamStage::Authority, "invalid-port"))?;
         let literal = &value[1..close];
-        let (address, scope_id) = match literal
-            .split_once("%25")
-            .or_else(|| literal.split_once('%'))
-        {
+        let scoped = match scope_syntax {
+            ScopeSyntax::Raw => literal.split_once('%'),
+            ScopeSyntax::UriEncoded => literal.split_once("%25"),
+        };
+        let (address, scope_id) = match scoped {
             Some((address, scope)) => {
                 let ip = address
                     .parse::<std::net::Ipv6Addr>()
@@ -153,6 +168,12 @@ impl DestinationAuthority {
             AuthorityHost::Ip(IpAddr::V6(ip)) => format!("[{ip}]:{}", self.port),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ScopeSyntax {
+    Raw,
+    UriEncoded,
 }
 
 fn valid_dns_name(value: &str) -> bool {

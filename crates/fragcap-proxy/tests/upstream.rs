@@ -26,8 +26,25 @@ fn authority_parser_preserves_names_and_rejects_ambiguity() {
     );
     assert_eq!(scoped.scope_id(), Some(7));
     assert_eq!(scoped.lookup_host(), "[fe80::1]:8443");
-    let encoded_scope = DestinationAuthority::parse("[fe80::1%257]:8443").unwrap();
+    let encoded_scope = DestinationAuthority::parse_uri("[fe80::1%257]:8443").unwrap();
     assert_eq!(encoded_scope.scope_id(), Some(7));
+
+    for (raw, expected) in [
+        ("[fe80::1%25]:8443", 25),
+        ("[fe80::1%250]:8443", 250),
+        ("[fe80::1%251]:8443", 251),
+    ] {
+        assert_eq!(
+            DestinationAuthority::parse(raw).unwrap().scope_id(),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        DestinationAuthority::parse_uri("[fe80::1%25251]:8443")
+            .unwrap()
+            .scope_id(),
+        Some(251)
+    );
     for bad in [
         "example.invalid",
         "user@example.invalid:80",

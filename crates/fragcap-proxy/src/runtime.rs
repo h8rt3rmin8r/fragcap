@@ -38,6 +38,7 @@ use crate::{
 
 pub struct NativeProxyBackend {
     config: NativeProxyConfig,
+    reserved_listener: Option<StdTcpListener>,
     destination_policy: Option<DestinationPolicy>,
     tls_client_config: Option<Arc<rustls::ClientConfig>>,
     application_sink: crate::application::SharedEventSink,
@@ -48,11 +49,18 @@ impl NativeProxyBackend {
     pub fn new(config: NativeProxyConfig) -> Self {
         Self {
             config,
+            reserved_listener: None,
             destination_policy: None,
             tls_client_config: None,
             application_sink: None,
             key_log: None,
         }
+    }
+
+    /// Start from an already-bound exact listener retained across authorization.
+    pub fn with_reserved_listener(mut self, listener: StdTcpListener) -> Self {
+        self.reserved_listener = Some(listener);
+        self
     }
 
     pub fn with_destination_policy(mut self, policy: DestinationPolicy) -> Self {
@@ -105,12 +113,32 @@ impl NativeProxyBackend {
             ));
         }
 
-        let listener = StdTcpListener::bind(self.config.listen).map_err(|error| {
-            StartError::new(
-                "listener-bind-failed",
-                format!("cannot bind {}: {error}", self.config.listen),
-            )
-        })?;
+        let listener = match self.reserved_listener.take() {
+            Some(listener) => {
+                let reserved = listener.local_addr().map_err(|error| {
+                    StartError::new(
+                        "listener-address-failed",
+                        format!("cannot read reserved listener endpoint: {error}"),
+                    )
+                })?;
+                if reserved != self.config.listen {
+                    return Err(StartError::new(
+                        "listener-reservation-mismatch",
+                        format!(
+                            "reserved listener {reserved} does not match authorized endpoint {}",
+                            self.config.listen
+                        ),
+                    ));
+                }
+                listener
+            }
+            None => StdTcpListener::bind(self.config.listen).map_err(|error| {
+                StartError::new(
+                    "listener-bind-failed",
+                    format!("cannot bind {}: {error}", self.config.listen),
+                )
+            })?,
+        };
         listener.set_nonblocking(true).map_err(|error| {
             StartError::new(
                 "listener-nonblocking-failed",

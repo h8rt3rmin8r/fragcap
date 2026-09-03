@@ -149,6 +149,14 @@ fn authenticated_ipv4_connect_preserves_bytes_and_half_close() {
     assert!(collector.0.lock().unwrap().iter().any(|event| {
         matches!(
             &event.kind,
+            ApplicationEventKind::SocksConnect(connection)
+                if connection.upstream_local.is_some_and(|local| local.is_ipv4())
+                    && connection.selected_peer == Some(address)
+        )
+    }));
+    assert!(collector.0.lock().unwrap().iter().any(|event| {
+        matches!(
+            &event.kind,
             ApplicationEventKind::GenericStreamChunk(chunk)
                 if chunk.provenance == fragcap_proxy::GenericStreamProvenance::TcpPlaintext
                     && chunk.direction == fragcap_proxy::GenericStreamDirection::ClientToUpstream

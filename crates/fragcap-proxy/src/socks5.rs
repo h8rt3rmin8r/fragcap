@@ -254,6 +254,7 @@ pub(crate) async fn serve_socks5(
                 "refused",
                 None,
                 None,
+                None,
             );
             return failed_with_observation(
                 accounting,
@@ -297,6 +298,7 @@ pub(crate) async fn serve_socks5(
         request.address_type,
         "connected",
         Some(classification),
+        bound,
         selected_peer,
     );
     let provenance = match classification {
@@ -1873,6 +1875,7 @@ fn emit_connect(
     address_type: SocksAddressType,
     outcome: &'static str,
     classification: Option<SocksClassification>,
+    upstream_local: Option<SocketAddr>,
     selected_peer: Option<SocketAddr>,
 ) {
     crate::application::emit(
@@ -1884,6 +1887,7 @@ fn emit_connect(
             None,
             ApplicationEventKind::SocksConnect(SocksConnectEvent {
                 authority: authority.to_string(),
+                upstream_local,
                 selected_peer,
                 address_type: address_type.as_str(),
                 dns_owner: if address_type == SocksAddressType::Domain {
