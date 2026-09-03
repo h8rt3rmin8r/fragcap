@@ -719,6 +719,7 @@ async fn serve_udp_association(
                 }
                 let address_type = datagram.address_type;
                 let payload_len = datagram.payload.len();
+                let client = client_endpoint.expect("accepted client endpoint is pinned");
                 let forwarding = tokio::select! {
                     biased;
                     _ = shutdown.changed() => OwnerBound::Shutdown,
@@ -732,6 +733,17 @@ async fn serve_udp_association(
                         &upstream_v4,
                         upstream_v6.as_ref(),
                         &peers,
+                        |selected| datagrams.observe(
+                            GenericUdpDirection::ClientToUpstream,
+                            client,
+                            selected,
+                            datagram.payload,
+                            limits,
+                            sink,
+                            session_id,
+                            connection_id,
+                            &mut accounting,
+                        ),
                     ) => OwnerBound::Completed(result),
                 };
                 let (selected, written) = match forwarding {
@@ -796,12 +808,23 @@ async fn serve_udp_association(
                         emit_udp(sink, session_id, connection_id, "drop", "peer-limit", Some(address_type), Some(selected), payload_len as u64, peers.len());
                         continue;
                     }
-                    OwnerBound::Completed(Err(UdpForwardFailure::Transport(selected, operation, kind))) => {
+                    OwnerBound::Completed(Err(UdpForwardFailure::Socket(selected, kind))) => {
                         accounting.socks_udp_transport_dropped = accounting.socks_udp_transport_dropped.saturating_add(1);
                         emit_udp_socket_error(
                             sink, session_id, connection_id, GenericUdpDirection::ClientToUpstream,
-                            operation, Some(selected), kind, &mut accounting,
+                            "send", Some(selected), kind, &mut accounting,
                         );
+                        emit_udp(sink, session_id, connection_id, "drop", "transport-failed", Some(address_type), Some(selected), payload_len as u64, peers.len());
+                        continue;
+                    }
+                    OwnerBound::Completed(Err(UdpForwardFailure::WriteTimeout(selected))) => {
+                        accounting.socks_udp_transport_dropped = accounting.socks_udp_transport_dropped.saturating_add(1);
+                        accounting.timed_out = accounting.timed_out.saturating_add(1);
+                        emit_udp(sink, session_id, connection_id, "drop", "timeout", Some(address_type), Some(selected), payload_len as u64, peers.len());
+                        continue;
+                    }
+                    OwnerBound::Completed(Err(UdpForwardFailure::ShortWrite(selected))) => {
+                        accounting.socks_udp_transport_dropped = accounting.socks_udp_transport_dropped.saturating_add(1);
                         emit_udp(sink, session_id, connection_id, "drop", "transport-failed", Some(address_type), Some(selected), payload_len as u64, peers.len());
                         continue;
                     }
@@ -810,18 +833,6 @@ async fn serve_udp_association(
                 accounting.socks_udp_peak_peers = accounting.socks_udp_peak_peers.max(peers.len() as u64);
                 accounting.socks_udp_client_forwarded = accounting.socks_udp_client_forwarded.saturating_add(1);
                 accounting.socks_udp_client_bytes = accounting.socks_udp_client_bytes.saturating_add(written as u64);
-                let client = client_endpoint.expect("accepted client endpoint is pinned");
-                datagrams.observe(
-                    GenericUdpDirection::ClientToUpstream,
-                    client,
-                    selected,
-                    datagram.payload,
-                    limits,
-                    sink,
-                    session_id,
-                    connection_id,
-                    &mut accounting,
-                );
                 emit_udp(sink, session_id, connection_id, "datagram", "forwarded", Some(address_type), Some(selected), written as u64, peers.len());
                 idle.as_mut().reset(Instant::now() + limits.idle_timeout);
             },
@@ -930,10 +941,16 @@ enum UdpForwardFailure {
     DnsTimeout,
     Ipv6Unavailable(SocketAddr),
     PeerLimit(SocketAddr),
-    Transport(SocketAddr, &'static str, &'static str),
+    Socket(SocketAddr, &'static str),
+    WriteTimeout(SocketAddr),
+    ShortWrite(SocketAddr),
 }
 
-async fn forward_client_datagram(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pre-send observation callback must share the exact validated forwarding inputs"
+)]
+async fn forward_client_datagram<F>(
     authority: &DestinationAuthority,
     payload: &[u8],
     policy: &DestinationPolicy,
@@ -941,7 +958,11 @@ async fn forward_client_datagram(
     upstream_v4: &UdpSocket,
     upstream_v6: Option<&UdpSocket>,
     peers: &BTreeSet<SocketAddr>,
-) -> Result<(SocketAddr, usize), UdpForwardFailure> {
+    observe: F,
+) -> Result<(SocketAddr, usize), UdpForwardFailure>
+where
+    F: FnOnce(SocketAddr),
+{
     let candidates = crate::resolve_allowed_udp(authority, policy, limits.upstream.dns)
         .await
         .map_err(|error| match (error.stage, error.code) {
@@ -958,6 +979,7 @@ async fn forward_client_datagram(
     if !peers.contains(&selected) && peers.len() >= limits.max_socks_udp_peers {
         return Err(UdpForwardFailure::PeerLimit(selected));
     }
+    observe(selected);
     let send = match selected {
         SocketAddr::V4(_) => {
             timeout(
@@ -973,13 +995,9 @@ async fn forward_client_datagram(
     };
     match send {
         Ok(Ok(written)) if written == payload.len() => Ok((selected, written)),
-        Ok(Ok(_)) => Err(UdpForwardFailure::Transport(selected, "send", "write-zero")),
-        Ok(Err(error)) => Err(UdpForwardFailure::Transport(
-            selected,
-            "send",
-            io_kind(error.kind()),
-        )),
-        Err(_) => Err(UdpForwardFailure::Transport(selected, "send", "timed-out")),
+        Ok(Ok(_)) => Err(UdpForwardFailure::ShortWrite(selected)),
+        Ok(Err(error)) => Err(UdpForwardFailure::Socket(selected, io_kind(error.kind()))),
+        Err(_) => Err(UdpForwardFailure::WriteTimeout(selected)),
     }
 }
 
@@ -1065,6 +1083,17 @@ async fn handle_upstream_datagram(
     }
     let mut framed = encode_udp_response(source, payload);
     let client_endpoint = client_endpoint.expect("checked above");
+    datagrams.observe(
+        GenericUdpDirection::UpstreamToClient,
+        client_endpoint,
+        source,
+        payload,
+        limits,
+        sink,
+        session_id,
+        connection_id,
+        accounting,
+    );
     let send = timeout(
         limits.upstream.write,
         relay.send_to(&framed, client_endpoint),
@@ -1077,17 +1106,6 @@ async fn handle_upstream_datagram(
             accounting.socks_udp_upstream_bytes = accounting
                 .socks_udp_upstream_bytes
                 .saturating_add(payload.len() as u64);
-            datagrams.observe(
-                GenericUdpDirection::UpstreamToClient,
-                client_endpoint,
-                source,
-                payload,
-                limits,
-                sink,
-                session_id,
-                connection_id,
-                accounting,
-            );
             emit_udp(
                 sink,
                 session_id,
@@ -1105,21 +1123,21 @@ async fn handle_upstream_datagram(
         outcome => {
             accounting.socks_udp_transport_dropped =
                 accounting.socks_udp_transport_dropped.saturating_add(1);
-            let error_kind = match outcome {
-                Ok(Ok(_)) => "write-zero",
-                Ok(Err(error)) => io_kind(error.kind()),
-                Err(_) => "timed-out",
-            };
-            emit_udp_socket_error(
-                sink,
-                session_id,
-                connection_id,
-                GenericUdpDirection::UpstreamToClient,
-                "send",
-                Some(client_endpoint),
-                error_kind,
-                accounting,
-            );
+            if let Ok(Err(error)) = &outcome {
+                emit_udp_socket_error(
+                    sink,
+                    session_id,
+                    connection_id,
+                    GenericUdpDirection::UpstreamToClient,
+                    "send",
+                    Some(client_endpoint),
+                    io_kind(error.kind()),
+                    accounting,
+                );
+            }
+            if outcome.is_err() {
+                accounting.timed_out = accounting.timed_out.saturating_add(1);
+            }
             emit_udp(
                 sink,
                 session_id,
@@ -1781,5 +1799,37 @@ mod tests {
         assert_eq!(io_kind(io::ErrorKind::HostUnreachable), "host-unreachable");
         assert_eq!(io_kind(io::ErrorKind::ConnectionReset), "connection-reset");
         assert_eq!(io_kind(io::ErrorKind::Other), "other");
+        assert!(!matches!(
+            UdpForwardFailure::WriteTimeout("127.0.0.1:9".parse().unwrap()),
+            UdpForwardFailure::Socket(_, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn accepted_udp_is_observed_before_transport_availability() {
+        let selected: SocketAddr = "[::1]:9".parse().unwrap();
+        let authority = DestinationAuthority::parse("[::1]:9").unwrap();
+        let upstream_v4 = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut policy = DestinationPolicy::new("127.0.0.1:1080".parse().unwrap());
+        policy.grant_for_test(selected);
+        let mut observed = None;
+
+        let result = forward_client_datagram(
+            &authority,
+            b"accepted",
+            &policy,
+            &ProtocolLimits::default(),
+            &upstream_v4,
+            None,
+            &BTreeSet::new(),
+            |remote| observed = Some(remote),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(UdpForwardFailure::Ipv6Unavailable(address)) if address == selected
+        ));
+        assert_eq!(observed, Some(selected));
     }
 }
