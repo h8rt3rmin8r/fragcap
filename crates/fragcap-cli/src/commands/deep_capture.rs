@@ -1140,6 +1140,7 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         let outcome = calibration.map(|phase| {
             terminal_calibration_outcome(
                 phase,
+                self.protocol.expect("calibration protocol retained"),
                 &snapshot.observations,
                 runtime.interrupted,
                 !snapshot.failures.is_empty(),
@@ -1457,6 +1458,10 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     let runtime = self.runtime.borrow();
                     let outcome = terminal_calibration_outcome(
                         phase,
+                        self.args
+                            .calibration_protocol
+                            .map(calibration_protocol)
+                            .expect("calibration protocol validated"),
                         &report.observations,
                         runtime.interrupted,
                         !report.failures.is_empty(),
@@ -3968,16 +3973,51 @@ mod tests {
     #[test]
     fn terminal_calibration_outcome_distinguishes_interrupt_and_failure() {
         assert_eq!(
-            terminal_calibration_outcome(CalibrationPhase::Tls, &[], true, false),
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Https,
+                &[],
+                true,
+                false,
+            ),
             CalibrationOutcome::Interrupted
         );
         assert_eq!(
-            terminal_calibration_outcome(CalibrationPhase::Tls, &[], false, true),
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Https,
+                &[],
+                false,
+                true,
+            ),
             CalibrationOutcome::Failed
         );
         assert_eq!(
-            terminal_calibration_outcome(CalibrationPhase::Tls, &[], true, true),
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Https,
+                &[],
+                true,
+                true,
+            ),
             CalibrationOutcome::Interrupted
+        );
+    }
+
+    #[test]
+    fn terminal_calibration_outcome_requires_the_selected_protocol() {
+        let mut https = observation();
+        https.role = Some("client".to_string());
+        https.attribution = Some("controlled-harness".to_string());
+        assert_eq!(
+            terminal_calibration_outcome(
+                CalibrationPhase::Tls,
+                CompatibilityProtocol::Http2,
+                &[https],
+                false,
+                false,
+            ),
+            CalibrationOutcome::Inconclusive
         );
     }
 

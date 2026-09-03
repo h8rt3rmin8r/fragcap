@@ -440,6 +440,7 @@ pub fn observation_proves_final_client_ca_acceptance(
 /// Fold interruption and operation failure into the evidence-based outcome.
 pub fn terminal_calibration_outcome(
     phase: CalibrationPhase,
+    selected_protocol: CompatibilityProtocol,
     observations: &[CompatibilityObservation],
     interrupted: bool,
     failed: bool,
@@ -449,7 +450,20 @@ pub fn terminal_calibration_outcome(
     } else if failed {
         CalibrationOutcome::Failed
     } else {
-        calibration_outcome(phase, observations)
+        match phase {
+            CalibrationPhase::Reachability => calibration_outcome(phase, observations),
+            CalibrationPhase::Tls => {
+                let matching = observations
+                    .iter()
+                    .filter(|observation| {
+                        compatibility_protocol_family(&observation.classification)
+                            == Some(selected_protocol)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                calibration_outcome(phase, &matching)
+            }
+        }
     }
 }
 
