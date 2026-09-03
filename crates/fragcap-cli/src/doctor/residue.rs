@@ -276,6 +276,16 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
         return NativeResidueInventory::default();
     };
     let mut inventory = NativeResidueInventory::default();
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            inventory
+                .limitations
+                .push(format!("inventory-root-invalid: {error}"));
+            return inventory;
+        }
+    };
+    let root = canonical_root.as_path();
     let owners = match registered_session_owners(root) {
         Ok(owners) => owners,
         Err(error) => {
@@ -333,7 +343,11 @@ pub(crate) fn inventory(root: Option<&Path>) -> NativeResidueInventory {
     observed_files.dedup();
     let mut journal_bundles = BTreeSet::new();
     for journal in journals {
-        let bundle = journal.parent().unwrap_or(root).to_path_buf();
+        let bundle = journal
+            .parent()
+            .unwrap_or(root)
+            .canonicalize()
+            .unwrap_or_else(|_| journal.parent().unwrap_or(root).to_path_buf());
         journal_bundles.insert(bundle.clone());
         let owner_activity = owner_states
             .get(&bundle)
@@ -899,6 +913,36 @@ mod tests {
             inventory(Some(root.path())).findings[0].health,
             ResidueHealth::Healthy
         );
+    }
+
+    #[test]
+    fn inventory_matches_owner_and_journal_through_a_noncanonical_root() {
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("bundle");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let _lease = register_session_owner(root.path(), &bundle).expect("owner");
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "proxy",
+                ResourceKind::Proxy,
+                "127.0.0.1:1234",
+                "session:session",
+                "release",
+                ResourceState::Applied,
+                "active",
+            ))
+            .expect("append");
+
+        let observed = inventory(Some(&root.path().join(".")));
+
+        let proxy = observed
+            .findings
+            .iter()
+            .filter(|finding| finding.resource_id == "proxy")
+            .collect::<Vec<_>>();
+        assert_eq!(proxy.len(), 1);
+        assert_eq!(proxy[0].health, ResidueHealth::Active);
     }
 
     #[test]

@@ -78,6 +78,28 @@ fn completed_resource_and_completed_journal_need_no_recovery() {
 }
 
 #[test]
+fn recovery_terminalizes_a_header_only_crash_prefix() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = {
+        let journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+        journal.path().to_path_buf()
+    };
+
+    let before = read_resource_journal(&path).unwrap();
+    assert_eq!(before.status, JournalStatus::CrashPrefix);
+    assert!(before.transitions.is_empty());
+
+    let plan = recover_resource_journal(&path, |_| unreachable!("no resource action")).unwrap();
+
+    assert!(plan.actions.is_empty());
+    assert!(plan.refusals.is_empty());
+    assert_eq!(
+        read_resource_journal(&path).unwrap().status,
+        JournalStatus::Complete
+    );
+}
+
+#[test]
 fn corrupt_and_noncontiguous_records_fail_closed() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("resource-journal.jsonl");

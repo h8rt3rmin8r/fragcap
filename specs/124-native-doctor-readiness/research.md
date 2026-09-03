@@ -21,7 +21,10 @@ Legacy owner records have no generation lease. A complete terminal journal is
 safe to retire automatically because it proves there is no live obligation.
 Every other legacy record remains unproven at startup and becomes actionable
 only through Doctor's existing explicit confirmation gate. Confirmed repair
-replays only its exact journal plan and retires only its exact owner record.
+replays only its exact journal plan and retires only its exact owner record. A
+header-only journal has no resource mutation to replay, so confirmed recovery
+first writes its synchronized terminal trailer and only then retires the owner
+record.
 
 ## R2: Inventory authority and bounds
 
@@ -29,7 +32,9 @@ replays only its exact journal plan and retires only its exact owner record.
 journal-byte, journal-record, and finding limits. It returns observations and
 limitations as data and never creates the session directory. Exact canonical
 custom bundle roots remain reachable through owner records because the shipped
-CLI supports an operator-selected bundle outside the default root.
+CLI supports an operator-selected bundle outside the default root. The default
+scan root and each discovered journal parent are canonicalized before ownership
+matching so Windows verbatim and ordinary spellings cannot conflict.
 
 **Rationale**: Independent scanners already cause journal errors to collapse
 into stale-manifest aggregates. One inventory can preserve unknowns and ensure
@@ -89,7 +94,9 @@ single global verdict hides which workflow is usable.
 exact legacy owner-record retirement and are executed only after the current
 confirmation gate by the existing recovery implementation. Re-run the
 inventory afterward. Native check identity is derived from session and
-resource identity rather than its changing list position.
+resource identity rather than its changing list position. When an unsupported
+journal version cannot expose a session identifier, the check uses a stable
+canonical-bundle-derived fallback.
 
 **Rationale**: Doctor must not invent a cleanup policy. Exact actions already
 exist for trust and process-scoped obligations, while ambiguous artifact and

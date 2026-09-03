@@ -416,6 +416,12 @@ pub fn recover_resource_journal(
     let prefix = read_resource_journal(path)?;
     let plan = prefix.recovery_plan();
     if plan.actions.is_empty() {
+        if prefix.status == JournalStatus::CrashPrefix
+            && prefix.transitions.is_empty()
+            && plan.refusals.is_empty()
+        {
+            ResourceJournal::resume(path)?.finish()?;
+        }
         return Ok(plan);
     }
     let latest = prefix.latest();

@@ -522,7 +522,10 @@ Confirmed repair reuses only the existing exact journal recovery plan and no
 longer deletes recognized historical sidecars by filename. Legacy owners
 require terminal journal proof or explicit repair confirmation, and native
 check identifiers derive from session and resource identity rather than list
-position. S124 adds one
+position; unsupported journal versions use a stable canonical-bundle fallback.
+Inventory canonicalizes scan and owner identities before matching them, and a
+confirmed header-only legacy recovery writes a terminal journal trailer before
+retiring its exact owner record. S124 adds one
 already-resolved `windows-sys` feature but no dependency or lockfile package;
 packaging validation remains #329 and Deep Capture remains incomplete until
 #334.

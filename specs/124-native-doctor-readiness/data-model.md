@@ -14,7 +14,9 @@ bundle includes packet capture.
 - `mode`: stable mode identifier.
 - `ready`: true only when every applicable check is non-failing.
 - `blocking_checks`: ordered stable check identifiers. Native identifiers use
-  session and resource identity rather than an ordinal.
+  session and resource identity rather than an ordinal. An unsupported journal
+  that cannot supply a session identity uses a stable canonical-bundle-derived
+  identity.
 
 ## SessionOwnerRecord
 
@@ -24,7 +26,8 @@ bundle includes packet capture.
 - `lease_id`: bounded opaque identifier for the exact session generation.
 
 The live named lease plus matching canonical record proves `active`. PID alone
-never does.
+never does. Scan roots and discovered bundle parents are canonicalized before
+they are matched against these records.
 
 ## NativeResidueInventory
 
@@ -64,4 +67,5 @@ Deep Capture readiness. It is never normalized to absence.
 Doctor does not define resource transitions. It consumes the S109 journal state
 machine and its `recovery_plan()`. A repair appends only transitions already
 authorized by that implementation, then a fresh inventory derives the new
-health state.
+health state. When explicit legacy repair confirms a header-only crash prefix,
+recovery writes its terminal trailer before retiring the exact owner record.

@@ -1223,6 +1223,31 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_legacy_recovery_terminalizes_a_header_only_journal() {
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("legacy-header");
+        std::fs::create_dir(&bundle).expect("bundle");
+        write_legacy_owner(root.path(), &bundle);
+        let journal =
+            fragcap::deep_capture::ResourceJournal::create(&bundle, "legacy-header", "plan")
+                .expect("journal");
+        drop(journal);
+
+        recover_deep_capture_journals_with_legacy_confirmation(root.path(), &mut std::io::sink())
+            .expect("confirmed header-only recovery");
+
+        assert!(registered_session_owners(root.path()).unwrap().is_empty());
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("terminal journal");
+        assert_eq!(
+            prefix.status,
+            fragcap::deep_capture::JournalStatus::Complete
+        );
+    }
+
+    #[test]
     fn terminal_legacy_owner_is_retired_without_liveness_guessing() {
         use fragcap::deep_capture::{
             ResourceJournal, ResourceKind, ResourceState, ResourceTransition,

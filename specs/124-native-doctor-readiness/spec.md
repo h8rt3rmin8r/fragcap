@@ -81,7 +81,7 @@ An operator can request Doctor fixes and receive one confirmation-gated action o
 - **FR-001**: Doctor MUST produce independent Capture and Deep Capture readiness verdicts from the same ordered check set.
 - **FR-002**: Deep Capture readiness MUST include every prerequisite shared with Capture plus native proxy, loopback, trust, storage, and unresolved-resource requirements.
 - **FR-003**: The command exit MUST remain unsuccessful when either mode has a blocking failure and successful when neither mode has one; warnings MUST remain non-blocking.
-- **FR-004**: Human and machine-readable reports MUST expose the same check identities, states, details, remediations, and separate mode verdicts in stable order.
+- **FR-004**: Human and machine-readable reports MUST expose the same check identities, states, details, remediations, and separate mode verdicts in stable order. When an unsupported journal version cannot supply a session identity, its check identity MUST derive from the canonical bundle.
 - **FR-005**: The production Doctor surface MUST identify the compiled native backend directly and MUST contain no external proxy discovery, mitmdump installation guidance, or legacy proxy-process placeholder.
 - **FR-006**: One bounded read-only inventory MUST classify session-owner registrations, resource journals, bundle manifests, listener endpoints, routing obligations, launch and capture obligations, CA and leaf material, trust entries, key logs, process traces, application evidence, cleanup streams, and incomplete bundles when those authorities exist.
 - **FR-007**: Every inventory item MUST retain its session, bundle, resource kind, latest lifecycle state, ownership authority, observed health, and exact recovery eligibility without exposing secret material.
@@ -100,7 +100,8 @@ An operator can request Doctor fixes and receive one confirmation-gated action o
 - **FR-020**: Tests MUST cover every readiness combination and residue state without a game, account, Internet service, elevation, capture driver, real trust mutation, or unrelated process cleanup.
 - **FR-021**: Documentation MUST describe the native Doctor authority and the runtime-versus-packaging boundary without declaring Deep Capture complete before issue #334.
 - **FR-022**: S124 MUST NOT claim installer, archive, offline release smoke, artifact-size, upgrade, repair, uninstall, supply-chain, Windows integration, or final completion work owned by issues #323 through #334.
-- **FR-023**: A legacy owner record without a generation lease MUST remain unproven during startup. Terminal journal evidence MAY retire it automatically; otherwise only an explicit confirmed Doctor repair MAY replay its exact journal plan and retire its exact owner record.
+- **FR-023**: A legacy owner record without a generation lease MUST remain unproven during startup. Terminal journal evidence MAY retire it automatically; otherwise only an explicit confirmed Doctor repair MAY replay its exact journal plan and retire its exact owner record. A confirmed header-only crash prefix MUST receive a terminal trailer before its owner record is retired.
+- **FR-024**: Inventory MUST canonicalize its scan root and discovered bundle identities before matching them to canonical owner records.
 
 ### Key Entities
 

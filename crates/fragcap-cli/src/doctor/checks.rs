@@ -574,9 +574,14 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
         .findings
         .iter()
         .map(|finding| {
+            let session_identity = if finding.session_id.is_empty() {
+                format!("bundle-{:016x}", stable_path_hash(&finding.bundle))
+            } else {
+                finding.session_id.clone()
+            };
             let name = format!(
                 "native resource {}/{}",
-                finding.session_id, finding.resource_id
+                session_identity, finding.resource_id
             );
             let detail = format!(
                 "session={} resource={} kind={} state={} health={} authority={}: {}",
@@ -614,6 +619,18 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
             }
         })
         .collect()
+}
+
+fn stable_path_hash(path: &std::path::Path) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    path.as_os_str()
+        .to_string_lossy()
+        .as_bytes()
+        .iter()
+        .fold(FNV_OFFSET, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+        })
 }
 
 fn loopback_check(
@@ -1168,6 +1185,35 @@ mod tests {
 
         assert_eq!(before, "native resource stable/proxy");
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn unknown_version_check_identity_uses_the_bundle() {
+        let finding = |bundle: &str| crate::doctor::residue::ResourceFinding {
+            session_id: String::new(),
+            bundle: std::path::PathBuf::from(bundle),
+            resource_id: "journal".to_string(),
+            kind: "journal".to_string(),
+            state: "unknown-version".to_string(),
+            health: crate::doctor::residue::ResidueHealth::Unknown,
+            recoverable: false,
+            ownership_authority: "resource-journal".to_string(),
+            detail: "resource journal version is unsupported".to_string(),
+        };
+        let inventory = crate::doctor::residue::NativeResidueInventory {
+            findings: vec![finding("C:\\sessions\\one"), finding("C:\\sessions\\two")],
+            limitations: Vec::new(),
+        };
+
+        let names = native_residue_checks(&inventory)
+            .into_iter()
+            .map(|check| check.name)
+            .collect::<Vec<_>>();
+
+        assert_ne!(names[0], names[1]);
+        assert!(names
+            .iter()
+            .all(|name| name.starts_with("native resource bundle-")));
     }
 
     #[test]
