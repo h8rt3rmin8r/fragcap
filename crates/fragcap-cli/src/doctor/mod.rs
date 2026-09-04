@@ -15,6 +15,7 @@ pub mod checks;
 pub mod fix;
 pub mod probe;
 pub mod progress;
+pub mod residue;
 
 use fragcap::write_json_string;
 
@@ -125,18 +126,8 @@ pub struct DeepCaptureInputs {
     pub analyzer_keylog_configured: bool,
     /// The fragcap-owned CA trust state.
     pub ca: DeepCaptureCa,
-    /// Proxy ports that appear occupied by stale Deep Capture state, or `None`
-    /// when no implemented probe can answer yet.
-    pub occupied_proxy_ports: Option<Vec<u16>>,
-    /// Proxy process descriptions that appear orphaned, or `None` when no
-    /// implemented probe can answer yet.
-    pub orphaned_proxy_processes: Option<Vec<String>>,
-    /// Manifest paths whose cleanup status is unfinished or failed.
-    pub stale_manifests: Vec<std::path::PathBuf>,
-    /// TLS key-log paths found under the session-bundle root.
-    pub stale_tls_key_logs: Vec<std::path::PathBuf>,
-    /// Sensitive sidecar paths found under the session-bundle root.
-    pub sensitive_artifacts: Vec<std::path::PathBuf>,
+    /// The bounded native resource and session-owner inventory.
+    pub native_residue: residue::NativeResidueInventory,
 }
 
 /// The raw environment facts `doctor` classifies. Entirely constructible in a
@@ -221,6 +212,24 @@ pub enum Status {
     Fail,
 }
 
+/// Which capture mode owns a diagnostic check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeScope {
+    /// An ordinary Capture prerequisite, also required by Deep Capture.
+    Capture,
+    /// A native Deep Capture-only prerequisite.
+    DeepCapture,
+}
+
+impl ModeScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::DeepCapture => "deep_capture",
+        }
+    }
+}
+
 impl Status {
     /// The word this status renders as.
     pub fn as_str(self) -> &'static str {
@@ -239,11 +248,13 @@ pub struct Check {
     /// The section it belongs to.
     pub section: &'static str,
     /// The check name.
-    pub name: &'static str,
+    pub name: String,
     /// A one-line detail.
     pub detail: String,
     /// The classification.
     pub status: Status,
+    /// The mode boundary used to derive independent readiness verdicts.
+    pub scope: ModeScope,
     /// The remediation, mandatory when the status is `Fail`.
     pub remediation: Option<String>,
     /// The structured, machine-facing counterpart of `remediation`: the action the
@@ -256,37 +267,56 @@ pub struct Check {
 }
 
 impl Check {
+    fn scope(section: &'static str) -> ModeScope {
+        if section == "Deep Capture" {
+            ModeScope::DeepCapture
+        } else {
+            ModeScope::Capture
+        }
+    }
+
     /// An `Ok` check.
-    pub fn ok(section: &'static str, name: &'static str, detail: impl Into<String>) -> Check {
+    pub fn ok(section: &'static str, name: impl Into<String>, detail: impl Into<String>) -> Check {
         Check {
             section,
-            name,
+            name: name.into(),
             detail: detail.into(),
             status: Status::Ok,
+            scope: Self::scope(section),
             remediation: None,
             action: None,
         }
     }
 
     /// A `Warn` check.
-    pub fn warn(section: &'static str, name: &'static str, detail: impl Into<String>) -> Check {
+    pub fn warn(
+        section: &'static str,
+        name: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Check {
         Check {
             section,
-            name,
+            name: name.into(),
             detail: detail.into(),
             status: Status::Warn,
+            scope: Self::scope(section),
             remediation: None,
             action: None,
         }
     }
 
     /// A `Skip` check.
-    pub fn skip(section: &'static str, name: &'static str, detail: impl Into<String>) -> Check {
+    pub fn skip(
+        section: &'static str,
+        name: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Check {
         Check {
             section,
-            name,
+            name: name.into(),
             detail: detail.into(),
             status: Status::Skip,
+            scope: Self::scope(section),
             remediation: None,
             action: None,
         }
@@ -295,15 +325,16 @@ impl Check {
     /// A `Fail` check, which must carry a remediation.
     pub fn fail(
         section: &'static str,
-        name: &'static str,
+        name: impl Into<String>,
         detail: impl Into<String>,
         remediation: impl Into<String>,
     ) -> Check {
         Check {
             section,
-            name,
+            name: name.into(),
             detail: detail.into(),
             status: Status::Fail,
+            scope: Self::scope(section),
             remediation: Some(remediation.into()),
             action: None,
         }
@@ -314,16 +345,17 @@ impl Check {
     /// cannot drift (FR-004).
     pub fn warn_action(
         section: &'static str,
-        name: &'static str,
+        name: impl Into<String>,
         detail: impl Into<String>,
         remediation: impl Into<String>,
         action: Action,
     ) -> Check {
         Check {
             section,
-            name,
+            name: name.into(),
             detail: detail.into(),
             status: Status::Warn,
+            scope: Self::scope(section),
             remediation: Some(remediation.into()),
             action: Some(action),
         }
@@ -334,16 +366,17 @@ impl Check {
     /// (FR-004).
     pub fn fail_action(
         section: &'static str,
-        name: &'static str,
+        name: impl Into<String>,
         detail: impl Into<String>,
         remediation: impl Into<String>,
         action: Action,
     ) -> Check {
         Check {
             section,
-            name,
+            name: name.into(),
             detail: detail.into(),
             status: Status::Fail,
+            scope: Self::scope(section),
             remediation: Some(remediation.into()),
             action: Some(action),
         }
@@ -370,6 +403,19 @@ impl Report {
     /// Whether capture is possible (no failing check).
     pub fn ready(&self) -> bool {
         self.exit() == Exit::SUCCESS
+    }
+
+    /// Whether ordinary Capture has no blocking check.
+    pub fn capture_ready(&self) -> bool {
+        !self
+            .checks
+            .iter()
+            .any(|check| check.scope == ModeScope::Capture && check.status == Status::Fail)
+    }
+
+    /// Whether Deep Capture and every Capture prerequisite have no blocking check.
+    pub fn deep_capture_ready(&self) -> bool {
+        !self.checks.iter().any(|check| check.status == Status::Fail)
     }
 
     /// Render the human report as aligned columns grouped by section, ending
@@ -416,18 +462,18 @@ impl Report {
             }
         }
         out.push('\n');
-        if self.ready() {
-            out.push_str("Ready to capture.\n");
+        out.push_str("Capture: ");
+        out.push_str(if self.capture_ready() {
+            "ready\n"
         } else {
-            let failing = self
-                .checks
-                .iter()
-                .filter(|c| c.status == Status::Fail)
-                .count();
-            out.push_str(&format!(
-                "Not ready: {failing} blocking problem(s); fix the failing checks above.\n"
-            ));
-        }
+            "not ready\n"
+        });
+        out.push_str("Deep Capture: ");
+        out.push_str(if self.deep_capture_ready() {
+            "ready\n"
+        } else {
+            "not ready\n"
+        });
         out
     }
 
@@ -438,11 +484,13 @@ impl Report {
             let mut line = String::from("{\"section\":");
             write_json_string(check.section, &mut line);
             line.push_str(",\"name\":");
-            write_json_string(check.name, &mut line);
+            write_json_string(&check.name, &mut line);
             line.push_str(",\"detail\":");
             write_json_string(&check.detail, &mut line);
             line.push_str(",\"status\":");
             write_json_string(check.status.as_str(), &mut line);
+            line.push_str(",\"scope\":");
+            write_json_string(check.scope.as_str(), &mut line);
             if let Some(remediation) = &check.remediation {
                 line.push_str(",\"remediation\":");
                 write_json_string(remediation, &mut line);
@@ -450,7 +498,41 @@ impl Report {
             line.push_str("}\n");
             out.push_str(&line);
         }
+        self.push_json_verdict(&mut out, "capture", self.capture_ready(), |check| {
+            check.scope == ModeScope::Capture
+        });
+        self.push_json_verdict(&mut out, "deep_capture", self.deep_capture_ready(), |_| {
+            true
+        });
         out
+    }
+
+    fn push_json_verdict(
+        &self,
+        out: &mut String,
+        mode: &str,
+        ready: bool,
+        applies: impl Fn(&Check) -> bool,
+    ) {
+        let mut line = String::from("{\"type\":\"readiness\",\"mode\":");
+        write_json_string(mode, &mut line);
+        line.push_str(",\"ready\":");
+        line.push_str(if ready { "true" } else { "false" });
+        line.push_str(",\"blocking_checks\":[");
+        let mut first = true;
+        for check in self
+            .checks
+            .iter()
+            .filter(|check| applies(check) && check.status == Status::Fail)
+        {
+            if !first {
+                line.push(',');
+            }
+            first = false;
+            write_json_string(&format!("{}/{}", check.section, check.name), &mut line);
+        }
+        line.push_str("]}\n");
+        out.push_str(&line);
     }
 }
 

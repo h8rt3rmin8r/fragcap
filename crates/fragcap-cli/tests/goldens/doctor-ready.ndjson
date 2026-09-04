@@ -1,26 +1,24 @@
-{"section":"Identity","name":"version","detail":"0.0.0-test","status":"ok"}
-{"section":"Identity","name":"binary","detail":"C:\\Program Files\\fragcap\\fragcap.exe","status":"ok"}
-{"section":"Identity","name":"catalog db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db (present)","status":"ok"}
-{"section":"Identity","name":"local db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db (present)","status":"ok"}
-{"section":"Platform","name":"os","detail":"Windows 11","status":"ok"}
-{"section":"Platform","name":"subsystem","detail":"native","status":"ok"}
-{"section":"Platform","name":"privilege","detail":"elevated","status":"ok"}
-{"section":"Capture driver","name":"npcap","detail":"version 1.79","status":"ok"}
-{"section":"Capture driver","name":"loopback adapter","detail":"loopback capture supported","status":"ok"}
-{"section":"Capture driver","name":"winpcap api mode","detail":"WinPcap API compatible","status":"ok"}
-{"section":"Capture driver","name":"live backend","detail":"live capture backend is built in","status":"ok"}
-{"section":"Capture driver","name":"socket-table backend","detail":"socket-table attribution is built in","status":"ok"}
-{"section":"Tracing","name":"process events","detail":"process-event session available","status":"ok"}
-{"section":"Interfaces","name":"adapter","detail":"Ethernet  192.0.2.10","status":"ok"}
-{"section":"Integration","name":"analyzer extcap","detail":"installed for the current user in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok"}
-{"section":"Deep Capture","name":"proxy backend","detail":"fragcap-native 0.8.0","status":"ok"}
-{"section":"Deep Capture","name":"IPv4 loopback listener","detail":"exact ephemeral bind to 127.0.0.1 succeeded","status":"ok"}
-{"section":"Deep Capture","name":"IPv6 loopback listener","detail":"exact ephemeral bind to ::1 succeeded","status":"ok"}
-{"section":"Deep Capture","name":"local CA trust","detail":"no fragcap Deep Capture CA trust found","status":"ok"}
-{"section":"Deep Capture","name":"analyzer key log","detail":"TLS key-log path is visible to this session","status":"ok"}
-{"section":"Deep Capture","name":"proxy ports","detail":"no stale Deep Capture proxy ports found","status":"ok"}
-{"section":"Deep Capture","name":"proxy processes","detail":"no orphaned Deep Capture proxy processes found","status":"ok"}
-{"section":"Deep Capture","name":"session manifests","detail":"no stale Deep Capture manifests found","status":"ok"}
-{"section":"Deep Capture","name":"tls key logs","detail":"no stale Deep Capture TLS key logs found","status":"ok"}
-{"section":"Deep Capture","name":"sensitive artifacts","detail":"no sensitive Deep Capture sidecars found","status":"ok"}
-{"section":"Deep Capture","name":"session storage","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions (absent)","status":"ok"}
+{"section":"Identity","name":"version","detail":"0.0.0-test","status":"ok","scope":"capture"}
+{"section":"Identity","name":"binary","detail":"C:\\Program Files\\fragcap\\fragcap.exe","status":"ok","scope":"capture"}
+{"section":"Identity","name":"catalog db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\catalog.db (present)","status":"ok","scope":"capture"}
+{"section":"Identity","name":"local db","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\local.db (present)","status":"ok","scope":"capture"}
+{"section":"Platform","name":"os","detail":"Windows 11","status":"ok","scope":"capture"}
+{"section":"Platform","name":"subsystem","detail":"native","status":"ok","scope":"capture"}
+{"section":"Platform","name":"privilege","detail":"elevated","status":"ok","scope":"capture"}
+{"section":"Capture driver","name":"npcap","detail":"version 1.79","status":"ok","scope":"capture"}
+{"section":"Capture driver","name":"loopback adapter","detail":"loopback capture supported","status":"ok","scope":"capture"}
+{"section":"Capture driver","name":"winpcap api mode","detail":"WinPcap API compatible","status":"ok","scope":"capture"}
+{"section":"Capture driver","name":"live backend","detail":"live capture backend is built in","status":"ok","scope":"capture"}
+{"section":"Capture driver","name":"socket-table backend","detail":"socket-table attribution is built in","status":"ok","scope":"capture"}
+{"section":"Tracing","name":"process events","detail":"process-event session available","status":"ok","scope":"capture"}
+{"section":"Interfaces","name":"adapter","detail":"Ethernet  192.0.2.10","status":"ok","scope":"capture"}
+{"section":"Integration","name":"analyzer extcap","detail":"installed for the current user in C:\\Users\\gamer\\AppData\\Roaming\\Wireshark\\extcap","status":"ok","scope":"capture"}
+{"section":"Deep Capture","name":"proxy backend","detail":"fragcap-native 0.8.0","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"IPv4 loopback listener","detail":"exact ephemeral bind to 127.0.0.1 succeeded","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"IPv6 loopback listener","detail":"exact ephemeral bind to ::1 succeeded","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"local CA trust","detail":"no fragcap Deep Capture CA trust found","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"analyzer key log","detail":"TLS key-log path is visible to this session","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"native inventory","detail":"no native Deep Capture session residue found","status":"ok","scope":"deep_capture"}
+{"section":"Deep Capture","name":"session storage","detail":"C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions (absent)","status":"ok","scope":"deep_capture"}
+{"type":"readiness","mode":"capture","ready":true,"blocking_checks":[]}
+{"type":"readiness","mode":"deep_capture","ready":true,"blocking_checks":[]}

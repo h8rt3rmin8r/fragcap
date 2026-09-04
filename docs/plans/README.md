@@ -287,3 +287,12 @@ an instance, so reuse and out-of-order delivery cannot transfer identity.
 Watcher, retention, and unresolved-join loss remain distinct, while the trace
 trailer drives compatibility and manifest truth. Deep Capture remains
 incomplete until #334.
+
+S124 (`specs/124-native-doctor-readiness`) follows S123 and closes #321 at the
+native runtime-readiness boundary. Doctor now derives independent Capture and
+Deep Capture verdicts from one ordered check set, inventories bounded resource
+journal and session-owner evidence without mutation, and distinguishes healthy,
+active, stale, cleanup-failed, unknown, and unsupported state. A held
+generation-specific lease replaces PID-only ownership. Confirmed fixes replay
+only exact journal recovery and preserve healthy evidence. Packaging validation
+remains #329, and Deep Capture remains incomplete until #334.

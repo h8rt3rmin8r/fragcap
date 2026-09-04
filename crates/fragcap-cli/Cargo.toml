@@ -62,8 +62,9 @@ http_req             = { workspace = true, optional = true }
 # `Win32_System_Registry` for reading the machine-wide Wireshark install location
 # the MSI registers extcap into. Deep Capture uses Toolhelp only to distinguish a
 # cold Steam launch from an already-running client before it applies a scoped proxy
-# environment; the snapshot opens no process handle. `Win32_Foundation` is already
-# in the workspace set.
+# environment; the snapshot opens no process handle. S124 adds
+# `Win32_System_Threading` for the session-generation named mutex that replaces
+# PID-only Doctor ownership. `Win32_Foundation` is already in the workspace set.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
@@ -72,6 +73,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
 # The live capture status display's terminal-width query (slice S069, Codex

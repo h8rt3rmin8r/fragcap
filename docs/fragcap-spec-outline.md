@@ -373,6 +373,11 @@ Managed launch, ETW creation and exit, query snapshots, stage transitions,
 packet-derived socket ownership, watcher loss, and terminal state reconcile by
 process instance and shared flow identifier. Missing authority weakens the
 trailer and therefore the compatibility and manifest claims.
+S124 adds independent Capture and Deep Capture Doctor verdicts plus one bounded
+native residue inventory. A generation-specific session lease prevents PID
+reuse from transferring ownership, every unknown remains visible, healthy
+retained evidence stays history, and confirmed repair reuses only exact journal
+recovery. Installer and archive validation remain #329.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

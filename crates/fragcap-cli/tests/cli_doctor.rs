@@ -69,11 +69,7 @@ fn ready() -> Inputs {
             ipv6_loopback: LoopbackReadiness::Ready,
             analyzer_keylog_configured: true,
             ca: DeepCaptureCa::Absent,
-            occupied_proxy_ports: Some(Vec::new()),
-            orphaned_proxy_processes: Some(Vec::new()),
-            stale_manifests: Vec::new(),
-            stale_tls_key_logs: Vec::new(),
-            sensitive_artifacts: Vec::new(),
+            native_residue: Default::default(),
         },
     }
 }
@@ -83,7 +79,8 @@ fn a_ready_machine_is_ok_ends_ready_and_exits_zero() {
     let report = checks::run(&ready());
     assert_eq!(report.exit().code(), 0);
     let human = report.render_human();
-    assert!(human.contains("Ready to capture."), "{human}");
+    assert!(human.contains("Capture: ready"), "{human}");
+    assert!(human.contains("Deep Capture: ready"), "{human}");
     common::assert_golden("doctor-ready.txt", human.as_bytes());
     common::assert_golden("doctor-ready.ndjson", report.render_json().as_bytes());
 }
@@ -268,11 +265,17 @@ fn the_json_form_is_one_record_per_check() {
     let report = checks::run(&ready());
     let json = report.render_json();
     let lines: Vec<&str> = json.lines().collect();
-    assert_eq!(lines.len(), report.checks.len(), "one record per check");
-    for line in lines {
+    assert_eq!(
+        lines.len(),
+        report.checks.len() + 2,
+        "one record per check plus two mode verdicts"
+    );
+    for line in &lines[..report.checks.len()] {
         assert!(line.starts_with("{\"section\":"), "record shape: {line}");
         assert!(line.contains("\"status\":"));
     }
+    assert!(lines[report.checks.len()].contains("\"mode\":\"capture\""));
+    assert!(lines[report.checks.len() + 1].contains("\"mode\":\"deep_capture\""));
 }
 
 #[test]
@@ -324,12 +327,30 @@ fn the_identity_section_appears_first_in_both_forms() {
         "no Profiles section:\n{human}"
     );
     let json = report.render_json();
-    assert_eq!(json.lines().count(), report.checks.len());
+    assert_eq!(json.lines().count(), report.checks.len() + 2);
     assert!(json
         .lines()
         .next()
         .unwrap()
         .contains("\"section\":\"Identity\""));
+}
+
+#[test]
+fn mode_verdicts_keep_deep_only_failures_out_of_capture() {
+    let mut inputs = ready();
+    inputs
+        .deep_capture
+        .native_residue
+        .limitations
+        .push("journal-invalid: controlled".to_string());
+    let report = checks::run(&inputs);
+    assert!(report.capture_ready());
+    assert!(!report.deep_capture_ready());
+
+    inputs.npcap = None;
+    let report = checks::run(&inputs);
+    assert!(!report.capture_ready());
+    assert!(!report.deep_capture_ready());
 }
 
 #[test]
@@ -468,16 +489,28 @@ fn a_ready_machine_offers_no_actions() {
 #[test]
 fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
     let mut inputs = ready();
-    inputs.deep_capture.stale_tls_key_logs = vec![std::path::PathBuf::from(
-        "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions\\s1\\tls-keylog.log",
-    )];
+    inputs.deep_capture.native_residue.findings.push(
+        fragcap_cli::doctor::residue::ResourceFinding {
+            session_id: "s1".to_string(),
+            bundle: std::path::PathBuf::from(
+                "C:\\Users\\gamer\\AppData\\Roaming\\fragcap\\sessions\\s1",
+            ),
+            resource_id: "trust".to_string(),
+            kind: "trust".to_string(),
+            state: "applied".to_string(),
+            health: fragcap_cli::doctor::residue::ResidueHealth::Stale,
+            recoverable: true,
+            ownership_authority: "resource-journal".to_string(),
+            detail: "exact journal recovery action is available".to_string(),
+        },
+    );
     let report = checks::run(&inputs);
     let keylog = report
         .checks
         .iter()
-        .find(|check| check.section == "Deep Capture" && check.name == "tls key logs")
+        .find(|check| check.section == "Deep Capture" && check.name == "native resource s1/trust")
         .unwrap();
-    assert_eq!(keylog.status, Status::Warn);
+    assert_eq!(keylog.status, Status::Fail);
     assert_eq!(
         keylog.action.as_ref().map(|action| action.kind),
         Some(ActionKind::CleanupDeepCapture)
@@ -486,8 +519,8 @@ fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
     assert!(
         json.lines().any(|line| {
             line.contains("\"section\":\"Deep Capture\"")
-                && line.contains("\"name\":\"tls key logs\"")
-                && line.contains("\"status\":\"warn\"")
+                && line.contains("\"name\":\"native resource s1/trust\"")
+                && line.contains("\"status\":\"fail\"")
         }),
         "Deep Capture residue is present in machine output: {json}"
     );

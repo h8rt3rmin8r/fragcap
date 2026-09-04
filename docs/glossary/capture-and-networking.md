@@ -1204,6 +1204,25 @@ that trailer.
 
 **See also:** [Process instance](capture-and-networking.md#process-instance)
 
+## Native residue inventory
+
+The bounded read-only Doctor projection of Deep Capture session-owner records,
+resource journals, manifests, trust facts, and declared artifact state. Each
+latest resource is healthy, active, stale, cleanup-failed, unknown, or
+unsupported. A scan limitation is evidence of an unknown, never evidence that
+the machine is clean.
+
+**See also:** [Session owner lease](capture-and-networking.md#session-owner-lease)
+
+## Session owner lease
+
+An opaque generation-specific synchronization object held for one native Deep
+Capture session lifetime. Its bounded owner record names the exact bundle and
+records the PID for diagnostics, but PID liveness alone cannot prove ownership.
+Doctor may test the lease without opening a target process.
+
+**See also:** [Native residue inventory](capture-and-networking.md#native-residue-inventory)
+
 ## Selection outcome
 
 The complete result of applying specification section 12.1's precedence to an

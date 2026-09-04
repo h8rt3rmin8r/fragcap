@@ -19,7 +19,6 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -31,13 +30,13 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use super::action::{
     offered_actions, Action, ActionKind, ActionOutcome, Capabilities, ExtcapScope,
 };
+pub(crate) use super::residue::register_session_owner;
+use super::residue::{owner_is_active, registered_session_owners, SESSION_OWNER_REGISTRY};
 use super::{checks, probe, Report};
 use crate::emit::Emitter;
 use crate::exit::{CliError, Exit};
 
-const SESSION_OWNER_REGISTRY: &str = "session-owners";
 const RECOVERY_LOCK: &str = "recovery.lock";
-static SESSION_OWNER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// A human confirmation for one action. Injected so the loop is driven by a
 /// scripted answer in tests. `true` performs the action; `false` skips it.
@@ -230,19 +229,24 @@ pub fn run_fix(
 
     let rechecked = checks::run(&probe::gather());
     let _ = writeln!(out, "\nRe-checked:");
-    if rechecked.ready() {
-        let _ = writeln!(out, "Ready to capture.");
-    } else {
-        let failing = rechecked
-            .checks
-            .iter()
-            .filter(|c| c.status == super::Status::Fail)
-            .count();
-        let _ = writeln!(
-            out,
-            "Not ready: {failing} blocking problem(s) remain; see the checks above."
-        );
-    }
+    let _ = writeln!(
+        out,
+        "Capture: {}",
+        if rechecked.capture_ready() {
+            "ready"
+        } else {
+            "not ready"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "Deep Capture: {}",
+        if rechecked.deep_capture_ready() {
+            "ready"
+        } else {
+            "not ready"
+        }
+    );
     rechecked.exit()
 }
 
@@ -319,83 +323,36 @@ fn cleanup_deep_capture(out: &mut dyn Write) -> ActionOutcome {
             ))
         }
     };
-    let mut removed = 0usize;
-    let mut failed = Vec::new();
-    let mut preserve_manifests = false;
-    let preserve_journals = match recover_deep_capture_journals(&root, out) {
-        Ok(()) => false,
-        Err(errors) => {
-            failed.extend(errors);
-            true
+    match recover_deep_capture_journals_with_legacy_confirmation(&root, out) {
+        Ok(()) => {
+            let _ = writeln!(out, "  replayed exact Deep Capture recovery actions");
+            ActionOutcome::Performed
         }
-    };
-    match super::probe::ca_cleanup_targets(&root) {
-        Ok(targets) => {
-            for (store, thumbprint) in targets {
-                match remove_ca_trust(&store, &thumbprint) {
-                    Ok(()) => {
-                        removed += 1;
-                        let _ = writeln!(out, "  removed {thumbprint} from {store}");
-                    }
-                    Err(err) => {
-                        preserve_manifests = true;
-                        failed.push(err);
-                    }
-                }
-            }
-        }
-        Err(err) => {
-            preserve_manifests = true;
-            failed.push(format!("could not audit Deep Capture CA trust: {err}"));
-        }
-    }
-    for path in deep_capture_cleanup_candidates(&root) {
-        if !path.starts_with(&root) {
-            failed.push(format!(
-                "refused path outside session storage: {}",
-                path.display()
-            ));
-            continue;
-        }
-        if preserve_manifests && path.file_name().is_some_and(|name| name == "manifest.json") {
-            let _ = writeln!(
-                out,
-                "  preserved {} because CA trust cleanup is incomplete",
-                path.display()
-            );
-            continue;
-        }
-        if preserve_journals
-            && path
-                .file_name()
-                .is_some_and(|name| name == fragcap::deep_capture::RESOURCE_JOURNAL)
-        {
-            let _ = writeln!(out, "  preserved incomplete {}", path.display());
-            continue;
-        }
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
-                removed += 1;
-                let _ = writeln!(out, "  removed {}", path.display());
-            }
-            Err(err) => failed.push(format!("{}: {err}", path.display())),
-        }
-    }
-    if failed.is_empty() {
-        let _ = writeln!(out, "  removed {removed} Deep Capture residue resource(s)");
-        ActionOutcome::Performed
-    } else {
-        ActionOutcome::Failed(format!(
-            "removed {removed} resource(s), failed to remove {} resource(s): {}",
-            failed.len(),
-            failed.join("; ")
-        ))
+        Err(errors) => ActionOutcome::Failed(format!(
+            "exact Deep Capture recovery failed: {}",
+            errors.join("; ")
+        )),
     }
 }
 
 pub(crate) fn recover_deep_capture_journals(
     root: &Path,
     out: &mut dyn Write,
+) -> Result<(), Vec<String>> {
+    recover_deep_capture_journals_inner(root, out, false)
+}
+
+fn recover_deep_capture_journals_with_legacy_confirmation(
+    root: &Path,
+    out: &mut dyn Write,
+) -> Result<(), Vec<String>> {
+    recover_deep_capture_journals_inner(root, out, true)
+}
+
+fn recover_deep_capture_journals_inner(
+    root: &Path,
+    out: &mut dyn Write,
+    legacy_confirmed: bool,
 ) -> Result<(), Vec<String>> {
     let _recovery_lock = RecoveryLock::acquire(root).map_err(|error| {
         vec![format!(
@@ -406,16 +363,39 @@ pub(crate) fn recover_deep_capture_journals(
     let mut roots = vec![root.to_path_buf()];
     let mut recoverable_entries = Vec::new();
     let mut active_bundles = Vec::new();
-    match registered_session_owners(root).and_then(|entries| {
-        let active = active_process_ids()?;
-        Ok(entries
-            .into_iter()
-            .partition::<Vec<_>, _>(|entry| active.contains(&entry.owner_pid)))
-    }) {
-        Ok((active, recoverable)) => {
-            active_bundles.extend(active.into_iter().map(|entry| entry.bundle));
-            roots.extend(recoverable.iter().map(|entry| entry.bundle.clone()));
-            recoverable_entries = recoverable;
+    match registered_session_owners(root) {
+        Ok(entries) => {
+            for entry in entries {
+                match owner_is_active(&entry) {
+                    Ok(true) => active_bundles.push(entry.bundle),
+                    Ok(false) => {
+                        roots.push(entry.bundle.clone());
+                        recoverable_entries.push(entry);
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::Unsupported
+                            && entry.lease_id.is_none()
+                            && (legacy_confirmed || legacy_owner_is_terminal(&entry)) =>
+                    {
+                        roots.push(entry.bundle.clone());
+                        recoverable_entries.push(entry);
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::Unsupported
+                            && entry.lease_id.is_none() =>
+                    {
+                        active_bundles.push(entry.bundle.clone());
+                        failed.push(format!(
+                            "legacy session owner {} has no generation lease; run `fragcap doctor --fix` and confirm exact recovery",
+                            entry.registry_path.display()
+                        ));
+                    }
+                    Err(error) => failed.push(format!(
+                        "could not determine session owner {}: {error}",
+                        entry.registry_path.display()
+                    )),
+                }
+            }
         }
         Err(error) => failed.push(format!("session owner registry is invalid: {error}")),
     }
@@ -448,14 +428,50 @@ pub(crate) fn recover_deep_capture_journals(
                 _ => Err("no unrelated-resource-safe recovery adapter exists".to_string()),
             }
         }) {
-            Ok(plan) if plan.refusals.is_empty() => {
-                let _ = writeln!(out, "  replayed {}", journal.display());
+            Ok(plan) => {
+                for refusal in &plan.refusals {
+                    let detail = format!(
+                        "{} resource {} refused: {}",
+                        journal.display(),
+                        refusal.resource_id,
+                        refusal.reason
+                    );
+                    let _ = writeln!(out, "  {detail}");
+                    failed.push(detail);
+                }
+                match fragcap::deep_capture::read_resource_journal(&journal) {
+                    Ok(prefix) => {
+                        let latest = prefix.latest();
+                        for action in &plan.actions {
+                            match latest.get(action.resource_id.as_str()) {
+                                Some(transition) if transition.state.terminal() => {
+                                    let _ = writeln!(
+                                        out,
+                                        "  recovered {} resource {}",
+                                        journal.display(),
+                                        action.resource_id
+                                    );
+                                }
+                                Some(transition) => failed.push(format!(
+                                    "{} resource {} ended recovery in {}",
+                                    journal.display(),
+                                    action.resource_id,
+                                    transition.state.as_str()
+                                )),
+                                None => failed.push(format!(
+                                    "{} lost resource {} during recovery",
+                                    journal.display(),
+                                    action.resource_id
+                                )),
+                            }
+                        }
+                    }
+                    Err(error) => failed.push(format!(
+                        "could not verify replay of {}: {error}",
+                        journal.display()
+                    )),
+                }
             }
-            Ok(plan) => failed.push(format!(
-                "{} has {} recovery refusal(s)",
-                journal.display(),
-                plan.refusals.len()
-            )),
             Err(error) => failed.push(format!("could not replay {}: {error}", journal.display())),
         }
     }
@@ -475,6 +491,17 @@ pub(crate) fn recover_deep_capture_journals(
     } else {
         Err(failed)
     }
+}
+
+fn legacy_owner_is_terminal(owner: &super::residue::SessionOwner) -> bool {
+    let journal = owner.bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL);
+    fragcap::deep_capture::read_resource_journal(&journal).is_ok_and(|prefix| {
+        prefix.status == fragcap::deep_capture::JournalStatus::Complete
+            && prefix
+                .latest()
+                .into_values()
+                .all(|transition| transition.state.terminal())
+    })
 }
 
 struct RecoveryLock {
@@ -530,94 +557,6 @@ impl Drop for RecoveryLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
-}
-
-pub(crate) fn register_session_owner(root: &Path, bundle: &Path) -> std::io::Result<()> {
-    let registry = root.join(SESSION_OWNER_REGISTRY);
-    std::fs::create_dir_all(&registry)?;
-    let bundle = bundle.canonicalize()?;
-    let owner_pid = std::process::id();
-    loop {
-        let sequence = SESSION_OWNER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = registry.join(format!("{owner_pid}-{sequence}.json"));
-        let mut file = match std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        serde_json::to_writer(
-            &mut file,
-            &serde_json::json!({"bundle": bundle, "owner_pid": owner_pid}),
-        )
-        .map_err(std::io::Error::other)?;
-        file.write_all(b"\n")?;
-        return file.sync_all();
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct SessionOwner {
-    bundle: PathBuf,
-    owner_pid: u32,
-    registry_path: PathBuf,
-}
-
-fn registered_session_owners(root: &Path) -> std::io::Result<Vec<SessionOwner>> {
-    let path = root.join(SESSION_OWNER_REGISTRY);
-    let entries = match std::fs::read_dir(&path) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut roots = Vec::new();
-    for entry in entries.take(4096) {
-        let registry_path = entry?.path();
-        let bytes = std::fs::read(&registry_path)?;
-        if bytes.len() > 4096 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "session owner registry entry exceeds its byte limit",
-            ));
-        }
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        let bundle = value
-            .get("bundle")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "session owner entry lacks a bundle path",
-                )
-            })?;
-        let bundle = PathBuf::from(bundle);
-        if !bundle.is_absolute() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "session owner bundle path is not absolute",
-            ));
-        }
-        let owner_pid = value
-            .get("owner_pid")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "session owner entry lacks a valid process identifier",
-                )
-            })?;
-        roots.push(SessionOwner {
-            bundle,
-            owner_pid,
-            registry_path,
-        });
-    }
-    Ok(roots)
 }
 
 #[cfg(windows)]
@@ -689,72 +628,6 @@ fn remove_ca_trust(store: &str, thumbprint: &str) -> Result<(), String> {
     Err(format!(
         "cannot remove {thumbprint} from {store}: Windows certificate stores are unavailable"
     ))
-}
-
-fn deep_capture_cleanup_candidates(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    fn walk(
-        dir: &std::path::Path,
-        depth: usize,
-        visited: &mut usize,
-        out: &mut Vec<std::path::PathBuf>,
-    ) {
-        if depth > 3 || *visited >= 200 {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            if *visited >= 200 {
-                break;
-            }
-            *visited += 1;
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let path = entry.path();
-            if file_type.is_dir() {
-                walk(&path, depth + 1, visited, out);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let cleanup_manifest = name == "manifest.json";
-            let stale_manifest =
-                cleanup_manifest && super::probe::manifest_cleanup_unfinished(&path);
-            if stale_manifest {
-                for declared in super::probe::manifest_declared_cleanup_paths(&path) {
-                    super::probe::push_unique(out, declared);
-                }
-            }
-            let recognized_sensitive_sidecar = matches!(
-                name,
-                "application.jsonl"
-                    | "http.har"
-                    | "tls-keylog.log"
-                    | "sslkeylog.log"
-                    | "proxy.jsonl"
-                    | "process-trace.jsonl"
-            );
-            let completed_manifest = path.parent().is_some_and(|parent| {
-                let manifest = parent.join("manifest.json");
-                manifest.is_file() && !super::probe::manifest_cleanup_unfinished(&manifest)
-            });
-            let sensitive_sidecar = recognized_sensitive_sidecar && !completed_manifest;
-            if stale_manifest || sensitive_sidecar {
-                super::probe::push_unique(out, path);
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    let mut visited = 0;
-    walk(root, 0, &mut visited, &mut out);
-    out
 }
 
 /// The stable vendor URL for the Windows installer that provides npcap. Wireshark
@@ -1118,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_capture_cleanup_removes_only_known_session_files() {
+    fn deep_capture_cleanup_preserves_artifacts_without_journal_authority() {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
 
@@ -1171,7 +1044,10 @@ mod tests {
             clean_manifest.exists(),
             "successful manifests are historical records, not residue"
         );
-        assert!(!stale_manifest.exists(), "unfinished manifest removed");
+        assert!(
+            stale_manifest.exists(),
+            "a manifest alone is not journal authority for deletion"
+        );
         assert!(keep.exists(), "unrelated file remains");
         assert!(
             unrelated_empty_dir.exists(),
@@ -1185,7 +1061,8 @@ mod tests {
         let custom = tempfile::tempdir().expect("custom root");
         let bundle = custom.path().join("custom-session");
         std::fs::create_dir(&bundle).expect("custom bundle");
-        register_session_owner(default.path(), &bundle).expect("register custom bundle");
+        let _lease =
+            register_session_owner(default.path(), &bundle).expect("register custom bundle");
         let roots = registered_session_owners(default.path()).expect("read registry");
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].bundle, bundle.canonicalize().unwrap());
@@ -1199,7 +1076,8 @@ mod tests {
         let custom = tempfile::tempdir().expect("custom root");
         let bundle = custom.path().join("active-session");
         std::fs::create_dir(&bundle).expect("custom bundle");
-        register_session_owner(default.path(), &bundle).expect("register custom bundle");
+        let _lease =
+            register_session_owner(default.path(), &bundle).expect("register custom bundle");
 
         recover_deep_capture_journals(default.path(), &mut std::io::sink())
             .expect("an active session is skipped rather than replayed");
@@ -1212,5 +1090,203 @@ mod tests {
         );
         assert_eq!(roots[0].bundle, bundle.canonicalize().unwrap());
         assert_eq!(roots[0].owner_pid, std::process::id());
+    }
+
+    #[test]
+    fn startup_recovery_replays_only_an_abandoned_exact_journal() {
+        use fragcap::deep_capture::{
+            JournalStatus, ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("abandoned-session");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let lease = register_session_owner(root.path(), &bundle).expect("owner");
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                "127.0.0.1:54321",
+                "session:session",
+                "close-loopback-listener",
+                ResourceState::Pending,
+                "obligation",
+            ))
+            .expect("pending");
+        journal
+            .append(ResourceTransition::new(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                "127.0.0.1:54321",
+                "session:session",
+                "close-loopback-listener",
+                ResourceState::Applied,
+                "bound",
+            ))
+            .expect("applied");
+        drop(journal);
+        drop(lease);
+
+        recover_deep_capture_journals(root.path(), &mut std::io::sink()).expect("recover");
+
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("recovered journal");
+        assert_eq!(prefix.status, JournalStatus::Complete);
+        assert_eq!(
+            prefix.latest()["proxy-listener"].state,
+            ResourceState::Released
+        );
+        assert!(registered_session_owners(root.path())
+            .expect("owners")
+            .is_empty());
+    }
+
+    #[test]
+    fn failed_exact_recovery_remains_journaled_and_registered() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("failed-session");
+        std::fs::create_dir(&bundle).expect("bundle");
+        let lease = register_session_owner(root.path(), &bundle).expect("owner");
+        let mut journal = ResourceJournal::create(&bundle, "session", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "artifact",
+                ResourceKind::Artifact,
+                "session/session-output",
+                "session:session",
+                "remove-artifact",
+                ResourceState::Applied,
+                "retained",
+            ))
+            .expect("applied");
+        drop(journal);
+        drop(lease);
+
+        let errors = recover_deep_capture_journals(root.path(), &mut std::io::sink())
+            .expect_err("artifact recovery has no broad deletion adapter");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("ended recovery in failed")));
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("failed journal");
+        assert_eq!(prefix.latest()["artifact"].state, ResourceState::Failed);
+        assert_eq!(
+            registered_session_owners(root.path())
+                .expect("owners")
+                .len(),
+            1,
+            "failed recovery retains exact retry authority"
+        );
+    }
+
+    #[test]
+    fn legacy_owner_requires_confirmation_before_recovery() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("legacy-session");
+        std::fs::create_dir(&bundle).expect("bundle");
+        write_legacy_owner(root.path(), &bundle);
+        let mut journal = ResourceJournal::create(&bundle, "legacy", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "proxy",
+                ResourceKind::Proxy,
+                "127.0.0.1:54321",
+                "session:legacy",
+                "close-loopback-listener",
+                ResourceState::Applied,
+                "bound",
+            ))
+            .expect("applied");
+        drop(journal);
+
+        let errors = recover_deep_capture_journals(root.path(), &mut std::io::sink())
+            .expect_err("startup cannot infer legacy liveness");
+        assert!(errors.iter().any(|error| error.contains("doctor --fix")));
+        assert_eq!(registered_session_owners(root.path()).unwrap().len(), 1);
+
+        recover_deep_capture_journals_with_legacy_confirmation(root.path(), &mut std::io::sink())
+            .expect("confirmed exact recovery");
+        assert!(registered_session_owners(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn confirmed_legacy_recovery_terminalizes_a_header_only_journal() {
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("legacy-header");
+        std::fs::create_dir(&bundle).expect("bundle");
+        write_legacy_owner(root.path(), &bundle);
+        let journal =
+            fragcap::deep_capture::ResourceJournal::create(&bundle, "legacy-header", "plan")
+                .expect("journal");
+        drop(journal);
+
+        recover_deep_capture_journals_with_legacy_confirmation(root.path(), &mut std::io::sink())
+            .expect("confirmed header-only recovery");
+
+        assert!(registered_session_owners(root.path()).unwrap().is_empty());
+        let prefix = fragcap::deep_capture::read_resource_journal(
+            &bundle.join(fragcap::deep_capture::RESOURCE_JOURNAL),
+        )
+        .expect("terminal journal");
+        assert_eq!(
+            prefix.status,
+            fragcap::deep_capture::JournalStatus::Complete
+        );
+    }
+
+    #[test]
+    fn terminal_legacy_owner_is_retired_without_liveness_guessing() {
+        use fragcap::deep_capture::{
+            ResourceJournal, ResourceKind, ResourceState, ResourceTransition,
+        };
+
+        let root = tempfile::tempdir().expect("root");
+        let bundle = root.path().join("legacy-complete");
+        std::fs::create_dir(&bundle).expect("bundle");
+        write_legacy_owner(root.path(), &bundle);
+        let mut journal = ResourceJournal::create(&bundle, "legacy", "plan").expect("journal");
+        journal
+            .append(ResourceTransition::new(
+                "proxy",
+                ResourceKind::Proxy,
+                "127.0.0.1:54321",
+                "session:legacy",
+                "close-loopback-listener",
+                ResourceState::Released,
+                "closed",
+            ))
+            .expect("released");
+        journal.finish().expect("complete journal");
+
+        recover_deep_capture_journals(root.path(), &mut std::io::sink())
+            .expect("terminal evidence is safe to retire");
+        assert!(registered_session_owners(root.path()).unwrap().is_empty());
+    }
+
+    fn write_legacy_owner(root: &Path, bundle: &Path) {
+        let registry = root.join(SESSION_OWNER_REGISTRY);
+        std::fs::create_dir(&registry).expect("registry");
+        let record = serde_json::json!({
+            "bundle": bundle.canonicalize().expect("canonical bundle"),
+            "owner_pid": std::process::id(),
+        });
+        std::fs::write(
+            registry.join("legacy.json"),
+            serde_json::to_vec(&record).expect("json"),
+        )
+        .expect("owner record");
     }
 }

@@ -139,6 +139,7 @@ enforcement.
 | 0.1.44-draft | 2026-09-03 | W. Thompson | **Completes the native compatibility calibration matrix (issue #317).** Extends sections 13.7, 15, 17.2.1, 19, 25, and 28.1. Every calibration names one exact launch case, routing strategy, loopback family, protocol case, backend and product version, and target version when available. Version-10 storage preserves append-only conflicts and legacy rows, while only the latest exact current applicable routing fact can authorize a session. S121 adds no dependency, bypass behavior, or Deep Capture completion claim. |
 | 0.1.45-draft | 2026-09-03 | W. Thompson | **Adds explicit proxy bypass and local-destination policy (issue #318).** Extends sections 13.7, 17.2.1, 19, 25, and 28.1. Typed canonical rules cover DNS domains, IP addresses, CIDRs, ports, and IPv6; bare and leading-dot DNS inputs both include descendants so conventional `NO_PROXY` clients cannot broaden an exact-name claim; the exact listener remains separate session infrastructure; uppercase and lowercase child proxy variables are plan-owned; every proxied DNS answer remains subject to resolved-address policy. Bypass is visible scope rather than proxy loss. S122 adds no dependency, system proxy mutation, transparent fallback, or Deep Capture completion claim. |
 | 0.1.46-draft | 2026-09-03 | W. Thompson | **Completes native process lifecycle evidence (issue #319).** Extends sections 10, 13.7, 19, 25, and 28.1. A bounded capture report joins managed launch receipts, ETW starts and exits, query-only snapshots, declared stage transitions, packet-derived socket ownership, watcher loss, and terminal state. PID plus observed creation time defines an instance; missing authority remains explicit; the versioned process trace trailer drives compatibility and manifest truth. S123 adds no target handle, second attribution path, dependency, or Deep Capture completion claim. |
+| 0.1.47-draft | 2026-09-03 | W. Thompson | **Completes native Doctor runtime readiness and residue diagnostics (issue #321).** Extends sections 26.3 and 28.1. Doctor derives independent Capture and Deep Capture verdicts from one check set, inventories bounded native journal and owner evidence without mutation, proves an active session with a generation lease rather than PID liveness, and offers only exact journal recovery. Healthy retained evidence is history, every inventory limitation blocks a false-clean Deep Capture verdict, and S124 adds no process handle, dependency package, packaging claim, or completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4318,7 +4319,8 @@ fragcap doctor
       Copy fragcap.exe to the analyzer's extcap directory
       to enable live capture from its interface list.
 
-  Ready to capture.
+  Capture: ready
+  Deep Capture: ready
 ```
 
 The report carries no profile section: profiles ceased to be user-authored
@@ -4398,30 +4400,51 @@ already satisfy offline. The
 classifier itself is unchanged: it remains a pure function from injected
 inputs to a report, and the action layer lives entirely above it.
 
-Doctor also reports Deep Capture readiness and residue. The Deep Capture section
-names the supported proxy backend and version when one is found, local CA trust
-state, analyzer key-log readiness, occupied proxy ports, orphaned proxy
-processes, stale session manifests, stale TLS key logs, sensitive sidecars, and
-the session-bundle storage path. A fact that no implemented probe can observe
-yet is reported as unknown rather than clean. These checks are read-only during
-ordinary `doctor` and are non-blocking for Capture mode. Stale Deep Capture
-residue under fragcap-owned session storage carries a `CleanupDeepCapture`
-action, so `doctor --fix` can remove known Deep Capture session files only after
-the same confirmation gate used for every other fix action. CA lifecycle
-creation and proxy orchestration remain outside `doctor`; doctor reports their
-state and cleans up residue it can name. CA ownership is established only by the
-normalized SHA-1 thumbprint recorded in a fragcap Deep Capture session manifest
-under fragcap-owned storage. Subject, issuer, and friendly names are never
-ownership evidence. On Windows, ordinary doctor enumerates the current-user Root
-and local-machine Root stores read-only. It reports an exact owned thumbprint as
-supported in current-user Root, warns when it is in the broader local-machine
-Root scope, and reports disagreement between a manifest thumbprint and remaining
-bundled CA material as a mismatch. Malformed manifests, failed store reads, and
-ambiguous multiple entries are unknown rather than absent. A wrong-store or
-mismatch result carries `CleanupDeepCapture` only when the exact observed
-thumbprint and store are available; the existing `doctor --fix` confirmation gate
-then scopes removal to that resource. These Deep Capture-only states never block
-passive Capture readiness.
+Doctor also reports native Deep Capture readiness and residue. One ordered check
+set produces separate `Capture` and `Deep Capture` verdicts in human and JSON
+output. Capture-only prerequisites apply to both modes because Deep Capture
+includes packet evidence; native-only failures never make the ordinary Capture
+verdict ambiguous. The command exits zero only when both verdicts are ready.
+
+The Deep Capture section names the compiled `fragcap-native` backend, exact IPv4
+and IPv6 loopback readiness, local CA trust, analyzer key-log configuration,
+session storage, and one bounded native residue inventory. The inventory reads
+session-owner records and versioned resource journals from the default root and
+from exact registered custom bundle roots. It classifies every latest resource
+as healthy, active, stale, cleanup-failed, unknown, or unsupported. Complete
+terminal journals and retained artifacts are healthy history. Scan bounds,
+malformed records, unreadable paths, unsupported versions, and insufficient
+ownership remain explicit limitations and block only Deep Capture.
+
+Each native check identifier is derived from the retained session and resource
+identity, never from its position in the inventory. Adding or removing another
+finding therefore cannot rename an unresolved resource in machine output or in
+a verdict's `blocking_checks` list.
+
+An active session is proven by an opaque generation-specific synchronization
+lease held for the session adapter lifetime. The recorded PID is diagnostic and
+cannot establish liveness by itself, so PID reuse cannot transfer ownership.
+The read-only probe opens no process handle, listener, route, trust entry, lock,
+or directory. A journaled endpoint without matching ownership is never called
+an orphan or selected as a cleanup target.
+
+`doctor --fix` offers Deep Capture recovery only when the existing journal
+recovery plan carries an exact action or an abandoned owner record can be
+retired exactly. The confirmation-gated performer replays that shared plan and
+then inventories again. It does not delete sidecars or manifests merely because
+their filenames are recognized. Active, malformed, wrong-store, mismatched, and
+ambiguous resources remain visible refusals. CA ownership still requires the
+normalized SHA-1 thumbprint recorded by the session; subject, issuer, and
+friendly names are never ownership evidence. Installer, archive, offline smoke,
+upgrade, repair, uninstall, artifact-content, and artifact-size validation
+remain packaging work under issue #329.
+
+A legacy owner record has no generation lease and cannot prove liveness from its
+PID. A complete terminal journal is safe to retire automatically. Any other
+legacy record blocks startup until the operator explicitly confirms Doctor's
+exact recovery action. That action replays only the recorded journal plan and
+retires only the exact owner record; it does not broaden legacy evidence into
+authority over unrelated files or processes.
 
 Compatibility calibration progress names confirmation, proxy readiness, managed launch, observation, fact persistence, finalization, and cleanup. Human output and structured events carry the same phase and terminal outcome without requiring a machine consumer to parse prose. Every refusal names the missing precondition and states that no calibration effects were applied.
 
@@ -4730,6 +4753,16 @@ loss, ignored rundown, bounded retention loss, and unresolved ownership remain
 separate. Compatibility and manifest claims derive from that trailer. It
 closes #319 without a target handle, memory right, new dependency, or Deep
 Capture completion claim.
+
+S124 closes native Doctor runtime readiness and residue diagnostics. A bounded
+inventory projects the existing resource journal, manifest, trust, artifact,
+and session-owner authorities into explicit health and recovery findings. A
+generation-specific session lease replaces PID-only ownership, separate Capture
+and Deep Capture verdicts derive from one report, and confirmed repair reuses
+only the exact journal recovery plan. Legacy owners require terminal journal
+proof or explicit repair confirmation, and native check identifiers derive from
+session and resource identity. Packaging validation remains #329, and
+Deep Capture remains incomplete until #334.
 
 The required dependency direction is:
 

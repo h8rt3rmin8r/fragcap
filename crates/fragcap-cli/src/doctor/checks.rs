@@ -441,7 +441,12 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             let detail = dc.proxy_backend_error.as_deref().unwrap_or(
                 "no supported proxy backend found; Deep Capture proxy inspection is unavailable",
             );
-            Check::warn(DEEP_CAPTURE, "proxy backend", detail)
+            Check::fail(
+                DEEP_CAPTURE,
+                "proxy backend",
+                detail,
+                "use a Windows build containing the native Deep Capture runtime",
+            )
         }
     });
     checks.push(loopback_check(
@@ -465,24 +470,22 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             "local CA trust",
             format!("trusted in current-user store ({thumbprint})"),
         ),
-        DeepCaptureCa::WrongStore { store, thumbprint } => Check::warn_action(
+        DeepCaptureCa::WrongStore { store, thumbprint } => Check::fail(
             DEEP_CAPTURE,
             "local CA trust",
             format!("fragcap CA is trusted in unexpected store {store} ({thumbprint})"),
-            "run `fragcap doctor --fix` to remove stale Deep Capture trust",
-            Action::new(ActionKind::CleanupDeepCapture),
+            "remove only the exact unexpected trust entry using that store's administration tools",
         ),
         DeepCaptureCa::Mismatched {
             expected,
             actual,
             store,
         } => match store {
-            Some(store) => Check::warn_action(
+            Some(store) => Check::fail(
                 DEEP_CAPTURE,
                 "local CA trust",
                 format!("manifest expects {expected}, but {store} contains {actual}"),
-                "run `fragcap doctor --fix` to remove mismatched Deep Capture trust",
-                Action::new(ActionKind::CleanupDeepCapture),
+                "inspect the manifest and remove only the exact mismatched trust entry",
             ),
             None => Check::warn(
                 DEEP_CAPTURE,
@@ -490,10 +493,11 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
                 format!("manifest expects {expected}, but bundled CA material is {actual}"),
             ),
         },
-        DeepCaptureCa::Unknown(reason) => Check::warn(
+        DeepCaptureCa::Unknown(reason) => Check::fail(
             DEEP_CAPTURE,
             "local CA trust",
             format!("CA trust state could not be determined: {reason}"),
+            "resolve the reported bundle or trust-store error before Deep Capture",
         ),
     });
     checks.push(if dc.analyzer_keylog_configured {
@@ -509,61 +513,7 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             "TLS key-log path is not configured; analyzer decryption may need manual setup",
         )
     });
-    checks.push(match &dc.occupied_proxy_ports {
-        Some(ports) if ports.is_empty() => Check::ok(
-            DEEP_CAPTURE,
-            "proxy ports",
-            "no stale Deep Capture proxy ports found",
-        ),
-        Some(ports) => Check::warn(
-            DEEP_CAPTURE,
-            "proxy ports",
-            format!("occupied Deep Capture proxy ports: {}", join_u16(ports)),
-        ),
-        None => Check::warn(
-            DEEP_CAPTURE,
-            "proxy ports",
-            "Deep Capture proxy port state is not yet observable",
-        ),
-    });
-    checks.push(match &dc.orphaned_proxy_processes {
-        Some(processes) if processes.is_empty() => Check::ok(
-            DEEP_CAPTURE,
-            "proxy processes",
-            "no orphaned Deep Capture proxy processes found",
-        ),
-        Some(processes) => Check::warn(
-            DEEP_CAPTURE,
-            "proxy processes",
-            format!(
-                "orphaned Deep Capture proxy processes: {}",
-                processes.join("; ")
-            ),
-        ),
-        None => Check::warn(
-            DEEP_CAPTURE,
-            "proxy processes",
-            "Deep Capture proxy process state is not yet observable",
-        ),
-    });
-    checks.push(residue_check(
-        "session manifests",
-        "no stale Deep Capture manifests found",
-        "stale Deep Capture manifests",
-        &dc.stale_manifests,
-    ));
-    checks.push(residue_check(
-        "tls key logs",
-        "no stale Deep Capture TLS key logs found",
-        "stale Deep Capture TLS key logs",
-        &dc.stale_tls_key_logs,
-    ));
-    checks.push(residue_check(
-        "sensitive artifacts",
-        "no sensitive Deep Capture sidecars found",
-        "sensitive Deep Capture sidecars",
-        &dc.sensitive_artifacts,
-    ));
+    checks.extend(native_residue_checks(&dc.native_residue));
     checks.push(match &dc.session_dir {
         Some(path) if dc.session_dir_present => Check::ok(
             DEEP_CAPTURE,
@@ -575,13 +525,112 @@ pub(crate) fn deep_capture(inputs: &Inputs) -> Vec<Check> {
             "session storage",
             format!("{} (absent)", path.display()),
         ),
-        None => Check::warn(
+        None => Check::fail(
             DEEP_CAPTURE,
             "session storage",
             "Deep Capture session storage path is undetermined",
+            "configure a writable current-user data directory before Deep Capture",
         ),
     });
+    if !matches!(dc.ipv4_loopback, crate::doctor::LoopbackReadiness::Ready)
+        && !matches!(dc.ipv6_loopback, crate::doctor::LoopbackReadiness::Ready)
+    {
+        checks.push(Check::fail(
+            DEEP_CAPTURE,
+            "loopback availability",
+            "neither exact IPv4 nor exact IPv6 loopback can host the native proxy",
+            "restore at least one exact loopback family before Deep Capture",
+        ));
+    }
     checks
+}
+
+fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> Vec<Check> {
+    if !inventory.limitations.is_empty() {
+        return vec![Check::fail(
+            DEEP_CAPTURE,
+            "native inventory",
+            format!(
+                "inventory is incomplete: {}",
+                inventory
+                    .limitations
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            "resolve the reported inventory limitations before Deep Capture",
+        )];
+    }
+    if inventory.findings.is_empty() {
+        return vec![Check::ok(
+            DEEP_CAPTURE,
+            "native inventory",
+            "no native Deep Capture session residue found",
+        )];
+    }
+    inventory
+        .findings
+        .iter()
+        .map(|finding| {
+            let session_identity = if finding.session_id.is_empty() {
+                format!("bundle-{:016x}", stable_path_hash(&finding.bundle))
+            } else {
+                finding.session_id.clone()
+            };
+            let name = format!(
+                "native resource {}/{}",
+                session_identity, finding.resource_id
+            );
+            let detail = format!(
+                "session={} resource={} kind={} state={} health={} authority={}: {}",
+                finding.session_id,
+                finding.resource_id,
+                finding.kind,
+                finding.state,
+                finding.health.as_str(),
+                finding.ownership_authority,
+                finding.detail
+            );
+            match finding.health {
+                super::residue::ResidueHealth::Healthy | super::residue::ResidueHealth::Active => {
+                    Check::ok(DEEP_CAPTURE, name, detail)
+                }
+                super::residue::ResidueHealth::Stale
+                | super::residue::ResidueHealth::CleanupFailed
+                | super::residue::ResidueHealth::Unknown
+                    if finding.recoverable =>
+                {
+                    Check::fail_action(
+                        DEEP_CAPTURE,
+                        name,
+                        detail,
+                        "run `fragcap doctor --fix` to replay this exact recovery authority",
+                        Action::new(ActionKind::CleanupDeepCapture),
+                    )
+                }
+                _ => Check::fail(
+                    DEEP_CAPTURE,
+                    name,
+                    detail,
+                    "inspect the reported journal refusal before starting Deep Capture",
+                ),
+            }
+        })
+        .collect()
+}
+
+fn stable_path_hash(path: &std::path::Path) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    path.as_os_str()
+        .to_string_lossy()
+        .as_bytes()
+        .iter()
+        .fold(FNV_OFFSET, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+        })
 }
 
 fn loopback_check(
@@ -606,42 +655,6 @@ fn loopback_check(
             format!("exact loopback bind readiness for {address} is undetermined"),
         ),
     }
-}
-
-fn residue_check(
-    name: &'static str,
-    clean: &'static str,
-    dirty: &'static str,
-    paths: &[std::path::PathBuf],
-) -> Check {
-    if paths.is_empty() {
-        Check::ok(DEEP_CAPTURE, name, clean)
-    } else {
-        Check::warn_action(
-            DEEP_CAPTURE,
-            name,
-            format!("{dirty}: {}", join_paths(paths)),
-            "run `fragcap doctor --fix` to clean stale Deep Capture residue",
-            Action::new(ActionKind::CleanupDeepCapture),
-        )
-    }
-}
-
-fn join_paths(paths: &[std::path::PathBuf]) -> String {
-    paths
-        .iter()
-        .take(5)
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn join_u16(values: &[u16]) -> String {
-    values
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
@@ -707,11 +720,7 @@ mod tests {
                 ipv6_loopback: LoopbackReadiness::Ready,
                 analyzer_keylog_configured: true,
                 ca: DeepCaptureCa::Absent,
-                occupied_proxy_ports: Some(Vec::new()),
-                orphaned_proxy_processes: Some(Vec::new()),
-                stale_manifests: Vec::new(),
-                stale_tls_key_logs: Vec::new(),
-                sensitive_artifacts: Vec::new(),
+                native_residue: Default::default(),
             },
         }
     }
@@ -1119,28 +1128,96 @@ mod tests {
     #[test]
     fn deep_capture_residue_warns_and_offers_cleanup() {
         let mut inputs = ready_inputs();
-        inputs.deep_capture.stale_manifests = vec![std::path::PathBuf::from(
-            "C:\\fragcap\\sessions\\old\\manifest.json",
-        )];
-        inputs.deep_capture.stale_tls_key_logs = vec![std::path::PathBuf::from(
-            "C:\\fragcap\\sessions\\old\\tls-keylog.log",
-        )];
-        inputs.deep_capture.sensitive_artifacts = vec![std::path::PathBuf::from(
-            "C:\\fragcap\\sessions\\old\\application.jsonl",
-        )];
+        inputs
+            .deep_capture
+            .native_residue
+            .findings
+            .push(crate::doctor::residue::ResourceFinding {
+                session_id: "old".to_string(),
+                bundle: std::path::PathBuf::from("C:\\fragcap\\sessions\\old"),
+                resource_id: "proxy".to_string(),
+                kind: "proxy".to_string(),
+                state: "applied".to_string(),
+                health: crate::doctor::residue::ResidueHealth::Stale,
+                recoverable: true,
+                ownership_authority: "resource-journal".to_string(),
+                detail: "exact journal recovery action is available".to_string(),
+            });
         let checks = deep_capture(&inputs);
-        for name in ["session manifests", "tls key logs", "sensitive artifacts"] {
-            let check = checks.iter().find(|check| check.name == name).unwrap();
-            assert_eq!(check.status, Status::Warn);
-            assert_eq!(
-                check.action.as_ref().map(|action| action.kind),
-                Some(ActionKind::CleanupDeepCapture)
-            );
-        }
+        let check = checks
+            .iter()
+            .find(|check| check.name == "native resource old/proxy")
+            .unwrap();
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(
+            check.action.as_ref().map(|action| action.kind),
+            Some(ActionKind::CleanupDeepCapture)
+        );
     }
 
     #[test]
-    fn deep_capture_ca_wrong_store_warns_with_cleanup() {
+    fn native_resource_check_identity_does_not_depend_on_list_position() {
+        let finding =
+            |session_id: &str, resource_id: &str| crate::doctor::residue::ResourceFinding {
+                session_id: session_id.to_string(),
+                bundle: std::path::PathBuf::from(format!("C:\\sessions\\{session_id}")),
+                resource_id: resource_id.to_string(),
+                kind: "proxy".to_string(),
+                state: "applied".to_string(),
+                health: crate::doctor::residue::ResidueHealth::Stale,
+                recoverable: true,
+                ownership_authority: "resource-journal".to_string(),
+                detail: "exact journal recovery action is available".to_string(),
+            };
+        let mut inventory = crate::doctor::residue::NativeResidueInventory::default();
+        inventory.findings.push(finding("stable", "proxy"));
+        let before = native_residue_checks(&inventory)
+            .into_iter()
+            .next()
+            .expect("check")
+            .name;
+        inventory.findings.insert(0, finding("earlier", "route"));
+        let after = native_residue_checks(&inventory)
+            .into_iter()
+            .find(|check| check.name.contains("stable/proxy"))
+            .expect("stable check")
+            .name;
+
+        assert_eq!(before, "native resource stable/proxy");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn unknown_version_check_identity_uses_the_bundle() {
+        let finding = |bundle: &str| crate::doctor::residue::ResourceFinding {
+            session_id: String::new(),
+            bundle: std::path::PathBuf::from(bundle),
+            resource_id: "journal".to_string(),
+            kind: "journal".to_string(),
+            state: "unknown-version".to_string(),
+            health: crate::doctor::residue::ResidueHealth::Unknown,
+            recoverable: false,
+            ownership_authority: "resource-journal".to_string(),
+            detail: "resource journal version is unsupported".to_string(),
+        };
+        let inventory = crate::doctor::residue::NativeResidueInventory {
+            findings: vec![finding("C:\\sessions\\one"), finding("C:\\sessions\\two")],
+            limitations: Vec::new(),
+        };
+
+        let names = native_residue_checks(&inventory)
+            .into_iter()
+            .map(|check| check.name)
+            .collect::<Vec<_>>();
+
+        assert_ne!(names[0], names[1]);
+        assert!(names
+            .iter()
+            .all(|name| name.starts_with("native resource bundle-")));
+    }
+
+    #[test]
+    fn deep_capture_ca_wrong_store_blocks_without_unsafe_cleanup() {
         let mut inputs = ready_inputs();
         inputs.deep_capture.ca = DeepCaptureCa::WrongStore {
             store: "local-machine".to_string(),
@@ -1151,12 +1228,9 @@ mod tests {
             .iter()
             .find(|check| check.name == "local CA trust")
             .unwrap();
-        assert_eq!(ca.status, Status::Warn);
+        assert_eq!(ca.status, Status::Fail);
         assert!(ca.detail.contains("local-machine"));
-        assert_eq!(
-            ca.action.as_ref().map(|action| action.kind),
-            Some(ActionKind::CleanupDeepCapture)
-        );
+        assert!(ca.action.is_none());
     }
 
     #[test]

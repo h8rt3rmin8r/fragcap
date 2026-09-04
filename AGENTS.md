@@ -512,6 +512,24 @@ compatibility and manifest finalization, completeness, loss, and correlation.
 No target handle, memory right, second attribution mechanism, dependency, or
 Deep Capture completion claim is added.
 
+S124 closes #321 at the native Doctor runtime-readiness boundary. One bounded
+read-only inventory classifies journaled resources and exact owner records as
+healthy, active, stale, cleanup-failed, unknown, or unsupported. A held Windows
+session-generation synchronization lease replaces PID-only liveness, so reuse
+cannot transfer ownership and no process handle is introduced. Human and JSON
+reports derive separate Capture and Deep Capture verdicts from one check set.
+Confirmed repair reuses only the existing exact journal recovery plan and no
+longer deletes recognized historical sidecars by filename. Legacy owners
+require terminal journal proof or explicit repair confirmation, and native
+check identifiers derive from session and resource identity rather than list
+position; unsupported journal versions use a stable canonical-bundle fallback.
+Inventory canonicalizes scan and owner identities before matching them, and a
+confirmed header-only legacy recovery writes a terminal journal trailer before
+retiring its exact owner record. S124 adds one
+already-resolved `windows-sys` feature but no dependency or lockfile package;
+packaging validation remains #329 and Deep Capture remains incomplete until
+#334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
