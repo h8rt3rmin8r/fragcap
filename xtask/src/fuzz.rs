@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -298,6 +299,9 @@ fn validate_corpus(root: &Path, value: &Value, problems: &mut Vec<String>) -> io
                 ));
             }
         }
+        if contains_public_ip_literal(&String::from_utf8_lossy(&data)) {
+            problems.push(format!("public IP literal in corpus seed {relative}"));
+        }
     }
     for target in value["targets"]
         .as_array()
@@ -310,6 +314,58 @@ fn validate_corpus(root: &Path, value: &Value, problems: &mut Vec<String>) -> io
         }
     }
     Ok(())
+}
+
+fn contains_public_ip_literal(text: &str) -> bool {
+    text.split(|character: char| {
+        character.is_ascii_whitespace()
+            || matches!(
+                character,
+                '"' | '\'' | '=' | ',' | ';' | '(' | ')' | '{' | '}'
+            )
+    })
+    .filter_map(ip_literal)
+    .any(is_public_ip)
+}
+
+fn ip_literal(token: &str) -> Option<IpAddr> {
+    let token = token.trim_matches(['<', '>']);
+    if let Some(rest) = token.strip_prefix('[') {
+        let close = rest.find(']')?;
+        let host = rest[..close]
+            .split_once('%')
+            .map_or(&rest[..close], |(address, _)| address);
+        return host.parse().ok();
+    }
+    if let Ok(ip) = token.parse() {
+        return Some(ip);
+    }
+    let (host, port) = token.rsplit_once(':')?;
+    port.parse::<u16>().ok()?;
+    host.parse().ok()
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast())
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_unicast_link_local()
+                || ip.is_unique_local()
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -389,5 +445,15 @@ mod tests {
         assert!(problems
             .iter()
             .any(|problem| problem.contains("cargo_fuzz_version")));
+    }
+
+    #[test]
+    fn public_ip_literals_are_rejected_and_synthetic_ranges_are_allowed() {
+        assert!(contains_public_ip_literal("origin=8.8.8.8:443"));
+        assert!(contains_public_ip_literal("[2606:4700:4700::1111]:443"));
+        assert!(!contains_public_ip_literal("127.0.0.1:443"));
+        assert!(!contains_public_ip_literal("192.0.2.1:443"));
+        assert!(!contains_public_ip_literal("[fe80::1%1]:443"));
+        assert!(!contains_public_ip_literal("[2001:db8::1]:443"));
     }
 }

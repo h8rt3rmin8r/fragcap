@@ -109,7 +109,7 @@ pub fn socks5(data: &[u8]) {
     } else {
         payload.to_vec()
     };
-    let mut stream = MemoryStream::new(&input);
+    let mut stream = MemoryStream::new(&input, usize::from(control % 7).saturating_add(1));
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     let runtime = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_current_thread()
@@ -136,6 +136,7 @@ pub fn streaming(data: &[u8]) {
     } else {
         BodyDirection::Response
     };
+    let terminal = streaming_outcome(control);
     match control % 3 {
         0 => {
             let mut value = WebSocketObserver::new(
@@ -148,31 +149,49 @@ pub fn streaming(data: &[u8]) {
             for chunk in chunks(control, payload) {
                 let _ = value.feed(chunk);
             }
-            let _ = value.finish(StreamingOutcome::Cancelled);
+            let _ = value.finish(terminal);
         }
         1 => {
             let mut value = SseObserver::new(256, RETENTION_LIMIT);
             for chunk in chunks(control, payload) {
                 let _ = value.feed(chunk);
             }
-            let _ = value.finish(StreamingOutcome::Cancelled);
+            let _ = value.finish(terminal);
         }
         _ => {
             let mut value = GrpcObserver::new(direction, RETENTION_LIMIT);
             for chunk in chunks(control, payload) {
                 let _ = value.feed(chunk);
             }
-            let _ = value.finish(None, None, None, StreamingOutcome::Cancelled);
+            let _ = value.finish(None, None, None, terminal);
         }
+    }
+}
+
+fn streaming_outcome(control: u8) -> StreamingOutcome {
+    if control & 0x10 == 0 {
+        StreamingOutcome::Cancelled
+    } else {
+        StreamingOutcome::Complete
     }
 }
 
 pub fn identities_quic(data: &[u8]) {
     let Some(data) = bounded(data) else { return };
-    let text = std::str::from_utf8(data).unwrap_or_default();
-    let _ = DestinationAuthority::parse(text);
-    let _ = DestinationAuthority::parse_uri(text);
-    let _ = CertificateIdentity::parse(text);
+    let control = data.first().copied().unwrap_or_default();
+    let payload = data.get(1..).unwrap_or_default();
+    let text = std::str::from_utf8(payload)
+        .unwrap_or_default()
+        .trim_end_matches(['\r', '\n']);
+    match control % 2 {
+        0 => {
+            let _ = DestinationAuthority::parse(text);
+            let _ = DestinationAuthority::parse_uri(text);
+        }
+        _ => {
+            let _ = CertificateIdentity::parse(text);
+        }
+    }
     let _ = crate::is_quic_initial(data);
 
     let authority = DestinationAuthority::parse("example.invalid:443").expect("fixture authority");
@@ -204,14 +223,18 @@ struct MemoryStream {
     input: Vec<u8>,
     offset: usize,
     written: usize,
+    max_read: usize,
+    read_calls: usize,
 }
 
 impl MemoryStream {
-    fn new(input: &[u8]) -> Self {
+    fn new(input: &[u8], max_read: usize) -> Self {
         Self {
             input: input.to_vec(),
             offset: 0,
             written: 0,
+            max_read,
+            read_calls: 0,
         }
     }
 }
@@ -223,9 +246,10 @@ impl AsyncRead for MemoryStream {
         output: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let remaining = &self.input[self.offset..];
-        let count = remaining.len().min(output.remaining());
+        let count = remaining.len().min(output.remaining()).min(self.max_read);
         output.put_slice(&remaining[..count]);
         self.offset += count;
+        self.read_calls = self.read_calls.saturating_add(1);
         Poll::Ready(Ok(()))
     }
 }
@@ -247,5 +271,30 @@ impl AsyncWrite for MemoryStream {
     }
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn memory_stream_exercises_fragmented_reads() {
+        let mut stream = MemoryStream::new(b"fragmented", 2);
+        let mut output = [0_u8; 10];
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(stream.read_exact(&mut output))
+            .unwrap();
+        assert_eq!(&output, b"fragmented");
+        assert_eq!(stream.read_calls, 5);
+    }
+
+    #[test]
+    fn streaming_terminal_selector_reaches_complete_and_cancelled() {
+        assert_eq!(streaming_outcome(b'0'), StreamingOutcome::Complete);
+        assert_eq!(streaming_outcome(b'@'), StreamingOutcome::Cancelled);
     }
 }

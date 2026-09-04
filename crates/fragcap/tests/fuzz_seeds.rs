@@ -45,6 +45,12 @@ fn cases() -> Vec<(String, PathBuf)> {
     cases
 }
 
+fn seed_text(bytes: &[u8]) -> &str {
+    std::str::from_utf8(&bytes[1..])
+        .unwrap()
+        .trim_end_matches(['\r', '\n'])
+}
+
 #[test]
 fn every_committed_seed_replays_twice_in_stable_order() {
     let cases = cases();
@@ -76,4 +82,15 @@ fn oversized_inputs_are_refused_before_parser_work() {
     ] {
         replay(target, &input);
     }
+}
+
+#[test]
+fn named_identity_seeds_reach_valid_owned_parsers() {
+    let corpus = root().join("fuzz/corpus/identities_quic");
+    let dns = fs::read(corpus.join("dns-authority")).unwrap();
+    let scoped = fs::read(corpus.join("scoped-ipv6")).unwrap();
+    let certificate = fs::read(corpus.join("certificate-dns")).unwrap();
+    assert!(fragcap_proxy::DestinationAuthority::parse(seed_text(&dns)).is_ok());
+    assert!(fragcap_proxy::DestinationAuthority::parse(seed_text(&scoped)).is_ok());
+    assert!(fragcap_proxy::CertificateIdentity::parse(seed_text(&certificate)).is_ok());
 }
