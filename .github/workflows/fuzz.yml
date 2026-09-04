@@ -1,0 +1,53 @@
+# Bounded coverage-guided smoke for every S126 native parser target.
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: http1
+          - target: socks5
+          - target: streaming
+          - target: identities_quic
+          - target: artifact_jsonl
+          - target: manifest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install exact nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-08-25
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install exact cargo-fuzz
+        run: cargo +1.96.0 install cargo-fuzz --version 0.13.2 --locked
+      - name: Verify isolated lockfile
+        run: cargo +nightly-2026-08-25 metadata --manifest-path fuzz/Cargo.toml --locked --no-deps
+      - name: Build target
+        run: cargo +nightly-2026-08-25 fuzz build ${{ matrix.target }}
+      - name: Run bounded smoke
+        run: cargo +nightly-2026-08-25 fuzz run ${{ matrix.target }} -- -runs=256 -timeout=5 -max_len=65536
+      - name: Retain findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.sha }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

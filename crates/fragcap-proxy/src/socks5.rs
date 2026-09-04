@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::watch;
 use tokio::time::{timeout, Instant};
@@ -62,19 +62,19 @@ pub enum SocksReplyCode {
 }
 
 #[derive(Debug)]
-struct ConnectRequest {
+pub(crate) struct ConnectRequest {
     authority: DestinationAuthority,
     address_type: SocksAddressType,
 }
 
 #[derive(Debug)]
-struct UdpAssociateRequest {
+pub(crate) struct UdpAssociateRequest {
     client_endpoint: Option<SocketAddr>,
     address_type: SocksAddressType,
 }
 
 #[derive(Debug)]
-enum SocksRequest {
+pub(crate) enum SocksRequest {
     Connect(ConnectRequest),
     UdpAssociate(UdpAssociateRequest),
 }
@@ -393,11 +393,14 @@ pub(crate) async fn serve_socks5(
     }
 }
 
-async fn negotiate(
-    stream: &mut TcpStream,
+pub(crate) async fn negotiate<S>(
+    stream: &mut S,
     capability: &SessionCapability,
     budget: Duration,
-) -> Result<(), SocksFailure> {
+) -> Result<(), SocksFailure>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let deadline = Instant::now() + budget;
     let mut head = [0_u8; 2];
     read_exact_until(stream, &mut head, deadline, "socks-greeting").await?;
@@ -442,10 +445,13 @@ async fn negotiate(
         .map_err(|error| SocksFailure::new("socks-auth-write-failed", error.to_string()))
 }
 
-async fn read_request(
-    stream: &mut TcpStream,
+pub(crate) async fn read_request<S>(
+    stream: &mut S,
     budget: Duration,
-) -> Result<SocksRequest, SocksFailure> {
+) -> Result<SocksRequest, SocksFailure>
+where
+    S: AsyncRead + Unpin,
+{
     let deadline = Instant::now() + budget;
     let mut prefix = [0_u8; 2];
     read_exact_until(stream, &mut prefix, deadline, "socks-request-prefix").await?;
@@ -1611,19 +1617,19 @@ impl GenericUdpObserver {
 }
 
 #[derive(Debug)]
-struct ParsedUdpDatagram<'a> {
+pub(crate) struct ParsedUdpDatagram<'a> {
     authority: DestinationAuthority,
     address_type: SocksAddressType,
     payload: &'a [u8],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum UdpFrameError {
+pub(crate) enum UdpFrameError {
     Fragmented,
     Malformed,
 }
 
-fn parse_udp_datagram(bytes: &[u8]) -> Result<ParsedUdpDatagram<'_>, UdpFrameError> {
+pub(crate) fn parse_udp_datagram(bytes: &[u8]) -> Result<ParsedUdpDatagram<'_>, UdpFrameError> {
     if bytes.get(2).is_some_and(|fragment| *fragment != 0) {
         return Err(UdpFrameError::Fragmented);
     }
@@ -1785,12 +1791,15 @@ fn udp_observation(
     value
 }
 
-async fn read_exact(
-    stream: &mut TcpStream,
+async fn read_exact<S>(
+    stream: &mut S,
     bytes: &mut [u8],
     budget: Duration,
     stage: &'static str,
-) -> Result<(), SocksFailure> {
+) -> Result<(), SocksFailure>
+where
+    S: AsyncRead + Unpin,
+{
     timeout(budget, stream.read_exact(bytes))
         .await
         .map_err(|_| SocksFailure::timeout(stage, SocksReplyCode::TtlExpired))?
@@ -1798,12 +1807,15 @@ async fn read_exact(
         .map_err(|error| SocksFailure::new(stage, error.to_string()))
 }
 
-async fn read_exact_until(
-    stream: &mut TcpStream,
+async fn read_exact_until<S>(
+    stream: &mut S,
     bytes: &mut [u8],
     deadline: Instant,
     stage: &'static str,
-) -> Result<(), SocksFailure> {
+) -> Result<(), SocksFailure>
+where
+    S: AsyncRead + Unpin,
+{
     read_exact(
         stream,
         bytes,
@@ -1936,7 +1948,7 @@ fn observation(
 }
 
 #[derive(Debug)]
-struct SocksFailure {
+pub(crate) struct SocksFailure {
     code: &'static str,
     detail: String,
     reply: SocksReplyCode,

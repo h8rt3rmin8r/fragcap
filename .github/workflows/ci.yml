@@ -78,6 +78,9 @@ jobs:
       - name: Native Deep Capture threat model
         run: cargo run --package xtask -- threat-model
 
+      - name: Native parser fuzz inventory and corpus
+        run: cargo run --package xtask -- fuzz
+
       # The wrapper compliance gate needs bash (for the vendored PowerShell
       # checker's POSIX twin and bash -n) and pwsh (for the PowerShell parse).
       # The ubuntu runner ships both; the checks are OS-independent, so running

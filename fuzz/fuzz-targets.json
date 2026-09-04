@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "product_scope": "native Deep Capture through S125",
+  "max_input_bytes": 65536,
+  "toolchain": "nightly-2026-08-25",
+  "cargo_fuzz_version": "0.13.2",
+  "libfuzzer_sys_version": "0.4.13",
+  "targets": [
+    {
+      "id": "http1",
+      "owner": "fragcap-proxy",
+      "corpus": "fuzz/corpus/http1",
+      "dictionary": "fuzz/dictionaries/http1.dict",
+      "ci_runs": 256,
+      "timeout_seconds": 5,
+      "properties": ["bounded-input", "framing-refusal", "authentication-refusal"],
+      "surfaces": [
+        {"id":"http1-request-head","authority":"fragcap-proxy::http1::parse_request","input_kind":"bytes","max_retained_bytes":65536,"states":["complete","incomplete","malformed","ambiguous"]},
+        {"id":"http1-response-head","authority":"fragcap-proxy::http1::parse_response","input_kind":"bytes","max_retained_bytes":65536,"states":["complete","incomplete","malformed","ambiguous"]},
+        {"id":"http1-chunk-framing","authority":"fragcap-proxy::http1::parse_chunk_size","input_kind":"bytes","max_retained_bytes":65536,"states":["complete","malformed","limit"]},
+        {"id":"proxy-basic-auth","authority":"fragcap-proxy::SessionCapability","input_kind":"bytes","max_retained_bytes":64,"states":["authenticated","missing","malformed","refused"]}
+      ]
+    },
+    {
+      "id": "socks5",
+      "owner": "fragcap-proxy",
+      "corpus": "fuzz/corpus/socks5",
+      "dictionary": "fuzz/dictionaries/socks5.dict",
+      "ci_runs": 256,
+      "timeout_seconds": 5,
+      "properties": ["bounded-input", "fragmentation", "state-transitions", "cancellation"],
+      "surfaces": [
+        {"id":"socks5-auth-state","authority":"fragcap-proxy::socks5::negotiate","input_kind":"transition-sequence","max_retained_bytes":4096,"states":["greeting","method","credentials","authenticated","refused"]},
+        {"id":"socks5-request-state","authority":"fragcap-proxy::socks5::read_request","input_kind":"transition-sequence","max_retained_bytes":4096,"states":["command","address","port","complete","refused"]},
+        {"id":"socks5-udp-datagram","authority":"fragcap-proxy::socks5::parse_udp_datagram","input_kind":"bytes","max_retained_bytes":65536,"states":["complete","fragmented","malformed"]}
+      ]
+    },
+    {
+      "id": "streaming",
+      "owner": "fragcap-proxy",
+      "corpus": "fuzz/corpus/streaming",
+      "dictionary": "fuzz/dictionaries/streaming.dict",
+      "ci_runs": 256,
+      "timeout_seconds": 5,
+      "properties": ["bounded-input", "fragmentation", "state-transitions", "cancellation", "retention-limit"],
+      "surfaces": [
+        {"id":"websocket-state","authority":"fragcap-proxy::WebSocketObserver","input_kind":"transition-sequence","max_retained_bytes":4096,"states":["frame","fragmented-message","terminal","malformed","limit"]},
+        {"id":"sse-state","authority":"fragcap-proxy::SseObserver","input_kind":"transition-sequence","max_retained_bytes":4096,"states":["field","event","terminal","partial","limit"]},
+        {"id":"grpc-envelope-state","authority":"fragcap-proxy::GrpcObserver","input_kind":"transition-sequence","max_retained_bytes":4096,"states":["envelope","terminal","partial","malformed","limit"]}
+      ]
+    },
+    {
+      "id": "identities_quic",
+      "owner": "fragcap-proxy",
+      "corpus": "fuzz/corpus/identities_quic",
+      "ci_runs": 256,
+      "timeout_seconds": 5,
+      "properties": ["bounded-input", "canonicalization", "retention-limit", "serialization-round-trip"],
+      "surfaces": [
+        {"id":"destination-authority","authority":"fragcap-proxy::DestinationAuthority","input_kind":"text","max_retained_bytes":65536,"states":["dns","ipv4","ipv6","scoped-ipv6","refused"]},
+        {"id":"certificate-identity","authority":"fragcap-proxy::CertificateIdentity","input_kind":"text","max_retained_bytes":65536,"states":["dns","ip","refused"]},
+        {"id":"quic-initial-classifier","authority":"fragcap-proxy::is_quic_initial","input_kind":"bytes","max_retained_bytes":0,"states":["v1","v2","not-initial"]},
+        {"id":"http3-evidence-state","authority":"fragcap-proxy::QuicEvidenceObserver","input_kind":"transition-sequence","max_retained_bytes":4096,"states":["stream","datagram","retention-limit","cancelled"]}
+      ]
+    },
+    {
+      "id": "artifact_jsonl",
+      "owner": "fragcap",
+      "corpus": "fuzz/corpus/artifact_jsonl",
+      "dictionary": "fuzz/dictionaries/json.dict",
+      "ci_runs": 256,
+      "timeout_seconds": 5,
+      "properties": ["bounded-input", "fragmentation", "state-transitions", "silent-truncation-refusal"],
+      "surfaces": [
+        {"id":"application-jsonl","authority":"fragcap::deep_capture::read_application_prefix","input_kind":"jsonl-stream","max_retained_bytes":65536,"states":["complete","incomplete","unknown-version","malformed"]},
+        {"id":"lifecycle-jsonl","authority":"fragcap::deep_capture::read_lifecycle_prefix","input_kind":"jsonl-stream","max_retained_bytes":65536,"states":["complete","crash-prefix","unknown-version","malformed"]},
+        {"id":"resource-journal-jsonl","authority":"fragcap::deep_capture::read_resource_journal","input_kind":"jsonl-stream","max_retained_bytes":65536,"states":["complete","crash-prefix","unknown-version","malformed","invalid-transition"]},
+        {"id":"process-trace-jsonl","authority":"fragcap::deep_capture::read_process_trace","input_kind":"jsonl-stream","max_retained_bytes":65536,"states":["complete","partial","unavailable","failed","malformed"]}
+      ]
+    },
+    {
+      "id": "manifest",
+      "owner": "fragcap",
+      "corpus": "fuzz/corpus/manifest",
+      "dictionary": "fuzz/dictionaries/json.dict",
+      "ci_runs": 256,
+      "timeout_seconds": 5,
+      "properties": ["bounded-input", "serialization-round-trip", "path-confinement"],
+      "surfaces": [
+        {"id":"bundle-manifest","authority":"fragcap::deep_capture::ManifestDocument","input_kind":"json-document","max_retained_bytes":65536,"states":["legacy-v1","native-v2","unknown-version","malformed"]},
+        {"id":"manifest-relative-path","authority":"fragcap::deep_capture::validate_relative_path","input_kind":"text","max_retained_bytes":65536,"states":["confined","absolute","traversal","malformed"]}
+      ]
+    }
+  ],
+  "dependency_boundaries": [
+    {"crate":"rustls","owns":"TLS record and handshake decoding","fragcap_surface":"certificate identity, policy, and refusal evidence"},
+    {"crate":"h2","owns":"HTTP/2 frame and HPACK decoding","fragcap_surface":"bounded metadata, stream, and terminal evidence"},
+    {"crate":"h3","owns":"HTTP/3 frame and QPACK decoding","fragcap_surface":"bounded stream, datagram, and terminal evidence"},
+    {"crate":"quinn","owns":"QUIC packet and transport decoding","fragcap_surface":"initial classification, pairing, admission, and evidence"},
+    {"crate":"httparse","owns":"HTTP/1 tokenization","fragcap_surface":"destination, framing, ambiguity, limits, and transformations"},
+    {"crate":"serde_json","owns":"JSON syntax decoding","fragcap_surface":"version, sequence, transition, reconciliation, and path semantics"}
+  ]
+}

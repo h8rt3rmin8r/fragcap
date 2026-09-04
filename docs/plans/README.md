@@ -305,3 +305,11 @@ ordinary CI gate rejects incomplete rows, missing or ignored tests, and drift
 in the exhaustive protocol-family or direct proxy dependency inventories.
 Fuzzing begins with S126 under #324, and Deep Capture remains incomplete until
 #334.
+
+S126 (`specs/126-native-parser-fuzzing`) follows S125 and closes #324 at the
+native parser-fuzzing boundary. One versioned registry maps twenty fragcap-owned
+protocol and artifact surfaces to six bounded libFuzzer targets, minimized
+synthetic corpora, deterministic stable replay, and exact-pinned CI. The fuzz
+workspace and lockfile remain outside the product graph, dependency-owned wire
+decoders are explicit exclusions, and Deep Capture remains incomplete until
+#334. S127 proceeds with native failure injection under #325.

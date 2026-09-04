@@ -16,6 +16,8 @@ mod adapters;
 mod application;
 mod artifacts;
 mod classification;
+#[doc(hidden)]
+pub mod fuzz_support;
 mod har;
 mod journal;
 mod lifecycle;

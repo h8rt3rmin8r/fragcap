@@ -21,6 +21,12 @@ use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 const EXCLUDED: &[&str] = &[
     ".git",
     "target",
+    // The isolated fuzz workspace has its own Cargo output and unreviewed
+    // campaign products. Its authored manifest, targets, dictionaries, and
+    // promoted corpus remain linted; generated output never does.
+    "fuzz/target",
+    "fuzz/artifacts",
+    "fuzz/coverage",
     "node_modules",
     "captures",
     ".agents/skills",
@@ -747,6 +753,22 @@ mod tests {
         assert!(!is_binary_ext("svg"));
         assert!(!is_binary_ext("css"));
         assert!(!is_binary_ext(""));
+    }
+
+    #[test]
+    fn isolated_fuzz_products_are_excluded_but_authored_inputs_are_not() {
+        let root = Path::new("repo");
+        assert!(is_excluded(Path::new("repo/fuzz/target/debug"), root));
+        assert!(is_excluded(Path::new("repo/fuzz/artifacts/http1"), root));
+        assert!(is_excluded(Path::new("repo/fuzz/coverage/http1"), root));
+        assert!(!is_excluded(
+            Path::new("repo/fuzz/fuzz_targets/http1.rs"),
+            root
+        ));
+        assert!(!is_excluded(
+            Path::new("repo/fuzz/corpus/http1/request-get"),
+            root
+        ));
     }
 
     #[test]

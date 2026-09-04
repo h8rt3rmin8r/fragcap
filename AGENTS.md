@@ -540,6 +540,17 @@ unreviewed changes to the exhaustive protocol-family or direct
 no runtime path, and adds no dependency package. Fuzzing and the remaining
 completion gates remain #324 through #334.
 
+S126 closes #324 at the native parser-fuzzing boundary. A versioned registry
+maps twenty fragcap-owned native protocol and artifact surfaces to six bounded
+coverage-guided targets, minimized synthetic corpora, deterministic stable
+replay, and exact-pinned Linux CI. The owner-local exercise seams call production
+parsers and state machines under 64 KiB input and smaller retention caps, with
+no listener, network, trust, routing, or process effect. The `fuzz/` workspace
+and lockfile are isolated from the product dependency graph. Rustls, h2, h3,
+Quinn, httparse, and serde_json remain explicit dependency-owned decoder
+boundaries. S126 adds no product dependency or runtime behavior, and Deep
+Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

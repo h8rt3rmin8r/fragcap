@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -167,8 +167,23 @@ pub fn read_lifecycle_prefix(path: &Path) -> io::Result<LifecyclePrefix> {
             "lifecycle stream exceeds byte limit",
         ));
     }
-    let ends_with_newline = fs::read(path)?.last() == Some(&b'\n');
-    let mut lines = BufReader::new(File::open(path)?).lines();
+    let bytes = fs::read(path)?;
+    parse_lifecycle_prefix(&bytes)
+}
+
+pub(crate) fn read_lifecycle_prefix_bytes(bytes: &[u8]) -> io::Result<LifecyclePrefix> {
+    if bytes.len() as u64 > MAX_STREAM_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "lifecycle stream exceeds byte limit",
+        ));
+    }
+    parse_lifecycle_prefix(bytes)
+}
+
+fn parse_lifecycle_prefix(bytes: &[u8]) -> io::Result<LifecyclePrefix> {
+    let ends_with_newline = bytes.last() == Some(&b'\n');
+    let mut lines = BufReader::new(Cursor::new(bytes)).lines();
     let header = lines.next().ok_or_else(|| {
         io::Error::new(io::ErrorKind::UnexpectedEof, "lifecycle stream is empty")
     })??;

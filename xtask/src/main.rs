@@ -17,6 +17,7 @@ mod changelog;
 mod conformance;
 mod deps;
 mod docs;
+mod fuzz;
 mod license;
 mod lint;
 mod notes;
@@ -49,6 +50,7 @@ cargo xtask <command>
   notes      Print release notes for a version, from CHANGELOG.md
   changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
+  fuzz       Validate native parser fuzz surfaces, corpora, and CI mapping
   threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
@@ -202,6 +204,15 @@ fn main() -> ExitCode {
             Ok(_) => ExitCode::from(1),
             Err(error) => {
                 eprintln!("threat-model: could not run: {error}");
+                ExitCode::from(2)
+            }
+        },
+
+        "fuzz" => match fuzz::run(&root) {
+            Ok(0) => ExitCode::SUCCESS,
+            Ok(_) => ExitCode::from(1),
+            Err(error) => {
+                eprintln!("fuzz: could not run: {error}");
                 ExitCode::from(2)
             }
         },
@@ -436,6 +447,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: threat model could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running native parser fuzz inventory");
+            match fuzz::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: fuzz inventory reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: fuzz inventory could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

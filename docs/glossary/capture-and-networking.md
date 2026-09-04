@@ -1260,6 +1260,24 @@ list of patterns.
 **See also:** [Interface inventory](capture-and-networking.md#interface-inventory),
 [Selection outcome](capture-and-networking.md#selection-outcome)
 
+## Fuzz surface
+
+A stable registry identity for one fragcap-owned parser or state machine that
+accepts attacker-controlled native Deep Capture input. It names the production
+authority, coverage-guided target, synthetic corpus, input and retention caps,
+states, and required properties. Dependency-owned wire decoders are recorded as
+boundaries rather than counted as fragcap fuzz surfaces.
+
+**See also:** [Fuzz target](#fuzz-target), [Threat registry](#threat-registry)
+
+## Fuzz target
+
+One isolated libFuzzer binary that invokes the same bounded exercise seam as
+stable corpus replay. Its exact toolchain, run count, per-input timeout, maximum
+input length, dictionary, and corpus are reviewable CI state.
+
+**See also:** [Fuzz surface](#fuzz-surface)
+
 ## Threat registry
 
 The versioned machine-readable native Deep Capture security inventory. Each

@@ -169,7 +169,7 @@ impl RequestHead {
 }
 
 #[derive(Debug)]
-struct ResponseHead {
+pub(crate) struct ResponseHead {
     raw: Vec<u8>,
     status: u16,
     reason: Option<String>,
@@ -1205,7 +1205,10 @@ fn emit_http1_terminal(
     );
 }
 
-fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, ProtocolError> {
+pub(crate) fn parse_request(
+    raw: &[u8],
+    limits: &ProtocolLimits,
+) -> Result<RequestHead, ProtocolError> {
     let mut storage = vec![httparse::EMPTY_HEADER; limits.max_headers];
     let mut request = httparse::Request::new(&mut storage);
     let status = request
@@ -1270,7 +1273,7 @@ fn parse_request(raw: &[u8], limits: &ProtocolLimits) -> Result<RequestHead, Pro
     })
 }
 
-fn parse_response(
+pub(crate) fn parse_response(
     raw: &[u8],
     limits: &ProtocolLimits,
     request_method: &str,
@@ -1664,11 +1667,7 @@ where
         let line = read_line(reader, 8 * 1024, limits.idle_timeout).await?;
         write_bounded(writer, &line, limits.idle_timeout).await?;
         let _ = observer.emit_raw(&line);
-        let text = std::str::from_utf8(&line[..line.len().saturating_sub(2)]).map_err(|_| {
-            ProtocolError::new("http-chunk-size-invalid", "chunk size is not ASCII")
-        })?;
-        let length = u64::from_str_radix(text.split(';').next().unwrap_or_default().trim(), 16)
-            .map_err(|_| ProtocolError::new("http-chunk-size-invalid", "chunk size is invalid"))?;
+        let length = parse_chunk_size(&line)?;
         if length == 0 {
             loop {
                 let trailer =
@@ -1692,6 +1691,14 @@ where
         write_bounded(writer, &end, limits.idle_timeout).await?;
         let _ = observer.emit_raw(&end);
     }
+}
+
+pub(crate) fn parse_chunk_size(line: &[u8]) -> Result<u64, ProtocolError> {
+    let payload = line.strip_suffix(b"\r\n").unwrap_or(line);
+    let text = std::str::from_utf8(payload)
+        .map_err(|_| ProtocolError::new("http-chunk-size-invalid", "chunk size is not ASCII"))?;
+    u64::from_str_radix(text.split(';').next().unwrap_or_default().trim(), 16)
+        .map_err(|_| ProtocolError::new("http-chunk-size-invalid", "chunk size is invalid"))
 }
 
 async fn read_line<R>(
