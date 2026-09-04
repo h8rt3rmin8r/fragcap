@@ -317,6 +317,13 @@ surfaces to six bounded coverage-guided targets, synthetic minimized corpora,
 deterministic stable replay, and exact-pinned CI. Dependency-owned wire decoders
 remain explicit rather than becoming inflated coverage claims.
 
+The native failure-injection gate generates both sides of every journaled
+effect and checked lifecycle transition. Controlled coordinator adapters cover
+ten concrete failure families, and each row keeps terminal, artifact, fact,
+event, cleanup, journal, and recovery truth independent. Source-derived
+inventories force review when an effect, resource kind, or lifecycle state
+changes.
+
 ## 26. Observability and Diagnostics
 
 Structured lifecycle events, human progress, capture statistics, calibration phase outcomes, and the diagnostic command that reports Capture and Deep Capture readiness, exact CA trust state, target stores, interfaces, ETW, proxy support, and owned cleanup residue.

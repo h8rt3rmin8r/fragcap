@@ -312,4 +312,13 @@ protocol and artifact surfaces to six bounded libFuzzer targets, minimized
 synthetic corpora, deterministic stable replay, and exact-pinned CI. The fuzz
 workspace and lockfile remain outside the product graph, dependency-owned wire
 decoders are explicit exclusions, and Deep Capture remains incomplete until
-#334. S127 proceeds with native failure injection under #325.
+#334.
+
+S127 (`specs/127-native-failure-injection`) follows S126 and closes #325 at the
+native failure-evidence boundary. One versioned registry generates before and
+after scenarios for seven journaled effects and eight checked lifecycle
+transitions. Controlled adapters exercise ten native failure families through
+the production coordinator, while journal prefixes produce exact actions,
+no-actions, or refusals through the shared Doctor recovery authority. S127 adds
+no dependency or runtime fault switch. Performance work begins with S128 under
+#326, and Deep Capture remains incomplete until #334.

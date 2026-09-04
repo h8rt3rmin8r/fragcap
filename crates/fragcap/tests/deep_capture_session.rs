@@ -364,6 +364,36 @@ impl EventSink for FailingEvents {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FailingEventPoint {
+    Started,
+    Terminal,
+}
+
+struct FailingNamedEvent(Ledger, FailingEventPoint);
+impl EventSink for FailingNamedEvent {
+    fn emit(&mut self, event: &DeepCaptureEvent) -> Result<(), StageFailure> {
+        self.0.borrow_mut().push("event.attempt".into());
+        let selected = matches!(
+            (self.1, event),
+            (FailingEventPoint::Started, DeepCaptureEvent::Started { .. })
+                | (
+                    FailingEventPoint::Terminal,
+                    DeepCaptureEvent::Terminal { .. }
+                )
+        );
+        if selected {
+            Err(StageFailure::new(
+                Stage::EventDelivery,
+                "controlled-event-failure",
+                "controlled event sink rejected the selected lifecycle event",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct FailingProxy(Ledger);
 impl ProxyBackend for FailingProxy {
     fn descriptor(&self) -> BackendDescriptor {
@@ -380,6 +410,49 @@ impl ProxyBackend for FailingProxy {
             "controlled-proxy-failure",
             "controlled proxy failed before acquisition",
         ))
+    }
+}
+
+struct FailingProxyCleanup(Ledger);
+impl ProxyBackend for FailingProxyCleanup {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "controlled-cleanup-failure".into(),
+            version: "1".into(),
+        }
+    }
+
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        Ok(Box::new(FailingProxyCleanupRun(self.0.clone())))
+    }
+}
+
+struct FailingProxyCleanupRun(Ledger);
+impl ProxyLease for FailingProxyCleanupRun {
+    fn route(&self) -> Result<ProxyRoute, StageFailure> {
+        Ok(test_route())
+    }
+
+    fn observations(&mut self, _: Budget) -> Result<Vec<CompatibilityObservation>, StageFailure> {
+        Ok(Vec::new())
+    }
+
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        self.0.borrow_mut().push("proxy.stop.failed".into());
+        CleanupResult {
+            resource: "proxy-process".into(),
+            status: CleanupStatus::Failed,
+            reason: "controlled network reset during proxy stop".into(),
+        }
+    }
+
+    fn cleanup(&mut self, _: Budget) -> Vec<CleanupResult> {
+        self.0.borrow_mut().push("proxy.cleanup.failed".into());
+        vec![CleanupResult {
+            resource: "proxy-task".into(),
+            status: CleanupStatus::Failed,
+            reason: "controlled proxy task panic retained by join".into(),
+        }]
     }
 }
 
@@ -414,6 +487,27 @@ impl LaunchAdapter for FailingLaunch {
             Stage::Launch,
             "launch-failed",
             "controlled launch failure",
+        ))
+    }
+}
+
+struct FailingRouting(Ledger);
+impl RoutingAdapter for FailingRouting {
+    fn prepare(&mut self, _: &PreparedTarget, _: &RoutingPlan) -> Result<(), PreflightRefusal> {
+        Ok(())
+    }
+
+    fn apply(
+        &mut self,
+        _: &SessionPlan,
+        _: ProxyRoute,
+        _: Budget,
+    ) -> Result<Box<dyn RoutingLease>, StageFailure> {
+        self.0.borrow_mut().push("route.apply.failed".into());
+        Err(StageFailure::new(
+            Stage::Routing,
+            "route-permission-denied",
+            "controlled route application denial",
         ))
     }
 }
@@ -475,6 +569,41 @@ impl CaptureRunner for InterruptedCapture {
     }
     fn stop(&mut self, _: Budget) -> CleanupResult {
         released("capture")
+    }
+}
+
+struct TimedOutStopCapture(Ledger);
+impl CaptureRunner for TimedOutStopCapture {
+    fn prepare(
+        &mut self,
+        _: &SessionConfig,
+        _: &PreparedTarget,
+        _: LoopbackEndpoint,
+    ) -> Result<PreparedCapture, PreflightRefusal> {
+        Ok(PreparedCapture {
+            token: "timed-out-stop".into(),
+        })
+    }
+
+    fn run(
+        &mut self,
+        _: &PreparedCapture,
+        _: &AppliedRoute,
+        _: Budget,
+    ) -> Result<CaptureRunResult, StageFailure> {
+        Ok(CaptureRunResult {
+            observations: Vec::new(),
+            interrupted: false,
+        })
+    }
+
+    fn stop(&mut self, _: Budget) -> CleanupResult {
+        self.0.borrow_mut().push("capture.stop.timed-out".into());
+        CleanupResult {
+            resource: "capture".into(),
+            status: CleanupStatus::TimedOut,
+            reason: "controlled capture stop timeout".into(),
+        }
     }
 }
 
@@ -866,6 +995,26 @@ fn launch_failure_still_cleans_trust_and_proxy() {
 }
 
 #[test]
+fn route_failure_still_cleans_trust_and_proxy_without_launching() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    environment.routing = Box::new(FailingRouting(ledger.clone()));
+    let report = run_with(environment);
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "route-permission-denied"));
+    let calls = ledger.borrow();
+    assert!(calls.iter().any(|call| call == "trust.cleanup"));
+    assert!(calls.iter().any(|call| call == "proxy.cleanup"));
+    assert!(!calls.iter().any(|call| call == "launch.start"));
+    assert!(report.snapshot.fact_writes.iter().all(|write| {
+        write.fact.kind == "launch-case" && write.fact.final_owner_index.is_none()
+    }));
+}
+
+#[test]
 fn capture_failure_still_stops_and_finalizes() {
     let ledger = Rc::new(RefCell::new(Vec::new()));
     let mut environment = adapters(&ledger);
@@ -911,6 +1060,10 @@ fn artifact_failure_is_lossless_and_never_complete() {
         .iter()
         .any(|failure| failure.code == "artifact-failed"));
     assert_eq!(report.artifacts.len(), 1);
+    assert!(matches!(
+        report.artifacts[0].status,
+        ArtifactStatus::Failed { .. }
+    ));
 }
 
 #[test]
@@ -934,4 +1087,265 @@ fn capture_interrupt_reaches_the_typed_terminal_outcome() {
     environment.capture = Box::new(InterruptedCapture(ledger.clone()));
     let report = run_with(environment);
     assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+}
+
+#[test]
+fn generated_failure_matrix_exercises_production_authorities() {
+    let registry: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/security/deep-capture-failures.v1.json"
+    ))
+    .expect("failure registry");
+    let mut scenarios = Vec::new();
+    for boundary in registry["effects"].as_array().unwrap() {
+        for side in ["before", "after"] {
+            scenarios.push((
+                format!("{}:{side}", boundary["id"].as_str().unwrap()),
+                boundary["id"].as_str().unwrap(),
+                true,
+                side,
+                boundary[side]["family"].as_str().unwrap(),
+                boundary[side]["driver"].as_str().unwrap(),
+            ));
+        }
+    }
+    for boundary in registry["transitions"].as_array().unwrap() {
+        for side in ["before", "after"] {
+            scenarios.push((
+                format!("{}:{side}", boundary["id"].as_str().unwrap()),
+                boundary["id"].as_str().unwrap(),
+                false,
+                side,
+                boundary[side]["family"].as_str().unwrap(),
+                boundary[side]["driver"].as_str().unwrap(),
+            ));
+        }
+    }
+    assert_eq!(scenarios.len(), 30);
+
+    for (scenario, boundary, is_effect, side, family, driver) in scenarios {
+        let ledger = Rc::new(RefCell::new(Vec::new()));
+        let mut environment = adapters(&ledger);
+        let event_failure = matches!(
+            driver,
+            "started-event-delivery-failure"
+                | "terminal-event-failure"
+                | "observation-event-failure"
+        );
+        match driver {
+            "proxy-start-refusal" | "listener-bind-refusal" => {
+                environment.proxy = Box::new(FailingProxy(ledger.clone()))
+            }
+            "proxy-task-join-failure" | "proxy-stop-reset" => {
+                environment.proxy = Box::new(FailingProxyCleanup(ledger.clone()))
+            }
+            "proxy-late-success" | "launcher-late-success" | "late-start-result" => {
+                environment.clock = Box::new(ScriptClock(Rc::new(RefCell::new(VecDeque::from([
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::from_secs(31),
+                ])))))
+            }
+            "proxy-cancelled-after-start" | "capture-interrupted" | "operator-stop" => {
+                environment.capture = Box::new(InterruptedCapture(ledger.clone()))
+            }
+            "trust-acquire-denied" | "authorization-or-start-refusal" => {
+                environment.trust = Box::new(FailingTrust(ledger.clone()))
+            }
+            "authorization-refusal" => {}
+            "trust-cleanup-denied" | "cleanup-denied" => {
+                environment.trust = Box::new(FailingCleanupTrust(ledger.clone()))
+            }
+            "route-apply-denied" => environment.routing = Box::new(FailingRouting(ledger.clone())),
+            "route-owned-then-launch-fails" | "launcher-start-failure" => {
+                environment.launch = Box::new(FailingLaunch(ledger.clone()))
+            }
+            "capture-start-failure" | "capture-run-failure" => {
+                environment.capture = Box::new(FailingCapture(ledger.clone()))
+            }
+            "capture-stop-timeout" => {
+                environment.capture = Box::new(TimedOutStopCapture(ledger.clone()))
+            }
+            "artifact-write-failure"
+            | "artifact-finalization-corruption"
+            | "manifest-corruption" => {
+                environment.artifacts = Box::new(FailingArtifacts(ledger.clone()))
+            }
+            "started-event-delivery-failure" => {
+                environment.events = Box::new(FailingNamedEvent(
+                    ledger.clone(),
+                    FailingEventPoint::Started,
+                ))
+            }
+            "terminal-event-failure" => {
+                environment.events = Box::new(FailingNamedEvent(
+                    ledger.clone(),
+                    FailingEventPoint::Terminal,
+                ))
+            }
+            "observation-event-failure" => {
+                environment.events = Box::new(FailingEvents(ledger.clone()))
+            }
+            "fact-writer-failure" => environment.facts = Box::new(FailingFacts(ledger.clone())),
+            other => panic!("{scenario}: unimplemented controlled driver {other}"),
+        }
+
+        let mut scenario_config = config();
+        if family == "timeout" {
+            scenario_config.deadlines.launch = Duration::from_secs(1);
+        }
+        let bundle = scenario_config.bundle.clone();
+        let prepared = DeepCapture::preflight(scenario_config, &mut environment)
+            .unwrap_or_else(|error| panic!("{scenario}: preflight failed: {}", error.code));
+        let authorization = if driver == "authorization-refusal" {
+            Authorization::approved(PlanId::new("stale-matrix-plan"))
+        } else {
+            Authorization::approved(prepared.plan().id.clone())
+        };
+        let report = prepared
+            .into_session(environment)
+            .run_to_completion(authorization);
+
+        assert!(!report.is_complete(), "{scenario}: terminal truth");
+        if driver == "authorization-refusal" {
+            assert!(report.artifacts.is_empty(), "{scenario}: artifact truth");
+        } else {
+            assert!(!report.artifacts.is_empty(), "{scenario}: artifact truth");
+        }
+        assert!(
+            report.snapshot.fact_writes.len() <= 5,
+            "{scenario}: fact truth"
+        );
+        if event_failure {
+            assert!(!report.event_failures.is_empty(), "{scenario}: event truth");
+        } else {
+            assert!(report.event_failures.is_empty(), "{scenario}: event truth");
+        }
+        let calls = ledger.borrow();
+        if !matches!(
+            driver,
+            "proxy-start-refusal" | "listener-bind-refusal" | "authorization-refusal"
+        ) {
+            assert!(
+                calls.iter().any(|call| call.contains("cleanup")),
+                "{scenario}: cleanup truth"
+            );
+        }
+        drop(calls);
+
+        if driver == "authorization-refusal" {
+            assert!(
+                !bundle.join("resource-journal.jsonl").exists(),
+                "{scenario}: refused authorization created a journal"
+            );
+        } else {
+            let journal = read_resource_journal(&bundle.join("resource-journal.jsonl"))
+                .unwrap_or_else(|error| panic!("{scenario}: journal truth: {error}"));
+            assert!(
+                !journal.transitions.is_empty(),
+                "{scenario}: journal contains no effect decisions"
+            );
+            let recovery = journal.recovery_plan();
+            let decisions = recovery
+                .actions
+                .iter()
+                .map(|action| action.resource_id.as_str())
+                .chain(
+                    recovery
+                        .refusals
+                        .iter()
+                        .map(|refusal| refusal.resource_id.as_str()),
+                )
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                decisions.len(),
+                recovery.actions.len() + recovery.refusals.len(),
+                "{scenario}: recovery truth contains duplicate decisions"
+            );
+        }
+
+        if is_effect {
+            let temp = tempfile::tempdir().unwrap();
+            let mut obligation = ResourceJournal::create(temp.path(), "matrix", "plan").unwrap();
+            let (kind, target, ownership, action) = match boundary {
+                "proxy-listener" => (
+                    ResourceKind::Proxy,
+                    "127.0.0.1:31337",
+                    "session:matrix",
+                    "close-loopback-listener",
+                ),
+                "proxy-runtime" => (
+                    ResourceKind::Proxy,
+                    "127.0.0.1:31337",
+                    "session:matrix",
+                    "join-proxy-tasks",
+                ),
+                "trust-entry" => (
+                    ResourceKind::Trust,
+                    "sha1:0123456789abcdef0123456789abcdef01234567",
+                    "session:matrix",
+                    "remove-current-user-root-by-exact-thumbprint",
+                ),
+                "route" => (
+                    ResourceKind::Route,
+                    "child-environment",
+                    "session:matrix",
+                    "remove-target-scoped-route",
+                ),
+                "managed-child" => (
+                    ResourceKind::Launch,
+                    "pid:7 created:42",
+                    "session:matrix",
+                    "stop-managed-child",
+                ),
+                "capture" => (
+                    ResourceKind::Capture,
+                    "capture-token",
+                    "session:matrix",
+                    "stop-capture",
+                ),
+                "bundle-evidence" => (
+                    ResourceKind::Artifact,
+                    "bundle:matrix",
+                    "session:matrix",
+                    "retain-or-delete-sensitive-bundle",
+                ),
+                other => panic!("{scenario}: unowned effect {other}"),
+            };
+            obligation
+                .append(ResourceTransition::new(
+                    boundary,
+                    kind,
+                    target,
+                    ownership,
+                    action,
+                    ResourceState::Pending,
+                    "generated matrix pending obligation",
+                ))
+                .unwrap();
+            if side == "before" {
+                obligation
+                    .append(ResourceTransition::new(
+                        boundary,
+                        kind,
+                        target,
+                        ownership,
+                        action,
+                        ResourceState::NotApplied,
+                        "controlled failure preceded the effect",
+                    ))
+                    .unwrap();
+            }
+            let obligation_recovery = read_resource_journal(obligation.path())
+                .unwrap()
+                .recovery_plan();
+            if side == "before" {
+                assert!(obligation_recovery.actions.is_empty(), "{scenario}");
+                assert!(obligation_recovery.refusals.is_empty(), "{scenario}");
+            } else {
+                assert_eq!(obligation_recovery.actions.len(), 1, "{scenario}");
+                assert!(obligation_recovery.refusals.is_empty(), "{scenario}");
+                assert_eq!(obligation_recovery.actions[0].resource_id, boundary);
+            }
+        }
+    }
 }

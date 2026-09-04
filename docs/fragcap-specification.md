@@ -142,6 +142,7 @@ enforcement.
 | 0.1.47-draft | 2026-09-03 | W. Thompson | **Completes native Doctor runtime readiness and residue diagnostics (issue #321).** Extends sections 26.3 and 28.1. Doctor derives independent Capture and Deep Capture verdicts from one check set, inventories bounded native journal and owner evidence without mutation, proves an active session with a generation lease rather than PID liveness, and offers only exact journal recovery. Healthy retained evidence is history, every inventory limitation blocks a false-clean Deep Capture verdict, and S124 adds no process handle, dependency package, packaging claim, or completion claim. |
 | 0.1.48-draft | 2026-09-04 | W. Thompson | **Completes the native Deep Capture threat model and abuse-case gate (issue #323).** Extends sections 19, 25, and 28.1. One versioned registry maps every trust boundary, sensitive asset, and high-risk abuse case to prevention, detection, containment, evidence, and exact executable negative tests. The ordinary CI gate rejects missing or ignored tests and unreviewed drift in the exhaustive protocol-family or direct proxy dependency inventories. S125 records no residual-risk acceptance, adds no dependency or runtime behavior, and does not claim Deep Capture complete before #334. |
 | 0.1.49-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native parser and artifact fuzzing (issue #324).** Extends sections 24.3, 25.5, and 28.1. A versioned registry maps twenty fragcap-owned protocol and artifact surfaces to six bounded libFuzzer targets, minimized synthetic corpora, stable deterministic replay, and an exact-pinned CI matrix. Dependency-owned wire decoders remain explicit boundaries. S126 isolates its fuzz dependency graph, adds no product lock package or runtime behavior, and leaves Deep Capture incomplete until #334. |
+| 0.1.50-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native failure-injection evidence (issue #325).** Extends sections 25.5 and 28.1. A versioned registry generates before and after scenarios for seven journaled effects and eight checked lifecycle transitions. Ten controlled failure families execute through the production coordinator and resource journal while terminal, artifact, fact, event, cleanup, journal, and recovery authorities remain independent. Source-derived inventory checks prevent unreviewed gaps. S127 adds no dependency, runtime fault switch, destructive host test, or Deep Capture completion claim. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4278,6 +4279,30 @@ dependency boundaries and does not claim direct coverage of their internals.
 Every finding is minimized, scrubbed, and promoted to both a focused regression
 test and a synthetic corpus seed.
 
+#### Native failure-injection matrix
+
+The canonical native failure registry is
+`docs/security/deep-capture-failures.v1.json`; its human review entry point is
+`docs/security/deep-capture-failure-injection.md`. It owns seven journaled
+external effects and eight checked lifecycle transitions. Exactly two scenarios
+are generated per boundary: before and after. Failure before a durable pending
+obligation prevents the effect. Failure after a possibly applied effect keeps
+the obligation recoverable and requires bounded cleanup or an exact refusal.
+
+The ten mandatory families are disk full, permission denial, broken pipe, task
+panic, timeout, cancellation, trust denial, listener port theft, network reset,
+and writer corruption. Portable controlled adapters exercise the production
+coordinator without mutating host trust, exhausting disk, stealing unrelated
+ports, launching a game, or routing external traffic. Every scenario evaluates
+terminal outcome, artifact status, fact writes, event delivery, cleanup,
+journal state, and shared Doctor recovery independently.
+
+`cargo xtask failure-matrix` derives resource kinds, lifecycle states, and
+coordinator effect identities from their owning source and rejects inventory
+drift, missing sides, incomplete outcomes, unowned families, and stale or
+disabled tests. The command runs in ordinary CI and follows the repository
+0/1/2 exit contract.
+
 ### 25.6 Attribution Accuracy Measurement
 
 SC-7 requires 99 percent attribution on profiled processes. The
@@ -4840,6 +4865,16 @@ production parsers and state machines directly under fixed input and retention
 caps without network, trust, process, or routing effects. The fuzz workspace and
 lockfile are isolated from the product graph. Dependency-owned wire decoders
 remain explicit exclusions, and Deep Capture remains incomplete until #334.
+
+S127 closes #325 at the native failure-evidence boundary. A versioned registry
+generates thirty scenarios covering both sides of seven journaled effects and
+eight checked lifecycle transitions. Ten controlled native failure families run
+through the production coordinator, artifact and fact status types, event path,
+resource journal, cleanup ordering, and shared Doctor recovery planner. The
+ordinary CI gate rejects source inventory drift and incomplete or stale
+evidence. S127 adds no dependency, shipped fault switch, destructive host test,
+or Deep Capture completion claim. Performance, Windows integration, packaging,
+supply-chain, and final completion work remain #326 through #334.
 
 The required dependency direction is:
 
