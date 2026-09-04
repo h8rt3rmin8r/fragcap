@@ -72,6 +72,12 @@ jobs:
       - name: Specification version lock-step
         run: cargo run --package xtask -- spec
 
+      # S125 security-review currency: every high-risk native threat keeps its
+      # exact executable evidence, and protocol or direct proxy dependency
+      # changes force a model update. File reads only, so both legs must agree.
+      - name: Native Deep Capture threat model
+        run: cargo run --package xtask -- threat-model
+
       # The wrapper compliance gate needs bash (for the vendored PowerShell
       # checker's POSIX twin and bash -n) and pwsh (for the PowerShell parse).
       # The ubuntu runner ships both; the checks are OS-independent, so running

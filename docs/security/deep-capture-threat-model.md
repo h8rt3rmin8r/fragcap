@@ -76,8 +76,10 @@ changes:
 - a referenced negative test or its failure semantics.
 
 The gate compares the first two inventories mechanically and verifies every test
-reference. Reviewers remain responsible for detecting semantic changes inside
-an existing dependency or authority.
+reference. Each protocol family also owns an explicit threat and executable
+abuse-case mapping, so adding its name to an inventory cannot satisfy review by
+itself. Reviewers remain responsible for detecting semantic changes inside an
+existing dependency or authority.
 
 ## Scope boundary
 

@@ -12,3 +12,7 @@
   a retained bundle path after operating-system process identifier reuse. Added
   a per-invocation time component to the test-only path so cleanup-interruption
   evidence remains deterministic without changing product behavior.
+- 2026-09-04: Added the threat-model command explicitly to both hosted CI
+  operating-system legs. The workflow runs repository gates individually, so
+  wiring only the composite local `cargo xtask ci` command would not protect
+  pull requests.

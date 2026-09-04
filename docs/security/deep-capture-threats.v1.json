@@ -42,6 +42,23 @@
     "windows-sys",
     "zeroize"
   ],
+  "protocol_reviews": [
+    {"family":"http1","threats":["request-framing-desynchronization"],"tests":[{"path":"crates/fragcap-proxy/tests/http1_proxy.rs","function":"refuses_ambiguous_framing_before_connecting","proves":"Ambiguous HTTP/1.1 framing is refused before origin connection."}]},
+    {"family":"https","threats":["certificate-authority-abuse"],"tests":[{"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"connect_fails_closed_for_wrong_name_and_untrusted_upstream","proves":"HTTPS name and trust failure cannot downgrade."}]},
+    {"family":"http2","threats":["unauthorized-local-proxy-use"],"tests":[{"path":"crates/fragcap-proxy/tests/http2_proxy.rs","function":"explicitly_routed_cleartext_http2_is_authenticated_and_authority_bound","proves":"HTTP/2 requires authentication and exact authority binding."}]},
+    {"family":"websocket","threats":["protocol-route-semantic-downgrade"],"tests":[{"path":"crates/fragcap-proxy/src/streaming.rs","function":"websocket_rejects_unmasked_client_frame","proves":"Invalid client WebSocket framing is refused."}]},
+    {"family":"sse","threats":["resource-budget-exhaustion"],"tests":[{"path":"crates/fragcap-proxy/src/streaming.rs","function":"sse_reports_line_and_event_limits","proves":"SSE line and event limits remain explicit."}]},
+    {"family":"grpc","threats":["resource-budget-exhaustion"],"tests":[{"path":"crates/fragcap-proxy/src/streaming.rs","function":"grpc_reports_oversized_without_buffering_payload","proves":"Oversized gRPC envelopes are rejected without retaining their payload."}]},
+    {"family":"generic-tcp","threats":["resource-budget-exhaustion"],"tests":[{"path":"crates/fragcap-proxy/tests/socks5_proxy.rs","function":"bounded_relay_preserves_a_payload_larger_than_its_buffers","proves":"Generic TCP relay remains bounded without truncating forwarding."}]},
+    {"family":"non-http-tls","threats":["certificate-authority-abuse"],"tests":[{"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"mismatched_operator_identity_is_rejected_before_connection","proves":"Non-HTTP TLS client identity mismatch is refused before connection."}]},
+    {"family":"socks5-tcp","threats":["unauthorized-local-proxy-use"],"tests":[{"path":"crates/fragcap-proxy/tests/socks5_proxy.rs","function":"wrong_password_is_refused_before_origin_accept","proves":"SOCKS5 TCP authentication failure cannot reach the origin."}]},
+    {"family":"socks5-udp","threats":["unauthorized-local-proxy-use"],"tests":[{"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"declared_client_port_blocks_local_hijack","proves":"SOCKS5 UDP client endpoint ownership cannot be hijacked."}]},
+    {"family":"generic-udp","threats":["resource-budget-exhaustion"],"tests":[{"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"retention_limits_preserve_one_record_and_complete_forwarding","proves":"Generic UDP evidence retention is bounded independently from forwarding."}]},
+    {"family":"quic","threats":["protocol-route-semantic-downgrade"],"tests":[{"path":"crates/fragcap-proxy/tests/quic_http3.rs","function":"scoped_plan_refuses_endpoint_migration_and_origin_changes","proves":"QUIC endpoint migration and origin changes are refused."}]},
+    {"family":"http3","threats":["resource-budget-exhaustion"],"tests":[{"path":"crates/fragcap-proxy/tests/quic_http3.rs","function":"transport_limits_are_finite_and_zero_rtt_is_disabled","proves":"HTTP/3 transport bounds are finite and zero round-trip data is disabled."}]},
+    {"family":"unrouted","threats":["protocol-route-semantic-downgrade"],"tests":[{"path":"crates/fragcap/tests/protocol_classification.rs","function":"native_reason_mapping_preserves_required_distinctions","proves":"Unrouted traffic remains a distinct packet-only classification."}]},
+    {"family":"unknown","threats":["protocol-route-semantic-downgrade"],"tests":[{"path":"crates/fragcap/tests/protocol_classification.rs","function":"unknown_unsupported_and_failed_are_pairwise_distinct","proves":"Unknown protocol evidence cannot normalize to supported or failed."}]}
+  ],
   "boundaries": [
     {"id":"operator-to-plan","description":"Operator selection becomes an immutable target-scoped authorized plan.","owner":"fragcap facade"},
     {"id":"target-to-route","description":"An owned target process receives only its session-scoped route and capability.","owner":"fragcap facade"},
@@ -143,7 +160,7 @@
       "evidence":["cleanup.jsonl trust and certificate records","manifest sensitivity declarations"],
       "tests":[
         {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"malformed_leaf_identities_are_refused","proves":"Malformed leaf identities cannot obtain certificates."},
-        {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"private_material_is_dpapi_protected_in_owned_storage","proves":"Private material is protected in owned storage."},
+        {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"ca_is_synthetic_bounded_and_fingerprinted","proves":"The session authority is synthetic, bounded, and exactly fingerprinted."},
         {"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"connect_fails_closed_for_wrong_name_and_untrusted_upstream","proves":"Upstream name and trust failures cannot downgrade."}
       ]
     },

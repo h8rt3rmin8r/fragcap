@@ -7,6 +7,8 @@
 - `scope`: stable product scope statement
 - `protocol_families`: sorted unique shipped protocol identifiers
 - `proxy_dependencies`: sorted unique direct runtime dependency identifiers
+- `protocol_reviews`: exactly one threat and executable-test mapping per shipped
+  protocol family
 - `boundaries`: unique boundary records
 - `assets`: unique sensitive-asset records
 - `threats`: unique threat records
@@ -44,6 +46,12 @@
 - `path`: tracked Rust source path beneath the repository
 - `function`: exact non-ignored test function in that file
 - `proves`: threat behavior demonstrated by the test
+
+## Protocol Review
+
+- `family`: exact shipped protocol-family identifier
+- `threats`: one or more declared threat rows applicable to the family
+- `tests`: one or more exact executable abuse-case references for the family
 
 ## Validation Invariants
 
