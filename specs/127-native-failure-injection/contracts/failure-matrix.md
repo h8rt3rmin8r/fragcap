@@ -19,7 +19,7 @@ The command rejects:
 - a missing before or after driver;
 - an unknown failure family, outcome value, resource kind, or lifecycle state;
 - a missing outcome dimension;
-- production resource, state, or coordinator-effect inventory drift;
+- production resource, lifecycle-state, executable lifecycle-edge, or coordinator-effect inventory drift;
 - a missing, ignored, conditional, untracked, or unattributed Rust test;
 - a mandatory failure family with no executable generated cell.
 
@@ -36,6 +36,6 @@ No third side is valid. Stored duplicate expanded rows are impossible because ex
 
 ## Execution contract
 
-Portable tests execute controlled drivers through the production Deep Capture coordinator, journal transition rules, artifact and fact status types, event sink, cleanup sequence, and recovery planner. No row may satisfy the contract using a separate lifecycle state machine.
+Portable tests execute controlled drivers through the production Deep Capture coordinator, journal transition rules, artifact and fact status types, event sink, cleanup sequence, and recovery planner. The coordinator checks every state change against the edge inventory consumed by the gate. No row may satisfy the contract using a separate lifecycle state machine.
 
-Each applicable row asserts terminal, artifact, fact, event, cleanup, journal, and recovery dispositions independently. The test output names the generated scenario identity on failure.
+Each row reads and asserts its declared terminal, artifact, fact, event, cleanup, journal, and recovery dispositions independently. Effect rows additionally prove their before or after placement from the production resource journal, rather than from a synthetic state machine. The test output names the generated scenario identity on failure.

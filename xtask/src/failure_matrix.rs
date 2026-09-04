@@ -47,6 +47,7 @@ const DRIVERS: &[&str] = &[
     "operator-stop",
     "proxy-cancelled-after-start",
     "proxy-late-success",
+    "proxy-runtime-start-panic",
     "proxy-start-refusal",
     "proxy-stop-reset",
     "proxy-task-join-failure",
@@ -119,6 +120,7 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
     let mut ids = BTreeSet::new();
     let mut families = BTreeSet::new();
     let mut effect_ids = BTreeSet::new();
+    let mut transition_ids = BTreeSet::new();
     for boundary in effects.iter().copied() {
         let id = validate_boundary(boundary, "effect", &mut ids, &mut families, &mut problems);
         let resource = required(boundary, "resource_kind", &id, &mut problems);
@@ -141,12 +143,27 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
                 problems.push(format!("transition {id} has unknown {field} state {state}"));
             }
         }
+        transition_ids.insert(id);
     }
     let source_effects = coordinator_effects(&coordinator_source);
     if effect_ids != source_effects {
         problems.push(format!(
             "coordinator effect inventory drift: registry={effect_ids:?}, source={source_effects:?}"
         ));
+    }
+    let source_transitions = coordinator_lifecycle_edges(&coordinator_source);
+    if transition_ids != source_transitions {
+        problems.push(format!(
+            "coordinator lifecycle edge drift: registry={transition_ids:?}, source={source_transitions:?}"
+        ));
+    }
+    if coordinator_source.matches("self.state = next;").count() != 1
+        || coordinator_source.contains("self.state = LifecycleState::")
+    {
+        problems.push(
+            "coordinator state mutation must occur only inside the checked transition helper"
+                .into(),
+        );
     }
     let expected_families = FAMILIES.iter().map(|value| (*value).to_string()).collect();
     if families != expected_families {
@@ -321,7 +338,7 @@ fn allowed_outcomes(dimension: &str) -> &'static [&'static str] {
             "no-positive-invention",
             "none",
         ],
-        "event" => &["failed-counted", "terminal-attempted"],
+        "event" => &["failed-counted", "none", "terminal-attempted"],
         "cleanup" => &[
             "acquired-attempted",
             "all-acquired-attempted",
@@ -403,6 +420,32 @@ fn coordinator_effects(source: &str) -> BTreeSet<String> {
         remainder = tail;
     }
     effects
+}
+
+fn coordinator_lifecycle_edges(source: &str) -> BTreeSet<String> {
+    let Some(body) = source
+        .split_once("const LIFECYCLE_EDGES:")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(body, _)| body)
+    else {
+        return BTreeSet::new();
+    };
+    body.lines()
+        .filter_map(|line| {
+            let states = line
+                .split("LifecycleState::")
+                .skip(1)
+                .filter_map(|part| {
+                    let name = part
+                        .chars()
+                        .take_while(|character| character.is_ascii_alphabetic())
+                        .collect::<String>();
+                    (!name.is_empty()).then(|| to_kebab(name))
+                })
+                .collect::<Vec<_>>();
+            (states.len() == 2).then(|| format!("{}-{}", states[0], states[1]))
+        })
+        .collect()
 }
 
 fn to_kebab(value: String) -> String {
@@ -514,6 +557,17 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_edge_drift_is_rejected() {
+        let mut value = registry();
+        value["transitions"][0]["id"] = Value::from("prepared-observed");
+        value["transitions"][0]["to"] = Value::from("observed");
+        assert!(validate(&root(), &value)
+            .unwrap()
+            .iter()
+            .any(|problem| problem.contains("lifecycle edge drift")));
+    }
+
+    #[test]
     fn source_inventory_parsers_are_closed() {
         assert_eq!(
             enum_variants("pub enum State {\n One,\n Two,\n }", "State"),
@@ -524,6 +578,12 @@ mod tests {
                 "x.record_resource(\n \"one\",\n); y.record_resource(\"two\", value);"
             ),
             BTreeSet::from(["one".into(), "two".into()])
+        );
+        assert_eq!(
+            coordinator_lifecycle_edges(
+                "const LIFECYCLE_EDGES: &[X] = &[\n (LifecycleState::One, LifecycleState::Two),\n];"
+            ),
+            BTreeSet::from(["one-two".into()])
         );
     }
 

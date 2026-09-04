@@ -7,12 +7,15 @@ rejects incomplete rows, source inventory drift, and stale executable evidence.
 
 ## Matrix ownership
 
-The registry owns seven journaled effects and eight checked lifecycle
-transitions. The gate deterministically expands every boundary into `before`
+The registry owns seven journaled effects and eight executable, checked lifecycle
+transitions. The gate extracts the coordinator's edge table and rejects any
+registry disagreement, then deterministically expands every boundary into `before`
 and `after` scenarios, yielding thirty stable cells. A before-effect failure
 must prevent the effect. An after-effect failure treats acquisition as possible,
 retains the synchronized obligation, and requires bounded cleanup or an exact
-recovery decision.
+recovery decision. Matrix execution compares all seven declared outcome fields
+with the production report and proves effect-side placement from the production
+resource journal itself.
 
 Every cell separately declares terminal, artifact, fact, event, cleanup,
 journal, and recovery expectations. A successful cleanup cannot turn a failed

@@ -33,7 +33,7 @@
     },
     {
       "id": "proxy-runtime", "resource_kind": "proxy", "source": "DeepCaptureSession::start",
-      "before": {"family": "task-panic", "driver": "proxy-task-join-failure", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "proxy-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-none"}},
+      "before": {"family": "task-panic", "driver": "proxy-runtime-start-panic", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "later-obligations-not-applied", "journal": "not-applied", "recovery": "none"}},
       "after": {"family": "cancellation", "driver": "proxy-cancelled-after-start", "expected": {"terminal": "interrupted-or-failed", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "all-acquired-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-none"}}
     },
     {
@@ -44,22 +44,22 @@
     {
       "id": "route", "resource_kind": "route", "source": "DeepCaptureSession::start",
       "before": {"family": "permission-denial", "driver": "route-apply-denied", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "earlier-resources-attempted", "journal": "failed", "recovery": "pending-obligation-exact"}},
-      "after": {"family": "network-reset", "driver": "route-owned-then-launch-fails", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "route-and-earlier-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-none"}}
+      "after": {"family": "network-reset", "driver": "route-owned-then-launch-fails", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "route-and-earlier-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-refused"}}
     },
     {
       "id": "managed-child", "resource_kind": "launch", "source": "DeepCaptureSession::start",
-      "before": {"family": "broken-pipe", "driver": "launcher-start-failure", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "route-and-earlier-attempted", "journal": "failed", "recovery": "pending-obligation-exact"}},
+      "before": {"family": "broken-pipe", "driver": "launcher-start-failure", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "route-and-earlier-attempted", "journal": "failed", "recovery": "exact-or-refused"}},
       "after": {"family": "timeout", "driver": "launcher-late-success", "expected": {"terminal": "failed", "artifact": "incomplete", "fact": "none", "event": "terminal-attempted", "cleanup": "child-and-earlier-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-none"}}
     },
     {
       "id": "capture", "resource_kind": "capture", "source": "DeepCaptureSession::observe",
-      "before": {"family": "network-reset", "driver": "capture-start-failure", "expected": {"terminal": "partial-or-failed", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "all-acquired-attempted", "journal": "failed", "recovery": "pending-obligation-exact"}},
+      "before": {"family": "network-reset", "driver": "capture-start-failure", "expected": {"terminal": "partial-or-failed", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "all-acquired-attempted", "journal": "failed", "recovery": "none"}},
       "after": {"family": "cancellation", "driver": "capture-interrupted", "expected": {"terminal": "interrupted", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "all-acquired-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-none"}}
     },
     {
       "id": "bundle-evidence", "resource_kind": "artifact", "source": "DeepCaptureSession::finalize",
       "before": {"family": "disk-full", "driver": "artifact-write-failure", "expected": {"terminal": "partial", "artifact": "failed-not-complete", "fact": "independent", "event": "terminal-attempted", "cleanup": "already-attempted", "journal": "failed-or-recoverable", "recovery": "exact-or-refused"}},
-      "after": {"family": "writer-corruption", "driver": "artifact-finalization-corruption", "expected": {"terminal": "partial", "artifact": "failed-not-complete", "fact": "independent", "event": "terminal-attempted", "cleanup": "already-attempted", "journal": "retained-or-failed", "recovery": "exact-or-refused"}}
+      "after": {"family": "writer-corruption", "driver": "artifact-finalization-corruption", "expected": {"terminal": "partial", "artifact": "failed-not-complete", "fact": "independent", "event": "terminal-attempted", "cleanup": "already-attempted", "journal": "retained-or-failed", "recovery": "none"}}
     }
   ],
   "transitions": [
@@ -75,8 +75,8 @@
     },
     {
       "id": "prepared-terminal", "from": "prepared", "to": "terminal", "source": "DeepCaptureSession::authorize",
-      "before": {"family": "permission-denial", "driver": "authorization-refusal", "expected": {"terminal": "failed", "artifact": "none", "fact": "none", "event": "terminal-attempted", "cleanup": "none", "journal": "none", "recovery": "none"}},
-      "after": {"family": "broken-pipe", "driver": "terminal-event-failure", "expected": {"terminal": "failed", "artifact": "independent", "fact": "none", "event": "failed-counted", "cleanup": "none", "journal": "none-or-complete", "recovery": "none"}}
+      "before": {"family": "permission-denial", "driver": "authorization-refusal", "expected": {"terminal": "failed", "artifact": "none", "fact": "none", "event": "none", "cleanup": "none", "journal": "none", "recovery": "none"}},
+      "after": {"family": "broken-pipe", "driver": "terminal-event-failure", "expected": {"terminal": "partial", "artifact": "independent", "fact": "independent", "event": "failed-counted", "cleanup": "all-acquired-attempted", "journal": "none-or-complete", "recovery": "none"}}
     },
     {
       "id": "running-observed", "from": "running", "to": "observed", "source": "DeepCaptureSession::observe",
@@ -86,12 +86,12 @@
     {
       "id": "running-stopped", "from": "running", "to": "stopped", "source": "DeepCaptureSession::stop without observe",
       "before": {"family": "cancellation", "driver": "operator-stop", "expected": {"terminal": "interrupted-or-partial", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "all-acquired-attempted", "journal": "terminal-or-recoverable", "recovery": "exact-or-none"}},
-      "after": {"family": "task-panic", "driver": "proxy-task-join-failure", "expected": {"terminal": "partial", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "later-cleanup-attempted", "journal": "failed-or-recoverable", "recovery": "exact-or-refused"}}
+      "after": {"family": "task-panic", "driver": "proxy-task-join-failure", "expected": {"terminal": "partial-or-failed", "artifact": "incomplete", "fact": "no-positive-invention", "event": "terminal-attempted", "cleanup": "later-cleanup-attempted", "journal": "failed-or-recoverable", "recovery": "exact-or-refused"}}
     },
     {
       "id": "observed-stopped", "from": "observed", "to": "stopped", "source": "DeepCaptureSession::stop",
       "before": {"family": "timeout", "driver": "capture-stop-timeout", "expected": {"terminal": "partial", "artifact": "incomplete", "fact": "independent", "event": "terminal-attempted", "cleanup": "later-cleanup-attempted", "journal": "timed-out", "recovery": "exact"}},
-      "after": {"family": "network-reset", "driver": "proxy-stop-reset", "expected": {"terminal": "partial", "artifact": "incomplete", "fact": "independent", "event": "terminal-attempted", "cleanup": "later-cleanup-attempted", "journal": "failed-or-recoverable", "recovery": "exact-or-refused"}}
+      "after": {"family": "network-reset", "driver": "proxy-stop-reset", "expected": {"terminal": "partial-or-failed", "artifact": "incomplete", "fact": "independent", "event": "terminal-attempted", "cleanup": "later-cleanup-attempted", "journal": "failed-or-recoverable", "recovery": "exact-or-refused"}}
     },
     {
       "id": "stopped-finalizing", "from": "stopped", "to": "finalizing", "source": "DeepCaptureSession::finalize",

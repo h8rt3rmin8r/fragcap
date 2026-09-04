@@ -46,7 +46,7 @@
 
 ## Decision 5: Bind review currency to source inventories
 
-**Decision**: The task-runner gate extracts resource kinds, lifecycle states, and coordinator resource identifiers from their owning sources and compares them with the registry.
+**Decision**: The task-runner gate extracts resource kinds, lifecycle states, the coordinator's executable lifecycle-edge table, and coordinator resource identifiers from their owning sources and compares them with the registry. Every coordinator state mutation passes through the same checked edge table.
 
 **Rationale**: A new state or effect changes the matrix obligation. Source-derived comparison forces the same pull request to supply failure evidence.
 

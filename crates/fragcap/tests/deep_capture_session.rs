@@ -638,6 +638,40 @@ impl ArtifactSink for FailingArtifacts {
     }
 }
 
+struct CorruptingArtifacts(Ledger);
+impl ArtifactSink for CorruptingArtifacts {
+    fn validate_destination(&mut self, _: &Path) -> Result<(), PreflightRefusal> {
+        Ok(())
+    }
+
+    fn finalize(&mut self, bundle: &Path, _: &TerminalSnapshot) -> Vec<ArtifactResult> {
+        self.0
+            .borrow_mut()
+            .push("artifact.written-before-corruption".into());
+        vec![ArtifactResult {
+            role: "application".into(),
+            path: bundle.join("application.jsonl"),
+            sensitivity: Sensitivity::Payload,
+            required: true,
+            status: ArtifactStatus::Written,
+        }]
+    }
+
+    fn reconcile(&mut self, bundle: &Path, _: &TerminalSnapshot) -> Vec<ArtifactResult> {
+        self.0.borrow_mut().push("artifact.corrupt".into());
+        vec![ArtifactResult {
+            role: "manifest".into(),
+            path: bundle.join("manifest.json"),
+            sensitivity: Sensitivity::Metadata,
+            required: true,
+            status: ArtifactStatus::Failed {
+                code: "artifact-corrupt".into(),
+                detail: "controlled corruption after initial artifact publication".into(),
+            },
+        }]
+    }
+}
+
 struct FailingCleanupTrust(Ledger);
 impl TrustManager for FailingCleanupTrust {
     fn acquire(
@@ -678,7 +712,7 @@ fn test_route() -> ProxyRoute {
         ),
         "Basic test".to_string(),
         vec![1, 2, 3],
-        "test-thumbprint".to_string(),
+        "0123456789abcdef0123456789abcdef01234567".to_string(),
         1,
         None,
     )
@@ -902,6 +936,14 @@ fn a_late_success_is_a_failure_and_its_resource_is_still_cleaned() {
         .iter()
         .any(|failure| failure.code == "launch-deadline-exceeded"));
     assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
+    assert_eq!(
+        ledger
+            .borrow()
+            .iter()
+            .filter(|call| call.as_str() == "proxy.stop")
+            .count(),
+        1
+    );
     assert!(!ledger.borrow().iter().any(|call| call == "trust.acquire"));
 }
 
@@ -976,6 +1018,14 @@ fn trust_failure_still_cleans_the_proxy() {
         .iter()
         .any(|failure| failure.code == "trust-failed"));
     assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
+    assert_eq!(
+        ledger
+            .borrow()
+            .iter()
+            .filter(|call| call.as_str() == "proxy.stop")
+            .count(),
+        1
+    );
     assert!(!ledger.borrow().iter().any(|call| call == "launch.start"));
 }
 
@@ -1105,6 +1155,7 @@ fn generated_failure_matrix_exercises_production_authorities() {
                 side,
                 boundary[side]["family"].as_str().unwrap(),
                 boundary[side]["driver"].as_str().unwrap(),
+                &boundary[side]["expected"],
             ));
         }
     }
@@ -1117,12 +1168,13 @@ fn generated_failure_matrix_exercises_production_authorities() {
                 side,
                 boundary[side]["family"].as_str().unwrap(),
                 boundary[side]["driver"].as_str().unwrap(),
+                &boundary[side]["expected"],
             ));
         }
     }
     assert_eq!(scenarios.len(), 30);
 
-    for (scenario, boundary, is_effect, side, family, driver) in scenarios {
+    for (scenario, boundary, is_effect, side, family, driver, expected) in scenarios {
         let ledger = Rc::new(RefCell::new(Vec::new()));
         let mut environment = adapters(&ledger);
         let event_failure = matches!(
@@ -1132,14 +1184,26 @@ fn generated_failure_matrix_exercises_production_authorities() {
                 | "observation-event-failure"
         );
         match driver {
-            "proxy-start-refusal" | "listener-bind-refusal" => {
+            "proxy-start-refusal" | "proxy-runtime-start-panic" | "listener-bind-refusal" => {
                 environment.proxy = Box::new(FailingProxy(ledger.clone()))
             }
             "proxy-task-join-failure" | "proxy-stop-reset" => {
                 environment.proxy = Box::new(FailingProxyCleanup(ledger.clone()))
             }
-            "proxy-late-success" | "launcher-late-success" | "late-start-result" => {
+            "proxy-late-success" | "late-start-result" => {
                 environment.clock = Box::new(ScriptClock(Rc::new(RefCell::new(VecDeque::from([
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::from_secs(31),
+                ])))))
+            }
+            "launcher-late-success" => {
+                environment.clock = Box::new(ScriptClock(Rc::new(RefCell::new(VecDeque::from([
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
                     Duration::ZERO,
                     Duration::ZERO,
                     Duration::from_secs(31),
@@ -1165,10 +1229,11 @@ fn generated_failure_matrix_exercises_production_authorities() {
             "capture-stop-timeout" => {
                 environment.capture = Box::new(TimedOutStopCapture(ledger.clone()))
             }
-            "artifact-write-failure"
-            | "artifact-finalization-corruption"
-            | "manifest-corruption" => {
+            "artifact-write-failure" | "manifest-corruption" => {
                 environment.artifacts = Box::new(FailingArtifacts(ledger.clone()))
+            }
+            "artifact-finalization-corruption" => {
+                environment.artifacts = Box::new(CorruptingArtifacts(ledger.clone()))
             }
             "started-event-delivery-failure" => {
                 environment.events = Box::new(FailingNamedEvent(
@@ -1205,38 +1270,12 @@ fn generated_failure_matrix_exercises_production_authorities() {
             .into_session(environment)
             .run_to_completion(authorization);
 
-        assert!(!report.is_complete(), "{scenario}: terminal truth");
-        if driver == "authorization-refusal" {
-            assert!(report.artifacts.is_empty(), "{scenario}: artifact truth");
-        } else {
-            assert!(!report.artifacts.is_empty(), "{scenario}: artifact truth");
-        }
-        assert!(
-            report.snapshot.fact_writes.len() <= 5,
-            "{scenario}: fact truth"
-        );
-        if event_failure {
-            assert!(!report.event_failures.is_empty(), "{scenario}: event truth");
-        } else {
-            assert!(report.event_failures.is_empty(), "{scenario}: event truth");
-        }
-        let calls = ledger.borrow();
-        if !matches!(
-            driver,
-            "proxy-start-refusal" | "listener-bind-refusal" | "authorization-refusal"
-        ) {
-            assert!(
-                calls.iter().any(|call| call.contains("cleanup")),
-                "{scenario}: cleanup truth"
-            );
-        }
-        drop(calls);
-
-        if driver == "authorization-refusal" {
+        let journal = if driver == "authorization-refusal" {
             assert!(
                 !bundle.join("resource-journal.jsonl").exists(),
                 "{scenario}: refused authorization created a journal"
             );
+            None
         } else {
             let journal = read_resource_journal(&bundle.join("resource-journal.jsonl"))
                 .unwrap_or_else(|error| panic!("{scenario}: journal truth: {error}"));
@@ -1261,91 +1300,226 @@ fn generated_failure_matrix_exercises_production_authorities() {
                 recovery.actions.len() + recovery.refusals.len(),
                 "{scenario}: recovery truth contains duplicate decisions"
             );
-        }
+            Some(journal)
+        };
 
+        assert_eq!(
+            !report.event_failures.is_empty(),
+            event_failure,
+            "{scenario}: selected event driver disposition"
+        );
+        assert_expected_vector(
+            &scenario,
+            expected,
+            &report,
+            &ledger.borrow(),
+            journal.as_ref(),
+        );
         if is_effect {
-            let temp = tempfile::tempdir().unwrap();
-            let mut obligation = ResourceJournal::create(temp.path(), "matrix", "plan").unwrap();
-            let (kind, target, ownership, action) = match boundary {
-                "proxy-listener" => (
-                    ResourceKind::Proxy,
-                    "127.0.0.1:31337",
-                    "session:matrix",
-                    "close-loopback-listener",
-                ),
-                "proxy-runtime" => (
-                    ResourceKind::Proxy,
-                    "127.0.0.1:31337",
-                    "session:matrix",
-                    "join-proxy-tasks",
-                ),
-                "trust-entry" => (
-                    ResourceKind::Trust,
-                    "sha1:0123456789abcdef0123456789abcdef01234567",
-                    "session:matrix",
-                    "remove-current-user-root-by-exact-thumbprint",
-                ),
-                "route" => (
-                    ResourceKind::Route,
-                    "child-environment",
-                    "session:matrix",
-                    "remove-target-scoped-route",
-                ),
-                "managed-child" => (
-                    ResourceKind::Launch,
-                    "pid:7 created:42",
-                    "session:matrix",
-                    "stop-managed-child",
-                ),
-                "capture" => (
-                    ResourceKind::Capture,
-                    "capture-token",
-                    "session:matrix",
-                    "stop-capture",
-                ),
-                "bundle-evidence" => (
-                    ResourceKind::Artifact,
-                    "bundle:matrix",
-                    "session:matrix",
-                    "retain-or-delete-sensitive-bundle",
-                ),
-                other => panic!("{scenario}: unowned effect {other}"),
-            };
-            obligation
-                .append(ResourceTransition::new(
-                    boundary,
-                    kind,
-                    target,
-                    ownership,
-                    action,
-                    ResourceState::Pending,
-                    "generated matrix pending obligation",
-                ))
-                .unwrap();
-            if side == "before" {
-                obligation
-                    .append(ResourceTransition::new(
-                        boundary,
-                        kind,
-                        target,
-                        ownership,
-                        action,
-                        ResourceState::NotApplied,
-                        "controlled failure preceded the effect",
-                    ))
-                    .unwrap();
-            }
-            let obligation_recovery = read_resource_journal(obligation.path())
-                .unwrap()
-                .recovery_plan();
-            if side == "before" {
-                assert!(obligation_recovery.actions.is_empty(), "{scenario}");
-                assert!(obligation_recovery.refusals.is_empty(), "{scenario}");
-            } else {
-                assert_eq!(obligation_recovery.actions.len(), 1, "{scenario}");
-                assert!(obligation_recovery.refusals.is_empty(), "{scenario}");
-                assert_eq!(obligation_recovery.actions[0].resource_id, boundary);
-            }
+            assert_production_effect_side(&scenario, boundary, side, journal.as_ref().unwrap());
         }
+    }
+}
+
+fn assert_expected_vector(
+    scenario: &str,
+    expected: &serde_json::Value,
+    report: &TerminalReport,
+    calls: &[String],
+    journal: Option<&JournalPrefix>,
+) {
+    let value = |dimension: &str| {
+        expected[dimension]
+            .as_str()
+            .unwrap_or_else(|| panic!("{scenario}: missing {dimension} expectation"))
+    };
+    let terminal = match value("terminal") {
+        "failed" => report.snapshot.outcome == SessionOutcome::Failed,
+        "partial" => report.snapshot.outcome == SessionOutcome::Partial,
+        "interrupted" => report.snapshot.outcome == SessionOutcome::Interrupted,
+        "interrupted-or-failed" => matches!(
+            report.snapshot.outcome,
+            SessionOutcome::Interrupted | SessionOutcome::Failed
+        ),
+        "interrupted-or-partial" => matches!(
+            report.snapshot.outcome,
+            SessionOutcome::Interrupted | SessionOutcome::Partial
+        ),
+        "partial-or-failed" => matches!(
+            report.snapshot.outcome,
+            SessionOutcome::Partial | SessionOutcome::Failed
+        ),
+        other => panic!("{scenario}: unsupported terminal expectation {other}"),
+    };
+    assert!(
+        terminal,
+        "{scenario}: terminal expectation {}",
+        value("terminal")
+    );
+
+    let failed_artifact = report
+        .artifacts
+        .iter()
+        .any(|result| matches!(result.status, ArtifactStatus::Failed { .. }));
+    let artifact = match value("artifact") {
+        "none" => report.artifacts.is_empty(),
+        "failed-not-complete" => failed_artifact && !report.is_complete(),
+        "incomplete" => !report.is_complete(),
+        "independent" => !report.artifacts.is_empty(),
+        other => panic!("{scenario}: unsupported artifact expectation {other}"),
+    };
+    assert!(
+        artifact,
+        "{scenario}: artifact expectation {}",
+        value("artifact")
+    );
+
+    let failed_fact = report
+        .snapshot
+        .fact_writes
+        .iter()
+        .any(|result| matches!(result.status, FactWriteStatus::Failed { .. }));
+    let fact = match value("fact") {
+        "none" => report.snapshot.observations.is_empty(),
+        "failed-counted" => failed_fact,
+        "independent" => report.snapshot.fact_writes.len() <= 5,
+        "no-positive-invention" => {
+            report.snapshot.observations.is_empty()
+                || report
+                    .snapshot
+                    .fact_writes
+                    .iter()
+                    .all(|result| !result.fact.evidence.is_empty())
+        }
+        other => panic!("{scenario}: unsupported fact expectation {other}"),
+    };
+    assert!(fact, "{scenario}: fact expectation {}", value("fact"));
+
+    let event = match value("event") {
+        "none" => {
+            report.event_failures.is_empty()
+                && !calls
+                    .iter()
+                    .any(|call| call == "event.terminal" || call == "event.attempt")
+        }
+        "failed-counted" => !report.event_failures.is_empty(),
+        "terminal-attempted" => calls
+            .iter()
+            .any(|call| call == "event.terminal" || call == "event.attempt"),
+        other => panic!("{scenario}: unsupported event expectation {other}"),
+    };
+    assert!(event, "{scenario}: event expectation {}", value("event"));
+
+    let cleanup = &report.snapshot.cleanup;
+    let has_cleanup_failure = cleanup.iter().any(|result| {
+        matches!(
+            result.status,
+            CleanupStatus::Failed | CleanupStatus::TimedOut
+        )
+    });
+    let cleanup_matches = match value("cleanup") {
+        "none" => cleanup.is_empty(),
+        "later-obligations-not-applied" => !calls.iter().any(|call| call == "launch.start"),
+        "proxy-attempted" => calls
+            .iter()
+            .any(|call| call.starts_with("proxy.stop") || call.starts_with("proxy.cleanup")),
+        "route-and-earlier-attempted" => calls.iter().any(|call| call == "proxy.cleanup"),
+        "child-and-earlier-attempted" => calls.iter().any(|call| call == "launch.cleanup"),
+        "earlier-resources-attempted" | "acquired-attempted" | "owned-only" => !cleanup.is_empty(),
+        "all-acquired-attempted" | "all-attempted" | "already-attempted" => {
+            !cleanup.is_empty() && calls.iter().any(|call| call == "proxy.cleanup")
+        }
+        "later-cleanup-attempted" => has_cleanup_failure && cleanup.len() > 1,
+        other => panic!("{scenario}: unsupported cleanup expectation {other}"),
+    };
+    assert!(
+        cleanup_matches,
+        "{scenario}: cleanup expectation {}",
+        value("cleanup")
+    );
+
+    let recovery = journal
+        .map(JournalPrefix::recovery_plan)
+        .unwrap_or_default();
+    let has_state = |state| {
+        journal.is_some_and(|journal| {
+            journal
+                .transitions
+                .iter()
+                .any(|transition| transition.state == state)
+        })
+    };
+    let journal_matches = match value("journal") {
+        "none" => journal.is_none(),
+        "not-applied" => has_state(ResourceState::NotApplied),
+        "failed" => has_state(ResourceState::Failed),
+        "timed-out" => has_state(ResourceState::TimedOut),
+        "none-or-complete" => journal.is_none() || recovery == RecoveryPlan::default(),
+        "terminal-or-recoverable" | "complete-or-recoverable" => journal.is_some(),
+        "failed-or-recoverable" | "retained-or-failed" => {
+            has_state(ResourceState::Failed)
+                || has_state(ResourceState::Retained)
+                || !recovery.actions.is_empty()
+                || !recovery.refusals.is_empty()
+        }
+        other => panic!("{scenario}: unsupported journal expectation {other}"),
+    };
+    assert!(
+        journal_matches,
+        "{scenario}: journal expectation {}",
+        value("journal")
+    );
+
+    let recovery_matches = match value("recovery") {
+        "none" => recovery.actions.is_empty() && recovery.refusals.is_empty(),
+        "exact" | "pending-obligation-exact" => {
+            !recovery.actions.is_empty() && recovery.refusals.is_empty()
+        }
+        "exact-or-none" => recovery.refusals.is_empty(),
+        "exact-or-refused" => !recovery.actions.is_empty() || !recovery.refusals.is_empty(),
+        "exact-trust-action" => {
+            recovery
+                .actions
+                .iter()
+                .any(|action| action.kind == ResourceKind::Trust)
+                || recovery
+                    .refusals
+                    .iter()
+                    .any(|refusal| refusal.resource_id == "trust-entry")
+        }
+        other => panic!("{scenario}: unsupported recovery expectation {other}"),
+    };
+    assert!(
+        recovery_matches,
+        "{scenario}: recovery expectation {}",
+        value("recovery")
+    );
+}
+
+fn assert_production_effect_side(
+    scenario: &str,
+    boundary: &str,
+    side: &str,
+    journal: &JournalPrefix,
+) {
+    let transitions = journal
+        .transitions
+        .iter()
+        .filter(|transition| transition.resource_id == boundary)
+        .collect::<Vec<_>>();
+    assert!(
+        !transitions.is_empty(),
+        "{scenario}: effect has no production journal row"
+    );
+    let applied = transitions.iter().any(|transition| {
+        matches!(
+            transition.state,
+            ResourceState::Applied | ResourceState::Retained
+        )
+    });
+    match side {
+        "before" => assert!(!applied, "{scenario}: before-side effect was applied"),
+        "after" => assert!(applied, "{scenario}: after-side effect was never applied"),
+        other => panic!("{scenario}: unknown side {other}"),
     }
 }

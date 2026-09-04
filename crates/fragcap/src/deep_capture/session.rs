@@ -10,6 +10,20 @@ const MAX_OBSERVATION: Duration = Duration::from_secs(300);
 const MAX_SHUTDOWN: Duration = Duration::from_secs(30);
 const MAX_CLEANUP: Duration = Duration::from_secs(60);
 
+// This is the coordinator's executable edge authority. Every state mutation
+// passes through `transition`, and the S127 gate compares this inventory with
+// the failure registry.
+const LIFECYCLE_EDGES: &[(LifecycleState, LifecycleState)] = &[
+    (LifecycleState::Prepared, LifecycleState::Running),
+    (LifecycleState::Prepared, LifecycleState::Stopped),
+    (LifecycleState::Prepared, LifecycleState::Terminal),
+    (LifecycleState::Running, LifecycleState::Observed),
+    (LifecycleState::Running, LifecycleState::Stopped),
+    (LifecycleState::Observed, LifecycleState::Stopped),
+    (LifecycleState::Stopped, LifecycleState::Finalizing),
+    (LifecycleState::Finalizing, LifecycleState::Terminal),
+];
+
 /// Entry point for side-effect-free Deep Capture preparation.
 pub struct DeepCapture;
 
@@ -85,6 +99,7 @@ impl PreparedSession {
             adapters,
             state: LifecycleState::Prepared,
             proxy: None,
+            proxy_stop_attempted: false,
             trust: None,
             trust_target: None,
             routing: None,
@@ -115,6 +130,7 @@ pub struct DeepCaptureSession<'a> {
     adapters: AdapterSet<'a>,
     state: LifecycleState,
     proxy: Option<Box<dyn ProxyLease>>,
+    proxy_stop_attempted: bool,
     trust: Option<Box<dyn TrustLease>>,
     trust_target: Option<String>,
     routing: Option<Box<dyn RoutingLease>>,
@@ -153,7 +169,7 @@ impl DeepCaptureSession<'_> {
                     "plan-id-mismatch",
                     "authorization names a different prepared plan",
                 );
-                self.state = LifecycleState::Terminal;
+                self.transition(LifecycleState::Terminal);
                 return Ok(());
             }
             Authorization::Declined => {
@@ -162,7 +178,7 @@ impl DeepCaptureSession<'_> {
                     "declined",
                     "caller declined the prepared plan",
                 );
-                self.state = LifecycleState::Terminal;
+                self.transition(LifecycleState::Terminal);
                 return Ok(());
             }
         }
@@ -174,7 +190,7 @@ impl DeepCaptureSession<'_> {
         let started = self.adapters.clock.monotonic_elapsed();
         if let Err(error) = self.adapters.artifacts.prepare(&self.plan) {
             self.failures.push(error);
-            self.state = LifecycleState::Stopped;
+            self.transition(LifecycleState::Stopped);
             return Ok(());
         }
         match ResourceJournal::create(
@@ -189,7 +205,7 @@ impl DeepCaptureSession<'_> {
                     "resource-journal-open-failed",
                     error.to_string(),
                 );
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
         }
@@ -205,7 +221,7 @@ impl DeepCaptureSession<'_> {
                     "cleanup-lifecycle-open-failed",
                     error.to_string(),
                 );
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
         }
@@ -226,7 +242,7 @@ impl DeepCaptureSession<'_> {
             ResourceState::Pending,
             "runtime task ownership must follow this durable obligation",
         ) {
-            self.state = LifecycleState::Stopped;
+            self.transition(LifecycleState::Stopped);
             return Ok(());
         }
         let route = match self.adapters.proxy.start(&self.plan, budget) {
@@ -252,7 +268,7 @@ impl DeepCaptureSession<'_> {
                     Err(error) => {
                         self.failures.push(error);
                         self.proxy = Some(lease);
-                        self.state = LifecycleState::Stopped;
+                        self.transition(LifecycleState::Stopped);
                         return Ok(());
                     }
                 };
@@ -281,7 +297,7 @@ impl DeepCaptureSession<'_> {
                     &error.detail,
                 );
                 self.failures.push(error);
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
         };
@@ -291,7 +307,7 @@ impl DeepCaptureSession<'_> {
                 "launch-deadline-exceeded",
                 "proxy start returned after the launch deadline",
             );
-            self.state = LifecycleState::Stopped;
+            self.transition(LifecycleState::Stopped);
             return Ok(());
         }
 
@@ -306,7 +322,7 @@ impl DeepCaptureSession<'_> {
                 ResourceState::Pending,
                 "trust mutation must follow this durable obligation",
             ) {
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
             match self.adapters.trust.acquire(&self.plan, &route, budget) {
@@ -336,7 +352,7 @@ impl DeepCaptureSession<'_> {
                         &error.detail,
                     );
                     self.failures.push(error);
-                    self.state = LifecycleState::Stopped;
+                    self.transition(LifecycleState::Stopped);
                     return Ok(());
                 }
             }
@@ -346,7 +362,7 @@ impl DeepCaptureSession<'_> {
                     "launch-deadline-exceeded",
                     "trust acquisition returned after the launch deadline",
                 );
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
         }
@@ -361,7 +377,7 @@ impl DeepCaptureSession<'_> {
             ResourceState::Pending,
             "route application must follow this durable obligation",
         ) {
-            self.state = LifecycleState::Stopped;
+            self.transition(LifecycleState::Stopped);
             return Ok(());
         }
         match self.adapters.routing.apply(&self.plan, route, budget) {
@@ -386,7 +402,7 @@ impl DeepCaptureSession<'_> {
                     &error.detail,
                 );
                 self.failures.push(error);
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
         }
@@ -401,7 +417,7 @@ impl DeepCaptureSession<'_> {
             ResourceState::Pending,
             "managed launch must follow this durable obligation",
         ) {
-            self.state = LifecycleState::Stopped;
+            self.transition(LifecycleState::Stopped);
             return Ok(());
         }
         match self.adapters.launch.launch(
@@ -438,7 +454,7 @@ impl DeepCaptureSession<'_> {
                     &error.detail,
                 );
                 self.failures.push(error);
-                self.state = LifecycleState::Stopped;
+                self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
         }
@@ -448,10 +464,10 @@ impl DeepCaptureSession<'_> {
                 "launch-deadline-exceeded",
                 "managed launch returned after the launch deadline",
             );
-            self.state = LifecycleState::Stopped;
+            self.transition(LifecycleState::Stopped);
             return Ok(());
         }
-        self.state = LifecycleState::Running;
+        self.transition(LifecycleState::Running);
         self.emit(DeepCaptureEvent::Started {
             sequence: 0,
             session_id: self.plan.session_id.clone(),
@@ -474,7 +490,7 @@ impl DeepCaptureSession<'_> {
             ResourceState::Pending,
             "capture start must follow this durable obligation",
         ) {
-            self.state = LifecycleState::Observed;
+            self.transition(LifecycleState::Observed);
             return Ok(());
         }
         match self.adapters.capture.run(
@@ -516,7 +532,7 @@ impl DeepCaptureSession<'_> {
                 "Capture returned after the observation deadline",
             );
         }
-        self.state = LifecycleState::Observed;
+        self.transition(LifecycleState::Observed);
         Ok(())
     }
 
@@ -576,6 +592,7 @@ impl DeepCaptureSession<'_> {
             );
             let proxy = self.proxy.as_mut().expect("proxy presence checked");
             let result = proxy.stop(budget);
+            self.proxy_stop_attempted = true;
             self.record_cleanup_transition(
                 "proxy-listener",
                 ResourceKind::Proxy,
@@ -628,7 +645,7 @@ impl DeepCaptureSession<'_> {
         if let Some(routing) = self.routing.as_ref() {
             self.route_verification = Some(routing.verify(&self.observations));
         }
-        self.state = LifecycleState::Stopped;
+        self.transition(LifecycleState::Stopped);
         Ok(())
     }
 
@@ -638,7 +655,7 @@ impl DeepCaptureSession<'_> {
             Operation::Finalize,
             &[LifecycleState::Stopped, LifecycleState::Finalizing],
         )?;
-        self.state = LifecycleState::Finalizing;
+        self.transition(LifecycleState::Finalizing);
         self.persist_facts();
         self.cleanup_resources();
         self.prepare_lifecycle_authority();
@@ -662,7 +679,7 @@ impl DeepCaptureSession<'_> {
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
             snapshot.outcome = SessionOutcome::Partial;
         }
-        self.state = LifecycleState::Terminal;
+        self.transition(LifecycleState::Terminal);
         Ok(TerminalReport {
             snapshot,
             artifacts: std::mem::take(&mut self.artifacts),
@@ -674,7 +691,7 @@ impl DeepCaptureSession<'_> {
     /// automatically; calling it separately moves the session to finalizing.
     pub fn cleanup(&mut self) -> Result<(), InvalidTransition> {
         self.require(Operation::Cleanup, &[LifecycleState::Stopped])?;
-        self.state = LifecycleState::Finalizing;
+        self.transition(LifecycleState::Finalizing);
         self.cleanup_resources();
         Ok(())
     }
@@ -703,6 +720,19 @@ impl DeepCaptureSession<'_> {
             artifacts: std::mem::take(&mut self.artifacts),
             event_failures: std::mem::take(&mut self.event_failures),
         }
+    }
+
+    fn transition(&mut self, next: LifecycleState) {
+        if self.state == next {
+            return;
+        }
+        assert!(
+            LIFECYCLE_EDGES.contains(&(self.state, next)),
+            "undeclared Deep Capture lifecycle edge: {:?} -> {:?}",
+            self.state,
+            next
+        );
+        self.state = next;
     }
 
     fn require(
@@ -822,6 +852,32 @@ impl DeepCaptureSession<'_> {
                 status: CleanupStatus::NotNeeded,
                 reason: "session did not acquire trust".into(),
             });
+        }
+        if self.proxy.is_some() && !self.proxy_stop_attempted {
+            let target = self.plan.endpoint.address().to_string();
+            self.record_resource(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                &target,
+                "close-loopback-listener",
+                ResourceState::CleanupPending,
+                "bounded listener stop attempt during early-failure cleanup",
+            );
+            let budget = self.remaining_budget(started, self.plan.deadlines.cleanup);
+            let result = self
+                .proxy
+                .as_mut()
+                .expect("proxy presence checked")
+                .stop(budget);
+            self.proxy_stop_attempted = true;
+            self.record_cleanup_transition(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                &target,
+                "close-loopback-listener",
+                &result,
+            );
+            self.record_cleanup(result);
         }
         if let Some(mut proxy) = self.proxy.take() {
             let target = self.plan.endpoint.address().to_string();
