@@ -530,6 +530,16 @@ already-resolved `windows-sys` feature but no dependency or lockfile package;
 packaging validation remains #329 and Deep Capture remains incomplete until
 #334.
 
+S125 closes #323 at the native Deep Capture threat-review boundary. The
+versioned registry in `docs/security/` maps all shipped trust boundaries,
+sensitive assets, and high-risk abuse cases to prevention, detection,
+containment, evidence, and exact executable negative tests. `cargo xtask
+threat-model` rejects incomplete rows, missing or ignored test references, and
+unreviewed changes to the exhaustive protocol-family or direct
+`fragcap-proxy` dependency inventories. S125 accepts no residual risk, changes
+no runtime path, and adds no dependency package. Fuzzing and the remaining
+completion gates remain #324 through #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

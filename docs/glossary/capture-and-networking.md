@@ -1259,3 +1259,23 @@ list of patterns.
 
 **See also:** [Interface inventory](capture-and-networking.md#interface-inventory),
 [Selection outcome](capture-and-networking.md#selection-outcome)
+
+## Threat registry
+
+The versioned machine-readable native Deep Capture security inventory. Each
+threat row links trust boundaries and sensitive assets to prevention,
+detection, containment, evidence authorities, and exact executable negative
+tests. `cargo xtask threat-model` rejects incomplete high-risk rows and review
+drift in shipped protocol families or direct proxy dependencies.
+
+**See also:** [Target-scoped proxy configuration](#target-scoped-proxy-configuration),
+[Protocol classification](#protocol-classification)
+
+## Trust boundary
+
+A transition where native Deep Capture must re-establish identity, authority,
+data interpretation, or lifecycle ownership. A fact at one boundary does not
+prove another: loopback reachability is not target ownership, client-facing TLS
+is not upstream trust, and a PID, port, or filename is not recovery authority.
+
+**See also:** [Threat registry](#threat-registry)

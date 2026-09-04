@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.45-draft \
+**Version:** 0.1.48-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -140,6 +140,7 @@ enforcement.
 | 0.1.45-draft | 2026-09-03 | W. Thompson | **Adds explicit proxy bypass and local-destination policy (issue #318).** Extends sections 13.7, 17.2.1, 19, 25, and 28.1. Typed canonical rules cover DNS domains, IP addresses, CIDRs, ports, and IPv6; bare and leading-dot DNS inputs both include descendants so conventional `NO_PROXY` clients cannot broaden an exact-name claim; the exact listener remains separate session infrastructure; uppercase and lowercase child proxy variables are plan-owned; every proxied DNS answer remains subject to resolved-address policy. Bypass is visible scope rather than proxy loss. S122 adds no dependency, system proxy mutation, transparent fallback, or Deep Capture completion claim. |
 | 0.1.46-draft | 2026-09-03 | W. Thompson | **Completes native process lifecycle evidence (issue #319).** Extends sections 10, 13.7, 19, 25, and 28.1. A bounded capture report joins managed launch receipts, ETW starts and exits, query-only snapshots, declared stage transitions, packet-derived socket ownership, watcher loss, and terminal state. PID plus observed creation time defines an instance; missing authority remains explicit; the versioned process trace trailer drives compatibility and manifest truth. S123 adds no target handle, second attribution path, dependency, or Deep Capture completion claim. |
 | 0.1.47-draft | 2026-09-03 | W. Thompson | **Completes native Doctor runtime readiness and residue diagnostics (issue #321).** Extends sections 26.3 and 28.1. Doctor derives independent Capture and Deep Capture verdicts from one check set, inventories bounded native journal and owner evidence without mutation, proves an active session with a generation lease rather than PID liveness, and offers only exact journal recovery. Healthy retained evidence is history, every inventory limitation blocks a false-clean Deep Capture verdict, and S124 adds no process handle, dependency package, packaging claim, or completion claim. |
+| 0.1.48-draft | 2026-09-04 | W. Thompson | **Completes the native Deep Capture threat model and abuse-case gate (issue #323).** Extends sections 19, 25, and 28.1. One versioned registry maps every trust boundary, sensitive asset, and high-risk abuse case to prevention, detection, containment, evidence, and exact executable negative tests. The ordinary CI gate rejects missing or ignored tests and unreviewed drift in the exhaustive protocol-family or direct proxy dependency inventories. S125 records no residual-risk acceptance, adds no dependency or runtime behavior, and does not claim Deep Capture complete before #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3569,6 +3570,30 @@ Traffic that never traverses a network interface is invisible.
 Inter-process communication over named pipes, shared memory, or window
 messages is out of scope for a network capture tool.
 
+### 19.7 Native Deep Capture Threat Model
+
+The canonical native threat registry is
+`docs/security/deep-capture-threats.v1.json`; its human review entry point is
+`docs/security/deep-capture-threat-model.md`. Together they enumerate every
+authorization, ownership, routing, DNS, upstream, parser, TLS, artifact, and
+recovery boundary plus each sensitive capability, key, content, artifact, and
+resource obligation.
+
+Every high-risk row names prevention, detection, containment, evidence, and
+one or more exact executable negative tests. The model covers unrelated local
+clients, malicious targets and origins, DNS rebinding, SSRF, request framing
+desynchronization, resource exhaustion, certificate abuse, artifact theft,
+cleanup interruption, and confused-deputy behavior. No residual risk is
+accepted implicitly.
+
+`cargo xtask threat-model` fails when a row is incomplete, a referenced test is
+missing or ignored, or the exhaustive native protocol-family or direct
+`fragcap-proxy` dependency inventory changes without model review. The command
+runs in the ordinary CI gate and performs no product or trust effect. The P-1
+denylist applies independently to every routed family: none opens a target
+process handle or adds memory access, injection, hooks, system proxy mutation,
+executable modification, or target key extraction.
+
 ## 20. Licensing and Third-Party Obligations
 
 ### 20.1 Project License
@@ -4250,6 +4275,19 @@ since they belong to no process fragcap was asked to attribute. The
 measurement tool is `cargo xtask accuracy`, and its output is recorded
 in the release checklist.
 
+### 25.7 Native Threat-Model Gate
+
+The versioned Deep Capture threat registry binds each high-risk abuse case to
+exact non-ignored Rust tests. The validator checks closed vocabulary,
+cross-references, complete control and evidence ownership, test attributes, the
+S120 protocol-family set, and direct normal plus Windows-target proxy
+dependencies. Cargo test executes the referenced tests; the threat-model gate
+proves that the reviewed rows still own them.
+
+The check is portable and offline. It needs no target, game, account, Internet
+service, elevation, capture driver, listener, or trust mutation. A missing
+input is unable to run, not a passing skip.
+
 ## 26. Observability and Diagnostics
 
 ### 26.1 Logging
@@ -4763,6 +4801,15 @@ only the exact journal recovery plan. Legacy owners require terminal journal
 proof or explicit repair confirmation, and native check identifiers derive from
 session and resource identity. Packaging validation remains #329, and
 Deep Capture remains incomplete until #334.
+
+S125 closes the native threat-review boundary. A versioned canonical registry
+maps every trust boundary, sensitive asset, and high-risk abuse category to
+owned prevention, detection, containment, evidence, and executable negative
+tests. Ordinary CI rejects incomplete rows, missing or ignored tests, and drift
+in the exhaustive protocol-family or direct proxy dependency inventories.
+S125 accepts no residual risk, changes no runtime path, adds no dependency, and
+leaves fuzzing, performance, Windows integration, packaging, supply-chain, and
+final completion work to #324 through #334.
 
 The required dependency direction is:
 
