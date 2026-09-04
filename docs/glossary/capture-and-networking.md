@@ -1260,6 +1260,16 @@ list of patterns.
 **See also:** [Interface inventory](capture-and-networking.md#interface-inventory),
 [Selection outcome](capture-and-networking.md#selection-outcome)
 
+## Failure boundary
+
+A journaled external effect or checked Deep Capture lifecycle transition with
+two mandatory injection sides. A before-boundary failure must prevent the
+effect or transition. An after-boundary failure assumes the effect may have
+occurred and therefore preserves cleanup or exact recovery authority.
+
+**See also:** [Resource obligation](#resource-obligation),
+[Threat registry](#threat-registry)
+
 ## Fuzz surface
 
 A stable registry identity for one fragcap-owned parser or state machine that

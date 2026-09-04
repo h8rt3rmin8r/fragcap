@@ -273,7 +273,7 @@ fn validate_test_references(
     Ok(problems)
 }
 
-fn validate_test_source(source: &str, function: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_test_source(source: &str, function: &str) -> Result<(), &'static str> {
     let source = strip_rust_comments(source);
     let declarations = [format!("fn {function}("), format!("async fn {function}(")];
     let mut attributes = Vec::new();

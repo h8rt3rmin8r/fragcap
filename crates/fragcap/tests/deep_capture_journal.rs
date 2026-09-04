@@ -189,3 +189,48 @@ fn completed_journal_compacts_to_latest_audit_state() {
     assert_eq!(prefix.transitions.len(), 1);
     assert_eq!(prefix.transitions[0].state, ResourceState::Released);
 }
+
+#[test]
+fn uncertain_and_failed_prefixes_produce_only_exact_recovery_decisions() {
+    for (state, expected_actions, expected_refusals) in [
+        (ResourceState::Pending, 1, 0),
+        (ResourceState::Applied, 1, 0),
+        (ResourceState::CleanupPending, 1, 0),
+        (ResourceState::Failed, 1, 0),
+        (ResourceState::TimedOut, 1, 0),
+        (ResourceState::NotApplied, 0, 0),
+        (ResourceState::Released, 0, 0),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+        journal.append(transition("trust", state)).unwrap();
+        let recovery = read_resource_journal(journal.path())
+            .unwrap()
+            .recovery_plan();
+        assert_eq!(recovery.actions.len(), expected_actions, "{state:?}");
+        assert_eq!(recovery.refusals.len(), expected_refusals, "{state:?}");
+        for decision in recovery.actions {
+            assert_eq!(
+                decision.target,
+                "sha1:0123456789abcdef0123456789abcdef01234567"
+            );
+            assert_eq!(decision.action, "remove-current-user-root");
+        }
+        for refusal in recovery.refusals {
+            assert_eq!(refusal.resource_id, "trust");
+            assert!(!refusal.reason.is_empty());
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut journal = ResourceJournal::create(temp.path(), "session", "plan").unwrap();
+    let mut inexact = transition("trust", ResourceState::Failed);
+    inexact.target = "current-user-root-without-thumbprint".into();
+    journal.append(inexact).unwrap();
+    let recovery = read_resource_journal(journal.path())
+        .unwrap()
+        .recovery_plan();
+    assert!(recovery.actions.is_empty());
+    assert_eq!(recovery.refusals.len(), 1);
+    assert_eq!(recovery.refusals[0].resource_id, "trust");
+}

@@ -1771,6 +1771,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let listener_reservation = fragcap::deep_capture::NativeListenerReservation::default();
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = fragcap::deep_capture::AdapterSet {
+        boundaries: Box::new(fragcap::deep_capture::AllowBoundaries),
         targets: Box::new(LibraryTargetAdapter {
             args,
             store: Rc::clone(&store),

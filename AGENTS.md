@@ -551,6 +551,19 @@ Quinn, httparse, and serde_json remain explicit dependency-owned decoder
 boundaries. S126 adds no product dependency or runtime behavior, and Deep
 Capture remains incomplete until #334.
 
+S127 closes #325 at the native failure-evidence boundary. One versioned
+registry generates before and after scenarios for seven journaled effects and
+eight checked lifecycle transitions. Ten controlled failure families execute
+through the production coordinator's exact boundary calls while terminal,
+artifact, fact, event, cleanup, journal, and shared Doctor recovery truth remain
+independent. `cargo xtask failure-matrix` rejects incomplete rows, stale tests,
+and source-derived resource, effect, or endpoint-pair lifecycle inventory drift.
+Terminal truth retains the ordered edges actually traversed, before-effect rows
+prove the adapter was not invoked, and independent fact rows require at least
+one evidence-backed append. S127 adds no
+dependency, shipped fault switch, destructive host test, or Deep Capture
+completion claim. Performance begins under #326.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

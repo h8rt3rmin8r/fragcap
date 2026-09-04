@@ -71,6 +71,7 @@ the owning category page.
 - [Exact loopback endpoint](capture-and-networking.md#exact-loopback-endpoint)
 - [extcap](windows-internals.md#extcap)
 - [Extension header chain](capture-and-networking.md#extension-header-chain)
+- [Failure boundary](capture-and-networking.md#failure-boundary)
 - [Fan-out](capture-and-networking.md#fan-out)
 - [Fidelity ordering](process-and-attribution.md#fidelity-ordering)
 - [Fidelity tier](process-and-attribution.md#fidelity-tier)

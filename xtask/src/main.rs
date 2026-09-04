@@ -17,6 +17,7 @@ mod changelog;
 mod conformance;
 mod deps;
 mod docs;
+mod failure_matrix;
 mod fuzz;
 mod license;
 mod lint;
@@ -51,6 +52,7 @@ cargo xtask <command>
   changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
   fuzz       Validate native parser fuzz surfaces, corpora, and CI mapping
+  failure-matrix Validate native Deep Capture failure injection and recovery evidence
   threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
@@ -213,6 +215,15 @@ fn main() -> ExitCode {
             Ok(_) => ExitCode::from(1),
             Err(error) => {
                 eprintln!("fuzz: could not run: {error}");
+                ExitCode::from(2)
+            }
+        },
+
+        "failure-matrix" => match failure_matrix::run(&root) {
+            Ok(0) => ExitCode::SUCCESS,
+            Ok(_) => ExitCode::from(1),
+            Err(error) => {
+                eprintln!("failure-matrix: could not run: {error}");
                 ExitCode::from(2)
             }
         },
@@ -459,6 +470,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: fuzz inventory could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running native Deep Capture failure matrix");
+            match failure_matrix::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: failure matrix reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: failure matrix could not run: {e}");
                     return ExitCode::from(2);
                 }
             }
