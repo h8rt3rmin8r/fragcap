@@ -23,6 +23,7 @@ mod notes;
 mod publish;
 mod skills;
 mod spec;
+mod threat_model;
 mod wrappers;
 
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ cargo xtask <command>
   notes      Print release notes for a version, from CHANGELOG.md
   changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
+  threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
 
@@ -194,6 +196,15 @@ fn main() -> ExitCode {
                 }
             }
         }
+
+        "threat-model" => match threat_model::run(&root) {
+            Ok(0) => ExitCode::SUCCESS,
+            Ok(_) => ExitCode::from(1),
+            Err(error) => {
+                eprintln!("threat-model: could not run: {error}");
+                ExitCode::from(2)
+            }
+        },
 
         "neutral" => {
             let installed = Command::new("rustup")
@@ -413,6 +424,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: spec could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running native Deep Capture threat model");
+            match threat_model::run(&root) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: threat model reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: threat model could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

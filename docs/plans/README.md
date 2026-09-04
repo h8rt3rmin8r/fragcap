@@ -296,3 +296,12 @@ active, stale, cleanup-failed, unknown, and unsupported state. A held
 generation-specific lease replaces PID-only ownership. Confirmed fixes replay
 only exact journal recovery and preserve healthy evidence. Packaging validation
 remains #329, and Deep Capture remains incomplete until #334.
+
+S125 (`specs/125-native-threat-model`) follows S124 and closes #323 at the
+native security-review boundary. One versioned registry enumerates every trust
+boundary, sensitive asset, and high-risk abuse case with owned prevention,
+detection, containment, evidence, and exact executable negative tests. The
+ordinary CI gate rejects incomplete rows, missing or ignored tests, and drift
+in the exhaustive protocol-family or direct proxy dependency inventories.
+Fuzzing begins with S126 under #324, and Deep Capture remains incomplete until
+#334.

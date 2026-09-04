@@ -250,6 +250,12 @@ binary and translates paths across the boundary.
 
 Framed as engineering constraint rather than policy. Documents the mode-specific allowlist and absolute denylist. Capture remains passive. Deep Capture and compatibility calibration are explicit, target-scoped, plan-visible, confirmed, reversible, and audited local proxy inspection with no system-proxy fallback or pinning bypass. Managed direct launch creates an explicit child with scoped environment but performs no target inspection or memory access.
 
+S125 adds one versioned native threat registry spanning trust boundaries,
+sensitive assets, abuse cases, controls, evidence, and exact executable negative
+tests. CI forces review when the exhaustive protocol family or direct proxy
+dependency inventory changes. No high-risk residual risk is implicitly
+accepted.
+
 ## 20. Licensing and Third-Party Obligations
 
 **(gate)** Apache-2.0 for the project, with the NOTICE file convention
@@ -301,6 +307,10 @@ site deployment and the custom-domain configuration.
 ## 25. Testing Strategy
 
 **(gate)** The replay and scripted seams that keep the packet pipeline offline-testable, plus the controlled Deep Capture target that proves calibration orchestration, local fact persistence, bundle contracts, and cleanup without a game account, remote service, or real trust mutation. Real launcher inheritance remains a manual evidence tier.
+
+The portable native threat-model gate validates complete control ownership,
+exact non-ignored test references, and reviewed protocol and direct dependency
+inventories without running a listener or mutating trust.
 
 ## 26. Observability and Diagnostics
 
@@ -378,6 +388,10 @@ native residue inventory. A generation-specific session lease prevents PID
 reuse from transferring ownership, every unknown remains visible, healthy
 retained evidence stays history, and confirmed repair reuses only exact journal
 recovery. Installer and archive validation remain #329.
+S125 adds the versioned native threat registry and ordinary CI gate. Every
+high-risk row owns prevention, detection, containment, evidence, and executable
+negative tests; protocol and direct proxy dependency drift forces review.
+Fuzzing and the remaining completion gates remain #324 through #334.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-09-04",
+  "scope": "Native Deep Capture product paths shipped through S124",
+  "protocol_families": [
+    "generic-tcp",
+    "generic-udp",
+    "grpc",
+    "http1",
+    "http2",
+    "http3",
+    "https",
+    "non-http-tls",
+    "quic",
+    "socks5-tcp",
+    "socks5-udp",
+    "sse",
+    "unknown",
+    "unrouted",
+    "websocket"
+  ],
+  "proxy_dependencies": [
+    "async-compression",
+    "base64",
+    "bytes",
+    "flate2",
+    "h2",
+    "h3",
+    "h3-quinn",
+    "http-body-util",
+    "httparse",
+    "hyper",
+    "hyper-util",
+    "quinn",
+    "rcgen",
+    "ring",
+    "rustls",
+    "rustls-native-certs",
+    "subtle",
+    "tokio",
+    "tokio-rustls",
+    "windows-sys",
+    "zeroize"
+  ],
+  "boundaries": [
+    {"id":"operator-to-plan","description":"Operator selection becomes an immutable target-scoped authorized plan.","owner":"fragcap facade"},
+    {"id":"target-to-route","description":"An owned target process receives only its session-scoped route and capability.","owner":"fragcap facade"},
+    {"id":"local-client-to-listener","description":"A loopback client proves the exact session capability before forwarding.","owner":"fragcap-proxy authentication"},
+    {"id":"proxy-to-dns","description":"The proxy resolves names and applies policy to canonical resulting addresses.","owner":"fragcap-proxy upstream policy"},
+    {"id":"proxy-to-origin","description":"Each upstream TCP, UDP, TLS, QUIC, or HTTP connection is separately policy checked.","owner":"fragcap-proxy transport"},
+    {"id":"bytes-to-protocol","description":"Untrusted bytes enter bounded protocol parsers without semantic normalization.","owner":"fragcap-proxy protocol engines"},
+    {"id":"tls-to-authority","description":"Client-facing TLS uses the session authority while upstream TLS verifies independently.","owner":"fragcap-proxy certificates and TLS"},
+    {"id":"observation-to-artifact","description":"Bounded observations become sensitive evidence under explicit artifact authority.","owner":"fragcap facade and CLI artifact writers"},
+    {"id":"resource-to-recovery","description":"Synchronized resource obligations become exact cleanup and Doctor recovery decisions.","owner":"fragcap lifecycle and Doctor"}
+  ],
+  "assets": [
+    {"id":"session-capability","description":"Random secret admitting only the selected routed client.","owner":"fragcap-proxy"},
+    {"id":"routing-authority","description":"Permission to route the selected target through the loopback proxy.","owner":"fragcap facade"},
+    {"id":"upstream-access","description":"Proxy-owned ability to resolve and connect to destinations.","owner":"fragcap-proxy"},
+    {"id":"session-ca-private-key","description":"Per-session authority and leaf private material.","owner":"fragcap-proxy certificate store"},
+    {"id":"decrypted-content","description":"Application plaintext, metadata, bodies, messages, and datagrams.","owner":"fragcap-proxy observers"},
+    {"id":"sensitive-artifacts","description":"Key log, certificates, application evidence, journals, and exported bundle copies.","owner":"fragcap facade and CLI"},
+    {"id":"resource-obligations","description":"Exact live listener, trust, route, process, and artifact cleanup obligations.","owner":"fragcap lifecycle journal"},
+    {"id":"target-ownership","description":"Proof that the routed process and descendants belong to the authorized launch.","owner":"fragcap launch coordinator"}
+  ],
+  "threats": [
+    {
+      "id":"unauthorized-local-proxy-use","title":"Unrelated local client uses the proxy","severity":"high",
+      "categories":["unrelated-local-client","confused-deputy"],
+      "boundaries":["target-to-route","local-client-to-listener"],"assets":["session-capability","routing-authority","upstream-access"],
+      "prevention":["Exact random per-session Basic or RFC 1929 proof precedes payload forwarding.","Routing is injected only into the owned child environment."],
+      "detection":["Authentication refusal and route-ownership outcomes are counted."],
+      "containment":["The exact loopback listener and capability die with the finite session lease."],
+      "evidence":["proxy.jsonl authentication and terminal records","cleanup.jsonl listener obligation"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/authentication.rs","function":"listener_refuses_wrong_proof_before_payload_and_counts_it","proves":"Wrong HTTP proxy proof cannot forward payload."},
+        {"path":"crates/fragcap-proxy/tests/socks5_proxy.rs","function":"wrong_password_is_refused_before_origin_accept","proves":"Wrong SOCKS5 proof cannot reach the origin."},
+        {"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"declared_client_port_blocks_local_hijack","proves":"A second local UDP client cannot seize an association."}
+      ]
+    },
+    {
+      "id":"upstream-policy-bypass","title":"Malicious destination obtains prohibited upstream access","severity":"high",
+      "categories":["malicious-target-or-origin","ssrf","confused-deputy"],
+      "boundaries":["proxy-to-dns","proxy-to-origin"],"assets":["upstream-access","routing-authority"],
+      "prevention":["Every canonical destination is denied unless public or exactly granted.","Listener and private addresses are checked after mapped-address normalization."],
+      "detection":["Policy refusals retain destination class and terminal stage."],
+      "containment":["Refusal occurs before upstream connect or datagram transmission."],
+      "evidence":["proxy.jsonl upstream-policy records","application.jsonl terminal classification"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/upstream.rs","function":"policy_refuses_listener_and_private_destinations_without_exact_grant","proves":"Private and listener-local destinations require exact grants."},
+        {"path":"crates/fragcap-proxy/tests/upstream.rs","function":"connector_refuses_private_destination_without_connecting","proves":"A refused private destination creates no upstream connection."},
+        {"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"fragments_malformed_frames_and_refused_destinations_are_counted","proves":"UDP policy refusals and malformed requests remain finite and counted."}
+      ]
+    },
+    {
+      "id":"dns-answer-rebinding","title":"A name changes to a prohibited or different peer","severity":"high",
+      "categories":["dns-rebinding","ssrf","malicious-target-or-origin"],
+      "boundaries":["proxy-to-dns","proxy-to-origin"],"assets":["upstream-access"],
+      "prevention":["The proxy owns resolution, policy checks each resolved address, and connects only the selected peer.","UDP replies require an exact contacted-peer entry."],
+      "detection":["Resolved address, selected peer, and refused or unsolicited outcomes are retained."],
+      "containment":["Peer maps are finite and never silently replace an authorized peer."],
+      "evidence":["proxy.jsonl resolution and peer records","application.jsonl UDP terminal records"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/upstream.rs","function":"authority_parser_preserves_names_and_rejects_ambiguity","proves":"Authority parsing cannot collapse ambiguous names or literals."},
+        {"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"unsolicited_origin_cannot_reflect_to_client","proves":"An origin not contacted by the association cannot inject a reply."},
+        {"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"peer_limit_refuses_new_mapping_without_evicting_existing_peer","proves":"Peer saturation cannot replace established ownership."}
+      ]
+    },
+    {
+      "id":"request-framing-desynchronization","title":"Conflicting framing changes request meaning","severity":"high",
+      "categories":["request-smuggling-desync","malicious-target-or-origin"],
+      "boundaries":["bytes-to-protocol","proxy-to-origin"],"assets":["upstream-access","decrypted-content"],
+      "prevention":["Conflicting content lengths and transfer encodings are refused before connect.","Unknown protocol semantics never inherit HTTP eligibility."],
+      "detection":["Parser failure and classification reason remain distinct terminal facts."],
+      "containment":["The client connection is retired without forwarding ambiguous bytes."],
+      "evidence":["proxy.jsonl parse refusal","application.jsonl failed classification"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/http1_proxy.rs","function":"refuses_ambiguous_framing_before_connecting","proves":"Ambiguous HTTP framing never reaches an origin."},
+        {"path":"crates/fragcap/tests/protocol_classification.rs","function":"invalid_combinations_are_refused_instead_of_normalized","proves":"Invalid classification combinations do not normalize to support."}
+      ]
+    },
+    {
+      "id":"resource-budget-exhaustion","title":"A peer exhausts finite proxy resources","severity":"high",
+      "categories":["resource-exhaustion","malicious-target-or-origin"],
+      "boundaries":["local-client-to-listener","bytes-to-protocol","observation-to-artifact"],"assets":["upstream-access","decrypted-content","sensitive-artifacts"],
+      "prevention":["Connections, streams, buffers, bodies, observations, peers, and identities have explicit bounds."],
+      "detection":["Every saturation and omitted byte has a named counter or terminal outcome."],
+      "containment":["New work is refused or observation is dropped independently from forwarding; existing ownership is not evicted."],
+      "evidence":["application.jsonl loss counters","proxy.jsonl saturation outcomes","manifest completeness and loss fields"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/lifecycle.rs","function":"start_refuses_an_exhausted_budget_and_an_occupied_endpoint","proves":"Connection budget exhaustion and occupied endpoints refuse startup work."},
+        {"path":"crates/fragcap-proxy/tests/socks5_udp.rs","function":"retention_limits_preserve_one_record_and_complete_forwarding","proves":"UDP retention bounds do not corrupt forwarding or hide loss."},
+        {"path":"crates/fragcap-proxy/tests/quic_http3.rs","function":"transport_limits_are_finite_and_zero_rtt_is_disabled","proves":"QUIC limits are finite and replayable early data is disabled."}
+      ]
+    },
+    {
+      "id":"certificate-authority-abuse","title":"Session certificate authority escapes its scope","severity":"high",
+      "categories":["certificate-abuse","artifact-theft","confused-deputy"],
+      "boundaries":["tls-to-authority","observation-to-artifact","resource-to-recovery"],"assets":["session-ca-private-key","sensitive-artifacts","resource-obligations"],
+      "prevention":["Authorities are per-session, leaves use exact validated identities, private storage is protected, and upstream trust is independent."],
+      "detection":["Trust identity, leaf issuance, store mismatch, and cleanup states are journaled."],
+      "containment":["Trust and private material are exact resource obligations removed without touching unrelated authorities."],
+      "evidence":["cleanup.jsonl trust and certificate records","manifest sensitivity declarations"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"malformed_leaf_identities_are_refused","proves":"Malformed leaf identities cannot obtain certificates."},
+        {"path":"crates/fragcap-proxy/tests/certificates.rs","function":"private_material_is_dpapi_protected_in_owned_storage","proves":"Private material is protected in owned storage."},
+        {"path":"crates/fragcap-proxy/tests/https_proxy.rs","function":"connect_fails_closed_for_wrong_name_and_untrusted_upstream","proves":"Upstream name and trust failures cannot downgrade."}
+      ]
+    },
+    {
+      "id":"artifact-path-or-export-theft","title":"Artifact paths or exports expose unintended data","severity":"high",
+      "categories":["artifact-theft","malicious-target-or-origin"],
+      "boundaries":["observation-to-artifact"],"assets":["decrypted-content","sensitive-artifacts","session-ca-private-key"],
+      "prevention":["Sensitive storage is protected before capture, paths are canonical and confined, and export is a separate explicit copy with a transformation manifest."],
+      "detection":["Manifest sensitivity, omission, transformation, and finalization fields are exhaustive."],
+      "containment":["Cleanup targets only the exact owned bundle; export never mutates the source."],
+      "evidence":["manifest.json artifact declarations","bundle export transformation manifest"],
+      "tests":[
+        {"path":"crates/fragcap-cli/tests/cli_bundle.rs","function":"cleanup_requires_confirmation_and_removes_only_sensitive_evidence","proves":"Cleanup requires confirmation and preserves non-sensitive evidence."},
+        {"path":"crates/fragcap-cli/tests/cli_bundle.rs","function":"export_is_a_separate_copy_with_an_exhaustive_manifest","proves":"Export is isolated and declares every transformation."},
+        {"path":"crates/fragcap-cli/tests/cli_deep_capture.rs","function":"deep_capture_refuses_a_nonempty_bundle_before_starting_the_proxy","proves":"Existing bundle content cannot be overwritten by session startup."}
+      ]
+    },
+    {
+      "id":"interrupted-cleanup-confusion","title":"Interrupted cleanup mutates unrelated or unowned resources","severity":"high",
+      "categories":["cleanup-interruption","confused-deputy","artifact-theft"],
+      "boundaries":["resource-to-recovery"],"assets":["resource-obligations","sensitive-artifacts","routing-authority"],
+      "prevention":["Every effect is preceded by a synchronized exact obligation; Doctor reuses the same recovery decision and requires confirmation."],
+      "detection":["Crash-readable journal prefixes and terminal trailers preserve partial state."],
+      "containment":["Recovery refuses active, ambiguous, unknown-versioned, and unrelated resources while continuing independent cleanup."],
+      "evidence":["cleanup.jsonl resource transitions","Doctor native residue findings","cleanup.json compatibility projection"],
+      "tests":[
+        {"path":"crates/fragcap/tests/deep_capture_session.rs","function":"cleanup_failure_does_not_skip_other_cleanup_or_bundle_finalization","proves":"One cleanup failure cannot suppress remaining cleanup or evidence."},
+        {"path":"crates/fragcap/tests/deep_capture_session.rs","function":"dropping_a_started_session_stops_and_cleans_every_acquired_resource_once","proves":"Unexpected session drop cleans exact acquired resources once."},
+        {"path":"crates/fragcap-cli/tests/cli_doctor.rs","function":"deep_capture_residue_is_machine_readable_and_offers_cleanup","proves":"Doctor exposes exact residue and recovery action."}
+      ]
+    },
+    {
+      "id":"target-ownership-substitution","title":"A different process inherits target authority","severity":"high",
+      "categories":["confused-deputy","unrelated-local-client","malicious-target-or-origin"],
+      "boundaries":["operator-to-plan","target-to-route"],"assets":["target-ownership","routing-authority","session-capability"],
+      "prevention":["Authorization binds an immutable plan, launch root, ancestry, process generation, route, and capability."],
+      "detection":["Warm, escaped, ambiguous, stale, and mismatched identities retain distinct refusals."],
+      "containment":["No session effect begins after failed preflight and no authority transfers on PID or endpoint reuse."],
+      "evidence":["session plan and lifecycle events","process trace","terminal refusal"],
+      "tests":[
+        {"path":"crates/fragcap/tests/session.rs","function":"owned_client_identity_outside_platform_tree_is_refused","proves":"An escaped client cannot inherit platform ownership."},
+        {"path":"crates/fragcap/tests/deep_capture_session.rs","function":"stale_authorization_has_no_external_effects","proves":"A stale authorization cannot create effects."},
+        {"path":"crates/fragcap-proxy/tests/authentication.rs","function":"port_reuse_gets_a_new_capability","proves":"Listener endpoint reuse cannot transfer capability."}
+      ]
+    },
+    {
+      "id":"protocol-route-semantic-downgrade","title":"Ambiguous traffic downgrades into transparent forwarding","severity":"high",
+      "categories":["malicious-target-or-origin","confused-deputy","resource-exhaustion"],
+      "boundaries":["target-to-route","bytes-to-protocol","proxy-to-origin"],"assets":["routing-authority","decrypted-content","upstream-access"],
+      "prevention":["Each routed family has an explicit classification and unknown ALPN, migration, changed endpoints, invalid framing, and unsupported semantics refuse without transparent fallback."],
+      "detection":["Classification, inspectability, refusal reason, and loss remain separate facts."],
+      "containment":["Failure retires only the affected connection or association under finite cleanup."],
+      "evidence":["application.jsonl classification","proxy.jsonl transport terminal","manifest omission authorities"],
+      "tests":[
+        {"path":"crates/fragcap-proxy/tests/quic_http3.rs","function":"scoped_plan_refuses_endpoint_migration_and_origin_changes","proves":"QUIC migration and route changes are refused."},
+        {"path":"crates/fragcap-proxy/tests/socks5_proxy.rs","function":"malformed_truncated_and_policy_refusals_are_finite_and_distinct","proves":"SOCKS TCP malformed and policy outcomes remain distinct."},
+        {"path":"crates/fragcap/tests/deep_capture_session.rs","function":"malformed_bypass_refuses_before_listener_selection","proves":"Malformed bypass policy cannot reach listener selection."}
+      ]
+    }
+  ]
+}

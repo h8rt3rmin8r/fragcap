@@ -558,6 +558,10 @@ fn test_route() -> ProxyRoute {
 fn config() -> SessionConfig {
     static NEXT_BUNDLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let bundle_id = NEXT_BUNDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let run_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock follows the Unix epoch")
+        .as_nanos();
     SessionConfig {
         target: "controlled-target".into(),
         launch_case: Some(LaunchCase::Controlled),
@@ -565,7 +569,7 @@ fn config() -> SessionConfig {
         calibration_protocol: Some(fragcap::targets::CompatibilityProtocol::Https),
         controlled: true,
         bundle: std::env::temp_dir().join(format!(
-            "fragcap-deep-capture-session-{}-{bundle_id}",
+            "fragcap-deep-capture-session-{}-{run_id}-{bundle_id}",
             std::process::id()
         )),
         trust_ca: true,
