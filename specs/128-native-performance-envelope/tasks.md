@@ -104,3 +104,10 @@
 - [x] T038 Add a committed QUIC evidence coalescing test that proves the 16 KiB event bound, exact byte reconstruction, offsets, and terminal identity per FR-007 and SC-006 (partial)
 - [x] T039 Add a seeded soak-report cadence rejection test covering intermediate and terminal gaps over 60 seconds per SC-008 and SC-010 (partial)
 - [x] T040 Replace the persistent documentation development-server command with the finite documentation check in `specs/128-native-performance-envelope/quickstart.md` per T035 (partial)
+
+## Phase 8: Final Review Remediation
+
+- [x] T041 Preserve successfully flushed application records when a later buffered write fails, with a deterministic regression test for exact storage-loss accounting
+- [x] T042 Reconstruct every report retry attempt from exact attempt and window identities, and reject any discarded attempt containing a hard failure
+- [x] T043 Exercise five admitted QUIC certificate identities against one four-entry production leaf cache per worker, and require the reported peak to prove the churn occurred
+- [ ] T044 Recollect two short campaigns and the complete two-hour soak on the final reviewed implementation, then rerun the complete repository gate

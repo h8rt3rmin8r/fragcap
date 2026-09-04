@@ -303,6 +303,9 @@ fn evaluate_case(case: &Value, limits: &Value, samples: &[WorkerResult]) -> Case
         .saturating_mul(1000);
     let task_ceiling = limits["maximum_worker_tasks"].as_u64().unwrap_or(0);
     let cache_entries = limits["maximum_leaf_cache_entries"].as_u64().unwrap_or(0);
+    let minimum_cache_peak = case["minimum_leaf_cache_peak_entries"]
+        .as_u64()
+        .unwrap_or(0);
     let cache_bytes = limits["maximum_leaf_cache_bytes"].as_u64().unwrap_or(0);
     let queue_ceiling = limits["maximum_application_queue"].as_u64().unwrap_or(0);
     let memory_ceiling = limits["maximum_worker_memory_bytes"].as_u64().unwrap_or(0);
@@ -335,6 +338,7 @@ fn evaluate_case(case: &Value, limits: &Value, samples: &[WorkerResult]) -> Case
                         .saturating_add(sample.task_aborted)
                         .saturating_add(sample.task_current)
                 || sample.cache_peak_entries > cache_entries
+                || sample.cache_peak_entries < minimum_cache_peak
                 || sample.cache_peak_bytes > cache_bytes
                 || sample.queue_peak > queue_ceiling
                 || sample.queue_current != 0

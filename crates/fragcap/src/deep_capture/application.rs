@@ -726,11 +726,15 @@ fn writer_loop(
         // records remain explicitly deferred until final reconciliation.
         let storage_event = event.clone();
         let value = event_json(event, sequence, ApplicationCorrelation::default());
-        match write_record_buffered(&mut writer, &value) {
-            Ok(serialized_bytes) => {
-                pending_storage.push(storage_event);
-                pending_serialized_bytes =
-                    pending_serialized_bytes.saturating_add(serialized_bytes);
+        match buffer_application_record(
+            &mut writer,
+            &value,
+            storage_event,
+            &mut pending_storage,
+            &mut pending_serialized_bytes,
+            &account,
+        ) {
+            Ok(()) => {
                 if pending_storage.len() == pending_storage.capacity() {
                     if let Err(error) = flush_application_batch(
                         &mut writer,
@@ -750,7 +754,6 @@ fn writer_loop(
                 }
             }
             Err(error) => {
-                pending_storage.push(storage_event);
                 return fail_application_writer(
                     error,
                     &mut pending_storage,
@@ -1146,10 +1149,59 @@ fn write_record(writer: &mut impl Write, value: &Value) -> io::Result<()> {
 }
 
 fn write_record_buffered(writer: &mut impl Write, value: &Value) -> io::Result<u64> {
-    let record = serde_json::to_vec(value).map_err(io::Error::other)?;
-    writer.write_all(&record)?;
-    writer.write_all(b"\n")?;
-    Ok(record.len() as u64)
+    let (wire, serialized_bytes) = serialized_record(value)?;
+    writer.write_all(&wire)?;
+    Ok(serialized_bytes)
+}
+
+fn serialized_record(value: &Value) -> io::Result<(Vec<u8>, u64)> {
+    let mut record = serde_json::to_vec(value).map_err(io::Error::other)?;
+    let serialized_bytes = record.len() as u64;
+    record.push(b'\n');
+    Ok((record, serialized_bytes))
+}
+
+fn buffer_application_record<W: Write>(
+    writer: &mut BufWriter<W>,
+    value: &Value,
+    event: ApplicationEvent,
+    pending: &mut Vec<ApplicationEvent>,
+    pending_serialized_bytes: &mut u64,
+    account: &WriterAccount,
+) -> io::Result<()> {
+    let (wire, serialized_bytes) = match serialized_record(value) {
+        Ok(record) => record,
+        Err(error) => {
+            pending.push(event);
+            return Err(error);
+        }
+    };
+    if !pending.is_empty() && writer.buffer().len().saturating_add(wire.len()) > writer.capacity() {
+        if let Err(error) =
+            flush_application_batch(writer, pending, pending_serialized_bytes, account)
+        {
+            pending.push(event);
+            return Err(error);
+        }
+    }
+    if wire.len() >= writer.capacity() {
+        if let Err(error) = writer.write_all(&wire) {
+            pending.push(event);
+            return Err(error);
+        }
+        account.written.fetch_add(1, Ordering::Relaxed);
+        account
+            .serialized_bytes
+            .fetch_add(serialized_bytes, Ordering::Relaxed);
+    } else {
+        if let Err(error) = writer.write_all(&wire) {
+            pending.push(event);
+            return Err(error);
+        }
+        pending.push(event);
+        *pending_serialized_bytes = pending_serialized_bytes.saturating_add(serialized_bytes);
+    }
+    Ok(())
 }
 
 fn flush_application_batch(
@@ -2783,6 +2835,86 @@ mod tests {
                 .quic_datagram_bytes_storage_dropped
                 .load(Ordering::Acquire),
             4
+        );
+    }
+
+    #[test]
+    fn buffered_writer_commits_prior_records_before_a_later_flush_failure() {
+        #[derive(Default)]
+        struct FailSecondWrite {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for FailSecondWrite {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                if self.calls == 2 {
+                    return Err(io::Error::other("second write failed"));
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let event = ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::ConnectionOpen(ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: "127.0.0.1:41000".parse().unwrap(),
+                proxy_local: "127.0.0.1:42000".parse().unwrap(),
+            }),
+        );
+        let value = event_json(event.clone(), 1, ApplicationCorrelation::default());
+        let wire_length = serialized_record(&value).unwrap().0.len();
+        let mut writer = BufWriter::with_capacity(wire_length + 1, FailSecondWrite::default());
+        let account = WriterAccount::default();
+        let mut pending = Vec::with_capacity(64);
+        let mut serialized_bytes = 0;
+
+        buffer_application_record(
+            &mut writer,
+            &value,
+            event.clone(),
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .unwrap();
+        buffer_application_record(
+            &mut writer,
+            &value,
+            event,
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .unwrap();
+
+        assert_eq!(account.written.load(Ordering::Acquire), 1);
+        assert_eq!(pending.len(), 1);
+        assert!(flush_application_batch(
+            &mut writer,
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .is_err());
+        assert_eq!(account.written.load(Ordering::Acquire), 1);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            writer
+                .get_ref()
+                .bytes
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count(),
+            1
         );
     }
 

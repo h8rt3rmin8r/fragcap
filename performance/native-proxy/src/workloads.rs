@@ -539,12 +539,13 @@ fn quic(capture: bool) -> io::Result<Measurement> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let (direct_origin, direct_ca, direct_task) = quic_origin(201).await?;
+        let (direct_origin, direct_ca, direct_task) =
+            quic_origin(201, "localhost", "127.0.0.1:0".parse().unwrap()).await?;
         let mut direct_roots = RootCertStore::empty();
         direct_roots
             .add(direct_ca.der().clone())
             .map_err(io::Error::other)?;
-        let direct = quic_exchange(direct_origin, direct_roots, None)
+        let direct = quic_exchange(direct_origin, direct_roots, None, "localhost", 1024 * 1024)
             .await
             .map_err(|error| io::Error::other(format!("direct QUIC exchange: {error}")))?;
         direct_task
@@ -552,7 +553,22 @@ fn quic(capture: bool) -> io::Result<Measurement> {
             .map_err(|error| io::Error::other(format!("direct QUIC task join: {error}")))?
             .map_err(|error| io::Error::other(format!("direct QUIC origin: {error}")))?;
 
-        let (origin, origin_ca, task) = quic_origin(202).await?;
+        let mut origins = Vec::new();
+        let mut origin_roots = RootCertStore::empty();
+        for (offset, octet) in [1_u8, 2, 3, 4, 5].into_iter().enumerate() {
+            let server_name = if octet == 1 {
+                "localhost".to_string()
+            } else {
+                format!("127.0.0.{octet}")
+            };
+            let bind = format!("127.0.0.{octet}:0").parse().unwrap();
+            let (origin, origin_ca, task) =
+                quic_origin(202 + offset as u64, &server_name, bind).await?;
+            origin_roots
+                .add(origin_ca.der().clone())
+                .map_err(io::Error::other)?;
+            origins.push((origin, server_name, task));
+        }
         let mut config = NativeProxyConfig::new(
             "127.0.0.1:0".parse().unwrap(),
             8,
@@ -565,13 +581,12 @@ fn quic(capture: bool) -> io::Result<Measurement> {
         let mut quic_limits = limits(capture);
         quic_limits.max_socks_udp_datagram_bytes = 8192;
         quic_limits.max_concurrent_streams = 8;
+        quic_limits.leaf_cache_entries = NonZeroUsize::new(4).unwrap();
         config = config.with_protocol_limits(quic_limits);
         let mut policy = DestinationPolicy::new(config.listen());
-        policy.grant_for_test(origin);
-        let mut origin_roots = RootCertStore::empty();
-        origin_roots
-            .add(origin_ca.der().clone())
-            .map_err(io::Error::other)?;
+        for (origin, _, _) in &origins {
+            policy.grant_for_test(*origin);
+        }
         let artifact_path = performance_artifact_path();
         let artifact =
             ApplicationArtifactLease::open(&artifact_path, "s128-quic-performance", 4096)?;
@@ -584,75 +599,115 @@ fn quic(capture: bool) -> io::Result<Measurement> {
             .with_application_event_sink(artifact.sink())
             .start(Duration::from_secs(3))
             .map_err(|error| io::Error::other(error.to_string()))?;
-        let shuttle = UdpSocket::bind("127.0.0.1:0")?;
-        shuttle.set_read_timeout(Some(Duration::from_millis(50)))?;
-        let shuttle_address = shuttle.local_addr()?;
-        let client_probe = UdpSocket::bind("127.0.0.1:0")?;
-        let client_address = client_probe.local_addr()?;
-        drop(client_probe);
-        let (control, relay) = authenticate_and_associate(
-            native.endpoint(),
-            native.capability_proof().proxy_password().as_bytes(),
-            shuttle_address,
-        )?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let shuttle_stop = Arc::clone(&stop);
-        let shuttle_task = std::thread::spawn(move || -> io::Result<u64> {
-            let mut buffer = vec![0_u8; 8192];
-            let mut connection_resets = 0_u64;
-            while !shuttle_stop.load(Ordering::Acquire) {
-                match shuttle.recv_from(&mut buffer) {
-                    Ok((read, source)) if source == client_address => {
-                        shuttle.send_to(&domain_frame(origin.port(), &buffer[..read]), relay)?;
-                    }
-                    Ok((read, source)) if source == relay => {
-                        shuttle.send_to(response_payload(&buffer[..read])?, client_address)?;
-                    }
-                    Ok(_) => {}
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                        ) => {}
-                    Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
-                        connection_resets = connection_resets.saturating_add(1);
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            Ok(connection_resets)
-        });
-        let mut client_roots = RootCertStore::empty();
-        client_roots
-            .add(native.ca_der().to_vec().into())
-            .map_err(io::Error::other)?;
-        let proxied = quic_exchange(shuttle_address, client_roots, Some(client_address))
+        let mut proxied = None;
+        for (index, (origin, server_name, task)) in origins.into_iter().enumerate() {
+            let payload_bytes = if index == 0 { 1024 * 1024 } else { 1 };
+            let elapsed = proxied_quic_exchange(
+                &native,
+                origin,
+                &server_name,
+                payload_bytes,
+            )
             .await
-            .map_err(|error| io::Error::other(format!("proxied QUIC exchange: {error}")));
-        stop.store(true, Ordering::Release);
-        let shuttle_result = shuttle_task
-            .join()
-            .map_err(|_| io::Error::other("QUIC shuttle panicked"))?
-            .map_err(|error| io::Error::other(format!("QUIC shuttle: {error}")))?;
-        let proxied = proxied?;
-        let _connection_resets = shuttle_result;
-        drop(control);
-        task.await
-            .map_err(|error| io::Error::other(format!("proxied QUIC task join: {error}")))?
-            .map_err(|error| io::Error::other(format!("proxied QUIC origin: {error}")))?;
+            .map_err(|error| io::Error::other(format!("proxied QUIC exchange: {error}")))?;
+            task.await
+                .map_err(|error| io::Error::other(format!("proxied QUIC task join: {error}")))?
+                .map_err(|error| io::Error::other(format!("proxied QUIC origin: {error}")))?;
+            if index == 0 {
+                proxied = Some(elapsed);
+            }
+        }
         let tail = finish(ProxyOwner { native, artifact }, Instant::now());
-        Ok(combine(direct, proxied, tail, 2 * 1024 * 1024))
+        Ok(combine(
+            direct,
+            proxied.ok_or_else(|| io::Error::other("measured QUIC exchange missing"))?,
+            tail,
+            2 * 1024 * 1024,
+        ))
     })
+}
+
+async fn proxied_quic_exchange(
+    native: &fragcap_proxy::NativeProxyLease,
+    origin: SocketAddr,
+    server_name: &str,
+    payload_bytes: usize,
+) -> io::Result<u64> {
+    let shuttle = UdpSocket::bind("127.0.0.1:0")?;
+    shuttle.set_read_timeout(Some(Duration::from_millis(50)))?;
+    let shuttle_address = shuttle.local_addr()?;
+    let client_probe = UdpSocket::bind("127.0.0.1:0")?;
+    let client_address = client_probe.local_addr()?;
+    drop(client_probe);
+    let (control, relay) = authenticate_and_associate(
+        native.endpoint(),
+        native.capability_proof().proxy_password().as_bytes(),
+        shuttle_address,
+    )?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let shuttle_stop = Arc::clone(&stop);
+    let frame_server_name = server_name.to_string();
+    let shuttle_task = std::thread::spawn(move || -> io::Result<u64> {
+        let mut buffer = vec![0_u8; 8192];
+        let mut connection_resets = 0_u64;
+        while !shuttle_stop.load(Ordering::Acquire) {
+            match shuttle.recv_from(&mut buffer) {
+                Ok((read, source)) if source == client_address => {
+                    shuttle.send_to(
+                        &authority_frame(&frame_server_name, origin.port(), &buffer[..read]),
+                        relay,
+                    )?;
+                }
+                Ok((read, source)) if source == relay => {
+                    shuttle.send_to(response_payload(&buffer[..read])?, client_address)?;
+                }
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    connection_resets = connection_resets.saturating_add(1);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(connection_resets)
+    });
+    let mut client_roots = RootCertStore::empty();
+    client_roots
+        .add(native.ca_der().to_vec().into())
+        .map_err(io::Error::other)?;
+    let result = quic_exchange(
+        shuttle_address,
+        client_roots,
+        Some(client_address),
+        server_name,
+        payload_bytes,
+    )
+    .await;
+    stop.store(true, Ordering::Release);
+    let shuttle_result = shuttle_task
+        .join()
+        .map_err(|_| io::Error::other("QUIC shuttle panicked"))?
+        .map_err(|error| io::Error::other(format!("QUIC shuttle: {error}")))?;
+    let _connection_resets = shuttle_result;
+    drop(control);
+    result
 }
 
 async fn quic_origin(
     lineage: u64,
+    server_name: &str,
+    bind: SocketAddr,
 ) -> io::Result<(
     SocketAddr,
     SessionCertificateAuthority,
     tokio::task::JoinHandle<io::Result<()>>,
 )> {
-    let authority = DestinationAuthority::parse("localhost:443").map_err(io::Error::other)?;
+    let authority = DestinationAuthority::parse(&format!("{server_name}:443"))
+        .map_err(io::Error::other)?;
     let ca = SessionCertificateAuthority::generate(
         lineage,
         SystemTime::now(),
@@ -671,7 +726,7 @@ async fn quic_origin(
     quic_limits.max_socks_udp_datagram_bytes = 8192;
     let server_config = build_quic_server_config(&authority, &ca, &mut cache, None, &quic_limits)
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
-    let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap())?;
+    let server = Endpoint::server(server_config, bind)?;
     let address = server.local_addr()?;
     let task = tokio::spawn(async move {
         let connection = server
@@ -718,6 +773,8 @@ async fn quic_exchange(
     endpoint: SocketAddr,
     roots: RootCertStore,
     bind: Option<SocketAddr>,
+    server_name: &str,
+    payload_bytes: usize,
 ) -> io::Result<u64> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let tls = Arc::new(
@@ -741,7 +798,7 @@ async fn quic_exchange(
     }
     client.set_default_client_config(client_config);
     let connection = client
-        .connect(endpoint, "localhost")
+        .connect(endpoint, server_name)
         .map_err(io::Error::other)?
         .await
         .map_err(io::Error::other)?;
@@ -751,10 +808,14 @@ async fn quic_exchange(
     let driver_task =
         tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
     let mut stream = sender
-        .send_request(Request::post("https://localhost/payload").body(()).unwrap())
+        .send_request(
+            Request::post(format!("https://{server_name}/payload"))
+                .body(())
+                .unwrap(),
+        )
         .await
         .map_err(io::Error::other)?;
-    let payload = Bytes::from(vec![0x66; 1024 * 1024]);
+    let payload = Bytes::from(vec![0x66; payload_bytes]);
     let started = Instant::now();
     for chunk in payload.chunks(16 * 1024) {
         stream
@@ -796,9 +857,16 @@ fn authenticate_and_associate(
     Ok((control, relay))
 }
 
-fn domain_frame(port: u16, payload: &[u8]) -> Vec<u8> {
-    let mut frame = vec![0, 0, 0, 3, 9];
-    frame.extend_from_slice(b"localhost");
+fn authority_frame(server_name: &str, port: u16, payload: &[u8]) -> Vec<u8> {
+    let mut frame = if let Ok(address) = server_name.parse::<std::net::Ipv4Addr>() {
+        let mut frame = vec![0, 0, 0, 1];
+        frame.extend_from_slice(&address.octets());
+        frame
+    } else {
+        let mut frame = vec![0, 0, 0, 3, server_name.len() as u8];
+        frame.extend_from_slice(server_name.as_bytes());
+        frame
+    };
     frame.extend_from_slice(&port.to_be_bytes());
     frame.extend_from_slice(payload);
     frame

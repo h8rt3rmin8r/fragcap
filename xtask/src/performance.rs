@@ -320,6 +320,7 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
     let mut terminal = 0_u64;
     let mut cases = BTreeSet::new();
     let mut case_samples = BTreeMap::<String, Vec<Value>>::new();
+    let mut consumed_case_samples = BTreeMap::<String, usize>::new();
     let mut profile = None;
     let mut last_progress_seconds = 0_u64;
     for (index, line) in text.lines().enumerate() {
@@ -381,6 +382,8 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
                     problems.push("report sample lacks required process metrics".into());
                 }
                 for field in [
+                    "attempt",
+                    "window",
                     "useful_bytes",
                     "direct_microseconds",
                     "proxy_microseconds",
@@ -428,14 +431,17 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
                         cases.iter().find(|case| case["id"].as_str() == Some(id))
                     });
                     if let Some(case) = case {
+                        let samples = case_samples.get(id).map(Vec::as_slice).unwrap_or_default();
+                        let consumed = consumed_case_samples.entry(id.to_string()).or_default();
                         validate_case_terminal(
                             id,
                             &value,
-                            case_samples.get(id).map(Vec::as_slice).unwrap_or_default(),
+                            &samples[*consumed..],
                             case,
                             &registry["evaluation"],
                             &mut problems,
                         );
+                        *consumed = samples.len();
                     } else {
                         problems.push(format!("report terminal has unknown case {id}"));
                     }
@@ -550,14 +556,44 @@ fn validate_case_terminal(
     problems: &mut Vec<String>,
 ) {
     let windows = terminal["windows"].as_u64().unwrap_or(0) as usize;
-    if windows == 0 || all_samples.len() < windows {
+    let attempts = terminal["attempts"].as_u64().unwrap_or(0) as usize;
+    let maximum_attempts = limits["maximum_retries"]
+        .as_u64()
+        .unwrap_or(0)
+        .saturating_add(1) as usize;
+    if windows == 0
+        || attempts == 0
+        || attempts > maximum_attempts
+        || all_samples.len() != windows.saturating_mul(attempts)
+    {
         problems.push(format!(
-            "report case {id} terminal has no complete sample window"
+            "report case {id} terminal has no complete attempt sequence"
         ));
         return;
     }
-    let evaluation =
-        evaluate_report_case(&all_samples[all_samples.len() - windows..], case, limits);
+    let attempt_samples = &all_samples[all_samples.len() - windows * attempts..];
+    for (attempt_index, samples) in attempt_samples.chunks_exact(windows).enumerate() {
+        let expected_attempt = attempt_index as u64 + 1;
+        for (window_index, sample) in samples.iter().enumerate() {
+            if sample["attempt"].as_u64() != Some(expected_attempt)
+                || sample["window"].as_u64() != Some(window_index as u64 + 1)
+            {
+                problems.push(format!(
+                    "report case {id} attempt {expected_attempt} has invalid sample identity"
+                ));
+            }
+        }
+        if expected_attempt < attempts as u64 {
+            let evaluation = evaluate_report_case(samples, case, limits);
+            if !evaluation.guard_band || evaluation.hard_invariant_failures != 0 {
+                problems.push(format!(
+                    "report case {id} retry attempt {expected_attempt} was not eligible"
+                ));
+            }
+        }
+    }
+    let final_samples = &attempt_samples[(attempts - 1) * windows..];
+    let evaluation = evaluate_report_case(final_samples, case, limits);
     for (field, expected) in [
         (
             "median_throughput_bytes_per_second",
@@ -643,6 +679,9 @@ fn evaluate_report_case(samples: &[Value], case: &Value, limits: &Value) -> Repo
         .unwrap_or(0)
         .saturating_mul(1000);
     let useful = case["useful_bytes_per_window"].as_u64().unwrap_or(0);
+    let minimum_cache_peak = case["minimum_leaf_cache_peak_entries"]
+        .as_u64()
+        .unwrap_or(0);
     let hard_invariant_failures = samples
         .iter()
         .filter(|sample| {
@@ -679,6 +718,7 @@ fn evaluate_report_case(samples: &[Value], case: &Value, limits: &Value) -> Repo
                         .saturating_add(number(sample, "task_current"))
                 || number(sample, "cache_peak_entries")
                     > number(limits, "maximum_leaf_cache_entries")
+                || number(sample, "cache_peak_entries") < minimum_cache_peak
                 || number(sample, "cache_peak_bytes") > number(limits, "maximum_leaf_cache_bytes")
                 || number(sample, "queue_peak") > number(limits, "maximum_application_queue")
                 || number(sample, "queue_current") != 0
@@ -832,11 +872,12 @@ mod tests {
                     .find(|case| case["id"].as_str() == Some(id.as_str()))
                     .unwrap();
                 let useful = case["useful_bytes_per_window"].as_u64().unwrap();
-                for _ in 0..7 {
+                for window in 0..7 {
                     sequence += 1;
                     records.push(serde_json::json!({
                         "schema_version":1,"kind":"case.sample","sequence":sequence,
-                        "case_id":id,"metrics_available":true,"useful_bytes":useful,
+                        "case_id":id,"attempt":1,"window":window + 1,
+                        "metrics_available":true,"useful_bytes":useful,
                         "direct_microseconds":90_000,"proxy_microseconds":100_000,
                         "throughput_bytes_per_second":useful * 10,"cpu_microseconds":0,
                         "peak_working_set_bytes":1,"private_bytes":1,"artifact_bytes":1,
@@ -846,7 +887,8 @@ mod tests {
                         "payload_bytes_queue_dropped":0,"payload_bytes_storage_dropped":0,
                         "queue_peak":0,"queue_current":0,"task_peak":1,"task_current":0,
                         "task_spawned":1,"task_completed":1,"task_aborted":0,
-                        "cache_peak_entries":0,"cache_peak_bytes":0,
+                        "cache_peak_entries":if *protocol == "quic" { 4 } else { 0 },
+                        "cache_peak_bytes":0,
                         "failure_details_dropped":0,"application_events_dropped":0,
                         "shutdown_microseconds":1,"success":true,"clean_shutdown":true
                     }));
@@ -898,6 +940,57 @@ mod tests {
         assert!(validate_report(&corrupt, "digest", &registry)
             .iter()
             .any(|problem| problem.contains("breaks sequence")));
+    }
+
+    #[test]
+    fn report_rejects_a_retry_that_discards_a_hard_failure() {
+        let registry: Value = serde_json::from_str(include_str!(
+            "../../performance/native-proxy-budgets-v1.json"
+        ))
+        .unwrap();
+        let case = &registry["cases"][0];
+        let useful = case["useful_bytes_per_window"].as_u64().unwrap();
+        let mut samples = Vec::new();
+        for attempt in 1..=2 {
+            for window in 1..=7 {
+                samples.push(serde_json::json!({
+                    "attempt":attempt,"window":window,"success":attempt != 1 || window != 1,
+                    "useful_bytes":useful,"direct_microseconds":90_000,
+                    "proxy_microseconds":100_000,"throughput_bytes_per_second":useful * 10,
+                    "cpu_microseconds":0,"peak_working_set_bytes":1,"private_bytes":1,
+                    "artifact_bytes":1,"payload_bytes_observed":useful,
+                    "payload_bytes_retained":0,"payload_bytes_omitted":useful,
+                    "payload_bytes_queue_dropped":0,"payload_bytes_storage_dropped":0,
+                    "queue_peak":0,"queue_current":0,"task_peak":1,"task_current":0,
+                    "task_spawned":1,"task_completed":1,"task_aborted":0,
+                    "cache_peak_entries":0,"cache_peak_bytes":0,
+                    "failure_details_dropped":0,"application_events_dropped":0,
+                    "shutdown_microseconds":1,"clean_shutdown":true
+                }));
+            }
+        }
+        let terminal = serde_json::json!({
+            "attempts":2,"windows":7,
+            "median_throughput_bytes_per_second":useful * 10,
+            "median_throughput_ratio_basis_points":9000,
+            "added_p95_microseconds":10_000,"timing_breaching_windows":0,
+            "hard_invariant_failures":0,"guard_band_terminal":false
+        });
+        let mut problems = Vec::new();
+        validate_case_terminal(
+            "http1-off",
+            &terminal,
+            &samples,
+            case,
+            &registry["evaluation"],
+            &mut problems,
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("retry attempt 1 was not eligible")),
+            "{problems:?}"
+        );
     }
 
     #[test]
