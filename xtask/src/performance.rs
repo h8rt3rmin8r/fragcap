@@ -517,7 +517,7 @@ fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<S
     for id in &expected {
         let count = case_samples.get(id).map_or(0, Vec::len);
         let valid = if profile.as_deref() == Some("soak") {
-            count >= 7 && count % 7 == 0
+            count >= 7 && count.is_multiple_of(7)
         } else {
             matches!(count, 7 | 14)
         };
