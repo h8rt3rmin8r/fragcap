@@ -120,7 +120,7 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
     let mut ids = BTreeSet::new();
     let mut families = BTreeSet::new();
     let mut effect_ids = BTreeSet::new();
-    let mut transition_ids = BTreeSet::new();
+    let mut transition_edges = BTreeSet::new();
     for boundary in effects.iter().copied() {
         let id = validate_boundary(boundary, "effect", &mut ids, &mut families, &mut problems);
         let resource = required(boundary, "resource_kind", &id, &mut problems);
@@ -137,13 +137,22 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
             &mut families,
             &mut problems,
         );
-        for field in ["from", "to"] {
-            let state = required(boundary, field, &id, &mut problems);
-            if !strings(value, "lifecycle_states").contains(&state) {
+        let from = required(boundary, "from", &id, &mut problems);
+        let to = required(boundary, "to", &id, &mut problems);
+        for (field, state) in [("from", &from), ("to", &to)] {
+            if !strings(value, "lifecycle_states").contains(state) {
                 problems.push(format!("transition {id} has unknown {field} state {state}"));
             }
         }
-        transition_ids.insert(id);
+        let edge = format!("{from}-{to}");
+        if id != edge {
+            problems.push(format!(
+                "transition {id} identity does not match its endpoints {edge}"
+            ));
+        }
+        if !transition_edges.insert(edge.clone()) {
+            problems.push(format!("duplicate lifecycle edge {edge}"));
+        }
     }
     let source_effects = coordinator_effects(&coordinator_source);
     if effect_ids != source_effects {
@@ -152,9 +161,9 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
         ));
     }
     let source_transitions = coordinator_lifecycle_edges(&coordinator_source);
-    if transition_ids != source_transitions {
+    if transition_edges != source_transitions {
         problems.push(format!(
-            "coordinator lifecycle edge drift: registry={transition_ids:?}, source={source_transitions:?}"
+            "coordinator lifecycle edge drift: registry={transition_edges:?}, source={source_transitions:?}"
         ));
     }
     if coordinator_source.matches("self.state = next;").count() != 1
@@ -559,10 +568,12 @@ mod tests {
     #[test]
     fn coordinator_edge_drift_is_rejected() {
         let mut value = registry();
-        value["transitions"][0]["id"] = Value::from("prepared-observed");
         value["transitions"][0]["to"] = Value::from("observed");
-        assert!(validate(&root(), &value)
-            .unwrap()
+        let problems = validate(&root(), &value).unwrap();
+        assert!(problems
+            .iter()
+            .any(|problem| problem.contains("identity does not match its endpoints")));
+        assert!(problems
             .iter()
             .any(|problem| problem.contains("lifecycle edge drift")));
     }

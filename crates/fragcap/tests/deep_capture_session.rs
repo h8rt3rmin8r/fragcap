@@ -1382,7 +1382,13 @@ fn assert_expected_vector(
     let fact = match value("fact") {
         "none" => report.snapshot.observations.is_empty(),
         "failed-counted" => failed_fact,
-        "independent" => report.snapshot.fact_writes.len() <= 5,
+        "independent" => {
+            !report.snapshot.fact_writes.is_empty()
+                && report.snapshot.fact_writes.iter().all(|result| {
+                    matches!(result.status, FactWriteStatus::Appended)
+                        && !result.fact.evidence.is_empty()
+                })
+        }
         "no-positive-invention" => {
             report.snapshot.observations.is_empty()
                 || report
