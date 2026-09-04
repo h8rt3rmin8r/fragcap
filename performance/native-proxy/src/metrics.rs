@@ -49,13 +49,21 @@ pub fn sample(child: &Child) -> ProcessSample {
         |value: FILETIME| (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime);
     ProcessSample {
         available: memory_ok && cpu_ok,
-        cpu_microseconds: cpu_ok
-            .then(|| filetime(kernel).saturating_add(filetime(user)) / 10)
-            .unwrap_or(0),
-        working_set_bytes: memory_ok
-            .then_some(memory.PeakWorkingSetSize as u64)
-            .unwrap_or(0),
-        private_bytes: memory_ok.then_some(memory.PrivateUsage as u64).unwrap_or(0),
+        cpu_microseconds: if cpu_ok {
+            filetime(kernel).saturating_add(filetime(user)) / 10
+        } else {
+            0
+        },
+        working_set_bytes: if memory_ok {
+            memory.PeakWorkingSetSize as u64
+        } else {
+            0
+        },
+        private_bytes: if memory_ok {
+            memory.PrivateUsage as u64
+        } else {
+            0
+        },
     }
 }
 

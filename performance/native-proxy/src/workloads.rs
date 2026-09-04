@@ -734,10 +734,10 @@ async fn quic_exchange(
     let local = bind.unwrap_or("127.0.0.1:0".parse().unwrap());
     let mut client = Endpoint::client(local)?;
     let client_address = client.local_addr()?;
-    if let Some(expected) = bind {
-        if client_address != expected {
-            return Err(io::Error::other("QUIC client reservation changed"));
-        }
+    if let Some(expected) = bind
+        && client_address != expected
+    {
+        return Err(io::Error::other("QUIC client reservation changed"));
     }
     client.set_default_client_config(client_config);
     let connection = client
@@ -860,39 +860,36 @@ async fn h2_origin(
                 .map_err(io::Error::other)?;
             send_h2_all(&mut send, Bytes::from(payload)).await
         });
-        loop {
-            tokio::select! {
-                result = &mut handler => {
-                    let result = result.map_err(io::Error::other)?;
-                    loop {
-                        match tokio::time::timeout(Duration::from_secs(1), connection.accept()).await {
-                            Ok(None) => return result,
-                            Ok(Some(Ok(_))) => {
-                                return Err(io::Error::other("unexpected second h2 request"));
-                            }
-                            Ok(Some(Err(_))) => return result,
-                            Err(_) => {
-                                return Err(io::Error::other("HTTP/2 origin drain timed out"));
-                            }
-                        }
+        tokio::select! {
+            result = &mut handler => {
+                let result = result.map_err(io::Error::other)?;
+                match tokio::time::timeout(Duration::from_secs(1), connection.accept()).await {
+                    Ok(None) => result,
+                    Ok(Some(Ok(_))) => {
+                        Err(io::Error::other("unexpected second h2 request"))
                     }
-                },
-                extra = connection.accept() => {
-                    match extra {
-                        Some(Ok(_)) => {
-                            return Err(io::Error::other("unexpected second h2 request"));
-                        }
-                        Some(Err(error)) => {
-                            return Err(io::Error::other(format!(
-                                "HTTP/2 origin connection: {error}"
-                            )));
-                        }
-                        None => {
-                            return Err(io::Error::other(
+                    Ok(Some(Err(_))) => result,
+                    Err(_) => Err(io::Error::other("HTTP/2 origin drain timed out")),
+                }
+            },
+            extra = connection.accept() => {
+                match extra {
+                    Some(Ok(_)) => {
+                        Err(io::Error::other("unexpected second h2 request"))
+                    }
+                    Some(Err(error)) => {
+                        Err(io::Error::other(format!(
+                            "HTTP/2 origin connection: {error}"
+                        )))
+                    }
+                    None => tokio::time::timeout(Duration::from_secs(1), &mut handler)
+                        .await
+                        .map_err(|_| {
+                            io::Error::other(
                                 "HTTP/2 peer closed before origin handler completed",
-                            ));
-                        }
-                    }
+                            )
+                        })?
+                        .map_err(io::Error::other)?,
                 }
             }
         }
