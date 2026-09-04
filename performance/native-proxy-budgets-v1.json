@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-09-04",
+  "issue": 326,
+  "workload_seed": 128,
+  "matrix": {
+    "protocols": ["http1", "http2", "websocket", "grpc", "tcp", "udp", "quic"],
+    "retention": ["off", "on"]
+  },
+  "profiles": {
+    "short": {
+      "warmup_windows": 1,
+      "windows": 7,
+      "sample_seconds": 1,
+      "minimum_duration_seconds": 0
+    },
+    "soak": {
+      "warmup_windows": 1,
+      "windows": 7,
+      "sample_seconds": 60,
+      "minimum_duration_seconds": 7200
+    }
+  },
+  "evaluation": {
+    "guard_band_percent": 5,
+    "minimum_breaching_windows": 5,
+    "maximum_retries": 1,
+    "maximum_shutdown_milliseconds": 5000,
+    "maximum_private_memory_growth_bytes": 33554432,
+    "maximum_worker_memory_bytes": 268435456,
+    "maximum_artifact_bytes": 33554432,
+    "maximum_cpu_microseconds_per_mib": 1000000,
+    "maximum_worker_tasks": 8,
+    "maximum_application_queue": 4096,
+    "maximum_leaf_cache_entries": 256,
+    "maximum_leaf_cache_bytes": 8388608,
+    "maximum_unaccounted_units": 0
+  },
+  "cases": [
+    {"id":"http1-off","protocol":"http1","retention":"off","useful_bytes_per_window":2097152,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":200000,"evidence":"crates/fragcap-proxy/tests/http1_proxy.rs"},
+    {"id":"http1-on","protocol":"http1","retention":"on","useful_bytes_per_window":2097152,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":200000,"evidence":"crates/fragcap-proxy/tests/http1_proxy.rs"},
+    {"id":"http2-off","protocol":"http2","retention":"off","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":200000,"evidence":"crates/fragcap-proxy/tests/http2_proxy.rs"},
+    {"id":"http2-on","protocol":"http2","retention":"on","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":200000,"evidence":"crates/fragcap-proxy/tests/http2_proxy.rs"},
+    {"id":"websocket-off","protocol":"websocket","retention":"off","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":400000,"evidence":"crates/fragcap-proxy/tests/http1_proxy.rs"},
+    {"id":"websocket-on","protocol":"websocket","retention":"on","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":400000,"evidence":"crates/fragcap-proxy/tests/http1_proxy.rs"},
+    {"id":"grpc-off","protocol":"grpc","retention":"off","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":200000,"evidence":"crates/fragcap-proxy/tests/conformance.rs"},
+    {"id":"grpc-on","protocol":"grpc","retention":"on","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":200000,"evidence":"crates/fragcap-proxy/tests/conformance.rs"},
+    {"id":"tcp-off","protocol":"tcp","retention":"off","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":400000,"evidence":"crates/fragcap-proxy/tests/socks5_proxy.rs"},
+    {"id":"tcp-on","protocol":"tcp","retention":"on","useful_bytes_per_window":4194304,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":200,"maximum_added_p95_microseconds":400000,"evidence":"crates/fragcap-proxy/tests/socks5_proxy.rs"},
+    {"id":"udp-off","protocol":"udp","retention":"off","useful_bytes_per_window":1966080,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":500,"maximum_added_p95_microseconds":25000,"evidence":"crates/fragcap-proxy/tests/socks5_udp.rs"},
+    {"id":"udp-on","protocol":"udp","retention":"on","useful_bytes_per_window":1966080,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":500,"maximum_added_p95_microseconds":25000,"evidence":"crates/fragcap-proxy/tests/socks5_udp.rs"},
+    {"id":"quic-off","protocol":"quic","retention":"off","useful_bytes_per_window":2097152,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":100,"maximum_added_p95_microseconds":750000,"evidence":"crates/fragcap-proxy/tests/quic_http3.rs"},
+    {"id":"quic-on","protocol":"quic","retention":"on","useful_bytes_per_window":2097152,"concurrency":1,"minimum_throughput_bytes_per_second":1048576,"minimum_throughput_ratio_basis_points":100,"maximum_added_p95_microseconds":750000,"evidence":"crates/fragcap-proxy/tests/quic_http3.rs"}
+  ]
+}

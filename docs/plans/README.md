@@ -322,3 +322,13 @@ the production coordinator, while journal prefixes produce exact actions,
 no-actions, or refusals through the shared Doctor recovery authority. S127 adds
 no dependency or runtime fault switch. Performance work begins with S128 under
 #326, and Deep Capture remains incomplete until #334.
+
+S128 (`specs/128-native-performance-envelope`) follows S127 and closes #326 at
+the bounded native performance-evidence boundary. One reviewed registry fixes
+all fourteen protocol and payload-retention rows before measurement. Release
+campaigns exercise the production backend with seven independent process
+windows, exact off/on policy, bounded runtime resource gauges, complete row
+identity, and immutable JSON Lines evidence. Pull requests run the short matrix
+on Windows and Ubuntu; Windows owns the genuine two-hour scheduled soak.
+Windows-host integration begins with S129 under #327, and Deep Capture remains
+incomplete until #334.

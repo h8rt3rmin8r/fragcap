@@ -170,6 +170,8 @@ pub struct LeafCache {
     entries: HashMap<CertificateIdentity, Arc<LeafCertificate>>,
     lru: VecDeque<CertificateIdentity>,
     bytes: usize,
+    peak_entries: usize,
+    peak_bytes: usize,
     evictions: u64,
 }
 
@@ -191,6 +193,8 @@ impl LeafCache {
             entries: HashMap::new(),
             lru: VecDeque::new(),
             bytes: 0,
+            peak_entries: 0,
+            peak_bytes: 0,
             evictions: 0,
         })
     }
@@ -226,6 +230,8 @@ impl LeafCache {
         self.bytes += leaf.byte_cost;
         self.lru.push_back(identity.clone());
         self.entries.insert(identity, Arc::clone(&leaf));
+        self.peak_entries = self.peak_entries.max(self.entries.len());
+        self.peak_bytes = self.peak_bytes.max(self.bytes);
         Ok(leaf)
     }
 
@@ -249,6 +255,12 @@ impl LeafCache {
     }
     pub fn evictions(&self) -> u64 {
         self.evictions
+    }
+    pub fn peak_entries(&self) -> usize {
+        self.peak_entries
+    }
+    pub fn peak_bytes(&self) -> usize {
+        self.peak_bytes
     }
     fn touch(&mut self, identity: &CertificateIdentity) {
         self.lru.retain(|item| item != identity);

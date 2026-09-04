@@ -143,6 +143,7 @@ enforcement.
 | 0.1.48-draft | 2026-09-04 | W. Thompson | **Completes the native Deep Capture threat model and abuse-case gate (issue #323).** Extends sections 19, 25, and 28.1. One versioned registry maps every trust boundary, sensitive asset, and high-risk abuse case to prevention, detection, containment, evidence, and exact executable negative tests. The ordinary CI gate rejects missing or ignored tests and unreviewed drift in the exhaustive protocol-family or direct proxy dependency inventories. S125 records no residual-risk acceptance, adds no dependency or runtime behavior, and does not claim Deep Capture complete before #334. |
 | 0.1.49-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native parser and artifact fuzzing (issue #324).** Extends sections 24.3, 25.5, and 28.1. A versioned registry maps twenty fragcap-owned protocol and artifact surfaces to six bounded libFuzzer targets, minimized synthetic corpora, stable deterministic replay, and an exact-pinned CI matrix. Dependency-owned wire decoders remain explicit boundaries. S126 isolates its fuzz dependency graph, adds no product lock package or runtime behavior, and leaves Deep Capture incomplete until #334. |
 | 0.1.50-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native failure-injection evidence (issue #325).** Extends sections 25.5 and 28.1. A versioned registry generates before and after scenarios for seven journaled effects and eight checked lifecycle transitions. Ten controlled failure families execute through the production coordinator and resource journal while terminal, artifact, fact, event, cleanup, journal, and recovery authorities remain independent. Source-derived inventory checks prevent unreviewed gaps. S127 adds no dependency, runtime fault switch, destructive host test, or Deep Capture completion claim. |
+| 0.1.51-draft | 2026-09-04 | W. Thompson | **Adds the bounded native performance envelope (issue #326).** Extends sections 25.5 and 28.1. A reviewed registry freezes fourteen production protocol and payload-retention cases, short and genuine two-hour soak profiles, finite timing and resource limits, seven independent worker windows, immutable JSON Lines evidence, and exact runtime failure, task, cache, queue, loss, and shutdown accounting. Windows and Ubuntu run the short gate; Windows owns scheduled soak evidence. The isolated measurement lock adds no product dependency. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4884,6 +4885,19 @@ ordinary CI gate rejects source inventory drift and incomplete or stale
 evidence. S127 adds no dependency, shipped fault switch, destructive host test,
 or Deep Capture completion claim. Performance, Windows integration, packaging,
 supply-chain, and final completion work remain #326 through #334.
+
+S128 closes #326 at the bounded native performance-evidence boundary. The
+version 1 registry fixes seven native protocol families under payload retention
+off and on before collecting measurements. Short campaigns run seven fresh
+production-path windows per row on Windows and Ubuntu. A Windows scheduled or
+manual campaign must run for at least 7,200 seconds to earn the soak identity.
+Reports carry monotonic sequences, the reviewed registry digest, every expected
+row identity, and one terminal completeness result. Runtime observations bound
+failure details and expose connection-task, leaf-cache, and application-writer
+queue occupancy alongside existing conservation and cleanup truth. The
+measurement workspace has an isolated lock and changes no product dependency.
+Windows integration, packaging, supply-chain, and final completion work remain
+#327 through #334.
 
 The required dependency direction is:
 

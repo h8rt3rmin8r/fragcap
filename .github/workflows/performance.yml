@@ -1,0 +1,60 @@
+name: Native performance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: Required soak duration
+        default: "7200"
+        required: true
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  short:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+      - name: Validate performance authority
+        run: cargo xtask performance
+      - name: Run short production-path campaign
+        run: cargo run --release --locked --manifest-path performance/native-proxy/Cargo.toml -- --profile short --output target/performance/short.jsonl
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-performance-short-${{ matrix.os }}
+          path: target/performance/short.jsonl
+
+  soak:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 135
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+      - name: Require the canonical two-hour duration
+        shell: pwsh
+        run: if ('${{ inputs.soak_seconds }}' -and '${{ inputs.soak_seconds }}' -ne '7200') { throw 'Only the canonical 7200-second soak can pass' }
+      - name: Run two-hour production-path campaign
+        run: cargo run --release --locked --manifest-path performance/native-proxy/Cargo.toml -- --profile soak --output target/performance/soak.jsonl
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-performance-soak-windows
+          path: target/performance/soak.jsonl

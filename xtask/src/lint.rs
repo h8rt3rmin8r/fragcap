@@ -27,6 +27,9 @@ const EXCLUDED: &[&str] = &[
     "fuzz/target",
     "fuzz/artifacts",
     "fuzz/coverage",
+    // The performance harness is an isolated Cargo workspace for fresh worker
+    // processes. Its generated target tree is not authored repository input.
+    "performance/native-proxy/target",
     "node_modules",
     "captures",
     ".agents/skills",
@@ -767,6 +770,19 @@ mod tests {
         ));
         assert!(!is_excluded(
             Path::new("repo/fuzz/corpus/http1/request-get"),
+            root
+        ));
+    }
+
+    #[test]
+    fn isolated_performance_build_output_is_excluded_but_sources_are_not() {
+        let root = Path::new("repo");
+        assert!(is_excluded(
+            Path::new("repo/performance/native-proxy/target/release"),
+            root
+        ));
+        assert!(!is_excluded(
+            Path::new("repo/performance/native-proxy/src/main.rs"),
             root
         ));
     }

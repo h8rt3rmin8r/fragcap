@@ -1456,6 +1456,8 @@ async fn run(
     let (shutdown_send, shutdown_receive) = watch::channel(false);
     let mut tasks = JoinSet::new();
     let mut observation = RuntimeObservation::running(endpoint);
+    observation.resources.failure_detail_capacity =
+        config.protocol_limits().max_observations as u64;
     let mut next_connection_id = 1_u64;
     let stop_budget = loop {
         while let Some(result) = tasks.try_join_next() {
@@ -1474,7 +1476,7 @@ async fn run(
             command = commands.recv() => {
                 match command {
                     Some(Command::Observe(response)) => {
-                        sync_application_accounting(&mut observation, &services.application_sink);
+                        sync_resource_accounting(&mut observation, &services).await;
                         let _ = response.send(observation.clone());
                     }
                     Some(Command::Stop { budget }) => {
@@ -1511,6 +1513,18 @@ async fn run(
                                 let opened_at_ns = wall_clock_ns();
                                 next_connection_id = next_connection_id.saturating_add(1);
                                 observation.accepted_connections = observation.accepted_connections.saturating_add(1);
+                                observation.resources.connection_tasks_spawned = observation
+                                    .resources
+                                    .connection_tasks_spawned
+                                    .saturating_add(1);
+                                observation.resources.connection_tasks_current = observation
+                                    .resources
+                                    .connection_tasks_current
+                                    .saturating_add(1);
+                                observation.resources.connection_tasks_peak = observation
+                                    .resources
+                                    .connection_tasks_peak
+                                    .max(observation.resources.connection_tasks_current);
                                 observation.live_connections = config
                                     .max_connections()
                                     .saturating_sub(permits.available_permits());
@@ -1570,7 +1584,7 @@ async fn run(
                         }
                     }
                     Err(error) => {
-                        observation.failures.push(RuntimeFailure {
+                        push_runtime_failure(&mut observation, RuntimeFailure {
                             code: "listener-accept-failed",
                             detail: error.to_string(),
                             connection_id: None,
@@ -1594,18 +1608,23 @@ async fn run(
     .await;
     observation.live_connections = 0;
     observation.state = LifecycleState::Stopped;
-    sync_application_accounting(&mut observation, &services.application_sink);
+    sync_resource_accounting(&mut observation, &services).await;
 
     let accounted = observation.completed_connections
         + observation.failed_connections
         + observation.forced_connections;
     let incomplete = observation.accepted_connections.saturating_sub(accounted);
     if incomplete > 0 {
-        observation.failures.push(RuntimeFailure {
-            code: "connection-accounting-incomplete",
-            detail: format!("{incomplete} accepted connection task(s) have no terminal outcome"),
-            connection_id: None,
-        });
+        push_runtime_failure(
+            &mut observation,
+            RuntimeFailure {
+                code: "connection-accounting-incomplete",
+                detail: format!(
+                    "{incomplete} accepted connection task(s) have no terminal outcome"
+                ),
+                connection_id: None,
+            },
+        );
     }
     ShutdownReport {
         joined_tasks: observation.accepted_connections.saturating_sub(incomplete),
@@ -1616,11 +1635,12 @@ async fn run(
     }
 }
 
-fn sync_application_accounting(
+async fn sync_resource_accounting(
     observation: &mut RuntimeObservation,
-    sink: &crate::application::SharedEventSink,
+    services: &RuntimeServices,
 ) {
-    let accounting = sink
+    let accounting = services
+        .application_sink
         .as_ref()
         .map_or_else(Default::default, |sink| sink.accounting());
     observation.protocol.application_events_accepted = accounting.accepted_events;
@@ -1647,6 +1667,24 @@ fn sync_application_accounting(
     observation.protocol.quic_datagrams_storage_dropped = accounting.quic_datagrams_storage_dropped;
     observation.protocol.quic_datagram_bytes_storage_dropped =
         accounting.quic_datagram_bytes_storage_dropped;
+    observation.resources.application_queue_capacity = accounting.queue_capacity;
+    observation.resources.application_queue_current = accounting.queue_current;
+    observation.resources.application_queue_peak = observation
+        .resources
+        .application_queue_peak
+        .max(accounting.queue_peak);
+    let cache = services.leaf_cache.lock().await;
+    observation.resources.leaf_cache_entries = cache.len() as u64;
+    observation.resources.leaf_cache_peak_entries = observation
+        .resources
+        .leaf_cache_peak_entries
+        .max(cache.peak_entries() as u64);
+    observation.resources.leaf_cache_bytes = cache.bytes() as u64;
+    observation.resources.leaf_cache_peak_bytes = observation
+        .resources
+        .leaf_cache_peak_bytes
+        .max(cache.peak_bytes() as u64);
+    observation.resources.leaf_cache_evictions = cache.evictions();
 }
 
 async fn drain_tasks(
@@ -1670,11 +1708,19 @@ async fn drain_tasks(
 
     let forced = tasks.len() as u64;
     observation.forced_connections = observation.forced_connections.saturating_add(forced);
+    observation.resources.connection_tasks_aborted = observation
+        .resources
+        .connection_tasks_aborted
+        .saturating_add(forced);
+    observation.resources.connection_tasks_current = observation
+        .resources
+        .connection_tasks_current
+        .saturating_sub(forced);
     tasks.abort_all();
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
             if !error.is_cancelled() {
-                observation.failures.push(join_failure(error, None));
+                push_runtime_failure(observation, join_failure(error, None));
                 observation.failed_connections = observation.failed_connections.saturating_add(1);
                 observation.forced_connections = observation.forced_connections.saturating_sub(1);
             }
@@ -1688,6 +1734,21 @@ fn account_join(
     max_observations: usize,
 ) {
     observation.live_connections = observation.live_connections.saturating_sub(1);
+    observation.resources.connection_tasks_current = observation
+        .resources
+        .connection_tasks_current
+        .saturating_sub(1);
+    if result.is_ok() {
+        observation.resources.connection_tasks_completed = observation
+            .resources
+            .connection_tasks_completed
+            .saturating_add(1);
+    } else {
+        observation.resources.connection_tasks_aborted = observation
+            .resources
+            .connection_tasks_aborted
+            .saturating_add(1);
+    }
     match result {
         Ok((_id, ConnectionOutcome::Completed(run))) => {
             observation.authenticated_connections =
@@ -1707,11 +1768,14 @@ fn account_join(
                 observation.protocol.socks_auth_refused =
                     observation.protocol.socks_auth_refused.saturating_add(1);
             }
-            observation.failures.push(RuntimeFailure {
-                code: error.code,
-                detail: error.detail,
-                connection_id: None,
-            });
+            push_runtime_failure(
+                observation,
+                RuntimeFailure {
+                    code: error.code,
+                    detail: error.detail,
+                    connection_id: None,
+                },
+            );
         }
         Ok((id, ConnectionOutcome::PreAuthenticationFailed(run))) => {
             observation.failed_connections = observation.failed_connections.saturating_add(1);
@@ -1723,11 +1787,14 @@ fn account_join(
                     "connection failed before authentication",
                 )
             });
-            observation.failures.push(RuntimeFailure {
-                code: failure.code,
-                detail: failure.detail,
-                connection_id: Some(id),
-            });
+            push_runtime_failure(
+                observation,
+                RuntimeFailure {
+                    code: failure.code,
+                    detail: failure.detail,
+                    connection_id: Some(id),
+                },
+            );
         }
         Ok((id, ConnectionOutcome::Failed(run))) => {
             observation.authenticated_connections =
@@ -1737,15 +1804,18 @@ fn account_join(
             merge_protocol(observation, run, max_observations);
             let failure = failure
                 .unwrap_or_else(|| ProtocolError::new("connection-io-failed", "connection failed"));
-            observation.failures.push(RuntimeFailure {
-                code: failure.code,
-                detail: failure.detail,
-                connection_id: Some(id),
-            });
+            push_runtime_failure(
+                observation,
+                RuntimeFailure {
+                    code: failure.code,
+                    detail: failure.detail,
+                    connection_id: Some(id),
+                },
+            );
         }
         Err(error) => {
             observation.failed_connections = observation.failed_connections.saturating_add(1);
-            observation.failures.push(join_failure(error, None));
+            push_runtime_failure(observation, join_failure(error, None));
         }
     }
 }
@@ -2170,13 +2240,30 @@ fn join_failure(error: JoinError, connection_id: Option<u64>) -> RuntimeFailure 
     }
 }
 
+fn push_runtime_failure(observation: &mut RuntimeObservation, failure: RuntimeFailure) {
+    let capacity = usize::try_from(observation.resources.failure_detail_capacity)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    if observation.failures.len() >= capacity {
+        observation.failures.remove(0);
+        observation.resources.failure_details_dropped_oldest = observation
+            .resources
+            .failure_details_dropped_oldest
+            .saturating_add(1);
+    }
+    observation.failures.push(failure);
+}
+
 fn runtime_thread_failure_report(mut observation: RuntimeObservation) -> ShutdownReport {
     observation.state = LifecycleState::Stopped;
-    observation.failures.push(RuntimeFailure {
-        code: "runtime-thread-failed",
-        detail: "native proxy owner thread ended without a terminal report".to_string(),
-        connection_id: None,
-    });
+    push_runtime_failure(
+        &mut observation,
+        RuntimeFailure {
+            code: "runtime-thread-failed",
+            detail: "native proxy owner thread ended without a terminal report".to_string(),
+            connection_id: None,
+        },
+    );
     ShutdownReport {
         observation,
         listener_released: false,
@@ -2200,11 +2287,15 @@ fn owner_thread_timeout_report(
         })
         .unwrap_or((false, 0, observation.live_connections as u64));
     observation.state = LifecycleState::Stopping;
-    observation.failures.push(RuntimeFailure {
-        code: "owner-thread-join-timeout",
-        detail: "native proxy owner thread did not finish within the cleanup budget".to_string(),
-        connection_id: None,
-    });
+    push_runtime_failure(
+        &mut observation,
+        RuntimeFailure {
+            code: "owner-thread-join-timeout",
+            detail: "native proxy owner thread did not finish within the cleanup budget"
+                .to_string(),
+            connection_id: None,
+        },
+    );
     ShutdownReport {
         observation,
         listener_released,
@@ -2228,6 +2319,26 @@ mod tests {
     }
 
     #[test]
+    fn runtime_failure_details_drop_oldest_and_count_overflow() {
+        let mut observed = observation();
+        observed.resources.failure_detail_capacity = 2;
+        for ordinal in 1..=3 {
+            push_runtime_failure(
+                &mut observed,
+                RuntimeFailure {
+                    code: "controlled-failure",
+                    detail: ordinal.to_string(),
+                    connection_id: Some(ordinal),
+                },
+            );
+        }
+        assert_eq!(observed.failures.len(), 2);
+        assert_eq!(observed.failures[0].connection_id, Some(2));
+        assert_eq!(observed.failures[1].connection_id, Some(3));
+        assert_eq!(observed.resources.failure_details_dropped_oldest, 1);
+    }
+
+    #[test]
     fn forced_timeout_aborts_and_joins_every_task() {
         let runtime = Builder::new_current_thread().enable_time().build().unwrap();
         runtime.block_on(async {
@@ -2240,6 +2351,8 @@ mod tests {
             drain_tasks(&mut tasks, &mut observed, Duration::ZERO, 4_096).await;
             assert!(tasks.is_empty());
             assert_eq!(observed.forced_connections, 1);
+            assert_eq!(observed.resources.connection_tasks_current, 0);
+            assert_eq!(observed.resources.connection_tasks_aborted, 1);
             assert!(observed.failures.is_empty());
         });
     }

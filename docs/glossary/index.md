@@ -154,6 +154,8 @@ the owning category page.
 - [pcapng](file-and-wire-formats.md#pcapng)
 - [Per-consumer queue](capture-and-networking.md#per-consumer-queue)
 - [Percent-encoding](file-and-wire-formats.md#percent-encoding)
+- [Performance campaign](capture-and-networking.md#performance-campaign)
+- [Performance registry](capture-and-networking.md#performance-registry)
 - [PID recycling](process-and-attribution.md#pid-recycling)
 - [Pipeline](capture-and-networking.md#pipeline)
 - [Platform walker](process-and-attribution.md#platform-walker)

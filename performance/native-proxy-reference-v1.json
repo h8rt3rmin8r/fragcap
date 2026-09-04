@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "registry_digest": "fnv1a64:1eff0d342141a3e0",
+  "profile": "short",
+  "collected_on": "2026-09-04",
+  "campaigns": [
+    {
+      "http1-off":{"throughput":32076844,"latency":79403},"http1-on":{"throughput":52732009,"latency":73909},"http2-off":{"throughput":79973763,"latency":70413},"http2-on":{"throughput":62028483,"latency":56164},"websocket-off":{"throughput":26645558,"latency":193972},"websocket-on":{"throughput":29619954,"latency":205036},"grpc-off":{"throughput":60456693,"latency":41340},"grpc-on":{"throughput":73103337,"latency":108461},"tcp-off":{"throughput":37483279,"latency":123319},"tcp-on":{"throughput":38800939,"latency":168997},"udp-off":{"throughput":459579242,"latency":3898},"udp-on":{"throughput":322784436,"latency":6424},"quic-off":{"throughput":8722396,"latency":256062},"quic-on":{"throughput":8979994,"latency":243082}
+    },
+    {
+      "http1-off":{"throughput":52196525,"latency":65501},"http1-on":{"throughput":37917697,"latency":117149},"http2-off":{"throughput":57150113,"latency":37540},"http2-on":{"throughput":60896451,"latency":56618},"websocket-off":{"throughput":60889379,"latency":128276},"websocket-on":{"throughput":26736769,"latency":203871},"grpc-off":{"throughput":75471057,"latency":51142},"grpc-on":{"throughput":48079415,"latency":65068},"tcp-off":{"throughput":42450321,"latency":186177},"tcp-on":{"throughput":62637077,"latency":233049},"udp-off":{"throughput":459471839,"latency":3734},"udp-on":{"throughput":422631126,"latency":5432},"quic-off":{"throughput":8958551,"latency":236684},"quic-on":{"throughput":8883941,"latency":244480}
+    }
+  ],
+  "units": {"throughput":"useful bytes per second","latency":"added p95 microseconds"},
+  "complete": true,
+  "maximum_pair_delta_percent": 56.2,
+  "comparison_tolerance_percent": 75,
+  "contains_sensitive_data": false
+}

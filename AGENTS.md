@@ -564,6 +564,17 @@ one evidence-backed append. S127 adds no
 dependency, shipped fault switch, destructive host test, or Deep Capture
 completion claim. Performance begins under #326.
 
+S128 closes #326 at the bounded native performance-evidence boundary. A
+reviewed versioned registry freezes fourteen protocol and payload-retention
+rows plus short and genuine two-hour soak profiles before measurement. Every
+row executes the production native backend in fresh hidden workers, reports a
+complete crash-readable identity set, and preserves exact loss and shutdown
+truth. Runtime observations now bound failure details and expose connection
+task, certificate-cache, and application-queue occupancy. The performance
+workspace and lock are isolated from the product dependency graph. S128 adds no
+product dependency or completion claim. Windows integration remains #327, and
+Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,
