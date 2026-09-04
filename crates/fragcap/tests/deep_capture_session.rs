@@ -244,6 +244,28 @@ impl TrustLease for TrustRun {
     }
 }
 
+struct Routing(Ledger, ChildEnvironmentRouting);
+
+impl RoutingAdapter for Routing {
+    fn prepare(
+        &mut self,
+        target: &PreparedTarget,
+        plan: &RoutingPlan,
+    ) -> Result<(), PreflightRefusal> {
+        self.1.prepare(target, plan)
+    }
+
+    fn apply(
+        &mut self,
+        session: &SessionPlan,
+        proxy: ProxyRoute,
+        budget: Budget,
+    ) -> Result<Box<dyn RoutingLease>, StageFailure> {
+        self.0.borrow_mut().push("routing.apply".into());
+        self.1.apply(session, proxy, budget)
+    }
+}
+
 struct Launch(Ledger);
 impl LaunchAdapter for Launch {
     fn launch(
@@ -365,11 +387,13 @@ impl EventSink for FailingEvents {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum FailingEventPoint {
     Started,
     Terminal,
 }
 
+#[allow(dead_code)]
 struct FailingNamedEvent(Ledger, FailingEventPoint);
 impl EventSink for FailingNamedEvent {
     fn emit(&mut self, event: &DeepCaptureEvent) -> Result<(), StageFailure> {
@@ -413,6 +437,7 @@ impl ProxyBackend for FailingProxy {
     }
 }
 
+#[allow(dead_code)]
 struct FailingProxyCleanup(Ledger);
 impl ProxyBackend for FailingProxyCleanup {
     fn descriptor(&self) -> BackendDescriptor {
@@ -427,6 +452,7 @@ impl ProxyBackend for FailingProxyCleanup {
     }
 }
 
+#[allow(dead_code)]
 struct FailingProxyCleanupRun(Ledger);
 impl ProxyLease for FailingProxyCleanupRun {
     fn route(&self) -> Result<ProxyRoute, StageFailure> {
@@ -572,6 +598,7 @@ impl CaptureRunner for InterruptedCapture {
     }
 }
 
+#[allow(dead_code)]
 struct TimedOutStopCapture(Ledger);
 impl CaptureRunner for TimedOutStopCapture {
     fn prepare(
@@ -638,6 +665,32 @@ impl ArtifactSink for FailingArtifacts {
     }
 }
 
+struct FailingBoundary {
+    boundary: String,
+    side: BoundarySide,
+    family: String,
+    driver: String,
+    ledger: Ledger,
+}
+
+impl BoundaryController for FailingBoundary {
+    fn check(&mut self, boundary: &str, side: BoundarySide) -> Result<(), StageFailure> {
+        self.ledger
+            .borrow_mut()
+            .push(format!("boundary.{boundary}.{side:?}"));
+        if boundary == self.boundary && side == self.side {
+            Err(StageFailure::new(
+                Stage::Bundle,
+                format!("controlled-{}", self.family),
+                format!("{} at {boundary}:{side:?}", self.driver),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[allow(dead_code)]
 struct CorruptingArtifacts(Ledger);
 impl ArtifactSink for CorruptingArtifacts {
     fn validate_destination(&mut self, _: &Path) -> Result<(), PreflightRefusal> {
@@ -747,13 +800,14 @@ fn config() -> SessionConfig {
 
 fn adapters(ledger: &Ledger) -> AdapterSet<'_> {
     AdapterSet {
+        boundaries: Box::new(AllowBoundaries),
         targets: Box::new(Targets(ledger.clone())),
         endpoints: Box::new(Endpoint(ledger.clone())),
         clock: Box::new(Clock),
         identifiers: Box::new(Ids(VecDeque::from(["session-1".into(), "plan-1".into()]))),
         proxy: Box::new(Proxy(ledger.clone())),
         trust: Box::new(Trust(ledger.clone())),
-        routing: Box::new(ChildEnvironmentRouting),
+        routing: Box::new(Routing(ledger.clone(), ChildEnvironmentRouting)),
         launch: Box::new(Launch(ledger.clone())),
         capture: Box::new(Capture(ledger.clone())),
         facts: Box::new(Facts(ledger.clone())),
@@ -1177,81 +1231,19 @@ fn generated_failure_matrix_exercises_production_authorities() {
     for (scenario, boundary, is_effect, side, family, driver, expected) in scenarios {
         let ledger = Rc::new(RefCell::new(Vec::new()));
         let mut environment = adapters(&ledger);
-        let event_failure = matches!(
-            driver,
-            "started-event-delivery-failure"
-                | "terminal-event-failure"
-                | "observation-event-failure"
-        );
-        match driver {
-            "proxy-start-refusal" | "proxy-runtime-start-panic" | "listener-bind-refusal" => {
-                environment.proxy = Box::new(FailingProxy(ledger.clone()))
-            }
-            "proxy-task-join-failure" | "proxy-stop-reset" => {
-                environment.proxy = Box::new(FailingProxyCleanup(ledger.clone()))
-            }
-            "proxy-late-success" | "late-start-result" => {
-                environment.clock = Box::new(ScriptClock(Rc::new(RefCell::new(VecDeque::from([
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::from_secs(31),
-                ])))))
-            }
-            "launcher-late-success" => {
-                environment.clock = Box::new(ScriptClock(Rc::new(RefCell::new(VecDeque::from([
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::from_secs(31),
-                ])))))
-            }
-            "proxy-cancelled-after-start" | "capture-interrupted" | "operator-stop" => {
-                environment.capture = Box::new(InterruptedCapture(ledger.clone()))
-            }
-            "trust-acquire-denied" | "authorization-or-start-refusal" => {
-                environment.trust = Box::new(FailingTrust(ledger.clone()))
-            }
-            "authorization-refusal" => {}
-            "trust-cleanup-denied" | "cleanup-denied" => {
-                environment.trust = Box::new(FailingCleanupTrust(ledger.clone()))
-            }
-            "route-apply-denied" => environment.routing = Box::new(FailingRouting(ledger.clone())),
-            "route-owned-then-launch-fails" | "launcher-start-failure" => {
-                environment.launch = Box::new(FailingLaunch(ledger.clone()))
-            }
-            "capture-start-failure" | "capture-run-failure" => {
-                environment.capture = Box::new(FailingCapture(ledger.clone()))
-            }
-            "capture-stop-timeout" => {
-                environment.capture = Box::new(TimedOutStopCapture(ledger.clone()))
-            }
-            "artifact-write-failure" | "manifest-corruption" => {
-                environment.artifacts = Box::new(FailingArtifacts(ledger.clone()))
-            }
-            "artifact-finalization-corruption" => {
-                environment.artifacts = Box::new(CorruptingArtifacts(ledger.clone()))
-            }
-            "started-event-delivery-failure" => {
-                environment.events = Box::new(FailingNamedEvent(
-                    ledger.clone(),
-                    FailingEventPoint::Started,
-                ))
-            }
-            "terminal-event-failure" => {
-                environment.events = Box::new(FailingNamedEvent(
-                    ledger.clone(),
-                    FailingEventPoint::Terminal,
-                ))
-            }
-            "observation-event-failure" => {
-                environment.events = Box::new(FailingEvents(ledger.clone()))
-            }
-            "fact-writer-failure" => environment.facts = Box::new(FailingFacts(ledger.clone())),
-            other => panic!("{scenario}: unimplemented controlled driver {other}"),
+        environment.boundaries = Box::new(FailingBoundary {
+            boundary: boundary.to_string(),
+            side: if side == "before" {
+                BoundarySide::Before
+            } else {
+                BoundarySide::After
+            },
+            family: family.to_string(),
+            driver: driver.to_string(),
+            ledger: ledger.clone(),
+        });
+        if !is_effect && boundary == "prepared-stopped" {
+            environment.proxy = Box::new(FailingProxy(ledger.clone()));
         }
 
         let mut scenario_config = config();
@@ -1261,16 +1253,42 @@ fn generated_failure_matrix_exercises_production_authorities() {
         let bundle = scenario_config.bundle.clone();
         let prepared = DeepCapture::preflight(scenario_config, &mut environment)
             .unwrap_or_else(|error| panic!("{scenario}: preflight failed: {}", error.code));
-        let authorization = if driver == "authorization-refusal" {
+        let authorization = if !is_effect && boundary == "prepared-terminal" {
             Authorization::approved(PlanId::new("stale-matrix-plan"))
         } else {
             Authorization::approved(prepared.plan().id.clone())
         };
-        let report = prepared
-            .into_session(environment)
-            .run_to_completion(authorization);
+        let mut session = prepared.into_session(environment);
+        let report = if !is_effect && boundary == "running-stopped" {
+            session.start(authorization).expect("matrix start");
+            session.stop().expect("matrix direct stop");
+            session.finalize().expect("matrix finalization")
+        } else {
+            session.run_to_completion(authorization)
+        };
+        let boundary_marker = format!(
+            "boundary.{boundary}.{}",
+            if side == "before" { "Before" } else { "After" }
+        );
+        assert_eq!(
+            ledger
+                .borrow()
+                .iter()
+                .filter(|entry| *entry == &boundary_marker)
+                .count(),
+            1,
+            "{scenario}: selected production boundary was not reached exactly once"
+        );
+        assert!(
+            report
+                .snapshot
+                .failures
+                .iter()
+                .any(|failure| failure.code == format!("controlled-{family}")),
+            "{scenario}: selected boundary failure was not retained"
+        );
 
-        let journal = if driver == "authorization-refusal" {
+        let journal = if !is_effect && boundary == "prepared-terminal" {
             assert!(
                 !bundle.join("resource-journal.jsonl").exists(),
                 "{scenario}: refused authorization created a journal"
@@ -1303,11 +1321,14 @@ fn generated_failure_matrix_exercises_production_authorities() {
             Some(journal)
         };
 
-        assert_eq!(
-            !report.event_failures.is_empty(),
-            event_failure,
-            "{scenario}: selected event driver disposition"
-        );
+        if !is_effect {
+            assert!(
+                report.snapshot.lifecycle_transitions.iter().any(|edge| {
+                    format!("{:?}-{:?}", edge.from, edge.to).to_ascii_lowercase() == boundary
+                }),
+                "{scenario}: named lifecycle edge was not traversed"
+            );
+        }
         assert_expected_vector(
             &scenario,
             expected,
@@ -1316,7 +1337,13 @@ fn generated_failure_matrix_exercises_production_authorities() {
             journal.as_ref(),
         );
         if is_effect {
-            assert_production_effect_side(&scenario, boundary, side, journal.as_ref().unwrap());
+            assert_production_effect_side(
+                &scenario,
+                boundary,
+                side,
+                &ledger.borrow(),
+                journal.as_ref().unwrap(),
+            );
         }
     }
 }
@@ -1506,6 +1533,7 @@ fn assert_production_effect_side(
     scenario: &str,
     boundary: &str,
     side: &str,
+    calls: &[String],
     journal: &JournalPrefix,
 ) {
     let transitions = journal
@@ -1523,9 +1551,26 @@ fn assert_production_effect_side(
             ResourceState::Applied | ResourceState::Retained
         )
     });
+    let invoked = match boundary {
+        "proxy-listener" | "proxy-runtime" => calls.iter().any(|call| call == "proxy.start"),
+        "trust-entry" => calls.iter().any(|call| call == "trust.acquire"),
+        "route" => calls.iter().any(|call| call == "routing.apply"),
+        "managed-child" => calls.iter().any(|call| call == "launch.start"),
+        "capture" => calls.iter().any(|call| call == "capture.run"),
+        "bundle-evidence" => calls.iter().any(|call| call.starts_with("artifact.")),
+        other => panic!("{scenario}: unknown effect {other}"),
+    };
     match side {
-        "before" => assert!(!applied, "{scenario}: before-side effect was applied"),
-        "after" => assert!(applied, "{scenario}: after-side effect was never applied"),
+        "before" => {
+            assert!(!invoked, "{scenario}: before-side effect was invoked");
+            assert!(!applied, "{scenario}: before-side effect was applied");
+        }
+        "after" => {
+            assert!(invoked, "{scenario}: after-side effect was never invoked");
+            if boundary != "bundle-evidence" {
+                assert!(applied, "{scenario}: after-side effect was never applied");
+            }
+        }
         other => panic!("{scenario}: unknown side {other}"),
     }
 }

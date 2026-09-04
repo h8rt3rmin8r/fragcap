@@ -24,6 +24,21 @@ const LIFECYCLE_EDGES: &[(LifecycleState, LifecycleState)] = &[
     (LifecycleState::Finalizing, LifecycleState::Terminal),
 ];
 
+fn lifecycle_edge_id(from: LifecycleState, to: LifecycleState) -> String {
+    format!("{}-{}", lifecycle_state_id(from), lifecycle_state_id(to))
+}
+
+fn lifecycle_state_id(state: LifecycleState) -> &'static str {
+    match state {
+        LifecycleState::Prepared => "prepared",
+        LifecycleState::Running => "running",
+        LifecycleState::Observed => "observed",
+        LifecycleState::Stopped => "stopped",
+        LifecycleState::Finalizing => "finalizing",
+        LifecycleState::Terminal => "terminal",
+    }
+}
+
 /// Entry point for side-effect-free Deep Capture preparation.
 pub struct DeepCapture;
 
@@ -98,6 +113,7 @@ impl PreparedSession {
             plan: self.plan,
             adapters,
             state: LifecycleState::Prepared,
+            lifecycle_transitions: Vec::new(),
             proxy: None,
             proxy_stop_attempted: false,
             trust: None,
@@ -129,6 +145,7 @@ pub struct DeepCaptureSession<'a> {
     plan: SessionPlan,
     adapters: AdapterSet<'a>,
     state: LifecycleState,
+    lifecycle_transitions: Vec<LifecycleTransition>,
     proxy: Option<Box<dyn ProxyLease>>,
     proxy_stop_attempted: bool,
     trust: Option<Box<dyn TrustLease>>,
@@ -245,6 +262,28 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Stopped);
             return Ok(());
         }
+        if !self.check_boundary("proxy-listener", BoundarySide::Before)
+            || !self.check_boundary("proxy-runtime", BoundarySide::Before)
+        {
+            self.record_resource(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                &proxy_target,
+                "close-loopback-listener",
+                ResourceState::NotApplied,
+                "controlled failure before proxy invocation",
+            );
+            self.record_resource(
+                "proxy-runtime",
+                ResourceKind::Proxy,
+                &proxy_target,
+                "join-proxy-tasks",
+                ResourceState::NotApplied,
+                "controlled failure before proxy invocation",
+            );
+            self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
         let route = match self.adapters.proxy.start(&self.plan, budget) {
             Ok(lease) => {
                 self.record_resource(
@@ -273,6 +312,12 @@ impl DeepCaptureSession<'_> {
                     }
                 };
                 self.proxy = Some(lease);
+                if !self.check_boundary("proxy-listener", BoundarySide::After)
+                    || !self.check_boundary("proxy-runtime", BoundarySide::After)
+                {
+                    self.transition(LifecycleState::Stopped);
+                    return Ok(());
+                }
                 self.emit(DeepCaptureEvent::ProxyStarted {
                     sequence: 0,
                     session_id: self.plan.session_id.clone(),
@@ -325,6 +370,18 @@ impl DeepCaptureSession<'_> {
                 self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
+            if !self.check_boundary("trust-entry", BoundarySide::Before) {
+                self.record_resource(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &trust_target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    ResourceState::NotApplied,
+                    "controlled failure before trust invocation",
+                );
+                self.transition(LifecycleState::Stopped);
+                return Ok(());
+            }
             match self.adapters.trust.acquire(&self.plan, &route, budget) {
                 Ok(lease) => {
                     self.record_resource(
@@ -337,6 +394,10 @@ impl DeepCaptureSession<'_> {
                     );
                     self.trust = Some(lease);
                     self.trust_target = Some(trust_target);
+                    if !self.check_boundary("trust-entry", BoundarySide::After) {
+                        self.transition(LifecycleState::Stopped);
+                        return Ok(());
+                    }
                     self.emit(DeepCaptureEvent::TrustAcquired {
                         sequence: 0,
                         session_id: self.plan.session_id.clone(),
@@ -380,6 +441,18 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Stopped);
             return Ok(());
         }
+        if !self.check_boundary("route", BoundarySide::Before) {
+            self.record_resource(
+                "route",
+                ResourceKind::Route,
+                &route_target,
+                "remove-target-scoped-route",
+                ResourceState::NotApplied,
+                "controlled failure before route invocation",
+            );
+            self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
         match self.adapters.routing.apply(&self.plan, route, budget) {
             Ok(lease) => {
                 self.record_resource(
@@ -391,6 +464,10 @@ impl DeepCaptureSession<'_> {
                     "target-scoped route material resolved",
                 );
                 self.routing = Some(lease);
+                if !self.check_boundary("route", BoundarySide::After) {
+                    self.transition(LifecycleState::Stopped);
+                    return Ok(());
+                }
             }
             Err(error) => {
                 self.record_resource(
@@ -420,6 +497,18 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Stopped);
             return Ok(());
         }
+        if !self.check_boundary("managed-child", BoundarySide::Before) {
+            self.record_resource(
+                "managed-child",
+                ResourceKind::Launch,
+                &launch_target,
+                "stop-managed-child",
+                ResourceState::NotApplied,
+                "controlled failure before launch invocation",
+            );
+            self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
         match self.adapters.launch.launch(
             &self.plan.target,
             self.plan.target.launch_case,
@@ -439,6 +528,10 @@ impl DeepCaptureSession<'_> {
                     "managed child acquired",
                 );
                 self.launch = Some(lease);
+                if !self.check_boundary("managed-child", BoundarySide::After) {
+                    self.transition(LifecycleState::Stopped);
+                    return Ok(());
+                }
                 self.emit(DeepCaptureEvent::LaunchStarted {
                     sequence: 0,
                     session_id: self.plan.session_id.clone(),
@@ -493,6 +586,18 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Observed);
             return Ok(());
         }
+        if !self.check_boundary("capture", BoundarySide::Before) {
+            self.record_resource(
+                "capture",
+                ResourceKind::Capture,
+                &capture_target,
+                "stop-capture",
+                ResourceState::NotApplied,
+                "controlled failure before capture invocation",
+            );
+            self.transition(LifecycleState::Observed);
+            return Ok(());
+        }
         match self.adapters.capture.run(
             &self.capture,
             self.routing
@@ -512,6 +617,7 @@ impl DeepCaptureSession<'_> {
                 );
                 self.interrupted |= result.interrupted;
                 self.extend_observations(result.observations);
+                self.check_boundary("capture", BoundarySide::After);
             }
             Err(error) => {
                 self.record_resource(
@@ -664,12 +770,20 @@ impl DeepCaptureSession<'_> {
             snapshot.outcome = SessionOutcome::Partial;
         }
         let failures_before_publication = self.failures.len();
-        self.write_bundle(&snapshot);
-        self.settle_lifecycle_authority(self.failures.len() == failures_before_publication);
+        let publication_started = self.check_boundary("bundle-evidence", BoundarySide::Before);
+        if publication_started {
+            self.write_bundle(&snapshot);
+            self.check_boundary("bundle-evidence", BoundarySide::After);
+        }
+        self.settle_lifecycle_authority(
+            publication_started && self.failures.len() == failures_before_publication,
+        );
         let reconciled_snapshot = self.snapshot();
         self.reconcile_bundle(&reconciled_snapshot);
         snapshot.failures = self.failures.clone();
-        if self.required_reporting_failed() && snapshot.outcome == SessionOutcome::Complete {
+        if (self.failures.len() > failures_before_publication || self.required_reporting_failed())
+            && snapshot.outcome == SessionOutcome::Complete
+        {
             snapshot.outcome = SessionOutcome::Partial;
         }
         self.emit(DeepCaptureEvent::Terminal {
@@ -680,6 +794,11 @@ impl DeepCaptureSession<'_> {
             snapshot.outcome = SessionOutcome::Partial;
         }
         self.transition(LifecycleState::Terminal);
+        snapshot.lifecycle_transitions = self.lifecycle_transitions.clone();
+        snapshot.failures = self.failures.clone();
+        if !snapshot.failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
+            snapshot.outcome = SessionOutcome::Partial;
+        }
         Ok(TerminalReport {
             snapshot,
             artifacts: std::mem::take(&mut self.artifacts),
@@ -726,13 +845,29 @@ impl DeepCaptureSession<'_> {
         if self.state == next {
             return;
         }
+        let from = self.state;
         assert!(
-            LIFECYCLE_EDGES.contains(&(self.state, next)),
+            LIFECYCLE_EDGES.contains(&(from, next)),
             "undeclared Deep Capture lifecycle edge: {:?} -> {:?}",
-            self.state,
+            from,
             next
         );
+        let boundary = lifecycle_edge_id(from, next);
+        self.check_boundary(&boundary, BoundarySide::Before);
         self.state = next;
+        self.lifecycle_transitions
+            .push(LifecycleTransition { from, to: next });
+        self.check_boundary(&boundary, BoundarySide::After);
+    }
+
+    fn check_boundary(&mut self, boundary: &str, side: BoundarySide) -> bool {
+        match self.adapters.boundaries.check(boundary, side) {
+            Ok(()) => true,
+            Err(error) => {
+                self.failures.push(error);
+                false
+            }
+        }
     }
 
     fn require(
@@ -1182,6 +1317,7 @@ impl DeepCaptureSession<'_> {
             controlled: self.plan.controlled,
             artifacts: self.plan.artifacts,
             outcome,
+            lifecycle_transitions: self.lifecycle_transitions.clone(),
             observations: self.observations.clone(),
             classification_records_lost: self.classification_records_lost,
             application_classification_summary: self.application_classification_summary.clone(),

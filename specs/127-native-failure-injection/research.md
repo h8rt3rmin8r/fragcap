@@ -13,7 +13,7 @@
 
 ## Decision 2: Use production adapters and authorities
 
-**Decision**: Inject external effect failures through the existing facade adapters and assert actual coordinator, artifact, fact, event, cleanup, journal, and recovery types.
+**Decision**: Inject external effect failures through the existing facade adapters and a narrow boundary controller, then assert actual coordinator, artifact, fact, event, cleanup, journal, and recovery types. Production always installs the allow-only controller; no CLI, profile, or environment input selects failure behavior.
 
 **Rationale**: The adapters already define the effect boundary and keep tests portable. A separate lifecycle simulator could prove its own behavior while the coordinator remained wrong.
 
@@ -21,6 +21,12 @@
 
 - Add environment-variable fault switches to production. Rejected because ambient mutable state is concurrency-unsafe and creates a shipped hidden control surface.
 - Trigger destructive host failures directly. Rejected because disk exhaustion, trust denial, and port theft would be nondeterministic and could affect unrelated resources.
+
+## Decision 2a: Retain the edge trace and prove invocation placement
+
+**Decision**: Terminal truth retains the ordered coordinator edges actually traversed. Every transition cell must contain its named endpoint pair. Effect cells additionally inspect adapter calls: before-side injection must leave the named adapter uncalled, while after-side injection must prove it returned at the owned boundary.
+
+**Rationale**: Existence of an edge in a source table does not prove a scenario exercised it, and a pending-to-failed journal sequence alone does not prove failure occurred before adapter invocation.
 
 ## Decision 3: Treat post-effect bookkeeping failure as uncertain acquisition
 

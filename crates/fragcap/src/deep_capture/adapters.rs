@@ -12,6 +12,33 @@ use super::{
     TerminalSnapshot,
 };
 
+/// Side of a coordinator-owned effect or lifecycle boundary.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundarySide {
+    Before,
+    After,
+}
+
+/// Narrow test seam for deterministic boundary failure evidence.
+///
+/// Production consumers install [`AllowBoundaries`]. There is deliberately no
+/// CLI, profile, or environment switch that can select a failing controller.
+#[doc(hidden)]
+pub trait BoundaryController {
+    fn check(&mut self, boundary: &str, side: BoundarySide) -> Result<(), StageFailure>;
+}
+
+/// Production boundary controller which never injects a failure.
+#[doc(hidden)]
+pub struct AllowBoundaries;
+
+impl BoundaryController for AllowBoundaries {
+    fn check(&mut self, _: &str, _: BoundarySide) -> Result<(), StageFailure> {
+        Ok(())
+    }
+}
+
 /// Side-effect-free target and compatibility resolution.
 pub trait TargetResolver {
     fn resolve(&mut self, config: &SessionConfig) -> Result<PreparedTarget, PreflightRefusal>;
@@ -230,6 +257,8 @@ pub trait EventSink {
 
 /// Complete replaceable environment for one coordinator.
 pub struct AdapterSet<'a> {
+    #[doc(hidden)]
+    pub boundaries: Box<dyn BoundaryController + 'a>,
     pub targets: Box<dyn TargetResolver + 'a>,
     pub endpoints: Box<dyn EndpointAllocator + 'a>,
     pub clock: Box<dyn SessionClock + 'a>,

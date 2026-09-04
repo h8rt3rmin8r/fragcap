@@ -4291,14 +4291,23 @@ the obligation recoverable and requires bounded cleanup or an exact refusal.
 
 The ten mandatory families are disk full, permission denial, broken pipe, task
 panic, timeout, cancellation, trust denial, listener port theft, network reset,
-and writer corruption. Portable controlled adapters exercise the production
+and writer corruption. Portable controlled adapters plus the coordinator's
+narrow boundary-controller seam exercise the production
 coordinator without mutating host trust, exhausting disk, stealing unrelated
 ports, launching a game, or routing external traffic. Every scenario evaluates
 terminal outcome, artifact status, fact writes, event delivery, cleanup,
 journal state, and shared Doctor recovery independently.
 
-`cargo xtask failure-matrix` derives resource kinds, lifecycle states, and
-coordinator effect identities from their owning source and rejects inventory
+The shipped adapter set installs an allow-only boundary controller; no CLI,
+profile, or environment input can select failure behavior. Tests replace that
+one adapter to fail at an exact named side. A before-effect row proves the
+effect adapter was not invoked, while an after-effect row proves invocation and
+possible acquisition. Terminal snapshots retain the ordered lifecycle edges
+actually traversed, and every transition row must contain its named edge.
+
+`cargo xtask failure-matrix` derives resource kinds, lifecycle states, endpoint
+pairs from the executable edge table, and coordinator effect identities from
+their owning source and rejects inventory
 drift, missing sides, incomplete outcomes, unowned families, and stale or
 disabled tests. The command runs in ordinary CI and follows the repository
 0/1/2 exit contract.

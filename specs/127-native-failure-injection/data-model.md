@@ -21,6 +21,7 @@
 - `after_driver`: deterministic injection driver after possible acquisition or transition.
 - `cleanup_resources`: ordered resources whose safe cleanup remains expected.
 - `recovery`: `exact-action`, `no-action`, or `refusal`.
+- `lifecycle_trace`: ordered endpoint pairs actually traversed by the production coordinator.
 
 Each boundary expands into exactly two matrix cells keyed by `(boundary_id, side)`.
 
@@ -55,3 +56,4 @@ Each boundary expands into exactly two matrix cells keyed by `(boundary_id, side
 8. A fact never maps to `appended` without retained qualifying observation evidence.
 9. Cleanup failure never suppresses later safe cleanup attempts.
 10. Recovery mutation requires exact ownership evidence from the production journal planner.
+11. Every transition cell retains its named endpoint pair in terminal truth.

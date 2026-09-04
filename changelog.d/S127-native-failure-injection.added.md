@@ -10,3 +10,5 @@
 - Early session failure after native proxy acquisition now performs the bounded
   listener stop exactly once before runtime cleanup, preserving the journaled
   cleanup and recovery contract.
+- Terminal reports now retain the exact ordered lifecycle edge trace used by
+  the generated matrix, and boundary failures cannot leave a complete outcome.

@@ -15,3 +15,11 @@
 - 2026-09-04: Replaced the initial broad matrix assertions and synthetic
   before/after journal with per-row outcome-vector checks and production-journal
   placement proof after first-round review exposed the weaker evidence.
+- 2026-09-04: Final review required execution proof rather than source-table
+  membership. Terminal truth now carries the ordered traversed-edge trace, and
+  each generated row reaches its named boundary exactly once. Effect rows use a
+  narrow controller that production fixes to allow-only, then prove before-side
+  adapter absence or after-side invocation from the controlled ledger.
+- 2026-09-04: Registry lifecycle identity is derived from `from` and `to`, and
+  independent fact truth requires a non-empty set of evidence-backed successful
+  appends. Labels and upper bounds alone are not evidence.

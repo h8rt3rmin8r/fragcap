@@ -378,6 +378,13 @@ pub enum LifecycleState {
     Terminal,
 }
 
+/// One coordinator edge actually traversed during a session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LifecycleTransition {
+    pub from: LifecycleState,
+    pub to: LifecycleState,
+}
+
 /// One lifecycle operation used in typed transition errors.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -636,6 +643,8 @@ pub struct TerminalSnapshot {
     pub controlled: bool,
     pub artifacts: ArtifactRequests,
     pub outcome: SessionOutcome,
+    /// Ordered production lifecycle edges traversed by this session.
+    pub lifecycle_transitions: Vec<LifecycleTransition>,
     pub observations: Vec<CompatibilityObservation>,
     /// Proxy observations discarded before the retained collection was produced.
     pub classification_records_lost: u64,

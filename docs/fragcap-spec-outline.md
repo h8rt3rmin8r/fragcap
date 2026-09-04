@@ -321,8 +321,9 @@ The native failure-injection gate generates both sides of every journaled
 effect and checked lifecycle transition. Controlled coordinator adapters cover
 ten concrete failure families, and each row keeps terminal, artifact, fact,
 event, cleanup, journal, and recovery truth independent. Source-derived
-inventories force review when an effect, resource kind, or lifecycle state
-changes.
+inventories force review when an effect, resource kind, lifecycle state, or
+edge endpoint pair changes. Effect rows prove adapter invocation placement,
+and transition rows prove the named edge in the terminal trace.
 
 ## 26. Observability and Diagnostics
 
