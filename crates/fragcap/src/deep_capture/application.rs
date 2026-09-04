@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -24,6 +24,8 @@ use super::{
 };
 
 const SCHEMA_VERSION: u64 = 2;
+const MAX_STREAM_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_STREAM_RECORDS: usize = 262_144;
 #[cfg(not(test))]
 const MAX_CONNECTION_WINDOWS: usize = 65_536;
 #[cfg(test)]
@@ -1928,9 +1930,34 @@ fn body_outcome(value: BodyOutcome) -> &'static str {
 }
 
 pub fn read_application_prefix(path: &Path) -> io::Result<ApplicationPrefix> {
-    let reader = BufReader::new(File::open(path)?);
+    if std::fs::metadata(path)?.len() > MAX_STREAM_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "application stream exceeds byte limit",
+        ));
+    }
+    parse_application_prefix(BufReader::new(File::open(path)?))
+}
+
+pub(crate) fn read_application_prefix_bytes(bytes: &[u8]) -> io::Result<ApplicationPrefix> {
+    if bytes.len() as u64 > MAX_STREAM_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "application stream exceeds byte limit",
+        ));
+    }
+    parse_application_prefix(BufReader::new(Cursor::new(bytes)))
+}
+
+fn parse_application_prefix(reader: impl BufRead) -> io::Result<ApplicationPrefix> {
     let mut records = Vec::new();
-    for line in reader.lines() {
+    for (index, line) in reader.lines().enumerate() {
+        if index >= MAX_STREAM_RECORDS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "application stream exceeds record limit",
+            ));
+        }
         let line = line?;
         if line.trim().is_empty() {
             continue;

@@ -16,6 +16,10 @@ pub const PROXY_USERNAME: &str = "fragcap";
 pub struct SessionCapability(Zeroizing<[u8; CAPABILITY_BYTES]>);
 
 impl SessionCapability {
+    pub(crate) fn from_test_bytes(bytes: [u8; CAPABILITY_BYTES]) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
     pub fn generate() -> Result<Self, CapabilityError> {
         let mut bytes = Zeroizing::new([0_u8; CAPABILITY_BYTES]);
         SystemRandom::new()

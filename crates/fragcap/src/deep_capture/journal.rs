@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -471,8 +471,23 @@ pub fn read_resource_journal(path: &Path) -> io::Result<JournalPrefix> {
             "resource journal exceeds byte limit",
         ));
     }
-    let ends_with_newline = fs::read(path)?.last() == Some(&b'\n');
-    let mut lines = BufReader::new(File::open(path)?).lines();
+    let bytes = fs::read(path)?;
+    parse_resource_journal(&bytes)
+}
+
+pub(crate) fn read_resource_journal_bytes(bytes: &[u8]) -> io::Result<JournalPrefix> {
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "resource journal exceeds byte limit",
+        ));
+    }
+    parse_resource_journal(bytes)
+}
+
+fn parse_resource_journal(bytes: &[u8]) -> io::Result<JournalPrefix> {
+    let ends_with_newline = bytes.last() == Some(&b'\n');
+    let mut lines = BufReader::new(Cursor::new(bytes)).lines();
     let header = lines.next().ok_or_else(|| {
         io::Error::new(io::ErrorKind::UnexpectedEof, "resource journal is empty")
     })??;

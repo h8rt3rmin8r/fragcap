@@ -1,0 +1,8 @@
+"GET"
+"CONNECT"
+"HTTP/1.1"
+"Host:"
+"Content-Length:"
+"Transfer-Encoding: chunked"
+"Proxy-Authorization: Basic"
+"\\r\\n"

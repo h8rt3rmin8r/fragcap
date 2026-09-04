@@ -19,6 +19,11 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# Coverage-guided fuzzing writes unreviewed reproducer and coverage artifacts.
+# Only scrubbed, minimized inputs promoted into fuzz/corpus are committed.
+/fuzz/artifacts/
+/fuzz/coverage/
+
 # Node and the documentation site (specification sections 21.3 and 22)
 node_modules
 .next

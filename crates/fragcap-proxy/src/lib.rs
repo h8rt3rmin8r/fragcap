@@ -7,6 +7,8 @@ mod auth;
 mod body;
 mod certificate;
 mod event;
+#[doc(hidden)]
+pub mod fuzz_support;
 mod generic;
 mod http1;
 mod http2;

@@ -1,0 +1,58 @@
+[package]
+name = "fragcap-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+fragcap = { path = "../crates/fragcap", features = ["deep-capture"] }
+fragcap-proxy = { path = "../crates/fragcap-proxy" }
+libfuzzer-sys = "=0.4.13"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "http1"
+path = "fuzz_targets/http1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socks5"
+path = "fuzz_targets/socks5.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "streaming"
+path = "fuzz_targets/streaming.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identities_quic"
+path = "fuzz_targets/identities_quic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "artifact_jsonl"
+path = "fuzz_targets/artifact_jsonl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false

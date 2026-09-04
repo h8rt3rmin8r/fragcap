@@ -312,6 +312,11 @@ The portable native threat-model gate validates complete control ownership,
 exact non-ignored test references, and reviewed protocol and direct dependency
 inventories without running a listener or mutating trust.
 
+The native parser fuzz gate maps twenty fragcap-owned protocol and artifact
+surfaces to six bounded coverage-guided targets, synthetic minimized corpora,
+deterministic stable replay, and exact-pinned CI. Dependency-owned wire decoders
+remain explicit rather than becoming inflated coverage claims.
+
 ## 26. Observability and Diagnostics
 
 Structured lifecycle events, human progress, capture statistics, calibration phase outcomes, and the diagnostic command that reports Capture and Deep Capture readiness, exact CA trust state, target stores, interfaces, ETW, proxy support, and owned cleanup residue.
@@ -391,7 +396,9 @@ recovery. Installer and archive validation remain #329.
 S125 adds the versioned native threat registry and ordinary CI gate. Every
 high-risk row owns prevention, detection, containment, evidence, and executable
 negative tests; protocol and direct proxy dependency drift forces review.
-Fuzzing and the remaining completion gates remain #324 through #334.
+S126 adds exhaustive bounded coverage-guided fuzzing for fragcap-owned native
+protocol and artifact boundaries, stable corpus replay, and reproducible CI.
+The remaining completion gates remain #325 through #334.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

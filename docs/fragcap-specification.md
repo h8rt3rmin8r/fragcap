@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.48-draft \
+**Version:** 0.1.49-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -141,6 +141,7 @@ enforcement.
 | 0.1.46-draft | 2026-09-03 | W. Thompson | **Completes native process lifecycle evidence (issue #319).** Extends sections 10, 13.7, 19, 25, and 28.1. A bounded capture report joins managed launch receipts, ETW starts and exits, query-only snapshots, declared stage transitions, packet-derived socket ownership, watcher loss, and terminal state. PID plus observed creation time defines an instance; missing authority remains explicit; the versioned process trace trailer drives compatibility and manifest truth. S123 adds no target handle, second attribution path, dependency, or Deep Capture completion claim. |
 | 0.1.47-draft | 2026-09-03 | W. Thompson | **Completes native Doctor runtime readiness and residue diagnostics (issue #321).** Extends sections 26.3 and 28.1. Doctor derives independent Capture and Deep Capture verdicts from one check set, inventories bounded native journal and owner evidence without mutation, proves an active session with a generation lease rather than PID liveness, and offers only exact journal recovery. Healthy retained evidence is history, every inventory limitation blocks a false-clean Deep Capture verdict, and S124 adds no process handle, dependency package, packaging claim, or completion claim. |
 | 0.1.48-draft | 2026-09-04 | W. Thompson | **Completes the native Deep Capture threat model and abuse-case gate (issue #323).** Extends sections 19, 25, and 28.1. One versioned registry maps every trust boundary, sensitive asset, and high-risk abuse case to prevention, detection, containment, evidence, and exact executable negative tests. The ordinary CI gate rejects missing or ignored tests and unreviewed drift in the exhaustive protocol-family or direct proxy dependency inventories. S125 records no residual-risk acceptance, adds no dependency or runtime behavior, and does not claim Deep Capture complete before #334. |
+| 0.1.49-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native parser and artifact fuzzing (issue #324).** Extends sections 24.3, 25.5, and 28.1. A versioned registry maps twenty fragcap-owned protocol and artifact surfaces to six bounded libFuzzer targets, minimized synthetic corpora, stable deterministic replay, and an exact-pinned CI matrix. Dependency-owned wire decoders remain explicit boundaries. S126 isolates its fuzz dependency graph, adds no product lock package or runtime behavior, and leaves Deep Capture incomplete until #334. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4257,6 +4258,26 @@ percent-encoding. Profile parsing is fuzzed against arbitrary TOML,
 with the property that any input either parses to a valid profile or
 produces a diagnostic, never a panic.
 
+Native Deep Capture adds a versioned exhaustive fuzz-surface registry covering
+every fragcap-owned protocol parser, state machine, and artifact reader through
+S125. Six coverage-guided targets exercise twenty HTTP/1, authentication,
+SOCKS5, WebSocket, SSE, gRPC, identity, QUIC/HTTP3-evidence, JSONL, journal,
+process-trace, and manifest surfaces. Inputs are capped at 65,536 bytes before
+parser work; retained data has a smaller target-specific cap; fragmentation,
+terminal transitions, cancellation, limits, and applicable serialization round
+trips are derived from the input. Committed corpora are minimized synthetic
+fixtures and are replayed twice in deterministic order by the stable test gate.
+
+The coverage-guided harness is an isolated workspace with its own lockfile and
+exact nightly, cargo-fuzz, and libfuzzer-sys versions. A bounded Linux CI matrix
+builds and runs every target, retains failures, and treats a missing target,
+corpus, matrix row, timeout, panic, sanitizer result, or incomplete stream as a
+failure rather than success. Rustls, h2, h3, Quinn, httparse, and serde_json own
+their internal wire or syntax decoders; fragcap's registry names those
+dependency boundaries and does not claim direct coverage of their internals.
+Every finding is minimized, scrubbed, and promoted to both a focused regression
+test and a synthetic corpus seed.
+
 ### 25.6 Attribution Accuracy Measurement
 
 SC-7 requires 99 percent attribution on profiled processes. The
@@ -4810,6 +4831,15 @@ in the exhaustive protocol-family or direct proxy dependency inventories.
 S125 accepts no residual risk, changes no runtime path, adds no dependency, and
 leaves fuzzing, performance, Windows integration, packaging, supply-chain, and
 final completion work to #324 through #334.
+
+S126 closes #324 at the native parser-fuzzing boundary. A versioned registry
+maps twenty fragcap-owned protocol and artifact input surfaces to six bounded
+coverage-guided targets, minimized synthetic corpora, deterministic stable
+replay, and an exact-pinned Linux CI matrix. Owner-local exercise seams call the
+production parsers and state machines directly under fixed input and retention
+caps without network, trust, process, or routing effects. The fuzz workspace and
+lockfile are isolated from the product graph. Dependency-owned wire decoders
+remain explicit exclusions, and Deep Capture remains incomplete until #334.
 
 The required dependency direction is:
 

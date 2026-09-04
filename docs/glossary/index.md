@@ -84,6 +84,8 @@ the owning category page.
 - [Flow key](capture-and-networking.md#flow-key)
 - [Fragment identity](capture-and-networking.md#fragment-identity)
 - [Fragment identity table](capture-and-networking.md#fragment-identity-table)
+- [Fuzz surface](capture-and-networking.md#fuzz-surface)
+- [Fuzz target](capture-and-networking.md#fuzz-target)
 - [Game profile](platform-and-distribution.md#game-profile)
 - [Generic stream evidence](capture-and-networking.md#generic-stream-evidence)
 - [Generic UDP evidence](capture-and-networking.md#generic-udp-evidence)
