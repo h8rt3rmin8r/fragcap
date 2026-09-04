@@ -166,6 +166,13 @@ fn validate_protocol_reviews(
             problems.push(format!(
                 "protocol review {family} has no executable abuse-case test"
             ));
+        } else {
+            validate_test_records(
+                review,
+                "tests",
+                &format!("protocol review {family}"),
+                problems,
+            );
         }
     }
     if reviewed != *protocols {
@@ -173,6 +180,20 @@ fn validate_protocol_reviews(
         problems.push(format!(
             "protocol review coverage is incomplete: missing={missing:?}"
         ));
+    }
+}
+
+fn validate_test_records(owner: &Value, field: &str, label: &str, problems: &mut Vec<String>) {
+    let mut references = BTreeSet::new();
+    for test in owner[field].as_array().into_iter().flatten() {
+        let path = test["path"].as_str().unwrap_or_default();
+        let function = test["function"].as_str().unwrap_or_default();
+        require_string(test, "proves", label, problems);
+        if path.is_empty() || function.is_empty() {
+            problems.push(format!("{label} has an incomplete test reference"));
+        } else if !references.insert(format!("{path}::{function}")) {
+            problems.push(format!("{label} duplicates test {path}::{function}"));
+        }
     }
 }
 
@@ -253,6 +274,7 @@ fn validate_test_references(
 }
 
 fn validate_test_source(source: &str, function: &str) -> Result<(), &'static str> {
+    let source = strip_rust_comments(source);
     let declarations = [format!("fn {function}("), format!("async fn {function}(")];
     let mut attributes = Vec::new();
     for line in source.lines() {
@@ -325,16 +347,169 @@ fn compare_inventory(
 }
 
 fn protocol_inventory(source: &str) -> BTreeSet<String> {
-    let body = source
-        .split("pub fn as_str(self)")
-        .nth(1)
-        .and_then(|tail| tail.split("pub fn from_proxy_label").next())
+    let source = strip_rust_comments(source);
+    let variants = rust_braced_body(&source, "pub enum TrafficFamily")
+        .map(|body| {
+            body.split(',')
+                .filter_map(|item| item.split_whitespace().next())
+                .filter(|variant| !variant.is_empty())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+        })
         .unwrap_or_default();
-    body.lines()
-        .filter_map(|line| line.split("=>").nth(1))
-        .filter_map(|tail| tail.split('"').nth(1))
-        .map(str::to_string)
+    let arms = rust_braced_body(&source, "pub fn as_str(self)")
+        .and_then(|body| rust_braced_body(body, "match self"))
+        .unwrap_or_default();
+    variants
+        .into_iter()
+        .map(|variant| {
+            let marker = format!("Self::{variant}");
+            let label = arms
+                .split_once(&marker)
+                .and_then(|(_, tail)| tail.split_once("=>").map(|(_, expression)| expression))
+                .map(|expression| expression.split("Self::").next().unwrap_or(expression))
+                .and_then(first_rust_string);
+            label.unwrap_or_else(|| format!("<unmapped:{variant}>"))
+        })
         .collect()
+}
+
+fn rust_braced_body<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
+    let start = source.find(marker)? + marker.len();
+    let open = source[start..].find('{')? + start;
+    let mut depth = 0_usize;
+    for (offset, byte) in source[open..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&source[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn first_rust_string(source: &str) -> Option<String> {
+    let start = source.find('"')? + 1;
+    let bytes = source.as_bytes();
+    let mut value = String::new();
+    let mut escaped = false;
+    for &byte in &bytes[start..] {
+        if escaped {
+            value.push(byte as char);
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            return Some(value);
+        } else {
+            value.push(byte as char);
+        }
+    }
+    None
+}
+
+fn strip_rust_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut block_depth = 0_usize;
+    let mut in_line = false;
+    let mut in_string = false;
+    let mut raw_hashes = None;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let next = bytes.get(index + 1).copied();
+        if in_line {
+            if byte == b'\n' {
+                in_line = false;
+                output.push(byte);
+            } else {
+                output.push(b' ');
+            }
+            index += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            if byte == b'/' && next == Some(b'*') {
+                block_depth += 1;
+                output.extend_from_slice(b"  ");
+                index += 2;
+            } else if byte == b'*' && next == Some(b'/') {
+                block_depth -= 1;
+                output.extend_from_slice(b"  ");
+                index += 2;
+            } else {
+                output.push(if byte == b'\n' { b'\n' } else { b' ' });
+                index += 1;
+            }
+            continue;
+        }
+        if in_string {
+            output.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(hashes) = raw_hashes {
+            output.push(byte);
+            if byte == b'"'
+                && bytes
+                    .get(index + 1..index + 1 + hashes)
+                    .is_some_and(|tail| tail.iter().all(|item| *item == b'#'))
+            {
+                output.extend_from_slice(&bytes[index + 1..index + 1 + hashes]);
+                index += 1 + hashes;
+                raw_hashes = None;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if byte == b'/' && next == Some(b'/') {
+            in_line = true;
+            output.extend_from_slice(b"  ");
+            index += 2;
+        } else if byte == b'/' && next == Some(b'*') {
+            block_depth = 1;
+            output.extend_from_slice(b"  ");
+            index += 2;
+        } else {
+            if byte == b'r' {
+                let hashes = bytes[index + 1..]
+                    .iter()
+                    .take_while(|item| **item == b'#')
+                    .count();
+                let quote = index + 1 + hashes;
+                if bytes.get(quote) == Some(&b'"') {
+                    output.extend_from_slice(&bytes[index..=quote]);
+                    raw_hashes = Some(hashes);
+                    index = quote + 1;
+                    continue;
+                }
+            }
+            let quoted_char = next == Some(b'\'')
+                && (index > 0 && bytes[index - 1] == b'\''
+                    || index > 1 && bytes[index - 1] == b'\\' && bytes[index - 2] == b'\'');
+            if byte == b'"' && !quoted_char {
+                in_string = true;
+            }
+            output.push(byte);
+            index += 1;
+        }
+    }
+    String::from_utf8(output).expect("Rust source was valid UTF-8")
 }
 
 fn dependency_inventory(source: &str) -> BTreeSet<String> {
@@ -474,7 +649,14 @@ mod tests {
         let protocols = protocol_inventory(
             "pub fn as_str(self) { Self::Http => \"http\", } pub fn from_proxy_label() {}",
         );
-        assert_eq!(protocols, BTreeSet::from(["http".to_string()]));
+        assert!(protocols.is_empty());
+        let protocols = protocol_inventory(
+            "pub enum TrafficFamily { Http, Quic } impl TrafficFamily { pub fn as_str(self) { match self { Self::Http => { \"http\" }, Self::Quic =>\n{\n\"quic\"\n}, } } pub fn from_proxy_label() {} }",
+        );
+        assert_eq!(
+            protocols,
+            BTreeSet::from(["http".to_string(), "quic".to_string()])
+        );
         let dependencies = dependency_inventory(
             "[dependencies]\ntokio.workspace = true\n[dev-dependencies]\ntempfile.workspace = true\n[target.'cfg(windows)'.dependencies]\nwindows-sys.workspace = true\n",
         );
@@ -509,6 +691,17 @@ mod tests {
             validate_test_source("#[test]\nfn neighbor() {}\n// fn ghost() {}", "ghost"),
             Err("references missing test")
         );
+        assert_eq!(
+            validate_test_source("/* #[test]\nfn ghost() {} */", "ghost"),
+            Err("references missing test")
+        );
+        assert_eq!(
+            validate_test_source(
+                "let marker = r#\"/* retained */\"#;\n#[test]\nfn real() {}",
+                "real"
+            ),
+            Ok(())
+        );
     }
 
     #[test]
@@ -523,6 +716,31 @@ mod tests {
         assert!(problems
             .iter()
             .any(|problem| problem.contains("missing=[\"http1\"]")));
+    }
+
+    #[test]
+    fn protocol_review_rejects_malformed_test_objects() {
+        let mut registry = valid();
+        registry["protocol_reviews"][0]["tests"] = json!([{}]);
+        let problems = validate_registry(
+            &registry,
+            &BTreeSet::from(["http1".to_string()]),
+            &BTreeSet::from(["tokio".to_string()]),
+        );
+        assert!(problems
+            .iter()
+            .any(|problem| problem.contains("incomplete test reference")));
+    }
+
+    #[test]
+    fn unmapped_protocol_variant_forces_inventory_drift() {
+        let protocols = protocol_inventory(
+            "pub enum TrafficFamily { Http, New } impl TrafficFamily { pub fn as_str(self) { match self { Self::Http => \"http\", Self::New => helper(), } } }",
+        );
+        assert_eq!(
+            protocols,
+            BTreeSet::from(["<unmapped:New>".to_string(), "http".to_string()])
+        );
     }
 
     #[test]

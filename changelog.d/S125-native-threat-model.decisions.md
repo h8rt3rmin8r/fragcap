@@ -16,3 +16,8 @@
   operating-system legs. The workflow runs repository gates individually, so
   wiring only the composite local `cargo xtask ci` command would not protect
   pull requests.
+- 2026-09-04: Closed the review inventory over parsed enum variants and match
+  arms instead of line layout, and made executable evidence reject malformed
+  objects plus line-commented, block-commented, ignored, and conditional test
+  declarations. Formatting a Rust arm or disabling a test cannot silently
+  preserve security-review currency.
