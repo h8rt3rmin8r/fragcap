@@ -5,15 +5,15 @@
   "collected_on": "2026-09-04",
   "campaigns": [
     {
-      "http1-off":{"throughput":32076844,"latency":79403},"http1-on":{"throughput":52732009,"latency":73909},"http2-off":{"throughput":79973763,"latency":70413},"http2-on":{"throughput":62028483,"latency":56164},"websocket-off":{"throughput":26645558,"latency":193972},"websocket-on":{"throughput":29619954,"latency":205036},"grpc-off":{"throughput":60456693,"latency":41340},"grpc-on":{"throughput":73103337,"latency":108461},"tcp-off":{"throughput":37483279,"latency":123319},"tcp-on":{"throughput":38800939,"latency":168997},"udp-off":{"throughput":459579242,"latency":3898},"udp-on":{"throughput":322784436,"latency":6424},"quic-off":{"throughput":8722396,"latency":256062},"quic-on":{"throughput":8979994,"latency":243082}
+      "http1-off":{"throughput":29705544,"latency":70684},"http1-on":{"throughput":38280373,"latency":76647},"http2-off":{"throughput":55041192,"latency":51713},"http2-on":{"throughput":64715927,"latency":61264},"websocket-off":{"throughput":31682861,"latency":213214},"websocket-on":{"throughput":32533151,"latency":252076},"grpc-off":{"throughput":54534513,"latency":71993},"grpc-on":{"throughput":53858058,"latency":95216},"tcp-off":{"throughput":24994809,"latency":265220},"tcp-on":{"throughput":32726325,"latency":211459},"udp-off":{"throughput":471030186,"latency":3655},"udp-on":{"throughput":395430410,"latency":3975},"quic-off":{"throughput":7906471,"latency":276135},"quic-on":{"throughput":7736998,"latency":274425}
     },
     {
-      "http1-off":{"throughput":52196525,"latency":65501},"http1-on":{"throughput":37917697,"latency":117149},"http2-off":{"throughput":57150113,"latency":37540},"http2-on":{"throughput":60896451,"latency":56618},"websocket-off":{"throughput":60889379,"latency":128276},"websocket-on":{"throughput":26736769,"latency":203871},"grpc-off":{"throughput":75471057,"latency":51142},"grpc-on":{"throughput":48079415,"latency":65068},"tcp-off":{"throughput":42450321,"latency":186177},"tcp-on":{"throughput":62637077,"latency":233049},"udp-off":{"throughput":459471839,"latency":3734},"udp-on":{"throughput":422631126,"latency":5432},"quic-off":{"throughput":8958551,"latency":236684},"quic-on":{"throughput":8883941,"latency":244480}
+      "http1-off":{"throughput":31101171,"latency":115586},"http1-on":{"throughput":29707227,"latency":91804},"http2-off":{"throughput":41799667,"latency":119162},"http2-on":{"throughput":50811101,"latency":102836},"websocket-off":{"throughput":26668090,"latency":249905},"websocket-on":{"throughput":26910369,"latency":215030},"grpc-off":{"throughput":70168197,"latency":65178},"grpc-on":{"throughput":58002876,"latency":86338},"tcp-off":{"throughput":26966599,"latency":191520},"tcp-on":{"throughput":31575768,"latency":246473},"udp-off":{"throughput":464135977,"latency":3858},"udp-on":{"throughput":436131322,"latency":4076},"quic-off":{"throughput":8427746,"latency":267074},"quic-on":{"throughput":8472382,"latency":246638}
     }
   ],
   "units": {"throughput":"useful bytes per second","latency":"added p95 microseconds"},
   "complete": true,
-  "maximum_pair_delta_percent": 56.2,
+  "maximum_pair_delta_percent": 56.6,
   "comparison_tolerance_percent": 75,
   "contains_sensitive_data": false
 }

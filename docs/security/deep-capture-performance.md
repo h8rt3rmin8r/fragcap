@@ -20,7 +20,7 @@ The registry freezes timing and resource ceilings before measurements are collec
 | Generic UDP | 5% | 25 ms |
 | QUIC and HTTP/3 | 1% | 750 ms |
 
-Every row also has a 1 MiB/s useful-payload floor. The hard worker limits are 256 MiB peak memory, 32 MiB cross-worker private-memory span, 1 second of CPU per useful MiB, 32 MiB per application artifact, eight accepted-connection tasks, 4,096 queued application events, 256 cached leaf certificates, 8 MiB of cached certificate material, and 5 seconds for shutdown. Current task and queue ownership must be zero at terminal, and spawned connection tasks must equal completed plus aborted tasks.
+Every row also has a 1 MiB/s useful-payload floor. The hard worker limits are 256 MiB peak memory, 32 MiB maximum same-case fresh-worker private-memory span, 1 second of CPU per useful MiB, 32 MiB per application artifact, eight accepted-connection tasks, 4,096 queued application events, 256 cached leaf certificates, 8 MiB of cached certificate material, and 5 seconds for shutdown. Current task and queue ownership must be zero at terminal, and spawned connection tasks must equal completed plus aborted tasks.
 
 Payload-disabled rows must retain zero protocol payload bytes. Every sample reconciles observed payload bytes as retained, intentionally omitted, queue-dropped, or storage-dropped. Overload behavior is exercised deterministically in the product tests referenced by the registry: forwarding remains independent, finite detail stores retain a bounded suffix, and each discarded unit advances its named counter.
 

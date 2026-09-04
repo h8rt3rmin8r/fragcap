@@ -2,7 +2,7 @@
 
 //! Isolated controller for the native proxy performance campaigns.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -102,8 +102,7 @@ fn run() -> io::Result<bool> {
     let mut sequence = 0_u64;
     let mut observed = BTreeSet::new();
     let mut passed = true;
-    let mut minimum_private_bytes = u64::MAX;
-    let mut maximum_private_bytes = 0_u64;
+    let mut private_ranges = BTreeMap::<String, (u64, u64)>::new();
     let mut last_campaign_sample = Instant::now();
     loop {
         for case in registry["cases"]
@@ -134,8 +133,11 @@ fn run() -> io::Result<bool> {
                 let mut attempt_passed = true;
                 for window in 0..windows {
                     let result = run_measurement(root, selected, protocol, retention)?;
-                    minimum_private_bytes = minimum_private_bytes.min(result.process.private_bytes);
-                    maximum_private_bytes = maximum_private_bytes.max(result.process.private_bytes);
+                    let range = private_ranges
+                        .entry(id.to_string())
+                        .or_insert((u64::MAX, 0));
+                    range.0 = range.0.min(result.process.private_bytes);
+                    range.1 = range.1.max(result.process.private_bytes);
                     sequence += 1;
                     write_line(
                         &mut writer,
@@ -155,7 +157,7 @@ fn run() -> io::Result<bool> {
                 attempt_passed &= samples.len() == windows as usize;
                 let evaluation = evaluate_case(case, &registry["evaluation"], &samples);
                 attempt_passed &= evaluation.passed;
-                if evaluation.guard_band && attempt <= maximum_retries {
+                if should_retry(&evaluation, attempt, maximum_retries) {
                     continue;
                 }
                 attempt_passed &= !evaluation.guard_band;
@@ -173,7 +175,11 @@ fn run() -> io::Result<bool> {
             break;
         }
     }
-    let private_memory_span_bytes = maximum_private_bytes.saturating_sub(minimum_private_bytes);
+    let private_memory_span_bytes = private_ranges
+        .values()
+        .map(|(minimum, maximum)| maximum.saturating_sub(*minimum))
+        .max()
+        .unwrap_or(0);
     passed &= private_memory_span_bytes
         <= registry["evaluation"]["maximum_private_memory_growth_bytes"]
             .as_u64()
@@ -334,7 +340,11 @@ fn evaluate_case(case: &Value, limits: &Value, samples: &[WorkerResult]) -> Case
                 || sample.queue_current != 0
                 || sample.failure_details_dropped != 0
                 || sample.application_events_dropped != 0
+                || sample.payload_bytes_observed < sample.useful_bytes
+                || sample.payload_bytes_queue_dropped != 0
+                || sample.payload_bytes_storage_dropped != 0
                 || (case["retention"].as_str() == Some("off") && sample.payload_bytes_retained != 0)
+                || (case["retention"].as_str() == Some("on") && sample.payload_bytes_retained == 0)
                 || sample.payload_bytes_observed
                     != sample
                         .payload_bytes_retained
@@ -365,6 +375,10 @@ fn evaluate_case(case: &Value, limits: &Value, samples: &[WorkerResult]) -> Case
 
 fn near_threshold(value: u64, threshold: u64, percent: u64) -> bool {
     value.abs_diff(threshold) <= threshold.saturating_mul(percent) / 100
+}
+
+fn should_retry(evaluation: &CaseEvaluation, attempt: u64, maximum_retries: u64) -> bool {
+    evaluation.guard_band && evaluation.hard_invariant_failures == 0 && attempt <= maximum_retries
 }
 
 fn run_measurement(
@@ -608,5 +622,19 @@ mod tests {
         let evaluation = evaluate_case(case, &registry["evaluation"], &[sample; 7]);
         assert!(!evaluation.passed);
         assert_eq!(evaluation.hard_invariant_failures, 7);
+    }
+
+    #[test]
+    fn hard_invariant_failure_is_never_retried_through_a_timing_guard_band() {
+        let evaluation = CaseEvaluation {
+            passed: false,
+            median_throughput: 100,
+            median_ratio_basis_points: 100,
+            added_p95_microseconds: 100,
+            timing_breaching_windows: 0,
+            hard_invariant_failures: 1,
+            guard_band: true,
+        };
+        assert!(!should_retry(&evaluation, 1, 1));
     }
 }

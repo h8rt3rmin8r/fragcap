@@ -24,6 +24,7 @@ pub fn run(root: &Path, report: Option<&Path>) -> io::Result<usize> {
         problems.extend(validate_report(
             &fs::read_to_string(report)?,
             &stable_digest(&registry_bytes),
+            &value,
         ));
     }
     for problem in &problems {
@@ -312,13 +313,13 @@ fn validate_reference(
     Ok(())
 }
 
-fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
+fn validate_report(text: &str, registry_digest: &str, registry: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let mut expected_sequence = 0_u64;
     let mut header = 0_u64;
     let mut terminal = 0_u64;
     let mut cases = BTreeSet::new();
-    let mut case_samples = BTreeMap::<String, u64>::new();
+    let mut case_samples = BTreeMap::<String, Vec<Value>>::new();
     let mut profile = None;
     let mut last_progress_seconds = 0_u64;
     for (index, line) in text.lines().enumerate() {
@@ -369,7 +370,10 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
             }
             Some("case.sample") => {
                 if let Some(id) = value["case_id"].as_str() {
-                    *case_samples.entry(id.to_string()).or_default() += 1;
+                    case_samples
+                        .entry(id.to_string())
+                        .or_default()
+                        .push(value.clone());
                 } else {
                     problems.push("report sample requires case_id".into());
                 }
@@ -378,6 +382,8 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
                 }
                 for field in [
                     "useful_bytes",
+                    "direct_microseconds",
+                    "proxy_microseconds",
                     "throughput_bytes_per_second",
                     "cpu_microseconds",
                     "peak_working_set_bytes",
@@ -389,7 +395,16 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
                     "payload_bytes_queue_dropped",
                     "payload_bytes_storage_dropped",
                     "queue_peak",
+                    "queue_current",
                     "task_peak",
+                    "task_current",
+                    "task_spawned",
+                    "task_completed",
+                    "task_aborted",
+                    "cache_peak_entries",
+                    "cache_peak_bytes",
+                    "failure_details_dropped",
+                    "application_events_dropped",
                     "shutdown_microseconds",
                 ] {
                     if value[field].as_u64().is_none() {
@@ -409,6 +424,21 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
                     if !cases.insert(id.to_string()) && profile.as_deref() != Some("soak") {
                         problems.push(format!("report duplicates terminal case {id}"));
                     }
+                    let case = registry["cases"].as_array().and_then(|cases| {
+                        cases.iter().find(|case| case["id"].as_str() == Some(id))
+                    });
+                    if let Some(case) = case {
+                        validate_case_terminal(
+                            id,
+                            &value,
+                            case_samples.get(id).map(Vec::as_slice).unwrap_or_default(),
+                            case,
+                            &registry["evaluation"],
+                            &mut problems,
+                        );
+                    } else {
+                        problems.push(format!("report terminal has unknown case {id}"));
+                    }
                 }
                 if value["passed"].as_bool() != Some(true) {
                     problems.push("report contains a failed case".into());
@@ -424,6 +454,32 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
                     || value["registry_digest"].as_str() != Some(registry_digest)
                 {
                     problems.push("report campaign terminal is not complete and passing".into());
+                }
+                let private_span = case_samples
+                    .values()
+                    .map(|samples| {
+                        let values = samples
+                            .iter()
+                            .filter_map(|sample| sample["private_bytes"].as_u64())
+                            .collect::<Vec<_>>();
+                        values
+                            .iter()
+                            .max()
+                            .zip(values.iter().min())
+                            .map_or(0, |(maximum, minimum)| maximum.saturating_sub(*minimum))
+                    })
+                    .max()
+                    .unwrap_or(0);
+                if value["private_memory_span_bytes"].as_u64() != Some(private_span)
+                    || private_span
+                        > registry["evaluation"]["maximum_private_memory_growth_bytes"]
+                            .as_u64()
+                            .unwrap_or(0)
+                {
+                    problems.push(
+                        "report campaign private-memory span disagrees with samples or exceeds its budget"
+                            .into(),
+                    );
                 }
                 if profile.as_deref() == Some("soak") {
                     let duration = value["duration_seconds"].as_u64().unwrap_or(0);
@@ -459,7 +515,7 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
         ));
     }
     for id in &expected {
-        let count = case_samples.get(id).copied().unwrap_or(0);
+        let count = case_samples.get(id).map_or(0, Vec::len);
         let valid = if profile.as_deref() == Some("soak") {
             count >= 7 && count % 7 == 0
         } else {
@@ -472,6 +528,184 @@ fn validate_report(text: &str, registry_digest: &str) -> Vec<String> {
         }
     }
     problems
+}
+
+#[derive(Clone, Copy)]
+struct ReportCaseEvaluation {
+    passed: bool,
+    median_throughput: u64,
+    median_ratio_basis_points: u64,
+    added_p95_microseconds: u64,
+    timing_breaching_windows: u64,
+    hard_invariant_failures: u64,
+    guard_band: bool,
+}
+
+fn validate_case_terminal(
+    id: &str,
+    terminal: &Value,
+    all_samples: &[Value],
+    case: &Value,
+    limits: &Value,
+    problems: &mut Vec<String>,
+) {
+    let windows = terminal["windows"].as_u64().unwrap_or(0) as usize;
+    if windows == 0 || all_samples.len() < windows {
+        problems.push(format!(
+            "report case {id} terminal has no complete sample window"
+        ));
+        return;
+    }
+    let evaluation =
+        evaluate_report_case(&all_samples[all_samples.len() - windows..], case, limits);
+    for (field, expected) in [
+        (
+            "median_throughput_bytes_per_second",
+            evaluation.median_throughput,
+        ),
+        (
+            "median_throughput_ratio_basis_points",
+            evaluation.median_ratio_basis_points,
+        ),
+        ("added_p95_microseconds", evaluation.added_p95_microseconds),
+        (
+            "timing_breaching_windows",
+            evaluation.timing_breaching_windows,
+        ),
+        (
+            "hard_invariant_failures",
+            evaluation.hard_invariant_failures,
+        ),
+    ] {
+        if terminal[field].as_u64() != Some(expected) {
+            problems.push(format!(
+                "report case {id} terminal {field} disagrees with its samples"
+            ));
+        }
+    }
+    if terminal["guard_band_terminal"].as_bool() != Some(evaluation.guard_band) {
+        problems.push(format!(
+            "report case {id} terminal guard band disagrees with its samples"
+        ));
+    }
+    if !evaluation.passed || evaluation.guard_band {
+        problems.push(format!(
+            "report case {id} samples do not satisfy the canonical budget"
+        ));
+    }
+}
+
+fn evaluate_report_case(samples: &[Value], case: &Value, limits: &Value) -> ReportCaseEvaluation {
+    let number = |sample: &Value, field: &str| sample[field].as_u64().unwrap_or(u64::MAX);
+    let rate = |sample: &Value| {
+        number(sample, "useful_bytes").saturating_mul(1_000_000)
+            / number(sample, "proxy_microseconds").max(1)
+    };
+    let ratio = |sample: &Value| {
+        number(sample, "direct_microseconds").saturating_mul(10_000)
+            / number(sample, "proxy_microseconds").max(1)
+    };
+    let added = |sample: &Value| {
+        number(sample, "proxy_microseconds").saturating_sub(number(sample, "direct_microseconds"))
+    };
+    let mut throughput = samples.iter().map(rate).collect::<Vec<_>>();
+    let mut ratios = samples.iter().map(ratio).collect::<Vec<_>>();
+    let mut added_values = samples.iter().map(added).collect::<Vec<_>>();
+    throughput.sort_unstable();
+    ratios.sort_unstable();
+    added_values.sort_unstable();
+    let median = |values: &[u64]| values.get(values.len() / 2).copied().unwrap_or(0);
+    let median_throughput = median(&throughput);
+    let median_ratio_basis_points = median(&ratios);
+    let p95_index = samples
+        .len()
+        .saturating_mul(95)
+        .div_ceil(100)
+        .saturating_sub(1);
+    let added_p95_microseconds = added_values.get(p95_index).copied().unwrap_or(u64::MAX);
+    let throughput_floor = case["minimum_throughput_bytes_per_second"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let ratio_floor = case["minimum_throughput_ratio_basis_points"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let added_ceiling = case["maximum_added_p95_microseconds"].as_u64().unwrap_or(0);
+    let timing_breaching_windows = samples
+        .iter()
+        .filter(|sample| {
+            rate(sample) < throughput_floor
+                || ratio(sample) < ratio_floor
+                || added(sample) > added_ceiling
+        })
+        .count() as u64;
+    let shutdown_ceiling = limits["maximum_shutdown_milliseconds"]
+        .as_u64()
+        .unwrap_or(0)
+        .saturating_mul(1000);
+    let useful = case["useful_bytes_per_window"].as_u64().unwrap_or(0);
+    let hard_invariant_failures = samples
+        .iter()
+        .filter(|sample| {
+            let observed = number(sample, "payload_bytes_observed");
+            let retained = number(sample, "payload_bytes_retained");
+            let omitted = number(sample, "payload_bytes_omitted");
+            let queue_dropped = number(sample, "payload_bytes_queue_dropped");
+            let storage_dropped = number(sample, "payload_bytes_storage_dropped");
+            sample["success"].as_bool() != Some(true)
+                || number(sample, "useful_bytes") != useful
+                || number(sample, "throughput_bytes_per_second") != rate(sample)
+                || observed < useful
+                || observed
+                    != retained
+                        .saturating_add(omitted)
+                        .saturating_add(queue_dropped)
+                        .saturating_add(storage_dropped)
+                || queue_dropped != 0
+                || storage_dropped != 0
+                || (case["retention"].as_str() == Some("off") && retained != 0)
+                || (case["retention"].as_str() == Some("on") && retained == 0)
+                || number(sample, "cpu_microseconds").saturating_mul(1024 * 1024) / useful.max(1)
+                    > number(limits, "maximum_cpu_microseconds_per_mib")
+                || number(sample, "peak_working_set_bytes").max(number(sample, "private_bytes"))
+                    > number(limits, "maximum_worker_memory_bytes")
+                || number(sample, "artifact_bytes") > number(limits, "maximum_artifact_bytes")
+                || number(sample, "shutdown_microseconds") > shutdown_ceiling
+                || sample["clean_shutdown"].as_bool() != Some(true)
+                || number(sample, "task_peak") > number(limits, "maximum_worker_tasks")
+                || number(sample, "task_current") != 0
+                || number(sample, "task_spawned")
+                    != number(sample, "task_completed")
+                        .saturating_add(number(sample, "task_aborted"))
+                        .saturating_add(number(sample, "task_current"))
+                || number(sample, "cache_peak_entries")
+                    > number(limits, "maximum_leaf_cache_entries")
+                || number(sample, "cache_peak_bytes") > number(limits, "maximum_leaf_cache_bytes")
+                || number(sample, "queue_peak") > number(limits, "maximum_application_queue")
+                || number(sample, "queue_current") != 0
+                || number(sample, "failure_details_dropped") != 0
+                || number(sample, "application_events_dropped") != 0
+        })
+        .count() as u64;
+    let minimum_breaches = limits["minimum_breaching_windows"].as_u64().unwrap_or(0);
+    let timing_passed = !((median_throughput < throughput_floor
+        || median_ratio_basis_points < ratio_floor
+        || added_p95_microseconds > added_ceiling)
+        && timing_breaching_windows >= minimum_breaches);
+    let guard_percent = limits["guard_band_percent"].as_u64().unwrap_or(0);
+    let near = |value: u64, threshold: u64| {
+        value.abs_diff(threshold) <= threshold.saturating_mul(guard_percent) / 100
+    };
+    ReportCaseEvaluation {
+        passed: timing_passed && hard_invariant_failures == 0,
+        median_throughput,
+        median_ratio_basis_points,
+        added_p95_microseconds,
+        timing_breaching_windows,
+        hard_invariant_failures,
+        guard_band: near(median_throughput, throughput_floor)
+            || near(median_ratio_basis_points, ratio_floor)
+            || near(added_p95_microseconds, added_ceiling),
+    }
 }
 
 fn stable_digest(bytes: &[u8]) -> String {
@@ -568,6 +802,10 @@ mod tests {
 
     #[test]
     fn report_requires_complete_monotonic_evidence() {
+        let registry: Value = serde_json::from_str(include_str!(
+            "../../performance/native-proxy-budgets-v1.json"
+        ))
+        .unwrap();
         let mut sequence = 0_u64;
         let mut records = vec![serde_json::json!({
             "schema_version": 1,
@@ -587,37 +825,69 @@ mod tests {
         for protocol in PROTOCOLS {
             for retention in RETENTION {
                 let id = format!("{protocol}-{retention}");
+                let case = registry["cases"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|case| case["id"].as_str() == Some(id.as_str()))
+                    .unwrap();
+                let useful = case["useful_bytes_per_window"].as_u64().unwrap();
                 for _ in 0..7 {
                     sequence += 1;
                     records.push(serde_json::json!({
                         "schema_version":1,"kind":"case.sample","sequence":sequence,
-                        "case_id":id,"metrics_available":true,"useful_bytes":1,
-                        "throughput_bytes_per_second":1,"cpu_microseconds":0,
+                        "case_id":id,"metrics_available":true,"useful_bytes":useful,
+                        "direct_microseconds":90_000,"proxy_microseconds":100_000,
+                        "throughput_bytes_per_second":useful * 10,"cpu_microseconds":0,
                         "peak_working_set_bytes":1,"private_bytes":1,"artifact_bytes":1,
-                        "payload_bytes_observed":0,"payload_bytes_retained":0,
-                        "payload_bytes_omitted":0,"payload_bytes_queue_dropped":0,
-                        "payload_bytes_storage_dropped":0,"queue_peak":0,"task_peak":1,
-                        "shutdown_microseconds":1
+                        "payload_bytes_observed":useful,
+                        "payload_bytes_retained":if *retention == "on" { useful } else { 0 },
+                        "payload_bytes_omitted":if *retention == "off" { useful } else { 0 },
+                        "payload_bytes_queue_dropped":0,"payload_bytes_storage_dropped":0,
+                        "queue_peak":0,"queue_current":0,"task_peak":1,"task_current":0,
+                        "task_spawned":1,"task_completed":1,"task_aborted":0,
+                        "cache_peak_entries":0,"cache_peak_bytes":0,
+                        "failure_details_dropped":0,"application_events_dropped":0,
+                        "shutdown_microseconds":1,"success":true,"clean_shutdown":true
                     }));
                 }
                 sequence += 1;
                 records.push(serde_json::json!({
                     "schema_version":1,"kind":"case.terminal","sequence":sequence,
-                    "case_id":id,"passed":true,"conservation_equation":"observed = terminal"
+                    "case_id":id,"passed":true,"attempts":1,"windows":7,
+                    "median_throughput_bytes_per_second":useful * 10,
+                    "median_throughput_ratio_basis_points":9000,
+                    "added_p95_microseconds":10_000,"timing_breaching_windows":0,
+                    "hard_invariant_failures":0,"guard_band_terminal":false,
+                    "conservation_equation":"observed = terminal"
                 }));
             }
         }
         sequence += 1;
         records.push(serde_json::json!({
             "schema_version":1,"kind":"campaign.terminal","sequence":sequence,
-            "complete":true,"passed":true,"registry_digest":"digest"
+            "complete":true,"passed":true,"registry_digest":"digest",
+            "private_memory_span_bytes":0
         }));
         let text = records
             .iter()
             .map(Value::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(validate_report(&text, "digest").is_empty());
+        let problems = validate_report(&text, "digest", &registry);
+        assert!(problems.is_empty(), "{problems:?}");
+
+        records[1]["throughput_bytes_per_second"] = Value::from(1);
+        let fabricated = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(validate_report(&fabricated, "digest", &registry)
+            .iter()
+            .any(|problem| problem.contains("canonical budget")));
+        records[1]["throughput_bytes_per_second"] =
+            Value::from(records[1]["useful_bytes"].as_u64().unwrap() * 10);
 
         records[1]["sequence"] = Value::from(99);
         let corrupt = records
@@ -625,13 +895,17 @@ mod tests {
             .map(Value::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(validate_report(&corrupt, "digest")
+        assert!(validate_report(&corrupt, "digest", &registry)
             .iter()
             .any(|problem| problem.contains("breaks sequence")));
     }
 
     #[test]
     fn soak_report_rejects_progress_and_terminal_gaps_over_sixty_seconds() {
+        let registry: Value = serde_json::from_str(include_str!(
+            "../../performance/native-proxy-budgets-v1.json"
+        ))
+        .unwrap();
         let report = [
             serde_json::json!({
                 "schema_version":1,"kind":"campaign.header","sequence":0,
@@ -654,7 +928,7 @@ mod tests {
         .map(Value::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-        let problems = validate_report(&report, "digest");
+        let problems = validate_report(&report, "digest", &registry);
         assert!(problems
             .iter()
             .any(|problem| problem == "soak report exceeds the 60-second progress cadence"));

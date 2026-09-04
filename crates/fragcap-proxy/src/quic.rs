@@ -427,11 +427,27 @@ async fn proxy_http3(
             let request_limits = stream_limits.clone();
             let request_forward = async move {
                 let mut evidence = Vec::with_capacity(request_limits.max_event_chunk_bytes);
-                while let Some(mut data) = client_recv
-                    .recv_data()
-                    .await
-                    .map_err(http3_stream_terminal)?
-                {
+                loop {
+                    let next = match client_recv.recv_data().await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            emit_coalesced_stream(
+                                &request_observer,
+                                &request_sink,
+                                QuicDirection::ClientToUpstream,
+                                stream_id,
+                                "http3-request",
+                                &mut evidence,
+                                &request_limits,
+                                true,
+                            )
+                            .await;
+                            return Err(http3_stream_terminal(error));
+                        }
+                    };
+                    let Some(mut data) = next else {
+                        break;
+                    };
                     let bytes = copy_buf(&mut data);
                     let sent = origin_send.send_data(bytes.clone()).await;
                     if sent.is_ok() {
@@ -526,11 +542,27 @@ async fn proxy_http3(
                     .send_response(response)
                     .await
                     .map_err(http3_stream_terminal)?;
-                while let Some(mut data) = origin_recv
-                    .recv_data()
-                    .await
-                    .map_err(http3_stream_terminal)?
-                {
+                loop {
+                    let next = match origin_recv.recv_data().await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            emit_coalesced_stream(
+                                &response_observer,
+                                &response_sink,
+                                QuicDirection::UpstreamToClient,
+                                stream_id,
+                                "http3-response",
+                                &mut evidence,
+                                &response_limits,
+                                true,
+                            )
+                            .await;
+                            return Err(http3_stream_terminal(error));
+                        }
+                    };
+                    let Some(mut data) = next else {
+                        break;
+                    };
                     let bytes = copy_buf(&mut data);
                     let sent = client_send.send_data(bytes.clone()).await;
                     if sent.is_ok() {

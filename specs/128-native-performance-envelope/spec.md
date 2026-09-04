@@ -112,7 +112,7 @@ A maintainer can reproduce a quick pull-request gate and a multi-hour soak campa
 - **SC-001**: All 14 required protocol and retention cases have predeclared budgets and produce exactly one terminal result in a complete short campaign; a soak produces one terminal result per case per completed cycle.
 - **SC-002**: The short campaign completes within 15 minutes on each supported continuous-integration operating-system family.
 - **SC-003**: Every required case sustains at least 1 MiB/s of useful synthetic loopback payload throughput and stays within its reviewed protocol-specific p95 added-latency ceiling, which ranges from 25 to 750 milliseconds in the short profile.
-- **SC-004**: Peak worker memory remains at or below 256 MiB, cross-worker private-memory span remains at or below 32 MiB, certificate ownership remains at or below 256 entries and 8 MiB, and final accepted-connection task ownership is zero.
+- **SC-004**: Peak worker memory remains at or below 256 MiB, the maximum same-case fresh-worker private-memory span remains at or below 32 MiB, certificate ownership remains at or below 256 entries and 8 MiB, and final accepted-connection task ownership is zero.
 - **SC-005**: Each workload artifact remains at or below 32 MiB, and disabled-retention cases report zero retained payload bytes.
 - **SC-006**: For every pressure case, observed work equals forwarded, retained, refused, omitted, truncated, and dropped dispositions according to the declared conservation equation, with no unexplained remainder.
 - **SC-007**: Clean shutdown completes within 5 seconds after a short or soak workload, with the listener released and no incomplete accepted tasks.

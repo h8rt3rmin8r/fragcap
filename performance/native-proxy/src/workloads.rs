@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::{Buf, Bytes};
-use fragcap::deep_capture::ApplicationArtifactLease;
+use fragcap::deep_capture::{ApplicationArtifactLease, read_application_prefix};
 use fragcap_proxy::{
     DestinationAuthority, DestinationPolicy, LeafCache, NativeProxyBackend, NativeProxyConfig,
     ProtocolLimits, SessionCertificateAuthority, ShutdownReport, build_quic_client_config,
@@ -114,11 +114,23 @@ fn finish(mut owner: ProxyOwner, started: Instant) -> MeasurementTail {
     let report = owner.native.cleanup(Duration::from_secs(3));
     let artifact_path = owner.artifact.path().to_path_buf();
     let artifact_finished = owner.artifact.finish().is_ok();
+    let payload = artifact_finished
+        .then(|| payload_totals(&artifact_path))
+        .transpose()
+        .ok()
+        .flatten();
     let artifact_bytes = std::fs::metadata(&artifact_path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
     let artifact_removed = std::fs::remove_file(artifact_path).is_ok();
     let mut resources = resources(&report);
+    if let Some(payload) = payload {
+        resources.payload_bytes_observed = payload.observed;
+        resources.payload_bytes_retained = payload.retained;
+        resources.payload_bytes_omitted = payload.omitted;
+        resources.payload_bytes_queue_dropped = payload.queue_dropped;
+        resources.payload_bytes_storage_dropped = payload.storage_dropped;
+    }
     let sink_accounting = sink.accounting();
     resources.queue_peak = sink_accounting.queue_peak;
     resources.queue_current = sink_accounting.queue_current;
@@ -128,10 +140,77 @@ fn finish(mut owner: ProxyOwner, started: Instant) -> MeasurementTail {
         shutdown_microseconds: micros(started.elapsed()),
         clean_shutdown: report.is_clean()
             && artifact_finished
+            && payload.is_some()
             && artifact_removed
             && sink_accounting.queue_current == 0,
         resources,
     }
+}
+
+#[derive(Clone, Copy)]
+struct PayloadTotals {
+    observed: u64,
+    retained: u64,
+    omitted: u64,
+    queue_dropped: u64,
+    storage_dropped: u64,
+}
+
+fn payload_totals(path: &std::path::Path) -> io::Result<PayloadTotals> {
+    let prefix = read_application_prefix(path)?;
+    let trailer = prefix
+        .records
+        .last()
+        .filter(|value| value["type"].as_str() == Some("application.trailer"))
+        .ok_or_else(|| io::Error::other("application artifact trailer missing"))?;
+    let field = |name: &str| trailer[name].as_u64().unwrap_or(0);
+    let observed = [
+        "body_bytes_observed",
+        "streaming_bytes_observed",
+        "generic_stream_bytes_observed",
+        "generic_udp_bytes_observed",
+        "quic_stream_bytes_observed",
+        "quic_datagram_bytes_observed",
+    ]
+    .iter()
+    .fold(0_u64, |total, name| total.saturating_add(field(name)));
+    let retained = [
+        "body_bytes_retained",
+        "streaming_bytes_retained",
+        "generic_stream_bytes_retained",
+        "generic_udp_bytes_retained",
+        "quic_stream_bytes_retained",
+        "quic_datagram_bytes_retained",
+    ]
+    .iter()
+    .fold(0_u64, |total, name| total.saturating_add(field(name)));
+    let queue_dropped = [
+        "body_bytes_queue_dropped",
+        "streaming_bytes_queue_dropped",
+        "generic_stream_bytes_queue_dropped",
+        "generic_udp_bytes_queue_dropped",
+        "quic_stream_bytes_queue_dropped",
+        "quic_datagram_bytes_queue_dropped",
+    ]
+    .iter()
+    .fold(0_u64, |total, name| total.saturating_add(field(name)));
+    let storage_dropped = [
+        "generic_udp_bytes_storage_dropped",
+        "quic_stream_bytes_storage_dropped",
+        "quic_datagram_bytes_storage_dropped",
+    ]
+    .iter()
+    .fold(0_u64, |total, name| total.saturating_add(field(name)));
+    Ok(PayloadTotals {
+        observed,
+        retained,
+        omitted: observed
+            .saturating_sub(retained)
+            .saturating_sub(queue_dropped)
+            .saturating_sub(storage_dropped),
+        queue_dropped,
+        storage_dropped,
+    })
 }
 
 fn performance_artifact_path() -> std::path::PathBuf {
@@ -743,9 +822,11 @@ async fn h2_origin(
     let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
-        let mut connection = h2::server::handshake(stream)
-            .await
-            .map_err(io::Error::other)?;
+        let mut builder = h2::server::Builder::new();
+        builder
+            .initial_window_size(PAYLOAD_BYTES as u32)
+            .initial_connection_window_size(PAYLOAD_BYTES as u32);
+        let mut connection = builder.handshake(stream).await.map_err(io::Error::other)?;
         let (request, mut respond) = connection
             .accept()
             .await
@@ -826,7 +907,12 @@ async fn h2_exchange(
     grpc: bool,
 ) -> io::Result<u64> {
     let stream = tokio::net::TcpStream::connect(endpoint).await?;
-    let (mut sender, connection) = h2::client::handshake(stream)
+    let mut client = h2::client::Builder::new();
+    client
+        .initial_window_size(PAYLOAD_BYTES as u32)
+        .initial_connection_window_size(PAYLOAD_BYTES as u32);
+    let (mut sender, connection) = client
+        .handshake(stream)
         .await
         .map_err(|error| io::Error::other(format!("client handshake: {error}")))?;
     let driver = tokio::spawn(connection);
