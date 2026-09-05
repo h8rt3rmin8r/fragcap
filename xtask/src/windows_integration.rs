@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -236,6 +236,15 @@ fn execute(
     );
     let allowed = root.join("target/windows-integration");
     fs::create_dir_all(&allowed)?;
+    let allowed_resolved = fs::canonicalize(&allowed)?;
+    if raw
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(invalid_input(
+            "report paths may not contain parent traversal",
+        ));
+    }
     let raw = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
@@ -248,7 +257,7 @@ fn execute(
     }
     let scratch = raw.with_extension("scratch");
     if scratch.exists() {
-        fs::remove_dir_all(&scratch)?;
+        remove_owned_dir(&scratch, &allowed_resolved)?;
     }
     fs::create_dir_all(&scratch)?;
     std::env::set_var("FRAGCAP_WINDOWS_SCRATCH", &scratch);
@@ -257,7 +266,7 @@ fn execute(
     let registry_digest = sha256(registry_bytes);
     let diagnostics = raw.with_extension("rows");
     if diagnostics.exists() {
-        fs::remove_dir_all(&diagnostics)?;
+        remove_owned_dir(&diagnostics, &allowed_resolved)?;
     }
     fs::create_dir_all(&diagnostics)?;
     if let Some(parent) = raw.parent() {
@@ -328,7 +337,7 @@ fn execute(
             }),
         )?;
     }
-    let residue = match fs::remove_dir_all(&scratch) {
+    let residue = match remove_owned_dir(&scratch, &allowed_resolved) {
         Ok(()) if !scratch.exists() => "none",
         _ => {
             failed += 1;
@@ -340,7 +349,7 @@ fn execute(
         &mut output,
         &json!({
             "record":"terminal", "status":if failed == 0 {"complete"} else {"failed"},
-            "required":required, "passed":required-failed, "failed":failed,
+            "required":required, "passed":required.saturating_sub(failed), "failed":failed,
             "residue":residue, "finished_unix_seconds":unix_seconds(),
         }),
     )?;
@@ -539,6 +548,17 @@ fn read_bounded(stream: impl Read) -> String {
     let mut bytes = Vec::new();
     let _ = stream.take((MAX_OUTPUT + 1) as u64).read_to_end(&mut bytes);
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn remove_owned_dir(path: &Path, allowed: &Path) -> io::Result<()> {
+    let resolved = fs::canonicalize(path)?;
+    if !resolved.starts_with(allowed) || resolved == allowed {
+        return Err(invalid_input(format!(
+            "refusing recursive removal outside the matrix workspace: {}",
+            resolved.display()
+        )));
+    }
+    fs::remove_dir_all(resolved)
 }
 
 fn capabilities() -> BTreeSet<String> {
