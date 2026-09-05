@@ -839,6 +839,9 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
             "process_observation",
             "network_observation",
             "samples",
+            "observed_endpoint_count",
+            "observed_non_loopback_attempt_count",
+            "loopback_socket_observed",
             "complete",
         ],
         "smoke report",
@@ -852,6 +855,13 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
         || report["smoke"]["samples"]
             .as_u64()
             .is_none_or(|samples| samples == 0)
+        || report["smoke"]["observed_endpoint_count"]
+            .as_u64()
+            .is_none()
+        || report["smoke"]["observed_non_loopback_attempt_count"]
+            .as_u64()
+            .is_none()
+        || !report["smoke"]["loopback_socket_observed"].is_boolean()
     {
         problems.push("packaged native smoke is incomplete".into());
     }
@@ -1130,7 +1140,7 @@ mod tests {
         let portable_pe = serde_json::json!({"surface": "portable-zip", "machine": "8664", "ordinary_imports": contract["pe_imports"]["ordinary"], "delayed_imports": contract["pe_imports"]["delayed"], "file_version": "0.9.0.0", "product_version": "0.9.0", "product_name": "fragcap", "original_filename": "fragcap.exe", "signature": "not_signed", "complete": true});
         let mut installed_pe = portable_pe.clone();
         installed_pe["surface"] = Value::String("installed-msi".into());
-        let mut value = serde_json::json!({"schema_version": 1, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "complete": true}, "lifecycle": lifecycle, "findings": [], "complete": true});
+        let mut value = serde_json::json!({"schema_version": 1, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "complete": true}, "lifecycle": lifecycle, "findings": [], "complete": true});
         let path = std::env::temp_dir().join(format!(
             "fragcap-package-report-{}.json",
             std::process::id()
