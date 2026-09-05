@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use std::{fs, io};
+
+#[cfg(windows)]
+use std::{fs, io, path::PathBuf};
 
 use fragcap_proxy::{CertificateIdentity, LeafCache, SessionCertificateAuthority};
 use x509_parser::extensions::{GeneralName, ParsedExtension};
