@@ -11,13 +11,13 @@
   "product_version": "0.8.0",
   "recorded_on": "2026-09-05",
   "registry_sha256": "dacb832bf4d4ae090275de5504bb92141908769cf5ca790e0db70e003769b017",
-  "revision": "c467b3903ed36dd87acca811fba1b38ad3ac2b8b",
+  "revision": "d42bef7704935675561a3c30fe55244c5451913e",
   "rows": [
     {
       "cleanup": "reconciled",
       "id": "physical-non-admin-refusal",
-      "output_bytes": 1340,
-      "output_sha256": "dd5b37487c8b1e49e35a4753b848c6e9356432e9f2a9948659de242c6e9d9e65",
+      "output_bytes": 1196,
+      "output_sha256": "7b360844e6d42671157f0cab80f3f38a9756a698b8d5a5f3de4b5b9d9547ffa2",
       "status": "passed",
       "timed_out": false
     },
@@ -25,7 +25,7 @@
       "cleanup": "reconciled",
       "id": "physical-npcap-present",
       "output_bytes": 511,
-      "output_sha256": "a4e830c2db5d6ce92276e7e029363c9ea95551233378d7c5a2636721caa2c2fb",
+      "output_sha256": "ec0747fba420f3041e30d8287e0fc4ff5354fa487de898a44a39f79a5d47391e",
       "status": "passed",
       "timed_out": false
     },
@@ -33,23 +33,23 @@
       "cleanup": "reconciled",
       "id": "physical-uac-denial",
       "output_bytes": 3656,
-      "output_sha256": "bded28d8bb63aa58b2a6b699da86a60698af0a187b650e0ee5a0cdbd2253a94f",
+      "output_sha256": "5974bb7c810278f93c02066fb80f8a8b7da161efe2ac4864d817b8a1d04b1ee8",
       "status": "passed",
       "timed_out": false
     },
     {
       "cleanup": "reconciled",
       "id": "physical-current-user-trust",
-      "output_bytes": 540,
-      "output_sha256": "040250131f20d1c69671e11045c73acb54a817439436cd0a074fde920f375c1e",
+      "output_bytes": 539,
+      "output_sha256": "665a8a36de3fe87e333b377926fca061e5a224cee597e7d280fb0fef42338b57",
       "status": "passed",
       "timed_out": false
     },
     {
       "cleanup": "reconciled",
       "id": "physical-analyzer-keylog",
-      "output_bytes": 41805,
-      "output_sha256": "cd7455113445cd9b3ad3b1dbed9bd4261b94865a00fe356e2e827330cefca94d",
+      "output_bytes": 41957,
+      "output_sha256": "38329c36c01a9e7d4bd97206de6a5ba5a8798a508c01b503f1898b405f6809ce",
       "status": "passed",
       "timed_out": false
     },
@@ -57,7 +57,7 @@
       "cleanup": "reconciled",
       "id": "physical-residue",
       "output_bytes": 358,
-      "output_sha256": "3ff3d7de25abadaf6792d2fc5419a8d0cc7d049cbba3dde45beeac2f2832cba6",
+      "output_sha256": "300772acaab6f10b9b3dc207950b2bea83b94c2495056e8a6a44535d0ab11d25",
       "status": "passed",
       "timed_out": false
     },
@@ -65,7 +65,7 @@
       "cleanup": "reconciled",
       "id": "physical-staged-binary",
       "output_bytes": 355,
-      "output_sha256": "39e6239cbaa2fb602b1cbfcf2d9f8549d3bf8a830f210167cae2833f639e4827",
+      "output_sha256": "d3077084659a5369372f6056521ebeff7c3ed0a45e886a77e65d341f29e81efb",
       "status": "passed",
       "timed_out": false
     }
