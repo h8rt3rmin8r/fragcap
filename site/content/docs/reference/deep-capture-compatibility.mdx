@@ -3,22 +3,18 @@ title: Deep Capture compatibility
 description: Current traffic support, local target evidence, and the limits of proxy inspection.
 ---
 
-<Callout title="Native in v0.9, final gate still open">
-This matrix describes the v0.9 native Deep Capture path through S129. Native
-protocol, scoped routing, managed launch, lifecycle recovery, artifact, security,
-performance, and relocated-binary integration work has landed. The final
-feature-completion gate remains
-[issue #334](https://github.com/h8rt3rmin8r/fragcap/issues/334), with packaging
-and archive validation tracked separately by
-[issue #329](https://github.com/h8rt3rmin8r/fragcap/issues/329).
+<Callout title="Functional, not feature-complete">
+This matrix describes the S105 native HTTP/1.1, HTTP/2, CONNECT, HTTPS,
+metadata, bounded body, and live application-stream path.
+[Issue #278](https://github.com/h8rt3rmin8r/fragcap/issues/278)
+owns the remaining protocol, launch, artifact, recovery, and packaging work.
 </Callout>
 
 <Callout title="The short version">
 **Capture** passively records packets and process attribution. **Deep Capture**
 runs Capture alongside an explicit, target-scoped local proxy. Deep Capture can
-add application semantics only when the selected software actually routes
-traffic through that proxy and satisfies the protocol-specific trust and scope
-requirements.
+add HTTP semantics only when the selected software actually routes traffic
+through that proxy and accepts the fragcap-owned local certificate authority.
 </Callout>
 
 Rust integrations can drive the same behavior through `fragcap::deep_capture`.
@@ -33,36 +29,25 @@ does not bypass certificate pinning, downgrade TLS, extract keys from a target
 process, or silently change system-wide proxy settings. Packet truth remains
 available through Capture even when application inspection is unavailable.
 
-See [Output formats and session bundles](/docs/reference/output-formats) for the
-current v0.9 artifact authority, sensitivity, omission, correlation, retention,
-and cleanup contract. The native bundle includes versioned application and
-cleanup streams, packet-to-application correlation, a bounded HAR projection,
-and a manifest that declares finalization, completeness, loss, sensitivity, and
-omissions for every expected artifact.
+See [Output formats and session bundles](/docs/reference/output-formats) for the current v0.8 artifact authority, sensitivity, omission, correlation, retention, and cleanup contract. Native manifest, HAR, correlation, and proxy/cleanup sidecar completion is owned by [#335](https://github.com/h8rt3rmin8r/fragcap/issues/335), [#302](https://github.com/h8rt3rmin8r/fragcap/issues/302), [#303](https://github.com/h8rt3rmin8r/fragcap/issues/303), and [#336](https://github.com/h8rt3rmin8r/fragcap/issues/336).
 
 ## Traffic support
 
 | Traffic | Capture | Deep Capture | Outputs and limits |
 | --- | --- | --- | --- |
-| HTTP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Observes HTTP/1.1 and HTTP/2 metadata, streams, bounded bodies, WebSocket frames and messages, Server-Sent Events, and bounded gRPC envelopes. | gRPC payloads remain opaque without an operator-supplied schema. Retention and derivation loss stay explicit and do not delay forwarding. |
-| HTTPS | Records encrypted packets and attribution. | Negotiates native HTTP/1.1 or HTTP/2 after the connection reaches the proxy and accepts the session CA, retaining available metadata and bounded application evidence. Explicit paired operator-owned credentials support upstream mutual TLS. | Certificate pinning is classified only when conclusive and is never bypassed. Trust, client-auth, and protocol failures never silently downgrade. |
-| WebSocket | Records packets and attribution. | Observes verified HTTP/1.1 upgrades and HTTP/2 extended CONNECT, preserving raw frames and bounded derived messages. | Masking, fragmentation, UTF-8, and negotiated per-message compression outcomes are retained. Raw frames remain authoritative. |
-| Non-HTTP TLS | Records encrypted packets and attribution. | Retains bounded decrypted chunks only after both client-facing session-CA TLS and independently verified upstream TLS succeed. | Unknown application protocols remain explicitly classified as protocol-unknown. Failed trust or protocol boundaries never fall back to transparent forwarding. |
-| QUIC and HTTP/3 | Records the underlying UDP packets and attribution. | An authenticated target-owned UDP route can terminate paired QUIC connections and retain bounded HTTP/3 request, response, stream, body, datagram, timing, refusal, and loss evidence. | Exact `h3` ALPN is required. Zero round-trip application data, active migration, changed endpoints, failed trust, pinning, and unscopable traffic are refused. |
-| UDP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Authenticated SOCKS5 UDP associations support IPv4, IPv6, and proxy-resolved destinations, with bounded generic datagram evidence. | One control connection owns one finite association. Fragmented, spoofed, unsolicited, saturated, oversized, failed, timed-out, and cancelled traffic is counted. Unrouted UDP remains packet-only. |
-| Plaintext TCP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Plaintext HTTP follows the HTTP row. Authenticated SOCKS5 CONNECT retains bounded directional chunks for other streams. | Generic records preserve bytes and direction without inventing protocol semantics. |
+| HTTP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Observes HTTP/1.1 metadata and bounded streaming bodies when the request reaches the proxy. | HTTP/2 cleartext prior knowledge is limited to explicitly routed authorized traffic; WebSocket and event-stream semantics remain deferred. |
+| HTTPS | Records encrypted packets and attribution. | Negotiates native HTTP/1.1 or HTTP/2 after the connection reaches the proxy and accepts the local CA, retaining available metadata and bounded body evidence. Explicit paired operator-owned credentials support upstream mutual TLS. | Certificate pinning is classified only when conclusive and is never bypassed. Ambiguous refusal remains unknown. |
+| WebSocket | Records packets and attribution. | Can observe the HTTP upgrade handshake when it reaches the HTTP proxy. | Complete frame and message support is [#295](https://github.com/h8rt3rmin8r/fragcap/issues/295). An observed handshake is not full support. |
+| Non-HTTP TLS | Records encrypted packets and attribution. | Records proxy connection metadata when the flow reaches the proxy, without interpreting the application protocol. | Generic native stream observations are [#312](https://github.com/h8rt3rmin8r/fragcap/issues/312); protocol-specific interpretation remains an explicit dissector or omission. |
+| QUIC | Records the underlying UDP packets and attribution. | Unsupported by the current HTTP proxy path. | Scoped QUIC and HTTP/3 are [#314](https://github.com/h8rt3rmin8r/fragcap/issues/314). No current routing or decryption claim. |
+| UDP | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Unsupported by the current proxy path. | Generic native UDP relay is [#313](https://github.com/h8rt3rmin8r/fragcap/issues/313). Packet truth remains available. |
+| Plaintext | Records packets, attribution, and payload bytes unless `--no-payload` is selected. | Plaintext HTTP follows the HTTP row. Other plaintext protocols have no generic application dissector. | Generic stream records are [#312](https://github.com/h8rt3rmin8r/fragcap/issues/312); exhaustive omissions are [#316](https://github.com/h8rt3rmin8r/fragcap/issues/316). |
 
-All supported routes preserve IPv4 or IPv6 family from authorization through
-listener ownership, routing, lifecycle, artifacts, and cleanup. The default is
-IPv4; IPv6 selection is explicit and never uses a wildcard listener.
-
-In compatibility facts, `full` means the proxy observed the required supported
-semantics for that exact target, launch case, route, address family, protocol,
-backend, and product version. It does not mean every body byte, WebSocket frame,
-or custom payload was retained. Bounded retention and explicit omission or
-truncation remain authoritative. A TLS key log is an analyzer aid produced by
-the proxy side of the session. It is not a key extracted from the selected
-process.
+In compatibility facts, `full` means the proxy observed supported HTTP semantics for that
+run. It does not mean that every body byte, WebSocket frame, or custom payload
+was retained. Bounded retention and explicit omission or truncation remain
+authoritative. A TLS key log is an analyzer aid produced by the proxy
+side of the session. It is not a key extracted from the selected process.
 
 ## Local target matrix
 
@@ -114,12 +99,7 @@ rewritten.
 
 Compatibility calibration is the supported, explicit path from unknown local evidence toward ordinary Deep Capture eligibility. It keeps the ordinary safety gate intact and measures one declared launch case in two separate runs.
 
-First close the selected target and, for a Steam launch, close Steam. Managed
-direct, cold Steam platform, and declared publisher-launcher chains are
-supported. A warm target enters an explicit operator-confirmed close-and-retry
-workflow; fragcap observes the transition but never signals or terminates the
-process. Then measure scoped proxy reachability without changing certificate
-trust. This example uses the Steam launch case:
+First close the selected target and, for a Steam launch, close Steam. Then measure scoped proxy reachability without changing certificate trust. This example uses the Steam launch case:
 
 ```powershell
 fragcap deep-capture sample-target --launch --calibrate reachability --calibration-protocol routing --launch-case steam-protocol-cold
