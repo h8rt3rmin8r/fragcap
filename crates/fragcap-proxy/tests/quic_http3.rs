@@ -312,7 +312,7 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
         .set_read_timeout(Some(Duration::from_millis(50)))
         .unwrap();
     let shuttle_address = shuttle.local_addr().unwrap();
-    let (control, relay) = authenticate_and_associate(
+    let (mut control, relay) = authenticate_and_associate(
         lease.endpoint(),
         lease.capability_proof().proxy_password().as_bytes(),
         shuttle_address,
@@ -428,10 +428,11 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
         .unwrap();
     assert!(close.is_h3_no_error());
     client.wait_idle().await;
-    // Keep the UDP shuttle alive while closing the association. The QUIC
-    // gateway may still need to exchange its terminal packets after the client
-    // becomes idle; stopping the shuttle first races that completion and can
-    // misclassify a fully completed pair as interrupted.
+    // Keep the UDP shuttle and its owning control connection alive until the
+    // proxy closes the control side. That EOF proves the QUIC terminal reached
+    // the association before cleanup reads its accounting.
+    let mut eof = [0_u8; 1];
+    assert_eq!(control.read(&mut eof).unwrap(), 0);
     drop(control);
     origin_task.await.unwrap();
     let report = lease.cleanup(Duration::from_secs(3));
