@@ -1,0 +1,16 @@
+fragcap third-party dependency notices
+
+This file is generated from the exact locked Windows release dependency graph. Do not edit it by hand.
+
+{{#each licenses}}
+================================================================================
+LICENSE: {{name}} ({{id}})
+{{#each used_by}}
+{{#if crate.source}}
+USED BY: {{crate.name}} {{crate.version}}
+SOURCE: {{#if crate.repository}}{{crate.repository}}{{else}}registry metadata{{/if}}
+{{/if}}
+{{/each}}
+
+{{text}}
+{{/each}}

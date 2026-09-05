@@ -598,6 +598,8 @@ is next, and Deep Capture remains incomplete until #334. The runner takes the
 already-resolved `windows-sys` 0.36 as a Windows-only tooling dependency for
 job-object ownership; it adds no package and changes no product dependency.
 
+S130 closes #328 at the native supply-chain and compatibility boundary. The repository now binds complete all-feature Windows and Linux graphs plus the exact shipped Windows closure to a versioned offline policy, and blocking cargo-deny automation supplies fresh advisory, yanked, unmaintained, unsound, license, ban, and source intelligence. Critical pins, review cadence, compatibility lines, unsafe-review currency, and finite exceptions fail closed. Exact-pinned cargo-cyclonedx and cargo-about produce CycloneDX 1.5 and complete third-party notices, which must reconcile before the existing ZIP and MSI are assembled. S130 adds no product dependency or runtime behavior; package certification remains #329 and Deep Capture remains incomplete until #334.
+
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version
 rather than `0.0.0.0` (issue #104). It is taken with `default-features = false`,

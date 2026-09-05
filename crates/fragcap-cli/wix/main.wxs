@@ -8,9 +8,7 @@
   the release job passes no extension flags; passing either again makes light fail
   with duplicate-table or duplicate-symbol collisions.
 
-  Payload files (fragcap.exe, catalog.db, LICENSE, NOTICE) are read from
-  $(var.CargoTargetBinDir): the release job stages catalog.db, LICENSE, and NOTICE
-  next to the built fragcap.exe before invoking cargo wix.
+  Payload files (fragcap.exe, catalog.db, LICENSE, NOTICE, fragcap.cdx.json, and THIRD-PARTY-NOTICES.txt) are read from $(var.CargoTargetBinDir): the release job stages them next to the built fragcap.exe before invoking cargo wix.
 
   UpgradeCode is frozen for the life of the product line; it must never change or
   upgrades will duplicate rather than replace the install.
@@ -79,6 +77,20 @@
                   KeyPath="yes" />
           </Component>
 
+          <Component Id="Comp_sbom" Guid="E4C24896-71A8-4BC6-9FC4-3A5F70D2B981">
+            <File Id="fragcap_sbom"
+                  Name="fragcap.cdx.json"
+                  Source="$(var.CargoTargetBinDir)\fragcap.cdx.json"
+                  KeyPath="yes" />
+          </Component>
+
+          <Component Id="Comp_third_party_notices" Guid="6B9083E1-CF42-4A7D-8596-1EC3F742DA50">
+            <File Id="third_party_notices"
+                  Name="THIRD-PARTY-NOTICES.txt"
+                  Source="$(var.CargoTargetBinDir)\THIRD-PARTY-NOTICES.txt"
+                  KeyPath="yes" />
+          </Component>
+
         </Directory>
       </Directory>
     </Directory>
@@ -88,6 +100,8 @@
       <ComponentRef Id="Comp_catalog_db" />
       <ComponentRef Id="Comp_license" />
       <ComponentRef Id="Comp_notice" />
+      <ComponentRef Id="Comp_sbom" />
+      <ComponentRef Id="Comp_third_party_notices" />
     </Feature>
 
     <!--

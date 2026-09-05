@@ -416,6 +416,7 @@ physical execution tiers, staged official-feature binary identity, exact
 Windows effect cleanup, and sanitized release evidence. Final installer and
 archive behavior remains #329; the remaining completion gates are #328 through
 #334.
+S130 adds one closed dependency policy over complete Windows/Linux graphs and the exact shipped Windows closure, blocking fresh ecosystem audit automation, finite exception and maintenance governance, and validated CycloneDX plus third-party notices embedded in both release packages. Final package certification remains #329; the remaining completion gates are #329 through #334.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

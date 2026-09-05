@@ -10,8 +10,8 @@
 # undone. A failed release is then a release that was never created, rather
 # than crate versions that exist with nothing to download.
 #
-# The distribution archive contains the release binary and its legal texts
-# (LICENSE, NOTICE), per section 24.5. It ships no shell wrappers (the exe
+# The distribution archive contains the release binary, project legal texts,
+# dependency SBOM, and third-party notices, per section 24.5. It ships no shell wrappers (the exe
 # handles elevation itself since #56 and `doctor` covers driver detection, so a
 # wrapper adds little in the archive; wrappers stay in-repo for cloners), no repo
 # README, and no game profiles (fragcap bundles none by design). The archive-
@@ -43,6 +43,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install exact dependency-evidence tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo install cargo-cyclonedx --locked --version 0.5.9
+          cargo install cargo-about --locked --version 0.9.2 --features cli
 
       - name: Acquire the npcap SDK
         shell: pwsh
@@ -112,8 +119,8 @@ jobs:
           # import path (issue #96), so it is an empty, current-schema store with
           # no rows. Placed beside the binary so both the archive and the MSI pick
           # it up as the read-only template the first-run bootstrap copies. LICENSE
-          # and NOTICE are staged here too, because the installer sources all four
-          # payload files from the binary directory (CargoTargetBinDir).
+          # and NOTICE are staged here too; dependency evidence joins them before
+          # the installer reads its complete payload from CargoTargetBinDir.
           $ErrorActionPreference = 'Stop'
           & target/release/fragcap.exe catalog import assets/hint-seed.json --db target/release/catalog.db
           # Seed the detection signature table from the bundled signature document
@@ -124,6 +131,21 @@ jobs:
           # not the per-user default the flagless form would resolve.
           & target/release/fragcap.exe catalog seed --tier signature --db target/release/catalog.db
           Copy-Item LICENSE, NOTICE target/release/
+
+      - name: Generate dependency evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $epoch = git show -s --format=%ct $env:GITHUB_SHA
+          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
+          $env:SOURCE_DATE_EPOCH = $epoch
+          cargo cyclonedx --manifest-path crates/fragcap-cli/Cargo.toml --format json --spec-version 1.5 --describe binaries --target x86_64-pc-windows-msvc --no-default-features --features live,socket-table,etw
+          Copy-Item crates/fragcap-cli/fragcap_bin.cdx.json target/release/fragcap.cdx.json
+          cargo about generate --config supply-chain/about.toml --manifest-path crates/fragcap-cli/Cargo.toml --locked --fail --target x86_64-pc-windows-msvc --no-default-features --features "live socket-table etw" --output-file target/release/THIRD-PARTY-NOTICES.txt supply-chain/about.hbs
+
+      - name: Validate dependency evidence
+        shell: pwsh
+        run: cargo run --package xtask -- supply-chain stamp-evidence target/release/fragcap.cdx.json target/release/THIRD-PARTY-NOTICES.txt
 
       - name: Install WiX and cargo-wix
         shell: pwsh
@@ -155,7 +177,7 @@ jobs:
           # duplicate-table collisions, so no extension flags are passed.
           # --target-bin-dir is required alongside --no-build so main.wxs's
           # $(var.CargoTargetBinDir) resolves to the staged payload (fragcap.exe,
-          # catalog.db, LICENSE, NOTICE). WiX is located through the WIX env var the
+          # catalog.db, LICENSE, NOTICE, SBOM, and third-party notices). WiX is located through the WIX env var the
           # previous step exported. This whole invocation was validated end to end
           # against WiX 3.14 before it was committed.
           $ErrorActionPreference = 'Stop'
@@ -181,6 +203,12 @@ jobs:
           if (-not (Test-Path $installed)) {
             Write-Error "fragcap.exe not found at $installed after install."
             exit 1
+          }
+          foreach ($evidence in 'fragcap.cdx.json','THIRD-PARTY-NOTICES.txt') {
+            if (-not (Test-Path (Join-Path (Split-Path $installed) $evidence))) {
+              Write-Error "$evidence was not installed beside fragcap.exe."
+              exit 1
+            }
           }
           Write-Output "OK: installed at $installed"
           Start-Process msiexec.exe -ArgumentList "/x","`"$msi`"","/qn" -Wait
@@ -209,6 +237,8 @@ jobs:
           # a portable-archive user gets the same first-run bootstrap as an
           # installed one (section 24.5, issue #96).
           Copy-Item target/release/catalog.db $stage
+          Copy-Item target/release/fragcap.cdx.json $stage
+          Copy-Item target/release/THIRD-PARTY-NOTICES.txt $stage
 
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse -Force $stage

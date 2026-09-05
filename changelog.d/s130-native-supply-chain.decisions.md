@@ -1,0 +1,3 @@
+<!-- spec-impact: 20.4, 24.2, 24.3, 24.5, 28.1 -->
+
+- **2026-09-05:** Pin cargo-deny-action v2.1.1 to commit `3c6349835b2b7b196a839186cb8b78e02f7b5f25`, cargo-deny to 0.20.2, cargo-cyclonedx to 0.5.9, and cargo-about to 0.9.2. Keep mutable advisory intelligence in blocking GitHub automation, keep normalized graph and exception governance offline in `xtask`, and preserve the existing three-download release contract by embedding evidence in ZIP and MSI rather than publishing loose files. Accept the official cargo-cyclonedx lock's yanked, non-advisory `xml-rs` 0.8.19 only as finite exception `S130-TOOL-001` through 2026-12-04; it is a generator-only package and must leave with the first suitable upstream tool release.

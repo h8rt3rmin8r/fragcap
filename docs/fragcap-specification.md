@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.52-draft \
+**Version:** 0.1.53-draft \
 **Applies-To:** 0.9.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -145,6 +145,7 @@ enforcement.
 | 0.1.50-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native failure-injection evidence (issue #325).** Extends sections 25.5 and 28.1. A versioned registry generates before and after scenarios for seven journaled effects and eight checked lifecycle transitions. Ten controlled failure families execute through the production coordinator and resource journal while terminal, artifact, fact, event, cleanup, journal, and recovery authorities remain independent. Source-derived inventory checks prevent unreviewed gaps. S127 adds no dependency, runtime fault switch, destructive host test, or Deep Capture completion claim. |
 | 0.1.51-draft | 2026-09-04 | W. Thompson | **Adds the bounded native performance envelope (issue #326).** Extends sections 25.5 and 28.1. A reviewed registry freezes fourteen production protocol and payload-retention cases, short and manual two-hour soak profiles, finite timing and resource limits, seven independent worker windows, immutable JSON Lines evidence, and exact runtime failure, task, cache, queue, loss, and shutdown accounting. Windows and Ubuntu run the short gate; Windows exposes soak evidence by manual dispatch. Final S128 acceptance records the project owner's explicit approval of 1,916 zero-failure terminals across 4,316 seconds without altering the interrupted raw report. The isolated measurement lock adds no product dependency. |
 | 0.1.52-draft | 2026-09-04 | W. Thompson | **Adds the finite native Windows integration authority (issue #327).** Extends sections 24.3, 25.5, and 28.1. A closed registry maps every required Windows completion domain to exact hosted or physical evidence. The hosted gate builds the official feature set from a temporary Npcap SDK, exercises a relocated staged binary, and publishes only a sanitized summary. Explicitly authorized physical evidence covers non-admin refusal, installed Npcap, current-user trust cleanup, unmodified analyzer use, and zero owned residue. S129 validates the staged install layout while final installer and archive behavior remains #329. |
+| 0.1.53-draft | 2026-09-05 | W. Thompson | **Adds the native dependency and supply-chain release authority (issue #328).** Extends sections 24.3, 25.5, 27, and 28.1. A versioned policy binds the locked all-feature Linux and Windows graphs plus the exact shipped Windows runtime closure, rejects ungoverned compatibility lines, unsupported sources, stale critical reviews, expired exceptions, checksum drift, and advisory or license failures, and generates validated CycloneDX and third-party notice artifacts for both official package formats. Exact-pinned audit and evidence tools run on pull requests, main, release, a weekly schedule, and manual dispatch. S130 adds no product dependency or runtime behavior; final installer and archive certification remains #329. |
 
 ## 2. Purpose and Problem Statement
 
@@ -3689,6 +3690,10 @@ License compliance is verified in continuous integration against a
 declared allowlist, and a new dependency introducing a license outside
 it fails the build.
 
+S130 closes the native dependency policy around three reviewed graph views: complete all-feature Windows and Linux workspaces plus the exact shipped Windows closure rooted at `fragcap-cli` with `live`, `socket-table`, and `etw`. The offline `cargo xtask supply-chain` authority normalizes package identity, source, checksum, license metadata, declared Rust requirement, resolved features, dependency kind, target expression, and exact edge before comparing graph digests and counts. It separately enforces critical pins and review cadence, Cargo-compatible major or pre-1.0 compatibility lines, graph-bound unsafe review, and finite exceptions with owner, rationale, creation, expiry, and removal condition. Any unknown, expired, duplicate, unused, or broad exception fails.
+
+The network-backed `audit` workflow runs cargo-deny on pull requests, `main`, manual dispatch, and weekly. It fails on actionable advisories, yanked, unmaintained, unsound, license, ban, or source findings and on unavailable advisory data. Static policy never converts absent mutable intelligence into a clean result. Routine and emergency maintenance procedures are in `docs/maintainers/supply-chain.md`.
+
 ### 20.5 Contribution Terms
 
 Contributions are accepted under the Apache-2.0 inbound-equals-outbound
@@ -4066,7 +4071,7 @@ build time per section 20.2 rather than vendored.
 | --- | --- | --- |
 | `ci` | Push, pull request | Format, lint, unit and pipeline tests |
 | `platform` | Push, pull request | Windows platform tests with capture driver |
-| `audit` | Push, weekly | Dependency vulnerabilities and licenses |
+| `audit` | Pull request, push to default branch, weekly, manual | Dependency vulnerabilities, maintenance status, licenses, bans, and sources |
 | `docs` | Push to default branch | Build and deploy the site |
 | `links` | Weekly | External reference verification |
 | `release` | Tag push | Artifacts and crate publication |
@@ -4084,6 +4089,8 @@ passes in check mode. Both shell wrapper compliance checkers pass.
 The Bash wrapper compliance gate requires ShellCheck to be runnable
 from Bash, because a skipped static-analysis pass is not a successful
 compliance pass.
+
+The offline supply-chain gate also runs in the ordinary sequence. It validates the complete reviewed graph, exact shipped closure, critical dependency and tool pins, compatibility-line exceptions, unsafe-review currency, release workflow ordering, and evidence payload wiring without downloading advisory data or running product effects.
 
 The pipeline tests run on runners with no capture driver installed and
 no game present, which is the property section 25 exists to guarantee.
@@ -4109,14 +4116,7 @@ available before publishing its dependents.
 
 ### 24.5 Artifacts
 
-Each release publishes three Windows downloads, and a checksum accompanies
-every one: a portable archive containing the binary, the license, the
-notice file, and the barebones catalog store; an unsigned MSI installer; and
-the barebones catalog store on its own. The user chooses among them. The
-catalog store (`catalog.db`) is placed beside the binary in both the archive
-and the installer, so the first-run bootstrap (section 15.3) can seed the
-writable per-user copy from it. The user-owned `local.db` is not shipped; it
-is created empty on first run.
+Each release publishes three Windows downloads, and a checksum accompanies every one: a portable archive containing the binary, the license, the project notice file, the exact release CycloneDX 1.5 software bill of materials, complete third-party dependency notices, and the barebones catalog store; an unsigned MSI installer carrying the same evidence beside the binary; and the barebones catalog store on its own. The user chooses among them. The catalog store (`catalog.db`) is placed beside the binary in both the archive and the installer, so the first-run bootstrap (section 15.3) can seed the writable per-user copy from it. The user-owned `local.db` is not shipped; it is created empty on first run.
 
 The MSI installs the binary per-machine, adds its directory to the system
 path, best-effort excludes its own install directory from Windows Defender
@@ -4916,6 +4916,8 @@ TShark consumption, and zero owned residue. This deliberately breaks the
 installation, upgrade, repair, uninstall, checksums, signatures, and final
 contents remain #329. Supply-chain, packaging, and final completion work remain
 #328 through #334, and Deep Capture remains incomplete until #334.
+
+S130 closes #328 at the native supply-chain and compatibility boundary. One versioned policy binds all-feature Windows and Linux graphs plus the exact shipped Windows runtime closure to package, edge, source, checksum, license metadata, declared MSRV, feature, target, compatibility-line, critical-pin, review-cadence, unsafe-review, and finite-exception authority. Blocking cargo-deny automation adds fresh advisory, yanked, unmaintained, unsound, license, ban, and source intelligence on pull requests, `main`, manual dispatch, and weekly. Exact-pinned cargo-cyclonedx and cargo-about generate CycloneDX 1.5 and complete third-party notices; repository-owned validation reconciles them before the existing ZIP and MSI are assembled. S130 adds no product dependency or runtime behavior, leaves package certification to #329, and leaves Deep Capture completion to #334.
 
 The required dependency direction is:
 
