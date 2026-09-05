@@ -205,6 +205,7 @@ Param(
         $observedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $observedAddresses = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $observationSamples = 0
+        if (-not [string]::IsNullOrEmpty($ObservedExecutablePath)) { [void]$observedPaths.Add([System.IO.Path]::GetFullPath($FilePath)) }
         while (-not $waitTask.IsCompleted) {
             if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
                 try { $process.Kill($true) } catch { Write-ShruggieLog "Timed-out child could not be killed cleanly: $($_.Exception.Message)" -Level Warn -Source Child }
