@@ -1,0 +1,49 @@
+name: Windows native integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native-integration:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Download temporary Npcap SDK build input
+        shell: pwsh
+        run: |
+          curl.exe --fail --silent --show-error --location https://npcap.com/dist/npcap-sdk-1.16.zip --output "$env:RUNNER_TEMP\npcap-sdk.zip"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\npcap-sdk.zip" -DestinationPath "$env:RUNNER_TEMP\npcap-sdk"
+          "LIB=$env:RUNNER_TEMP\npcap-sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build official-feature binary
+        run: cargo build --locked --release -p fragcap-cli --features live,socket-table,etw
+
+      - name: Create staged install layout
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path target\windows-integration\stage -Force | Out-Null
+          Copy-Item -LiteralPath target\release\fragcap.exe -Destination target\windows-integration\stage\fragcap.exe
+
+      - name: Run complete hosted matrix
+        run: cargo xtask windows-integration --run hosted --binary target\windows-integration\stage\fragcap.exe --report target\windows-integration\hosted.jsonl
+
+      - name: Validate sanitized summary
+        run: cargo xtask windows-integration --validate-report target\windows-integration\hosted.summary.json
+
+      - name: Upload sanitized evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-integration-summary
+          path: target/windows-integration/hosted.summary.json
+          if-no-files-found: error

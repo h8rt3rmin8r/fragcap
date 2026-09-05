@@ -411,6 +411,11 @@ effect and checked lifecycle edge. S128 adds the frozen fourteen-row native
 performance registry, bounded runtime resource gauges, cross-platform short
 gate, and genuine Windows soak authority. The remaining completion gates remain
 #327 through #334.
+S129 adds a closed native Windows integration registry, finite hosted and
+physical execution tiers, staged official-feature binary identity, exact
+Windows effect cleanup, and sanitized release evidence. Final installer and
+archive behavior remains #329; the remaining completion gates are #328 through
+#334.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

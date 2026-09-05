@@ -243,6 +243,7 @@ the owning category page.
 - [Watch mode](process-and-attribution.md#watch-mode)
 - [Wildcard bind address](capture-and-networking.md#wildcard-bind-address)
 - [Windows Defender exclusion](platform-and-distribution.md#windows-defender-exclusion)
+- [Windows integration matrix](capture-and-networking.md#windows-integration-matrix)
 - [Write gate](capture-and-networking.md#write-gate)
 - [WSL2 interop](command-line-and-diagnostics.md#wsl2-interop)
 - [xtask](rust-and-tooling.md#xtask)

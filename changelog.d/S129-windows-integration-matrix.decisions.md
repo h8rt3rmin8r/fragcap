@@ -1,0 +1,3 @@
+<!-- spec-impact: 24.3, 25.5, 28.1 -->
+- 2026-09-04: Break the #327/#329 dependency cycle at a package-independent staged-layout boundary. S129 proves native Windows behavior against the relocated production executable; #329 retains MSI and archive installation, upgrade, repair, uninstall, signatures, checksums, and final content validation. (#327)
+- 2026-09-04: Keep raw Windows command output local and bounded. Release evidence contains only closed identifiers, digests, capabilities, outcomes, cleanup state, and counts so machine identity, paths, secrets, payloads, certificates, and free-form diagnostics are not published. (#327)

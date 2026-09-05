@@ -126,3 +126,44 @@ fn private_material_is_dpapi_protected_in_owned_storage() {
     assert!(ca.persist_private_key(&impossible).is_err());
     assert!(!impossible.exists());
 }
+
+#[cfg(windows)]
+#[test]
+#[ignore = "S129 matrix runner only"]
+fn approved_current_user_trust_round_trip_restores_exact_state() {
+    use fragcap_proxy::{CertificateStore, NativeCertificateStore, TrustState};
+
+    assert_eq!(
+        std::env::var("FRAGCAP_WINDOWS_PHYSICAL_EFFECTS").as_deref(),
+        Ok("approved")
+    );
+    let ca = SessionCertificateAuthority::generate(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        SystemTime::now(),
+        Duration::from_secs(300),
+    )
+    .unwrap();
+    let store = NativeCertificateStore;
+    assert_eq!(
+        store
+            .observe(ca.der().as_ref(), ca.sha1_thumbprint())
+            .unwrap(),
+        TrustState::Absent
+    );
+    store
+        .add_exact(ca.der().as_ref(), ca.sha1_thumbprint())
+        .unwrap();
+    let observed = store.observe(ca.der().as_ref(), ca.sha1_thumbprint());
+    let cleanup = store.remove_exact(ca.der().as_ref(), ca.sha1_thumbprint());
+    cleanup.unwrap();
+    assert_eq!(observed.unwrap(), TrustState::PresentExact);
+    assert_eq!(
+        store
+            .observe(ca.der().as_ref(), ca.sha1_thumbprint())
+            .unwrap(),
+        TrustState::Absent
+    );
+}

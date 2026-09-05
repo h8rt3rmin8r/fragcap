@@ -1,7 +1,7 @@
 # fragcap Technical Specification
 
 **Status:** Draft \
-**Version:** 0.1.49-draft \
+**Version:** 0.1.52-draft \
 **Applies-To:** 0.8.0 \
 **Audience:** Human-facing (operator, contributors, agent sessions) \
 **Author:** William Thompson (Shruggie LLC, DBA ShruggieTech) \
@@ -144,6 +144,7 @@ enforcement.
 | 0.1.49-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native parser and artifact fuzzing (issue #324).** Extends sections 24.3, 25.5, and 28.1. A versioned registry maps twenty fragcap-owned protocol and artifact surfaces to six bounded libFuzzer targets, minimized synthetic corpora, stable deterministic replay, and an exact-pinned CI matrix. Dependency-owned wire decoders remain explicit boundaries. S126 isolates its fuzz dependency graph, adds no product lock package or runtime behavior, and leaves Deep Capture incomplete until #334. |
 | 0.1.50-draft | 2026-09-04 | W. Thompson | **Adds exhaustive native failure-injection evidence (issue #325).** Extends sections 25.5 and 28.1. A versioned registry generates before and after scenarios for seven journaled effects and eight checked lifecycle transitions. Ten controlled failure families execute through the production coordinator and resource journal while terminal, artifact, fact, event, cleanup, journal, and recovery authorities remain independent. Source-derived inventory checks prevent unreviewed gaps. S127 adds no dependency, runtime fault switch, destructive host test, or Deep Capture completion claim. |
 | 0.1.51-draft | 2026-09-04 | W. Thompson | **Adds the bounded native performance envelope (issue #326).** Extends sections 25.5 and 28.1. A reviewed registry freezes fourteen production protocol and payload-retention cases, short and manual two-hour soak profiles, finite timing and resource limits, seven independent worker windows, immutable JSON Lines evidence, and exact runtime failure, task, cache, queue, loss, and shutdown accounting. Windows and Ubuntu run the short gate; Windows exposes soak evidence by manual dispatch. Final S128 acceptance records the project owner's explicit approval of 1,916 zero-failure terminals across 4,316 seconds without altering the interrupted raw report. The isolated measurement lock adds no product dependency. |
+| 0.1.52-draft | 2026-09-04 | W. Thompson | **Adds the finite native Windows integration authority (issue #327).** Extends sections 24.3, 25.5, and 28.1. A closed registry maps every required Windows completion domain to exact hosted or physical evidence. The hosted gate builds the official feature set from a temporary Npcap SDK, exercises a relocated staged binary, and publishes only a sanitized summary. Explicitly authorized physical evidence covers non-admin refusal, installed Npcap, current-user trust cleanup, unmodified analyzer use, and zero owned residue. S129 validates the staged install layout while final installer and archive behavior remains #329. |
 
 ## 2. Purpose and Problem Statement
 
@@ -4902,6 +4903,21 @@ remains explicitly incomplete, the sanitized summary records the approval, and
 no recurring soak trigger remains.
 Windows integration, packaging, supply-chain, and final completion work remain
 #327 through #334.
+
+S129 closes #327 at the native Windows integration boundary. A closed registry
+assigns every required Windows domain to a finite hosted or explicitly
+authorized physical row. Each row runs direct argv under a deadline with hidden
+child processes, bounded local output, immutable capability inventory, and
+exact cleanup status. Hosted CI builds the official Windows feature set with a
+temporary Npcap SDK input, relocates the production executable into a staged
+install layout, refuses missing required capabilities as failures, and uploads
+only a closed-field sanitized summary. Physical evidence covers non-admin
+refusal, installed Npcap, exact current-user trust add and removal, unmodified
+TShark consumption, and zero owned residue. This deliberately breaks the
+#327/#329 dependency cycle at the staged-layout boundary: MSI and archive
+installation, upgrade, repair, uninstall, checksums, signatures, and final
+contents remain #329. Supply-chain, packaging, and final completion work remain
+#328 through #334, and Deep Capture remains incomplete until #334.
 
 The required dependency direction is:
 

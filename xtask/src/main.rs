@@ -27,6 +27,7 @@ mod publish;
 mod skills;
 mod spec;
 mod threat_model;
+mod windows_integration;
 mod wrappers;
 
 use std::path::{Path, PathBuf};
@@ -55,6 +56,7 @@ cargo xtask <command>
   fuzz       Validate native parser fuzz surfaces, corpora, and CI mapping
   failure-matrix Validate native Deep Capture failure injection and recovery evidence
   performance Validate the native Deep Capture performance registry and automation [--report <path>]
+  windows-integration Validate or run the finite native Windows integration matrix
   threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
@@ -241,6 +243,18 @@ fn main() -> ExitCode {
                 Ok(_) => ExitCode::from(1),
                 Err(error) => {
                     eprintln!("performance: could not run: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+
+        "windows-integration" => {
+            let arguments = std::env::args().skip(2).collect::<Vec<_>>();
+            match windows_integration::run(&root, &arguments) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("windows-integration: could not run: {error}");
                     ExitCode::from(2)
                 }
             }
@@ -524,6 +538,18 @@ fn main() -> ExitCode {
                 }
                 Err(error) => {
                     eprintln!("ci: performance authority could not run: {error}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running native Windows integration authority");
+            match windows_integration::run(&root, &[]) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: Windows integration authority reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(error) => {
+                    eprintln!("ci: Windows integration authority could not run: {error}");
                     return ExitCode::from(2);
                 }
             }
