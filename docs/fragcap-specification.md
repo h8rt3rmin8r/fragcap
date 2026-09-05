@@ -4094,9 +4094,7 @@ Releases are tag-triggered and follow semantic versioning. Below 1.0.0,
 minor version increments may carry breaking changes, and this is stated
 in the README rather than discovered.
 
-The release workflow builds Windows artifacts, generates checksums,
-creates a release with notes derived from the changelog, and publishes
-crates to the registry in dependency order.
+The release workflow builds Windows artifacts, generates checksums, validates and publishes a separately authored AI summary of the release highlights, and publishes crates to the registry in dependency order. The summary is required before tagging, is bounded to 1,400 characters and 12 non-empty lines, never falls back to changelog extraction, and ends with guidance and a link to the complete changelog at the release tag.
 
 ```text
 fragcap-core → fragcap-profile → fragcap-capture
