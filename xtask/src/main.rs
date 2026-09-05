@@ -22,6 +22,7 @@ mod fuzz;
 mod license;
 mod lint;
 mod notes;
+mod performance;
 mod publish;
 mod skills;
 mod spec;
@@ -53,6 +54,7 @@ cargo xtask <command>
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
   fuzz       Validate native parser fuzz surfaces, corpora, and CI mapping
   failure-matrix Validate native Deep Capture failure injection and recovery evidence
+  performance Validate the native Deep Capture performance registry and automation [--report <path>]
   threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
 ";
@@ -227,6 +229,22 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+
+        "performance" => {
+            let arguments = std::env::args().skip(2).collect::<Vec<_>>();
+            let report = arguments
+                .windows(2)
+                .find(|pair| pair[0] == "--report")
+                .map(|pair| Path::new(&pair[1]));
+            match performance::run(&root, report) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("performance: could not run: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
 
         "neutral" => {
             let installed = Command::new("rustup")
@@ -494,6 +512,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: conformance could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running native Deep Capture performance authority");
+            match performance::run(&root, None) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: performance authority reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(error) => {
+                    eprintln!("ci: performance authority could not run: {error}");
                     return ExitCode::from(2);
                 }
             }

@@ -426,28 +426,78 @@ async fn proxy_http3(
             let request_sink = stream_sink.clone();
             let request_limits = stream_limits.clone();
             let request_forward = async move {
-                while let Some(mut data) = client_recv
-                    .recv_data()
-                    .await
-                    .map_err(http3_stream_terminal)?
-                {
+                let mut evidence = Vec::with_capacity(request_limits.max_event_chunk_bytes);
+                loop {
+                    let next = match client_recv.recv_data().await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            emit_coalesced_stream(
+                                &request_observer,
+                                &request_sink,
+                                QuicDirection::ClientToUpstream,
+                                stream_id,
+                                "http3-request",
+                                &mut evidence,
+                                &request_limits,
+                                true,
+                            )
+                            .await;
+                            return Err(http3_stream_terminal(error));
+                        }
+                    };
+                    let Some(mut data) = next else {
+                        break;
+                    };
                     let bytes = copy_buf(&mut data);
                     let sent = origin_send.send_data(bytes.clone()).await;
-                    let event = request_observer.lock().await.stream(
-                        QuicDirection::ClientToUpstream,
-                        stream_id,
-                        "http3-request",
-                        &bytes,
-                        &request_limits,
-                        if sent.is_ok() {
-                            "forwarded"
-                        } else {
-                            "transport-failed"
-                        },
-                    );
-                    emit_stream_observed(&request_sink, event);
+                    if sent.is_ok() {
+                        evidence.extend_from_slice(&bytes);
+                        emit_coalesced_stream(
+                            &request_observer,
+                            &request_sink,
+                            QuicDirection::ClientToUpstream,
+                            stream_id,
+                            "http3-request",
+                            &mut evidence,
+                            &request_limits,
+                            false,
+                        )
+                        .await;
+                    } else {
+                        emit_coalesced_stream(
+                            &request_observer,
+                            &request_sink,
+                            QuicDirection::ClientToUpstream,
+                            stream_id,
+                            "http3-request",
+                            &mut evidence,
+                            &request_limits,
+                            true,
+                        )
+                        .await;
+                        let event = request_observer.lock().await.stream(
+                            QuicDirection::ClientToUpstream,
+                            stream_id,
+                            "http3-request",
+                            &bytes,
+                            &request_limits,
+                            "transport-failed",
+                        );
+                        emit_stream_observed(&request_sink, event);
+                    }
                     sent.map_err(http3_stream_terminal)?;
                 }
+                emit_coalesced_stream(
+                    &request_observer,
+                    &request_sink,
+                    QuicDirection::ClientToUpstream,
+                    stream_id,
+                    "http3-request",
+                    &mut evidence,
+                    &request_limits,
+                    true,
+                )
+                .await;
                 if let Some(trailers) = client_recv
                     .recv_trailers()
                     .await
@@ -470,6 +520,7 @@ async fn proxy_http3(
             let response_sink = stream_sink.clone();
             let response_limits = stream_limits.clone();
             let response_forward = async move {
+                let mut evidence = Vec::with_capacity(response_limits.max_event_chunk_bytes);
                 let response = origin_recv
                     .recv_response()
                     .await
@@ -491,28 +542,77 @@ async fn proxy_http3(
                     .send_response(response)
                     .await
                     .map_err(http3_stream_terminal)?;
-                while let Some(mut data) = origin_recv
-                    .recv_data()
-                    .await
-                    .map_err(http3_stream_terminal)?
-                {
+                loop {
+                    let next = match origin_recv.recv_data().await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            emit_coalesced_stream(
+                                &response_observer,
+                                &response_sink,
+                                QuicDirection::UpstreamToClient,
+                                stream_id,
+                                "http3-response",
+                                &mut evidence,
+                                &response_limits,
+                                true,
+                            )
+                            .await;
+                            return Err(http3_stream_terminal(error));
+                        }
+                    };
+                    let Some(mut data) = next else {
+                        break;
+                    };
                     let bytes = copy_buf(&mut data);
                     let sent = client_send.send_data(bytes.clone()).await;
-                    let event = response_observer.lock().await.stream(
-                        QuicDirection::UpstreamToClient,
-                        stream_id,
-                        "http3-response",
-                        &bytes,
-                        &response_limits,
-                        if sent.is_ok() {
-                            "forwarded"
-                        } else {
-                            "transport-failed"
-                        },
-                    );
-                    emit_stream_observed(&response_sink, event);
+                    if sent.is_ok() {
+                        evidence.extend_from_slice(&bytes);
+                        emit_coalesced_stream(
+                            &response_observer,
+                            &response_sink,
+                            QuicDirection::UpstreamToClient,
+                            stream_id,
+                            "http3-response",
+                            &mut evidence,
+                            &response_limits,
+                            false,
+                        )
+                        .await;
+                    } else {
+                        emit_coalesced_stream(
+                            &response_observer,
+                            &response_sink,
+                            QuicDirection::UpstreamToClient,
+                            stream_id,
+                            "http3-response",
+                            &mut evidence,
+                            &response_limits,
+                            true,
+                        )
+                        .await;
+                        let event = response_observer.lock().await.stream(
+                            QuicDirection::UpstreamToClient,
+                            stream_id,
+                            "http3-response",
+                            &bytes,
+                            &response_limits,
+                            "transport-failed",
+                        );
+                        emit_stream_observed(&response_sink, event);
+                    }
                     sent.map_err(http3_stream_terminal)?;
                 }
+                emit_coalesced_stream(
+                    &response_observer,
+                    &response_sink,
+                    QuicDirection::UpstreamToClient,
+                    stream_id,
+                    "http3-response",
+                    &mut evidence,
+                    &response_limits,
+                    true,
+                )
+                .await;
                 if let Some(trailers) = origin_recv
                     .recv_trailers()
                     .await
@@ -670,6 +770,33 @@ fn emit_stream_observed(sink: &application::SharedEventSink, event: ApplicationE
     };
     emit_observed(sink, event);
     emit_observed(sink, body);
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the coalescer preserves the complete QUIC evidence identity"
+)]
+async fn emit_coalesced_stream(
+    observer: &Arc<tokio::sync::Mutex<QuicEvidenceObserver>>,
+    sink: &application::SharedEventSink,
+    direction: QuicDirection,
+    stream_id: u64,
+    kind: &'static str,
+    pending: &mut Vec<u8>,
+    limits: &ProtocolLimits,
+    flush: bool,
+) {
+    let chunk_limit = limits.max_event_chunk_bytes;
+    while pending.len() >= chunk_limit || (flush && !pending.is_empty()) {
+        let length = pending.len().min(chunk_limit);
+        let chunk = pending.drain(..length).collect::<Vec<_>>();
+        let event =
+            observer
+                .lock()
+                .await
+                .stream(direction, stream_id, kind, &chunk, limits, "forwarded");
+        emit_stream_observed(sink, event);
+    }
 }
 
 fn duration_ns(value: std::time::Duration) -> u64 {
@@ -1259,12 +1386,80 @@ fn datagram_outcome(length: usize, retained: usize, enabled: bool) -> GenericUdp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ApplicationEventSink, EventDisposition};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Sink(Mutex<Vec<ApplicationEvent>>);
+
+    impl ApplicationEventSink for Sink {
+        fn try_emit(&self, event: ApplicationEvent) -> EventDisposition {
+            self.0.lock().unwrap().push(event);
+            EventDisposition::Accepted
+        }
+    }
 
     fn authority() -> DestinationAuthority {
         DestinationAuthority::parse("localhost:443").unwrap()
     }
     fn address(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    #[tokio::test]
+    async fn coalesced_stream_evidence_is_bounded_and_exact() {
+        let plan =
+            QuicInspectionPlan::new("s", 1, address(1), address(2), &authority(), true).unwrap();
+        let observer = Arc::new(tokio::sync::Mutex::new(QuicEvidenceObserver::new(plan)));
+        let sink = Arc::new(Sink::default());
+        let shared: application::SharedEventSink = Some(sink.clone());
+        let limits = ProtocolLimits {
+            max_event_chunk_bytes: 3,
+            ..ProtocolLimits::default()
+        };
+        let mut pending = b"abcdefghij".to_vec();
+        emit_coalesced_stream(
+            &observer,
+            &shared,
+            QuicDirection::ClientToUpstream,
+            4,
+            "http3-request",
+            &mut pending,
+            &limits,
+            true,
+        )
+        .await;
+        assert!(pending.is_empty());
+        let events = sink.0.lock().unwrap();
+        let streams: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                ApplicationEventKind::QuicStream(value) => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streams.len(), 4);
+        assert_eq!(
+            streams.iter().map(|value| value.offset).collect::<Vec<_>>(),
+            vec![0, 3, 6, 9]
+        );
+        assert_eq!(
+            streams
+                .iter()
+                .map(|value| value.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert!(streams.iter().all(|value| {
+            value.observed_len <= 3 && value.bytes.len() <= 3 && value.terminal == "forwarded"
+        }));
+        assert_eq!(
+            streams
+                .iter()
+                .flat_map(|value| value.bytes.iter().copied())
+                .collect::<Vec<_>>(),
+            b"abcdefghij"
+        );
     }
 
     #[test]

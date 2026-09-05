@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use base64::Engine;
 use fragcap_proxy::{
@@ -67,6 +68,9 @@ struct WriterAccount {
     written: AtomicU64,
     serialized_bytes: AtomicU64,
     failures: AtomicU64,
+    queue_capacity: AtomicU64,
+    queue_current: AtomicU64,
+    queue_peak: AtomicU64,
     body_bytes_queue_dropped: AtomicU64,
     body_retained_bytes_queue_dropped: AtomicU64,
     streaming_bytes_queue_dropped: AtomicU64,
@@ -122,6 +126,25 @@ struct DatagramDropTotals {
 }
 
 impl WriterAccount {
+    fn reserve_queue_slot(&self) -> bool {
+        let capacity = self.queue_capacity.load(Ordering::Acquire);
+        let reserved =
+            self.queue_current
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    (current < capacity).then_some(current + 1)
+                });
+        if let Ok(previous) = reserved {
+            self.queue_peak.fetch_max(previous + 1, Ordering::AcqRel);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn release_queue_slot(&self) {
+        self.queue_current.fetch_sub(1, Ordering::AcqRel);
+    }
+
     fn record_storage_drop(&self, event: &ApplicationEvent) {
         if let ApplicationEventKind::GenericUdpDatagram(value) = &event.kind {
             self.generic_udp_datagrams_storage_dropped
@@ -306,17 +329,24 @@ impl ApplicationEventSink for ChannelSink {
             self.account.dropped.fetch_add(1, Ordering::Relaxed);
             return EventDisposition::Retired;
         };
+        if !self.account.reserve_queue_slot() {
+            self.account.record_queue_drop(&event);
+            self.account.dropped.fetch_add(1, Ordering::Relaxed);
+            return EventDisposition::QueueFull;
+        }
         match sender.try_send(event) {
             Ok(()) => {
                 self.account.accepted.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::Accepted
             }
             Err(mpsc::TrySendError::Full(event)) => {
+                self.account.release_queue_slot();
                 self.account.record_queue_drop(&event);
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
                 EventDisposition::QueueFull
             }
             Err(mpsc::TrySendError::Disconnected(event)) => {
+                self.account.release_queue_slot();
                 self.account.record_storage_drop(&event);
                 self.retired.store(true, Ordering::Release);
                 self.account.dropped.fetch_add(1, Ordering::Relaxed);
@@ -329,6 +359,9 @@ impl ApplicationEventSink for ChannelSink {
         ApplicationSinkAccounting {
             accepted_events: self.account.accepted.load(Ordering::Acquire),
             dropped_events: self.account.dropped.load(Ordering::Acquire),
+            queue_capacity: self.account.queue_capacity.load(Ordering::Acquire),
+            queue_current: self.account.queue_current.load(Ordering::Acquire),
+            queue_peak: self.account.queue_peak.load(Ordering::Acquire),
             body_bytes_queue_dropped: self
                 .account
                 .body_bytes_queue_dropped
@@ -452,6 +485,9 @@ impl ApplicationArtifactLease {
         let sender = Arc::new(Mutex::new(Some(sender)));
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
+        account
+            .queue_capacity
+            .store(capacity.max(1) as u64, Ordering::Release);
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let classification_summary = Arc::new(Mutex::new(None));
         let sink = Arc::new(ChannelSink {
@@ -573,7 +609,49 @@ fn writer_loop(
     let mut quic_datagram_observed_bytes = 0_u64;
     let mut quic_datagram_retained_bytes = 0_u64;
     let mut classification_summary = ClassificationSummary::default();
-    while let Ok(event) = receiver.recv() {
+    let mut pending_storage = Vec::with_capacity(64);
+    let mut pending_serialized_bytes = 0_u64;
+    loop {
+        let event = match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Err(error) = flush_application_batch(
+                    &mut writer,
+                    &mut pending_storage,
+                    &mut pending_serialized_bytes,
+                    &account,
+                ) {
+                    return fail_application_writer(
+                        error,
+                        &mut pending_storage,
+                        &receiver,
+                        &sender,
+                        &retired,
+                        &account,
+                    );
+                }
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Err(error) = flush_application_batch(
+                    &mut writer,
+                    &mut pending_storage,
+                    &mut pending_serialized_bytes,
+                    &account,
+                ) {
+                    return fail_application_writer(
+                        error,
+                        &mut pending_storage,
+                        &receiver,
+                        &sender,
+                        &retired,
+                        &account,
+                    );
+                }
+                break;
+            }
+        };
+        account.release_queue_slot();
         let classification = application_event_classification(&event);
         classification_summary.record(&classification);
         let record_type = event_type(&event.kind).to_string();
@@ -648,27 +726,42 @@ fn writer_loop(
         // records remain explicitly deferred until final reconciliation.
         let storage_event = event.clone();
         let value = event_json(event, sequence, ApplicationCorrelation::default());
-        match write_record(&mut writer, &value) {
+        match buffer_application_record(
+            &mut writer,
+            &value,
+            storage_event,
+            &mut pending_storage,
+            &mut pending_serialized_bytes,
+            &account,
+        ) {
             Ok(()) => {
-                account.written.fetch_add(1, Ordering::Relaxed);
-                account
-                    .serialized_bytes
-                    .fetch_add(value.to_string().len() as u64, Ordering::Relaxed);
+                if pending_storage.len() == pending_storage.capacity() {
+                    if let Err(error) = flush_application_batch(
+                        &mut writer,
+                        &mut pending_storage,
+                        &mut pending_serialized_bytes,
+                        &account,
+                    ) {
+                        return fail_application_writer(
+                            error,
+                            &mut pending_storage,
+                            &receiver,
+                            &sender,
+                            &retired,
+                            &account,
+                        );
+                    }
+                }
             }
             Err(error) => {
-                account.failures.fetch_add(1, Ordering::Relaxed);
-                retired.store(true, Ordering::Release);
-                account.record_storage_drop(&storage_event);
-                account.dropped.fetch_add(1, Ordering::Relaxed);
-                // Synchronize with any producer that passed the retired check,
-                // close the sole sender, then drain every event that had
-                // already been accepted into the bounded queue.
-                drop(sender.lock().expect("application sender lock").take());
-                while let Ok(pending) = receiver.recv() {
-                    account.record_storage_drop(&pending);
-                    account.dropped.fetch_add(1, Ordering::Relaxed);
-                }
-                return Err(error);
+                return fail_application_writer(
+                    error,
+                    &mut pending_storage,
+                    &receiver,
+                    &sender,
+                    &retired,
+                    &account,
+                );
             }
         }
     }
@@ -1051,9 +1144,108 @@ fn correlation_record(
 }
 
 fn write_record(writer: &mut impl Write, value: &Value) -> io::Result<()> {
-    serde_json::to_writer(&mut *writer, value).map_err(io::Error::other)?;
-    writer.write_all(b"\n")?;
+    write_record_buffered(writer, value)?;
     writer.flush()
+}
+
+fn write_record_buffered(writer: &mut impl Write, value: &Value) -> io::Result<u64> {
+    let (wire, serialized_bytes) = serialized_record(value)?;
+    writer.write_all(&wire)?;
+    Ok(serialized_bytes)
+}
+
+fn serialized_record(value: &Value) -> io::Result<(Vec<u8>, u64)> {
+    let mut record = serde_json::to_vec(value).map_err(io::Error::other)?;
+    let serialized_bytes = record.len() as u64;
+    record.push(b'\n');
+    Ok((record, serialized_bytes))
+}
+
+fn buffer_application_record<W: Write>(
+    writer: &mut BufWriter<W>,
+    value: &Value,
+    event: ApplicationEvent,
+    pending: &mut Vec<ApplicationEvent>,
+    pending_serialized_bytes: &mut u64,
+    account: &WriterAccount,
+) -> io::Result<()> {
+    let (wire, serialized_bytes) = match serialized_record(value) {
+        Ok(record) => record,
+        Err(error) => {
+            pending.push(event);
+            return Err(error);
+        }
+    };
+    if !pending.is_empty() && writer.buffer().len().saturating_add(wire.len()) > writer.capacity() {
+        if let Err(error) =
+            flush_application_batch(writer, pending, pending_serialized_bytes, account)
+        {
+            pending.push(event);
+            return Err(error);
+        }
+    }
+    if wire.len() >= writer.capacity() {
+        if let Err(error) = writer.write_all(&wire) {
+            pending.push(event);
+            return Err(error);
+        }
+        account.written.fetch_add(1, Ordering::Relaxed);
+        account
+            .serialized_bytes
+            .fetch_add(serialized_bytes, Ordering::Relaxed);
+    } else {
+        if let Err(error) = writer.write_all(&wire) {
+            pending.push(event);
+            return Err(error);
+        }
+        pending.push(event);
+        *pending_serialized_bytes = pending_serialized_bytes.saturating_add(serialized_bytes);
+    }
+    Ok(())
+}
+
+fn flush_application_batch(
+    writer: &mut impl Write,
+    pending: &mut Vec<ApplicationEvent>,
+    serialized_bytes: &mut u64,
+    account: &WriterAccount,
+) -> io::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    writer.flush()?;
+    account
+        .written
+        .fetch_add(pending.len() as u64, Ordering::Relaxed);
+    account
+        .serialized_bytes
+        .fetch_add(*serialized_bytes, Ordering::Relaxed);
+    pending.clear();
+    *serialized_bytes = 0;
+    Ok(())
+}
+
+fn fail_application_writer(
+    error: io::Error,
+    pending: &mut Vec<ApplicationEvent>,
+    receiver: &mpsc::Receiver<ApplicationEvent>,
+    sender: &Arc<Mutex<Option<mpsc::SyncSender<ApplicationEvent>>>>,
+    retired: &AtomicBool,
+    account: &WriterAccount,
+) -> io::Result<()> {
+    account.failures.fetch_add(1, Ordering::Relaxed);
+    retired.store(true, Ordering::Release);
+    for event in pending.drain(..) {
+        account.record_storage_drop(&event);
+        account.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+    drop(sender.lock().expect("application sender lock").take());
+    while let Ok(event) = receiver.recv() {
+        account.release_queue_slot();
+        account.record_storage_drop(&event);
+        account.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+    Err(error)
 }
 
 fn event_json(
@@ -2521,6 +2713,39 @@ mod tests {
     }
 
     #[test]
+    fn writer_queue_reports_capacity_current_and_peak() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let account = Arc::new(WriterAccount::default());
+        account.queue_capacity.store(1, Ordering::Release);
+        let sink = ChannelSink {
+            sender: Arc::new(Mutex::new(Some(sender))),
+            retired: Arc::new(AtomicBool::new(false)),
+            account: Arc::clone(&account),
+            connections: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        let event = ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::ConnectionOpen(ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: "127.0.0.1:41000".parse().unwrap(),
+                proxy_local: "127.0.0.1:42000".parse().unwrap(),
+            }),
+        );
+        assert_eq!(sink.try_emit(event.clone()), EventDisposition::Accepted);
+        assert_eq!(sink.try_emit(event), EventDisposition::QueueFull);
+        let accounting = sink.accounting();
+        assert_eq!(accounting.queue_capacity, 1);
+        assert_eq!(accounting.queue_current, 1);
+        assert_eq!(accounting.queue_peak, 1);
+        let _ = receiver.recv().unwrap();
+        account.queue_current.fetch_sub(1, Ordering::AcqRel);
+        assert_eq!(sink.accounting().queue_current, 0);
+    }
+
+    #[test]
     fn write_failure_counts_the_triggering_and_buffered_quic_records() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("read-only.jsonl");
@@ -2530,6 +2755,7 @@ mod tests {
         let sender = Arc::new(Mutex::new(Some(sender)));
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
+        account.queue_capacity.store(2, Ordering::Release);
         let sink = ChannelSink {
             sender: Arc::clone(&sender),
             retired: Arc::clone(&retired),
@@ -2613,6 +2839,86 @@ mod tests {
     }
 
     #[test]
+    fn buffered_writer_commits_prior_records_before_a_later_flush_failure() {
+        #[derive(Default)]
+        struct FailSecondWrite {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for FailSecondWrite {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                if self.calls == 2 {
+                    return Err(io::Error::other("second write failed"));
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let event = ApplicationEvent::now(
+            "session",
+            7,
+            None,
+            None,
+            ApplicationEventKind::ConnectionOpen(ConnectionDescriptor {
+                transport: "tcp",
+                client_peer: "127.0.0.1:41000".parse().unwrap(),
+                proxy_local: "127.0.0.1:42000".parse().unwrap(),
+            }),
+        );
+        let value = event_json(event.clone(), 1, ApplicationCorrelation::default());
+        let wire_length = serialized_record(&value).unwrap().0.len();
+        let mut writer = BufWriter::with_capacity(wire_length + 1, FailSecondWrite::default());
+        let account = WriterAccount::default();
+        let mut pending = Vec::with_capacity(64);
+        let mut serialized_bytes = 0;
+
+        buffer_application_record(
+            &mut writer,
+            &value,
+            event.clone(),
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .unwrap();
+        buffer_application_record(
+            &mut writer,
+            &value,
+            event,
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .unwrap();
+
+        assert_eq!(account.written.load(Ordering::Acquire), 1);
+        assert_eq!(pending.len(), 1);
+        assert!(flush_application_batch(
+            &mut writer,
+            &mut pending,
+            &mut serialized_bytes,
+            &account,
+        )
+        .is_err());
+        assert_eq!(account.written.load(Ordering::Acquire), 1);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            writer
+                .get_ref()
+                .bytes
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn queue_pressure_cannot_erase_a_connection_descriptor() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("application.jsonl");
@@ -2625,6 +2931,7 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
+        account.queue_capacity.store(1, Ordering::Release);
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = ChannelSink {
             sender: Arc::new(Mutex::new(Some(sender))),
@@ -2709,6 +3016,7 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         let retired = Arc::new(AtomicBool::new(false));
         let account = Arc::new(WriterAccount::default());
+        account.queue_capacity.store(1, Ordering::Release);
         let connections = Arc::new(Mutex::new(BTreeMap::new()));
         let sink = ChannelSink {
             sender: Arc::new(Mutex::new(Some(sender))),

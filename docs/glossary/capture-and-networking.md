@@ -1299,6 +1299,26 @@ drift in shipped protocol families or direct proxy dependencies.
 **See also:** [Target-scoped proxy configuration](#target-scoped-proxy-configuration),
 [Protocol classification](#protocol-classification)
 
+## Performance campaign
+
+A complete execution of one reviewed native proxy performance profile. The
+campaign owns fresh worker processes, all fourteen protocol and retention case
+identities, monotonic JSON Lines records, one registry digest, periodic resource
+samples, and one terminal completeness decision.
+
+**See also:** [Performance registry](#performance-registry),
+[Resource obligation](#resource-obligation)
+
+## Performance registry
+
+The reviewed versioned authority that freezes native proxy case identities,
+workloads, timing rules, resource ceilings, loss invariants, and short or soak
+profiles before measurement. A campaign reads this registry but cannot rewrite
+it.
+
+**See also:** [Performance campaign](#performance-campaign),
+[Protocol classification](#protocol-classification)
+
 ## Trust boundary
 
 A transition where native Deep Capture must re-establish identity, authority,

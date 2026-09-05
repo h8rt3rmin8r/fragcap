@@ -321,6 +321,25 @@ pub struct RuntimeFailure {
     pub connection_id: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeResourceAccounting {
+    pub failure_detail_capacity: u64,
+    pub failure_details_dropped_oldest: u64,
+    pub connection_tasks_current: u64,
+    pub connection_tasks_peak: u64,
+    pub connection_tasks_spawned: u64,
+    pub connection_tasks_completed: u64,
+    pub connection_tasks_aborted: u64,
+    pub leaf_cache_entries: u64,
+    pub leaf_cache_peak_entries: u64,
+    pub leaf_cache_bytes: u64,
+    pub leaf_cache_peak_bytes: u64,
+    pub leaf_cache_evictions: u64,
+    pub application_queue_capacity: u64,
+    pub application_queue_current: u64,
+    pub application_queue_peak: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeObservation {
     pub state: LifecycleState,
@@ -335,6 +354,7 @@ pub struct RuntimeObservation {
     pub live_connections: usize,
     pub peak_live_connections: usize,
     pub failures: Vec<RuntimeFailure>,
+    pub resources: RuntimeResourceAccounting,
     pub protocol: ProtocolAccounting,
     pub application: Vec<ProxyObservation>,
 }
@@ -354,6 +374,7 @@ impl RuntimeObservation {
             live_connections: 0,
             peak_live_connections: 0,
             failures: Vec::new(),
+            resources: RuntimeResourceAccounting::default(),
             protocol: ProtocolAccounting::default(),
             application: Vec::new(),
         }
@@ -510,6 +531,7 @@ impl ShutdownReport {
         self.listener_released
             && self.observation.state == LifecycleState::Stopped
             && self.observation.live_connections == 0
+            && self.observation.resources.connection_tasks_current == 0
             && self.incomplete_tasks == 0
             && !self.residue
     }

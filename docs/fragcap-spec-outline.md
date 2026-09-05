@@ -406,7 +406,11 @@ high-risk row owns prevention, detection, containment, evidence, and executable
 negative tests; protocol and direct proxy dependency drift forces review.
 S126 adds exhaustive bounded coverage-guided fuzzing for fragcap-owned native
 protocol and artifact boundaries, stable corpus replay, and reproducible CI.
-The remaining completion gates remain #325 through #334.
+S127 adds exhaustive before-and-after failure evidence for every journaled
+effect and checked lifecycle edge. S128 adds the frozen fourteen-row native
+performance registry, bounded runtime resource gauges, cross-platform short
+gate, and genuine Windows soak authority. The remaining completion gates remain
+#327 through #334.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

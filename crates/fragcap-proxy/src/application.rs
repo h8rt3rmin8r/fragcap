@@ -352,6 +352,9 @@ pub enum EventDisposition {
 pub struct ApplicationSinkAccounting {
     pub accepted_events: u64,
     pub dropped_events: u64,
+    pub queue_capacity: u64,
+    pub queue_current: u64,
+    pub queue_peak: u64,
     pub body_bytes_queue_dropped: u64,
     pub streaming_bytes_queue_dropped: u64,
     pub generic_stream_bytes_queue_dropped: u64,
@@ -414,6 +417,9 @@ impl ApplicationEventSink for FanoutApplicationEventSink {
                 let value = sink.accounting();
                 total.accepted_events = total.accepted_events.saturating_add(value.accepted_events);
                 total.dropped_events = total.dropped_events.saturating_add(value.dropped_events);
+                total.queue_capacity = total.queue_capacity.saturating_add(value.queue_capacity);
+                total.queue_current = total.queue_current.saturating_add(value.queue_current);
+                total.queue_peak = total.queue_peak.saturating_add(value.queue_peak);
                 total.body_bytes_queue_dropped = total
                     .body_bytes_queue_dropped
                     .saturating_add(value.body_bytes_queue_dropped);
