@@ -37,6 +37,7 @@ Completes the secure native Deep Capture foundation with authenticated loopback 
 ### Fixed
 
 - The production accessibility audit now follows the generated v0.9.0 route count and distinguishes real skip-link navigation from unrelated framework prefetch requests.
+- Release validation now preserves the exact measured version and binary identity of historical Windows physical evidence while keeping explicit current-release validation strict.
 
 - Session bundle directory creation is now an explicit artifact-owner operation instead of an accidental side effect of starting the former external proxy.
 - Steam protocol launches are refused before effects while native child-scoped routing cannot be guaranteed; issue #308 owns the platform-client routing strategy.

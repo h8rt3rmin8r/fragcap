@@ -201,13 +201,12 @@ Param(
             [System.IO.File]::WriteAllText($file, $text)
             Write-Log "updated embedded version in $file" 'Info'
         }
-        # Release-bound retained evidence and its exact staged-binary assertion
-        # move with the workspace version. The evidence rows remain unchanged;
-        # this is the release metadata transition for the already-approved code.
+        # Portable conformance evidence is rerun by the release check set, and
+        # the staged-binary assertion moves with the workspace version. Physical
+        # Windows evidence keeps the exact version and binary identity it measured.
         $releaseVersionFiles = @(
             (Join-Path $RepoRoot 'conformance/native-http-tls/matrix-v1.json'),
             (Join-Path $RepoRoot 'conformance/native-http-tls/report-v1.json'),
-            (Join-Path $RepoRoot 'integration/windows-native-reference-v1.json'),
             (Join-Path $RepoRoot 'crates/fragcap-cli/tests/windows_native_integration.rs')
         )
         foreach ($file in $releaseVersionFiles) {
