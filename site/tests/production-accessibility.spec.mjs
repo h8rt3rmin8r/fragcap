@@ -107,7 +107,7 @@ test.describe('production accessibility contract', () => {
   for (const width of viewports) {
     test(`all public routes expose one primary region and keyboard bypass at ${width}px`, async ({ page }) => {
       const routes = publicRoutes();
-      expect(routes, 'public route population').toHaveLength(57);
+      expect(routes, 'public route population').toHaveLength(61);
       await page.setViewportSize({ width, height: 900 });
       for (const route of routes) {
         const response = await page.goto(route);
@@ -128,7 +128,9 @@ test.describe('production accessibility contract', () => {
 
         await page.waitForLoadState('networkidle');
         const skipRequests = [];
-        const recordSkipRequest = (request) => skipRequests.push(request.url());
+        const recordSkipRequest = (request) => {
+          if (request.isNavigationRequest()) skipRequests.push(request.url());
+        };
         page.on('request', recordSkipRequest);
         await page.locator('.fc-skip-link').press('Enter');
         await expect.poll(

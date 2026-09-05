@@ -36,6 +36,8 @@ Completes the secure native Deep Capture foundation with authenticated loopback 
 
 ### Fixed
 
+- The production accessibility audit now follows the generated v0.9.0 route count and distinguishes real skip-link navigation from unrelated framework prefetch requests.
+
 - Session bundle directory creation is now an explicit artifact-owner operation instead of an accidental side effect of starting the former external proxy.
 - Steam protocol launches are refused before effects while native child-scoped routing cannot be guaranteed; issue #308 owns the platform-client routing strategy.
 - Native observations again join the packet-side flow registry for real targets, while controlled observations carry the exact spawned child process identifier rather than the parent CLI identifier.
