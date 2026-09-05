@@ -242,10 +242,12 @@
       <Custom Action="SetRegisterExtcapMachine" After="RegisterExtcapUser">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
       <Custom Action="RegisterExtcapMachine" After="SetRegisterExtcapMachine">REGISTEREXTCAP_MACHINE = 1 AND WIRESHARK_DIR AND NOT Installed</Custom>
 
-      <!-- Uninstall: remove the Defender exclusion before the files are removed.
-           extcap registration is intentionally left in place (see above). -->
-      <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <!-- Uninstall and major upgrade: remove the exact exclusion owned by the
+           outgoing product before its files are removed. The incoming product
+           may then establish ownership for its own selected INSTALLDIR. extcap
+           registration is intentionally left in place (see above). -->
+      <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
 
     <!--

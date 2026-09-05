@@ -183,12 +183,15 @@ Param(
             try { $process.Kill($true) } catch { Write-ShruggieLog "Timed-out child could not be killed cleanly: $($_.Exception.Message)" -Level Warn -Source Child }
             throw "process exceeded $TimeoutSeconds seconds"
         }
-        $waitTask.GetAwaiter().GetResult()
+        [void]$waitTask.GetAwaiter().GetResult()
+        $process.WaitForExit()
         $watch.Stop()
         $stdout = $stdoutTask.GetAwaiter().GetResult()
         $stderr = $stderrTask.GetAwaiter().GetResult()
         if ($stdout.Length -gt 262144 -or $stderr.Length -gt 262144) { throw 'child output exceeded 256 KiB' }
-        return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr; ElapsedSeconds = [math]::Ceiling($watch.Elapsed.TotalSeconds) }
+        $exitCode = [int]$process.ExitCode
+        $process.Dispose()
+        return [pscustomobject]@{ ExitCode = $exitCode; Stdout = $stdout; Stderr = $stderr; ElapsedSeconds = [math]::Ceiling($watch.Elapsed.TotalSeconds) }
     }
 
     function Invoke-MsiOperation {
@@ -263,14 +266,14 @@ Param(
             [string]$ReferenceDirectory,
 
             [Parameter(Mandatory=$true)]
-            [string[]]$ExpectedNames
+            [string[]]$ExpectedPaths
         )
-        $observed = @(Get-ChildItem -LiteralPath $InstallDirectory -File | Select-Object -ExpandProperty Name | Sort-Object)
-        if (Compare-Object -ReferenceObject @($ExpectedNames | Sort-Object) -DifferenceObject $observed) { throw "installed file inventory does not match the contract" }
-        foreach ($name in $ExpectedNames) {
-            $installed = [System.IO.Path]::Combine($InstallDirectory, $name)
-            $reference = [System.IO.Path]::Combine($ReferenceDirectory, $name)
-            if ((Get-Sha256 -Path $installed) -ne (Get-Sha256 -Path $reference)) { throw "installed $name differs from the portable package" }
+        $observed = @(Get-ChildItem -LiteralPath $InstallDirectory -Recurse -File | ForEach-Object { [System.IO.Path]::GetRelativePath($InstallDirectory, $_.FullName).Replace('\', '/') } | Sort-Object)
+        if (Compare-Object -ReferenceObject @($ExpectedPaths | Sort-Object) -DifferenceObject $observed) { throw "recursive installed file inventory does not match the contract" }
+        foreach ($path in $ExpectedPaths) {
+            $installed = [System.IO.Path]::Combine($InstallDirectory, $path)
+            $reference = [System.IO.Path]::Combine($ReferenceDirectory, $path)
+            if ((Get-Sha256 -Path $installed) -ne (Get-Sha256 -Path $reference)) { throw "installed $path differs from the portable package" }
         }
     }
 
@@ -399,6 +402,8 @@ Param(
     $scratch = $null
     $seededDefender = $false
     $installDirectory = $null
+    $currentProductCode = $null
+    $predecessorProductCode = $null
 
 #_______________________________________________________________________________
 ## Execute Operations
@@ -495,7 +500,7 @@ Param(
         if ((Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'ProductName') -cne 'fragcap' -or (Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'ProductVersion') -cne $buildIdentity.version -or (Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'Manufacturer') -cne 'ShruggieTech' -or (Get-MsiProperty -MsiPath $candidateMsi[0].FullName -Name 'UpgradeCode') -cne '{7F3A2C4E-1D9B-4A6E-9C58-2B0E7D4F6A13}') { throw 'MSI metadata disagrees with the certified release identity' }
         $lifecycle = [System.Collections.Generic.List[object]]::new()
         $clean = Invoke-MsiOperation -Case 'clean-install' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-install.log')
-        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedNames @($contract.shared_entries.path)
+        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 1 -or (Get-SystemPathCount -ExpectedPath $installDirectory) -ne 1) { throw 'clean install did not create one exact product and PATH entry' }
         Test-UserFixture -Digests $userDigests
         if ($seededDefender -and -not (@((Get-MpPreference).ExclusionPath) -contains $installDirectory)) { throw 'clean install removed the pre-existing Defender exclusion' }
@@ -503,11 +508,11 @@ Param(
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'NOTICE'), 'Delete owned file before repair')) { Remove-Item -LiteralPath (Join-Path $installDirectory 'NOTICE') -Force }
         if ($PSCmdlet.ShouldProcess((Join-Path $installDirectory 'LICENSE'), 'Alter owned file before repair')) { [System.IO.File]::WriteAllText((Join-Path $installDirectory 'LICENSE'), 'altered', [System.Text.UTF8Encoding]::new($false)) }
         $repair = Invoke-MsiOperation -Case 'repair' -Arguments @('/fa', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'repair.log')
-        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedNames @($contract.shared_entries.path)
+        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         Test-UserFixture -Digests $userDigests
         $lifecycle.Add([pscustomobject]@{ id = 'repair'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$repair.ElapsedSeconds; complete = $true })
         $reinstall = Invoke-MsiOperation -Case 'same-version-reinstall' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'reinstall.log')
-        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedNames @($contract.shared_entries.path)
+        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 1 -or (Get-SystemPathCount -ExpectedPath $installDirectory) -ne 1) { throw 'same-version reinstall duplicated product state' }
         Test-UserFixture -Digests $userDigests
         $lifecycle.Add([pscustomobject]@{ id = 'same-version-reinstall'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$reinstall.ElapsedSeconds; complete = $true })
@@ -519,7 +524,7 @@ Param(
         }
         [void](Invoke-MsiOperation -Case 'install-predecessor' -Arguments @('/i', $predecessor, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'predecessor.log'))
         $upgrade = Invoke-MsiOperation -Case 'upgrade' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'upgrade.log')
-        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedNames @($contract.shared_entries.path)
+        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 1 -or (Get-ProductRegistrationCount -ProductCode $predecessorProductCode) -ne 0) { throw 'upgrade did not replace the predecessor product exactly' }
         Test-UserFixture -Digests $userDigests
         $lifecycle.Add([pscustomobject]@{ id = 'upgrade'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$upgrade.ElapsedSeconds; complete = $true })
@@ -527,7 +532,7 @@ Param(
         [void](Invoke-MsiOperation -Case 'downgrade-refusal' -Arguments @('/i', $predecessor, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'downgrade.log') -AllowedExitCodes @(1603, 1638))
         $downgradeWatch.Stop()
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 1 -or (Get-ProductRegistrationCount -ProductCode $predecessorProductCode) -ne 0) { throw 'older predecessor was not refused without changing the current product' }
-        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedNames @($contract.shared_entries.path)
+        Assert-ExactInstalledFiles -InstallDirectory $installDirectory -ReferenceDirectory $zipRoot -ExpectedPaths @($contract.shared_entries.path)
         Test-UserFixture -Digests $userDigests
         $lifecycle.Add([pscustomobject]@{ id = 'downgrade-refusal'; terminal = 'refused_as_expected'; cleanup = 'reconciled'; elapsed_seconds = [int][math]::Ceiling($downgradeWatch.Elapsed.TotalSeconds); complete = $true })
         $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
@@ -560,9 +565,24 @@ Param(
         Write-ShruggieLog 'Final package bytes and installer lifecycle are certified.' -Level Success -Source Complete
         exit 0
     } catch {
-        Write-ShruggieLog $_.Exception.Message -Level Error -Source Certification
+        Write-ShruggieLog "$($_.Exception.Message) [$($_.InvocationInfo.ScriptLineNumber)]" -Level Error -Source Certification
         exit 1
     } finally {
+        foreach ($cleanupProductCode in @($currentProductCode, $predecessorProductCode) | Where-Object { $_ } | Select-Object -Unique) {
+            if ((Get-ProductRegistrationCount -ProductCode $cleanupProductCode) -gt 0 -and $PSCmdlet.ShouldProcess($cleanupProductCode, 'Uninstall registered certification product during final cleanup')) {
+                try {
+                    $cleanupResult = Invoke-HiddenProcess -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @('/x', $cleanupProductCode, '/qn', '/norestart') -TimeoutSeconds 600
+                    if (@(0, 1605, 3010) -notcontains $cleanupResult.ExitCode) { Write-ShruggieLog "Cleanup uninstall for $cleanupProductCode exited $($cleanupResult.ExitCode)." -Level Warn -Source Cleanup }
+                } catch { Write-ShruggieLog "Cleanup uninstall for $cleanupProductCode failed: $($_.Exception.Message)" -Level Warn -Source Cleanup }
+            }
+        }
+        if ($installDirectory) {
+            $cleanupMarkerPath = 'HKLM:\Software\ShruggieTech\fragcap'
+            $cleanupMarker = Get-ItemProperty -LiteralPath $cleanupMarkerPath -Name 'FRAGCAP_DEFENDER_EXCLUSION_OWNER' -ErrorAction SilentlyContinue
+            if ($null -ne $cleanupMarker -and $cleanupMarker.FRAGCAP_DEFENDER_EXCLUSION_OWNER -eq $installDirectory -and $PSCmdlet.ShouldProcess($installDirectory, 'Remove exact installer-owned Defender state during final cleanup')) {
+                try { Remove-MpPreference -ExclusionPath $installDirectory -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $cleanupMarkerPath -Force -ErrorAction SilentlyContinue } catch { Write-ShruggieLog "Installer-owned Defender cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup }
+            }
+        }
         if ($seededDefender -and $installDirectory -and $PSCmdlet.ShouldProcess($installDirectory, 'Remove certification-seeded Defender exclusion during final cleanup')) { try { Remove-MpPreference -ExclusionPath $installDirectory -ErrorAction SilentlyContinue } catch { Write-ShruggieLog "Defender cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup } }
         if ($scratch -and (Test-Path -LiteralPath $scratch) -and $PSCmdlet.ShouldProcess($scratch, 'Remove package-certification scratch directory')) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
