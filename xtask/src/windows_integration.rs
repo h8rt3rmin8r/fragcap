@@ -287,11 +287,8 @@ fn execute(
         ));
     }
     let scratch = raw.with_extension("scratch");
-    if scratch.exists() {
-        remove_owned_dir(&scratch, &allowed_resolved)?;
-    }
-    fs::create_dir_all(&scratch)?;
     std::env::set_var("FRAGCAP_WINDOWS_SCRATCH", &scratch);
+    prepare_scratch(root, &scratch, &allowed_resolved)?;
     std::env::set_var("FRAGCAP_SESSION_DIR", &scratch);
     std::env::set_var("FRAGCAP_LOCAL_DB", scratch.join("local.db"));
     std::env::set_var("FRAGCAP_CATALOG_DB", scratch.join("catalog.db"));
@@ -360,22 +357,7 @@ fn execute(
                 .push_str("\npreflight capability snapshot changed during the row");
         }
         if scratch.join(TRUST_OBLIGATION).is_file() {
-            let recovery = child_output(
-                Path::new("cargo"),
-                &[
-                    "test",
-                    "-p",
-                    "fragcap-proxy",
-                    "--test",
-                    "certificates",
-                    "reconcile_pending_current_user_trust",
-                    "--",
-                    "--exact",
-                    "--ignored",
-                ],
-                root,
-                Duration::from_secs(180),
-            )?;
+            let recovery = recover_pending_trust(root)?;
             result.output.push_str("\ntrust recovery:\n");
             result.output.push_str(&recovery.output);
             result.success &= recovery.success && !scratch.join(TRUST_OBLIGATION).exists();
@@ -447,6 +429,62 @@ fn execute(
     )?;
     let problems = validate_summary(root, registry, &summary_path, RELEASE_SUMMARY)?;
     report(problems)
+}
+
+fn prepare_scratch(root: &Path, scratch: &Path, allowed_resolved: &Path) -> io::Result<()> {
+    prepare_scratch_with(
+        scratch,
+        allowed_resolved,
+        std::env::var(PHYSICAL_APPROVAL).as_deref() == Ok("approved"),
+        || recover_pending_trust(root),
+    )
+}
+
+fn prepare_scratch_with(
+    scratch: &Path,
+    allowed_resolved: &Path,
+    physical_approved: bool,
+    recover: impl FnOnce() -> io::Result<ChildResult>,
+) -> io::Result<()> {
+    if scratch.exists() {
+        if scratch.join(TRUST_OBLIGATION).is_file() {
+            if !physical_approved {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "retained trust cleanup requires physical-effects approval",
+                ));
+            }
+            let recovery = recover()?;
+            if !recovery.success || scratch.join(TRUST_OBLIGATION).exists() {
+                return Err(invalid_data(format!(
+                    "retained trust cleanup failed; scratch was preserved ({})",
+                    sha256(recovery.output.as_bytes())
+                )));
+            }
+        }
+        remove_owned_dir(scratch, allowed_resolved)?;
+    }
+    fs::create_dir_all(scratch)?;
+    Ok(())
+}
+
+fn recover_pending_trust(root: &Path) -> io::Result<ChildResult> {
+    child_output(
+        Path::new("cargo"),
+        &[
+            "test",
+            "-p",
+            "fragcap-proxy",
+            "--test",
+            "certificates",
+            "reconcile_pending_current_user_trust",
+            "--",
+            "--exact",
+            "--ignored",
+        ],
+        root,
+        Duration::from_secs(180),
+    )
 }
 
 fn effect_snapshot(
@@ -599,7 +637,13 @@ fn inventory_paths(
             snapshot.insert(format!("path:dir:{}", relative.display()));
             inventory_paths(root, &path, snapshot)?;
         } else {
-            snapshot.insert(format!("path:file:{}", relative.display()));
+            let bytes = fs::read(&path)?;
+            snapshot.insert(format!(
+                "path:file:{}:bytes={}:sha256={}",
+                relative.display(),
+                bytes.len(),
+                sha256(&bytes)
+            ));
         }
     }
     Ok(())
@@ -616,7 +660,22 @@ fn derive_summary(raw: &Path) -> io::Result<Value> {
     let terminal = records
         .last()
         .ok_or_else(|| invalid_data("report has no terminal"))?;
-    let rows = records.iter().filter(|record| record["record"] == "row").map(|row| json!({
+    validate_raw_record(header, "header", HEADER_KEYS)?;
+    validate_raw_record(terminal, "terminal", RAW_TERMINAL_KEYS)?;
+    if records.len() < 2 {
+        return Err(invalid_data("report has no terminal"));
+    }
+    let mut row_ids = BTreeSet::new();
+    for record in &records[1..records.len() - 1] {
+        validate_raw_record(record, "row", RAW_ROW_KEYS)?;
+        let id = record["id"]
+            .as_str()
+            .ok_or_else(|| invalid_data("raw row lacks a string id"))?;
+        if !row_ids.insert(id) {
+            return Err(invalid_data(format!("raw report repeats row {id}")));
+        }
+    }
+    let rows = records[1..records.len() - 1].iter().map(|row| json!({
         "id":row["id"], "status":row["status"], "timed_out":row["timed_out"],
         "cleanup":row["cleanup"], "output_sha256":row["output_sha256"], "output_bytes":row["output_bytes"]
     })).collect::<Vec<_>>();
@@ -627,6 +686,75 @@ fn derive_summary(raw: &Path) -> io::Result<Value> {
         "recorded_on":civil_date(), "rows":rows,
         "terminal":{"status":terminal["status"],"required":terminal["required"],"passed":terminal["passed"],"failed":terminal["failed"],"residue":terminal["residue"]}
     }))
+}
+
+const HEADER_KEYS: &[&str] = &[
+    "binary_sha256",
+    "capabilities",
+    "product_version",
+    "record",
+    "registry_sha256",
+    "revision",
+    "schema_version",
+    "started_unix_seconds",
+    "tier",
+];
+const RAW_ROW_KEYS: &[&str] = &[
+    "cleanup",
+    "duration_ms",
+    "effects_after_sha256",
+    "effects_before_sha256",
+    "id",
+    "output_bytes",
+    "output_sha256",
+    "record",
+    "status",
+    "timed_out",
+];
+const RAW_TERMINAL_KEYS: &[&str] = &[
+    "failed",
+    "finished_unix_seconds",
+    "passed",
+    "record",
+    "required",
+    "residue",
+    "status",
+];
+
+fn validate_raw_record(value: &Value, kind: &str, allowed: &[&str]) -> io::Result<()> {
+    if value["record"] != kind {
+        return Err(invalid_data(format!("raw report expected {kind} record")));
+    }
+    if !has_exact_keys(value, allowed) {
+        return Err(invalid_data(format!(
+            "raw {kind} record has an invalid field set"
+        )));
+    }
+    let valid_types = match kind {
+        "header" => {
+            value["schema_version"] == 1 && value["started_unix_seconds"].as_u64().is_some()
+        }
+        "row" => {
+            value["duration_ms"].as_u64().is_some()
+                && is_lower_hex(
+                    value["effects_before_sha256"].as_str().unwrap_or_default(),
+                    64,
+                )
+                && is_effect_digest(value["effects_after_sha256"].as_str().unwrap_or_default())
+        }
+        "terminal" => value["finished_unix_seconds"].as_u64().is_some(),
+        _ => false,
+    };
+    if !valid_types {
+        return Err(invalid_data(format!(
+            "raw {kind} record has invalid value types"
+        )));
+    }
+    Ok(())
+}
+
+fn is_effect_digest(value: &str) -> bool {
+    is_lower_hex(value, 64) || matches!(value, "changed" | "unavailable")
 }
 
 fn validate_summary(
@@ -663,8 +791,35 @@ fn validate_summary_value(
     policy: SummaryPolicy,
 ) -> io::Result<Vec<String>> {
     let mut problems = Vec::new();
+    const SUMMARY_KEYS: &[&str] = &[
+        "binary_sha256",
+        "capabilities",
+        "product_version",
+        "recorded_on",
+        "registry_sha256",
+        "revision",
+        "rows",
+        "schema_version",
+        "terminal",
+        "tier",
+    ];
+    const SUMMARY_ROW_KEYS: &[&str] = &[
+        "cleanup",
+        "id",
+        "output_bytes",
+        "output_sha256",
+        "status",
+        "timed_out",
+    ];
+    const SUMMARY_TERMINAL_KEYS: &[&str] = &["failed", "passed", "required", "residue", "status"];
     if bytes.len() > 128 * 1024 {
         problems.push("summary exceeds 128 KiB".into());
+    }
+    if !has_exact_keys(value, SUMMARY_KEYS) {
+        problems.push("summary contains unknown or missing top-level fields".into());
+    }
+    if !has_exact_keys(&value["terminal"], SUMMARY_TERMINAL_KEYS) {
+        problems.push("summary terminal contains unknown or missing fields".into());
     }
     if value["schema_version"] != 1 {
         problems.push("summary schema_version must be 1".into());
@@ -684,6 +839,35 @@ fn validate_summary_value(
         if value[field].as_str().is_none_or(str::is_empty) {
             problems.push(format!("summary lacks {field}"));
         }
+    }
+    for field in ["registry_sha256", "binary_sha256"] {
+        if !is_lower_hex(value[field].as_str().unwrap_or_default(), 64) {
+            problems.push(format!("summary {field} is not a SHA-256 digest"));
+        }
+    }
+    if !is_lower_hex(value["revision"].as_str().unwrap_or_default(), 40) {
+        problems.push("summary revision is not a full lowercase Git object id".into());
+    }
+    if parse_civil(value["recorded_on"].as_str().unwrap_or_default()).is_none() {
+        problems.push("summary recorded_on is not a civil date".into());
+    }
+    let allowed_capabilities = strings(registry, "capabilities");
+    let summary_capabilities = value["capabilities"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if value["capabilities"].as_array().is_none_or(|items| {
+        items.len() != summary_capabilities.len()
+            || items.iter().any(|item| item.as_str().is_none())
+    }) || !summary_capabilities.is_subset(&allowed_capabilities)
+    {
+        problems.push("summary capabilities are invalid".into());
     }
     if policy.ancestor
         && !revision_is_ancestor(root, value["revision"].as_str().unwrap_or_default())
@@ -711,20 +895,13 @@ fn validate_summary_value(
         {
             problems.push(format!("row {} is not satisfied", row["id"]));
         }
-        let keys = row
-            .as_object()
-            .map(|map| map.keys().map(String::as_str).collect::<BTreeSet<_>>())
-            .unwrap_or_default();
-        let allowed = BTreeSet::from([
-            "cleanup",
-            "id",
-            "output_bytes",
-            "output_sha256",
-            "status",
-            "timed_out",
-        ]);
-        if keys != allowed {
+        if !has_exact_keys(row, SUMMARY_ROW_KEYS) {
             problems.push(format!("row {} contains non-public fields", row["id"]));
+        }
+        if !is_lower_hex(row["output_sha256"].as_str().unwrap_or_default(), 64)
+            || row["output_bytes"].as_u64().is_none()
+        {
+            problems.push(format!("row {} has invalid evidence metadata", row["id"]));
         }
     }
     if value["terminal"]["status"] != "complete"
@@ -732,6 +909,12 @@ fn validate_summary_value(
         || value["terminal"]["residue"] != "none"
     {
         problems.push("summary terminal is not complete and residue-free".into());
+    }
+    let required = value["terminal"]["required"].as_u64();
+    let passed = value["terminal"]["passed"].as_u64();
+    let failed = value["terminal"]["failed"].as_u64();
+    if required != Some(expected.len() as u64) || passed != required || failed != Some(0) {
+        problems.push("summary terminal counts do not reconcile".into());
     }
     let forbidden = [
         "stdout",
@@ -807,14 +990,15 @@ fn child_output(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
+        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
     #[cfg(windows)]
     let job = WindowsJob::new()?;
     let mut child = command.spawn()?;
     #[cfg(windows)]
-    if let Err(error) = job.assign(&child) {
-        let _ = child.kill();
+    if let Err(error) = job.assign(&child).and_then(|()| resume_child(child.id())) {
+        let _ = job.terminate();
         let _ = child.wait();
         return Err(error);
     }
@@ -850,6 +1034,46 @@ fn child_output(
         timed_out,
         output,
     })
+}
+
+#[cfg(windows)]
+fn resume_child(process_id: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    let mut present = unsafe { Thread32First(snapshot, std::ptr::addr_of_mut!(entry)) } != 0;
+    while present {
+        if entry.th32OwnerProcessID == process_id {
+            unsafe { CloseHandle(snapshot) };
+            // The child is still suspended. Request only the right needed to resume its
+            // primary thread after Job Object assignment; no memory right is requested.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let resumed = unsafe { ResumeThread(thread) };
+            unsafe { CloseHandle(thread) };
+            if resumed == u32::MAX {
+                return Err(io::Error::last_os_error());
+            }
+            return Ok(());
+        }
+        present = unsafe { Thread32Next(snapshot, std::ptr::addr_of_mut!(entry)) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "suspended child primary thread was not found",
+    ))
 }
 
 #[cfg(windows)]
@@ -1035,6 +1259,20 @@ fn valid_id(value: &str) -> bool {
         && !value.ends_with('-')
 }
 
+fn has_exact_keys(value: &Value, expected: &[&str]) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
+}
+
+fn is_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn write_record(file: &mut File, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *file, value).map_err(invalid_data)?;
     file.write_all(b"\n")?;
@@ -1070,6 +1308,16 @@ fn date_is_current(date: &str, max_age: u64) -> bool {
     recorded <= today && today - recorded <= max_age as i64
 }
 fn parse_civil(value: &str) -> Option<i64> {
+    if value.len() != 10
+        || value.as_bytes()[4] != b'-'
+        || value.as_bytes()[7] != b'-'
+        || value
+            .bytes()
+            .enumerate()
+            .any(|(index, byte)| !matches!(index, 4 | 7) && !byte.is_ascii_digit())
+    {
+        return None;
+    }
     let mut fields = value.split('-');
     let year = fields.next()?.parse::<i64>().ok()?;
     let month = fields.next()?.parse::<u32>().ok()?;
@@ -1077,7 +1325,8 @@ fn parse_civil(value: &str) -> Option<i64> {
     if fields.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
-    Some(days_from_civil(year, month, day))
+    let days = days_from_civil(year, month, day);
+    (civil_from_days(days) == (year, month, day)).then_some(days)
 }
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year = year - i64::from(month <= 2);
@@ -1195,6 +1444,16 @@ mod tests {
         assert!(problems
             .iter()
             .any(|p| p.contains("forbidden field stdout")));
+        let mut reference: Value =
+            serde_json::from_slice(&fs::read(root().join(REFERENCE)).unwrap()).unwrap();
+        reference["note"] = json!(r"C:\Users\operator\private");
+        let bytes = serde_json::to_vec(&reference).unwrap();
+        let problems =
+            validate_summary_value(&root(), &registry(), &bytes, &reference, STATIC_SUMMARY)
+                .unwrap();
+        assert!(problems
+            .iter()
+            .any(|problem| problem.contains("unknown or missing top-level fields")));
         let _ = fs::remove_dir_all(directory);
     }
     #[test]
@@ -1213,17 +1472,21 @@ mod tests {
                 "registry_sha256":reference["registry_sha256"], "revision":reference["revision"],
                 "product_version":reference["product_version"],
                 "binary_sha256":reference["binary_sha256"],
-                "capabilities":reference["capabilities"]
+                "capabilities":reference["capabilities"], "started_unix_seconds":1
             }),
         )
         .unwrap();
         for row in reference["rows"].as_array().unwrap() {
             let mut record = row.clone();
             record["record"] = json!("row");
+            record["duration_ms"] = json!(1);
+            record["effects_before_sha256"] = row["output_sha256"].clone();
+            record["effects_after_sha256"] = row["output_sha256"].clone();
             write_record(&mut raw, &record).unwrap();
         }
         let mut terminal = reference["terminal"].clone();
         terminal["record"] = json!("terminal");
+        terminal["finished_unix_seconds"] = json!(2);
         write_record(&mut raw, &terminal).unwrap();
         drop(raw);
         assert!(
@@ -1239,6 +1502,9 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+        let mut append = fs::OpenOptions::new().append(true).open(&raw_path).unwrap();
+        write_record(&mut append, &terminal).unwrap();
+        assert!(derive_summary(&raw_path).is_err());
         let _ = fs::remove_dir_all(directory);
     }
     #[test]
@@ -1274,7 +1540,36 @@ mod tests {
         let mut after = BTreeSet::new();
         inventory_paths(&directory, &directory, &mut after).unwrap();
         assert_ne!(after, before);
+        let original = after;
+        fs::write(directory.join("residue.bin"), b"changed").unwrap();
+        let mut changed = BTreeSet::new();
+        inventory_paths(&directory, &directory, &mut changed).unwrap();
+        assert_ne!(changed, original);
         let _ = fs::remove_dir_all(directory);
+    }
+    #[test]
+    fn retained_trust_is_recovered_or_preserved_before_scratch_replacement() {
+        let allowed = root().join("target/windows-integration");
+        fs::create_dir_all(&allowed).unwrap();
+        let allowed_resolved = fs::canonicalize(&allowed).unwrap();
+        let scratch = allowed.join(format!("recovery-order-{}", std::process::id()));
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(scratch.join(TRUST_OBLIGATION), b"retained authority").unwrap();
+        let denied = prepare_scratch_with(&scratch, &allowed_resolved, false, || {
+            panic!("recovery must not run without approval")
+        });
+        assert_eq!(denied.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert!(scratch.join(TRUST_OBLIGATION).is_file());
+        let failed = prepare_scratch_with(&scratch, &allowed_resolved, true, || {
+            Ok(ChildResult {
+                success: false,
+                timed_out: false,
+                output: "controlled recovery failure".into(),
+            })
+        });
+        assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert!(scratch.join(TRUST_OBLIGATION).is_file());
+        remove_owned_dir(&scratch, &allowed_resolved).unwrap();
     }
     #[test]
     fn bounded_reader_and_timeout_are_finite() {

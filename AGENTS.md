@@ -581,10 +581,11 @@ Deep Capture remains incomplete until #334.
 S129 closes #327 at the finite native Windows integration boundary. One closed
 registry maps every required Windows completion domain to a hosted or explicitly
 authorized physical row. The runner uses direct argv, hidden finite child
-processes inside kill-on-close Windows jobs, bounded local output, exact
-capability refusal, staged binary identity, and observed before/after cleanup
-reconciliation. Physical trust work
-persists an exact recovery obligation before mutation. Ordinary CI checks
+processes created suspended and resumed only inside kill-on-close Windows jobs,
+bounded local output, exact capability refusal, staged binary identity, and
+content-aware before/after cleanup reconciliation. Physical trust work persists
+an exact recovery obligation before mutation and reconciles it before any later
+scratch replacement. Raw and summary evidence use closed schemas. Ordinary CI checks
 retained evidence structurally; only the release gate enforces age and commit
 ancestry. Hosted CI uses the temporary Npcap SDK as
 a build input but does not install or publish it, and uploads only a sanitized

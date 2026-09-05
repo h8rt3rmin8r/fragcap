@@ -49,7 +49,7 @@ Ordinary CI validates the committed physical summary structurally without applyi
 
 ## Decision 5: Child execution is finite and hidden on Windows
 
-**Decision**: The orchestrator launches direct argv vectors with redirected standard streams, fixed timeouts, bounded output capture, and `CREATE_NO_WINDOW` on Windows. Each child is assigned immediately to a kill-on-close Windows job, and timeout terminates and awaits the whole job before output readers join. It never invokes a shell, scheduled task, service, background monitor, or recurring automation.
+**Decision**: The orchestrator launches direct argv vectors with redirected standard streams, fixed timeouts, bounded output capture, and `CREATE_NO_WINDOW` on Windows. Each child is created suspended, assigned to a kill-on-close Windows job, and resumed only after assignment. A timeout terminates and awaits the whole job before output readers join. It never invokes a shell, scheduled task, service, background monitor, or recurring automation.
 
 **Rationale**: This satisfies the repository desktop rule, avoids quoting injection, prevents focus-stealing consoles, and ensures a hung child and every descendant become an explicit failed row without retaining pipe handles or effects beyond the deadline.
 
@@ -58,9 +58,9 @@ Ordinary CI validates the committed physical summary structurally without applyi
 - PowerShell orchestration. Rejected because matrix semantics belong in tested Rust and wrappers must remain thin.
 - Background polling. Rejected because it obscures process ownership and previously caused unacceptable repeated activity.
 
-## Decision 6: Raw evidence stays local; summaries are denylist validated
+## Decision 6: Raw evidence stays local; summaries use closed schemas
 
-**Decision**: Raw command output and scratch bundles remain under ignored build output and are never uploaded. A derived summary contains closed typed fields only. Validation rejects secrets, raw certificates, payloads, host/user names, and absolute operator paths before upload or commit.
+**Decision**: Raw command output and scratch bundles remain under ignored build output and are never uploaded. Raw JSON Lines enforces exactly one header first, each expected row once, and exactly one terminal last. Both raw records and the derived summary use exact field allowlists and constrained value classes. Validation also rejects known secret-bearing field names before upload or commit.
 
 **Rationale**: Failure evidence must remain useful without publishing the sensitive observations the product exists to collect. Closed construction plus adversarial seeded tests is stronger than best-effort text redaction.
 
@@ -68,9 +68,9 @@ The validation entry point accepts either the local JSON Lines stream or the der
 
 ## Decision 7: Reconcile declared effects from independent observations
 
-**Decision**: Before and after each row, the runner records normalized observations selected by the row's owned and prohibited effects. The observations cover the isolated session tree, Doctor trust and native-resource findings, parent proxy environment, system proxy registry values, firewall rule registries, and kill-on-close child job. Cleanup is `reconciled` only when both inventories have the same digest. A failed row retains its scratch tree instead of deleting unresolved authority.
+**Decision**: Before and after each row, the runner records normalized observations selected by the row's owned and prohibited effects. The observations cover the isolated session tree including regular-file content digests, Doctor trust and native-resource findings, parent proxy environment, system proxy registry values, firewall rule registries, and kill-on-close child job. Cleanup is `reconciled` only when both inventories have the same digest. A failed row retains its scratch tree instead of deleting unresolved authority.
 
-The CurrentUser trust row writes an atomic public-certificate cleanup obligation before trust is added. It removes that obligation only after exact trust removal is observed. If the test fails or is terminated, the runner invokes a separate exact recovery test; persistent recovery failure leaves the obligation and makes the run incomplete.
+The CurrentUser trust row writes an atomic public-certificate cleanup obligation before trust is added. It removes that obligation only after exact trust removal is observed. If the test fails or is terminated, the runner invokes a separate exact recovery test. A later run recovers any retained obligation before it may delete or recreate scratch. Persistent recovery failure preserves the obligation and refuses the run.
 
 **Rationale**: A successful child exit is not cleanup evidence. Independent observations and a recoverable trust identity keep release authority honest across failures at the effect boundary.
 
