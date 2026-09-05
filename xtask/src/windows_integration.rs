@@ -17,6 +17,22 @@ const REFERENCE: &str = "integration/windows-native-reference-v1.json";
 const WORKFLOW: &str = ".github/workflows/windows-integration.yml";
 const MAX_OUTPUT: usize = 256 * 1024;
 const PHYSICAL_APPROVAL: &str = "FRAGCAP_WINDOWS_PHYSICAL_EFFECTS";
+const TRUST_OBLIGATION: &str = "trust-cleanup.bin";
+
+#[derive(Clone, Copy)]
+struct SummaryPolicy {
+    current: bool,
+    ancestor: bool,
+}
+
+const STATIC_SUMMARY: SummaryPolicy = SummaryPolicy {
+    current: false,
+    ancestor: false,
+};
+const RELEASE_SUMMARY: SummaryPolicy = SummaryPolicy {
+    current: true,
+    ancestor: true,
+};
 
 pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     let registry_bytes = fs::read(root.join(REGISTRY))?;
@@ -24,7 +40,12 @@ pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     let mut problems = validate_registry(root, &registry)?;
     if arguments.is_empty() {
         if root.join(REFERENCE).is_file() {
-            problems.extend(validate_summary(root, &registry, &root.join(REFERENCE))?);
+            problems.extend(validate_summary(
+                root,
+                &registry,
+                &root.join(REFERENCE),
+                STATIC_SUMMARY,
+            )?);
         }
         return report(problems);
     }
@@ -32,14 +53,24 @@ pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     if arguments.first().map(String::as_str) == Some("--validate-report") {
         let path = value_after(arguments, "--validate-report")
             .ok_or_else(|| invalid_input("--validate-report needs a path"))?;
-        problems.extend(validate_report(root, &registry, Path::new(path))?);
+        problems.extend(validate_report(
+            root,
+            &registry,
+            Path::new(path),
+            RELEASE_SUMMARY,
+        )?);
         return report(problems);
     }
     if arguments.first().map(String::as_str) == Some("--release") {
         if !root.join(REFERENCE).is_file() {
             problems.push(format!("missing required physical evidence {REFERENCE}"));
         } else {
-            problems.extend(validate_summary(root, &registry, &root.join(REFERENCE))?);
+            problems.extend(validate_summary(
+                root,
+                &registry,
+                &root.join(REFERENCE),
+                RELEASE_SUMMARY,
+            )?);
         }
         return report(problems);
     }
@@ -262,8 +293,11 @@ fn execute(
     fs::create_dir_all(&scratch)?;
     std::env::set_var("FRAGCAP_WINDOWS_SCRATCH", &scratch);
     std::env::set_var("FRAGCAP_SESSION_DIR", &scratch);
+    std::env::set_var("FRAGCAP_LOCAL_DB", scratch.join("local.db"));
+    std::env::set_var("FRAGCAP_CATALOG_DB", scratch.join("catalog.db"));
     let digest = sha256(&fs::read(&binary)?);
     let registry_digest = sha256(registry_bytes);
+    let revision = source_revision(root)?;
     let diagnostics = raw.with_extension("rows");
     if diagnostics.exists() {
         remove_owned_dir(&diagnostics, &allowed_resolved)?;
@@ -277,7 +311,7 @@ fn execute(
         &mut output,
         &json!({
             "record":"header", "schema_version":1, "tier":tier,
-            "registry_sha256":registry_digest, "revision":source_revision(root),
+            "registry_sha256":registry_digest, "revision":revision,
             "product_version":env!("CARGO_PKG_VERSION"), "binary_sha256":digest,
         "capabilities":capability_snapshot, "started_unix_seconds":unix_seconds(),
         }),
@@ -286,6 +320,12 @@ fn execute(
     let rows = registry["rows"].as_array().unwrap();
     for row in rows.iter().filter(|row| row["tier"] == tier) {
         let id = row["id"].as_str().unwrap();
+        let effects = strings(row, "owned_effects")
+            .union(&strings(row, "prohibited_effects"))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let before = effect_snapshot(root, &binary, &scratch, &effects)?;
+        let effects_before_sha256 = inventory_digest(&before);
         let required = strings(row, "required_capabilities");
         let missing = required
             .difference(&capability_snapshot)
@@ -319,6 +359,45 @@ fn execute(
                 .output
                 .push_str("\npreflight capability snapshot changed during the row");
         }
+        if scratch.join(TRUST_OBLIGATION).is_file() {
+            let recovery = child_output(
+                Path::new("cargo"),
+                &[
+                    "test",
+                    "-p",
+                    "fragcap-proxy",
+                    "--test",
+                    "certificates",
+                    "reconcile_pending_current_user_trust",
+                    "--",
+                    "--exact",
+                    "--ignored",
+                ],
+                root,
+                Duration::from_secs(180),
+            )?;
+            result.output.push_str("\ntrust recovery:\n");
+            result.output.push_str(&recovery.output);
+            result.success &= recovery.success && !scratch.join(TRUST_OBLIGATION).exists();
+        }
+        let (cleanup, effects_after_sha256) =
+            match effect_snapshot(root, &binary, &scratch, &effects) {
+                Ok(after) if after == before => ("reconciled", inventory_digest(&after)),
+                Ok(_) => {
+                    result.success = false;
+                    result
+                        .output
+                        .push_str("\neffect inventory changed across the row");
+                    ("failed", "changed".into())
+                }
+                Err(error) => {
+                    result.success = false;
+                    result
+                        .output
+                        .push_str(&format!("\neffect inventory failed after the row: {error}"));
+                    ("failed", "unavailable".into())
+                }
+            };
         let status = if result.success { "passed" } else { "failed" };
         if !result.success {
             failed += 1;
@@ -332,17 +411,23 @@ fn execute(
             &json!({
                 "record":"row", "id":id, "status":status,
                 "timed_out":result.timed_out, "duration_ms":start.elapsed().as_millis() as u64,
-                "cleanup":"reconciled", "output_sha256":sha256(result.output.as_bytes()),
+                "cleanup":cleanup, "output_sha256":sha256(result.output.as_bytes()),
                 "output_bytes":result.output.len().min(MAX_OUTPUT),
+                "effects_before_sha256":effects_before_sha256,
+                "effects_after_sha256":effects_after_sha256,
             }),
         )?;
     }
-    let residue = match remove_owned_dir(&scratch, &allowed_resolved) {
-        Ok(()) if !scratch.exists() => "none",
-        _ => {
-            failed += 1;
-            "present"
+    let residue = if failed == 0 {
+        match remove_owned_dir(&scratch, &allowed_resolved) {
+            Ok(()) if !scratch.exists() => "none",
+            _ => {
+                failed += 1;
+                "present"
+            }
         }
+    } else {
+        "present"
     };
     let required = rows.iter().filter(|row| row["tier"] == tier).count() as u64;
     write_record(
@@ -360,8 +445,164 @@ fn execute(
         &summary_path,
         serde_json::to_vec_pretty(&summary).map_err(invalid_data)?,
     )?;
-    let problems = validate_summary(root, registry, &summary_path)?;
+    let problems = validate_summary(root, registry, &summary_path, RELEASE_SUMMARY)?;
     report(problems)
+}
+
+fn effect_snapshot(
+    root: &Path,
+    binary: &Path,
+    scratch: &Path,
+    effects: &BTreeSet<String>,
+) -> io::Result<BTreeSet<String>> {
+    let mut snapshot = BTreeSet::new();
+    if effects.contains("child-process") {
+        snapshot.insert("child-process=job-contained".into());
+    }
+    if effects.contains("routing-environment") {
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ] {
+            snapshot.insert(format!("env:{name}={:?}", std::env::var_os(name)));
+        }
+    }
+    if effects.iter().any(|effect| {
+        matches!(
+            effect.as_str(),
+            "current-user-trust"
+                | "listener"
+                | "sensitive-file"
+                | "session-journal"
+                | "session-lease"
+                | "temporary-key"
+        )
+    }) {
+        let doctor = child_output(binary, &["--json", "doctor"], root, Duration::from_secs(60))?;
+        for line in doctor.output.lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let name = record["name"].as_str().unwrap_or_default();
+            let file_effect = effects.iter().any(|effect| {
+                matches!(
+                    effect.as_str(),
+                    "sensitive-file" | "session-journal" | "session-lease" | "temporary-key"
+                )
+            });
+            let relevant = (effects.contains("current-user-trust") && name == "local CA trust")
+                || (effects.contains("listener")
+                    && matches!(
+                        name,
+                        "IPv4 loopback listener"
+                            | "IPv6 loopback listener"
+                            | "native resource bundle/session-owner"
+                    ))
+                || (file_effect && name == "native resource bundle/session-owner");
+            if relevant {
+                snapshot.insert(format!(
+                    "doctor:{name}:{}:{}",
+                    record["status"].as_str().unwrap_or_default(),
+                    record["detail"].as_str().unwrap_or_default()
+                ));
+            }
+        }
+        inventory_paths(scratch, scratch, &mut snapshot)?;
+    }
+    if effects.contains("system-proxy") {
+        for name in ["ProxyEnable", "ProxyServer", "AutoConfigURL"] {
+            registry_observation(
+                root,
+                &[
+                    "query",
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                    "/v",
+                    name,
+                ],
+                &format!("system-proxy:{name}"),
+                &mut snapshot,
+            )?;
+        }
+    }
+    if effects.contains("firewall-rule") {
+        for (name, key) in [
+            (
+                "machine",
+                r"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules",
+            ),
+            (
+                "user",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\FirewallPolicy\FirewallRules",
+            ),
+        ] {
+            registry_observation(
+                root,
+                &["query", key],
+                &format!("firewall:{name}"),
+                &mut snapshot,
+            )?;
+        }
+    }
+    Ok(snapshot)
+}
+
+fn registry_observation(
+    root: &Path,
+    arguments: &[&str],
+    name: &str,
+    snapshot: &mut BTreeSet<String>,
+) -> io::Result<()> {
+    let result = child_output(
+        Path::new("reg.exe"),
+        arguments,
+        root,
+        Duration::from_secs(30),
+    )?;
+    snapshot.insert(format!(
+        "{name}:{}:{}",
+        result.success,
+        sha256(result.output.as_bytes())
+    ));
+    Ok(())
+}
+
+fn inventory_digest(snapshot: &BTreeSet<String>) -> String {
+    let bytes = snapshot
+        .iter()
+        .flat_map(|entry| entry.bytes().chain(std::iter::once(b'\n')))
+        .collect::<Vec<_>>();
+    sha256(&bytes)
+}
+
+fn inventory_paths(
+    root: &Path,
+    directory: &Path,
+    snapshot: &mut BTreeSet<String>,
+) -> io::Result<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(invalid_data)?;
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            snapshot.insert(format!("path:link:{}", relative.display()));
+        } else if metadata.is_dir() {
+            snapshot.insert(format!("path:dir:{}", relative.display()));
+            inventory_paths(root, &path, snapshot)?;
+        } else {
+            snapshot.insert(format!("path:file:{}", relative.display()));
+        }
+    }
+    Ok(())
 }
 
 fn derive_summary(raw: &Path) -> io::Result<Value> {
@@ -388,20 +629,30 @@ fn derive_summary(raw: &Path) -> io::Result<Value> {
     }))
 }
 
-fn validate_summary(root: &Path, registry: &Value, path: &Path) -> io::Result<Vec<String>> {
+fn validate_summary(
+    root: &Path,
+    registry: &Value,
+    path: &Path,
+    policy: SummaryPolicy,
+) -> io::Result<Vec<String>> {
     let bytes = fs::read(path)?;
     let value: Value = serde_json::from_slice(&bytes).map_err(invalid_data)?;
-    validate_summary_value(root, registry, &bytes, &value)
+    validate_summary_value(root, registry, &bytes, &value, policy)
 }
 
-fn validate_report(root: &Path, registry: &Value, path: &Path) -> io::Result<Vec<String>> {
+fn validate_report(
+    root: &Path,
+    registry: &Value,
+    path: &Path,
+    policy: SummaryPolicy,
+) -> io::Result<Vec<String>> {
     let bytes = fs::read(path)?;
     if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-        return validate_summary_value(root, registry, &bytes, &value);
+        return validate_summary_value(root, registry, &bytes, &value, policy);
     }
     let summary = derive_summary(path)?;
     let summary_bytes = serde_json::to_vec(&summary).map_err(invalid_data)?;
-    validate_summary_value(root, registry, &summary_bytes, &summary)
+    validate_summary_value(root, registry, &summary_bytes, &summary, policy)
 }
 
 fn validate_summary_value(
@@ -409,6 +660,7 @@ fn validate_summary_value(
     registry: &Value,
     bytes: &[u8],
     value: &Value,
+    policy: SummaryPolicy,
 ) -> io::Result<Vec<String>> {
     let mut problems = Vec::new();
     if bytes.len() > 128 * 1024 {
@@ -432,6 +684,11 @@ fn validate_summary_value(
         if value[field].as_str().is_none_or(str::is_empty) {
             problems.push(format!("summary lacks {field}"));
         }
+    }
+    if policy.ancestor
+        && !revision_is_ancestor(root, value["revision"].as_str().unwrap_or_default())
+    {
+        problems.push("summary revision is not a commit ancestor of the candidate".into());
     }
     let expected = registry["rows"]
         .as_array()
@@ -493,7 +750,8 @@ fn validate_summary_value(
             problems.push(format!("summary exposes forbidden field {token}"));
         }
     }
-    if tier == "physical"
+    if policy.current
+        && tier == "physical"
         && !date_is_current(
             value["recorded_on"].as_str().unwrap_or_default(),
             registry["physical_evidence_max_age_days"]
@@ -504,6 +762,26 @@ fn validate_summary_value(
         problems.push("physical evidence is expired or has an invalid date".into());
     }
     Ok(problems)
+}
+
+fn revision_is_ancestor(root: &Path, revision: &str) -> bool {
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    child_output(
+        Path::new("git"),
+        &["cat-file", "-e", &format!("{revision}^{{commit}}")],
+        root,
+        Duration::from_secs(10),
+    )
+    .is_ok_and(|result| result.success)
+        && child_output(
+            Path::new("git"),
+            &["merge-base", "--is-ancestor", revision, "HEAD"],
+            root,
+            Duration::from_secs(10),
+        )
+        .is_ok_and(|result| result.success)
 }
 
 struct ChildResult {
@@ -827,17 +1105,28 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     year += i64::from(month <= 2);
     (year, month as u32, day as u32)
 }
-fn source_revision(root: &Path) -> String {
-    child_output(
+fn source_revision(root: &Path) -> io::Result<String> {
+    let status = child_output(
+        Path::new("git"),
+        &["status", "--porcelain", "--untracked-files=no"],
+        root,
+        Duration::from_secs(10),
+    )?;
+    if !status.success || !status.output.trim().is_empty() {
+        return Err(invalid_data(
+            "Windows evidence requires a clean tracked source revision",
+        ));
+    }
+    let revision = child_output(
         Path::new("git"),
         &["rev-parse", "HEAD"],
         root,
         Duration::from_secs(10),
-    )
-    .ok()
-    .filter(|r| r.success)
-    .map(|r| r.output.trim().to_owned())
-    .unwrap_or_else(|| "unknown".into())
+    )?;
+    if !revision.success {
+        return Err(invalid_data("could not resolve the source revision"));
+    }
+    Ok(revision.output.trim().to_owned())
 }
 fn value_after<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
     arguments
@@ -901,7 +1190,7 @@ mod tests {
             br#"{"schema_version":1,"tier":"physical","stdout":"secret"}"#,
         )
         .unwrap();
-        let problems = validate_summary(&root(), &registry(), &path).unwrap();
+        let problems = validate_summary(&root(), &registry(), &path, STATIC_SUMMARY).unwrap();
         assert!(problems.iter().any(|p| p.contains("row identity")));
         assert!(problems
             .iter()
@@ -937,14 +1226,54 @@ mod tests {
         terminal["record"] = json!("terminal");
         write_record(&mut raw, &terminal).unwrap();
         drop(raw);
-        assert!(validate_report(&root(), &registry(), &raw_path)
-            .unwrap()
-            .is_empty());
         assert!(
-            validate_summary(&root(), &registry(), &root().join(REFERENCE))
+            validate_report(&root(), &registry(), &raw_path, RELEASE_SUMMARY)
                 .unwrap()
                 .is_empty()
         );
+        assert!(validate_summary(
+            &root(),
+            &registry(),
+            &root().join(REFERENCE),
+            STATIC_SUMMARY,
+        )
+        .unwrap()
+        .is_empty());
+        let _ = fs::remove_dir_all(directory);
+    }
+    #[test]
+    fn currency_and_revision_binding_are_release_only() {
+        let bytes = fs::read(root().join(REFERENCE)).unwrap();
+        let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+        value["recorded_on"] = json!("2000-01-01");
+        value["revision"] = json!("0000000000000000000000000000000000000000");
+        let mutated = serde_json::to_vec(&value).unwrap();
+        let static_problems =
+            validate_summary_value(&root(), &registry(), &mutated, &value, STATIC_SUMMARY).unwrap();
+        assert!(!static_problems
+            .iter()
+            .any(|problem| { problem.contains("expired") || problem.contains("commit ancestor") }));
+        let release_problems =
+            validate_summary_value(&root(), &registry(), &mutated, &value, RELEASE_SUMMARY)
+                .unwrap();
+        assert!(release_problems
+            .iter()
+            .any(|problem| problem.contains("expired")));
+        assert!(release_problems
+            .iter()
+            .any(|problem| problem.contains("commit ancestor")));
+    }
+    #[test]
+    fn path_inventory_detects_effect_residue() {
+        let directory =
+            std::env::temp_dir().join(format!("fragcap-s129-effects-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut before = BTreeSet::new();
+        inventory_paths(&directory, &directory, &mut before).unwrap();
+        fs::write(directory.join("residue.bin"), b"residue").unwrap();
+        let mut after = BTreeSet::new();
+        inventory_paths(&directory, &directory, &mut after).unwrap();
+        assert_ne!(after, before);
         let _ = fs::remove_dir_all(directory);
     }
     #[test]

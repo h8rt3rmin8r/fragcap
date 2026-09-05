@@ -15,6 +15,8 @@
 
 **Decision**: Every row is required, but rows have either `hosted` or `physical` execution authority. Hosted rows run on every pull request. Physical rows are satisfied by a separately executed report whose validated public-safe summary is committed with a bounded review expiry. The release gate fails when either authority is absent, stale, incomplete, or mismatched to the registry and product revision.
 
+Ordinary CI validates the committed physical summary structurally without applying its age. Only `--release` and explicit report validation enforce currency and require the recorded source revision to resolve to a commit that is equal to or an ancestor of the candidate. A new physical report refuses a dirty tracked worktree.
+
 **Rationale**: GitHub-hosted Windows runners do not promise Npcap runtime, Wireshark, interactive UAC transitions, or the exact non-admin state. Pretending otherwise creates flaky or skipped evidence. This model retains real physical evidence without weakening the pull-request gate.
 
 **Alternatives considered**:
@@ -63,6 +65,14 @@
 **Rationale**: Failure evidence must remain useful without publishing the sensitive observations the product exists to collect. Closed construction plus adversarial seeded tests is stronger than best-effort text redaction.
 
 The validation entry point accepts either the local JSON Lines stream or the derived public summary. A raw stream is reduced through the same summary derivation before the closed public schema is validated, so both forms have one acceptance authority.
+
+## Decision 7: Reconcile declared effects from independent observations
+
+**Decision**: Before and after each row, the runner records normalized observations selected by the row's owned and prohibited effects. The observations cover the isolated session tree, Doctor trust and native-resource findings, parent proxy environment, system proxy registry values, firewall rule registries, and kill-on-close child job. Cleanup is `reconciled` only when both inventories have the same digest. A failed row retains its scratch tree instead of deleting unresolved authority.
+
+The CurrentUser trust row writes an atomic public-certificate cleanup obligation before trust is added. It removes that obligation only after exact trust removal is observed. If the test fails or is terminated, the runner invokes a separate exact recovery test; persistent recovery failure leaves the obligation and makes the run incomplete.
+
+**Rationale**: A successful child exit is not cleanup evidence. Independent observations and a recoverable trust identity keep release authority honest across failures at the effect boundary.
 
 **Alternatives considered**:
 
