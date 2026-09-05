@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "matrix_id": "fragcap-native-http-tls-v1",
-  "product_version": "0.8.0",
+  "product_version": "0.9.0",
   "required_protocols": ["http1", "https", "http2", "websocket", "sse", "grpc"],
   "implementations": [
     {"id":"client-wire","role":"client","name":"fragcap bounded wire client","version":"s110-v1","driver_lineage":"fragcap-wire-client-v1","transport":"sync-wire"},
     {"id":"client-library","role":"client","name":"Tokio plus Hyper or h2 client","version":"tokio-1.53.1/hyper-1.11.1/h2-0.4.19","driver_lineage":"hyper-h2-client-v1","transport":"async-library"},
     {"id":"origin-wire","role":"origin","name":"fragcap bounded wire origin","version":"s110-v1","driver_lineage":"fragcap-wire-origin-v1","transport":"sync-wire"},
     {"id":"origin-library","role":"origin","name":"Tokio plus Hyper or h2 origin","version":"tokio-1.53.1/hyper-1.11.1/h2-0.4.19","driver_lineage":"hyper-h2-origin-v1","transport":"async-library"},
-    {"id":"fragcap-native","role":"proxy","name":"fragcap native proxy","version":"0.8.0","driver_lineage":"fragcap-native-v1","transport":"native"},
+    {"id":"fragcap-native","role":"proxy","name":"fragcap native proxy","version":"0.9.0","driver_lineage":"fragcap-native-v1","transport":"native"},
     {"id":"tshark","role":"analyzer","name":"TShark","version":"captured-at-runtime","driver_lineage":"wireshark","transport":"external"}
   ],
   "rows": [

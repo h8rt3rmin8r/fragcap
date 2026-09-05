@@ -201,6 +201,21 @@ Param(
             [System.IO.File]::WriteAllText($file, $text)
             Write-Log "updated embedded version in $file" 'Info'
         }
+        # Release-bound retained evidence and its exact staged-binary assertion
+        # move with the workspace version. The evidence rows remain unchanged;
+        # this is the release metadata transition for the already-approved code.
+        $releaseVersionFiles = @(
+            (Join-Path $RepoRoot 'conformance/native-http-tls/matrix-v1.json'),
+            (Join-Path $RepoRoot 'conformance/native-http-tls/report-v1.json'),
+            (Join-Path $RepoRoot 'integration/windows-native-reference-v1.json'),
+            (Join-Path $RepoRoot 'crates/fragcap-cli/tests/windows_native_integration.rs')
+        )
+        foreach ($file in $releaseVersionFiles) {
+            $text = [System.IO.File]::ReadAllText($file)
+            $text = $text.Replace($Old, $New)
+            [System.IO.File]::WriteAllText($file, $text)
+            Write-Log "updated release-bound version in $file" 'Info'
+        }
         # Applies-To moves with the workspace version. It is bound to that version
         # by cargo xtask spec (constitution P-11), which runs in the check set, so
         # leaving it stale would fail every release preparation deterministically.
@@ -338,9 +353,9 @@ Next steps (each is a deliberate, authorized act this script does not perform):
         }
 
         # Assemble the changelog and fold everything into the one release commit.
-        Invoke-Native cargo run --quiet --package xtask -- changelog --release $targetVersion $releaseDate
-        Invoke-Native git add -A
-        Invoke-Native git commit --amend --no-edit
+        Invoke-Native -Exe cargo -Arguments @('run', '--quiet', '--package', 'xtask', '--', 'changelog', '--release', $targetVersion, $releaseDate)
+        Invoke-Native -Exe git -Arguments @('add', '-A')
+        Invoke-Native -Exe git -Arguments @('commit', '--amend', '--no-edit')
 
         Write-Log 'running the full check set (cargo xtask ci)' 'Info'
         & cargo xtask ci

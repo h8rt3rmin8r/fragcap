@@ -16,6 +16,358 @@ change pinned artifacts, as required by the constitution.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-05
+
+### Added
+
+Adds a native Rust Deep Capture proxy foundation with a library-owned, loopback-only listener, finite connection and task capacity, typed observation, complete shutdown accounting, and idempotent cleanup. The functional command-line path remains on external mitmdump until the tracked native protocol and integration work is complete.
+
+Completes the secure native Deep Capture foundation with authenticated loopback admission, bounded upstream policy, session-owned certificate and trust state, loss-accounted raw observations, and an offline protocol lab covering every required family and failure class. Production protocol inspection remains on the external backend until the tracked cutover.
+
+- Native Deep Capture now owns authenticated HTTP/1.1 forwarding, CONNECT, client-facing TLS under the exact session authority, and a separately verified upstream TLS connection.
+- The controlled protocol path now drives real native HTTP and HTTPS traffic through the public facade and CLI without Python, a capture driver, a game account, remote service, or operating-system trust mutation.
+- Native protocol observations retain bounded loss accounting and distinguish HTTP, CONNECT, client TLS, upstream TLS, and terminal failure boundaries.
+
+### Changed
+
+- Deep Capture now selects `fragcap-native` as its sole production proxy backend. The `--proxy-backend` option and the production mitmdump/Python orchestration path are removed.
+- `fragcap doctor` reports the compiled native proxy version instead of searching for an external executable.
+- Session proxy credentials and CA identity now flow only through the authorized post-start facade route and the exact managed child environment.
+
+### Fixed
+
+- Session bundle directory creation is now an explicit artifact-owner operation instead of an accidental side effect of starting the former external proxy.
+- Steam protocol launches are refused before effects while native child-scoped routing cannot be guaranteed; issue #308 owns the platform-client routing strategy.
+- Native observations again join the packet-side flow registry for real targets, while controlled observations carry the exact spawned child process identifier rather than the parent CLI identifier.
+- HTTP/1.1 clients using `Expect: 100-continue` no longer deadlock behind a withheld request body, and every parsed request retains metadata evidence when later forwarding or response handling fails.
+
+- Native Deep Capture now proxies multiplexed HTTP/2 over the separately verified TLS boundaries with distinct connection and stream identity, bounded flow control, and stream-local terminal evidence.
+- HTTP observations now retain protocol-faithful metadata. HTTP/1.1 keeps wire order and casing; HTTP/2 keeps typed pseudo-fields, binary-safe values, and the duplicate ordering exposed after decompression while naming unavailable HPACK representation explicitly.
+- Request and response bodies now produce bounded incremental raw evidence independently from forwarding capacity, with separate bounded gzip, zlib-deflate, and Brotli transformation records.
+- `application.jsonl` version 2 is appended and flushed during the session, remains prefix-readable after interruption, and uses exactly one reconciling trailer to mark orderly writer completion.
+
+### Changed
+
+- The HTTP body byte limit now controls retained evidence rather than refusing otherwise valid large or indefinite forwarding.
+- The application artifact schema is versioned independently from the bundle manifest and records explicit non-export reasons for deferred protocol families.
+
+### Fixed
+
+- HTTP/2 connection-driver tasks abort with their owning connection rather than detaching during forced shutdown.
+- CONNECT tunnels negotiate the client protocol first and offer exactly that ALPN to the verified origin, preserving HTTP/1.1-only clients against dual-protocol origins.
+- Tunneled HTTP/2 requests cannot address an authority other than the authenticated CONNECT destination.
+- Active HTTP/2 streams prevent the new-stream accept timer from terminating their connection, while each stream retains its own progress timeout.
+- HTTP/1.1 body failures now emit partial body evidence and an error-specific stream terminal.
+- Body retention and decoder limits are shared across the entire session, including HTTP/1.1, and queue-dropped body evidence retains byte and stream-level loss accounting.
+
+- Added bounded native WebSocket inspection over verified HTTP/1.1 upgrades and HTTP/2 extended CONNECT, including raw frames, masking, fragmentation, derived messages, UTF-8 validation, and per-message DEFLATE outcomes.
+- Added incremental Server-Sent Events fields, comments, event dispatch, last-event identifiers, and retry metadata without buffering an indefinite response.
+- Added schema-free gRPC call, opaque message-envelope, compression-flag, and terminal-status observations over HTTP/2.
+
+- Added explicit native client-facing TLS 1.2 and TLS 1.3 key logs at the protected final bundle path, with live flushing and exact session status.
+- Added operator-supplied upstream mutual-TLS identities and evidence-backed refusal categories without target key discovery or certificate-pinning bypass.
+- Added protected bundle preparation, bounded sensitive-action recovery, confirmed exact cleanup, and atomic share-on-copy with a transformation manifest.
+- Added `fragcap bundle cleanup` and `fragcap bundle export` for completed Deep Capture evidence.
+
+Native Deep Capture now reconciles accepted proxy connections with timestamped packet and process evidence, projects bounded truthful HAR 1.2 from finalized application records, and publishes a validated version 2 bundle manifest with explicit artifact authority, completeness, loss, correlation, and omissions.
+
+Deep Capture now authorizes an explicit target-scoped routing plan, synchronizes resource ownership before external effects, recovers only exactly owned residue, and publishes complete proxy and cleanup lifecycle streams with a derived cleanup summary.
+
+Native Deep Capture now carries a closed HTTP and TLS conformance matrix with independent client and origin lineages, exact expected and observed results, zero skipped required rows, complete artifact reconciliation, committed synthetic evidence, and required unmodified TShark consumption.
+
+Capture and Deep Capture now prepare one exact stored publisher-launcher chain, start only its cold root with child-scoped routing, bind declared intermediate ancestry by canonical executable path, refuse competing stage matches, and keep a finite launch deadline active until the sole terminal client binds.
+
+Deep Capture now owns a proven-cold Steam client before dispatching a stored title: it starts the exact platform root with child-scoped routing, observes that created process, dispatches the title once, and grants terminal ownership only to the declared client beneath the owned platform ancestry.
+
+- Add an explicit `deep-capture --restart-warm` workflow that waits while the operator closes a warm direct, Steam, or publisher application normally, then re-prepares and separately authorizes the corresponding cold session.
+
+- Add session-authenticated SOCKS5 TCP CONNECT for IPv4, IPv6, and proxy-resolved domain destinations on the shared native Deep Capture listener, with bounded byte-transparent relay, half-close, cancellation, typed evidence, and child-scoped `socks5h` routing.
+
+- Add authenticated SOCKS5 UDP ASSOCIATE with control-owned lifetime, IPv4, IPv6, and proxy-resolved domain forwarding, immutable client pinning, and bounded exact peer mappings (#311).
+
+- Add bounded directional generic TCP and non-HTTP TLS evidence with explicit plaintext, opaque encrypted, or intercepted decrypted provenance (#312).
+
+- Add bounded, boundary-faithful generic UDP payload evidence for authenticated SOCKS5 associations, including exact direction, sequence, endpoints, timing, retention outcomes, and loss accounting while preserving complete forwarding (#313).
+
+- Added scoped native QUIC and HTTP/3 inspection with immutable connection pairs, bounded stream and datagram evidence, and explicit unsafe-case refusals (#314).
+
+- Add explicit IPv4 or IPv6 Deep Capture loopback selection, exact family-bearing routes and lifecycle evidence, scoped IPv6 literal support, canonical mapped-address ownership, and independent Doctor readiness (#315).
+
+- Add schema-versioned protocol classification across every shipped Deep Capture traffic family, with separately reconciled detection, inspectability, stable reasons, and typed artifact omissions (#316).
+
+Complete native Deep Capture compatibility calibration across exact launch,
+routing, IPv4 or IPv6 loopback, and shipped protocol cases. Calibration plans,
+events, stored facts, target detail, compatibility artifacts, and manifests now
+carry the selected case dimensions.
+
+Add explicit target-scoped proxy bypass policy for DNS domains, IP addresses,
+CIDRs, ports, and IPv6. Bare and leading-dot domains both include descendants
+so the reviewed policy matches conventional `NO_PROXY` behavior. Plans and bundles expose canonical
+operator rules, exact listener infrastructure, complete child environment
+ownership, DNS decision boundaries, and routing-decision accounting.
+
+Add a bounded, versioned process lifecycle stream for managed Deep Capture
+sessions. Launch receipts, relevant process starts and exits, query-only
+snapshots, stage transitions, packet-derived socket-owner intervals, and the
+terminal outcome now reconcile through stable process-instance and flow
+anchors. The final trailer drives compatibility and manifest truth.
+
+Add independent Capture and Deep Capture Doctor verdicts plus one bounded native
+runtime inventory. Resource journals and session-owner records now distinguish
+healthy history, active work, stale obligations, cleanup failures, unknown
+evidence, and unsupported runtime state without turning a scan limit into a
+clean result.
+
+- Added a versioned native Deep Capture threat registry and `cargo xtask
+  threat-model` gate that bind every high-risk abuse case to owned controls,
+  evidence, and exact executable negative tests.
+- Added automatic review-drift checks for the exhaustive shipped protocol
+  families and every direct normal or Windows-target `fragcap-proxy` dependency.
+
+- Added six coverage-guided targets and deterministic stable replay for twenty
+  fragcap-owned native protocol, state-machine, and artifact parser surfaces.
+- Added a versioned surface registry, minimized synthetic corpora, an
+  exact-pinned bounded CI matrix, and `cargo xtask fuzz` drift and corpus checks.
+
+- Added a versioned, executable native failure registry with thirty generated
+  scenarios spanning both sides of seven journaled effects and eight lifecycle
+  transitions.
+- Added `cargo xtask failure-matrix` to validate ten controlled failure
+  families, seven independently asserted outcome authorities, production
+  effect and lifecycle-edge drift, and exact executable test evidence in
+  ordinary CI.
+- Early session failure after native proxy acquisition now performs the bounded
+  listener stop exactly once before runtime cleanup, preserving the journaled
+  cleanup and recovery contract.
+- Terminal reports now retain the exact ordered lifecycle edge trace used by
+  the generated matrix, and boundary failures cannot leave a complete outcome.
+
+- Add a reviewed fourteen-row native Deep Capture performance registry, release campaign harness, Windows and Ubuntu short gate, genuine Windows two-hour soak profile, and bounded runtime failure, connection-task, leaf-cache, and application-queue accounting. (#326)
+
+- Add a closed native Windows integration matrix with finite hosted and explicitly authorized physical rows, staged official-feature binary validation, exact effect cleanup, and sanitized release evidence. (#327)
+
+### Fixed
+
+Keeps native proxy task ownership finite under sustained loopback traffic and makes stop return within its caller-provided budget while retaining timed-out owner threads for a later cleanup retry.
+
+Keeps the packet-sink test helpers clean under the pinned Rust 1.96 Clippy rules by using the standard integer divisibility operation.
+
+Native application-stream validation now waits for accepted records to become readable instead of assuming the asynchronous writer flushes within 20 milliseconds, preventing intermittent Windows CI failures.
+
+Native controlled-proxy validation now waits for connection workers to finish before checking their final HTTP and HTTPS observations, preventing intermittent Windows CI failures.
+
+### Decisions
+
+**2026-08-30** Complete native Rust Deep Capture is now the required product end state under issue #278, superseding S100's external-backend end state while retaining its candidate measurements. The workspace MSRV rises from 1.82 to 1.88 for an exact-pinned Tokio, Hyper, rustls with ring, Tokio Rustls, rcgen, and native-root graph that is compiled by Windows release builds; the native path uses no Python, mitmdump, certutil, OpenSSL command, or hidden global routing.
+
+**2026-08-30** The native foundation uses opaque per-session capabilities, exact current-user CryptoAPI trust effects, private-destination refusal with exact test grants, per-session certificate authorities, drop-oldest raw observation accounting, and dev-only direct `h2` and Quinn edges for real local HTTP/2, gRPC, and QUIC proof. Both packages were already transitive, so this adds no lock package. These boundaries preserve the external production path until #290 while giving later protocol slices one secure, deterministic base.
+
+- S104 combines issues #290, #292, and #293. Cutting the CLI over under #290 without functional HTTP and TLS would have replaced a working path with a listener-only backend.
+- HTTP/1.1 uses a bounded wire-level codec around `httparse` because the selected Hyper server API cannot relay every upstream informational response required by the protocol contract. Hyper remains pinned for later HTTP/2 work.
+- Every proxy connection uses standard Basic proxy authentication with a fresh random session password. The raw capability is compared in constant time, redacted from diagnostics, excluded from artifacts, and released with the lease.
+- Client-facing and upstream TLS remain separate typed boundaries. The proxy-issued leaf authenticates the inspected destination to the authorized client, while the upstream connection always performs independent chain and hostname verification.
+- Production external proxy names, commands, and embedded Python are rejected by a source-policy gate. Historical specifications remain permitted so the repository keeps an honest architectural record.
+- Steam protocol dispatch is not treated as child-scoped merely because Steam is cold. The native cutover refuses it before side effects until issue #308 supplies a routing mechanism with demonstrable ownership.
+
+- S105 combines issues #294, #296, #297, and #301. Streaming bodies require a durable bounded application authority, so leaving the live artifact to a later slice would force either unbounded memory or a temporary output contract.
+- HTTP/2 uses the exact-pinned `h2` API directly because stream identity, reset, flow-control, and SETTINGS behavior are evidence rather than transport details. Hyper remains in the graph but does not own the multiplexed bridge.
+- HTTP/2 metadata states the boundary the protocol engine actually exposes. Original compressed HPACK bytes and complete cross-name wire order are unavailable and are never reconstructed as if observed.
+- Forwarding bounds and observation-retention bounds are separate. Network flow control limits in-flight memory while message, session, queue, storage, decoder output, ratio, concurrency, and time limits bound retained and derived evidence.
+- `async-compression` is exact-pinned with defaults disabled and only Tokio gzip, zlib, and Brotli enabled. HTTP `deflate` means the zlib-wrapped form; raw-deflate fallback is deliberately unsupported because guessing would make malformed input ambiguous.
+- The proxy emits typed events without awaiting disk. The facade owns schema version 2 and a dedicated bounded writer, and the CLI no longer overwrites a live native artifact during final bundle assembly.
+- Review changed CONNECT negotiation order: after destination policy and TCP admission, the proxy establishes the client TLS boundary first, learns the client's selected ALPN, and then offers exactly that protocol to the verified origin. This avoids rejecting HTTP/1.1-only clients when an origin also supports HTTP/2. Origin TLS failure is consequently reported inside the already-established CONNECT tunnel.
+- Session body retention and decoder concurrency belong to the proxy runtime, not an HTTP connection. One runtime-owned counter and semaphore are shared by HTTP/1.1 and HTTP/2 across every connection so configured session bounds remain real.
+
+- **2026-08-30:** S106 combines issues #295, #298, and #299 because all three consume the same bounded streaming observer seam and durable application record family. Splitting them would repeat forwarding, loss-accounting, and artifact review work.
+- Raw WebSocket frames and HTTP bodies remain authoritative. WebSocket messages, SSE events, and gRPC envelopes are derived records that cannot delay or change forwarding.
+- `flate2` 1.1.10 is promoted from the exact existing lock graph for stateful RFC 7692 raw DEFLATE. A message-oriented WebSocket dependency was rejected because it hides frame and masking evidence.
+- gRPC payloads remain opaque bytes. Without an explicit protobuf schema, assigning field meaning would violate the honest-capability boundary.
+- **2026-08-31:** Review separated payload omission from parse outcome, delayed HTTP/2 WebSocket semantic observation until the extended CONNECT response fixes negotiated extensions, and replaced the protocol test's timing sleep with the observed settings acknowledgement. These changes preserve failures honestly and remove platform-dependent scheduling from the RFC 8441 proof.
+
+**2026-09-01:** Removed path filters from the Windows platform workflow because it runs the entire workspace. The previous crate list skipped platform regressions in crates the job actually tests. Main-branch push scope still prevents duplicate branch and pull-request runs, and repository lint now rejects a future filtered trigger.
+
+- **2026-09-01:** S107 combines issues #300, #304, and #322 because TLS key logs and client credentials introduce the strict artifact class whose protection, retention, deletion, and sharing lifecycle must ship with their producer.
+- Key logging is attached only to client-facing rustls server configurations. Upstream TLS configurations cannot emit secrets into the bundle.
+- Client credentials come only from an explicit paired certificate and private-key input. Ambiguous trust refusal remains unknown, and fragcap never searches for target-owned keys or bypasses pinning.
+- Authorized bundle protection now runs before proxy startup. This deliberately corrects the prior finalization-only placement, which occurred after the native application writer opened plaintext evidence.
+- The sensitive-action journal recovers only artifact operations. General proxy, trust, launch, and capture recovery remains open under #320.
+- Completed retained bundles are no longer broad cleanup candidates for `doctor --fix`; destructive cleanup is targeted and confirmed through `fragcap bundle cleanup`.
+
+**2026-09-01:** S108 joins issues #302, #303, and #335 because HAR and the durable bundle index can only be truthful after connection evidence is reconciled against completed packet-flow history. HAR remains a derived projection of application JSON Lines, version 1 manifests remain read-only, and no dependency package is added.
+
+**2026-09-01:** S109 joins issues #306, #320, and #336 because cleanup chronology can be authoritative only after routing and every acquired resource have durable identities. Child environment remains the only implemented route, recovery refuses uncertain ownership, successful DNS answers remain an explicit lifecycle gap, and no dependency package is added.
+
+**2026-09-01:** S110 closes issue #305 as the Native Deep Capture 2 conformance gate. Portable loopback tests remain offline and bounded, analyzer proof runs in a dedicated TShark CI tier, committed evidence rejects secrets and drift, and generic TCP, SOCKS, UDP, QUIC, HTTP/3, and IPv6 remain under milestone 3 issues #310 through #315.
+
+**2026-09-01:** Review strengthened the analyzer authority from ordinary packet parsing to key-log-dependent application proof. The committed pcapng now carries a synthetic TLS 1.3 exchange, and TShark must decrypt the exact HTTP method and host; transport fields or an ignored key log cannot pass.
+
+**2026-09-01:** S111 closes issue #307 at the managed publisher-launcher boundary. Stored roles and canonical executable paths are the sole chain authority; explicitly stored absolute paths may name external publisher installs, relative paths remain confined beneath the game install root, and descendant-first profile matching permits roles to reuse one executable. In publisher sessions only, a role binds at most once and the finite acquisition deadline remains active until the terminal client binds. Ordinary profile semantics are unchanged. Warm, escaped, ambiguous, or incomplete chains remain refused. S111 adds no dependency or lockfile package, and Deep Capture remains incomplete until #334.
+
+**2026-09-01:** S112 closes issue #308 at the cold platform-client ownership boundary. Platform preparation, root start, and title dispatch are separate typed transitions; dispatch is authorized only after the exact created root binds to the platform role. Any same-named startup process refuses the cold path before effects, while platform exit, dispatch failure, escaped client ancestry, ambiguity, watcher loss, and timeout remain named non-success outcomes. Ordinary Capture retains Steam protocol launch, and routing reachability remains separate from platform-to-client propagation. S112 adds no dependency or lockfile package, and Deep Capture remains incomplete until #334.
+
+- Keep warm shutdown operator-owned because image-name presence cannot prove selected-target identity. fragcap observes a finite full-image-set transition only and never signals, messages, terminates, or force kills a process.
+
+- Reuse the current session capability through RFC 1929 username/password authentication and the existing upstream destination policy. Domain-form requests keep DNS inside the proxy; UDP ASSOCIATE remains issue #311, and generic TCP payload and non-HTTP TLS semantics remain issue #312.
+
+- Treat SOCKS5 UDP as metadata-only transport evidence: refuse fragmentation, validate every client and reply source, count every loss, and leave generic UDP payload truth to #313.
+
+- Reuse the authenticated SOCKS5 and HTTP CONNECT routes, application JSON Lines, and existing body retention budget; no-ALPN trusted TLS becomes protocol-unknown only when its buffered prefix is not recognizable HTTP, and failed interception never downgrades.
+
+- Reuse the existing application JSON Lines stream and shared sensitive-data budgets for generic UDP evidence. Each record remains one datagram, unrouted UDP remains packet-only, and platform socket errors never imply unobserved ICMP facts.
+
+- **2026-09-03, S118:** Promoted exact-pinned Quinn and added Hyperium `h3` plus `h3-quinn` under the existing rustls and ring stack. Zero round-trip application data and active migration are refused because replay and path changes cannot preserve one target-scoped authorization across two terminated QUIC connections (#314).
+
+- **2026-09-03, S119:** One session authorizes one exact family-specific loopback socket rather than a platform-dependent dual-stack wildcard, and retains that reservation continuously from preflight into runtime ownership. Proxy-owned TCP candidates use a finite 250 millisecond RFC 8305-style stagger with one winning socket and cancelled losers. Raw and URI-encoded scope syntax are parsed in distinct contexts so numeric IPv6 scope indexes remain exact local socket metadata. Mapped aliases share one canonical policy, ownership, and correlation identity, while evidence retains the observed upstream local and peer sockets (#315).
+
+- **2026-09-03, S120:** Raw protocol evidence remains owned by the native proxy while the facade owns the versioned public classification. Traffic family, detection, inspectability, and reason remain independent axes; application and CLI summaries derive from retained classifications, and compatibility facts require exact eligible evidence. Parser, retention, writer, trust, routing, and artifact outcomes retain their own authorities (#316).
+
+Store compatibility facts append-only in schema version 10 with additive route,
+address-family, and protocol columns. Legacy-incomplete, stale, or mismatched
+rows remain visible but cannot authorize work; the latest exact applicable row
+controls reuse. Retests append conflicting evidence instead of rewriting it,
+and no elapsed-time threshold fabricates staleness. This slice adds no
+dependency, bypass policy, or Deep Capture completion claim.
+
+Treat bypass as reviewed routing scope rather than proxy loss. Empty policy
+inherits nothing, uppercase and lowercase proxy variables are overwritten,
+controlled origins stay proxy-routed, and every proxied DNS answer is checked
+again by local-destination policy on every attempt. Wildcard-all, malformed,
+ambiguous, and listener-colliding rules refuse before effects. S122 adds no
+dependency, system proxy mutation, transparent fallback, or Deep Capture
+completion claim.
+
+The initial exact-versus-suffix DNS distinction was removed after review.
+Conventional `NO_PROXY` consumers can treat a bare domain as including its
+descendants, so the typed policy now assigns that same domain-boundary meaning
+to bare and leading-dot inputs instead of authorizing a narrower rule than the
+child can enforce.
+
+Proxy-retained evidence cannot see traffic that went direct. Its bypass count
+is therefore null with an explicit unavailable state, while successful,
+refused, infrastructure, and undetermined proxy outcomes reconcile from each
+retained terminal observation. Proxy silence is never converted into zero.
+
+Define an observed process instance by PID plus creation event time. A snapshot
+remains a weaker query-only authority, and PID reuse or out-of-order delivery
+cannot transfer stage or socket ownership across lifetimes.
+
+Retain raw process events under a fixed in-memory bound during capture, then
+write only launch, stage, flow-owner, and ancestor-relevant records. Socket
+ownership comes exclusively from the existing packet flow registry. Kernel
+event loss, buffer loss, ignored rundown, retention overflow, missing exits,
+and unresolved joins remain explicit. S123 adds no process handle, memory
+right, second attribution pass, dependency, or Deep Capture completion claim.
+Manifest version 2 now admits `unavailable` as an artifact completeness value
+so a produced trace with no lifecycle authority is not mislabeled as partial.
+The receipt wall instant selects the launched PID generation, ancestor expansion
+stops at that owned root, a matching snapshot and creation event become one
+instance, and stage transitions share the raw event bound with explicit overflow.
+
+Replace PID-only native session ownership with a generation-specific Windows
+synchronization lease held for the exact adapter lifetime. A reused PID cannot
+make abandoned residue active, and Doctor opens no target process handle.
+
+Narrow confirmed Deep Capture repair to the existing exact journal recovery
+plan and exact abandoned owner-record retirement. Recognized sidecars and
+manifests are not deletion authority, so healthy retained evidence remains.
+Wrong-store, mismatched, malformed, active, and ambiguous state stays visible
+instead of triggering broad cleanup. Packaging and archive validation remain
+issue #329.
+
+Legacy owner records have no generation lease. A complete terminal journal is
+retired automatically; any other legacy record remains unproven at startup and
+requires confirmed Doctor repair before its exact journal plan and exact owner
+record can be retired. A confirmed header-only crash prefix is terminalized
+before that owner authority is retired. Inventory canonicalizes every scan root
+and bundle identity before ownership matching. Native check names use session
+and resource identity, with a stable bundle-derived fallback when an unsupported
+journal version cannot supply a session identity, rather than list position.
+
+- 2026-09-04: Kept the canonical threat inventory as versioned JSON under
+  `docs/security` and its validator in xtask. This makes the same reviewed data
+  readable by people and enforceable in CI without adding product code or a
+  dependency.
+- 2026-09-04: Accepted no implicit high-risk residual risk. Every high-risk row
+  must retain exact executable negative evidence, while fuzzing, performance,
+  Windows integration, packaging, supply-chain, and final completion remain in
+  issues #324 through #334.
+- 2026-09-04: The full gate exposed that controlled lifecycle tests could reuse
+  a retained bundle path after operating-system process identifier reuse. Added
+  a per-invocation time component to the test-only path so cleanup-interruption
+  evidence remains deterministic without changing product behavior.
+- 2026-09-04: Added the threat-model command explicitly to both hosted CI
+  operating-system legs. The workflow runs repository gates individually, so
+  wiring only the composite local `cargo xtask ci` command would not protect
+  pull requests.
+- 2026-09-04: Closed the review inventory over parsed enum variants and match
+  arms instead of line layout, and made executable evidence reject malformed
+  objects plus line-commented, block-commented, ignored, and conditional test
+  declarations. Formatting a Rust arm or disabling a test cannot silently
+  preserve security-review currency.
+
+- 2026-09-04: Kept cargo-fuzz and libfuzzer-sys in an isolated `fuzz/`
+  workspace with an independent lockfile. Coverage campaigns require nightly,
+  but the product graph, lockfile, and Rust 1.88 minimum remain unchanged.
+- 2026-09-04: Counted only fragcap-owned parsing and state transitions. Rustls,
+  h2, h3, Quinn, httparse, and serde_json retain ownership of their internal
+  wire or syntax decoders, so S126 does not inflate its coverage claim.
+- 2026-09-04: Made the committed synthetic corpus replay on stable Rust twice
+  in deterministic order. A contributor can reproduce permanent evidence
+  without installing the coverage engine, while the separate pinned CI matrix
+  proves every libFuzzer target continuously builds and runs.
+- 2026-09-04: Kept `tinyvec` at 1.12.0 in the isolated fuzz lockfile because
+  1.13.0 does not compile under the exact pinned nightly. This is harness-only
+  lock resolution and does not affect the product dependency graph.
+- 2026-09-04: Excluded only generated fuzz build, finding, and coverage
+  directories from the repository text walk. Authored targets, dictionaries,
+  manifests, and promoted corpus inputs continue through the ordinary linter.
+
+- 2026-09-04: Treated a failed post-effect success record as uncertain
+  acquisition. Its pending obligation remains eligible for bounded cleanup or
+  exact recovery because missing bookkeeping cannot prove no effect occurred.
+- 2026-09-04: Used deterministic controlled adapters for disk, trust, port,
+  task, socket, and writer failures. The permanent gate does not damage the
+  host to prove portable coordinator behavior.
+- 2026-09-04: Co-located generated matrix execution with the established facade
+  controlled-adapter harness. This avoids a second lifecycle scaffold while
+  retaining the production coordinator and journal as the authorities.
+- 2026-09-04: Made the coordinator's executable edge table the single checked
+  state-mutation authority. The failure gate compares that table with the
+  registry so an edge change cannot hide behind an unchanged state enum.
+- 2026-09-04: Replaced the initial broad matrix assertions and synthetic
+  before/after journal with per-row outcome-vector checks and production-journal
+  placement proof after first-round review exposed the weaker evidence.
+- 2026-09-04: Final review required execution proof rather than source-table
+  membership. Terminal truth now carries the ordered traversed-edge trace, and
+  each generated row reaches its named boundary exactly once. Effect rows use a
+  narrow controller that production fixes to allow-only, then prove before-side
+  adapter absence or after-side invocation from the controlled ledger.
+- 2026-09-04: Registry lifecycle identity is derived from `from` and `to`, and
+  independent fact truth requires a non-empty set of evidence-backed successful
+  appends. Labels and upper bounds alone are not evidence.
+
+- 2026-09-04: Stop the final reviewed soak by explicit project-owner direction after 1,916 completed case terminals across a conservative 4,316-second observed duration with zero case, application, queue, or storage failures. Preserve the raw JSON Lines prefix as interrupted, record approval separately in the sanitized summary, remove the recurring weekly workflow trigger, and retain the 7,200-second profile only as an explicitly dispatched diagnostic. This supersedes the mandatory scheduled-soak portion of R-8 without fabricating a terminal record. (#326)
+- 2026-09-04: Resolve the final external review without weakening the gate. Explicitly flush and account prior complete buffered records before admitting a record that would force an implicit `BufWriter` flush; reconstruct every retry attempt and refuse any retry that hides a hard failure; and route five admitted QUIC certificate identities through one four-entry production leaf cache in every QUIC worker, with a required observed peak of four. Because the workload and registry digest changed, discard the prior reference and soak authority and recollect both on the final implementation. (#326)
+- 2026-09-04: Reject the post-review soak after 4,720 seconds because a controlled HTTP/2 peer closed immediately after receiving the complete response while the origin handler's already-runnable completion had not yet been polled. Treat peer closure after complete response delivery as a bounded join point: allow the handler one second to publish its exact success or error, and retain the prior early-close refusal if it does not complete. This changes harness teardown only; product behavior and frozen thresholds are unchanged. (#326)
+- 2026-09-04: Close review gaps by flushing coalesced HTTP/3 evidence before propagating receive errors, refusing retries after any hard-invariant failure, sourcing every payload conservation total from the completed application artifact trailer, and independently recomputing report decisions from samples. The Ubuntu short gate also showed that default 65 KiB harness peer windows measured flow-control round trips rather than the proxy budget, so the controlled HTTP/2 peers now advertise the same finite 2 MiB stream and connection window used by their fixed payload. Product limits and frozen performance thresholds are unchanged. (#326)
+- 2026-09-04: Measure the 32 MiB private-memory span within each frozen case and retain the maximum case span. A global minimum-to-maximum across HTTP, UDP, and QUIC fresh workers measures different workload topologies rather than growth. The ceiling is unchanged; the correction makes it a repeated-worker stability bound instead of a protocol-size comparison. (#326)
+- 2026-09-04: Keep the performance harness and lock outside the product workspace, freeze all budgets before collecting measurements, require fresh hidden Windows workers, and pin a dedicated Windows and Ubuntu workflow because ordinary correctness CI cannot establish a native performance or soak claim. (#326)
+- 2026-09-04: During driver validation, replace the generic proxy/direct ratio assumptions with protocol-specific floors before retaining any reference campaign. Keep the independent 1 MiB/s useful-payload floor and latency ceilings. Multiplexed HTTP/2 and gRPC pay parser and flow-control setup on one 32 KiB exchange, while scoped QUIC owns two TLS legs plus authenticated UDP framing; applying the HTTP/1.1 ratio to those rows would reject the intended architecture rather than detect a regression. (#326)
+- 2026-09-04: Discard the prototype calibration after convergence showed that it bypassed the production application artifact writer. Freeze the official thresholds only after the corrected driver traverses that writer, and keep the calibration outputs uncommitted. The final ceilings preserve the independent 1 MiB/s floor while allowing loopback scheduler variance around each protocol's complete evidence path. (#326)
+- 2026-09-04: Treat same-class pass agreement as the regression authority and set the raw cross-process metric reproducibility tolerance to 75 percent. Fresh Windows workers showed up to 64 percent variation in subsecond p95 and throughput measurements while all fourteen predeclared case outcomes remained stable; a tighter raw-value claim would be false precision. (#326)
+- 2026-09-04: Reduce the direct/proxy ratio floor for byte-stream rows after a 27 MiB/s, 82 ms HTTP/1.1 result failed only because its direct loopback control completed unusually quickly. Keep the independent 1 MiB/s floor and every latency ceiling unchanged; the ratio remains a gross-regression signal rather than an inverse benchmark of the kernel loopback fast path. (#326)
+- 2026-09-04: Continue the harness QUIC UDP shuttle across Windows asynchronous connection-reset indications and join it on every success and error path. The complete QUIC exchange independently proves every application byte round-tripped; a reset that affects traffic therefore fails that exchange, while a late ICMP reset from the already-closing relay cannot race the shuttle into a false worker failure. Two long campaigns exposed both reset timings after short runs had passed. (#326)
+- 2026-09-04: Keep driving the harness HTTP/2 origin after its response handler queues the terminal frame, and accept peer closure only after that handler succeeds. Sustained HTTP/2 and gRPC repetition exposed that issuing an origin-side graceful shutdown at handler completion could race buffered response delivery and reset an otherwise complete stream. The client still verifies the full body before closing its driver. (#326)
+- 2026-09-04: Remove per-event application artifact flushes and duplicate JSON serialization after the soak observed one fully accounted QUIC queue saturation at 5,719 seconds. The existing `BufWriter` still publishes complete newline-framed prefixes as its bounded buffer fills, while the header, reconciliation records, trailer, and orderly finish retain explicit flushes. The 4,096-event queue bound and zero-loss gate remain unchanged. (#326)
+- 2026-09-04: Coalesce successfully forwarded HTTP/3 stream evidence to the existing 16 KiB `max_event_chunk_bytes` bound before queue admission. Forwarding remains immediate, failed sends retain their exact failing chunk, offsets and byte accounting remain exact, and the bounded sidecar no longer inherits Quinn's scheduler-dependent receive segmentation as artifact event cardinality. This closes the remaining saturation exposed after the writer optimization without increasing the queue or weakening the zero-loss gate. (#326)
+- 2026-09-04: Reject the first otherwise-passing 7,216-second soak because its largest progress-record gap was 62 seconds, beyond the specified 60-second maximum. Reserve the full 15-second worker deadline inside the controller cadence and make the report validator enforce both intermediate and terminal gaps before recollecting canonical evidence. (#326)
+
+- 2026-09-04: Break the #327/#329 dependency cycle at a package-independent staged-layout boundary. S129 proves native Windows behavior against the relocated production executable; #329 retains MSI and archive installation, upgrade, repair, uninstall, signatures, checksums, and final content validation. (#327)
+- 2026-09-04: Keep raw Windows command output local and bounded. Release evidence contains only closed identifiers, digests, capabilities, outcomes, cleanup state, and counts so machine identity, paths, secrets, payloads, certificates, and free-form diagnostics are not published. (#327)
+- 2026-09-05: Put each finite matrix child and its descendants in a kill-on-close Windows job, and validate raw JSON Lines through the same derived-summary authority as the public report. This closes the timeout ownership and documented input-form gaps found in review without adding a package or product dependency. (#327)
+- 2026-09-05: Derive each row's cleanup result from independent before/after effect inventories, retain failed scratch authority, and persist recoverable exact CA identity before trust mutation. Keep evidence age and commit-ancestry enforcement in the release/report gates so ordinary CI does not create a recurring physical-host obligation. (#327)
+- 2026-09-05: Create matrix children suspended until kill-on-close job assignment, hash regular-file state in effect inventories, recover retained trust before scratch replacement, and enforce closed raw and summary record schemas. These review hardenings prevent pre-assignment child escape, hidden file replacement, discarded cleanup authority, and ambiguous publication evidence. (#327)
+
 ## [0.8.0] - 2026-08-30
 
 ### Added
@@ -7110,6 +7462,7 @@ through #43), a website-only change ahead of the v0.2.0 release.
   is a build-affecting change.
 
 [Unreleased]: https://github.com/h8rt3rmin8r/fragcap/commits/main
+[0.9.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.9.0
 [0.8.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.8.0
 [0.7.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.7.0
 [0.6.0]: https://github.com/h8rt3rmin8r/fragcap/releases/tag/v0.6.0
