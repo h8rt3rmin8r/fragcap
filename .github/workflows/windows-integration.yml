@@ -23,6 +23,7 @@ jobs:
         shell: pwsh
         run: |
           curl.exe --fail --silent --show-error --location https://npcap.com/dist/npcap-sdk-1.16.zip --output "$env:RUNNER_TEMP\npcap-sdk.zip"
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP\npcap-sdk.zip" -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'f0a8be7778ee3ae1b99bbbecb27a3ff0f6c111a4093f1c78c5c5a099607184db') { throw 'Npcap SDK checksum mismatch' }
           Expand-Archive -LiteralPath "$env:RUNNER_TEMP\npcap-sdk.zip" -DestinationPath "$env:RUNNER_TEMP\npcap-sdk"
           "LIB=$env:RUNNER_TEMP\npcap-sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 

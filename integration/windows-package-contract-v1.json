@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "release_identity": {
+    "product": "fragcap",
+    "target": "x86_64-pc-windows-msvc",
+    "architecture": "x86_64",
+    "pe_machine": "8664",
+    "features": ["etw", "live", "native-deep-capture", "socket-table"],
+    "deep_capture_backend": "fragcap-native"
+  },
+  "primary_artifacts": [
+    {"id": "portable-zip", "filename": "fragcap-{version}-x86_64-pc-windows-msvc.zip", "signature": "not_applicable", "size_ceiling_bytes": 33554432},
+    {"id": "windows-msi", "filename": "fragcap-{version}-x86_64.msi", "signature": "not_signed", "size_ceiling_bytes": 33554432},
+    {"id": "standalone-catalog", "filename": "catalog.db", "signature": "not_applicable", "size_ceiling_bytes": 8388608}
+  ],
+  "shared_entries": [
+    {"path": "fragcap.exe", "role": "binary", "size_ceiling_bytes": 33554432, "signature": "not_signed"},
+    {"path": "catalog.db", "role": "catalog", "size_ceiling_bytes": 8388608, "signature": "not_applicable"},
+    {"path": "LICENSE", "role": "project-license", "size_ceiling_bytes": 131072, "signature": "not_applicable"},
+    {"path": "NOTICE", "role": "project-notice", "size_ceiling_bytes": 131072, "signature": "not_applicable"},
+    {"path": "fragcap.cdx.json", "role": "software-bill-of-materials", "size_ceiling_bytes": 8388608, "signature": "not_applicable"},
+    {"path": "THIRD-PARTY-NOTICES.txt", "role": "third-party-notices", "size_ceiling_bytes": 16777216, "signature": "not_applicable"}
+  ],
+  "checksum_sidecars": ["portable-zip", "windows-msi", "standalone-catalog"],
+  "prohibited_tokens": ["mitmdump", "mitmproxy", "npcap", "openssl", "packet.dll", "python", "wpcap.dll"],
+  "pe_imports": {
+    "ordinary": ["advapi32.dll", "api-ms-win-core-synch-l1-2-0.dll", "api-ms-win-crt-heap-l1-1-0.dll", "api-ms-win-crt-locale-l1-1-0.dll", "api-ms-win-crt-math-l1-1-0.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "api-ms-win-crt-stdio-l1-1-0.dll", "api-ms-win-crt-string-l1-1-0.dll", "api-ms-win-crt-time-l1-1-0.dll", "api-ms-win-crt-utility-l1-1-0.dll", "bcrypt.dll", "bcryptprimitives.dll", "crypt32.dll", "iphlpapi.dll", "kernel32.dll", "ntdll.dll", "shell32.dll", "vcruntime140.dll", "version.dll", "ws2_32.dll"],
+    "delayed": ["wpcap.dll"]
+  },
+  "installer_effects": ["defender-exclusion-if-created", "installed-files", "product-registration", "system-path-entry"],
+  "user_owned_fixtures": ["capture", "deep-capture-bundle", "extcap-registration", "local-database", "preexisting-defender-exclusion", "writable-catalog"],
+  "lifecycle_cases": [
+    {"id": "clean-install", "timeout_seconds": 600, "terminal": "passed"},
+    {"id": "repair", "timeout_seconds": 600, "terminal": "passed"},
+    {"id": "same-version-reinstall", "timeout_seconds": 600, "terminal": "passed"},
+    {"id": "upgrade", "timeout_seconds": 600, "terminal": "passed"},
+    {"id": "downgrade-refusal", "timeout_seconds": 600, "terminal": "refused_as_expected"},
+    {"id": "uninstall", "timeout_seconds": 600, "terminal": "passed"}
+  ],
+  "predecessor": {
+    "version": "0.8.0",
+    "url": "https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.8.0/fragcap-0.8.0-x86_64.msi",
+    "size_bytes": 3436544,
+    "sha256": "eaf2554b1da3721400c1b00f5ea0a298455f59454b0084e617ed2efcdcf83901"
+  },
+  "tooling": {
+    "cargo_wix": "0.3.9",
+    "npcap_sdk": "1.16",
+    "npcap_sdk_sha256": "f0a8be7778ee3ae1b99bbbecb27a3ff0f6c111a4093f1c78c5c5a099607184db",
+    "wixtoolset_chocolatey": "3.14.1.20250415"
+  },
+  "report_limits": {"max_findings": 128, "max_path_chars": 260, "max_report_bytes": 524288, "max_string_chars": 1024},
+  "workflow_order": ["identity", "build", "supply-chain-evidence", "assemble", "checksums", "certify", "upload-certified", "revalidate", "github-release", "crates-publish"]
+}

@@ -10,6 +10,8 @@ use std::cell::RefCell;
 use std::fs;
 use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
@@ -54,6 +56,8 @@ use crate::paths;
 
 const CONTROLLED_TARGET_HANDLE: &str = "sample-target";
 const CONTROLLED_TARGET_STABLE_ID: i64 = 75_000;
+const PACKAGE_CONTROLLED_TARGET_HANDLE: &str = "package_certification";
+const PACKAGE_CONTROLLED_TARGET_STABLE_ID: i64 = 7_056_203_534_889_944_332;
 const CALIBRATION_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 const CALIBRATION_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(60);
 const CALIBRATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -2316,8 +2320,12 @@ fn loopback_bind_address(family: DeepCaptureProxyFamilyArg) -> SocketAddr {
 }
 
 fn require_controlled_target(target: &TargetEntry) -> Result<(), CliError> {
-    if target.handle == CONTROLLED_TARGET_HANDLE && target.stable_id == CONTROLLED_TARGET_STABLE_ID
-    {
+    let test_identity = target.handle == CONTROLLED_TARGET_HANDLE
+        && target.stable_id == CONTROLLED_TARGET_STABLE_ID;
+    let package_identity = target.handle == PACKAGE_CONTROLLED_TARGET_HANDLE
+        && target.stable_id == PACKAGE_CONTROLLED_TARGET_STABLE_ID
+        && target.anchor.as_deref() == Some("package:certification");
+    if test_identity || package_identity {
         Ok(())
     } else {
         Err(CliError::usage(
@@ -2697,6 +2705,8 @@ fn run_controlled_target_harness(
     if calibration == Some(CalibrationPhase::Reachability) {
         command.env("FRAGCAP_CONTROLLED_REQUEST_LIMIT", "1");
     }
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     let mut child = command
         .spawn()
         .map_err(|e| CliError::failure(format!("cannot start controlled target: {e}")))?;

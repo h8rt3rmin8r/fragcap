@@ -8,6 +8,7 @@
 //! timeout whose summary was printed) returns the code directly; an error means
 //! "print this and stop".
 
+pub mod build_identity;
 pub mod bundle;
 pub mod capture;
 pub mod catalog;

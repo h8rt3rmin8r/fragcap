@@ -1,21 +1,4 @@
-# Artifacts and crate publication. Specification 24.4, 24.5.
-#
-# Fires on a version tag. Cutting that tag is the operator's authorization to
-# release; approving the `crates-io` environment is the second, because
-# publication is irreversible and a tag can be pushed by mistake.
-#
-# The order of the jobs is the order of section 24.4: build artifacts, generate
-# checksums, create the release with separately authored highlights, then publish to
-# the registry. Publication is last because it is the only step that cannot be
-# undone. A failed release is then a release that was never created, rather
-# than crate versions that exist with nothing to download.
-#
-# The distribution archive contains the release binary, project legal texts,
-# dependency SBOM, and third-party notices, per section 24.5. It ships no shell wrappers (the exe
-# handles elevation itself since #56 and `doctor` covers driver detection, so a
-# wrapper adds little in the archive; wrappers stay in-repo for cloners), no repo
-# README, and no game profiles (fragcap bundles none by design). The archive-
-# contents decision is recorded in changelog.d/release-packaging.decisions.md.
+# Certified Windows artifacts and crate publication. Specification sections 24.4 and 24.5.
 name: release
 
 on:
@@ -29,310 +12,72 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  CARGO_TERM_COLOR: always
-  # The npcap SDK supplies wpcap.lib, the import library the `live` feature
-  # links against. Acquired at build time and discarded with the runner; npcap
-  # itself is never bundled or redistributed (specification section 20.2).
-  NPCAP_SDK_URL: https://npcap.com/dist/npcap-sdk-1.13.zip
-
 jobs:
-  artifacts:
-    name: build release artifacts
-    runs-on: windows-latest
+  identity:
+    name: validate release identity
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install exact dependency-evidence tools
-        shell: pwsh
+      - name: Assert the tag matches the workspace version
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          cargo install cargo-cyclonedx --locked --version 0.5.9
-          cargo install cargo-about --locked --version 0.9.2 --features cli
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "$tagged" = "$declared"
+          echo "tag and workspace version agree on $declared"
 
-      - name: Acquire the npcap SDK
-        shell: pwsh
-        run: |
-          # Supplies wpcap.lib for the `live` feature's link step, the same way
-          # platform.yml acquires it for its live build. Downloaded at build time
-          # and discarded with the runner; npcap is never bundled (section 20.2).
-          Invoke-WebRequest -Uri $env:NPCAP_SDK_URL -OutFile npcap-sdk.zip
-          Expand-Archive npcap-sdk.zip -DestinationPath npcap-sdk
-          "LIB=$PWD\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
-
-      - name: Build
-        # The shipped binary carries its capability features so it can actually
-        # capture (live), attribute from the OS socket table (socket-table), and
-        # trace process events (etw). A bare `cargo build --release` produced an
-        # inert binary that failed every capture (issue #62); the decision to
-        # ship these features is recorded in changelog.d/release-features.decisions.md.
-        # fragcap-cli's unconditional facade dependency enables deep-capture, so
-        # this release build also compiles and links the selected native proxy
-        # graph used by the native Deep Capture command path.
-        run: cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
-
-      - name: Assert the featured binary starts without npcap
-        shell: pwsh
-        run: |
-          # The runner has no npcap installed. Linking `live` makes wpcap.dll an
-          # import; without delay-loading the binary would exit STATUS_DLL_NOT_FOUND
-          # before main, so `doctor` could never run to say "install npcap".
-          # crates/fragcap-cli/build.rs delay-loads wpcap.dll to prevent exactly
-          # that. This proves it on the real artifact: doctor must RUN (it reports
-          # npcap absent and exits 1) rather than fail to start.
-          & target/release/fragcap.exe doctor
-          $code = $LASTEXITCODE
-          Write-Output "doctor exit code: $code"
-          if ($code -ne 0 -and $code -ne 1) {
-            Write-Error "fragcap.exe did not start without npcap (exit $code); wpcap.dll delay-load may be broken."
-            exit 1
-          }
-          Write-Output "OK: the featured binary starts and runs doctor without npcap installed."
-          # doctor exits 1 when npcap is absent (its correct "not ready" code), so
-          # `$LASTEXITCODE` is 1 on the success path here. Reset it, or GitHub
-          # Actions ends the step with that leftover code and fails a passing check.
-          exit 0
-
-      - name: Assert no npcap component is present in any artifact
-        shell: pwsh
-        run: |
-          # Specification section 20.2: no distribution artifact contains npcap
-          # binaries, installers, or driver files. Asserted mechanically here
-          # rather than left to release-time discipline.
-          $pattern = '(?i)npcap|wpcap|packet\.dll'
-          $hits = Get-ChildItem target/release -Recurse -File |
-                  Where-Object { $_.Name -match $pattern }
-          if ($hits) {
-            $hits | ForEach-Object {
-              Write-Error "npcap component in artifact: $($_.FullName)"
-            }
-            exit 1
-          }
-          Write-Output "OK: no npcap component found in the artifact tree."
-
-      - name: Build the barebones catalog store
-        shell: pwsh
-        run: |
-          # Section 24.5: the release ships a barebones catalog store (catalog.db).
-          # It is built offline from a committed empty seed through the existing
-          # import path (issue #96), so it is an empty, current-schema store with
-          # no rows. Placed beside the binary so both the archive and the MSI pick
-          # it up as the read-only template the first-run bootstrap copies. LICENSE
-          # and NOTICE are staged here too; dependency evidence joins them before
-          # the installer reads its complete payload from CargoTargetBinDir.
-          $ErrorActionPreference = 'Stop'
-          & target/release/fragcap.exe catalog import assets/hint-seed.json --db target/release/catalog.db
-          # Seed the detection signature table from the bundled signature document
-          # so the shipped catalog detects engines, anti-cheat, and DRM out of the
-          # box rather than shipping an empty signature table (offline; idempotent).
-          # Slice S063 collapsed `seed-signatures` into `seed --tier signature`;
-          # `--db` stays explicit here because this writes the build's staging copy,
-          # not the per-user default the flagless form would resolve.
-          & target/release/fragcap.exe catalog seed --tier signature --db target/release/catalog.db
-          Copy-Item LICENSE, NOTICE target/release/
-
-      - name: Generate dependency evidence
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $epoch = git show -s --format=%ct $env:GITHUB_SHA
-          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
-          $env:SOURCE_DATE_EPOCH = $epoch
-          cargo cyclonedx --manifest-path crates/fragcap-cli/Cargo.toml --format json --spec-version 1.5 --describe binaries --target x86_64-pc-windows-msvc --no-default-features --features live,socket-table,etw
-          Copy-Item crates/fragcap-cli/fragcap_bin.cdx.json target/release/fragcap.cdx.json
-          cargo about generate --config supply-chain/about.toml --manifest-path crates/fragcap-cli/Cargo.toml --locked --fail --target x86_64-pc-windows-msvc --no-default-features --features "live socket-table etw" --output-file target/release/THIRD-PARTY-NOTICES.txt supply-chain/about.hbs
-
-      - name: Validate dependency evidence
-        shell: pwsh
-        run: cargo run --package xtask -- supply-chain stamp-evidence target/release/fragcap.cdx.json target/release/THIRD-PARTY-NOTICES.txt
-
-      - name: Install WiX and cargo-wix
-        shell: pwsh
-        run: |
-          # WiX v3 is not reliably preinstalled on windows-latest; install it and
-          # cargo-wix, which drives candle/light over crates/fragcap-cli/wix/main.wxs.
-          $ErrorActionPreference = 'Stop'
-          choco install wixtoolset --no-progress -y
-          # choco sets the machine WIX env var and PATH, but a later step runs in a
-          # fresh shell that does not inherit them; export them so `cargo wix` can
-          # locate the WiX binaries (it resolves them through the WIX env var).
-          $wix = [Environment]::GetEnvironmentVariable('WIX', 'Machine')
-          if (-not $wix) {
-            Write-Error "WiX Toolset not found after install (WIX env var is unset)."
-            exit 1
-          }
-          "WIX=$wix" >> $env:GITHUB_ENV
-          (Join-Path $wix 'bin') >> $env:GITHUB_PATH
-          cargo install cargo-wix --locked
-
-      - name: Build the MSI installer
-        shell: pwsh
-        run: |
-          # Unsigned MSI (issue #96; signing is #79, out of scope). --no-build
-          # reuses the featured release binary already built above rather than
-          # rebuilding a featureless one. cargo-wix already links WixUIExtension
-          # and WixUtilExtension (which main.wxs uses for WixUI_InstallDir and the
-          # Defender/npcap custom actions); adding them again makes light fail with
-          # duplicate-table collisions, so no extension flags are passed.
-          # --target-bin-dir is required alongside --no-build so main.wxs's
-          # $(var.CargoTargetBinDir) resolves to the staged payload (fragcap.exe,
-          # catalog.db, LICENSE, NOTICE, SBOM, and third-party notices). WiX is located through the WIX env var the
-          # previous step exported. This whole invocation was validated end to end
-          # against WiX 3.14 before it was committed.
-          $ErrorActionPreference = 'Stop'
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          New-Item -ItemType Directory -Force dist | Out-Null
-          cargo wix --package fragcap-cli --no-build --nocapture `
-            --target-bin-dir (Resolve-Path target/release).Path `
-            --install-version $version `
-            --output "dist/fragcap-$version-x86_64.msi"
-
-      - name: Smoke-test the installer (silent install and uninstall)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          # Best-effort: install per-machine silently, confirm the binary landed,
-          # then uninstall. Does not assert Defender state (the runner's Defender
-          # posture is not representative). The authoritative check is the manual
-          # verification recorded on the pull request, so a hiccup here does not
-          # fail the release (continue-on-error).
-          $msi = (Get-ChildItem dist -Filter *.msi | Select-Object -First 1).FullName
-          Start-Process msiexec.exe -ArgumentList "/i","`"$msi`"","/qn" -Wait
-          $installed = Join-Path $env:ProgramFiles "fragcap\fragcap.exe"
-          if (-not (Test-Path $installed)) {
-            Write-Error "fragcap.exe not found at $installed after install."
-            exit 1
-          }
-          foreach ($evidence in 'fragcap.cdx.json','THIRD-PARTY-NOTICES.txt') {
-            if (-not (Test-Path (Join-Path (Split-Path $installed) $evidence))) {
-              Write-Error "$evidence was not installed beside fragcap.exe."
-              exit 1
-            }
-          }
-          Write-Output "OK: installed at $installed"
-          Start-Process msiexec.exe -ArgumentList "/x","`"$msi`"","/qn" -Wait
-          Write-Output "OK: uninstalled."
-
-      - name: Assemble the distribution archive
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          $name    = "fragcap-$version-x86_64-pc-windows-msvc"
-          $stage   = "dist/$name"
-          New-Item -ItemType Directory -Force $stage | Out-Null
-
-          # Section 24.5: the archive is the binary and its legal texts. It does
-          # NOT ship the shell wrappers (the exe detects elevation itself since
-          # #56 and `doctor` covers driver detection, so a wrapper adds little in
-          # the archive; the wrappers stay in-repo for people who clone), the repo
-          # README (repo-oriented banner/badges/brand-image paths that do not
-          # resolve outside the tree), or a profiles/ directory (fragcap bundles
-          # no profiles by design; they are scaffolded or authored per title), so
-          # there is no INCOMPLETE marker (issues #54, #57).
-          Copy-Item target/release/fragcap.exe $stage
-          Copy-Item LICENSE, NOTICE $stage
-          # The barebones catalog store ships in the archive beside the binary, so
-          # a portable-archive user gets the same first-run bootstrap as an
-          # installed one (section 24.5, issue #96).
-          Copy-Item target/release/catalog.db $stage
-          Copy-Item target/release/fragcap.cdx.json $stage
-          Copy-Item target/release/THIRD-PARTY-NOTICES.txt $stage
-
-          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip"
-          Remove-Item -Recurse -Force $stage
-          # Also ship the catalog store as its own download, so a user can take it
-          # without the archive or the installer.
-          Copy-Item target/release/catalog.db "dist/catalog.db"
-          Get-ChildItem dist
-
-      - name: Generate checksums
-        shell: pwsh
-        run: |
-          # Section 24.5: checksums accompany every artifact. The release now
-          # publishes three downloads (the portable archive, the unsigned MSI, and
-          # the loose hint database), so hash each of them (issue #96).
-          $ErrorActionPreference = 'Stop'
-          Get-ChildItem dist -File |
-            Where-Object { $_.Extension -in '.zip', '.msi', '.db' } |
-            ForEach-Object {
-              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-              "$hash  $($_.Name)" |
-                Set-Content "$($_.FullName).sha256" -Encoding utf8NoBOM
-              Write-Output "$hash  $($_.Name)"
-            }
-
-      - name: Upload the distribution
-        uses: actions/upload-artifact@v4
-        with:
-          name: fragcap-windows-x86_64
-          path: dist/*
-          if-no-files-found: error
+  package-certification:
+    name: build and certify release packages
+    needs: identity
+    uses: ./.github/workflows/package-certification.yml
 
   release:
     name: create the tagged release
-    needs: artifacts
+    needs: package-certification
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: actions/download-artifact@v4
         with:
           name: fragcap-windows-x86_64
           path: dist
-
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package-certification-summary
+          path: certification
+      - name: Independently revalidate certified bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 6
+          for sidecar in dist/*.sha256; do (cd dist && sha256sum --check "$(basename "$sidecar")"); done
+          cargo xtask package-certification validate-report certification/report.json dist
       - name: Validate and render the AI-written release highlights
         shell: bash
         run: |
-          # Release notes are a short AI-written overview stored separately from
-          # the complete changelog. The validator has no copy-the-changelog
-          # fallback and refuses a missing, malformed, or oversized summary.
           set -euo pipefail
           cargo run --quiet --package xtask -- notes "${GITHUB_REF_NAME#v}" > notes.md
           cat notes.md
-
       - name: Create the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
-            --title "fragcap $GITHUB_REF_NAME" \
-            --notes-file notes.md \
-            --verify-tag \
-            dist/*
+          gh release create "$GITHUB_REF_NAME" --title "fragcap $GITHUB_REF_NAME" --notes-file notes.md --verify-tag dist/*.zip dist/*.msi dist/*.db dist/*.sha256
 
   publish:
     name: publish to crates.io
     needs: release
     runs-on: ubuntu-latest
-    # Requires a human to approve the run. This is the gate that keeps
-    # "never publish a crate without explicit authorization" mechanical
-    # rather than remembered.
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Assert the tag matches the workspace version
-        shell: bash
-        run: |
-          # A tag that disagrees with the manifest would publish a version
-          # nobody named. Cheap to check, expensive to discover afterwards.
-          set -euo pipefail
-          tagged="${GITHUB_REF_NAME#v}"
-          declared=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          if [ "$tagged" != "$declared" ]; then
-            echo "tag $GITHUB_REF_NAME does not match workspace version $declared"
-            exit 1
-          fi
-          echo "tag and workspace version agree on $declared"
-
       - name: Publish in dependency order
         run: cargo run --package xtask -- publish --execute
         env:

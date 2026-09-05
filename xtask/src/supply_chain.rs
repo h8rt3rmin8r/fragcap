@@ -917,6 +917,8 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
         fs::read_to_string(root.join(".github/workflows/audit.yml")).map_err(|e| e.to_string())?;
     let release = fs::read_to_string(root.join(".github/workflows/release.yml"))
         .map_err(|e| e.to_string())?;
+    let packaging = fs::read_to_string(root.join(".github/workflows/package-certification.yml"))
+        .map_err(|e| e.to_string())?;
     let wix = fs::read_to_string(root.join("crates/fragcap-cli/wix/main.wxs"))
         .map_err(|e| e.to_string())?;
     let procedure =
@@ -949,24 +951,34 @@ fn validate_repository_wiring(root: &Path, policy: &Value) -> Result<Vec<String>
     for tool in tools {
         let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
         let version = tool.get("version").and_then(Value::as_str).unwrap_or("");
-        if name != "cargo-deny" && (!release.contains(name) || !release.contains(version)) {
+        if name != "cargo-deny" && (!packaging.contains(name) || !packaging.contains(version)) {
             findings.push(format!(
-                "workflow-tool-pin: release.yml lacks {name} {version}"
+                "workflow-tool-pin: package-certification.yml lacks {name} {version}"
             ));
         }
     }
-    let generation = release.find("Generate dependency evidence");
-    let validation = release.find("stamp-evidence");
-    let msi = release.find("Build the MSI installer");
-    let archive = release.find("Assemble the distribution archive");
-    if !matches!((generation, validation, msi, archive), (Some(g), Some(v), Some(m), Some(a)) if g < v && v < m && v < a)
+    let generation = packaging.find("cargo cyclonedx");
+    let validation = packaging.find("stamp-evidence");
+    let assembly = packaging.find("Assemble candidate bytes once");
+    if !matches!((generation, validation, assembly), (Some(g), Some(v), Some(a)) if g < v && v < a)
     {
         findings.push("workflow-order: evidence must be generated and validated before MSI and archive assembly".to_string());
     }
     for file in ["fragcap.cdx.json", "THIRD-PARTY-NOTICES.txt"] {
-        if !release.contains(file) || !wix.contains(file) {
+        if !packaging.contains(file) || !wix.contains(file) {
             findings.push(format!(
-                "artifact-wiring: {file} is not in release and WiX inputs"
+                "artifact-wiring: {file} is not in package-certification and WiX inputs"
+            ));
+        }
+    }
+    for required in [
+        "uses: ./.github/workflows/package-certification.yml",
+        "needs: package-certification",
+        "name: fragcap-windows-x86_64",
+    ] {
+        if !release.contains(required) {
+            findings.push(format!(
+                "workflow-order: release.yml does not consume certified package bytes through {required}"
             ));
         }
     }

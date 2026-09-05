@@ -44,6 +44,12 @@ fn isolate_from_machine_state() {
             std::env::temp_dir().join(format!("fragcap-cli-test-local-{}.db", std::process::id()));
         let _ = fs::remove_file(&local);
         std::env::set_var("FRAGCAP_LOCAL_DB", local);
+        // Deep Capture recovery must never inspect or alter the developer's real
+        // session registry while an in-process CLI test is running.
+        std::env::set_var(
+            "FRAGCAP_SESSION_DIR",
+            std::env::temp_dir().join(format!("fragcap-cli-test-sessions-{}", std::process::id())),
+        );
     });
 }
 

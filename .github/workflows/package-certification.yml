@@ -1,0 +1,119 @@
+name: Windows package certification
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-certification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    name: certify final Windows packages
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      NPCAP_SDK_URL: https://npcap.com/dist/npcap-sdk-1.16.zip
+      NPCAP_SDK_SHA256: f0a8be7778ee3ae1b99bbbecb27a3ff0f6c111a4093f1c78c5c5a099607184db
+      PREDECESSOR_URL: https://github.com/h8rt3rmin8r/fragcap/releases/download/v0.8.0/fragcap-0.8.0-x86_64.msi
+      PREDECESSOR_SHA256: eaf2554b1da3721400c1b00f5ea0a298455f59454b0084e617ed2efcdcf83901
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Validate static package authority
+        run: cargo xtask package-certification
+
+      - name: Install exact packaging and evidence tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo install cargo-cyclonedx --locked --version 0.5.9
+          cargo install cargo-about --locked --version 0.9.2 --features cli
+          cargo install cargo-wix --locked --version 0.3.9
+          choco install wixtoolset --version=3.14.1.20250415 --no-progress -y
+          $wix = [Environment]::GetEnvironmentVariable('WIX', 'Machine')
+          if (-not $wix) { throw 'WiX Toolset did not set WIX' }
+          "WIX=$wix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $wix 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Acquire pinned build and predecessor inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          curl.exe --fail --silent --show-error --location $env:NPCAP_SDK_URL --output "$env:RUNNER_TEMP\npcap-sdk.zip"
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP\npcap-sdk.zip" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:NPCAP_SDK_SHA256) { throw 'Npcap SDK checksum mismatch' }
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\npcap-sdk.zip" -DestinationPath "$env:RUNNER_TEMP\npcap-sdk"
+          "LIB=$env:RUNNER_TEMP\npcap-sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          curl.exe --fail --silent --show-error --location $env:PREDECESSOR_URL --output "$env:RUNNER_TEMP\fragcap-0.8.0-x86_64.msi"
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP\fragcap-0.8.0-x86_64.msi" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:PREDECESSOR_SHA256) { throw 'Predecessor MSI checksum mismatch' }
+
+      - name: Build exact official feature closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:FRAGCAP_SOURCE_REVISION = $env:GITHUB_SHA
+          $env:FRAGCAP_OFFICIAL_BUILD = '1'
+          cargo build --release --locked -p fragcap-cli --features live,socket-table,etw
+          $identity = & target/release/fragcap.exe __build-identity | ConvertFrom-Json
+          if (-not $identity.official -or $identity.source_revision -ne $env:GITHUB_SHA) { throw 'Official build identity was not embedded' }
+
+      - name: Assemble validated package inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & target/release/fragcap.exe catalog import assets/hint-seed.json --db target/release/catalog.db
+          if ($LASTEXITCODE -ne 0) { throw 'Catalog import failed' }
+          & target/release/fragcap.exe catalog seed --tier signature --db target/release/catalog.db
+          if ($LASTEXITCODE -ne 0) { throw 'Catalog signature seed failed' }
+          Copy-Item -LiteralPath LICENSE -Destination target/release/LICENSE
+          Copy-Item -LiteralPath NOTICE -Destination target/release/NOTICE
+          $env:SOURCE_DATE_EPOCH = git show -s --format=%ct $env:GITHUB_SHA
+          cargo cyclonedx --manifest-path crates/fragcap-cli/Cargo.toml --format json --spec-version 1.5 --describe binaries --target x86_64-pc-windows-msvc --no-default-features --features live,socket-table,etw
+          Copy-Item -LiteralPath crates/fragcap-cli/fragcap_bin.cdx.json -Destination target/release/fragcap.cdx.json
+          cargo about generate --config supply-chain/about.toml --manifest-path crates/fragcap-cli/Cargo.toml --locked --fail --target x86_64-pc-windows-msvc --no-default-features --features "live socket-table etw" --output-file target/release/THIRD-PARTY-NOTICES.txt supply-chain/about.hbs
+          cargo xtask supply-chain stamp-evidence target/release/fragcap.cdx.json target/release/THIRD-PARTY-NOTICES.txt
+
+      - name: Assemble candidate bytes once
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Select-String -LiteralPath Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          cargo wix --package fragcap-cli --no-build --nocapture --target-bin-dir (Resolve-Path -LiteralPath target/release).Path --install-version $version --output "dist/fragcap-$version-x86_64.msi"
+          $stage = "target/package-certification/fragcap-$version-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          foreach ($name in 'fragcap.exe','catalog.db','LICENSE','NOTICE','fragcap.cdx.json','THIRD-PARTY-NOTICES.txt') { Copy-Item -LiteralPath "target/release/$name" -Destination "$stage/$name" }
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/fragcap-$version-x86_64-pc-windows-msvc.zip"
+          Copy-Item -LiteralPath target/release/catalog.db -Destination dist/catalog.db
+          Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Extension -in '.zip','.msi','.db' } | ForEach-Object { $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [System.IO.File]::WriteAllText("$($_.FullName).sha256", "$hash  $($_.Name)`n", [System.Text.UTF8Encoding]::new($false)) }
+
+      - name: Certify final bytes and lifecycle
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -NonInteractive -File scripts/Test-PackageCertification.ps1 -ArtifactDirectory dist -PredecessorPath "$env:RUNNER_TEMP\fragcap-0.8.0-x86_64.msi" -ReportPath target/package-certification/report.json -Confirm:$false
+          if ($LASTEXITCODE -ne 0) { throw "Package certification exited $LASTEXITCODE" }
+          cargo xtask package-certification validate-report target/package-certification/report.json dist
+
+      - name: Upload certified distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: fragcap-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload sanitized certification summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-certification-summary
+          path: target/package-certification/report.json
+          if-no-files-found: error

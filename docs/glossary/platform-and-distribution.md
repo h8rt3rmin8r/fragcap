@@ -281,3 +281,66 @@ uninstall.
 
 **See also:** [MSI installer](platform-and-distribution.md#msi-installer),
 [Unsigned installer](platform-and-distribution.md#unsigned-installer)
+
+## Artifact identity
+
+The version, source revision, target, architecture, feature set, filename, content digest, checksum, signature state, and package metadata that jointly identify one final release download.
+
+{: .matters }
+> S131 requires every field to agree before publication, so a correctly named package containing stale, rebuilt, wrong-feature, or wrong-target bytes cannot inherit another artifact's certification.
+
+**See also:** [Package certification](platform-and-distribution.md#package-certification), [Release build identity](platform-and-distribution.md#release-build-identity)
+
+## Package contract
+
+The versioned closed declaration of official release artifacts, exact entries, size ceilings, prohibited content, PE imports, signature policy, installer ownership, lifecycle cases, and publication order.
+
+{: .matters }
+> Unknown content and missing required rows fail rather than being treated as harmless packaging variation. Changes to the contract are release-policy changes and require review.
+
+**See also:** [Package entry](platform-and-distribution.md#package-entry), [Package certification](platform-and-distribution.md#package-certification)
+
+## Package entry
+
+One canonical relative file inside a release package, identified by role, size ceiling, byte digest, ownership class, and every artifact surface on which it must appear.
+
+{: .matters }
+> Paths are case-unique, non-traversing, and byte-compared across ZIP, MSI, and standalone surfaces where applicable. A permitted basename does not excuse a wrong digest or undeclared native import.
+
+**See also:** [Package contract](platform-and-distribution.md#package-contract), [Artifact identity](platform-and-distribution.md#artifact-identity)
+
+## Release build identity
+
+The machine-readable compile-time record of fragcap version, source revision, target triple, architecture, exact official feature set, native backend, and official-build status.
+
+{: .matters }
+> `--version` proves only semantic version. The fuller identity lets final-package certification reject a local rebuild, stale source, wrong target, or feature-incomplete executable without inferring from its filename.
+
+**See also:** [Capability feature](platform-and-distribution.md#capability-feature), [Artifact identity](platform-and-distribution.md#artifact-identity)
+
+## Installer effect
+
+One exact installer-owned file or machine-state change with declared install, repair, upgrade, and removal expectations.
+
+{: .matters }
+> Ownership requires a stable product, component, path, or effect marker. A display name, filename, process identifier, or pre-existing administrator-owned Defender exclusion cannot authorize deletion.
+
+**See also:** [MSI installer](platform-and-distribution.md#msi-installer), [Windows Defender exclusion](platform-and-distribution.md#windows-defender-exclusion)
+
+## Lifecycle case
+
+One finite package transition with exact preconditions, installer operation, accepted exit status, state observations, deadline, cleanup result, and terminal classification.
+
+{: .matters }
+> Clean install, repair, exact-byte reinstall, supported upgrade, downgrade refusal, and uninstall are required rows. A skipped, timed-out, warning-only, or unreconciled row cannot authorize a release.
+
+**See also:** [Installer effect](platform-and-distribution.md#installer-effect), [Package certification](platform-and-distribution.md#package-certification)
+
+## Package certification
+
+The blocking reconciliation of final ZIP, MSI, catalog, and checksum bytes against the [package contract](platform-and-distribution.md#package-contract), including package contents, size, PE imports, build identity, unsigned state, packaged native smoke, installer lifecycle, exact cleanup, and publication ordering.
+
+{: .matters }
+> Certification is attached to the bytes built once and later published. Rebuilding after the check, continuing after a failed smoke, or publishing before post-transfer revalidation would break that authority.
+
+**See also:** [Artifact identity](platform-and-distribution.md#artifact-identity), [Lifecycle case](platform-and-distribution.md#lifecycle-case), [Unsigned installer](platform-and-distribution.md#unsigned-installer)
