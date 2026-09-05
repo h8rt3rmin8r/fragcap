@@ -32,7 +32,7 @@ section.
 
 ## Current state
 
-v0.8.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
+v0.9.0 is the current release. The Rust workspace ships target discovery, passive process-attributed Capture, explicit native Deep Capture for known-compatible stored targets, analyzer integration, Windows packaging, and the documentation site. [`CHANGELOG.md`](CHANGELOG.md) records the chronological release history, `specs/` records every completed work slice, and the open [GitHub milestones](https://github.com/h8rt3rmin8r/fragcap/milestones) show the current workstreams.
 
 Deep Capture is functional but incomplete. Its CLI now uses the native Rust
 HTTP/1.1, CONNECT, and HTTPS path, while certificate trust effects use the native Windows API.

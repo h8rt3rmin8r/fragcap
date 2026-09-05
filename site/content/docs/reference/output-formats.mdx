@@ -29,7 +29,7 @@ A `.fcapng` file owns the packet bytes, timestamps, capturing interface, process
 Packet JSON Lines is the machine-readable Capture stream. It is distinct from Deep Capture's `application.jsonl`. The first line is a `header`, every intervening line is one packet with no `type` field, and a successfully finalized stream ends with a `trailer` carrying run counts.
 
 ```json
-{"type":"header","version":"fragcap/0.8.0","interfaces":["capture"]}
+{"type":"header","version":"fragcap/0.9.0","interfaces":["capture"]}
 {"ts":1700000000.000000,"iface":"capture","pid":4242,"proc":"sample.exe","role":"client","stage":"client","dir":"out","attr":"live","flow_id":"flow-00000001","proto":"udp","src":"192.0.2.10:30000","dst":"198.51.100.5:5055","len":2,"orig_len":74,"data":"0200"}
 {"type":"trailer","packets":24,"attributed":24,"unattributed":0,"kernel_dropped":0,"interface_dropped":0,"buffer_dropped":0,"sink_dropped":0,"filter_gaps":0}
 ```

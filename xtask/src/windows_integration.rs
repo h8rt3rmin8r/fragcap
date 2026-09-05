@@ -832,7 +832,7 @@ fn validate_summary_value(
     if value["registry_sha256"] != registry_digest {
         problems.push("summary registry digest mismatch".into());
     }
-    if value["product_version"] != env!("CARGO_PKG_VERSION") {
+    if policy.current && value["product_version"] != env!("CARGO_PKG_VERSION") {
         problems.push("summary product version mismatch".into());
     }
     for field in ["revision", "binary_sha256", "recorded_on"] {
@@ -1513,12 +1513,15 @@ mod tests {
         let mut value: Value = serde_json::from_slice(&bytes).unwrap();
         value["recorded_on"] = json!("2000-01-01");
         value["revision"] = json!("0000000000000000000000000000000000000000");
+        value["product_version"] = json!("0.0.0");
         let mutated = serde_json::to_vec(&value).unwrap();
         let static_problems =
             validate_summary_value(&root(), &registry(), &mutated, &value, STATIC_SUMMARY).unwrap();
-        assert!(!static_problems
-            .iter()
-            .any(|problem| { problem.contains("expired") || problem.contains("commit ancestor") }));
+        assert!(!static_problems.iter().any(|problem| {
+            problem.contains("expired")
+                || problem.contains("commit ancestor")
+                || problem.contains("product version")
+        }));
         let release_problems =
             validate_summary_value(&root(), &registry(), &mutated, &value, RELEASE_SUMMARY)
                 .unwrap();
@@ -1528,6 +1531,9 @@ mod tests {
         assert!(release_problems
             .iter()
             .any(|problem| problem.contains("commit ancestor")));
+        assert!(release_problems
+            .iter()
+            .any(|problem| problem.contains("product version")));
     }
     #[test]
     fn path_inventory_detects_effect_residue() {

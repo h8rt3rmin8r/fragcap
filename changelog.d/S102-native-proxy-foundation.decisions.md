@@ -1,2 +1,0 @@
-<!-- spec-impact: 2.1, 8.2, 8.3, 24.1, 28, 29 -->
-**2026-08-30** Complete native Rust Deep Capture is now the required product end state under issue #278, superseding S100's external-backend end state while retaining its candidate measurements. The workspace MSRV rises from 1.82 to 1.88 for an exact-pinned Tokio, Hyper, rustls with ring, Tokio Rustls, rcgen, and native-root graph that is compiled by Windows release builds; the native path uses no Python, mitmdump, certutil, OpenSSL command, or hidden global routing.

@@ -56,7 +56,7 @@ Live packet capture requires [Npcap](https://npcap.com) to be installed separate
 
 ## Status
 
-**v0.8.0 is the current release.** Capture provides target-scoped, process-attributed packet capture, and Deep Capture adds the first guarded local-proxy path for stored targets. An explicit two-phase compatibility calibration can collect local evidence for an unknown target without weakening ordinary Deep Capture's eligibility gate. The public library API and CLI can orchestrate eligible cold Steam and direct-executable launches. Deep Capture writes a manifest-indexed session bundle containing packet truth, application observations where supported, proxy and process sidecars, compatibility updates, omissions, and cleanup results.
+**v0.9.0 is the current release.** Capture provides target-scoped, process-attributed packet capture. Deep Capture adds a guarded native Rust proxy for eligible stored targets, with managed Steam, publisher, and direct-executable launches; scoped IPv4 and IPv6 routing; HTTP/1.1, HTTP/2, HTTP/3, TLS, WebSocket, SSE, gRPC, SOCKS5 TCP and UDP, and generic TCP and UDP evidence; and manifest-indexed packet, application, process, correlation, loss, and cleanup records.
 
 > **Deep Capture is functional but incomplete.** S107 adds proxy-owned TLS key
 > logs, explicit operator-supplied upstream client identities, stable refusal

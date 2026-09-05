@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "matrix_id": "fragcap-native-http-tls-v1",
-  "product_version": "0.8.0",
+  "product_version": "0.9.0",
   "generated_by": "cargo-xtask-conformance-s110-v1",
   "rows": [
     {"id":"http1-wire","status":"pass","observed":"200-body-trailers-preserved"},

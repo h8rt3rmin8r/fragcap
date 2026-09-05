@@ -335,7 +335,7 @@ mod tests {
 
         let body = &buf[8..buf.len() - 4];
         let appl = find_option(body, 16, opt::SHB_USERAPPL).expect("shb_userappl");
-        assert_eq!(String::from_utf8(appl).unwrap(), "fragcap/0.8.0");
+        assert_eq!(String::from_utf8(appl).unwrap(), "fragcap/0.9.0");
         let comment = find_option(body, 16, opt::COMMENT).expect("opt_comment");
         assert_eq!(String::from_utf8(comment).unwrap(), PROFILE_COMMENT);
     }

@@ -4,13 +4,13 @@ description: Verify fragcap, run a first Capture, and continue into a known-comp
 ---
 
 <Callout title="Deep Capture is incomplete">
-These instructions describe the S105 native HTTP/1.1, HTTP/2, CONNECT, HTTPS,
-metadata, bounded body, and live application-stream path.
-Broader protocol, launch, transport, artifact, recovery, and completion work
-remains tracked under [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278).
+These instructions describe the v0.9.0 native path, including managed launch,
+scoped IPv4 and IPv6 routing, supported application protocols, bounded evidence,
+recovery, and Windows integration. The final Deep Capture completion gate remains
+tracked under [#278](https://github.com/h8rt3rmin8r/fragcap/issues/278).
 </Callout>
 
-fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.8.0 requires.
+fragcap has two capture paths. **Capture** passively records packets and attributes flows to processes. **Deep Capture** runs Capture beside an explicit, target-scoped local proxy and can add application observations for traffic that reaches that proxy. This guide takes you through a first Capture, then continues into Deep Capture only when the selected target already has the current compatibility evidence v0.9.0 requires.
 
 <Callout title="Start with Capture">
 Capture remains useful when Deep Capture is unavailable. The `.fcapng` file is packet truth in both paths, and an unmodified pcapng analyzer can open it.
@@ -69,7 +69,7 @@ fragcap doctor
 
 ```text
 Identity
-  version                ok    0.8.0
+  version                ok    0.9.0
   binary                 ok    C:\Program Files\fragcap\fragcap.exe
   catalog db             ok    C:\Users\you\AppData\Roaming\fragcap\catalog.db
                                (present)
@@ -99,7 +99,7 @@ Integration
                                C:\Users\you\AppData\Roaming\Wireshark\extcap
 
 Deep Capture
-  proxy backend          ok    fragcap-native 0.8.0
+  proxy backend          ok    fragcap-native 0.9.0
   local CA trust         ok    no fragcap Deep Capture CA trust found
   analyzer key log       ok    TLS key-log path is visible to this session
   proxy ports            ok    no stale Deep Capture proxy ports found
@@ -195,7 +195,7 @@ fragcap deep-capture sample-target --launch --calibrate tls --calibration-protoc
 
 Review the target again before ordinary Deep Capture. Calibration outcomes and fact rows preserve uncertainty; they do not create an aggregate compatibility verdict.
 
-For a Steam target, Steam must be closed before the session begins. An already-running Steam process is a warm launch that fragcap does not own, so Deep Capture refuses it. v0.8.0 also supports an eligible cold direct-executable launch from the target's prevalidated executable path; an already-running direct target remains a side-effect-free refusal.
+For a Steam target, Steam must be closed before the session begins. An already-running Steam process is a warm launch that fragcap does not own, so Deep Capture refuses it. v0.9.0 also supports eligible cold publisher chains and direct-executable launches from prevalidated paths; an already-running target remains a side-effect-free refusal.
 
 ## 7. Run a known-compatible Deep Capture
 
@@ -213,14 +213,15 @@ Run `fragcap deep-capture --help` to review the current launch, duration, trust,
 
 Deep Capture support remains traffic-specific:
 
-| Traffic | What v0.8.0 can add beyond Capture |
+| Traffic | What v0.9.0 can add beyond Capture |
 | --- | --- |
-| HTTP | Method, URL, and response status when traffic reaches the proxy. Headers and bodies are not retained. |
-| HTTPS | The same HTTP fields when traffic reaches the proxy and accepts the fragcap-owned CA. Certificate-pinned traffic remains encrypted. |
-| WebSocket | The HTTP upgrade handshake only. WebSocket frames and frame payloads are not retained. |
-| Non-HTTP TLS | Proxy connection metadata without application-protocol interpretation. |
-| QUIC and UDP | No application inspection through the current HTTP proxy. Packet Capture remains available. |
-| Other plaintext | Plaintext HTTP follows the HTTP row. Other protocols remain packet payloads unless a future dissector adds records. |
+| HTTP/1.1 and HTTP/2 | Protocol-faithful metadata, bounded raw bodies, supported content-decoding derivations, streaming timing, and explicit loss. |
+| HTTPS | The corresponding HTTP evidence across separately verified client-facing and upstream TLS boundaries. Certificate-pinned traffic is refused without downgrade. |
+| HTTP/3 and QUIC | Scoped, authenticated HTTP/3 request, response, stream, datagram, timing, refusal, and loss evidence for exact `h3` routes. |
+| WebSocket | Verified HTTP/1.1 and HTTP/2 upgrades, frames, bounded messages, compression outcomes, and terminals. |
+| SSE and gRPC | Incremental SSE events and bounded gRPC envelopes and status without inventing protobuf meaning. |
+| Generic TCP and non-HTTP TLS | Bounded directional plaintext or opaque encrypted chunks with exact terminal and omission evidence. |
+| Generic UDP | Metadata and bounded retained payload prefixes for authenticated scoped associations, independently from forwarding. |
 
 See the [complete traffic matrix and evidence labels](/docs/reference/deep-capture-compatibility) before drawing conclusions from absent application records.
 
@@ -238,7 +239,7 @@ Bundle artifacts have different authority:
 | --- | --- |
 | `capture.fcapng` | Packet truth and process attribution, readable by unmodified pcapng analyzers. |
 | `application.jsonl` | Sensitive HTTP or connection observations emitted by the proxy. Records may be partial or metadata-only. |
-| `http.har` | Optional [HAR](/docs/glossary/file-and-wire-formats#har) projection of observed HTTP semantics. It cannot contain headers or bodies that v0.8.0 never retained. |
+| `http.har` | Optional [HAR](/docs/glossary/file-and-wire-formats#har) projection of complete observed HTTP semantics. Missing or partial facts remain explicit rather than becoming placeholders. |
 | `tls-keylog.log` | Optional, highly sensitive [proxy-owned TLS key-log export](/docs/glossary/file-and-wire-formats#proxy-owned-tls-key-log-export). It is not extracted from the target process. |
 | `proxy.jsonl` and `process-trace.jsonl` | Sensitive diagnostic evidence about proxy and process activity. |
 | `compatibility.json` | Facts actually observed during this session, with launch and backend provenance. |

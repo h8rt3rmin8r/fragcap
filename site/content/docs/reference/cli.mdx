@@ -14,7 +14,7 @@ Capture requires the **npcap** driver in WinPcap-compatible mode. Run
 `fragcap doctor` first to inspect readiness without capturing anything.
 </Callout>
 
-This page describes the public v0.8.0 command tree. Its command headings,
+This page describes the public v0.9.0 command tree. Its command headings,
 option tables, sink vocabulary, and executable examples are checked against the
 same parser used by the binary. Hidden test controls are excluded. clap's
 generated `help` and `version` controls remain available but are not repeated in
@@ -32,7 +32,7 @@ Running `fragcap` with no command lists registered targets and points at
 ## Retired command migration
 
 Older releases and their preserved changelog pages may refer to command forms
-that the current CLI no longer accepts. Use these replacements with v0.8.0:
+that the current CLI no longer accepts. Use these replacements with v0.9.0:
 
 | Retired form | Current form |
 | --- | --- |
@@ -93,7 +93,7 @@ fragcap capture --process sample.exe --out capture.fcapng
 | `--wait` | open | none | all | Set the target acquisition timeout. With no value, wait until start or interruption. |
 
 `--roles` is enforced. `--direction in` and `--direction out` are recorded and
-reported, but v0.8.0 still writes both directions.
+reported, but v0.9.0 still writes both directions.
 
 ### Sink specifications
 
