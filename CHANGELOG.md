@@ -36,6 +36,8 @@ Completes the secure native Deep Capture foundation with authenticated loopback 
 
 ### Fixed
 
+- Keeps the scoped HTTP/3 integration shuttle alive through association cleanup so terminal QUIC accounting cannot race an otherwise complete exchange.
+
 - The production accessibility audit now follows the generated v0.9.0 route count and distinguishes real skip-link navigation from unrelated framework prefetch requests.
 - Release validation now preserves the exact measured version and binary identity of historical Windows physical evidence while keeping explicit current-release validation strict.
 
