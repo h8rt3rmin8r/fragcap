@@ -428,11 +428,15 @@ async fn authenticated_socks_udp_route_proxies_http3_end_to_end() {
         .unwrap();
     assert!(close.is_h3_no_error());
     client.wait_idle().await;
-    stop.store(true, Ordering::Relaxed);
-    shuttle_task.join().unwrap();
+    // Keep the UDP shuttle alive while closing the association. The QUIC
+    // gateway may still need to exchange its terminal packets after the client
+    // becomes idle; stopping the shuttle first races that completion and can
+    // misclassify a fully completed pair as interrupted.
     drop(control);
     origin_task.await.unwrap();
     let report = lease.cleanup(Duration::from_secs(3));
+    stop.store(true, Ordering::Relaxed);
+    shuttle_task.join().unwrap();
     assert!(report.is_clean());
     assert_eq!(report.observation.protocol.quic_pairs_started, 1);
     assert_eq!(report.observation.protocol.quic_pairs_completed, 1);
