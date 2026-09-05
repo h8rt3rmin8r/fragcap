@@ -206,7 +206,7 @@ Param(
         $observedAddresses = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $observationSamples = 0
         if (-not [string]::IsNullOrEmpty($ObservedExecutablePath)) { [void]$observedPaths.Add([System.IO.Path]::GetFullPath($FilePath)) }
-        while (-not $waitTask.IsCompleted) {
+        do {
             if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
                 try { $process.Kill($true) } catch { Write-ShruggieLog "Timed-out child could not be killed cleanly: $($_.Exception.Message)" -Level Warn -Source Child }
                 throw "process exceeded $TimeoutSeconds seconds"
@@ -231,8 +231,8 @@ Param(
                 foreach ($endpoint in @(Get-NetUDPEndpoint -ErrorAction Stop | Where-Object { $owned.Contains([uint32]$_.OwningProcess) })) { [void]$observedAddresses.Add([string]$endpoint.LocalAddress) }
                 $observationSamples++
             }
-            [System.Threading.Thread]::Sleep(100)
-        }
+            if (-not $waitTask.IsCompleted) { [System.Threading.Thread]::Sleep(100) }
+        } while (-not $waitTask.IsCompleted)
         [void]$waitTask.GetAwaiter().GetResult()
         $process.WaitForExit()
         $watch.Stop()
@@ -545,7 +545,9 @@ Param(
         [void](New-NetFirewallRule -Name $smokeFirewallRuleName -DisplayName $smokeFirewallRuleName -Direction Outbound -Action Block -Program $zipExe -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
         $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--yes', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment -ObserveTreeAndNetwork
         if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw 'packaged controlled native smoke did not produce expected evidence' }
-        if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1 -or $smoke.Observation.process_paths.Count -lt 1 -or $smoke.Observation.unexpected_process_paths.Count -ne 0) { throw 'packaged controlled native smoke escaped the observed process boundary' }
+        if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "packaged controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
+        if ($smoke.Observation.process_paths.Count -lt 1) { throw 'packaged controlled native smoke recorded no executable path' }
+        if ($smoke.Observation.unexpected_process_paths.Count -ne 0) { throw "packaged controlled native smoke launched unexpected executables: $($smoke.Observation.unexpected_process_paths -join ', ')" }
         if ($PSCmdlet.ShouldProcess($smokeFirewallRuleName, 'Remove package-certification smoke firewall rule')) { Remove-NetFirewallRule -Name $smokeFirewallRuleName -ErrorAction Stop; $smokeFirewallRuleName = $null }
         $installDirectory = Join-Path $scratch 'installed'
         $userFixturePaths = [ordered]@{
