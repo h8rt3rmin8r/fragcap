@@ -10,8 +10,6 @@ on:
         description: Required soak duration
         default: "7200"
         required: true
-  schedule:
-    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
@@ -40,7 +38,7 @@ jobs:
           path: target/performance/short.jsonl
 
   soak:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 135
     steps:

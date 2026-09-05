@@ -329,6 +329,6 @@ all fourteen protocol and payload-retention rows before measurement. Release
 campaigns exercise the production backend with seven independent process
 windows, exact off/on policy, bounded runtime resource gauges, complete row
 identity, and immutable JSON Lines evidence. Pull requests run the short matrix
-on Windows and Ubuntu; Windows owns the genuine two-hour scheduled soak.
+on Windows and Ubuntu; Windows exposes the genuine two-hour soak by explicit manual dispatch, while S128's final evidence carries a separately recorded project-owner approval.
 Windows-host integration begins with S129 under #327, and Deep Capture remains
 incomplete until #334.

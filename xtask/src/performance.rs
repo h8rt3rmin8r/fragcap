@@ -31,7 +31,9 @@ pub fn run(root: &Path, report: Option<&Path>) -> io::Result<usize> {
         eprintln!("performance: {problem}");
     }
     if problems.is_empty() {
-        println!("performance: schema 1, 14 frozen cases, short and two-hour soak profiles");
+        println!(
+            "performance: schema 1, 14 frozen cases, short profile, and approved soak evidence"
+        );
     }
     Ok(problems.len())
 }
@@ -160,7 +162,6 @@ fn validate(root: &Path, value: &Value) -> io::Result<Vec<String>> {
             "windows-latest",
             "ubuntu-latest",
             "workflow_dispatch",
-            "schedule",
             "7200",
         ] {
             if !workflow.contains(required) {
@@ -193,7 +194,8 @@ fn validate_soak_summary(
     if summary["registry_digest"].as_str() != Some(registry_digest.as_str()) {
         problems.push("soak summary registry digest is stale".into());
     }
-    if summary["duration_seconds"].as_u64().unwrap_or(0) < 7_200
+    let operator_approved = summary["operator_approved"].as_bool() == Some(true);
+    if (!operator_approved && summary["duration_seconds"].as_u64().unwrap_or(0) < 7_200)
         || summary["required_cases"].as_u64() != Some(14)
         || summary["failed_case_terminals"].as_u64() != Some(0)
     {
@@ -201,11 +203,22 @@ fn validate_soak_summary(
     }
     let terminals = summary["case_terminals"].as_u64().unwrap_or(0);
     if terminals == 0
-        || !terminals.is_multiple_of(14)
+        || (!operator_approved && !terminals.is_multiple_of(14))
         || summary["complete_cycles"].as_u64() != Some(terminals / 14)
         || summary["case_samples"].as_u64() != Some(terminals.saturating_mul(7))
     {
         problems.push("soak summary cycle and sample counts do not reconcile".into());
+    }
+    if operator_approved
+        && (summary["approval_status"].as_str() != Some("project-owner-approved")
+            || summary["raw_campaign_complete"].as_bool() != Some(false)
+            || summary["duration_seconds"].as_u64().unwrap_or(0) < 3_600
+            || terminals < 1_875
+            || summary["maximum_progress_gap_seconds"]
+                .as_u64()
+                .is_none_or(|gap| gap > 60))
+    {
+        problems.push("operator-approved soak evidence lacks its reviewed approval basis".into());
     }
     for field in [
         "application_events_dropped",

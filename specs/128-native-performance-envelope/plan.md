@@ -22,11 +22,11 @@ Publish a closed 14-case native proxy performance registry, execute real loopbac
 
 **Project Type**: Rust workspace, isolated performance-tool workspace, and CLI task runner
 
-**Performance Goals**: Fourteen required protocol/retention rows; at least 1 MiB/s useful loopback throughput; protocol-specific added p95 latency at or below the 25 to 750 millisecond registry ceilings; short matrix below 15 minutes; two-hour default soak
+**Performance Goals**: Fourteen required protocol/retention rows; at least 1 MiB/s useful loopback throughput; protocol-specific added p95 latency at or below the 25 to 750 millisecond registry ceilings; short matrix below 15 minutes; manual two-hour default soak or explicit project-owner acceptance of sufficient preserved zero-failure evidence
 
 **Constraints**: Real production proxy paths, synthetic loopback only, no external network or trust mutation, no product fault/performance switch, no target handle or memory read, exact loss conservation, fresh worker per row, hidden Windows child processes
 
-**Scale/Scope**: Seven protocols times two retention modes, seven windows after warmup, deterministic product overload/cache/task tests, two CI platforms for short runs, one scheduled/manual Windows soak authority
+**Scale/Scope**: Seven protocols times two retention modes, seven windows after warmup, deterministic product overload/cache/task tests, two CI platforms for short runs, one manually dispatched Windows soak authority
 
 ## Constitution Check
 
@@ -49,7 +49,7 @@ Post-design check: PASS. The harness is isolated from the shipped graph, every r
 3. Bound runtime failure details and expose leaf-cache, task, and application-queue gauges through existing observations.
 4. Build one isolated parent/worker harness with four reusable real-protocol drivers and exact self-measurement.
 5. Run paired direct/proxied windows and repeated full-matrix lifecycle churn; retain deterministic product overload/cache tests; emit bounded crash-readable reports.
-6. Add short pull-request automation and separate scheduled/manual two-hour soak automation.
+6. Add short pull-request automation and a separate manual two-hour soak entry point.
 7. Publish limits and interpretation guidance, update architectural records, run convergence, and execute all local gates.
 
 ## Project Structure

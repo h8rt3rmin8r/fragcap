@@ -54,7 +54,7 @@ A maintainer can reproduce a quick pull-request gate and a multi-hour soak campa
 **Acceptance Scenarios**:
 
 1. **Given** two short campaigns on the same supported environment, **When** their reports are compared, **Then** case identities and budgets match and each measured gate result is reproducible within its declared tolerance.
-2. **Given** the soak profile, **When** it runs for at least two hours of wall-clock time with repeated connection, stream, datagram, and certificate churn, **Then** it emits periodic bounded samples and one complete terminal report.
+2. **Given** the soak profile, **When** it runs with repeated connection, stream, datagram, and certificate churn, **Then** either a complete two-hour terminal or an explicit project-owner approval of preserved zero-failure evidence establishes the slice authority.
 3. **Given** an interrupted soak, **When** its incomplete report is inspected, **Then** completed samples remain readable but cannot be mistaken for a passing terminal campaign.
 4. **Given** an environment outside the report's declared comparability class, **When** results are compared, **Then** the tool reports them as non-comparable rather than as a regression or pass.
 
@@ -85,12 +85,12 @@ A maintainer can reproduce a quick pull-request gate and a multi-hour soak campa
 - **FR-008**: Forwarded traffic MUST use complete workload payloads independently from whether evidence retention is enabled, capped, saturated, or disabled.
 - **FR-009**: Every campaign MUST prove that accepted tasks terminate, the exact listener is released, and cleanup leaves no proxy-owned residue within the declared deadline.
 - **FR-010**: The short profile MUST complete within the ordinary continuous-integration time budget and MUST use thresholds broad enough to tolerate shared-runner variance without suppressing large regressions.
-- **FR-011**: The soak profile MUST run for at least two continuous wall-clock hours by default and MUST exercise repeated connection, stream, datagram, retention, and certificate-name churn.
-- **FR-012**: A soak MUST emit bounded periodic samples plus a distinct terminal reconciliation; an interrupted or short run MUST remain explicitly incomplete.
+- **FR-011**: The manual soak profile MUST run for at least two continuous wall-clock hours by default and MUST exercise repeated connection, stream, datagram, retention, and certificate-name churn. S128 acceptance MAY instead use an explicit project-owner approval of a preserved report after at least 1,875 zero-failure case terminals and one hour of continuous evidence.
+- **FR-012**: A soak MUST emit bounded periodic samples plus a distinct terminal reconciliation; an interrupted or short raw report MUST remain explicitly incomplete. A separate sanitized acceptance summary MAY record project-owner approval without altering that raw status.
 - **FR-013**: Reports MUST identify the registry version, campaign profile, product version, source revision, operating-system family, architecture, logical CPU count, timer characteristics, start and end times, and declared comparability class without retaining machine-unique secrets.
 - **FR-014**: Regression comparison MUST reject mismatched case inventories, budgets, profiles, or comparability classes and MUST never convert a non-comparable result into a pass.
 - **FR-015**: The ordinary repository gate MUST validate registry completeness, report schema, source inventory drift, attributed executable coverage, and the short performance profile.
-- **FR-016**: The long soak MUST be runnable through an explicit command and automation entry point without adding a shipped runtime performance or fault-control switch.
+- **FR-016**: The long soak MUST be runnable through an explicit command and manual workflow entry point without adding a shipped runtime performance or fault-control switch or a recurring schedule.
 - **FR-017**: Performance instrumentation MUST remain outside target processes and MUST NOT introduce target handles, memory reads, hooks, traffic mutation, ambient routing, trust changes, or external network access.
 - **FR-018**: All workload traffic MUST stay on harness-owned loopback endpoints, use synthetic payloads, and perform no real operating-system trust-store mutation.
 - **FR-019**: The system MUST publish supported limits, threshold rationale, degradation behavior, reproduction commands, and interpretation rules alongside the registry.
@@ -116,7 +116,7 @@ A maintainer can reproduce a quick pull-request gate and a multi-hour soak campa
 - **SC-005**: Each workload artifact remains at or below 32 MiB, and disabled-retention cases report zero retained payload bytes.
 - **SC-006**: For every pressure case, observed work equals forwarded, retained, refused, omitted, truncated, and dropped dispositions according to the declared conservation equation, with no unexplained remainder.
 - **SC-007**: Clean shutdown completes within 5 seconds after a short or soak workload, with the listener released and no incomplete accepted tasks.
-- **SC-008**: The default soak runs for at least 2 hours, records a sample at least every 60 seconds, and completes with no more than 32 MiB resident-memory growth between its first post-warmup and final comparable windows.
+- **SC-008**: Soak evidence records a sample at least every 60 seconds and shows no more than 32 MiB same-case private-memory growth. It is accepted by either a complete two-hour terminal or explicit project-owner approval after at least 1,875 zero-failure case terminals and one continuous hour.
 - **SC-009**: Two successive short campaigns on the same comparability class agree on every pass/fail result and keep median throughput and p95 latency within the declared 75 percent cross-process Windows comparison tolerance.
 - **SC-010**: The ordinary repository gate rejects every seeded missing-case, stale-reference, budget, conservation, terminal, comparability, and source-drift defect.
 

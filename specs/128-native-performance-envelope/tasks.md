@@ -52,13 +52,13 @@
 
 ## Phase 5: User Story 3 - Reproduce Short and Multi-Hour Evidence (Priority: P3)
 
-**Goal**: Provide trustworthy short regression and genuine two-hour soak profiles from one registry.
+**Goal**: Provide trustworthy short regression and manually dispatched long-duration evidence from one registry.
 
 **Independent Test**: Short runs are comparable and repeatable within the declared tolerance; a two-hour run emits periodic samples and one complete terminal without resource slope or residue.
 
 - [x] T025 [US3] Implement profile selection, fixed-duration soak phases, periodic sampling, incomplete-prefix handling, and one terminal reconciliation in `performance/native-proxy/src/main.rs`
 - [x] T026 [US3] Implement report digest, environment comparability, repeatability, and report-validation tests in `xtask/src/performance.rs`
-- [x] T027 [US3] Add required Windows and Ubuntu short jobs plus scheduled/manual Windows soak automation and report upload in `.github/workflows/performance.yml`
+- [x] T027 [US3] Add required Windows and Ubuntu short jobs plus a manual Windows soak workflow and report upload in `.github/workflows/performance.yml`
 - [x] T028 [US3] Run two successive local short campaigns, compare their results, and retain sanitized reference evidence in `performance/native-proxy-reference-v1.json`
 - [x] T029 [US3] Run the default two-hour soak campaign and retain its sanitized complete result in `performance/native-proxy-soak-v1.json`
 
@@ -110,4 +110,4 @@
 - [x] T041 Preserve successfully flushed application records when a later buffered write fails, with a deterministic regression test for exact storage-loss accounting
 - [x] T042 Reconstruct every report retry attempt from exact attempt and window identities, and reject any discarded attempt containing a hard failure
 - [x] T043 Exercise five admitted QUIC certificate identities against one four-entry production leaf cache per worker, and require the reported peak to prove the churn occurred
-- [ ] T044 Recollect two short campaigns and the complete two-hour soak on the final reviewed implementation, then rerun the complete repository gate
+- [x] T044 Recollect two short campaigns and obtain explicit project-owner approval of 1,916 zero-failure terminals from 4,316 seconds of final reviewed soak evidence; retain the raw report as interrupted and rerun the complete repository gate

@@ -71,3 +71,11 @@
 **Rationale**: The constitution permits pinned process changes only with a dated decision. Performance is issue #326's deliverable, so workflow automation is in scope.
 
 **Alternatives considered**: Fold timing into the generic CI workflow (rejected because the soak trigger and report artifacts need separate lifecycle and timeout policy).
+
+## R-10: Project-owner approval supersedes recurring soak execution
+
+**Decision**: Remove the weekly soak trigger and accept the final reviewed S128 evidence after 1,916 completed case terminals across at least 4,316 seconds with zero case, application, queue, or storage failures. Preserve the raw campaign as interrupted and record approval only in the sanitized authority summary.
+
+**Rationale**: The project owner explicitly judged the repeated zero-failure coverage sufficient and directed that the run stop and the requirement be marked approved. Continuing or scheduling further costly repetitions would contradict that authority. A manual 7,200-second diagnostic remains available without being required for this slice.
+
+**Alternatives considered**: Fabricate a complete raw terminal (rejected because it would corrupt evidence); discard the completed evidence (rejected because 1,916 terminal decisions remain useful); retain the recurring trigger (rejected by explicit owner direction).

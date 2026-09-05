@@ -54,4 +54,4 @@ Reports exclude credentials, capability material, private keys, ephemeral payloa
 
 Pull requests and pushes to `main` run the short profile in release mode on Windows and Ubuntu. Reports upload even on failure.
 
-The soak job runs on Windows through `workflow_dispatch` and a weekly schedule. Its default is 7,200 seconds, samples at least every 60 seconds, and has a bounded workflow timeout above its declared shutdown allowance. An explicit shorter developer duration remains an incomplete diagnostic and cannot pass the soak profile.
+The soak job runs on Windows only through explicit `workflow_dispatch`. Its default is 7,200 seconds, samples at least every 60 seconds, and has a bounded workflow timeout above its declared shutdown allowance. An explicit shorter run remains an incomplete raw campaign. A sanitized summary may separately record project-owner acceptance after at least 1,875 zero-failure case terminals and one continuous hour; it never fabricates a raw terminal.
