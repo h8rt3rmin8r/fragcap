@@ -5,7 +5,7 @@
 # publication is irreversible and a tag can be pushed by mistake.
 #
 # The order of the jobs is the order of section 24.4: build artifacts, generate
-# checksums, create the release with notes from the changelog, then publish to
+# checksums, create the release with separately authored highlights, then publish to
 # the registry. Publication is last because it is the only step that cannot be
 # undone. A failed release is then a release that was never created, rather
 # than crate versions that exist with nothing to download.
@@ -255,12 +255,12 @@ jobs:
           name: fragcap-windows-x86_64
           path: dist
 
-      - name: Derive the release notes from the changelog
+      - name: Validate and render the AI-written release highlights
         shell: bash
         run: |
-          # Section 24.4: notes are derived from the changelog. The extraction
-          # is a task runner subcommand rather than shell here, so it is unit
-          # tested and cannot quietly produce an empty body.
+          # Release notes are a short AI-written overview stored separately from
+          # the complete changelog. The validator has no copy-the-changelog
+          # fallback and refuses a missing, malformed, or oversized summary.
           set -euo pipefail
           cargo run --quiet --package xtask -- notes "${GITHUB_REF_NAME#v}" > notes.md
           cat notes.md

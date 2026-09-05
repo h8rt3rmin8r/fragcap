@@ -1063,6 +1063,8 @@ authoritative; this list is the one to keep in working memory.
   (added 2026-08-08 with the release automation), so the rule binds it.
 - **All text files are UTF-8 without BOM with LF line endings. No em-dashes or
   en-dashes anywhere, including code comments.**
+- **Never introduce hard wrapping in Markdown files.** Keep each prose paragraph and each list item you author or modify on one source line, regardless of length. Display wrapping belongs to the renderer. Tables, URLs, headings, link definitions, and fenced blocks also remain intact. Existing wrapped prose is migration debt, not a pattern to copy or an invitation to rewrite unrelated historical files from a feature branch.
+- **Release notes are short AI-written summaries, never changelog extracts.** Before cutting a release tag, an AI must synthesize `release-notes/v<version>.md` from the completed release record, emphasizing only user-relevant highlights. The file must end with guidance and a link to the complete tagged changelog. `cargo xtask notes <version>` enforces the required file, structure, link, and one-screen length budget and has no changelog-copy fallback.
 
 ## Verification discipline
 

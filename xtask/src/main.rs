@@ -50,8 +50,8 @@ cargo xtask <command>
   ci         Run the full local check set in order
   docs       Documentation site: docs (dev), docs build, docs check
   publish    Registry publication in dependency order (--execute to publish)
-  notes      Print release notes for a version, from CHANGELOG.md
-  changelog  Assemble changelog.d/ fragments (--check, or --release <ver> <date>)
+  notes      Validate and print the AI-written summary for a release
+  changelog  Assemble fragments (--check or --release), or --normalize wrapping
   conformance Validate native HTTP/TLS evidence (--analyzer requires TShark)
   fuzz       Validate native parser fuzz surfaces, corpora, and CI mapping
   failure-matrix Validate native Deep Capture failure injection and recovery evidence
@@ -593,6 +593,7 @@ fn main() -> ExitCode {
             let sub = std::env::args().nth(2);
             let mode = match sub.as_deref() {
                 Some("--check") | None => Some(changelog::Mode::Check),
+                Some("--normalize") => Some(changelog::Mode::Normalize),
                 Some("--release") => match (std::env::args().nth(3), std::env::args().nth(4)) {
                     (Some(version), Some(date)) => Some(changelog::Mode::Release { version, date }),
                     _ => {
@@ -606,7 +607,7 @@ fn main() -> ExitCode {
                 Some(other) => {
                     eprintln!(
                         "changelog: unknown argument: {other}\n\n\
-                         Use: changelog [--check] | changelog --release <version> <date>"
+                         Use: changelog [--check] | changelog --normalize | changelog --release <version> <date>"
                     );
                     return ExitCode::from(2);
                 }

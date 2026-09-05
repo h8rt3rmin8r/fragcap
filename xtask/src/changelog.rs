@@ -133,6 +133,106 @@ fn is_markdown_heading(line: &str) -> bool {
     hashes > 0 && trimmed.as_bytes().get(hashes) == Some(&b' ')
 }
 
+fn is_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if ["- ", "* ", "+ "]
+        .iter()
+        .any(|marker| trimmed.starts_with(marker))
+    {
+        return true;
+    }
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0
+        && trimmed
+            .as_bytes()
+            .get(digits)
+            .is_some_and(|byte| *byte == b'.' || *byte == b')')
+        && trimmed.as_bytes().get(digits + 1) == Some(&b' ')
+}
+
+fn is_standalone_markdown_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    is_markdown_heading(trimmed)
+        || trimmed.starts_with('|')
+        || trimmed.starts_with('>')
+        || trimmed.starts_with('<')
+        || (trimmed.starts_with('[') && trimmed.contains("]:"))
+        || line.starts_with("    ")
+}
+
+/// Normalize Markdown to one source line per paragraph and list item.
+///
+/// Headings, tables, link definitions, HTML, block quotes, indented code, and
+/// fenced blocks retain their physical lines. Changelog prose is deliberately
+/// long in source because renderers own display wrapping.
+pub fn normalize_markdown(input: &str) -> String {
+    fn flush(current: &mut Option<String>, output: &mut Vec<String>) {
+        if let Some(line) = current.take() {
+            output.push(line);
+        }
+    }
+
+    let mut output = Vec::new();
+    let mut current: Option<String> = None;
+    let mut fence: Option<char> = None;
+
+    for raw in input.lines() {
+        let trimmed = raw.trim();
+        let fence_char = if trimmed.starts_with("```") {
+            Some('`')
+        } else if trimmed.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+
+        if let Some(marker) = fence_char {
+            flush(&mut current, &mut output);
+            output.push(raw.to_string());
+            fence = if fence == Some(marker) {
+                None
+            } else {
+                Some(marker)
+            };
+            continue;
+        }
+        if fence.is_some() {
+            output.push(raw.to_string());
+            continue;
+        }
+        if trimmed.is_empty() {
+            flush(&mut current, &mut output);
+            if output.last().is_some_and(|line| !line.is_empty()) {
+                output.push(String::new());
+            }
+            continue;
+        }
+        if is_list_item(raw) || is_standalone_markdown_line(raw) {
+            flush(&mut current, &mut output);
+            output.push(trimmed.to_string());
+            continue;
+        }
+
+        if let Some(line) = current.as_mut() {
+            line.push(' ');
+            line.push_str(trimmed);
+        } else if output.last().is_some_and(|line| is_list_item(line))
+            && (raw.starts_with(' ') || raw.starts_with('\t'))
+        {
+            let line = output.last_mut().expect("list item exists");
+            line.push(' ');
+            line.push_str(trimmed);
+        } else {
+            current = Some(trimmed.to_string());
+        }
+    }
+    flush(&mut current, &mut output);
+    while output.last().is_some_and(String::is_empty) {
+        output.pop();
+    }
+    output.join("\n") + "\n"
+}
+
 /// Merge an `[Unreleased]` body and a set of fragments into one changelog body
 /// in canonical section order.
 ///
@@ -188,7 +288,7 @@ pub fn assemble(unreleased_body: &str, fragments: &[(String, String)]) -> Result
         body.push_str("\n\n");
     }
 
-    Ok(body.trim_end().to_string())
+    Ok(normalize_markdown(&body).trim_end().to_string())
 }
 
 /// Extract the body of the `## [Unreleased]` section from a changelog. Returns
@@ -443,6 +543,8 @@ fn is_iso_date(d: &str) -> bool {
 pub enum Mode {
     /// Print the assembled body; change nothing.
     Check,
+    /// Rewrite only line wrapping in the existing changelog.
+    Normalize,
     /// Rewrite `CHANGELOG.md` and remove the consumed fragments.
     Release { version: String, date: String },
 }
@@ -471,6 +573,11 @@ pub fn run(root: &Path, mode: Mode) -> io::Result<usize> {
 
     let changelog_path = root.join("CHANGELOG.md");
     let changelog = fs::read_to_string(&changelog_path)?;
+    if matches!(mode, Mode::Normalize) {
+        fs::write(&changelog_path, normalize_markdown(&changelog))?;
+        println!("changelog: normalized Markdown to one logical line per paragraph and list item");
+        return Ok(0);
+    }
     let fragments = read_fragments(root)?;
 
     let assembled = match assemble(&unreleased_body(&changelog), &fragments) {
@@ -491,6 +598,7 @@ pub fn run(root: &Path, mode: Mode) -> io::Result<usize> {
             println!("{assembled}");
             Ok(0)
         }
+        Mode::Normalize => unreachable!("normalize mode returns before assembly"),
         Mode::Release { version, date } => {
             // Slice S049 release gate: refuse before any rewrite or deletion when
             // a fragment claims a specification change the release diff lacks.
@@ -500,7 +608,7 @@ pub fn run(root: &Path, mode: Mode) -> io::Result<usize> {
                 return Ok(1);
             }
 
-            let rewritten = rewrite(&changelog, &version, &date, &assembled);
+            let rewritten = normalize_markdown(&rewrite(&changelog, &version, &date, &assembled));
             fs::write(&changelog_path, rewritten)?;
 
             for path in fragment_paths(root)? {
@@ -542,6 +650,22 @@ mod tests {
         assert_eq!(chunks[0].0, "added");
         assert!(chunks[0].1.contains("- one"));
         assert_eq!(chunks[1].0, "fixed");
+    }
+
+    #[test]
+    fn normalization_joins_paragraphs_and_list_continuations() {
+        let wrapped = "# Changelog\n\nA paragraph that\nwraps here.\n\n- A list item that\n  wraps here.\n- Another item.\n";
+        let normalized = normalize_markdown(wrapped);
+        assert!(normalized.contains("A paragraph that wraps here."));
+        assert!(normalized.contains("- A list item that wraps here."));
+        assert!(normalized.contains("- Another item."));
+        assert_eq!(normalize_markdown(&normalized), normalized);
+    }
+
+    #[test]
+    fn normalization_preserves_structural_lines_and_fences() {
+        let markdown = "# Title\n\n| A | B |\n| --- | --- |\n\n```text\nline one\nline two\n```\n\n[label]: https://example.com/a/long/path\n";
+        assert_eq!(normalize_markdown(markdown), markdown);
     }
 
     #[test]

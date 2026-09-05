@@ -53,6 +53,7 @@ Npcap remains a separately installed prerequisite for live packet capture. fragc
 - Continuous integration must be green before a pull request is merged.
 - A release is cut only by pushing a `vX.Y.Z` tag, and that tag push is the
   operator's.
+- Before that tag is pushed, an AI synthesizes the user-relevant highlights into `release-notes/vX.Y.Z.md`; `cargo xtask notes X.Y.Z` must validate the short summary and its link to the complete tagged changelog.
 
 ## Workflow
 

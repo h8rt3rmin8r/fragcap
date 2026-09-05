@@ -1,0 +1,3 @@
+<!-- spec-impact: 24.4 -->
+
+- **2026-09-05:** Replace changelog-derived GitHub release bodies with separately authored AI summaries. Require a versioned summary before tagging, reject copied text including selected or reordered changelog entries, enforce a 1,400-character and 12-non-empty-line screen budget, append explicit guidance to the complete tagged changelog, and remove every fallback that republishes changelog sections. Normalize the complete `CHANGELOG.md` to one source line per paragraph or list item during release assembly without editing that shared release record on feature branches.

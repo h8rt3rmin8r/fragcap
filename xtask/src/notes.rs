@@ -1,310 +1,323 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Release notes derived from the changelog.
+//! Short, separately authored release notes.
 //!
-//! Specification section 24.4 requires a release to carry notes derived from
-//! the changelog. That means finding one section in `CHANGELOG.md` and
-//! printing it, which is small enough to be tempting to do with a few lines
-//! of shell inside the release workflow.
-//!
-//! It lives here instead for the reason the house rules give: a wrapper that
-//! parses text is a missing capability in Rust. Parsing in the workflow would
-//! also be untestable, and a notes extractor that silently produces an empty
-//! body would publish a release with no notes and report success.
+//! A release page is a summary, not a second copy of `CHANGELOG.md`. Release
+//! preparation therefore produces one AI-written file under `release-notes/`,
+//! and this command validates that file before the tag workflow publishes it.
 
 use std::fs;
 use std::path::Path;
 
-/// Pull the body of one version's section out of a changelog.
-///
-/// Matches the heading `## [<version>]` exactly, so `0.1.0` does not match
-/// `## [10.1.0]`. Collects until the next second-level heading, and also stops
-/// at the `### Decisions` subsection: decisions record verbose internal
-/// rationale for changing pinned artifacts, which belongs in the changelog file
-/// but would bloat the release notes (a single decision fragment runs to
-/// kilobytes). The curated `### Highlights` and the user-facing Added, Changed,
-/// and Fixed sections all sit above Decisions, so they are kept. Returns `None`
-/// when the section is absent, and `None` when it is present but empty, because
-/// an empty body is not usable release notes.
-pub fn extract(changelog: &str, version: &str) -> Option<String> {
-    let wanted = format!("[{version}]");
-    let mut lines = changelog.lines();
+const MAX_CHARACTERS: usize = 1_400;
+const MAX_NONEMPTY_LINES: usize = 12;
 
-    lines.by_ref().find(|line| {
-        let l = line.trim_start();
-        l.starts_with("## ") && l.contains(&wanted)
-    })?;
-
-    let mut body = String::new();
-    for line in lines {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("## ") {
-            break;
-        }
-        if trimmed == "### Decisions" {
-            break;
-        }
-        body.push_str(line);
-        body.push('\n');
-    }
-
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-/// Pull just the `### Highlights` subsection out of one version's section.
-///
-/// Finds `## [<version>]`, then the `### Highlights` heading within it, and
-/// collects until the next subsection (`###`) or version (`##`). The heading
-/// itself is dropped; the curated bullets are what the release notes want.
-/// Returns `None` when the version has no Highlights block, so the caller can
-/// fall back to the fuller body. This is what keeps a release page crisp: for a
-/// release with eighteen essay-length fragments, the full Added list runs to
-/// over a thousand lines, and the Highlights are the two dozen that matter.
-pub fn extract_highlights(changelog: &str, version: &str) -> Option<String> {
-    let wanted = format!("[{version}]");
-    let mut lines = changelog.lines();
-
-    lines.by_ref().find(|line| {
-        let l = line.trim_start();
-        l.starts_with("## ") && l.contains(&wanted)
-    })?;
-
-    let mut in_highlights = false;
-    let mut body = String::new();
-    for line in lines {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("## ") {
-            break;
-        }
-        if trimmed.starts_with("### ") {
-            if trimmed == "### Highlights" {
-                in_highlights = true;
-            } else if in_highlights {
-                break;
-            }
-            continue;
-        }
-        if in_highlights {
-            body.push_str(line);
-            body.push('\n');
-        }
-    }
-
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-/// A link to the full changelog at the release tag.
-fn changelog_link(version: &str) -> String {
+fn changelog_url(version: &str) -> String {
     format!("https://github.com/h8rt3rmin8r/fragcap/blob/v{version}/CHANGELOG.md")
 }
 
-/// The release-notes body for a real version: the curated Highlights plus a link
-/// to the full changelog at the tag, or the fuller Added/Changed/Fixed body when
-/// the version carries no Highlights block. Returns `None` when the version has
-/// no section at all.
-pub fn notes(changelog: &str, version: &str) -> Option<String> {
-    if let Some(highlights) = extract_highlights(changelog, version) {
-        Some(format!(
-            "{highlights}\n\nFull changelog: {}",
-            changelog_link(version)
-        ))
+fn required_closing_line(version: &str) -> String {
+    format!(
+        "For the complete change history, implementation details, and issue references, see the [full v{version} changelog]({}).",
+        changelog_url(version)
+    )
+}
+
+/// Validate a separately authored release summary.
+///
+/// The length budgets keep the rendered body within one ordinary desktop
+/// screen. Requiring the fixed closing guidance keeps the complete record one
+/// click away without letting the workflow fall back to copying that record.
+pub fn validate(body: &str, version: &str) -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+    let trimmed = body.trim();
+    let lines: Vec<_> = trimmed.lines().collect();
+    let nonempty = lines.iter().filter(|line| !line.trim().is_empty()).count();
+    let characters = trimmed.chars().count();
+
+    if trimmed.is_empty() {
+        problems.push("release notes are empty".to_string());
+        return Err(problems);
+    }
+    if lines.first().copied() != Some("# Highlights") {
+        problems.push("release notes must begin with '# Highlights'".to_string());
+    }
+    if lines.iter().skip(1).any(|line| line.starts_with('#')) {
+        problems.push("release notes may contain only the '# Highlights' heading".to_string());
+    }
+    if characters > MAX_CHARACTERS {
+        problems.push(format!(
+            "release notes contain {characters} characters; the limit is {MAX_CHARACTERS}"
+        ));
+    }
+    if nonempty > MAX_NONEMPTY_LINES {
+        problems.push(format!(
+            "release notes contain {nonempty} non-empty lines; the limit is {MAX_NONEMPTY_LINES}"
+        ));
+    }
+    if crate::changelog::normalize_markdown(trimmed).trim_end() != trimmed {
+        problems.push(
+            "release notes must keep each paragraph and list item on one source line".to_string(),
+        );
+    }
+    if lines.last().copied() != Some(required_closing_line(version).as_str()) {
+        problems
+            .push("release notes must end with the standard full-changelog guidance".to_string());
+    }
+    for heading in [
+        "### Added",
+        "### Changed",
+        "### Deprecated",
+        "### Removed",
+        "### Fixed",
+        "### Security",
+        "### Decisions",
+    ] {
+        if trimmed.contains(heading) {
+            problems.push(format!(
+                "release notes contain changelog section heading '{heading}'; summarize instead"
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
     } else {
-        extract(changelog, version)
+        Err(problems)
     }
 }
 
-/// Print the notes for `version`, falling back to the `Unreleased` section.
-///
-/// For a real version, the notes are the curated Highlights plus a link to the
-/// full changelog; a version with no Highlights keeps the fuller body. The
-/// Unreleased fallback exists because `CHANGELOG.md` is assembled from
-/// `changelog.d/` fragments at release time, and a tag can be cut before that
-/// assembly has renamed the section; it carries no tag link, because the content
-/// is not yet published under a version.
+fn release_section<'a>(changelog: &'a str, version: &str) -> Option<&'a str> {
+    let wanted = format!("## [{version}]");
+    let start = changelog
+        .lines()
+        .position(|line| line.starts_with(&wanted))?;
+    let mut offset = 0usize;
+    let mut body_start = None;
+    for (index, line) in changelog.split_inclusive('\n').enumerate() {
+        if index == start {
+            body_start = Some(offset + line.len());
+            break;
+        }
+        offset += line.len();
+    }
+    let body_start = body_start?;
+    let rest = &changelog[body_start..];
+    let body_end = rest
+        .match_indices("\n## [")
+        .next()
+        .map(|(index, _)| index)
+        .unwrap_or(rest.len());
+    Some(rest[..body_end].trim())
+}
+
+fn content_units(markdown: &str) -> Vec<Vec<String>> {
+    crate::changelog::normalize_markdown(markdown)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            line.strip_prefix("- ")
+                .or_else(|| line.strip_prefix("* "))
+                .or_else(|| line.strip_prefix("+ "))
+                .unwrap_or(line)
+        })
+        .map(|line| {
+            line.split(|character: char| !character.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        })
+        .filter(|words| !words.is_empty())
+        .collect()
+}
+
+fn contains_words(haystack: &[String], needle: &[String]) -> bool {
+    needle.len() <= haystack.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn copies_changelog_text(body: &str, changelog: &str, version: &str) -> bool {
+    const MIN_SUBSTANTIVE_WORDS: usize = 8;
+
+    let Some(section) = release_section(changelog, version) else {
+        return false;
+    };
+    let closing = required_closing_line(version);
+    let summary = body
+        .trim()
+        .strip_prefix("# Highlights")
+        .unwrap_or(body)
+        .trim()
+        .strip_suffix(&closing)
+        .unwrap_or(body)
+        .trim();
+    let summary_units = content_units(summary);
+    let changelog_units = content_units(section);
+    let summary_all = summary_units.iter().flatten().collect::<Vec<_>>();
+    let changelog_all = changelog_units.iter().flatten().collect::<Vec<_>>();
+
+    if !summary_all.is_empty() && summary_all == changelog_all {
+        return true;
+    }
+
+    summary_units.iter().any(|summary_unit| {
+        changelog_units.iter().any(|changelog_unit| {
+            let shorter = summary_unit.len().min(changelog_unit.len());
+            shorter >= MIN_SUBSTANTIVE_WORDS
+                && (contains_words(summary_unit, changelog_unit)
+                    || contains_words(changelog_unit, summary_unit))
+        })
+    })
+}
+
+/// Print the validated release notes for `version`.
 pub fn run(root: &Path, version: &str) -> usize {
-    let path = root.join("CHANGELOG.md");
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("notes: could not read {}: {e}", path.display());
+    let path = root.join("release-notes").join(format!("v{version}.md"));
+    let body = match fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!(
+                "notes: could not read {}: {error}; release preparation must add an AI-written summary",
+                path.display()
+            );
             return 1;
         }
     };
 
-    if let Some(body) = notes(&text, version) {
-        println!("{body}");
-        return 0;
+    if let Err(problems) = validate(&body, version) {
+        for problem in problems {
+            eprintln!("notes: {}: {problem}", path.display());
+        }
+        return 1;
     }
 
-    if let Some(body) =
-        extract_highlights(&text, "Unreleased").or_else(|| extract(&text, "Unreleased"))
-    {
-        eprintln!("notes: no section for {version}, using Unreleased");
-        println!("{body}");
-        return 0;
+    let changelog_path = root.join("CHANGELOG.md");
+    let changelog = match fs::read_to_string(&changelog_path) {
+        Ok(changelog) => changelog,
+        Err(error) => {
+            eprintln!(
+                "notes: could not read {}: {error}",
+                changelog_path.display()
+            );
+            return 1;
+        }
+    };
+    if release_section(&changelog, version).is_none() {
+        eprintln!("notes: CHANGELOG.md has no [{version}] release section");
+        return 1;
+    }
+    if copies_changelog_text(&body, &changelog, version) {
+        eprintln!(
+            "notes: {} copies substantive changelog text; synthesize the highlights instead",
+            path.display()
+        );
+        return 1;
     }
 
-    eprintln!("notes: CHANGELOG.md has no section for {version} and no Unreleased section");
-    1
+    print!("{}", body.trim_end());
+    println!();
+    0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "\
-# Changelog
-
-Preamble that is not part of any section.
-
-## [Unreleased]
-
-### Added
-
-- Something unreleased.
-
-## [0.2.0] - 2026-09-01
-
-### Added
-
-- The thing this release adds.
-
-### Decisions
-
-- **2026-09-01** A decision.
-
-## [0.1.0] - 2026-08-08
-
-### Added
-
-- The first release.
-";
-
-    #[test]
-    fn extracts_the_named_version() {
-        let body = extract(SAMPLE, "0.2.0").unwrap();
-        assert!(body.contains("The thing this release adds."));
+    fn valid(version: &str) -> String {
+        format!(
+            "# Highlights\n\nA concise AI-written overview.\n\n- One important outcome.\n- Another important outcome.\n\n{}\n",
+            required_closing_line(version)
+        )
     }
 
     #[test]
-    fn excludes_the_decisions_section() {
-        // Decisions are verbose internal rationale and must not reach the
-        // release notes, even though they stay in CHANGELOG.md.
-        let body = extract(SAMPLE, "0.2.0").unwrap();
-        assert!(!body.contains("A decision."));
-        assert!(!body.contains("### Decisions"));
+    fn accepts_a_short_summary_with_full_changelog_guidance() {
+        assert_eq!(validate(&valid("0.9.0"), "0.9.0"), Ok(()));
     }
 
     #[test]
-    fn stops_at_the_next_version() {
-        let body = extract(SAMPLE, "0.2.0").unwrap();
-        assert!(!body.contains("The first release."));
-        assert!(!body.contains("Something unreleased."));
-    }
-
-    #[test]
-    fn extracts_the_last_section() {
-        let body = extract(SAMPLE, "0.1.0").unwrap();
-        assert!(body.contains("The first release."));
-    }
-
-    #[test]
-    fn extracts_unreleased() {
-        let body = extract(SAMPLE, "Unreleased").unwrap();
-        assert!(body.contains("Something unreleased."));
-    }
-
-    #[test]
-    fn a_version_prefix_does_not_match_a_longer_version() {
-        // "0.1.0" must not match "## [10.1.0]".
-        let text = "## [10.1.0]\n\n- Ten.\n";
-        assert_eq!(extract(text, "0.1.0"), None);
-    }
-
-    #[test]
-    fn an_absent_section_is_none() {
-        assert_eq!(extract(SAMPLE, "9.9.9"), None);
-    }
-
-    #[test]
-    fn an_empty_section_is_none() {
-        let text = "## [0.3.0]\n\n## [0.2.0]\n\n- Real.\n";
-        assert_eq!(extract(text, "0.3.0"), None);
-    }
-
-    #[test]
-    fn the_preamble_is_not_treated_as_a_section() {
-        let body = extract(SAMPLE, "Unreleased").unwrap();
-        assert!(!body.contains("Preamble"));
-    }
-
-    const HIGHLIGHTED: &str = "\
-## [0.2.0] - 2026-09-01
-
-### Highlights
-
-- A curated highlight.
-- Another highlight.
-
-### Added
-
-- A verbose added item that should not reach the notes.
-
-### Decisions
-
-- **2026-09-01** A decision.
-";
-
-    #[test]
-    fn extract_highlights_returns_only_the_highlights_bullets() {
-        let h = extract_highlights(HIGHLIGHTED, "0.2.0").unwrap();
-        assert!(h.contains("A curated highlight."));
-        assert!(h.contains("Another highlight."));
-        assert!(
-            !h.contains("verbose added item"),
-            "the Added list is trimmed"
+    fn rejects_a_changelog_shaped_body() {
+        let body = valid("0.9.0").replace(
+            "A concise AI-written overview.",
+            "### Added\n\nA copied changelog section.",
         );
-        assert!(!h.contains("### Highlights"), "the heading is dropped");
-        assert!(!h.contains("A decision."), "decisions are excluded");
+        let problems = validate(&body, "0.9.0").unwrap_err().join("\n");
+        assert!(problems.contains("only the '# Highlights' heading"));
+        assert!(problems.contains("summarize instead"));
     }
 
     #[test]
-    fn extract_highlights_is_none_without_a_highlights_block() {
-        // SAMPLE's 0.2.0 has Added but no Highlights.
-        assert_eq!(extract_highlights(SAMPLE, "0.2.0"), None);
+    fn rejects_missing_or_wrong_changelog_guidance() {
+        let body = valid("0.9.0").replace("v0.9.0", "v0.8.0");
+        assert!(validate(&body, "0.9.0")
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("full-changelog guidance")));
     }
 
     #[test]
-    fn notes_prefers_highlights_and_appends_a_tag_link() {
-        let body = notes(HIGHLIGHTED, "0.2.0").unwrap();
-        assert!(body.contains("A curated highlight."));
-        assert!(
-            !body.contains("verbose added item"),
-            "the full Added list is trimmed away when Highlights exist"
+    fn rejects_notes_beyond_the_screen_budget() {
+        let long = format!(
+            "# Highlights\n\n{}\n\n{}\n",
+            "x".repeat(MAX_CHARACTERS),
+            required_closing_line("0.9.0")
         );
-        assert!(
-            body.contains("blob/v0.2.0/CHANGELOG.md"),
-            "links to the full changelog at the tag: {body}"
-        );
+        assert!(validate(&long, "0.9.0")
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("characters")));
+
+        let mut many_lines = String::from("# Highlights\n\n");
+        for _ in 0..MAX_NONEMPTY_LINES {
+            many_lines.push_str("- item\n");
+        }
+        many_lines.push('\n');
+        many_lines.push_str(&required_closing_line("0.9.0"));
+        assert!(validate(&many_lines, "0.9.0")
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("non-empty lines")));
     }
 
     #[test]
-    fn notes_falls_back_to_the_full_body_without_highlights() {
-        // SAMPLE 0.2.0 has no Highlights: keep the current Added/Changed/Fixed
-        // body, and do not append a link (the body is already the full notes).
-        let body = notes(SAMPLE, "0.2.0").unwrap();
-        assert!(body.contains("The thing this release adds."));
-        assert!(!body.contains("A decision."), "decisions still excluded");
-        assert!(!body.contains("blob/"), "no link in the fallback body");
+    fn rejects_hard_wrapped_release_notes() {
+        let body = valid("0.9.0").replace(
+            "A concise AI-written overview.",
+            "A concise AI-written\noverview.",
+        );
+        assert!(validate(&body, "0.9.0")
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("one source line")));
+    }
+
+    #[test]
+    fn rejects_a_carbon_copy_of_the_release_changelog() {
+        let changelog = "# Changelog\n\n## [0.9.0] - 2026-09-05\n\n### Added\n\n- One result.\n- Another result.\n\n## [0.8.0] - 2026-08-30\n\nOlder.\n";
+        let body = format!(
+            "# Highlights\n\n- One result.\n- Another result.\n\n{}\n",
+            required_closing_line("0.9.0")
+        );
+        assert!(copies_changelog_text(&body, changelog, "0.9.0"));
+        assert!(!copies_changelog_text(&valid("0.9.0"), changelog, "0.9.0"));
+    }
+
+    #[test]
+    fn rejects_selected_or_reordered_changelog_entries() {
+        let changelog = "# Changelog\n\n## [0.9.0] - 2026-09-05\n\n### Added\n\n- Capture now preserves every accepted datagram with exact direction and sequence identity.\n- Release archives now contain independently verified checksums for every supported Windows target.\n\n## [0.8.0] - 2026-08-30\n\nOlder.\n";
+        let reordered = format!(
+            "# Highlights\n\n- Release archives now contain independently verified checksums for every supported Windows target.\n- Capture now preserves every accepted datagram with exact direction and sequence identity.\n\n{}\n",
+            required_closing_line("0.9.0")
+        );
+        let excerpt = format!(
+            "# Highlights\n\n- Preserves every accepted datagram with exact direction and sequence identity.\n\n{}\n",
+            required_closing_line("0.9.0")
+        );
+
+        assert!(copies_changelog_text(&reordered, changelog, "0.9.0"));
+        assert!(copies_changelog_text(&excerpt, changelog, "0.9.0"));
     }
 }
