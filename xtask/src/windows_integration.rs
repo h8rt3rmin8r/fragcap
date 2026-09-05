@@ -1227,7 +1227,7 @@ mod tests {
         write_record(&mut raw, &terminal).unwrap();
         drop(raw);
         assert!(
-            validate_report(&root(), &registry(), &raw_path, RELEASE_SUMMARY)
+            validate_report(&root(), &registry(), &raw_path, STATIC_SUMMARY)
                 .unwrap()
                 .is_empty()
         );
