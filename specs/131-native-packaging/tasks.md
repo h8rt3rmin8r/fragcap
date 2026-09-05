@@ -71,9 +71,9 @@
 
 - [x] T032 Run spec-kit analysis across `spec.md`, `plan.md`, and `tasks.md` and remediate every finding before implementation
 - [x] T033 Run contract schema, workflow, WiX, build-identity, package mutation, checksum, signature, PE, report, lifecycle, timeout, ownership, and path-hygiene tests from `specs/131-native-packaging/quickstart.md`
-- [ ] T034 Run the live Windows package-certification workflow and confirm every final-byte, smoke, lifecycle, integrity, and cleanup row reconciles
+- [x] T034 Run the live Windows package-certification workflow and confirm every final-byte, smoke, lifecycle, integrity, and cleanup row reconciles
 - [x] T035 Run `cargo xtask ci`, formatting, locked tests, MSRV build, text hygiene, PowerShell compliance, forbidden-capability checks, dependency locks, and mojibake checks
-- [ ] T036 Run post-implementation convergence, complete appended tasks, mark every task in `specs/131-native-packaging/tasks.md`, and perform the final #329/#334 scope audit
+- [x] T036 Run post-implementation convergence, complete appended tasks, mark every task in `specs/131-native-packaging/tasks.md`, and perform the final #329/#334 scope audit
 
 ## Dependencies and Execution Order
 
