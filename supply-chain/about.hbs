@@ -8,7 +8,7 @@ LICENSE: {{name}} ({{id}})
 {{#each used_by}}
 {{#if crate.source}}
 USED BY: {{crate.name}} {{crate.version}}
-SOURCE: {{#if crate.repository}}{{crate.repository}}{{else}}registry metadata{{/if}}
+SOURCE: {{crate.source}}
 {{/if}}
 {{/each}}
 

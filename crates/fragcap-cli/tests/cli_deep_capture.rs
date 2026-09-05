@@ -25,6 +25,10 @@ fn controlled_environment() -> &'static Mutex<()> {
 }
 
 fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
+    seed_target_with_executable(local, with_compatibility, "client.exe")
+}
+
+fn seed_target_with_executable(local: &Path, with_compatibility: bool, executable: &str) -> i64 {
     let mut store = Store::open(local).expect("scratch local store");
     let entry = TargetEntry {
         id: None,
@@ -36,12 +40,12 @@ fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
         fidelity: FidelityTier::Authored,
         provenance: None,
         anchor: None,
-        launch_entries: Some(resolved_client_launch("client.exe")),
+        launch_entries: Some(resolved_client_launch(executable)),
         install_root: None,
         evidence: None,
         detection_scan: None,
         folder_name: None,
-        executable_hint: Some("client.exe".to_string()),
+        executable_hint: Some(executable.to_string()),
     };
     let id = store.insert_target(&entry).expect("insert target");
     if with_compatibility {
@@ -520,7 +524,8 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
 fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources() {
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("local.db");
-    let target_id = seed_target(&local, false);
+    let target_id =
+        seed_target_with_executable(&local, false, "fragcap-unlaunchable-direct-fixture.exe");
     let mut store = Store::open(&local).unwrap();
     let mut fact = CompatibilityFact::new(
         target_id,

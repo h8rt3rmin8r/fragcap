@@ -37,6 +37,13 @@ struct Graph {
     digest: String,
 }
 
+#[derive(Default)]
+struct NoticeCoverage {
+    licenses: BTreeSet<String>,
+    sources: BTreeSet<String>,
+    missing_legal_text: bool,
+}
+
 pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
     match args.first().map(String::as_str) {
         None => validate_repository(root),
@@ -1546,6 +1553,7 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
         findings.push("sbom-identity: nondeterministic serial number is present".to_string());
     }
     let notices = fs::read_to_string(notices_path).map_err(|e| e.to_string())?;
+    validate_notice_sections(&notices, &release, &mut findings);
     for package in &expected {
         let marker = format!("COMPONENT: {package}");
         match notices.match_indices(&marker).count() {
@@ -1596,6 +1604,188 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
         eprintln!("supply-chain: {finding}");
     }
     Ok(findings.len())
+}
+
+fn validate_notice_sections(notices: &str, release: &Graph, findings: &mut Vec<String>) {
+    let lines: Vec<&str> = notices.lines().collect();
+    let mut separators: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.len() >= 20 && line.bytes().all(|byte| byte == b'=')).then_some(index)
+        })
+        .collect();
+    separators.push(lines.len());
+    let mut coverage = BTreeMap::<String, NoticeCoverage>::new();
+    for bounds in separators.windows(2) {
+        let section = &lines[bounds[0] + 1..bounds[1]];
+        let Some(license_line) = section
+            .first()
+            .and_then(|line| line.strip_prefix("LICENSE: "))
+        else {
+            continue;
+        };
+        let Some((_, license_id)) = license_line.rsplit_once(" (") else {
+            findings.push("notices-license: malformed LICENSE line".to_string());
+            continue;
+        };
+        let Some(license_id) = license_id.strip_suffix(')') else {
+            findings.push("notices-license: malformed LICENSE identifier".to_string());
+            continue;
+        };
+        let metadata_end = section
+            .iter()
+            .position(|line| line.is_empty())
+            .unwrap_or(section.len());
+        let legal_text_present = section
+            .get(metadata_end + 1..)
+            .is_some_and(|legal| legal.iter().any(|line| !line.trim().is_empty()));
+        let mut index = 1;
+        while index < metadata_end {
+            let Some(package) = section[index].strip_prefix("USED BY: ") else {
+                index += 1;
+                continue;
+            };
+            let source = section
+                .get(index + 1)
+                .and_then(|line| line.strip_prefix("SOURCE: "));
+            let entry = coverage.entry(package.to_string()).or_default();
+            entry.licenses.insert(license_id.to_string());
+            if let Some(source) = source {
+                entry.sources.insert(source.to_string());
+            } else {
+                findings.push(format!("notices-license: {package} lacks a source line"));
+            }
+            if !legal_text_present {
+                entry.missing_legal_text = true;
+            }
+            index += 2;
+        }
+    }
+    for package in release
+        .packages
+        .values()
+        .filter(|package| package.source.is_some())
+    {
+        let identity = format!("{} {}", package.name, package.version);
+        let Some(observed) = coverage.get(&identity) else {
+            findings.push(format!(
+                "notices-license: {identity} has no resolved license section"
+            ));
+            continue;
+        };
+        let expected_source = package.source.as_deref().unwrap_or("");
+        if observed.sources.len() != 1 || !observed.sources.contains(expected_source) {
+            findings.push(format!(
+                "notices-license: {identity} source is missing or stale"
+            ));
+        }
+        if package
+            .license
+            .as_deref()
+            .is_none_or(|expression| !license_expression_satisfied(expression, &observed.licenses))
+        {
+            findings.push(format!(
+                "notices-license: {identity} license sections do not satisfy Cargo metadata"
+            ));
+        }
+        if observed.missing_legal_text {
+            findings.push(format!(
+                "notices-license: {identity} has an empty legal-text section"
+            ));
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LicenseToken {
+    Identifier(String),
+    And,
+    Or,
+    With,
+    Left,
+    Right,
+}
+
+fn license_expression_satisfied(expression: &str, observed: &BTreeSet<String>) -> bool {
+    let mut tokens = Vec::new();
+    let spaced = expression
+        .replace('(', " ( ")
+        .replace(')', " ) ")
+        .replace('/', " OR ");
+    for token in spaced.split_whitespace() {
+        tokens.push(match token {
+            "AND" => LicenseToken::And,
+            "OR" => LicenseToken::Or,
+            "WITH" => LicenseToken::With,
+            "(" => LicenseToken::Left,
+            ")" => LicenseToken::Right,
+            identifier => LicenseToken::Identifier(identifier.to_string()),
+        });
+    }
+    let mut position = 0;
+    parse_license_or(&tokens, &mut position, observed)
+        .is_some_and(|value| value && position == tokens.len())
+}
+
+fn parse_license_or(
+    tokens: &[LicenseToken],
+    position: &mut usize,
+    observed: &BTreeSet<String>,
+) -> Option<bool> {
+    let mut value = parse_license_and(tokens, position, observed)?;
+    while tokens.get(*position) == Some(&LicenseToken::Or) {
+        *position += 1;
+        let right = parse_license_and(tokens, position, observed)?;
+        value |= right;
+    }
+    Some(value)
+}
+
+fn parse_license_and(
+    tokens: &[LicenseToken],
+    position: &mut usize,
+    observed: &BTreeSet<String>,
+) -> Option<bool> {
+    let mut value = parse_license_factor(tokens, position, observed)?;
+    while tokens.get(*position) == Some(&LicenseToken::And) {
+        *position += 1;
+        let right = parse_license_factor(tokens, position, observed)?;
+        value &= right;
+    }
+    Some(value)
+}
+
+fn parse_license_factor(
+    tokens: &[LicenseToken],
+    position: &mut usize,
+    observed: &BTreeSet<String>,
+) -> Option<bool> {
+    match tokens.get(*position)?.clone() {
+        LicenseToken::Identifier(identifier) => {
+            *position += 1;
+            if tokens.get(*position) == Some(&LicenseToken::With) {
+                *position += 1;
+                let LicenseToken::Identifier(exception) = tokens.get(*position)?.clone() else {
+                    return None;
+                };
+                *position += 1;
+                Some(observed.contains(&format!("{identifier} WITH {exception}")))
+            } else {
+                Some(observed.contains(&identifier))
+            }
+        }
+        LicenseToken::Left => {
+            *position += 1;
+            let value = parse_license_or(tokens, position, observed)?;
+            if tokens.get(*position) != Some(&LicenseToken::Right) {
+                return None;
+            }
+            *position += 1;
+            Some(value)
+        }
+        _ => None,
+    }
 }
 
 fn validate_sbom_dependencies(sbom: &Value, release: &Graph, findings: &mut Vec<String>) {
@@ -1877,7 +2067,7 @@ fn validate_governance_dates(
 ) {
     let start = item.get(start_key).and_then(Value::as_str).unwrap_or("");
     let expires = item.get("expires").and_then(Value::as_str).unwrap_or("");
-    if !valid_date(start) || !valid_date(expires) || start > expires {
+    if !valid_date(start) || !valid_date(expires) || start > expires || start > today {
         findings.push(format!("exception-schema: {label} has invalid dates"));
     } else if expires < today {
         findings.push(format!("exception-expired: {label} expired {expires}"));
@@ -2344,6 +2534,56 @@ mod tests {
     }
 
     #[test]
+    fn notice_sections_bind_license_source_and_legal_text() {
+        let package = Package {
+            id: "registry+example#demo@1.0.0".to_string(),
+            key: "demo@1.0.0|registry+example".to_string(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            source: Some("registry+example".to_string()),
+            checksum: Some("abc".to_string()),
+            license: Some("MIT OR Apache-2.0".to_string()),
+            rust_version: None,
+            features: Vec::new(),
+        };
+        let graph = Graph {
+            name: "windows-release".to_string(),
+            packages: BTreeMap::from([(package.key.clone(), package)]),
+            edges: BTreeSet::new(),
+            digest: String::new(),
+        };
+        let good = "====================\nLICENSE: MIT License (MIT)\nUSED BY: demo 1.0.0\nSOURCE: registry+example\n\nPermission is granted.\n";
+        let mut findings = Vec::new();
+        validate_notice_sections(good, &graph, &mut findings);
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let broken = "====================\nLICENSE: ISC License (ISC)\nUSED BY: demo 1.0.0\nSOURCE: registry+wrong\n\n";
+        validate_notice_sections(broken, &graph, &mut findings);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("source is missing or stale")));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("do not satisfy Cargo metadata")));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("empty legal-text section")));
+    }
+
+    #[test]
+    fn license_expression_evaluation_preserves_and_or_precedence() {
+        let observed = BTreeSet::from(["Apache-2.0".to_string(), "Unicode-3.0".to_string()]);
+        assert!(license_expression_satisfied(
+            "(MIT OR Apache-2.0) AND Unicode-3.0",
+            &observed
+        ));
+        assert!(!license_expression_satisfied(
+            "MIT OR (Apache-2.0 AND ISC)",
+            &observed
+        ));
+    }
+
+    #[test]
     fn only_the_exact_governed_tool_exception_is_used() {
         let valid = Map::from_iter([
             (
@@ -2404,6 +2644,27 @@ mod tests {
         assert!(findings
             .iter()
             .any(|finding| finding.contains("future maintenance review")));
+    }
+
+    #[test]
+    fn governance_start_dates_cannot_be_future_dated() {
+        for start_key in ["created", "reviewed"] {
+            let item = json!({
+                (start_key): "2026-09-06",
+                "expires": "2026-12-04"
+            });
+            let mut findings = Vec::new();
+            validate_governance_dates(
+                item.as_object().unwrap(),
+                start_key,
+                "2026-09-05",
+                "governed record",
+                &mut findings,
+            );
+            assert!(findings
+                .iter()
+                .any(|finding| finding.contains("invalid dates")));
+        }
     }
 
     #[test]
