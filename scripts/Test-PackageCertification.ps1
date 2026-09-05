@@ -244,10 +244,12 @@ Param(
         $observation = $null
         if (-not [string]::IsNullOrEmpty($ObservedExecutablePath)) {
             $expectedPath = [System.IO.Path]::GetFullPath($ObservedExecutablePath)
-            $unexpectedPaths = @($observedPaths | Where-Object { $_ -ine $expectedPath })
+            $systemConsolePath = [System.IO.Path]::GetFullPath((Join-Path ([System.Environment]::SystemDirectory) 'conhost.exe'))
+            $systemPaths = @($observedPaths | Where-Object { $_ -ieq $systemConsolePath })
+            $unexpectedPaths = @($observedPaths | Where-Object { $_ -ine $expectedPath -and $_ -ine $systemConsolePath })
             $nonLoopbackAddresses = @($observedAddresses | Where-Object { -not (Test-IsLoopbackAddress -Address $_) })
             $loopbackAddresses = @($observedAddresses | Where-Object { Test-IsExactLoopbackAddress -Address $_ })
-            $observation = [pscustomobject]@{ samples = $observationSamples; process_paths = @($observedPaths | Sort-Object); unexpected_process_paths = $unexpectedPaths; observed_addresses = @($observedAddresses | Sort-Object); non_loopback_addresses = $nonLoopbackAddresses; loopback_observed = $loopbackAddresses.Count -gt 0; complete = $observationSamples -gt 0 }
+            $observation = [pscustomobject]@{ samples = $observationSamples; process_paths = @($observedPaths | Sort-Object); system_process_paths = $systemPaths; unexpected_process_paths = $unexpectedPaths; observed_addresses = @($observedAddresses | Sort-Object); non_loopback_addresses = $nonLoopbackAddresses; loopback_observed = $loopbackAddresses.Count -gt 0; complete = $observationSamples -gt 0 }
         }
         return [pscustomobject]@{ ExitCode = $exitCode; Stdout = $stdout; Stderr = $stderr; ElapsedSeconds = [math]::Ceiling($watch.Elapsed.TotalSeconds); Observation = $observation }
     }
@@ -636,7 +638,7 @@ Param(
         )
         $entryRows = @($contract.shared_entries | ForEach-Object { $entryFile = Get-Item -LiteralPath (Join-Path $zipRoot $_.path); [pscustomobject]@{ path = $_.path; role = $_.role; size_bytes = $entryFile.Length; sha256 = Get-Sha256 -Path $entryFile.FullName; signature = $_.signature; complete = $true } })
         $reportIdentity = [ordered]@{ product = $contract.release_identity.product; target = $contract.release_identity.target; architecture = $contract.release_identity.architecture; pe_machine = $contract.release_identity.pe_machine; features = @($contract.release_identity.features); deep_capture_backend = $contract.release_identity.deep_capture_backend }
-        $report = [ordered]@{ schema_version = 1; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; complete = $true }; lifecycle = @($lifecycle); findings = @(); complete = $true }
+        $report = [ordered]@{ schema_version = 1; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; complete = $true }; lifecycle = @($lifecycle); findings = @(); complete = $true }
         $json = $report | ConvertTo-Json -Depth 16
         if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt [int]$contract.report_limits.max_report_bytes) { throw 'certification report exceeds its byte bound' }
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($reportFile))
