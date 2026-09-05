@@ -102,7 +102,7 @@ jobs:
         run: |
           pwsh -NoLogo -NoProfile -NonInteractive -File scripts/Test-PackageCertification.ps1 -ArtifactDirectory dist -PredecessorPath "$env:RUNNER_TEMP\fragcap-0.8.0-x86_64.msi" -ReportPath target/package-certification/report.json -Confirm:$false
           if ($LASTEXITCODE -ne 0) { throw "Package certification exited $LASTEXITCODE" }
-          cargo xtask package-certification validate-report target/package-certification/report.json
+          cargo xtask package-certification validate-report target/package-certification/report.json dist
 
       - name: Upload certified distribution
         uses: actions/upload-artifact@v4

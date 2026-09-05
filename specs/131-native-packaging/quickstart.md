@@ -19,8 +19,8 @@ Expected result: package certification runs in the ordinary offline gate after S
 ## Windows final-artifact certification
 
 ```text
-pwsh -NoLogo -NoProfile -NonInteractive -File scripts/Test-PackageCertification.ps1 -ArtifactDirectory target/package-certification -PredecessorPath target/package-certification/fragcap-0.8.0-x86_64.msi -ReportPath target/package-certification/report.json -Confirm:$false
-cargo xtask package-certification validate-report target/package-certification/report.json
+pwsh -NoLogo -NoProfile -NonInteractive -File scripts/Test-PackageCertification.ps1 -ArtifactDirectory dist -PredecessorPath target/package-certification/fragcap-0.8.0-x86_64.msi -ReportPath target/package-certification/report.json -Confirm:$false
+cargo xtask package-certification validate-report target/package-certification/report.json dist
 ```
 
 Expected result: final bytes, checksums, unsigned state, PE identity/imports, packaged native smoke, and every lifecycle row pass; only a bounded public-safe report is retained.

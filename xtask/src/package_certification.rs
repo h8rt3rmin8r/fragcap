@@ -24,14 +24,24 @@ pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     if arguments.is_empty() {
         return report(problems);
     }
-    if arguments.first().map(String::as_str) != Some("validate-report") || arguments.len() != 2 {
-        return Err(invalid_input("use validate-report <report.json>"));
+    if arguments.first().map(String::as_str) != Some("validate-report")
+        || !(2..=3).contains(&arguments.len())
+    {
+        return Err(invalid_input(
+            "use validate-report <report.json> [artifact-directory]",
+        ));
     }
     problems.extend(validate_report(
         &contract,
         &bytes,
         Path::new(&arguments[1]),
     )?);
+    if let Some(directory) = arguments.get(2) {
+        problems.extend(validate_transferred_artifacts(
+            Path::new(&arguments[1]),
+            Path::new(directory),
+        )?);
+    }
     report(problems)
 }
 
@@ -388,6 +398,7 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "AllowSameVersionUpgrades=\"yes\"",
             "Schedule=\"afterInstallInitialize\"",
             "FRAGCAP_DEFENDER_EXCLUSION_OWNER",
+            "if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty",
             "SetDefenderRemove\" Before=\"RemoveFiles\">REMOVE=\"ALL\"",
             "Name=\"fragcap.exe\"",
             "Name=\"catalog.db\"",
@@ -422,7 +433,7 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
         &[
             "uses: ./.github/workflows/package-certification.yml",
             "needs: package-certification",
-            "cargo xtask package-certification validate-report",
+            "cargo xtask package-certification validate-report certification/report.json dist",
             "Assert the tag matches the workspace version",
         ],
         &mut problems,
@@ -442,6 +453,12 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "dumpbin.exe",
             "-Recurse -File",
             "Uninstall registered certification product during final cleanup",
+            "New-NetFirewallRule",
+            "Get-NetTCPConnection",
+            "Get-NetUDPEndpoint",
+            "unexpected_process_paths",
+            "fragcap\\captures\\preserved.fcapng",
+            "Wireshark\\extcap\\fragcap.exe",
             "ProductName",
             "ProductVersion",
             "Manufacturer",
@@ -549,6 +566,62 @@ fn validate_report(
                 "certification report contains host-sensitive text: {forbidden}"
             ));
         }
+    }
+    Ok(problems)
+}
+
+fn validate_transferred_artifacts(report_path: &Path, directory: &Path) -> io::Result<Vec<String>> {
+    let report: Value = serde_json::from_slice(&fs::read(report_path)?).map_err(invalid_data)?;
+    let mut problems = Vec::new();
+    let mut expected_names = BTreeSet::new();
+    for row in report["artifacts"].as_array().into_iter().flatten() {
+        let Some(filename) = row["filename"].as_str() else {
+            problems.push("transferred artifact report row lacks a filename".into());
+            continue;
+        };
+        if Path::new(filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(filename)
+            || !expected_names.insert(filename.to_string())
+        {
+            problems.push(format!(
+                "unsafe or duplicate transferred artifact name: {filename}"
+            ));
+            continue;
+        }
+        let path = directory.join(filename);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                problems.push(format!(
+                    "could not read transferred artifact {filename}: {error}"
+                ));
+                continue;
+            }
+        };
+        if row["size_bytes"].as_u64() != Some(bytes.len() as u64)
+            || row["sha256"].as_str() != Some(sha256(&bytes).as_str())
+        {
+            problems.push(format!(
+                "transferred artifact {filename} differs from the certified size or digest"
+            ));
+        }
+    }
+    let observed_names = fs::read_dir(directory)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(|kind| kind.is_file())
+                .and_then(|_| entry.file_name().into_string().ok())
+        })
+        .collect::<BTreeSet<_>>();
+    if observed_names != expected_names {
+        problems.push(format!(
+            "transferred artifact set mismatch: {observed_names:?}"
+        ));
     }
     Ok(problems)
 }
@@ -758,9 +831,27 @@ fn validate_report_rows(contract: &Value, report: &Value, problems: &mut Vec<Str
         problems
             .push("report must contain two complete identity-bound unsigned PE inspections".into());
     }
+    exact_keys(
+        &report["smoke"],
+        &[
+            "backend",
+            "network",
+            "process_observation",
+            "network_observation",
+            "samples",
+            "complete",
+        ],
+        "smoke report",
+        problems,
+    );
     if report["smoke"]["complete"] != true
         || report["smoke"]["backend"] != "fragcap-native"
         || report["smoke"]["network"] != "loopback-only"
+        || report["smoke"]["process_observation"] != "complete"
+        || report["smoke"]["network_observation"] != "firewall-contained-and-socket-observed"
+        || report["smoke"]["samples"]
+            .as_u64()
+            .is_none_or(|samples| samples == 0)
     {
         problems.push("packaged native smoke is incomplete".into());
     }
@@ -980,6 +1071,33 @@ mod tests {
     }
 
     #[test]
+    fn transferred_artifacts_must_match_the_certified_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "fragcap-transferred-artifacts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let report_path = root.join("report.json");
+        let artifact_root = root.join("dist");
+        fs::create_dir_all(&artifact_root).unwrap();
+        fs::write(artifact_root.join("fragcap.zip"), b"certified").unwrap();
+        let report = serde_json::json!({"artifacts": [{"filename": "fragcap.zip", "size_bytes": 9, "sha256": sha256(b"certified")}]});
+        fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(validate_transferred_artifacts(&report_path, &artifact_root)
+            .unwrap()
+            .is_empty());
+        fs::write(artifact_root.join("fragcap.zip"), b"substituted").unwrap();
+        assert!(validate_transferred_artifacts(&report_path, &artifact_root)
+            .unwrap()
+            .iter()
+            .any(|problem| problem.contains("differs from the certified")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn complete_report_reconciles_and_duplicate_row_fails() {
         let contract_bytes = include_bytes!("../../integration/windows-package-contract-v1.json");
         let contract = contract();
@@ -1012,7 +1130,7 @@ mod tests {
         let portable_pe = serde_json::json!({"surface": "portable-zip", "machine": "8664", "ordinary_imports": contract["pe_imports"]["ordinary"], "delayed_imports": contract["pe_imports"]["delayed"], "file_version": "0.9.0.0", "product_version": "0.9.0", "product_name": "fragcap", "original_filename": "fragcap.exe", "signature": "not_signed", "complete": true});
         let mut installed_pe = portable_pe.clone();
         installed_pe["surface"] = Value::String("installed-msi".into());
-        let mut value = serde_json::json!({"schema_version": 1, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "complete": true}, "lifecycle": lifecycle, "findings": [], "complete": true});
+        let mut value = serde_json::json!({"schema_version": 1, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "complete": true}, "lifecycle": lifecycle, "findings": [], "complete": true});
         let path = std::env::temp_dir().join(format!(
             "fragcap-package-report-{}.json",
             std::process::id()

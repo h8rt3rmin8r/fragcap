@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 6
           for sidecar in dist/*.sha256; do (cd dist && sha256sum --check "$(basename "$sidecar")"); done
-          cargo xtask package-certification validate-report certification/report.json
+          cargo xtask package-certification validate-report certification/report.json dist
       - name: Validate and render the AI-written release highlights
         shell: bash
         run: |

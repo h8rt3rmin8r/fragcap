@@ -144,6 +144,27 @@ Param(
         return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 
+    function Test-IsLoopbackAddress {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [string]$Address
+        )
+        $parsed = $null
+        if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$parsed)) { return $false }
+        return [System.Net.IPAddress]::IsLoopback($parsed) -or $parsed.Equals([System.Net.IPAddress]::Any) -or $parsed.Equals([System.Net.IPAddress]::IPv6Any)
+    }
+
+    function Test-IsExactLoopbackAddress {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [string]$Address
+        )
+        $parsed = $null
+        return [System.Net.IPAddress]::TryParse($Address, [ref]$parsed) -and [System.Net.IPAddress]::IsLoopback($parsed)
+    }
+
     function Invoke-HiddenProcess {
         [CmdletBinding()]
         Param(
@@ -158,7 +179,10 @@ Param(
             [int]$TimeoutSeconds,
 
             [Parameter(Mandatory=$false)]
-            [hashtable]$Environment = @{}
+            [hashtable]$Environment = @{},
+
+            [Parameter(Mandatory=$false)]
+            [string]$ObservedExecutablePath
         )
         $start = [System.Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $FilePath
@@ -178,10 +202,35 @@ Param(
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $waitTask = $process.WaitForExitAsync()
-        $winner = [System.Threading.Tasks.Task]::WhenAny($waitTask, [System.Threading.Tasks.Task]::Delay([TimeSpan]::FromSeconds($TimeoutSeconds))).GetAwaiter().GetResult()
-        if ($winner -ne $waitTask) {
-            try { $process.Kill($true) } catch { Write-ShruggieLog "Timed-out child could not be killed cleanly: $($_.Exception.Message)" -Level Warn -Source Child }
-            throw "process exceeded $TimeoutSeconds seconds"
+        $observedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $observedAddresses = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $observationSamples = 0
+        while (-not $waitTask.IsCompleted) {
+            if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+                try { $process.Kill($true) } catch { Write-ShruggieLog "Timed-out child could not be killed cleanly: $($_.Exception.Message)" -Level Warn -Source Child }
+                throw "process exceeded $TimeoutSeconds seconds"
+            }
+            if (-not [string]::IsNullOrEmpty($ObservedExecutablePath)) {
+                $snapshot = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath -ErrorAction Stop)
+                $owned = [System.Collections.Generic.HashSet[uint32]]::new()
+                [void]$owned.Add([uint32]$process.Id)
+                do {
+                    $added = $false
+                    foreach ($candidate in $snapshot) {
+                        if ($owned.Contains([uint32]$candidate.ParentProcessId) -and $owned.Add([uint32]$candidate.ProcessId)) { $added = $true }
+                    }
+                } while ($added)
+                foreach ($candidate in $snapshot | Where-Object { $owned.Contains([uint32]$_.ProcessId) }) {
+                    if (-not [string]::IsNullOrEmpty($candidate.ExecutablePath)) { [void]$observedPaths.Add([System.IO.Path]::GetFullPath($candidate.ExecutablePath)) }
+                }
+                foreach ($connection in @(Get-NetTCPConnection -ErrorAction Stop | Where-Object { $owned.Contains([uint32]$_.OwningProcess) })) {
+                    [void]$observedAddresses.Add([string]$connection.LocalAddress)
+                    [void]$observedAddresses.Add([string]$connection.RemoteAddress)
+                }
+                foreach ($endpoint in @(Get-NetUDPEndpoint -ErrorAction Stop | Where-Object { $owned.Contains([uint32]$_.OwningProcess) })) { [void]$observedAddresses.Add([string]$endpoint.LocalAddress) }
+                $observationSamples++
+            }
+            [System.Threading.Thread]::Sleep(100)
         }
         [void]$waitTask.GetAwaiter().GetResult()
         $process.WaitForExit()
@@ -191,7 +240,15 @@ Param(
         if ($stdout.Length -gt 262144 -or $stderr.Length -gt 262144) { throw 'child output exceeded 256 KiB' }
         $exitCode = [int]$process.ExitCode
         $process.Dispose()
-        return [pscustomobject]@{ ExitCode = $exitCode; Stdout = $stdout; Stderr = $stderr; ElapsedSeconds = [math]::Ceiling($watch.Elapsed.TotalSeconds) }
+        $observation = $null
+        if (-not [string]::IsNullOrEmpty($ObservedExecutablePath)) {
+            $expectedPath = [System.IO.Path]::GetFullPath($ObservedExecutablePath)
+            $unexpectedPaths = @($observedPaths | Where-Object { $_ -ine $expectedPath })
+            $nonLoopbackAddresses = @($observedAddresses | Where-Object { -not (Test-IsLoopbackAddress -Address $_) })
+            $loopbackAddresses = @($observedAddresses | Where-Object { Test-IsExactLoopbackAddress -Address $_ })
+            $observation = [pscustomobject]@{ samples = $observationSamples; process_paths = @($observedPaths | Sort-Object); unexpected_process_paths = $unexpectedPaths; observed_addresses = @($observedAddresses | Sort-Object); non_loopback_addresses = $nonLoopbackAddresses; loopback_observed = $loopbackAddresses.Count -gt 0; complete = $observationSamples -gt 0 }
+        }
+        return [pscustomobject]@{ ExitCode = $exitCode; Stdout = $stdout; Stderr = $stderr; ElapsedSeconds = [math]::Ceiling($watch.Elapsed.TotalSeconds); Observation = $observation }
     }
 
     function Invoke-MsiOperation {
@@ -374,9 +431,13 @@ Param(
             [hashtable]$Environment,
 
             [Parameter(Mandatory=$false)]
-            [int[]]$AllowedExitCodes = @(0)
+            [int[]]$AllowedExitCodes = @(0),
+
+            [Parameter(Mandatory=$false)]
+            [switch]$ObserveTreeAndNetwork
         )
-        $result = Invoke-HiddenProcess -FilePath $Executable -ArgumentList $Arguments -TimeoutSeconds 60 -Environment $Environment
+        $observedPath = if ($ObserveTreeAndNetwork) { $Executable } else { $null }
+        $result = Invoke-HiddenProcess -FilePath $Executable -ArgumentList $Arguments -TimeoutSeconds 60 -Environment $Environment -ObservedExecutablePath $observedPath
         if ($AllowedExitCodes -notcontains $result.ExitCode) { throw "fragcap $($Arguments -join ' ') exited $($result.ExitCode): $($result.Stderr)" }
         return $result
     }
@@ -404,6 +465,7 @@ Param(
     $installDirectory = $null
     $currentProductCode = $null
     $predecessorProductCode = $null
+    $smokeFirewallRuleName = $null
 
 #_______________________________________________________________________________
 ## Execute Operations
@@ -476,14 +538,28 @@ Param(
         $localDb = Join-Path $scratch 'local.db'
         $bundle = Join-Path $scratch 'bundle'
         [void](Invoke-Fragcap -Executable $zipExe -Arguments @('targets', 'add', 'Package Certification', '--db', $localDb, '--anchor', 'package:certification', '--exe', $zipExe, '--socket-holder', 'yes') -Environment $cleanEnvironment)
-        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--yes', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment
+        if ($null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue) -or $null -eq (Get-Command Remove-NetFirewallRule -ErrorAction SilentlyContinue)) { Write-ShruggieLog 'Windows Firewall observation controls are unavailable.' -Level Error -Source Preflight; exit 2 }
+        $smokeFirewallRuleName = "fragcap-package-certification-$([guid]::NewGuid().ToString('N'))"
+        if (-not $PSCmdlet.ShouldProcess($zipExe, 'Block non-loopback smoke traffic for the exact packaged executable')) { throw 'smoke network containment was not established' }
+        [void](New-NetFirewallRule -Name $smokeFirewallRuleName -DisplayName $smokeFirewallRuleName -Direction Outbound -Action Block -Program $zipExe -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
+        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--yes', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment -ObserveTreeAndNetwork
         if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw 'packaged controlled native smoke did not produce expected evidence' }
+        if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1 -or $smoke.Observation.process_paths.Count -lt 1 -or $smoke.Observation.unexpected_process_paths.Count -ne 0 -or $smoke.Observation.non_loopback_addresses.Count -ne 0 -or -not $smoke.Observation.loopback_observed) { throw 'packaged controlled native smoke escaped the observed process or loopback-only network boundary' }
+        if ($PSCmdlet.ShouldProcess($smokeFirewallRuleName, 'Remove package-certification smoke firewall rule')) { Remove-NetFirewallRule -Name $smokeFirewallRuleName -ErrorAction Stop; $smokeFirewallRuleName = $null }
         $installDirectory = Join-Path $scratch 'installed'
-        $userRoot = Join-Path $scratch 'user-owned'
-        [void][System.IO.Directory]::CreateDirectory($userRoot)
+        $userFixturePaths = [ordered]@{
+            'capture' = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap\captures\preserved.fcapng'
+            'deep-capture-bundle' = Join-Path $cleanEnvironment.APPDATA 'fragcap\sessions\preserved\manifest.json'
+            'extcap-registration' = Join-Path $cleanEnvironment.APPDATA 'Wireshark\extcap\fragcap.exe'
+            'local-database' = Join-Path $cleanEnvironment.APPDATA 'fragcap\local.db'
+            'writable-catalog' = Join-Path $cleanEnvironment.APPDATA 'fragcap\catalog.db'
+        }
+        $expectedFileFixtureNames = @($contract.user_owned_fixtures | Where-Object { $_ -ne 'preexisting-defender-exclusion' } | Sort-Object)
+        if (Compare-Object -ReferenceObject $expectedFileFixtureNames -DifferenceObject @($userFixturePaths.Keys | Sort-Object)) { throw 'user-owned fixture path map does not cover the contract' }
         $userDigests = @{}
-        foreach ($name in $contract.user_owned_fixtures) {
-            $path = Join-Path $userRoot "$name.fixture"
+        foreach ($name in $userFixturePaths.Keys) {
+            $path = $userFixturePaths[$name]
+            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
             [System.IO.File]::WriteAllText($path, "S131 user-owned fixture: $name", [System.Text.UTF8Encoding]::new($false))
             $userDigests[$path] = Get-Sha256 -Path $path
         }
@@ -557,7 +633,7 @@ Param(
         )
         $entryRows = @($contract.shared_entries | ForEach-Object { $entryFile = Get-Item -LiteralPath (Join-Path $zipRoot $_.path); [pscustomobject]@{ path = $_.path; role = $_.role; size_bytes = $entryFile.Length; sha256 = Get-Sha256 -Path $entryFile.FullName; signature = $_.signature; complete = $true } })
         $reportIdentity = [ordered]@{ product = $contract.release_identity.product; target = $contract.release_identity.target; architecture = $contract.release_identity.architecture; pe_machine = $contract.release_identity.pe_machine; features = @($contract.release_identity.features); deep_capture_backend = $contract.release_identity.deep_capture_backend }
-        $report = [ordered]@{ schema_version = 1; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; complete = $true }; lifecycle = @($lifecycle); findings = @(); complete = $true }
+        $report = [ordered]@{ schema_version = 1; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; complete = $true }; lifecycle = @($lifecycle); findings = @(); complete = $true }
         $json = $report | ConvertTo-Json -Depth 16
         if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt [int]$contract.report_limits.max_report_bytes) { throw 'certification report exceeds its byte bound' }
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($reportFile))
@@ -568,6 +644,7 @@ Param(
         Write-ShruggieLog "$($_.Exception.Message) [$($_.InvocationInfo.ScriptLineNumber)]" -Level Error -Source Certification
         exit 1
     } finally {
+        if ($smokeFirewallRuleName -and $PSCmdlet.ShouldProcess($smokeFirewallRuleName, 'Remove package-certification smoke firewall rule during final cleanup')) { try { Remove-NetFirewallRule -Name $smokeFirewallRuleName -ErrorAction Stop } catch { Write-ShruggieLog "Firewall cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup } }
         foreach ($cleanupProductCode in @($currentProductCode, $predecessorProductCode) | Where-Object { $_ } | Select-Object -Unique) {
             if ((Get-ProductRegistrationCount -ProductCode $cleanupProductCode) -gt 0 -and $PSCmdlet.ShouldProcess($cleanupProductCode, 'Uninstall registered certification product during final cleanup')) {
                 try {
@@ -580,7 +657,10 @@ Param(
             $cleanupMarkerPath = 'HKLM:\Software\ShruggieTech\fragcap'
             $cleanupMarker = Get-ItemProperty -LiteralPath $cleanupMarkerPath -Name 'FRAGCAP_DEFENDER_EXCLUSION_OWNER' -ErrorAction SilentlyContinue
             if ($null -ne $cleanupMarker -and $cleanupMarker.FRAGCAP_DEFENDER_EXCLUSION_OWNER -eq $installDirectory -and $PSCmdlet.ShouldProcess($installDirectory, 'Remove exact installer-owned Defender state during final cleanup')) {
-                try { Remove-MpPreference -ExclusionPath $installDirectory -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $cleanupMarkerPath -Force -ErrorAction SilentlyContinue } catch { Write-ShruggieLog "Installer-owned Defender cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup }
+                try {
+                    Remove-MpPreference -ExclusionPath $installDirectory -ErrorAction SilentlyContinue
+                    if (-not (@((Get-MpPreference).ExclusionPath) -contains $installDirectory)) { Remove-ItemProperty -LiteralPath $cleanupMarkerPath -Name 'FRAGCAP_DEFENDER_EXCLUSION_OWNER' -Force -ErrorAction SilentlyContinue }
+                } catch { Write-ShruggieLog "Installer-owned Defender cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup }
             }
         }
         if ($seededDefender -and $installDirectory -and $PSCmdlet.ShouldProcess($installDirectory, 'Remove certification-seeded Defender exclusion during final cleanup')) { try { Remove-MpPreference -ExclusionPath $installDirectory -ErrorAction SilentlyContinue } catch { Write-ShruggieLog "Defender cleanup failed: $($_.Exception.Message)" -Level Warn -Source Cleanup } }

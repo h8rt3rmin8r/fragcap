@@ -6,7 +6,7 @@
 
 ## Report command
 
-`cargo xtask package-certification validate-report <report.json>` validates a Windows-produced report against the current contract. It refuses an unknown schema, contract digest, release identity, artifact, entry, import, signature state, lifecycle case, terminal outcome, missing row, duplicate row, skipped required row, unbounded field, absolute host path, credential-like value, or incomplete result.
+`cargo xtask package-certification validate-report <report.json> <artifact-directory>` validates a Windows-produced report against the current contract and rehashes every transferred artifact and sidecar against its certified report row. It refuses an unknown schema, contract digest, release identity, artifact, entry, import, signature state, lifecycle case, terminal outcome, missing row, duplicate row, skipped required row, unbounded field, absolute host path, credential-like value, transferred-byte mismatch, or incomplete result.
 
 ## Artifact contract
 
@@ -22,13 +22,13 @@ The current executable and MSI policy is `not_signed`, established only by a det
 
 ## Packaged smoke contract
 
-The exact extracted and installed executables must report the certified build identity, start with Npcap absent, report the native Deep Capture backend, and complete the existing controlled loopback native smoke under a sanitized environment. No undeclared child process, non-loopback connection, network fetch, package manager, Python executable, external proxy executable, first-use installer, trust residue, route residue, or target mutation is allowed.
+The exact extracted and installed executables must report the certified build identity, start with Npcap absent, report the native Deep Capture backend, and complete the existing controlled loopback native smoke under a sanitized environment. The harness blocks non-loopback traffic for the exact executable, samples its complete descendant tree and sockets while it runs, rejects every unexpected executable or observed non-loopback endpoint, and requires an observed loopback endpoint. No undeclared child process, non-loopback connection, network fetch, package manager, Python executable, external proxy executable, first-use installer, trust residue, route residue, or target mutation is allowed.
 
 ## Installer lifecycle contract
 
 All Windows Installer processes are hidden, non-interactive, finite, exit-accounted, and scoped to fresh CI roots. Clean install creates exactly the owned payload and effects. Repair restores one deleted and one modified owned file. Exact-byte reinstall remains idempotent. Upgrade replaces the digest-pinned v0.8.0 predecessor with one current product. Downgrade is refused without changing the newer installation. Uninstall removes only owned state and is idempotently absent on repetition.
 
-Seeded per-user catalog/local database, capture, bundle, and separately managed extcap fixtures remain byte-identical in every case. Defender installation is best effort and explicitly classified; any exact exclusion created for the installed binary is absent after uninstall. Local MSI logs remain unuploaded scratch because they may contain runner paths.
+Seeded files at the isolated `%APPDATA%` catalog, local database, session bundle, and personal Wireshark extcap paths plus the isolated `%LOCALAPPDATA%` capture path remain byte-identical in every case. Defender installation is best effort and explicitly classified; any exact exclusion created for the installed binary is absent after uninstall, and its ownership marker remains when removal fails so later reconciliation retains authority. Local MSI logs remain unuploaded scratch because they may contain runner paths.
 
 ## Publication contract
 

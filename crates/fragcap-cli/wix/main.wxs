@@ -137,7 +137,7 @@
 
     <CustomAction Id="SetDefenderRollback"
                   Property="DefenderRollback"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; Remove-Item -Path $k -Force -ErrorAction SilentlyContinue}}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty -Path $k -Name $n -Force -ErrorAction SilentlyContinue}}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRollback"
                   BinaryKey="WixCA"
@@ -148,7 +148,7 @@
 
     <CustomAction Id="SetDefenderRemove"
                   Property="DefenderRemove"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; Remove-Item -Path $k -Force -ErrorAction SilentlyContinue}}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty -Path $k -Name $n -Force -ErrorAction SilentlyContinue}}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRemove"
                   BinaryKey="WixCA"
