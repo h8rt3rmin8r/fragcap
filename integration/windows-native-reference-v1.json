@@ -1,0 +1,82 @@
+{
+  "binary_sha256": "91dd09f1755be271a5f4e85971682afee7ce2af0026b1e2d24fe87e554021aeb",
+  "capabilities": [
+    "ipv4-loopback",
+    "ipv6-loopback",
+    "non-elevated",
+    "npcap-present",
+    "tshark-present",
+    "windows"
+  ],
+  "product_version": "0.8.0",
+  "recorded_on": "2026-09-05",
+  "registry_sha256": "dacb832bf4d4ae090275de5504bb92141908769cf5ca790e0db70e003769b017",
+  "revision": "279b0c84a3a0759874c9c641a2c8eff9c0c482d8",
+  "rows": [
+    {
+      "cleanup": "reconciled",
+      "id": "physical-non-admin-refusal",
+      "output_bytes": 876,
+      "output_sha256": "67f87ce0f7bc524d71c43482675af96d1e31e64370113bc9d28191333665d4d6",
+      "status": "passed",
+      "timed_out": false
+    },
+    {
+      "cleanup": "reconciled",
+      "id": "physical-npcap-present",
+      "output_bytes": 450,
+      "output_sha256": "9d328ead2c9655ee0f0ab5c1af143521ba16063d1c81e54819e9341b4586e794",
+      "status": "passed",
+      "timed_out": false
+    },
+    {
+      "cleanup": "reconciled",
+      "id": "physical-uac-denial",
+      "output_bytes": 3656,
+      "output_sha256": "af6487bf00e47b06b7f24273ebaf01583c323d8db19f52b941d793fc88515acb",
+      "status": "passed",
+      "timed_out": false
+    },
+    {
+      "cleanup": "reconciled",
+      "id": "physical-current-user-trust",
+      "output_bytes": 346,
+      "output_sha256": "d96fe220aa60f10781ca7b61fded96a18d76ae18468de4349d4f4d55be27cd19",
+      "status": "passed",
+      "timed_out": false
+    },
+    {
+      "cleanup": "reconciled",
+      "id": "physical-analyzer-keylog",
+      "output_bytes": 41658,
+      "output_sha256": "2338c33e567167aafdf3675a15393978fd7dc655a4a058aea53b8b1d5e691c11",
+      "status": "passed",
+      "timed_out": false
+    },
+    {
+      "cleanup": "reconciled",
+      "id": "physical-residue",
+      "output_bytes": 358,
+      "output_sha256": "300772acaab6f10b9b3dc207950b2bea83b94c2495056e8a6a44535d0ab11d25",
+      "status": "passed",
+      "timed_out": false
+    },
+    {
+      "cleanup": "reconciled",
+      "id": "physical-staged-binary",
+      "output_bytes": 355,
+      "output_sha256": "d3077084659a5369372f6056521ebeff7c3ed0a45e886a77e65d341f29e81efb",
+      "status": "passed",
+      "timed_out": false
+    }
+  ],
+  "schema_version": 1,
+  "terminal": {
+    "failed": 0,
+    "passed": 7,
+    "required": 7,
+    "residue": "none",
+    "status": "complete"
+  },
+  "tier": "physical"
+}

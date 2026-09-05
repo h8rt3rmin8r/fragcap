@@ -1327,3 +1327,14 @@ prove another: loopback reachability is not target ownership, client-facing TLS
 is not upstream trust, and a PID, port, or filename is not recovery authority.
 
 **See also:** [Threat registry](#threat-registry)
+
+## Windows integration matrix
+
+The closed, versioned release authority that maps every required native Windows
+completion domain to an exact hosted or explicitly authorized physical evidence
+row. Required capability absence is a failure, never a skip. Each finite row
+records staged binary identity, bounded execution outcome, and cleanup truth;
+only a closed-field sanitized summary may be published.
+
+**See also:** [Performance registry](#performance-registry),
+[Threat registry](#threat-registry)

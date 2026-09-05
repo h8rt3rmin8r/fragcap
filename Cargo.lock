@@ -2123,7 +2123,9 @@ dependencies = [
 name = "xtask"
 version = "0.8.0"
 dependencies = [
+ "ring",
  "serde_json",
+ "windows-sys 0.36.1",
 ]
 
 [[package]]

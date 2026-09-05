@@ -332,3 +332,16 @@ identity, and immutable JSON Lines evidence. Pull requests run the short matrix
 on Windows and Ubuntu; Windows exposes the genuine two-hour soak by explicit manual dispatch, while S128's final evidence carries a separately recorded project-owner approval.
 Windows-host integration begins with S129 under #327, and Deep Capture remains
 incomplete until #334.
+
+S129 (`specs/129-windows-integration-matrix`) follows S128 and closes #327 at
+the finite native Windows integration boundary. A closed registry maps every
+required completion domain to an exact hosted or physical evidence row. Hosted
+CI builds the official feature set from a temporary Npcap SDK, stages the
+relocated executable, and retains only a sanitized summary. Explicit physical
+execution covers non-admin refusal, installed Npcap, current-user trust
+cleanup, unmodified analyzer consumption, and residue reconciliation. This
+validates package-independent Windows behavior and the staged install layout;
+S131 under #329 retains MSI and archive install, upgrade, repair, uninstall,
+checksum, signature, and content validation. Supply-chain audit S130 under
+#328 is the next release-critical slice, and Deep Capture remains incomplete
+until #334.

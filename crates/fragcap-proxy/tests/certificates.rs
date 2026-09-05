@@ -4,6 +4,9 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+#[cfg(windows)]
+use std::{fs, io, path::PathBuf};
+
 use fragcap_proxy::{CertificateIdentity, LeafCache, SessionCertificateAuthority};
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::parse_x509_certificate;
@@ -125,4 +128,130 @@ fn private_material_is_dpapi_protected_in_owned_storage() {
     let impossible = directory.path().join("absent").join("key");
     assert!(ca.persist_private_key(&impossible).is_err());
     assert!(!impossible.exists());
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "S129 matrix runner only"]
+fn approved_current_user_trust_round_trip_restores_exact_state() {
+    use fragcap_proxy::{CertificateStore, NativeCertificateStore, TrustState};
+
+    assert_eq!(
+        std::env::var("FRAGCAP_WINDOWS_PHYSICAL_EFFECTS").as_deref(),
+        Ok("approved")
+    );
+    let ca = SessionCertificateAuthority::generate(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        SystemTime::now(),
+        Duration::from_secs(300),
+    )
+    .unwrap();
+    let store = NativeCertificateStore;
+    let obligation = trust_obligation_path();
+    assert_eq!(
+        store
+            .observe(ca.der().as_ref(), ca.sha1_thumbprint())
+            .unwrap(),
+        TrustState::Absent
+    );
+    write_trust_obligation(&obligation, ca.der().as_ref(), ca.sha1_thumbprint()).unwrap();
+    store
+        .add_exact(ca.der().as_ref(), ca.sha1_thumbprint())
+        .unwrap();
+    let observed = store.observe(ca.der().as_ref(), ca.sha1_thumbprint());
+    let cleanup = store.remove_exact(ca.der().as_ref(), ca.sha1_thumbprint());
+    let after = store.observe(ca.der().as_ref(), ca.sha1_thumbprint());
+    if cleanup.is_ok() && matches!(after, Ok(TrustState::Absent)) {
+        fs::remove_file(&obligation).unwrap();
+    }
+    cleanup.unwrap();
+    assert_eq!(observed.unwrap(), TrustState::PresentExact);
+    assert_eq!(after.unwrap(), TrustState::Absent);
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "S129 matrix runner recovery only"]
+fn reconcile_pending_current_user_trust() {
+    use fragcap_proxy::{CertificateStore, NativeCertificateStore, TrustState};
+
+    assert_eq!(
+        std::env::var("FRAGCAP_WINDOWS_PHYSICAL_EFFECTS").as_deref(),
+        Ok("approved")
+    );
+    let obligation = trust_obligation_path();
+    if !obligation.is_file() {
+        return;
+    }
+    let (der, thumbprint) = read_trust_obligation(&obligation).unwrap();
+    let calculated = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &der)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(calculated, thumbprint);
+    let store = NativeCertificateStore;
+    store.remove_exact(&der, &thumbprint).unwrap();
+    assert_eq!(
+        store.observe(&der, &thumbprint).unwrap(),
+        TrustState::Absent
+    );
+    fs::remove_file(obligation).unwrap();
+}
+
+#[cfg(windows)]
+fn trust_obligation_path() -> PathBuf {
+    PathBuf::from(std::env::var_os("FRAGCAP_WINDOWS_SCRATCH").expect("matrix scratch root"))
+        .join("trust-cleanup.bin")
+}
+
+#[cfg(windows)]
+fn write_trust_obligation(path: &std::path::Path, der: &[u8], thumbprint: &str) -> io::Result<()> {
+    let mut bytes = b"fragcap-s129-trust-v1\n".to_vec();
+    bytes.extend_from_slice(thumbprint.as_bytes());
+    bytes.push(b'\n');
+    bytes.extend_from_slice(der);
+    let pending = path.with_extension("pending");
+    fs::write(&pending, bytes)?;
+    fs::rename(pending, path)
+}
+
+#[cfg(windows)]
+fn read_trust_obligation(path: &std::path::Path) -> io::Result<(Vec<u8>, String)> {
+    let bytes = fs::read(path)?;
+    let first = bytes.iter().position(|byte| *byte == b'\n');
+    let second = first.and_then(|index| {
+        bytes[index + 1..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|next| index + 1 + next)
+    });
+    let (first, second) = first
+        .zip(second)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid trust obligation"))?;
+    if &bytes[..first] != b"fragcap-s129-trust-v1" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unknown trust obligation",
+        ));
+    }
+    let thumbprint = std::str::from_utf8(&bytes[first + 1..second])
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        .to_owned();
+    Ok((bytes[second + 1..].to_vec(), thumbprint))
+}
+
+#[cfg(windows)]
+#[test]
+fn trust_cleanup_obligation_round_trips_exact_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("trust-cleanup.bin");
+    let der = b"public certificate bytes";
+    let thumbprint = "0123456789abcdef0123456789abcdef01234567";
+    write_trust_obligation(&path, der, thumbprint).unwrap();
+    let observed = read_trust_obligation(&path).unwrap();
+    assert_eq!(observed, (der.to_vec(), thumbprint.to_owned()));
 }
