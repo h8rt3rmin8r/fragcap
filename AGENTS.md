@@ -581,7 +581,7 @@ Deep Capture remains incomplete until #334.
 S129 closes #327 at the finite native Windows integration boundary. One closed
 registry maps every required Windows completion domain to a hosted or explicitly
 authorized physical row. The runner uses direct argv, hidden finite child
-processes, bounded local output, exact capability refusal, staged binary
+processes inside kill-on-close Windows jobs, bounded local output, exact capability refusal, staged binary
 identity, and cleanup reconciliation. Hosted CI uses the temporary Npcap SDK as
 a build input but does not install or publish it, and uploads only a sanitized
 summary. Physical evidence covers non-admin refusal, installed Npcap,
@@ -589,7 +589,9 @@ current-user trust cleanup, unmodified analyzer consumption, and zero owned
 residue. S129 deliberately validates a package-independent staged install
 layout to break the #327/#329 dependency cycle. MSI and archive lifecycle,
 signatures, checksums, and final contents remain #329. Supply-chain audit #328
-is next, and Deep Capture remains incomplete until #334.
+is next, and Deep Capture remains incomplete until #334. The runner takes the
+already-resolved `windows-sys` 0.36 as a Windows-only tooling dependency for
+job-object ownership; it adds no package and changes no product dependency.
 
 S048 added `winresource`, the workspace's first build-dependency, to stamp the
 Windows exe's version resource so `Get-Command fragcap` reports the real version

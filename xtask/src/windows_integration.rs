@@ -32,7 +32,7 @@ pub fn run(root: &Path, arguments: &[String]) -> io::Result<usize> {
     if arguments.first().map(String::as_str) == Some("--validate-report") {
         let path = value_after(arguments, "--validate-report")
             .ok_or_else(|| invalid_input("--validate-report needs a path"))?;
-        problems.extend(validate_summary(root, &registry, Path::new(path))?);
+        problems.extend(validate_report(root, &registry, Path::new(path))?);
         return report(problems);
     }
     if arguments.first().map(String::as_str) == Some("--release") {
@@ -391,6 +391,25 @@ fn derive_summary(raw: &Path) -> io::Result<Value> {
 fn validate_summary(root: &Path, registry: &Value, path: &Path) -> io::Result<Vec<String>> {
     let bytes = fs::read(path)?;
     let value: Value = serde_json::from_slice(&bytes).map_err(invalid_data)?;
+    validate_summary_value(root, registry, &bytes, &value)
+}
+
+fn validate_report(root: &Path, registry: &Value, path: &Path) -> io::Result<Vec<String>> {
+    let bytes = fs::read(path)?;
+    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+        return validate_summary_value(root, registry, &bytes, &value);
+    }
+    let summary = derive_summary(path)?;
+    let summary_bytes = serde_json::to_vec(&summary).map_err(invalid_data)?;
+    validate_summary_value(root, registry, &summary_bytes, &summary)
+}
+
+fn validate_summary_value(
+    root: &Path,
+    registry: &Value,
+    bytes: &[u8],
+    value: &Value,
+) -> io::Result<Vec<String>> {
     let mut problems = Vec::new();
     if bytes.len() > 128 * 1024 {
         problems.push("summary exceeds 128 KiB".into());
@@ -468,7 +487,7 @@ fn validate_summary(root: &Path, registry: &Value, path: &Path) -> io::Result<Ve
         "hostname",
         "secret",
     ];
-    let lowered = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+    let lowered = String::from_utf8_lossy(bytes).to_ascii_lowercase();
     for token in forbidden {
         if lowered.contains(&format!("\"{token}\"")) {
             problems.push(format!("summary exposes forbidden field {token}"));
@@ -512,7 +531,15 @@ fn child_output(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
+    #[cfg(windows)]
+    let job = WindowsJob::new()?;
     let mut child = command.spawn()?;
+    #[cfg(windows)]
+    if let Err(error) = job.assign(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let out_thread = thread::spawn(move || read_bounded(stdout));
@@ -525,6 +552,9 @@ fn child_output(
         }
         if started.elapsed() >= timeout {
             timed_out = true;
+            #[cfg(windows)]
+            job.terminate()?;
+            #[cfg(not(windows))]
             child.kill()?;
             break child.wait()?;
         }
@@ -542,6 +572,67 @@ fn child_output(
         timed_out,
         output,
     })
+}
+
+#[cfg(windows)]
+struct WindowsJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn new() -> io::Result<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let job = Self(handle);
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(limits).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    fn assign(&self, child: &std::process::Child) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as isize) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) -> io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+        if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
 }
 
 fn read_bounded(stream: impl Read) -> String {
@@ -818,6 +909,45 @@ mod tests {
         let _ = fs::remove_dir_all(directory);
     }
     #[test]
+    fn raw_jsonl_and_derived_summary_validate_identically() {
+        let directory =
+            std::env::temp_dir().join(format!("fragcap-s129-jsonl-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let reference: Value =
+            serde_json::from_slice(&fs::read(root().join(REFERENCE)).unwrap()).unwrap();
+        let raw_path = directory.join("physical.jsonl");
+        let mut raw = File::create(&raw_path).unwrap();
+        write_record(
+            &mut raw,
+            &json!({
+                "record":"header", "schema_version":1, "tier":reference["tier"],
+                "registry_sha256":reference["registry_sha256"], "revision":reference["revision"],
+                "product_version":reference["product_version"],
+                "binary_sha256":reference["binary_sha256"],
+                "capabilities":reference["capabilities"]
+            }),
+        )
+        .unwrap();
+        for row in reference["rows"].as_array().unwrap() {
+            let mut record = row.clone();
+            record["record"] = json!("row");
+            write_record(&mut raw, &record).unwrap();
+        }
+        let mut terminal = reference["terminal"].clone();
+        terminal["record"] = json!("terminal");
+        write_record(&mut raw, &terminal).unwrap();
+        drop(raw);
+        assert!(validate_report(&root(), &registry(), &raw_path)
+            .unwrap()
+            .is_empty());
+        assert!(
+            validate_summary(&root(), &registry(), &root().join(REFERENCE))
+                .unwrap()
+                .is_empty()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+    #[test]
     fn bounded_reader_and_timeout_are_finite() {
         let input = vec![b'x'; MAX_OUTPUT + 10];
         assert_eq!(read_bounded(input.as_slice()).len(), MAX_OUTPUT + 1);
@@ -830,5 +960,30 @@ mod tests {
         .unwrap();
         assert!(result.success);
         assert!(result.output.contains("rustc"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn timeout_terminates_descendants_before_reader_join() {
+        let directory =
+            std::env::temp_dir().join(format!("fragcap-s129-tree-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let marker = directory.join("survived.txt");
+        let script = format!(
+            "ping.exe -n 20 127.0.0.1 && echo survived > \\\"{}\\\"",
+            marker.display()
+        );
+        let started = Instant::now();
+        let result = child_output(
+            Path::new("cmd.exe"),
+            &["/d", "/s", "/c", &script],
+            &root(),
+            Duration::from_millis(250),
+        )
+        .unwrap();
+        assert!(result.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!marker.exists());
+        let _ = fs::remove_dir_all(directory);
     }
 }

@@ -47,9 +47,9 @@
 
 ## Decision 5: Child execution is finite and hidden on Windows
 
-**Decision**: The orchestrator launches direct argv vectors with redirected standard streams, fixed timeouts, bounded output capture, and `CREATE_NO_WINDOW` on Windows. It never invokes a shell, scheduled task, service, background monitor, or recurring automation.
+**Decision**: The orchestrator launches direct argv vectors with redirected standard streams, fixed timeouts, bounded output capture, and `CREATE_NO_WINDOW` on Windows. Each child is assigned immediately to a kill-on-close Windows job, and timeout terminates and awaits the whole job before output readers join. It never invokes a shell, scheduled task, service, background monitor, or recurring automation.
 
-**Rationale**: This satisfies the repository desktop rule, avoids quoting injection, prevents focus-stealing consoles, and ensures a hung child becomes an explicit failed row.
+**Rationale**: This satisfies the repository desktop rule, avoids quoting injection, prevents focus-stealing consoles, and ensures a hung child and every descendant become an explicit failed row without retaining pipe handles or effects beyond the deadline.
 
 **Alternatives considered**:
 
@@ -61,6 +61,8 @@
 **Decision**: Raw command output and scratch bundles remain under ignored build output and are never uploaded. A derived summary contains closed typed fields only. Validation rejects secrets, raw certificates, payloads, host/user names, and absolute operator paths before upload or commit.
 
 **Rationale**: Failure evidence must remain useful without publishing the sensitive observations the product exists to collect. Closed construction plus adversarial seeded tests is stronger than best-effort text redaction.
+
+The validation entry point accepts either the local JSON Lines stream or the derived public summary. A raw stream is reduced through the same summary derivation before the closed public schema is validated, so both forms have one acceptance authority.
 
 **Alternatives considered**:
 
