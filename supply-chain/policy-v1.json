@@ -45,6 +45,6 @@
   ],
   "unsafe_review": {"graph_view": "windows-all", "graph_digest": "c657c64f75e0ab60ec843a74b2ba85c34f6a236c1fc931203b53efa5e4596862", "owner": "project-maintainers", "reviewed": "2026-09-05", "expires": "2026-12-04", "rationale": "Unsafe implementation is confined to reviewed cryptography, platform FFI, allocators, and optimized transitive packages; graph drift requires renewed review."},
   "exceptions": [
-    {"id": "S130-TOOL-001", "rule": "tool-yanked", "package": "xml-rs@0.8.19", "owner": "project-maintainers", "rationale": "The current official cargo-cyclonedx 0.5.9 locked tool graph retains this yanked XML writer; it runs only during SBOM generation, is not linked or shipped, and has no advisory.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "Upgrade cargo-cyclonedx when an official release removes xml-rs 0.8.19 from its locked generator graph."}
+    {"id": "S130-TOOL-001", "rule": "tool-yanked", "package": "xml-rs@0.8.19", "tool": "cargo-cyclonedx", "tool_version": "0.5.9", "owner": "project-maintainers", "rationale": "The current official cargo-cyclonedx 0.5.9 locked tool graph retains this yanked XML writer; it runs only during SBOM generation, is not linked or shipped, and has no advisory.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "Upgrade cargo-cyclonedx when an official release removes xml-rs 0.8.19 from its locked generator graph."}
   ]
 }

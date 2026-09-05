@@ -60,7 +60,7 @@ The current official cargo-cyclonedx 0.5.9 locked tool graph emits a Cargo warni
 
 ## Decision 9: Make exceptions finite and procedures executable
 
-Every exception is JSON data with a unique identifier, exact rule and package scope, owner, rationale, creation date, expiry date, and removal condition. The validator rejects unknown fields, invalid dates, expired exceptions, duplicates, unused entries, and a package wildcard. An exception can narrow a finding but cannot disable the entire gate or turn an unavailable audit into success.
+Every exception is JSON data with a unique identifier, exact rule and package scope, owner, rationale, creation date, expiry date, and removal condition. A tool-graph exception additionally binds the exact governed tool and version that resolves the package. The validator rejects unknown fields, invalid or future dates, expired exceptions, duplicates, unused entries, and a package wildcard. An exception can narrow a finding but cannot disable the entire gate or turn an unavailable audit into success.
 
 The maintainer procedure documents routine one-package updates and emergency advisory response. Contract tests seed valid update, advisory, stale-data, expired-exception, feature-drift, Windows-only drift, and rollback cases. The process preserves pull requests, CI, tag authorization, and the crates.io environment approval.
 

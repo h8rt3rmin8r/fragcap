@@ -61,6 +61,8 @@
 - `id`: Unique stable identifier.
 - `rule`: Exact closed rule identifier.
 - `package`: Exact name and version scope; wildcards prohibited.
+- `tool`: Exact governed tool when the finding belongs to a release-tool graph.
+- `tool_version`: Exact governed tool version when the finding belongs to a release-tool graph.
 - `owner`: Responsible maintainer.
 - `rationale`: Specific reason the policy cannot yet be met.
 - `created`: ISO date.

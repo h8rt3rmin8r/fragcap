@@ -219,7 +219,7 @@ fn normalize_metadata(
         let id = string(object, "id")?;
         let package_name = string(object, "name")?;
         let version = string(object, "version")?;
-        let source = optional_string(object, "source");
+        let source = normalize_package_source(&id, optional_string(object, "source"), &workspace);
         let source_key = source.clone().unwrap_or_else(|| "workspace".to_string());
         let key = format!("{package_name}@{version}|{source_key}");
         let checksum = optional_string(object, "checksum").or_else(|| {
@@ -330,6 +330,18 @@ fn normalize_metadata(
         edges,
         digest,
     })
+}
+
+fn normalize_package_source(
+    id: &str,
+    declared: Option<String>,
+    workspace: &BTreeSet<String>,
+) -> Option<String> {
+    match declared {
+        Some(source) => Some(source),
+        None if workspace.contains(id) => None,
+        None => Some("path+unapproved".to_string()),
+    }
 }
 
 fn graph_digest(packages: &BTreeMap<String, Package>, edges: &BTreeSet<String>) -> String {
@@ -825,7 +837,7 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
             findings.push("exception-schema: exception is not an object".to_string());
             continue;
         };
-        check_keys(
+        check_keys_with_optional(
             item,
             &[
                 "created",
@@ -837,6 +849,7 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
                 "removal_condition",
                 "rule",
             ],
+            &["tool", "tool_version"],
             "exception",
             findings,
         );
@@ -854,7 +867,36 @@ fn validate_exceptions(object: &Map<String, Value>, today: &str, findings: &mut 
         }
         validate_governance(item, today, &format!("exception {id}"), findings);
         let rule = item.get("rule").and_then(Value::as_str).unwrap_or("");
-        let used = matches!((rule, package), ("tool-yanked", "xml-rs@0.8.19"));
+        let tool = item.get("tool").and_then(Value::as_str).unwrap_or("");
+        let tool_version = item
+            .get("tool_version")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if rule.starts_with("tool-") && (tool.is_empty() || tool_version.is_empty()) {
+            findings.push(format!("exception-schema: {id} tool scope must be exact"));
+        } else if !rule.starts_with("tool-") && (!tool.is_empty() || !tool_version.is_empty()) {
+            findings.push(format!(
+                "exception-schema: {id} has tool scope for a non-tool rule"
+            ));
+        }
+        let governed_version = object
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|record| record.get("name").and_then(Value::as_str) == Some(tool))
+            .and_then(|record| record.get("version"))
+            .and_then(Value::as_str);
+        let used = matches!(
+            (rule, package, tool, tool_version, governed_version),
+            (
+                "tool-yanked",
+                "xml-rs@0.8.19",
+                "cargo-cyclonedx",
+                "0.5.9",
+                Some("0.5.9")
+            )
+        );
         if !used {
             findings.push(format!("exception-unused: {id}"));
         }
@@ -1051,6 +1093,7 @@ fn stamp_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Result<
     filter_sbom(&mut sbom, &allowed)?;
     canonicalize_sbom_refs(&mut sbom)?;
     filter_sbom_edges(&mut sbom, &release)?;
+    stamp_sbom_package_metadata(&mut sbom, &release)?;
     let metadata = sbom
         .as_object_mut()
         .ok_or("SBOM root is not an object")?
@@ -1147,6 +1190,79 @@ fn component_allowed(component: &Value, allowed: &BTreeSet<(String, String)>) ->
         (Some(name), Some(version)) => allowed.contains(&(name.to_string(), version.to_string())),
         _ => false,
     }
+}
+
+fn stamp_sbom_package_metadata(sbom: &mut Value, release: &Graph) -> Result<(), String> {
+    if let Some(components) = sbom.get_mut("components").and_then(Value::as_array_mut) {
+        stamp_component_metadata_tree(components, release)?;
+    }
+    if let Some(component) = sbom
+        .get_mut("metadata")
+        .and_then(|value| value.get_mut("component"))
+    {
+        stamp_component_metadata(component, release)?;
+    }
+    Ok(())
+}
+
+fn stamp_component_metadata_tree(components: &mut [Value], release: &Graph) -> Result<(), String> {
+    for component in components {
+        stamp_component_metadata(component, release)?;
+        if let Some(children) = component
+            .get_mut("components")
+            .and_then(Value::as_array_mut)
+        {
+            stamp_component_metadata_tree(children, release)?;
+        }
+    }
+    Ok(())
+}
+
+fn stamp_component_metadata(component: &mut Value, release: &Graph) -> Result<(), String> {
+    let name = component
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("SBOM component lacks name")?;
+    let version = component
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or("SBOM component lacks version")?;
+    let package = graph_package(release, name, version)?;
+    let source = package.source.as_deref().unwrap_or("workspace");
+    let object = component
+        .as_object_mut()
+        .ok_or("SBOM component is not an object")?;
+    let properties = object
+        .entry("properties")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or("SBOM component properties are not an array")?;
+    properties.retain(|property| {
+        property.get("name").and_then(Value::as_str) != Some("fragcap:cargo-source")
+    });
+    properties.push(json!({"name": "fragcap:cargo-source", "value": source}));
+    properties.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .cmp(&right.get("name").and_then(Value::as_str))
+    });
+    Ok(())
+}
+
+fn graph_package<'a>(graph: &'a Graph, name: &str, version: &str) -> Result<&'a Package, String> {
+    let mut matches = graph
+        .packages
+        .values()
+        .filter(|package| package.name == name && package.version == version);
+    let package = matches
+        .next()
+        .ok_or_else(|| format!("SBOM component {name} {version} is not in the release graph"))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "SBOM component {name} {version} has ambiguous release sources"
+        ));
+    }
+    Ok(package)
 }
 
 fn canonicalize_sbom_refs(sbom: &mut Value) -> Result<(), String> {
@@ -1343,6 +1459,12 @@ fn validate_evidence(root: &Path, sbom_path: &Path, notices_path: &Path) -> Resu
     collect_components(sbom.get("components"), &mut observed);
     if let Some(component) = sbom.get("metadata").and_then(|v| v.get("component")) {
         collect_component(component, &mut observed);
+    }
+    if let Some(components) = sbom.get("components").and_then(Value::as_array) {
+        validate_sbom_component_metadata_tree(components, &release, &mut findings);
+    }
+    if let Some(component) = sbom.get("metadata").and_then(|v| v.get("component")) {
+        validate_sbom_component_metadata(component, &release, &mut findings);
     }
     for package in &expected {
         match observed.get(package).copied().unwrap_or(0) {
@@ -1615,6 +1737,106 @@ fn collect_component(component: &Value, observed: &mut BTreeMap<String, usize>) 
     }
 }
 
+fn validate_sbom_component_metadata_tree(
+    components: &[Value],
+    release: &Graph,
+    findings: &mut Vec<String>,
+) {
+    for component in components {
+        validate_sbom_component_metadata(component, release, findings);
+        if let Some(children) = component.get("components").and_then(Value::as_array) {
+            validate_sbom_component_metadata_tree(children, release, findings);
+        }
+    }
+}
+
+fn validate_sbom_component_metadata(
+    component: &Value,
+    release: &Graph,
+    findings: &mut Vec<String>,
+) {
+    let Some(name) = component.get("name").and_then(Value::as_str) else {
+        findings.push("sbom-component: component lacks name".to_string());
+        return;
+    };
+    let Some(version) = component.get("version").and_then(Value::as_str) else {
+        findings.push(format!("sbom-component: {name} lacks version"));
+        return;
+    };
+    let package = match graph_package(release, name, version) {
+        Ok(package) => package,
+        Err(error) => {
+            findings.push(format!("sbom-component: {error}"));
+            return;
+        }
+    };
+    let identity = format!("{name} {version}");
+    let expected_source = package.source.as_deref().unwrap_or("workspace");
+    let sources: Vec<&str> = component
+        .get("properties")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|property| {
+            property.get("name").and_then(Value::as_str) == Some("fragcap:cargo-source")
+        })
+        .filter_map(|property| property.get("value").and_then(Value::as_str))
+        .collect();
+    if sources.as_slice() != [expected_source] {
+        findings.push(format!(
+            "sbom-component: {identity} cargo source is missing, duplicated, or stale"
+        ));
+    }
+    match (package.license.as_deref(), component_license(component)) {
+        (Some(expected), Some(observed))
+            if normalize_license_expression(expected) == normalize_license_expression(observed) => {
+        }
+        _ => findings.push(format!(
+            "sbom-component: {identity} license metadata is missing or stale"
+        )),
+    }
+    if let Some(checksum) = package.checksum.as_deref() {
+        let exact = component
+            .get("hashes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|hash| {
+                hash.get("alg").and_then(Value::as_str) == Some("SHA-256")
+                    && hash.get("content").and_then(Value::as_str) == Some(checksum)
+            });
+        if !exact {
+            findings.push(format!(
+                "sbom-component: {identity} registry checksum is missing or stale"
+            ));
+        }
+    }
+}
+
+fn component_license(component: &Value) -> Option<&str> {
+    let licenses = component.get("licenses")?.as_array()?;
+    if licenses.len() != 1 {
+        return None;
+    }
+    licenses[0]
+        .get("expression")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            licenses[0]
+                .get("license")
+                .and_then(|license| license.get("id").or_else(|| license.get("name")))
+                .and_then(Value::as_str)
+        })
+}
+
+fn normalize_license_expression(value: &str) -> String {
+    value
+        .replace('/', " OR ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn policy_tool_version(policy: &Value, name: &str) -> Result<String, String> {
     policy
         .get("tools")
@@ -1689,8 +1911,19 @@ fn validate_maintenance(
         findings.push(format!(
             "exception-schema: {label} has invalid maintenance cadence"
         ));
-    } else if days_between(reviewed, today).is_none_or(|days| days > cadence as i64) {
-        findings.push(format!("critical-review-expired: {label}"));
+    } else {
+        match days_between(reviewed, today) {
+            Some(days) if days < 0 => findings.push(format!(
+                "exception-schema: {label} has a future maintenance review"
+            )),
+            Some(days) if days > cadence as i64 => {
+                findings.push(format!("critical-review-expired: {label}"));
+            }
+            Some(_) => {}
+            None => findings.push(format!(
+                "exception-schema: {label} has invalid maintenance cadence"
+            )),
+        }
     }
 }
 
@@ -1707,6 +1940,31 @@ fn check_keys(
         }
     }
     for key in expected {
+        if !object.contains_key(key) {
+            findings.push(format!("exception-schema: {label} lacks {key}"));
+        }
+    }
+}
+
+fn check_keys_with_optional(
+    object: &Map<String, Value>,
+    required: &[&str],
+    optional: &[&str],
+    label: &str,
+    findings: &mut Vec<String>,
+) {
+    let required: BTreeSet<&str> = required.iter().copied().collect();
+    let allowed: BTreeSet<&str> = required
+        .iter()
+        .copied()
+        .chain(optional.iter().copied())
+        .collect();
+    for key in object.keys() {
+        if !allowed.contains(key.as_str()) {
+            findings.push(format!("exception-schema: {label} has unknown field {key}"));
+        }
+    }
+    for key in required {
         if !object.contains_key(key) {
             findings.push(format!("exception-schema: {label} lacks {key}"));
         }
@@ -1951,6 +2209,19 @@ mod tests {
     }
 
     #[test]
+    fn null_source_is_workspace_only_for_exact_workspace_members() {
+        let workspace = BTreeSet::from(["path+file:///repo/member#1.0.0".to_string()]);
+        assert_eq!(
+            normalize_package_source("path+file:///repo/member#1.0.0", None, &workspace),
+            None
+        );
+        assert_eq!(
+            normalize_package_source("path+file:///outside/member#1.0.0", None, &workspace),
+            Some("path+unapproved".to_string())
+        );
+    }
+
+    #[test]
     fn sbom_filter_removes_nonrelease_components_and_edges() {
         let mut sbom = json!({
             "metadata": {"component": {"bom-ref": "root", "name": "fragcap-cli", "version": "0.9.0"}},
@@ -2028,27 +2299,86 @@ mod tests {
     }
 
     #[test]
+    fn sbom_component_metadata_is_bound_to_the_release_graph() {
+        let package = Package {
+            id: "registry+example#demo@1.0.0".to_string(),
+            key: "demo@1.0.0|registry+example".to_string(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            source: Some("registry+example".to_string()),
+            checksum: Some("abc".to_string()),
+            license: Some("MIT/Apache-2.0".to_string()),
+            rust_version: Some("1.70".to_string()),
+            features: Vec::new(),
+        };
+        let graph = Graph {
+            name: "windows-release".to_string(),
+            packages: BTreeMap::from([(package.key.clone(), package)]),
+            edges: BTreeSet::new(),
+            digest: String::new(),
+        };
+        let mut component = json!({
+            "name": "demo",
+            "version": "1.0.0",
+            "licenses": [{"expression": "MIT OR Apache-2.0"}],
+            "hashes": [{"alg": "SHA-256", "content": "abc"}]
+        });
+        stamp_component_metadata(&mut component, &graph).unwrap();
+        let mut findings = Vec::new();
+        validate_sbom_component_metadata(&component, &graph, &mut findings);
+        assert!(findings.is_empty(), "{findings:?}");
+
+        component["licenses"][0]["expression"] = json!("MIT");
+        component["properties"][0]["value"] = json!("registry+wrong");
+        component["hashes"][0]["content"] = json!("wrong");
+        validate_sbom_component_metadata(&component, &graph, &mut findings);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("license metadata")));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("cargo source")));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("registry checksum")));
+    }
+
+    #[test]
     fn only_the_exact_governed_tool_exception_is_used() {
-        let valid = Map::from_iter([(
-            "exceptions".to_string(),
-            json!([{
-                "id": "S130-TOOL-001", "rule": "tool-yanked", "package": "xml-rs@0.8.19",
-                "owner": "maintainers", "rationale": "generator only", "created": "2026-09-05",
-                "expires": "2026-12-04", "removal_condition": "upstream release"
-            }]),
-        )]);
+        let valid = Map::from_iter([
+            (
+                "tools".to_string(),
+                json!([{"name": "cargo-cyclonedx", "version": "0.5.9"}]),
+            ),
+            (
+                "exceptions".to_string(),
+                json!([{
+                    "id": "S130-TOOL-001", "rule": "tool-yanked", "package": "xml-rs@0.8.19",
+                    "tool": "cargo-cyclonedx", "tool_version": "0.5.9",
+                    "owner": "maintainers", "rationale": "generator only", "created": "2026-09-05",
+                    "expires": "2026-12-04", "removal_condition": "upstream release"
+                }]),
+            ),
+        ]);
         let mut findings = Vec::new();
         validate_exceptions(&valid, "2026-09-05", &mut findings);
         assert!(findings.is_empty());
 
-        let wildcard = Map::from_iter([(
-            "exceptions".to_string(),
-            json!([{
-                "id": "bad", "rule": "tool-yanked", "package": "xml-rs@*",
-                "owner": "maintainers", "rationale": "too broad", "created": "2026-09-05",
-                "expires": "2026-12-04", "removal_condition": "unknown"
-            }]),
-        )]);
+        let wildcard = Map::from_iter([
+            (
+                "tools".to_string(),
+                json!([{"name": "cargo-cyclonedx", "version": "0.6.0"}]),
+            ),
+            (
+                "exceptions".to_string(),
+                json!([{
+                    "id": "bad", "rule": "tool-yanked", "package": "xml-rs@*",
+                    "tool": "cargo-cyclonedx", "tool_version": "0.5.9",
+                    "owner": "maintainers", "rationale": "too broad", "created": "2026-09-05",
+                    "expires": "2026-12-04", "removal_condition": "unknown"
+                }]),
+            ),
+        ]);
         validate_exceptions(&wildcard, "2026-09-05", &mut findings);
         assert!(findings
             .iter()
@@ -2056,6 +2386,24 @@ mod tests {
         assert!(findings
             .iter()
             .any(|finding| finding.contains("exception-unused")));
+    }
+
+    #[test]
+    fn maintenance_review_cannot_be_future_dated() {
+        let item = json!({
+            "name": "cargo-deny", "version": "0.20.2", "owner": "maintainers",
+            "last_reviewed": "2026-09-06", "cadence_days": 30
+        });
+        let mut findings = Vec::new();
+        validate_maintenance(
+            item.as_object().unwrap(),
+            "2026-09-05",
+            "tool cargo-deny",
+            &mut findings,
+        );
+        assert!(findings
+            .iter()
+            .any(|finding| finding.contains("future maintenance review")));
     }
 
     #[test]

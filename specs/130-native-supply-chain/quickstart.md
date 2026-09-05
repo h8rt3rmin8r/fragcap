@@ -43,7 +43,7 @@ Expected result: both files reconcile exactly to the locked shipped closure and 
 - Change one critical dependency pin, feature, default-feature state, or review date and require the matching finding.
 - Add a Windows-only or optional edge without refreshing policy and require drift on a non-Windows host.
 - Add an unapproved compatibility line and require `duplicate-compatibility`.
-- Remove or duplicate one SBOM component and require evidence refusal.
+- Remove or duplicate one SBOM component, alter its license, source, or checksum metadata, and require evidence refusal.
 - Remove one third-party package marker and require evidence refusal.
 - Remove either evidence file from WiX or archive assembly and require `artifact-wiring`.
 - Move validation after packaging or publication and require `workflow-order`.

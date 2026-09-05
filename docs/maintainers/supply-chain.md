@@ -12,7 +12,7 @@ If a security-critical package or generator changes, update its exact pin, resol
 
 Treat an actionable RustSec advisory as a release blocker. Prefer a patched exact version and update the smallest coordinated family that resolves it. Run the same graph, MSRV, Windows release, license, evidence, and full-CI checks as a routine update. If no patched version exists, stop release work unless a narrowly scoped temporary exception is explicitly approved in a pull request.
 
-An exception must name one rule and one exact package version, owner, rationale, creation date, expiry date, and observable removal condition. It cannot contain a wildcard, disable an entire check, excuse unavailable advisory data, or outlive its stated need. Mirror an advisory exception into cargo-deny's exact advisory ignore only after the repository record exists, and remove both together. The static gate rejects expired and unused records.
+An exception must name one rule and one exact package version, owner, rationale, creation date, expiry date, and observable removal condition. A tool-graph exception must also name the exact governed tool and version that resolves the package. It cannot contain a wildcard, disable an entire check, excuse unavailable advisory data, or outlive its stated need. Mirror an advisory exception into cargo-deny's exact advisory ignore only after the repository record exists, and remove both together. The static gate rejects expired and unused records, including a tool exception whose pinned tool version has changed.
 
 ## Rollback
 

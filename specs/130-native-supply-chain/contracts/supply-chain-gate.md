@@ -26,7 +26,7 @@ Diagnostics are sorted and bounded. Each includes view, package when applicable,
 
 ## Exception Matching
 
-An exception matches one rule and one exact package identity only. No wildcard, empty package, global disable, or infrastructure-failure exception is valid. The current date must fall on or before `expires`, the exception must be used exactly once, and all governance fields are mandatory.
+An exception matches one rule and one exact package identity only. A tool-graph exception additionally matches one exact governed tool and version, so changing the tool immediately makes the exception unused. No wildcard, empty package, global disable, or infrastructure-failure exception is valid. The current date must fall on or before `expires`, the exception must be used exactly once, and all governance fields are mandatory.
 
 ## Network Audit
 
