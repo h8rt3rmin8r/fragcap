@@ -26,6 +26,7 @@ mod performance;
 mod publish;
 mod skills;
 mod spec;
+mod supply_chain;
 mod threat_model;
 mod windows_integration;
 mod wrappers;
@@ -59,6 +60,7 @@ cargo xtask <command>
   windows-integration Validate or run the finite native Windows integration matrix
   threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
+  supply-chain Validate the closed dependency policy and release evidence
 ";
 
 fn repo_root() -> PathBuf {
@@ -147,6 +149,24 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+
+        "supply-chain" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            match supply_chain::run(&root, &args) {
+                Ok(0) => {
+                    println!("supply-chain: policy and evidence boundary is complete");
+                    ExitCode::SUCCESS
+                }
+                Ok(n) => {
+                    eprintln!("supply-chain: {n} problem(s)");
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("supply-chain: could not run: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
 
         "wrappers" => match wrappers::run(&root) {
             Ok(0) => {
@@ -430,6 +450,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: license could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running supply-chain");
+            match supply_chain::run(&root, &[]) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: supply-chain reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: supply-chain could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

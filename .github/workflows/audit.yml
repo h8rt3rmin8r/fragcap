@@ -1,18 +1,17 @@
 # Dependency vulnerabilities and license policy. Specification 20.4, 24.2.
 #
-# NOTE: never executed as of S01. The allowlist in deny.toml is validated
-# locally; see the slice completion notes for its exercised status.
 name: audit
 
-# Weekly and on demand. Not per push: the workspace currently has zero external
-# dependencies, so there is nothing to audit on a change, and advisory data
-# moves on its own schedule rather than with the code. S02 adds `pull_request`
-# when dependencies first enter the graph and the check starts to mean
-# something.
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: audit-${{ github.ref }}
@@ -24,10 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # cargo-deny-action v2.1.1, immutable because this is a release-security gate.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           # A dependency introducing a license outside the allowlist fails the
           # build, per specification section 20.4. Copyleft is excluded, with
           # particular force for packet interception libraries, which
           # constitution P-1 prohibits on independent grounds.
           command: check advisories licenses bans sources
+          arguments: --all-features
+          version: 0.20.2
+          rust-version: 1.88.0

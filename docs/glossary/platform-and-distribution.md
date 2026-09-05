@@ -1,5 +1,52 @@
 # Platform and Distribution
 
+## Supply-chain gate
+
+The combined offline and network-backed authority that decides whether fragcap's locked dependency graph remains eligible for release. The offline half compares complete all-feature Windows and Linux graphs plus the exact shipped Windows closure with one reviewed policy. The network half evaluates current advisories, yanks, maintenance notices, licenses, bans, and sources.
+
+{: .matters }
+> A graph cannot disappear from review because its feature is optional or its target is inactive on the current host. Unknown or stale authority fails closed, and no supply-chain exception may disable the whole gate.
+
+**See also:** [Compatibility line](#compatibility-line), [Finite dependency exception](#finite-dependency-exception), [Software bill of materials](#software-bill-of-materials), [Third-party notices](#third-party-notices), [Capability feature](#capability-feature)
+
+## Compatibility line
+
+A set of Cargo versions expected to be semver-compatible: the major number at or above 1.0, and `0.minor` before 1.0. Simultaneous lines for one package represent independently maintained code lineages and require an exact finite policy record.
+
+{: .matters }
+> Two patch releases inside one line remain visible but are not mislabeled as a duplicate-major problem. Adding a new major or pre-1.0 minor line fails until its owner, rationale, expiry, and removal condition are reviewed.
+
+**See also:** [Supply-chain gate](#supply-chain-gate), [Finite dependency exception](#finite-dependency-exception)
+
+## Finite dependency exception
+
+A temporary approval for one exact supply-chain rule and package version. It carries a unique identity, owner, rationale, creation date, expiry date, and observable removal condition.
+
+{: .matters }
+> Wildcards, global bypasses, missing owners, expired records, and unused records fail the gate. An unavailable advisory database is infrastructure failure and cannot be excused as though it were a package finding.
+
+**See also:** [Supply-chain gate](#supply-chain-gate), [Compatibility line](#compatibility-line)
+
+## Software bill of materials
+
+**Also known as:** SBOM
+
+The CycloneDX 1.5 machine-readable inventory generated from the exact locked Windows release graph. It records component identities and dependency relationships and is bound to the fragcap version, source revision, target, feature set, lockfile digest, and supply-chain policy digest.
+
+{: .matters }
+> Both the portable archive and MSI contain the validated SBOM. Build-only and development-only packages are not represented as distributed runtime libraries, and stale or missing components stop packaging.
+
+**See also:** [Supply-chain gate](#supply-chain-gate), [Third-party notices](#third-party-notices), [MSI installer](#msi-installer)
+
+## Third-party notices
+
+The human-readable dependency identity, license expression, source, attribution, and legal text generated from the same exact release graph as the [software bill of materials](#software-bill-of-materials).
+
+{: .matters }
+> This file is dependency evidence, not the project's Apache `NOTICE` and not release notes. It is generated and reconciled before packaging, then installed beside fragcap in both release forms.
+
+**See also:** [Software bill of materials](#software-bill-of-materials), [Supply-chain gate](#supply-chain-gate), [MSI installer](#msi-installer)
+
 ## npcap
 
 A Windows packet capture driver and library, the current successor to WinPcap.

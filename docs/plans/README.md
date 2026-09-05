@@ -345,3 +345,5 @@ S131 under #329 retains MSI and archive install, upgrade, repair, uninstall,
 checksum, signature, and content validation. Supply-chain audit S130 under
 #328 is the next release-critical slice, and Deep Capture remains incomplete
 until #334.
+
+S130 (`specs/130-native-supply-chain`) follows S129 and closes #328 at the native dependency policy and release-evidence boundary. A closed offline authority covers complete all-feature Windows and Linux graphs plus the exact shipped Windows closure, while blocking cargo-deny automation supplies fresh advisory, yanked, abandoned, unsound, license, ban, and source intelligence. Finite exceptions and critical maintenance records expire mechanically. Exact-pinned standard generators produce CycloneDX 1.5 and complete third-party notices, and repository-owned reconciliation must pass before both existing release packages are assembled. S131 under #329 is the next release-critical slice and owns authoritative archive/MSI installation, upgrade, repair, uninstall, checksum, signature, and final-content certification. Deep Capture remains incomplete until #334.

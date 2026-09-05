@@ -17,6 +17,7 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.9
+include-dev = true
 
 [[licenses.exceptions]]
 # The project's own crates.
@@ -25,6 +26,7 @@ name  = "fragcap"
 
 [bans]
 multiple-versions = "warn"
+multiple-versions-include-dev = true
 wildcards         = "deny"
 
 [[bans.deny]]
@@ -36,7 +38,16 @@ name = "windivert"
 name = "windivert-sys"
 
 [advisories]
-yanked = "deny"
+yanked       = "deny"
+unmaintained = "all"
+unsound      = "all"
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
 
 [sources]
 unknown-registry = "deny"
