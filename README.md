@@ -198,34 +198,19 @@ covert decryption or key-recovery path.
 
 ## Windows installer (MSI)
 
-**Each release offers three downloads, and you choose: a portable `.zip`, a
-Windows installer (`.msi`), and the targets hint database on its own.** Every
-download has a `.sha256` checksum beside it. The installer is the simplest path
-for a new user; the portable archive needs no installation.
+**Each release offers three downloads, and you choose: a portable `.zip`, a Windows installer (`.msi`), and the catalog database on its own.** Every primary download has a `.sha256` checksum beside it. The installer is the simplest path for a new user; the portable archive needs no installation.
 
-The installer places fragcap under `Program Files`, adds it to your `PATH` (so
-`fragcap` works in any new terminal), installs the barebones hint database, and
-excludes its own install directory from Windows Defender on a best-effort basis
-(removed when you uninstall). On completion it offers to open the npcap download
-page, because npcap is still a separate install (see below). It never downloads,
-bundles, or installs npcap itself.
+The installer places fragcap under `Program Files`, adds it to your `PATH` (so `fragcap` works in any new terminal), installs the seeded barebones catalog database, and excludes its own install directory from Windows Defender on a best-effort basis when the exclusion was not already independently present. On completion it offers to open the npcap download page, because npcap is still a separate install (see below). It never downloads, bundles, or installs npcap itself.
 
-**The installer is not code-signed.** Windows will show a SmartScreen warning
-("Windows protected your PC") and an "Unknown Publisher" prompt. This is expected
-for this release, not a sign the download is bad. To proceed, choose **More info**
-and then **Run anyway**. Because there is no signature, the integrity check is the
-checksum: compute the SHA-256 of the downloaded `.msi` and confirm it matches the
-published `.sha256`. Code signing is planned and tracked separately (issue #79).
+**The installer is not code-signed.** Windows will show a SmartScreen warning ("Windows protected your PC") and an "Unknown Publisher" prompt. This is expected for this release, not a sign the download is bad. To proceed, choose **More info** and then **Run anyway**. Because there is no signature, the integrity check is the checksum: compute the SHA-256 of the downloaded `.msi` and confirm it matches the published `.sha256`. Package certification checks this unsigned state and the checksum over the final published bytes.
 
 | Download | Use it when |
 | --- | --- |
 | `fragcap-<version>-x86_64-pc-windows-msvc.zip` | You want a portable copy with no installer; unzip and run |
 | `fragcap-<version>-x86_64.msi` | You want a normal install (PATH, uninstall entry, bundled database) |
-| `hint.db` | You only want to refresh the targets hint database |
+| `catalog.db` | You only want to refresh the shipped catalog database |
 
-The `PATH` entry takes effect in newly opened terminals, not the one that was
-already open. The bundled hint database is empty on release; fragcap grows it from
-your own machine as you capture.
+The `PATH` entry takes effect in newly opened terminals, not the one that was already open. The bundled catalog is seeded offline with the shipped detection signatures; its writable per-user copy can grow independently without being owned or removed by the installer.
 
 ## Prerequisite: npcap
 

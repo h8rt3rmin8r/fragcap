@@ -22,6 +22,7 @@ mod fuzz;
 mod license;
 mod lint;
 mod notes;
+mod package_certification;
 mod performance;
 mod publish;
 mod skills;
@@ -61,6 +62,7 @@ cargo xtask <command>
   threat-model Validate native Deep Capture threats and executable evidence
   spec       Specification currency: Applies-To vs workspace version, fragment spec-impact
   supply-chain Validate the closed dependency policy and release evidence
+  package-certification Validate final Windows package and lifecycle evidence
 ";
 
 fn repo_root() -> PathBuf {
@@ -163,6 +165,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("supply-chain: could not run: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+
+        "package-certification" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            match package_certification::run(&root, &args) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("package-certification: could not run: {error}");
                     ExitCode::from(2)
                 }
             }
@@ -462,6 +476,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("ci: supply-chain could not run: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            println!("ci: running package-certification");
+            match package_certification::run(&root, &[]) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("ci: package-certification reported {n} problem(s)");
+                    return ExitCode::from(1);
+                }
+                Err(e) => {
+                    eprintln!("ci: package-certification could not run: {e}");
                     return ExitCode::from(2);
                 }
             }

@@ -24,6 +24,20 @@
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    let source_revision =
+        std::env::var("FRAGCAP_SOURCE_REVISION").unwrap_or_else(|_| "unknown".into());
+    let official = std::env::var("FRAGCAP_OFFICIAL_BUILD").map_or("false", |value| {
+        if value == "1" {
+            "true"
+        } else {
+            "false"
+        }
+    });
+
+    println!("cargo:rustc-env=FRAGCAP_BUILD_TARGET={target}");
+    println!("cargo:rustc-env=FRAGCAP_BUILD_SOURCE_REVISION={source_revision}");
+    println!("cargo:rustc-env=FRAGCAP_BUILD_OFFICIAL={official}");
 
     if target_os == "windows" && target_env == "msvc" {
         // Stamp the PE version resource on every windows-msvc build, live or not.
@@ -40,6 +54,8 @@ fn main() {
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
+    println!("cargo:rerun-if-env-changed=FRAGCAP_SOURCE_REVISION");
+    println!("cargo:rerun-if-env-changed=FRAGCAP_OFFICIAL_BUILD");
 }
 
 /// Embed a VERSIONINFO resource carrying the crate version, so the exe's
@@ -76,6 +92,9 @@ fn stamp_version_resource() {
     res.set("OriginalFilename", "fragcap.exe");
     res.set("LegalCopyright", "Licensed under Apache-2.0");
     if let Err(e) = res.compile() {
+        if std::env::var("FRAGCAP_OFFICIAL_BUILD").as_deref() == Ok("1") {
+            panic!("official fragcap version resource could not be stamped: {e}");
+        }
         println!("cargo:warning=fragcap version resource not stamped: {e}");
     }
 }

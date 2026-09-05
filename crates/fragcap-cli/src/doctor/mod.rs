@@ -114,7 +114,7 @@ pub struct DeepCaptureInputs {
     pub session_dir: Option<std::path::PathBuf>,
     /// Whether the session-bundle root exists.
     pub session_dir_present: bool,
-    /// External proxy backend availability, when one is found.
+    /// Native Deep Capture backend availability.
     pub proxy_backend: Option<ProxyBackendInfo>,
     /// Probe error for the proxy backend, when detection failed after finding it.
     pub proxy_backend_error: Option<String>,

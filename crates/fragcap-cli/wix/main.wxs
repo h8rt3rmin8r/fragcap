@@ -29,7 +29,9 @@
              Description="fragcap: passive, process-attributed network capture for Windows"
              Manufacturer="ShruggieTech" />
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of fragcap is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of fragcap is already installed."
+                  AllowSameVersionUpgrades="yes"
+                  Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Add/Remove Programs metadata. WixUI_InstallDir sets ARPNOMODIFY itself. -->
@@ -121,9 +123,10 @@
       action removes the exclusion if a later step fails, so a cancelled install
       leaves no orphaned exclusion.
     -->
+    <!-- FRAGCAP_DEFENDER_EXCLUSION_OWNER is written only after this installer creates and re-observes the exact exclusion. A pre-existing administrator-owned exclusion has no marker and is never removed by fragcap. -->
     <CustomAction Id="SetDefenderAdd"
                   Property="DefenderAdd"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) Add-MpPreference -ExclusionPath ($p.TrimEnd([char]46, [char]92))}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Add-MpPreference -ExclusionPath $p; if((Get-MpPreference).ExclusionPath -contains $p){New-Item -Path $k -Force|Out-Null; New-ItemProperty -Path $k -Name $n -Value $p -PropertyType String -Force|Out-Null}}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderAdd"
                   BinaryKey="WixCA"
@@ -134,7 +137,7 @@
 
     <CustomAction Id="SetDefenderRollback"
                   Property="DefenderRollback"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) Remove-MpPreference -ExclusionPath ($p.TrimEnd([char]46, [char]92))}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; Remove-Item -Path $k -Force -ErrorAction SilentlyContinue}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRollback"
                   BinaryKey="WixCA"
@@ -145,7 +148,7 @@
 
     <CustomAction Id="SetDefenderRemove"
                   Property="DefenderRemove"
-                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) Remove-MpPreference -ExclusionPath ($p.TrimEnd([char]46, [char]92))}&quot; &quot;[INSTALLDIR].&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($p) $p=$p.TrimEnd([char]46,[char]92); $k='HKLM:\Software\ShruggieTech\fragcap'; $n='FRAGCAP_DEFENDER_EXCLUSION_OWNER'; if((Get-ItemProperty -Path $k -Name $n -ErrorAction SilentlyContinue).$n -eq $p){Remove-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue; Remove-Item -Path $k -Force -ErrorAction SilentlyContinue}}&quot; &quot;[INSTALLDIR].&quot;"
                   Execute="immediate" />
     <CustomAction Id="DefenderRemove"
                   BinaryKey="WixCA"
@@ -241,8 +244,8 @@
 
       <!-- Uninstall: remove the Defender exclusion before the files are removed.
            extcap registration is intentionally left in place (see above). -->
-      <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
-      <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
+      <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
     <!--

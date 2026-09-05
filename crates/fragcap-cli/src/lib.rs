@@ -163,6 +163,7 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
             "capture"
                 | "deep-capture"
                 | "__controlled-target"
+                | "__build-identity"
                 | "replay"
                 | "targets"
                 | "technologies"
@@ -203,6 +204,7 @@ fn dispatch(
         Command::DeepCapture(args) => commands::deep_capture::run(&args, emitter),
         Command::Bundle(args) => commands::bundle::run(&args, out),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
+        Command::BuildIdentity => commands::build_identity::run(out),
         Command::Doctor(args) => commands::doctor::run(&args, json, out, emitter),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, json, out, emitter),

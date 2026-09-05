@@ -144,6 +144,9 @@ pub enum Command {
     /// Internal controlled target used by the Deep Capture verification harness.
     #[command(name = "__controlled-target", hide = true)]
     ControlledTarget(ControlledTargetArgs),
+    /// Internal machine-readable release build identity.
+    #[command(name = "__build-identity", hide = true)]
+    BuildIdentity,
     /// Run a capture file back (not yet implemented).
     Replay(StubArgs),
     /// Register, list, show, and discover capture targets in the user store

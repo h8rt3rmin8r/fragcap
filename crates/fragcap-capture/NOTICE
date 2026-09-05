@@ -27,9 +27,10 @@ npcap
     fragcap distribution artifact: not in release archives, not in installers,
     and not in container images.
 
-    fragcap detects npcap at runtime and reports its absence with the official
-    download location. It never downloads, installs, or invokes an installer
-    for it.
+    Official fragcap release packages detect npcap at runtime and report its
+    absence with the official download location. They never download, install,
+    or invoke an installer for it. A separately built optional developer feature
+    may fetch the vendor installer only after explicit operator confirmation.
 
     npcap is a product of the Nmap Project and is governed by its own license.
     Obtain it from https://npcap.com and review the license terms there.
