@@ -55,6 +55,11 @@ pub fn validate(body: &str, version: &str) -> Result<(), Vec<String>> {
             "release notes contain {nonempty} non-empty lines; the limit is {MAX_NONEMPTY_LINES}"
         ));
     }
+    if crate::changelog::normalize_markdown(trimmed).trim_end() != trimmed {
+        problems.push(
+            "release notes must keep each paragraph and list item on one source line".to_string(),
+        );
+    }
     if lines.last().copied() != Some(required_closing_line(version).as_str()) {
         problems
             .push("release notes must end with the standard full-changelog guidance".to_string());
@@ -106,20 +111,37 @@ fn release_section<'a>(changelog: &'a str, version: &str) -> Option<&'a str> {
     Some(rest[..body_end].trim())
 }
 
-fn comparable_text(markdown: &str) -> String {
-    markdown
+fn content_units(markdown: &str) -> Vec<Vec<String>> {
+    crate::changelog::normalize_markdown(markdown)
         .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            line.strip_prefix("- ")
+                .or_else(|| line.strip_prefix("* "))
+                .or_else(|| line.strip_prefix("+ "))
+                .unwrap_or(line)
+        })
+        .map(|line| {
+            line.split(|character: char| !character.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        })
+        .filter(|words| !words.is_empty())
+        .collect()
 }
 
-fn is_carbon_copy(body: &str, changelog: &str, version: &str) -> bool {
+fn contains_words(haystack: &[String], needle: &[String]) -> bool {
+    needle.len() <= haystack.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn copies_changelog_text(body: &str, changelog: &str, version: &str) -> bool {
+    const MIN_SUBSTANTIVE_WORDS: usize = 8;
+
     let Some(section) = release_section(changelog, version) else {
         return false;
     };
@@ -132,7 +154,23 @@ fn is_carbon_copy(body: &str, changelog: &str, version: &str) -> bool {
         .strip_suffix(&closing)
         .unwrap_or(body)
         .trim();
-    !summary.is_empty() && comparable_text(summary) == comparable_text(section)
+    let summary_units = content_units(summary);
+    let changelog_units = content_units(section);
+    let summary_all = summary_units.iter().flatten().collect::<Vec<_>>();
+    let changelog_all = changelog_units.iter().flatten().collect::<Vec<_>>();
+
+    if !summary_all.is_empty() && summary_all == changelog_all {
+        return true;
+    }
+
+    summary_units.iter().any(|summary_unit| {
+        changelog_units.iter().any(|changelog_unit| {
+            let shorter = summary_unit.len().min(changelog_unit.len());
+            shorter >= MIN_SUBSTANTIVE_WORDS
+                && (contains_words(summary_unit, changelog_unit)
+                    || contains_words(changelog_unit, summary_unit))
+        })
+    })
 }
 
 /// Print the validated release notes for `version`.
@@ -171,9 +209,9 @@ pub fn run(root: &Path, version: &str) -> usize {
         eprintln!("notes: CHANGELOG.md has no [{version}] release section");
         return 1;
     }
-    if is_carbon_copy(&body, &changelog, version) {
+    if copies_changelog_text(&body, &changelog, version) {
         eprintln!(
-            "notes: {} copies the complete changelog section; summarize its highlights instead",
+            "notes: {} copies substantive changelog text; synthesize the highlights instead",
             path.display()
         );
         return 1;
@@ -245,13 +283,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_hard_wrapped_release_notes() {
+        let body = valid("0.9.0").replace(
+            "A concise AI-written overview.",
+            "A concise AI-written\noverview.",
+        );
+        assert!(validate(&body, "0.9.0")
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("one source line")));
+    }
+
+    #[test]
     fn rejects_a_carbon_copy_of_the_release_changelog() {
         let changelog = "# Changelog\n\n## [0.9.0] - 2026-09-05\n\n### Added\n\n- One result.\n- Another result.\n\n## [0.8.0] - 2026-08-30\n\nOlder.\n";
         let body = format!(
             "# Highlights\n\n- One result.\n- Another result.\n\n{}\n",
             required_closing_line("0.9.0")
         );
-        assert!(is_carbon_copy(&body, changelog, "0.9.0"));
-        assert!(!is_carbon_copy(&valid("0.9.0"), changelog, "0.9.0"));
+        assert!(copies_changelog_text(&body, changelog, "0.9.0"));
+        assert!(!copies_changelog_text(&valid("0.9.0"), changelog, "0.9.0"));
+    }
+
+    #[test]
+    fn rejects_selected_or_reordered_changelog_entries() {
+        let changelog = "# Changelog\n\n## [0.9.0] - 2026-09-05\n\n### Added\n\n- Capture now preserves every accepted datagram with exact direction and sequence identity.\n- Release archives now contain independently verified checksums for every supported Windows target.\n\n## [0.8.0] - 2026-08-30\n\nOlder.\n";
+        let reordered = format!(
+            "# Highlights\n\n- Release archives now contain independently verified checksums for every supported Windows target.\n- Capture now preserves every accepted datagram with exact direction and sequence identity.\n\n{}\n",
+            required_closing_line("0.9.0")
+        );
+        let excerpt = format!(
+            "# Highlights\n\n- Preserves every accepted datagram with exact direction and sequence identity.\n\n{}\n",
+            required_closing_line("0.9.0")
+        );
+
+        assert!(copies_changelog_text(&reordered, changelog, "0.9.0"));
+        assert!(copies_changelog_text(&excerpt, changelog, "0.9.0"));
     }
 }

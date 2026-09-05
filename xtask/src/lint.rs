@@ -537,12 +537,6 @@ pub fn run(root: &Path) -> std::io::Result<usize> {
         }
 
         if let Ok(text) = std::str::from_utf8(&bytes) {
-            if shown == "CHANGELOG.md" && crate::changelog::normalize_markdown(text) != text {
-                println!(
-                    "{shown}: markdown-wrap: run `cargo xtask changelog --normalize`; changelog paragraphs and list items must occupy one source line"
-                );
-                total += 1;
-            }
             if let Some(detail) = external_proxy_violation(&shown, text) {
                 println!(
                     "{shown}: native-proxy-cutover: production and release inputs contain {detail}"

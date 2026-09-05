@@ -31,7 +31,7 @@ fact. Both failures are cheap to prevent and expensive to diagnose.
 comments, doc comments, commit messages, string literals, log messages, and
 generated output. Use commas, parentheses, or standard hyphens.
 
-Markdown is never hard-wrapped. Keep each prose paragraph and each list item on one source line, regardless of length. Display wrapping belongs to the renderer.
+Never introduce hard wrapping in Markdown. Keep each prose paragraph and each list item you author or modify on one source line, regardless of length. Display wrapping belongs to the renderer. Existing wrapped prose is migration debt and must not be copied into new work or mechanically rewritten outside the owning change.
 
 When hard line breaks are intentional, use a trailing backslash, never two trailing spaces, because trailing whitespace is stripped. Do not wrap inside a table row, URL, heading, link definition, or fenced code block; let those run long.
 
@@ -101,7 +101,7 @@ continuous integration.
 
 | Content | Limit |
 | --- | --- |
-| Markdown prose | One source line per paragraph or list item |
+| New or modified Markdown prose | One source line per paragraph or list item |
 | Rust | 100 columns (`rustfmt`) |
 | Shell | 80 columns |
 | Tables, URLs, code fences | no limit |
