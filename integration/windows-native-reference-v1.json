@@ -11,21 +11,21 @@
   "product_version": "0.8.0",
   "recorded_on": "2026-09-05",
   "registry_sha256": "dacb832bf4d4ae090275de5504bb92141908769cf5ca790e0db70e003769b017",
-  "revision": "d42bef7704935675561a3c30fe55244c5451913e",
+  "revision": "279b0c84a3a0759874c9c641a2c8eff9c0c482d8",
   "rows": [
     {
       "cleanup": "reconciled",
       "id": "physical-non-admin-refusal",
-      "output_bytes": 1196,
-      "output_sha256": "7b360844e6d42671157f0cab80f3f38a9756a698b8d5a5f3de4b5b9d9547ffa2",
+      "output_bytes": 876,
+      "output_sha256": "67f87ce0f7bc524d71c43482675af96d1e31e64370113bc9d28191333665d4d6",
       "status": "passed",
       "timed_out": false
     },
     {
       "cleanup": "reconciled",
       "id": "physical-npcap-present",
-      "output_bytes": 511,
-      "output_sha256": "ec0747fba420f3041e30d8287e0fc4ff5354fa487de898a44a39f79a5d47391e",
+      "output_bytes": 450,
+      "output_sha256": "9d328ead2c9655ee0f0ab5c1af143521ba16063d1c81e54819e9341b4586e794",
       "status": "passed",
       "timed_out": false
     },
@@ -33,23 +33,23 @@
       "cleanup": "reconciled",
       "id": "physical-uac-denial",
       "output_bytes": 3656,
-      "output_sha256": "5974bb7c810278f93c02066fb80f8a8b7da161efe2ac4864d817b8a1d04b1ee8",
+      "output_sha256": "af6487bf00e47b06b7f24273ebaf01583c323d8db19f52b941d793fc88515acb",
       "status": "passed",
       "timed_out": false
     },
     {
       "cleanup": "reconciled",
       "id": "physical-current-user-trust",
-      "output_bytes": 539,
-      "output_sha256": "665a8a36de3fe87e333b377926fca061e5a224cee597e7d280fb0fef42338b57",
+      "output_bytes": 346,
+      "output_sha256": "d96fe220aa60f10781ca7b61fded96a18d76ae18468de4349d4f4d55be27cd19",
       "status": "passed",
       "timed_out": false
     },
     {
       "cleanup": "reconciled",
       "id": "physical-analyzer-keylog",
-      "output_bytes": 41957,
-      "output_sha256": "38329c36c01a9e7d4bd97206de6a5ba5a8798a508c01b503f1898b405f6809ce",
+      "output_bytes": 41658,
+      "output_sha256": "2338c33e567167aafdf3675a15393978fd7dc655a4a058aea53b8b1d5e691c11",
       "status": "passed",
       "timed_out": false
     },
