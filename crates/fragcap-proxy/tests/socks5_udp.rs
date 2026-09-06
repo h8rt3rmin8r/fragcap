@@ -42,6 +42,7 @@ fn start_proxy(
     }
     NativeProxyBackend::new(config)
         .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
         .with_application_event_sink(collector)
         .start(Duration::from_secs(2))
         .unwrap()
@@ -706,3 +707,4 @@ fn forced_cleanup_revokes_an_active_association_and_releases_its_relay() {
     assert_eq!(report.observation.live_connections, 0);
     assert!(UdpSocket::bind(relay).is_ok());
 }
+mod support;

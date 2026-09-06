@@ -108,6 +108,15 @@ impl PreparedSession {
 
     /// Consume preparation and all adapters into one checked coordinator.
     pub fn into_session<'a>(self, adapters: AdapterSet<'a>) -> DeepCaptureSession<'a> {
+        self.into_session_with_cancellation(adapters, CancellationToken::new())
+    }
+
+    /// Consume preparation with a caller-owned cooperative cancellation token.
+    pub fn into_session_with_cancellation<'a>(
+        self,
+        adapters: AdapterSet<'a>,
+        cancellation: CancellationToken,
+    ) -> DeepCaptureSession<'a> {
         DeepCaptureSession {
             capture: self.capture,
             plan: self.plan,
@@ -135,6 +144,7 @@ impl PreparedSession {
             route_verification: None,
             resource_journal: None,
             cleanup_lifecycle: None,
+            cancellation,
         }
     }
 }
@@ -167,6 +177,7 @@ pub struct DeepCaptureSession<'a> {
     route_verification: Option<RouteVerification>,
     resource_journal: Option<ResourceJournal>,
     cleanup_lifecycle: Option<LifecycleWriter>,
+    cancellation: CancellationToken,
 }
 
 impl DeepCaptureSession<'_> {
@@ -175,9 +186,17 @@ impl DeepCaptureSession<'_> {
         self.state
     }
 
+    /// Return a cloneable token that may request cancellation from another thread.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
     /// Start proxy, optional trust, and managed launch after exact-plan approval.
     pub fn start(&mut self, authorization: Authorization) -> Result<(), InvalidTransition> {
         self.require(Operation::Start, &[LifecycleState::Prepared])?;
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         match authorization {
             Authorization::Approved { plan_id } if plan_id == self.plan.id => {}
             Authorization::Approved { .. } => {
@@ -346,6 +365,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         };
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         if self.deadline_expired(started, self.plan.deadlines.launch) {
             self.fail(
                 Stage::ProxyStart,
@@ -427,6 +449,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         }
+        if self.observe_cancellation() {
+            return Ok(());
+        }
 
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
         let route_target = self.plan.routing.strategy.as_str().to_string();
@@ -482,6 +507,9 @@ impl DeepCaptureSession<'_> {
                 self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
+        }
+        if self.observe_cancellation() {
+            return Ok(());
         }
 
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
@@ -551,6 +579,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         }
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         if self.deadline_expired(started, self.plan.deadlines.launch) {
             self.fail(
                 Stage::Launch,
@@ -571,6 +602,9 @@ impl DeepCaptureSession<'_> {
     /// Run ordinary Capture and collect proxy observations.
     pub fn observe(&mut self) -> Result<(), InvalidTransition> {
         self.require(Operation::Observe, &[LifecycleState::Running])?;
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         let started = self.adapters.clock.monotonic_elapsed();
         self.observation_started = Some(started);
         let budget = self.remaining_budget(started, self.plan.deadlines.observation);
@@ -858,6 +892,34 @@ impl DeepCaptureSession<'_> {
         self.lifecycle_transitions
             .push(LifecycleTransition { from, to: next });
         self.check_boundary(&boundary, BoundarySide::After);
+    }
+
+    fn observe_cancellation(&mut self) -> bool {
+        if !self.cancellation.is_requested() {
+            return false;
+        }
+        self.interrupted = true;
+        self.fail(
+            Stage::Observe,
+            "cancellation-requested",
+            "caller requested cooperative cancellation",
+        );
+        match self.state {
+            LifecycleState::Prepared
+                if self.proxy.is_some()
+                    || self.trust.is_some()
+                    || self.routing.is_some()
+                    || self.launch.is_some() =>
+            {
+                self.transition(LifecycleState::Stopped)
+            }
+            LifecycleState::Prepared => self.transition(LifecycleState::Terminal),
+            LifecycleState::Running | LifecycleState::Observed => {
+                self.transition(LifecycleState::Stopped)
+            }
+            LifecycleState::Stopped | LifecycleState::Finalizing | LifecycleState::Terminal => {}
+        }
+        true
     }
 
     fn check_boundary(&mut self, boundary: &str, side: BoundarySide) -> bool {

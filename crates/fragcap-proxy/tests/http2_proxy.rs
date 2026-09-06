@@ -348,6 +348,7 @@ async fn explicitly_routed_cleartext_http2_is_authenticated_and_authority_bound(
     let collector = Arc::new(Collector::default());
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
         .unwrap();
@@ -462,6 +463,7 @@ async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
     let collector = Arc::new(Collector::default());
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
         .unwrap();
@@ -543,3 +545,4 @@ async fn extended_connect_websocket_is_forwarded_and_observed_as_frames() {
         2
     );
 }
+mod support;

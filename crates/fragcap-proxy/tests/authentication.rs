@@ -20,6 +20,10 @@ impl ApplicationEventSink for Collector {
     }
 }
 
+fn isolated_backend(config: NativeProxyConfig) -> NativeProxyBackend {
+    NativeProxyBackend::new(config).with_tls_client_config(support::isolated_tls_client_config())
+}
+
 #[test]
 fn capability_is_random_redacted_and_exact() {
     let first = SessionCapability::generate().unwrap();
@@ -29,6 +33,8 @@ fn capability_is_random_redacted_and_exact() {
     assert!(!first.authenticates(second.proof().as_bytes()));
     assert!(!format!("{first:?}").contains(&format!("{:?}", first.proof().as_bytes())));
 }
+
+mod support;
 
 #[test]
 fn capability_uses_strict_standard_proxy_authorization() {
@@ -93,7 +99,7 @@ fn capability_urls_bracket_an_exact_ipv6_listener() {
 fn native_listener_binds_exact_ipv6_loopback_when_available() {
     let endpoint: SocketAddr = "[::1]:0".parse().unwrap();
     let config = NativeProxyConfig::new(endpoint, 1, 64, Duration::from_secs(1)).unwrap();
-    let mut backend = NativeProxyBackend::new(config);
+    let mut backend = isolated_backend(config);
     let Ok(mut lease) = backend.start(Duration::from_secs(1)) else {
         return;
     };
@@ -112,8 +118,7 @@ fn listener_refuses_wrong_proof_before_payload_and_counts_it() {
     )
     .unwrap();
     let collector = Arc::new(Collector::default());
-    let mut backend =
-        NativeProxyBackend::new(config).with_application_event_sink(collector.clone());
+    let mut backend = isolated_backend(config).with_application_event_sink(collector.clone());
     let mut lease = backend.start(Duration::from_secs(1)).unwrap();
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let mut wrong = TcpStream::connect(endpoint).unwrap();
@@ -161,11 +166,11 @@ fn port_reuse_gets_a_new_capability() {
     let endpoint = reserved.local_addr().unwrap();
     drop(reserved);
     let config = || NativeProxyConfig::new(endpoint, 1, 64, Duration::from_secs(1)).unwrap();
-    let mut first_backend = NativeProxyBackend::new(config());
+    let mut first_backend = isolated_backend(config());
     let mut first = first_backend.start(Duration::from_secs(1)).unwrap();
     let stale = first.capability_proof();
     assert!(first.cleanup(Duration::from_secs(1)).is_clean());
-    let mut second_backend = NativeProxyBackend::new(config());
+    let mut second_backend = isolated_backend(config());
     let mut second = second_backend.start(Duration::from_secs(1)).unwrap();
     assert_ne!(stale.as_bytes(), second.capability_proof().as_bytes());
     assert!(second.cleanup(Duration::from_secs(1)).is_clean());

@@ -87,6 +87,21 @@ impl ProxyBackend for Proxy {
     }
 }
 
+struct CancellingProxy(Ledger, CancellationToken);
+impl ProxyBackend for CancellingProxy {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            name: "cancelling".into(),
+            version: "1".into(),
+        }
+    }
+    fn start(&mut self, _: &SessionPlan, _: Budget) -> Result<Box<dyn ProxyLease>, StageFailure> {
+        self.0.borrow_mut().push("proxy.start".into());
+        self.1.request();
+        Ok(Box::new(ProxyRun(self.0.clone())))
+    }
+}
+
 struct ProxyRun(Ledger);
 impl ProxyLease for ProxyRun {
     fn route(&self) -> Result<ProxyRoute, StageFailure> {
@@ -878,6 +893,45 @@ fn controlled_consumer_runs_complete_lifecycle_without_cli() {
         calls.iter().position(|call| call == "event.trust-acquired")
             < calls.iter().position(|call| call == "launch.start")
     );
+}
+
+#[test]
+fn cancellation_before_authorization_starts_no_effect() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let mut environment = adapters(&ledger);
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let cancellation = CancellationToken::new();
+    cancellation.request();
+    let report = prepared
+        .into_session_with_cancellation(environment, cancellation)
+        .run_to_completion(authorization);
+
+    assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+    assert!(report.snapshot.cleanup.is_empty());
+    assert!(!ledger.borrow().iter().any(|call| call == "proxy.start"));
+}
+
+#[test]
+fn cancellation_after_effect_acquisition_runs_exact_cleanup() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let cancellation = CancellationToken::new();
+    let mut environment = adapters(&ledger);
+    environment.proxy = Box::new(CancellingProxy(ledger.clone(), cancellation.clone()));
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session_with_cancellation(environment, cancellation)
+        .run_to_completion(authorization);
+
+    assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+    assert!(
+        ledger.borrow().iter().any(|call| call == "proxy.cleanup"),
+        "calls: {:?}",
+        ledger.borrow()
+    );
+    assert!(!ledger.borrow().iter().any(|call| call == "trust.acquire"));
+    assert!(!ledger.borrow().iter().any(|call| call == "capture.run"));
 }
 
 fn prepared_artifact_requests() -> ArtifactRequests {
