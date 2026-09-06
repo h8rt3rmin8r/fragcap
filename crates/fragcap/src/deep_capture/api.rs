@@ -163,6 +163,7 @@ pub const STABLE_API_EXPORTS: &[&str] = &[
     "TargetResolver",
     "TerminalReport",
     "TerminalSnapshot",
+    "TrafficFamily",
     "TrustLease",
     "TrustManager",
     "TrustMutation",

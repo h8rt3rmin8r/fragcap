@@ -144,6 +144,7 @@ impl PreparedSession {
             route_verification: None,
             resource_journal: None,
             cleanup_lifecycle: None,
+            artifacts_prepared: false,
             cancellation,
         }
     }
@@ -177,6 +178,7 @@ pub struct DeepCaptureSession<'a> {
     route_verification: Option<RouteVerification>,
     resource_journal: Option<ResourceJournal>,
     cleanup_lifecycle: Option<LifecycleWriter>,
+    artifacts_prepared: bool,
     cancellation: CancellationToken,
 }
 
@@ -223,10 +225,17 @@ impl DeepCaptureSession<'_> {
             sequence: 0,
             plan: self.plan.clone(),
         });
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         let started = self.adapters.clock.monotonic_elapsed();
         if let Err(error) = self.adapters.artifacts.prepare(&self.plan) {
             self.failures.push(error);
             self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
+        self.artifacts_prepared = true;
+        if self.observe_cancellation() {
             return Ok(());
         }
         match ResourceJournal::create(
@@ -301,6 +310,9 @@ impl DeepCaptureSession<'_> {
                 "controlled failure before proxy invocation",
             );
             self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
+        if self.observe_cancellation() {
             return Ok(());
         }
         let route = match self.adapters.proxy.start(&self.plan, budget) {
@@ -632,14 +644,19 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Observed);
             return Ok(());
         }
-        match self.adapters.capture.run(
+        if self.observe_cancellation() {
+            return Ok(());
+        }
+        let capture_result = self.adapters.capture.run(
             &self.capture,
             self.routing
                 .as_ref()
                 .expect("routing was applied")
                 .applied(),
             budget,
-        ) {
+        );
+        let cancellation_requested = self.cancellation.is_requested();
+        match capture_result {
             Ok(result) => {
                 self.record_resource(
                     "capture",
@@ -664,6 +681,9 @@ impl DeepCaptureSession<'_> {
                 );
                 self.failures.push(error);
             }
+        }
+        if cancellation_requested || self.cancellation.is_requested() {
+            self.record_cancellation();
         }
         if self.deadline_expired(started, self.plan.deadlines.observation) {
             self.fail(
@@ -692,6 +712,9 @@ impl DeepCaptureSession<'_> {
                 actual: self.state,
                 allowed: &[LifecycleState::Running, LifecycleState::Observed],
             });
+        }
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
         }
         let started = self.adapters.clock.monotonic_elapsed();
         let capture_target = self.capture.token.clone();
@@ -795,6 +818,9 @@ impl DeepCaptureSession<'_> {
             Operation::Finalize,
             &[LifecycleState::Stopped, LifecycleState::Finalizing],
         )?;
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         self.transition(LifecycleState::Finalizing);
         self.persist_facts();
         self.cleanup_resources();
@@ -898,15 +924,11 @@ impl DeepCaptureSession<'_> {
         if !self.cancellation.is_requested() {
             return false;
         }
-        self.interrupted = true;
-        self.fail(
-            Stage::Observe,
-            "cancellation-requested",
-            "caller requested cooperative cancellation",
-        );
+        self.record_cancellation();
         match self.state {
             LifecycleState::Prepared
-                if self.proxy.is_some()
+                if self.artifacts_prepared
+                    || self.proxy.is_some()
                     || self.trust.is_some()
                     || self.routing.is_some()
                     || self.launch.is_some() =>
@@ -920,6 +942,21 @@ impl DeepCaptureSession<'_> {
             LifecycleState::Stopped | LifecycleState::Finalizing | LifecycleState::Terminal => {}
         }
         true
+    }
+
+    fn record_cancellation(&mut self) {
+        self.interrupted = true;
+        if !self
+            .failures
+            .iter()
+            .any(|failure| failure.code == "cancellation-requested")
+        {
+            self.fail(
+                Stage::Observe,
+                "cancellation-requested",
+                "caller requested cooperative cancellation",
+            );
+        }
     }
 
     fn check_boundary(&mut self, boundary: &str, side: BoundarySide) -> bool {

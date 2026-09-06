@@ -3975,7 +3975,7 @@ mod tests {
             status: Some(200),
             reason: None,
             classification: deep_capture_api::ProtocolClassification::new(
-                fragcap::deep_capture::TrafficFamily::Https,
+                deep_capture_api::TrafficFamily::Https,
                 deep_capture_api::DetectionState::Identified,
                 deep_capture_api::InspectabilityState::Full,
                 None,
@@ -4077,7 +4077,7 @@ mod tests {
         pinned.inspectability = Inspectability::Inconclusive;
         pinned.reason = Some("certificate-pinned".to_string());
         pinned.classification = deep_capture_api::ProtocolClassification::new(
-            fragcap::deep_capture::TrafficFamily::Https,
+            deep_capture_api::TrafficFamily::Https,
             deep_capture_api::DetectionState::Identified,
             deep_capture_api::InspectabilityState::Unavailable,
             Some(fragcap::deep_capture::ClassificationReason::CertificatePinned),
@@ -4091,7 +4091,7 @@ mod tests {
         metadata.inspectability = Inspectability::MetadataOnly;
         metadata.protocol = "non-http-tls".to_string();
         metadata.classification = deep_capture_api::ProtocolClassification::new(
-            fragcap::deep_capture::TrafficFamily::NonHttpTls,
+            deep_capture_api::TrafficFamily::NonHttpTls,
             deep_capture_api::DetectionState::Identified,
             deep_capture_api::InspectabilityState::MetadataOnly,
             None,
@@ -4105,7 +4105,7 @@ mod tests {
         unsupported.inspectability = Inspectability::Unsupported;
         unsupported.protocol = "quic".to_string();
         unsupported.classification = deep_capture_api::ProtocolClassification::new(
-            fragcap::deep_capture::TrafficFamily::Quic,
+            deep_capture_api::TrafficFamily::Quic,
             deep_capture_api::DetectionState::Unsupported,
             deep_capture_api::InspectabilityState::Unavailable,
             Some(fragcap::deep_capture::ClassificationReason::UnsupportedVersion),
