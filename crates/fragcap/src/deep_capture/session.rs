@@ -312,7 +312,24 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Stopped);
             return Ok(());
         }
-        if self.observe_cancellation() {
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                &proxy_target,
+                "close-loopback-listener",
+                ResourceState::NotApplied,
+                "cancellation won before proxy invocation",
+            );
+            self.record_resource(
+                "proxy-runtime",
+                ResourceKind::Proxy,
+                &proxy_target,
+                "join-proxy-tasks",
+                ResourceState::NotApplied,
+                "cancellation won before proxy invocation",
+            );
+            self.observe_cancellation();
             return Ok(());
         }
         let route = match self.adapters.proxy.start(&self.plan, budget) {
@@ -416,6 +433,18 @@ impl DeepCaptureSession<'_> {
                 self.transition(LifecycleState::Stopped);
                 return Ok(());
             }
+            if self.cancellation.is_requested() {
+                self.record_resource(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &trust_target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    ResourceState::NotApplied,
+                    "cancellation won before trust invocation",
+                );
+                self.observe_cancellation();
+                return Ok(());
+            }
             match self.adapters.trust.acquire(&self.plan, &route, budget) {
                 Ok(lease) => {
                     self.record_resource(
@@ -490,6 +519,18 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Stopped);
             return Ok(());
         }
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "route",
+                ResourceKind::Route,
+                &route_target,
+                "remove-target-scoped-route",
+                ResourceState::NotApplied,
+                "cancellation won before route invocation",
+            );
+            self.observe_cancellation();
+            return Ok(());
+        }
         match self.adapters.routing.apply(&self.plan, route, budget) {
             Ok(lease) => {
                 self.record_resource(
@@ -547,6 +588,18 @@ impl DeepCaptureSession<'_> {
                 "controlled failure before launch invocation",
             );
             self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "managed-child",
+                ResourceKind::Launch,
+                &launch_target,
+                "stop-managed-child",
+                ResourceState::NotApplied,
+                "cancellation won before launch invocation",
+            );
+            self.observe_cancellation();
             return Ok(());
         }
         match self.adapters.launch.launch(
@@ -644,7 +697,16 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Observed);
             return Ok(());
         }
-        if self.observe_cancellation() {
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "capture",
+                ResourceKind::Capture,
+                &capture_target,
+                "stop-capture",
+                ResourceState::NotApplied,
+                "cancellation won before capture invocation",
+            );
+            self.observe_cancellation();
             return Ok(());
         }
         let capture_result = self.adapters.capture.run(
@@ -823,7 +885,13 @@ impl DeepCaptureSession<'_> {
         }
         self.transition(LifecycleState::Finalizing);
         self.persist_facts();
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         self.cleanup_resources();
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         self.prepare_lifecycle_authority();
         let mut snapshot = self.snapshot();
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
@@ -833,14 +901,27 @@ impl DeepCaptureSession<'_> {
         let publication_started = self.check_boundary("bundle-evidence", BoundarySide::Before);
         if publication_started {
             self.write_bundle(&snapshot);
+            if self.cancellation.is_requested() {
+                self.record_cancellation();
+            }
             self.check_boundary("bundle-evidence", BoundarySide::After);
         }
         self.settle_lifecycle_authority(
             publication_started && self.failures.len() == failures_before_publication,
         );
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         let reconciled_snapshot = self.snapshot();
         self.reconcile_bundle(&reconciled_snapshot);
-        snapshot.failures = self.failures.clone();
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
+        self.transition(LifecycleState::Terminal);
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
+        snapshot = self.snapshot();
         if (self.failures.len() > failures_before_publication || self.required_reporting_failed())
             && snapshot.outcome == SessionOutcome::Complete
         {
@@ -853,7 +934,6 @@ impl DeepCaptureSession<'_> {
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
             snapshot.outcome = SessionOutcome::Partial;
         }
-        self.transition(LifecycleState::Terminal);
         snapshot.lifecycle_transitions = self.lifecycle_transitions.clone();
         snapshot.failures = self.failures.clone();
         if !snapshot.failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {

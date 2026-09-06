@@ -4080,7 +4080,7 @@ mod tests {
             deep_capture_api::TrafficFamily::Https,
             deep_capture_api::DetectionState::Identified,
             deep_capture_api::InspectabilityState::Unavailable,
-            Some(fragcap::deep_capture::ClassificationReason::CertificatePinned),
+            Some(deep_capture_api::ClassificationReason::CertificatePinned),
         )
         .unwrap();
         assert_eq!(
@@ -4108,7 +4108,7 @@ mod tests {
             deep_capture_api::TrafficFamily::Quic,
             deep_capture_api::DetectionState::Unsupported,
             deep_capture_api::InspectabilityState::Unavailable,
-            Some(fragcap::deep_capture::ClassificationReason::UnsupportedVersion),
+            Some(deep_capture_api::ClassificationReason::UnsupportedVersion),
         )
         .unwrap();
         assert_eq!(

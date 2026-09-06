@@ -751,6 +751,43 @@ impl BoundaryController for FailingBoundary {
     }
 }
 
+struct CancellingBoundary {
+    boundary: &'static str,
+    side: BoundarySide,
+    cancellation: CancellationToken,
+    ledger: Ledger,
+}
+
+impl BoundaryController for CancellingBoundary {
+    fn check(&mut self, boundary: &str, side: BoundarySide) -> Result<(), StageFailure> {
+        self.ledger
+            .borrow_mut()
+            .push(format!("boundary.{boundary}.{side:?}"));
+        if boundary == self.boundary && side == self.side {
+            self.cancellation.request();
+        }
+        Ok(())
+    }
+}
+
+struct CancellingFinalArtifacts(Ledger, CancellationToken);
+impl ArtifactSink for CancellingFinalArtifacts {
+    fn validate_destination(&mut self, _: &Path) -> Result<(), PreflightRefusal> {
+        Ok(())
+    }
+
+    fn finalize(&mut self, _: &Path, _: &TerminalSnapshot) -> Vec<ArtifactResult> {
+        self.0.borrow_mut().push("artifact.finalize".into());
+        Vec::new()
+    }
+
+    fn reconcile(&mut self, _: &Path, _: &TerminalSnapshot) -> Vec<ArtifactResult> {
+        self.0.borrow_mut().push("artifact.reconcile".into());
+        self.1.request();
+        Vec::new()
+    }
+}
+
 #[allow(dead_code)]
 struct CorruptingArtifacts(Ledger);
 impl ArtifactSink for CorruptingArtifacts {
@@ -1016,6 +1053,95 @@ fn cancellation_requested_by_capture_is_observed_after_its_return() {
     assert!(ledger.borrow().iter().any(|call| call == "capture.stop"));
     assert!(ledger.borrow().iter().any(|call| call == "proxy.stop"));
     assert!(ledger.borrow().iter().any(|call| call == "proxy.cleanup"));
+}
+
+#[test]
+fn cancellation_before_proxy_invocation_settles_pending_obligations() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let cancellation = CancellationToken::new();
+    let mut environment = adapters(&ledger);
+    environment.boundaries = Box::new(CancellingBoundary {
+        boundary: "proxy-runtime",
+        side: BoundarySide::Before,
+        cancellation: cancellation.clone(),
+        ledger: ledger.clone(),
+    });
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let bundle = prepared.plan().bundle.clone();
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session_with_cancellation(environment, cancellation)
+        .run_to_completion(authorization);
+
+    assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+    assert!(!ledger.borrow().iter().any(|call| call == "proxy.start"));
+    let journal = read_resource_journal(&bundle.join("resource-journal.jsonl")).expect("journal");
+    for resource in ["proxy-listener", "proxy-runtime"] {
+        assert_eq!(
+            journal.latest().get(resource).expect("resource").state,
+            ResourceState::NotApplied
+        );
+    }
+    assert!(journal.recovery_plan().actions.is_empty());
+}
+
+#[test]
+fn cancellation_before_capture_invocation_settles_pending_obligation() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let cancellation = CancellationToken::new();
+    let mut environment = adapters(&ledger);
+    environment.boundaries = Box::new(CancellingBoundary {
+        boundary: "capture",
+        side: BoundarySide::Before,
+        cancellation: cancellation.clone(),
+        ledger: ledger.clone(),
+    });
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let bundle = prepared.plan().bundle.clone();
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session_with_cancellation(environment, cancellation)
+        .run_to_completion(authorization);
+
+    assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+    assert!(!ledger.borrow().iter().any(|call| call == "capture.run"));
+    let journal = read_resource_journal(&bundle.join("resource-journal.jsonl")).expect("journal");
+    assert_eq!(
+        journal.latest().get("capture").expect("capture").state,
+        ResourceState::NotApplied
+    );
+    assert!(journal
+        .recovery_plan()
+        .actions
+        .iter()
+        .all(|action| action.resource_id != "capture"));
+}
+
+#[test]
+fn cancellation_from_final_artifact_adapter_is_in_terminal_truth() {
+    let ledger = Rc::new(RefCell::new(Vec::new()));
+    let cancellation = CancellationToken::new();
+    let mut environment = adapters(&ledger);
+    environment.artifacts = Box::new(CancellingFinalArtifacts(
+        ledger.clone(),
+        cancellation.clone(),
+    ));
+    let prepared = DeepCapture::preflight(config(), &mut environment).expect("preflight");
+    let authorization = Authorization::approved(prepared.plan().id.clone());
+    let report = prepared
+        .into_session_with_cancellation(environment, cancellation)
+        .run_to_completion(authorization);
+
+    assert_eq!(report.snapshot.outcome, SessionOutcome::Interrupted);
+    assert!(report
+        .snapshot
+        .failures
+        .iter()
+        .any(|failure| failure.code == "cancellation-requested"));
+    assert!(ledger
+        .borrow()
+        .iter()
+        .any(|call| call == "artifact.reconcile"));
 }
 
 fn prepared_artifact_requests() -> ArtifactRequests {

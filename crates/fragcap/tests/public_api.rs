@@ -5,8 +5,11 @@
 use std::path::PathBuf;
 
 use fragcap::deep_capture::api::{
-    AdapterSetBuilder, CancellationToken, LaunchCase, SessionConfigBuilder, SessionMode,
-    DEEP_CAPTURE_API_VERSION, STABLE_API_EXPORTS,
+    AdapterSetBuilder, CancellationToken, ClassificationReason, CompatibilityAddressFamily,
+    CompatibilityApplicability, CompatibilityCase, CompatibilityEvidenceSource,
+    CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityRoutingStrategy, LaunchCase,
+    ResourceKind, SessionConfigBuilder, SessionMode, StoredCompatibilityFact, TargetsError,
+    TrustError, DEEP_CAPTURE_API_VERSION, STABLE_API_EXPORTS,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -14,12 +17,14 @@ fn assert_send_sync<T: Send + Sync>() {}
 #[test]
 fn version_one_inventory_is_curated_and_sorted() {
     assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
-    assert_eq!(STABLE_API_EXPORTS.len(), 113);
+    assert_eq!(STABLE_API_EXPORTS.len(), 125);
     assert!(STABLE_API_EXPORTS.windows(2).all(|pair| pair[0] < pair[1]));
     for required in [
         "AdapterSetBuilder",
         "Authorization",
         "CancellationToken",
+        "ClassificationReason",
+        "CompatibilityCase",
         "DEEP_CAPTURE_API_VERSION",
         "DeepCapture",
         "NativeProxyAdapter",
@@ -27,10 +32,12 @@ fn version_one_inventory_is_curated_and_sorted() {
         "ProtocolClassification",
         "RecoveryPlan",
         "RoutingPlan",
+        "StoredCompatibilityFact",
         "STABLE_API_EXPORTS",
         "SessionConfigBuilder",
         "TerminalReport",
         "TrafficFamily",
+        "TrustError",
     ] {
         assert!(
             STABLE_API_EXPORTS.binary_search(&required).is_ok(),
@@ -50,6 +57,22 @@ fn version_one_inventory_is_curated_and_sorted() {
             "implementation detail leaked into stable inventory: {implementation_detail}"
         );
     }
+}
+
+#[test]
+fn transitive_signature_types_are_available_from_the_stable_module() {
+    let _ = std::mem::size_of::<ClassificationReason>();
+    let _ = std::mem::size_of::<CompatibilityAddressFamily>();
+    let _ = std::mem::size_of::<CompatibilityApplicability>();
+    let _ = std::mem::size_of::<CompatibilityCase>();
+    let _ = std::mem::size_of::<CompatibilityEvidenceSource>();
+    let _ = std::mem::size_of::<CompatibilityFreshness>();
+    let _ = std::mem::size_of::<CompatibilityLaunchCase>();
+    let _ = std::mem::size_of::<CompatibilityRoutingStrategy>();
+    let _ = std::mem::size_of::<ResourceKind>();
+    let _ = std::mem::size_of::<StoredCompatibilityFact>();
+    let _ = std::mem::size_of::<TargetsError>();
+    let _ = std::mem::size_of::<TrustError>();
 }
 
 #[test]
