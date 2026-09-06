@@ -16,6 +16,10 @@ fn config(port: u16, max_connections: usize) -> NativeProxyConfig {
     .expect("valid loopback config")
 }
 
+fn backend(config: NativeProxyConfig) -> NativeProxyBackend {
+    NativeProxyBackend::new(config).with_tls_client_config(support::isolated_tls_client_config())
+}
+
 #[test]
 fn configuration_refuses_non_loopback_and_zero_bounds() {
     let non_loopback = NativeProxyConfig::new(
@@ -38,7 +42,7 @@ fn configuration_refuses_non_loopback_and_zero_bounds() {
 
 #[test]
 fn start_refuses_an_exhausted_budget_and_an_occupied_endpoint() {
-    let mut zero_budget_backend = NativeProxyBackend::new(config(0, 1));
+    let mut zero_budget_backend = backend(config(0, 1));
     let zero_budget = match zero_budget_backend.start(Duration::ZERO) {
         Ok(_) => panic!("zero start budget must fail"),
         Err(error) => error,
@@ -47,7 +51,7 @@ fn start_refuses_an_exhausted_budget_and_an_occupied_endpoint() {
 
     let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = reserved.local_addr().unwrap();
-    let mut occupied_backend = NativeProxyBackend::new(config(endpoint.port(), 1));
+    let mut occupied_backend = backend(config(endpoint.port(), 1));
     let occupied = match occupied_backend.start(Duration::from_secs(1)) {
         Ok(_) => panic!("occupied endpoint must fail"),
         Err(error) => error,
@@ -59,8 +63,7 @@ fn start_refuses_an_exhausted_budget_and_an_occupied_endpoint() {
 fn startup_consumes_the_exact_listener_reserved_before_authorization() {
     let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = reserved.local_addr().unwrap();
-    let mut backend =
-        NativeProxyBackend::new(config(endpoint.port(), 1)).with_reserved_listener(reserved);
+    let mut backend = backend(config(endpoint.port(), 1)).with_reserved_listener(reserved);
     let mut lease = backend.start(Duration::from_secs(1)).unwrap();
 
     assert_eq!(lease.endpoint(), endpoint);
@@ -82,7 +85,7 @@ fn identity_is_stable_and_claims_native_http_tls() {
 
 #[test]
 fn start_stop_and_cleanup_are_owned_and_idempotent() {
-    let mut backend = NativeProxyBackend::new(config(0, 2));
+    let mut backend = backend(config(0, 2));
     let mut lease = backend.start(Duration::from_secs(1)).expect("start");
     let running = lease.observation(Duration::from_secs(1)).expect("observe");
     assert_eq!(running.state, LifecycleState::Running);
@@ -99,7 +102,7 @@ fn start_stop_and_cleanup_are_owned_and_idempotent() {
 
 #[test]
 fn saturation_is_bounded_and_conserved() {
-    let mut backend = NativeProxyBackend::new(config(0, 1));
+    let mut backend = backend(config(0, 1));
     let mut lease = backend.start(Duration::from_secs(1)).expect("start");
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
     let first = TcpStream::connect(endpoint).expect("first connection");
@@ -125,7 +128,7 @@ fn saturation_is_bounded_and_conserved() {
 
 #[test]
 fn completed_tasks_are_reaped_before_more_connections_are_admitted() {
-    let mut backend = NativeProxyBackend::new(config(0, 2));
+    let mut backend = backend(config(0, 2));
     let mut lease = backend.start(Duration::from_secs(1)).expect("start");
     let endpoint = lease.observation(Duration::from_secs(1)).unwrap().endpoint;
 
@@ -154,7 +157,7 @@ fn ten_cycles_leave_no_listener_or_task_residue() {
     drop(reserved);
 
     for _ in 0..10 {
-        let mut backend = NativeProxyBackend::new(config(endpoint.port(), 2));
+        let mut backend = backend(config(endpoint.port(), 2));
         let mut lease = backend.start(Duration::from_secs(1)).expect("start cycle");
         let client = TcpStream::connect(endpoint).expect("connect cycle");
         drop(client);
@@ -162,3 +165,4 @@ fn ten_cycles_leave_no_listener_or_task_residue() {
         assert!(report.is_clean(), "{report:?}");
     }
 }
+mod support;

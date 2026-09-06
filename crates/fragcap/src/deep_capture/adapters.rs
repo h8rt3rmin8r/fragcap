@@ -273,6 +273,97 @@ pub struct AdapterSet<'a> {
     pub events: Box<dyn EventSink + 'a>,
 }
 
+/// Checked assembly of every adapter required by the coordinator.
+#[derive(Default)]
+pub struct AdapterSetBuilder<'a> {
+    targets: Option<Box<dyn TargetResolver + 'a>>,
+    endpoints: Option<Box<dyn EndpointAllocator + 'a>>,
+    clock: Option<Box<dyn SessionClock + 'a>>,
+    identifiers: Option<Box<dyn IdentifierSource + 'a>>,
+    proxy: Option<Box<dyn ProxyBackend + 'a>>,
+    trust: Option<Box<dyn TrustManager + 'a>>,
+    routing: Option<Box<dyn RoutingAdapter + 'a>>,
+    launch: Option<Box<dyn LaunchAdapter + 'a>>,
+    capture: Option<Box<dyn CaptureRunner + 'a>>,
+    facts: Option<Box<dyn CompatibilityRepository + 'a>>,
+    artifacts: Option<Box<dyn ArtifactSink + 'a>>,
+    events: Option<Box<dyn EventSink + 'a>>,
+}
+
+macro_rules! adapter_setter {
+    ($name:ident, $field:ident, $trait:ident) => {
+        pub fn $name(mut self, value: impl $trait + 'a) -> Self {
+            self.$field = Some(Box::new(value));
+            self
+        }
+    };
+}
+
+impl<'a> AdapterSetBuilder<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    adapter_setter!(targets, targets, TargetResolver);
+    adapter_setter!(endpoints, endpoints, EndpointAllocator);
+    adapter_setter!(clock, clock, SessionClock);
+    adapter_setter!(identifiers, identifiers, IdentifierSource);
+    adapter_setter!(proxy, proxy, ProxyBackend);
+    adapter_setter!(trust, trust, TrustManager);
+    adapter_setter!(routing, routing, RoutingAdapter);
+    adapter_setter!(launch, launch, LaunchAdapter);
+    adapter_setter!(capture, capture, CaptureRunner);
+    adapter_setter!(facts, facts, CompatibilityRepository);
+    adapter_setter!(artifacts, artifacts, ArtifactSink);
+    adapter_setter!(events, events, EventSink);
+
+    /// Consume the builder only when every required capability is present.
+    pub fn build(self) -> Result<AdapterSet<'a>, AdapterSetBuildError> {
+        macro_rules! required {
+            ($field:ident) => {
+                self.$field.ok_or(AdapterSetBuildError {
+                    missing: stringify!($field),
+                })?
+            };
+        }
+        Ok(AdapterSet {
+            boundaries: Box::new(AllowBoundaries),
+            targets: required!(targets),
+            endpoints: required!(endpoints),
+            clock: required!(clock),
+            identifiers: required!(identifiers),
+            proxy: required!(proxy),
+            trust: required!(trust),
+            routing: required!(routing),
+            launch: required!(launch),
+            capture: required!(capture),
+            facts: required!(facts),
+            artifacts: required!(artifacts),
+            events: required!(events),
+        })
+    }
+}
+
+/// Stable refusal returned when an adapter capability is absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterSetBuildError {
+    pub missing: &'static str,
+}
+
+impl AdapterSetBuildError {
+    pub fn capability(&self) -> &'static str {
+        self.missing
+    }
+}
+
+impl std::fmt::Display for AdapterSetBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "missing required Deep Capture adapter: {}", self.missing)
+    }
+}
+
+impl std::error::Error for AdapterSetBuildError {}
+
 impl std::fmt::Debug for AdapterSet<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdapterSet").finish_non_exhaustive()

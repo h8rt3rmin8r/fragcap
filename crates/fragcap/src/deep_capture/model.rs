@@ -3,6 +3,8 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::{ProtocolClassification, SensitiveRetention};
@@ -159,6 +161,154 @@ pub struct SessionConfig {
     pub sensitive_retention: SensitiveRetention,
     /// Requested lifecycle deadlines.
     pub deadlines: Deadlines,
+}
+
+/// Checked construction of caller intent for a Deep Capture session.
+#[derive(Clone, Debug)]
+pub struct SessionConfigBuilder {
+    config: SessionConfig,
+}
+
+impl SessionConfigBuilder {
+    /// Begin a capture-mode session for one target and bundle destination.
+    pub fn new(target: impl Into<String>, bundle: impl Into<PathBuf>) -> Self {
+        Self {
+            config: SessionConfig {
+                target: target.into(),
+                launch_case: None,
+                mode: SessionMode::Capture,
+                calibration_protocol: None,
+                controlled: false,
+                bundle: bundle.into(),
+                trust_ca: false,
+                har: false,
+                key_log: false,
+                client_identity: false,
+                proxy_bypass: Vec::new(),
+                sensitive_retention: SensitiveRetention::Retain,
+                deadlines: Deadlines::default(),
+            },
+        }
+    }
+
+    pub fn launch_case(mut self, value: LaunchCase) -> Self {
+        self.config.launch_case = Some(value);
+        self
+    }
+
+    pub fn mode(mut self, value: SessionMode) -> Self {
+        self.config.mode = value;
+        self
+    }
+
+    pub fn calibration_protocol(mut self, value: CompatibilityProtocol) -> Self {
+        self.config.calibration_protocol = Some(value);
+        self
+    }
+
+    pub fn controlled(mut self, value: bool) -> Self {
+        self.config.controlled = value;
+        self
+    }
+
+    pub fn trust_ca(mut self, value: bool) -> Self {
+        self.config.trust_ca = value;
+        self
+    }
+
+    pub fn har(mut self, value: bool) -> Self {
+        self.config.har = value;
+        self
+    }
+
+    pub fn key_log(mut self, value: bool) -> Self {
+        self.config.key_log = value;
+        self
+    }
+
+    pub fn client_identity(mut self, value: bool) -> Self {
+        self.config.client_identity = value;
+        self
+    }
+
+    pub fn proxy_bypass(mut self, value: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.config.proxy_bypass = value.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn sensitive_retention(mut self, value: SensitiveRetention) -> Self {
+        self.config.sensitive_retention = value;
+        self
+    }
+
+    pub fn deadlines(mut self, value: Deadlines) -> Self {
+        self.config.deadlines = value;
+        self
+    }
+
+    /// Validate the fields that can be checked without adapters or effects.
+    pub fn build(self) -> Result<SessionConfig, SessionConfigBuildError> {
+        if self.config.target.trim().is_empty() {
+            return Err(SessionConfigBuildError::new(
+                "session-config-target-empty",
+                "target must not be empty",
+            ));
+        }
+        if self.config.bundle.as_os_str().is_empty() {
+            return Err(SessionConfigBuildError::new(
+                "bundle-empty",
+                "bundle destination must not be empty",
+            ));
+        }
+        Ok(self.config)
+    }
+}
+
+/// Stable refusal returned by [`SessionConfigBuilder`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionConfigBuildError {
+    pub code: &'static str,
+    pub detail: &'static str,
+}
+
+impl SessionConfigBuildError {
+    fn new(code: &'static str, detail: &'static str) -> Self {
+        Self { code, detail }
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub fn detail(&self) -> &'static str {
+        self.detail
+    }
+}
+
+impl fmt::Display for SessionConfigBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.detail)
+    }
+}
+
+impl std::error::Error for SessionConfigBuildError {}
+
+/// Cloneable, thread-safe request for cooperative session cancellation.
+#[derive(Clone, Debug, Default)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 /// Optional sensitive artifacts explicitly authorized for one session.
@@ -433,6 +583,14 @@ impl StageFailure {
     }
 }
 
+impl fmt::Display for StageFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}/{}: {}", self.stage, self.code, self.detail)
+    }
+}
+
+impl std::error::Error for StageFailure {}
+
 /// Failure before an executable session exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreflightRefusal {
@@ -449,6 +607,14 @@ impl PreflightRefusal {
     }
 }
 
+impl fmt::Display for PreflightRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.detail)
+    }
+}
+
+impl std::error::Error for PreflightRefusal {}
+
 /// Invalid lifecycle use. No adapter is called for this error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvalidTransition {
@@ -456,6 +622,18 @@ pub struct InvalidTransition {
     pub actual: LifecycleState,
     pub allowed: &'static [LifecycleState],
 }
+
+impl fmt::Display for InvalidTransition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?} is invalid in {:?}; allowed states: {:?}",
+            self.operation, self.actual, self.allowed
+        )
+    }
+}
+
+impl std::error::Error for InvalidTransition {}
 
 /// Application-level inspectability observed by the proxy.
 #[non_exhaustive]

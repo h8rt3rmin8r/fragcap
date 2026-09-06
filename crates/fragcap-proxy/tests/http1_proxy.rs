@@ -50,7 +50,9 @@ fn start_proxy_with_sink(
     .unwrap();
     let mut policy = DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin);
-    let backend = NativeProxyBackend::new(config).with_destination_policy(policy);
+    let backend = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config());
     let mut backend = match sink {
         Some(sink) => backend.with_application_event_sink(sink),
         None => backend,
@@ -495,6 +497,7 @@ fn failed_websocket_relay_finishes_both_directional_observers() {
     let collector = Arc::new(Collector::default());
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
         .unwrap();
@@ -561,6 +564,7 @@ fn session_body_retention_is_shared_across_http1_connections() {
     let collector = Arc::new(Collector::default());
     let mut lease = NativeProxyBackend::new(config)
         .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config())
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
         .unwrap();
@@ -648,3 +652,4 @@ fn failed_http1_response_body_emits_body_and_stream_terminals() {
         })
     )));
 }
+mod support;

@@ -13,6 +13,7 @@
 //! return is still classified as a deadline failure by the coordinator.
 
 mod adapters;
+pub mod api;
 mod application;
 mod artifacts;
 mod classification;

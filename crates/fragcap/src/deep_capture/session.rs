@@ -108,6 +108,15 @@ impl PreparedSession {
 
     /// Consume preparation and all adapters into one checked coordinator.
     pub fn into_session<'a>(self, adapters: AdapterSet<'a>) -> DeepCaptureSession<'a> {
+        self.into_session_with_cancellation(adapters, CancellationToken::new())
+    }
+
+    /// Consume preparation with a caller-owned cooperative cancellation token.
+    pub fn into_session_with_cancellation<'a>(
+        self,
+        adapters: AdapterSet<'a>,
+        cancellation: CancellationToken,
+    ) -> DeepCaptureSession<'a> {
         DeepCaptureSession {
             capture: self.capture,
             plan: self.plan,
@@ -135,6 +144,8 @@ impl PreparedSession {
             route_verification: None,
             resource_journal: None,
             cleanup_lifecycle: None,
+            artifacts_prepared: false,
+            cancellation,
         }
     }
 }
@@ -167,6 +178,8 @@ pub struct DeepCaptureSession<'a> {
     route_verification: Option<RouteVerification>,
     resource_journal: Option<ResourceJournal>,
     cleanup_lifecycle: Option<LifecycleWriter>,
+    artifacts_prepared: bool,
+    cancellation: CancellationToken,
 }
 
 impl DeepCaptureSession<'_> {
@@ -175,9 +188,17 @@ impl DeepCaptureSession<'_> {
         self.state
     }
 
+    /// Return a cloneable token that may request cancellation from another thread.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
     /// Start proxy, optional trust, and managed launch after exact-plan approval.
     pub fn start(&mut self, authorization: Authorization) -> Result<(), InvalidTransition> {
         self.require(Operation::Start, &[LifecycleState::Prepared])?;
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         match authorization {
             Authorization::Approved { plan_id } if plan_id == self.plan.id => {}
             Authorization::Approved { .. } => {
@@ -204,10 +225,17 @@ impl DeepCaptureSession<'_> {
             sequence: 0,
             plan: self.plan.clone(),
         });
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         let started = self.adapters.clock.monotonic_elapsed();
         if let Err(error) = self.adapters.artifacts.prepare(&self.plan) {
             self.failures.push(error);
             self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
+        self.artifacts_prepared = true;
+        if self.observe_cancellation() {
             return Ok(());
         }
         match ResourceJournal::create(
@@ -284,6 +312,26 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Stopped);
             return Ok(());
         }
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "proxy-listener",
+                ResourceKind::Proxy,
+                &proxy_target,
+                "close-loopback-listener",
+                ResourceState::NotApplied,
+                "cancellation won before proxy invocation",
+            );
+            self.record_resource(
+                "proxy-runtime",
+                ResourceKind::Proxy,
+                &proxy_target,
+                "join-proxy-tasks",
+                ResourceState::NotApplied,
+                "cancellation won before proxy invocation",
+            );
+            self.observe_cancellation();
+            return Ok(());
+        }
         let route = match self.adapters.proxy.start(&self.plan, budget) {
             Ok(lease) => {
                 self.record_resource(
@@ -346,6 +394,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         };
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         if self.deadline_expired(started, self.plan.deadlines.launch) {
             self.fail(
                 Stage::ProxyStart,
@@ -380,6 +431,18 @@ impl DeepCaptureSession<'_> {
                     "controlled failure before trust invocation",
                 );
                 self.transition(LifecycleState::Stopped);
+                return Ok(());
+            }
+            if self.cancellation.is_requested() {
+                self.record_resource(
+                    "trust-entry",
+                    ResourceKind::Trust,
+                    &trust_target,
+                    "remove-current-user-root-by-exact-thumbprint",
+                    ResourceState::NotApplied,
+                    "cancellation won before trust invocation",
+                );
+                self.observe_cancellation();
                 return Ok(());
             }
             match self.adapters.trust.acquire(&self.plan, &route, budget) {
@@ -427,6 +490,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         }
+        if self.observe_cancellation() {
+            return Ok(());
+        }
 
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
         let route_target = self.plan.routing.strategy.as_str().to_string();
@@ -451,6 +517,18 @@ impl DeepCaptureSession<'_> {
                 "controlled failure before route invocation",
             );
             self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "route",
+                ResourceKind::Route,
+                &route_target,
+                "remove-target-scoped-route",
+                ResourceState::NotApplied,
+                "cancellation won before route invocation",
+            );
+            self.observe_cancellation();
             return Ok(());
         }
         match self.adapters.routing.apply(&self.plan, route, budget) {
@@ -483,6 +561,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         }
+        if self.observe_cancellation() {
+            return Ok(());
+        }
 
         let budget = self.remaining_budget(started, self.plan.deadlines.launch);
         let launch_target = format!("target:{}", self.plan.target.id);
@@ -507,6 +588,18 @@ impl DeepCaptureSession<'_> {
                 "controlled failure before launch invocation",
             );
             self.transition(LifecycleState::Stopped);
+            return Ok(());
+        }
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "managed-child",
+                ResourceKind::Launch,
+                &launch_target,
+                "stop-managed-child",
+                ResourceState::NotApplied,
+                "cancellation won before launch invocation",
+            );
+            self.observe_cancellation();
             return Ok(());
         }
         match self.adapters.launch.launch(
@@ -551,6 +644,9 @@ impl DeepCaptureSession<'_> {
                 return Ok(());
             }
         }
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         if self.deadline_expired(started, self.plan.deadlines.launch) {
             self.fail(
                 Stage::Launch,
@@ -571,6 +667,9 @@ impl DeepCaptureSession<'_> {
     /// Run ordinary Capture and collect proxy observations.
     pub fn observe(&mut self) -> Result<(), InvalidTransition> {
         self.require(Operation::Observe, &[LifecycleState::Running])?;
+        if self.observe_cancellation() {
+            return Ok(());
+        }
         let started = self.adapters.clock.monotonic_elapsed();
         self.observation_started = Some(started);
         let budget = self.remaining_budget(started, self.plan.deadlines.observation);
@@ -598,14 +697,28 @@ impl DeepCaptureSession<'_> {
             self.transition(LifecycleState::Observed);
             return Ok(());
         }
-        match self.adapters.capture.run(
+        if self.cancellation.is_requested() {
+            self.record_resource(
+                "capture",
+                ResourceKind::Capture,
+                &capture_target,
+                "stop-capture",
+                ResourceState::NotApplied,
+                "cancellation won before capture invocation",
+            );
+            self.observe_cancellation();
+            return Ok(());
+        }
+        let capture_result = self.adapters.capture.run(
             &self.capture,
             self.routing
                 .as_ref()
                 .expect("routing was applied")
                 .applied(),
             budget,
-        ) {
+        );
+        let cancellation_requested = self.cancellation.is_requested();
+        match capture_result {
             Ok(result) => {
                 self.record_resource(
                     "capture",
@@ -630,6 +743,9 @@ impl DeepCaptureSession<'_> {
                 );
                 self.failures.push(error);
             }
+        }
+        if cancellation_requested || self.cancellation.is_requested() {
+            self.record_cancellation();
         }
         if self.deadline_expired(started, self.plan.deadlines.observation) {
             self.fail(
@@ -658,6 +774,9 @@ impl DeepCaptureSession<'_> {
                 actual: self.state,
                 allowed: &[LifecycleState::Running, LifecycleState::Observed],
             });
+        }
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
         }
         let started = self.adapters.clock.monotonic_elapsed();
         let capture_target = self.capture.token.clone();
@@ -761,9 +880,18 @@ impl DeepCaptureSession<'_> {
             Operation::Finalize,
             &[LifecycleState::Stopped, LifecycleState::Finalizing],
         )?;
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         self.transition(LifecycleState::Finalizing);
         self.persist_facts();
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         self.cleanup_resources();
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         self.prepare_lifecycle_authority();
         let mut snapshot = self.snapshot();
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
@@ -773,14 +901,27 @@ impl DeepCaptureSession<'_> {
         let publication_started = self.check_boundary("bundle-evidence", BoundarySide::Before);
         if publication_started {
             self.write_bundle(&snapshot);
+            if self.cancellation.is_requested() {
+                self.record_cancellation();
+            }
             self.check_boundary("bundle-evidence", BoundarySide::After);
         }
         self.settle_lifecycle_authority(
             publication_started && self.failures.len() == failures_before_publication,
         );
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
         let reconciled_snapshot = self.snapshot();
         self.reconcile_bundle(&reconciled_snapshot);
-        snapshot.failures = self.failures.clone();
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
+        self.transition(LifecycleState::Terminal);
+        if self.cancellation.is_requested() {
+            self.record_cancellation();
+        }
+        snapshot = self.snapshot();
         if (self.failures.len() > failures_before_publication || self.required_reporting_failed())
             && snapshot.outcome == SessionOutcome::Complete
         {
@@ -793,7 +934,6 @@ impl DeepCaptureSession<'_> {
         if !self.event_failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
             snapshot.outcome = SessionOutcome::Partial;
         }
-        self.transition(LifecycleState::Terminal);
         snapshot.lifecycle_transitions = self.lifecycle_transitions.clone();
         snapshot.failures = self.failures.clone();
         if !snapshot.failures.is_empty() && snapshot.outcome == SessionOutcome::Complete {
@@ -858,6 +998,45 @@ impl DeepCaptureSession<'_> {
         self.lifecycle_transitions
             .push(LifecycleTransition { from, to: next });
         self.check_boundary(&boundary, BoundarySide::After);
+    }
+
+    fn observe_cancellation(&mut self) -> bool {
+        if !self.cancellation.is_requested() {
+            return false;
+        }
+        self.record_cancellation();
+        match self.state {
+            LifecycleState::Prepared
+                if self.artifacts_prepared
+                    || self.proxy.is_some()
+                    || self.trust.is_some()
+                    || self.routing.is_some()
+                    || self.launch.is_some() =>
+            {
+                self.transition(LifecycleState::Stopped)
+            }
+            LifecycleState::Prepared => self.transition(LifecycleState::Terminal),
+            LifecycleState::Running | LifecycleState::Observed => {
+                self.transition(LifecycleState::Stopped)
+            }
+            LifecycleState::Stopped | LifecycleState::Finalizing | LifecycleState::Terminal => {}
+        }
+        true
+    }
+
+    fn record_cancellation(&mut self) {
+        self.interrupted = true;
+        if !self
+            .failures
+            .iter()
+            .any(|failure| failure.code == "cancellation-requested")
+        {
+            self.fail(
+                Stage::Observe,
+                "cancellation-requested",
+                "caller requested cooperative cancellation",
+            );
+        }
     }
 
     fn check_boundary(&mut self, boundary: &str, side: BoundarySide) -> bool {

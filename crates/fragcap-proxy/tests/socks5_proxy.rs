@@ -41,7 +41,9 @@ fn start_proxy_with(
     .with_protocol_limits(limits);
     let mut policy = DestinationPolicy::new(config.listen());
     policy.grant_for_test(origin);
-    let backend = NativeProxyBackend::new(config).with_destination_policy(policy);
+    let backend = NativeProxyBackend::new(config)
+        .with_destination_policy(policy)
+        .with_tls_client_config(support::isolated_tls_client_config());
     let mut backend = match collector {
         Some(collector) => backend.with_application_event_sink(collector),
         None => backend,
@@ -594,3 +596,4 @@ fn authentication_fields_share_one_deadline() {
     assert_eq!(report.observation.protocol.timed_out, 1);
     assert_eq!(report.observation.protocol.socks_auth_succeeded, 0);
 }
+mod support;

@@ -20,14 +20,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
-use fragcap::deep_capture::{calibration_outcome, observation_proves_final_client_ca_acceptance};
-use fragcap::deep_capture::{
+use deep_capture_api::{calibration_outcome, observation_proves_final_client_ca_acceptance};
+use deep_capture_api::{
     calibration_outcome_reason, terminal_calibration_outcome, CalibrationOutcome, CalibrationPhase,
     ClassificationSummary, CompatibilityObservation as Observation, Inspectability,
     ManifestOmissionReason,
 };
 #[cfg(windows)]
-use fragcap::deep_capture::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
+use deep_capture_api::{CertificateStore, NativeCertificateStore, TrustMutation, TrustState};
+use fragcap::deep_capture::api as deep_capture_api;
 use fragcap::targets::{
     entry_windows_clients, entry_windows_launch_entries, resolve_id, resolve_positional,
     CompatibilityAddressFamily, CompatibilityCase, CompatibilityEvidenceSource, CompatibilityFact,
@@ -114,8 +115,8 @@ fn current_compatibility_case(
     }
 }
 
-fn library_launch_case(value: CompatibilityLaunchCase) -> fragcap::deep_capture::LaunchCase {
-    use fragcap::deep_capture::LaunchCase;
+fn library_launch_case(value: CompatibilityLaunchCase) -> deep_capture_api::LaunchCase {
+    use deep_capture_api::LaunchCase;
     match value {
         CompatibilityLaunchCase::SteamProtocolWarm => LaunchCase::SteamProtocolWarm,
         CompatibilityLaunchCase::SteamProtocolCold => LaunchCase::SteamProtocolCold,
@@ -366,7 +367,7 @@ fn emit_restart_outcome(
     context: &WarmRestartContext,
     stage: &str,
     status: &str,
-    cold_case: Option<fragcap::deep_capture::LaunchCase>,
+    cold_case: Option<deep_capture_api::LaunchCase>,
     reason: &str,
 ) {
     emitter.event(&Event::DeepCaptureRestart {
@@ -581,16 +582,15 @@ struct LibraryTargetAdapter<'a> {
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
 }
 
-impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
+impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_> {
     fn resolve(
         &mut self,
-        _config: &fragcap::deep_capture::SessionConfig,
-    ) -> Result<fragcap::deep_capture::PreparedTarget, fragcap::deep_capture::PreflightRefusal>
-    {
+        _config: &deep_capture_api::SessionConfig,
+    ) -> Result<deep_capture_api::PreparedTarget, deep_capture_api::PreflightRefusal> {
         let target = resolve_target(&self.store.borrow(), self.args)
             .map_err(|error| library_refusal("target-resolution", error))?;
         let id = target.id.ok_or_else(|| {
-            fragcap::deep_capture::PreflightRefusal::new(
+            deep_capture_api::PreflightRefusal::new(
                 "target-id-missing",
                 "resolved target has no local row id",
             )
@@ -598,7 +598,7 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
         let launch_case = effective_launch_case(&target, self.args.controlled_target)
             .map_err(|error| library_refusal("launch-case", error))?;
         *self.selected_launch_case.borrow_mut() = Some(launch_case);
-        let prepared = fragcap::deep_capture::PreparedTarget {
+        let prepared = deep_capture_api::PreparedTarget {
             id,
             handle: target.handle.clone(),
             launch_case: library_launch_case(launch_case),
@@ -609,18 +609,15 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
 
     fn validate_compatibility(
         &mut self,
-        target: &fragcap::deep_capture::PreparedTarget,
-        config: &fragcap::deep_capture::SessionConfig,
-    ) -> Result<(), fragcap::deep_capture::PreflightRefusal> {
+        target: &deep_capture_api::PreparedTarget,
+        config: &deep_capture_api::SessionConfig,
+    ) -> Result<(), deep_capture_api::PreflightRefusal> {
         let facts = self
             .store
             .borrow()
             .compatibility_facts_for_target(target.id)
             .map_err(|error| {
-                fragcap::deep_capture::PreflightRefusal::new(
-                    "compatibility-read",
-                    error.to_string(),
-                )
+                deep_capture_api::PreflightRefusal::new("compatibility-read", error.to_string())
             })?;
         if self.args.controlled_target {
             require_controlled_target(
@@ -631,7 +628,7 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
             )
             .map_err(|error| library_refusal("controlled-target", error))?;
         }
-        fragcap::deep_capture::validate_compatibility_prerequisites(
+        deep_capture_api::validate_compatibility_prerequisites(
             config.mode,
             self.args.controlled_target,
             &facts,
@@ -650,31 +647,30 @@ impl fragcap::deep_capture::TargetResolver for LibraryTargetAdapter<'_> {
     }
 }
 
-fn library_refusal(code: &'static str, error: CliError) -> fragcap::deep_capture::PreflightRefusal {
-    fragcap::deep_capture::PreflightRefusal::new(code, error.to_string())
+fn library_refusal(code: &'static str, error: CliError) -> deep_capture_api::PreflightRefusal {
+    deep_capture_api::PreflightRefusal::new(code, error.to_string())
 }
 
 struct LibraryEndpointAdapter {
     family: DeepCaptureProxyFamilyArg,
-    reservation: fragcap::deep_capture::NativeListenerReservation,
+    reservation: deep_capture_api::NativeListenerReservation,
 }
 
-impl fragcap::deep_capture::EndpointAllocator for LibraryEndpointAdapter {
+impl deep_capture_api::EndpointAllocator for LibraryEndpointAdapter {
     fn select(
         &mut self,
-    ) -> Result<fragcap::deep_capture::LoopbackEndpoint, fragcap::deep_capture::PreflightRefusal>
-    {
+    ) -> Result<deep_capture_api::LoopbackEndpoint, deep_capture_api::PreflightRefusal> {
         self.reservation.reserve(loopback_bind_address(self.family))
     }
 }
 
 struct LibraryIdentifierAdapter;
 
-impl fragcap::deep_capture::IdentifierSource for LibraryIdentifierAdapter {
+impl deep_capture_api::IdentifierSource for LibraryIdentifierAdapter {
     fn next_id(
         &mut self,
         kind: &'static str,
-    ) -> Result<String, fragcap::deep_capture::PreflightRefusal> {
+    ) -> Result<String, deep_capture_api::PreflightRefusal> {
         Ok(if kind == "session" {
             session_id()
         } else {
@@ -687,7 +683,7 @@ struct LibraryClockAdapter {
     started: Instant,
 }
 
-impl fragcap::deep_capture::SessionClock for LibraryClockAdapter {
+impl deep_capture_api::SessionClock for LibraryClockAdapter {
     fn wall_now(&mut self) -> SystemTime {
         SystemTime::now()
     }
@@ -711,20 +707,20 @@ struct LibraryRuntime {
 }
 
 fn library_stage_failure(
-    stage: fragcap::deep_capture::Stage,
+    stage: deep_capture_api::Stage,
     code: &'static str,
     error: CliError,
-) -> fragcap::deep_capture::StageFailure {
-    fragcap::deep_capture::StageFailure::new(stage, code, error.to_string())
+) -> deep_capture_api::StageFailure {
+    deep_capture_api::StageFailure::new(stage, code, error.to_string())
 }
 
-fn library_cleanup_resource(value: CleanupResource) -> fragcap::deep_capture::CleanupResult {
-    fragcap::deep_capture::CleanupResult {
+fn library_cleanup_resource(value: CleanupResource) -> deep_capture_api::CleanupResult {
+    deep_capture_api::CleanupResult {
         resource: value.resource,
         status: match value.status.as_str() {
-            "succeeded" => fragcap::deep_capture::CleanupStatus::Released,
-            "not-needed" => fragcap::deep_capture::CleanupStatus::NotNeeded,
-            _ => fragcap::deep_capture::CleanupStatus::Failed,
+            "succeeded" => deep_capture_api::CleanupStatus::Released,
+            "not-needed" => deep_capture_api::CleanupStatus::NotNeeded,
+            _ => deep_capture_api::CleanupStatus::Failed,
         },
         reason: value.reason,
     }
@@ -735,20 +731,19 @@ struct LibraryTrustAdapter {
     runtime: Rc<RefCell<LibraryRuntime>>,
 }
 
-impl fragcap::deep_capture::TrustManager for LibraryTrustAdapter {
+impl deep_capture_api::TrustManager for LibraryTrustAdapter {
     fn acquire(
         &mut self,
-        _plan: &fragcap::deep_capture::SessionPlan,
-        route: &fragcap::deep_capture::ProxyRoute,
-        _budget: fragcap::deep_capture::Budget,
-    ) -> Result<Box<dyn fragcap::deep_capture::TrustLease>, fragcap::deep_capture::StageFailure>
-    {
+        _plan: &deep_capture_api::SessionPlan,
+        route: &deep_capture_api::ProxyRoute,
+        _budget: deep_capture_api::Budget,
+    ) -> Result<Box<dyn deep_capture_api::TrustLease>, deep_capture_api::StageFailure> {
         let mut manager: Box<dyn TrustManager> = if self.controlled {
             Box::new(ControlledTrustManager)
         } else {
             if route.ca_der().is_empty() || route.ca_sha1_thumbprint().is_empty() {
-                return Err(fragcap::deep_capture::StageFailure::new(
-                    fragcap::deep_capture::Stage::Trust,
+                return Err(deep_capture_api::StageFailure::new(
+                    deep_capture_api::Stage::Trust,
                     "ca-material-missing",
                     "the proxy did not expose session CA material",
                 ));
@@ -758,11 +753,11 @@ impl fragcap::deep_capture::TrustManager for LibraryTrustAdapter {
                 route.ca_sha1_thumbprint().to_string(),
             )
             .map_err(|error| {
-                library_stage_failure(fragcap::deep_capture::Stage::Trust, "manager", error)
+                library_stage_failure(deep_capture_api::Stage::Trust, "manager", error)
             })?
         };
         let outcome = manager.ensure_trusted(true).map_err(|error| {
-            library_stage_failure(fragcap::deep_capture::Stage::Trust, "acquire", error)
+            library_stage_failure(deep_capture_api::Stage::Trust, "acquire", error)
         })?;
         self.runtime.borrow_mut().trust = Some(outcome);
         Ok(Box::new(LibraryTrustLease { manager }))
@@ -773,40 +768,33 @@ struct LibraryTrustLease {
     manager: Box<dyn TrustManager>,
 }
 
-impl fragcap::deep_capture::TrustLease for LibraryTrustLease {
-    fn cleanup(
-        &mut self,
-        budget: fragcap::deep_capture::Budget,
-    ) -> fragcap::deep_capture::CleanupResult {
+impl deep_capture_api::TrustLease for LibraryTrustLease {
+    fn cleanup(&mut self, budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
         library_cleanup_resource(self.manager.cleanup(budget.remaining()))
     }
 }
 
 struct LibraryLaunchAdapter;
 
-impl fragcap::deep_capture::LaunchAdapter for LibraryLaunchAdapter {
+impl deep_capture_api::LaunchAdapter for LibraryLaunchAdapter {
     fn launch(
         &mut self,
-        _target: &fragcap::deep_capture::PreparedTarget,
-        _launch_case: fragcap::deep_capture::LaunchCase,
-        _route: &fragcap::deep_capture::AppliedRoute,
-        _budget: fragcap::deep_capture::Budget,
-    ) -> Result<Box<dyn fragcap::deep_capture::LaunchLease>, fragcap::deep_capture::StageFailure>
-    {
+        _target: &deep_capture_api::PreparedTarget,
+        _launch_case: deep_capture_api::LaunchCase,
+        _route: &deep_capture_api::AppliedRoute,
+        _budget: deep_capture_api::Budget,
+    ) -> Result<Box<dyn deep_capture_api::LaunchLease>, deep_capture_api::StageFailure> {
         Ok(Box::new(LibraryLaunchLease))
     }
 }
 
 struct LibraryLaunchLease;
 
-impl fragcap::deep_capture::LaunchLease for LibraryLaunchLease {
-    fn cleanup(
-        &mut self,
-        _budget: fragcap::deep_capture::Budget,
-    ) -> fragcap::deep_capture::CleanupResult {
-        fragcap::deep_capture::CleanupResult {
+impl deep_capture_api::LaunchLease for LibraryLaunchLease {
+    fn cleanup(&mut self, _budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
+        deep_capture_api::CleanupResult {
             resource: "managed-launch".to_string(),
-            status: fragcap::deep_capture::CleanupStatus::NotNeeded,
+            status: deep_capture_api::CleanupStatus::NotNeeded,
             reason: "ordinary Capture owns the managed launch lifetime".to_string(),
         }
     }
@@ -817,18 +805,17 @@ struct LibraryCaptureAdapter<'a, 'e, 'w> {
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
     prepared: Option<(CaptureArgs, capture::PreparedCapture)>,
     runtime: Rc<RefCell<LibraryRuntime>>,
-    observation_context: fragcap::deep_capture::NativeObservationContext,
-    mode: fragcap::deep_capture::SessionMode,
+    observation_context: deep_capture_api::NativeObservationContext,
+    mode: deep_capture_api::SessionMode,
 }
 
-impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
+impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
     fn prepare(
         &mut self,
-        config: &fragcap::deep_capture::SessionConfig,
-        target: &fragcap::deep_capture::PreparedTarget,
-        _endpoint: fragcap::deep_capture::LoopbackEndpoint,
-    ) -> Result<fragcap::deep_capture::PreparedCapture, fragcap::deep_capture::PreflightRefusal>
-    {
+        config: &deep_capture_api::SessionConfig,
+        target: &deep_capture_api::PreparedTarget,
+        _endpoint: deep_capture_api::LoopbackEndpoint,
+    ) -> Result<deep_capture_api::PreparedCapture, deep_capture_api::PreflightRefusal> {
         self.mode = config.mode;
         if !self.args.controlled_target {
             let deadlines = CalibrationDeadlines {
@@ -838,36 +825,36 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 cleanup: config.deadlines.cleanup,
             };
             let mut capture_args = real_capture_args(self.args, &config.bundle, deadlines);
-            if target.launch_case == fragcap::deep_capture::LaunchCase::SteamProtocolCold {
+            if target.launch_case == deep_capture_api::LaunchCase::SteamProtocolCold {
                 capture_args.wait = owned_platform_wait(capture_args.wait, config.deadlines.launch);
             }
-            let prepared =
-                if target.launch_case == fragcap::deep_capture::LaunchCase::SteamProtocolCold {
-                    capture::prepare_owned_platform(&capture_args, &mut self.emitter.borrow_mut())
-                } else {
-                    capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
-                }
-                .map_err(|error| library_refusal("capture-prepare", error))?;
+            let prepared = if target.launch_case == deep_capture_api::LaunchCase::SteamProtocolCold
+            {
+                capture::prepare_owned_platform(&capture_args, &mut self.emitter.borrow_mut())
+            } else {
+                capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
+            }
+            .map_err(|error| library_refusal("capture-prepare", error))?;
             self.prepared = Some((capture_args, prepared));
         }
-        Ok(fragcap::deep_capture::PreparedCapture {
+        Ok(deep_capture_api::PreparedCapture {
             token: "ordinary-capture".to_string(),
         })
     }
 
     fn run(
         &mut self,
-        _prepared: &fragcap::deep_capture::PreparedCapture,
-        route: &fragcap::deep_capture::AppliedRoute,
-        budget: fragcap::deep_capture::Budget,
-    ) -> Result<fragcap::deep_capture::CaptureRunResult, fragcap::deep_capture::StageFailure> {
+        _prepared: &deep_capture_api::PreparedCapture,
+        route: &deep_capture_api::AppliedRoute,
+        budget: deep_capture_api::Budget,
+    ) -> Result<deep_capture_api::CaptureRunResult, deep_capture_api::StageFailure> {
         if self.args.controlled_target {
             let phase = match self.mode {
-                fragcap::deep_capture::SessionMode::Capture => None,
-                fragcap::deep_capture::SessionMode::ReachabilityCalibration => {
+                deep_capture_api::SessionMode::Capture => None,
+                deep_capture_api::SessionMode::ReachabilityCalibration => {
                     Some(CalibrationPhase::Reachability)
                 }
-                fragcap::deep_capture::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
+                deep_capture_api::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
                 _ => None,
             };
             let runtime = Rc::clone(&self.runtime);
@@ -881,21 +868,17 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
                 },
             )
             .map_err(|error| {
-                library_stage_failure(
-                    fragcap::deep_capture::Stage::Capture,
-                    "controlled-target",
-                    error,
-                )
+                library_stage_failure(deep_capture_api::Stage::Capture, "controlled-target", error)
             })?;
             runtime.borrow_mut().process_evidence = Some(controlled_process_evidence(process_id));
-            return Ok(fragcap::deep_capture::CaptureRunResult {
+            return Ok(deep_capture_api::CaptureRunResult {
                 observations: Vec::new(),
                 interrupted: false,
             });
         }
         let (capture_args, mut prepared) = self.prepared.take().ok_or_else(|| {
-            fragcap::deep_capture::StageFailure::new(
-                fragcap::deep_capture::Stage::Capture,
+            deep_capture_api::StageFailure::new(
+                deep_capture_api::Stage::Capture,
                 "capture-not-prepared",
                 "ordinary Capture preparation was not retained",
             )
@@ -904,7 +887,7 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
             .with_launch_environment(route.environment())
             .map_err(|error| {
                 library_stage_failure(
-                    fragcap::deep_capture::Stage::Launch,
+                    deep_capture_api::Stage::Launch,
                     "launch-route-environment",
                     error,
                 )
@@ -924,21 +907,18 @@ impl fragcap::deep_capture::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> 
             runtime.interrupted = interrupted;
         }
         result.map_err(|error| {
-            library_stage_failure(fragcap::deep_capture::Stage::Capture, "capture-run", error)
+            library_stage_failure(deep_capture_api::Stage::Capture, "capture-run", error)
         })?;
-        Ok(fragcap::deep_capture::CaptureRunResult {
+        Ok(deep_capture_api::CaptureRunResult {
             observations: Vec::new(),
             interrupted,
         })
     }
 
-    fn stop(
-        &mut self,
-        _budget: fragcap::deep_capture::Budget,
-    ) -> fragcap::deep_capture::CleanupResult {
-        fragcap::deep_capture::CleanupResult {
+    fn stop(&mut self, _budget: deep_capture_api::Budget) -> deep_capture_api::CleanupResult {
+        deep_capture_api::CleanupResult {
             resource: "capture".to_string(),
-            status: fragcap::deep_capture::CleanupStatus::NotNeeded,
+            status: deep_capture_api::CleanupStatus::NotNeeded,
             reason: "ordinary Capture returned after its own bounded stop".to_string(),
         }
     }
@@ -952,16 +932,16 @@ struct LibraryFactAdapter {
     family: DeepCaptureProxyFamilyArg,
 }
 
-impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
+impl deep_capture_api::CompatibilityRepository for LibraryFactAdapter {
     fn append(
         &mut self,
-        target: &fragcap::deep_capture::PreparedTarget,
-        fact: &fragcap::deep_capture::CompatibilityFact,
-    ) -> fragcap::deep_capture::FactWriteStatus {
+        target: &deep_capture_api::PreparedTarget,
+        fact: &deep_capture_api::CompatibilityFact,
+    ) -> deep_capture_api::FactWriteStatus {
         let key = match CompatibilityFactKey::parse(&fact.kind) {
             Ok(key) => key,
             Err(error) => {
-                return fragcap::deep_capture::FactWriteStatus::Failed {
+                return deep_capture_api::FactWriteStatus::Failed {
                     code: "fact-key".to_string(),
                     detail: error.to_string(),
                 }
@@ -970,7 +950,7 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
         let launch_case = match *self.selected_launch_case.borrow() {
             Some(value) => value,
             None => {
-                return fragcap::deep_capture::FactWriteStatus::Failed {
+                return deep_capture_api::FactWriteStatus::Failed {
                     code: "launch-case".to_string(),
                     detail: "the resolved launch case is unavailable".to_string(),
                 }
@@ -980,7 +960,7 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
         let backend = match runtime.backend.as_ref() {
             Some(value) => value,
             None => {
-                return fragcap::deep_capture::FactWriteStatus::Failed {
+                return deep_capture_api::FactWriteStatus::Failed {
                     code: "proxy-backend".to_string(),
                     detail: "the selected proxy backend is unavailable".to_string(),
                 }
@@ -1005,8 +985,8 @@ impl fragcap::deep_capture::CompatibilityRepository for LibraryFactAdapter {
             },
         );
         match result {
-            Ok(()) => fragcap::deep_capture::FactWriteStatus::Appended,
-            Err(error) => fragcap::deep_capture::FactWriteStatus::Failed {
+            Ok(()) => deep_capture_api::FactWriteStatus::Appended,
+            Err(error) => deep_capture_api::FactWriteStatus::Failed {
                 code: "fact-append".to_string(),
                 detail: error.to_string(),
             },
@@ -1022,22 +1002,22 @@ struct LibraryArtifactAdapter<'e, 'w> {
     deadlines: CalibrationDeadlines,
     family: DeepCaptureProxyFamilyArg,
     protocol: Option<CompatibilityProtocol>,
-    routing: Option<fragcap::deep_capture::RoutingPlan>,
+    routing: Option<deep_capture_api::RoutingPlan>,
     owner_lease: Option<crate::doctor::residue::SessionOwnerLease>,
 }
 
-impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
+impl deep_capture_api::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
     fn validate_destination(
         &mut self,
         path: &Path,
-    ) -> Result<(), fragcap::deep_capture::PreflightRefusal> {
+    ) -> Result<(), deep_capture_api::PreflightRefusal> {
         validate_bundle_root(path).map_err(|error| library_refusal("bundle-destination", error))
     }
 
     fn prepare(
         &mut self,
-        plan: &fragcap::deep_capture::SessionPlan,
-    ) -> Result<(), fragcap::deep_capture::StageFailure> {
+        plan: &deep_capture_api::SessionPlan,
+    ) -> Result<(), deep_capture_api::StageFailure> {
         self.routing = Some(plan.routing.clone());
         fragcap::deep_capture::prepare_bundle(&plan.bundle)
             .and_then(|()| {
@@ -1053,8 +1033,8 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                 fragcap::deep_capture::write_crash_prefix(&plan.bundle, &plan.session_id)
             })
             .map_err(|error| {
-                fragcap::deep_capture::StageFailure::new(
-                    fragcap::deep_capture::Stage::Bundle,
+                deep_capture_api::StageFailure::new(
+                    deep_capture_api::Stage::Bundle,
                     "bundle-protection-failed",
                     error.to_string(),
                 )
@@ -1064,15 +1044,15 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
     fn finalize(
         &mut self,
         bundle: &Path,
-        snapshot: &fragcap::deep_capture::TerminalSnapshot,
-    ) -> Vec<fragcap::deep_capture::ArtifactResult> {
+        snapshot: &deep_capture_api::TerminalSnapshot,
+    ) -> Vec<deep_capture_api::ArtifactResult> {
         if let Err(error) = fs::create_dir_all(bundle) {
-            return vec![fragcap::deep_capture::ArtifactResult {
+            return vec![deep_capture_api::ArtifactResult {
                 role: "bundle-finalization".to_string(),
                 path: bundle.to_path_buf(),
-                sensitivity: fragcap::deep_capture::Sensitivity::Metadata,
+                sensitivity: deep_capture_api::Sensitivity::Metadata,
                 required: true,
-                status: fragcap::deep_capture::ArtifactStatus::Failed {
+                status: deep_capture_api::ArtifactStatus::Failed {
                     code: "bundle-create".to_string(),
                     detail: error.to_string(),
                 },
@@ -1129,18 +1109,16 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
                 value: write.fact.value.clone(),
                 protocol: write.fact.protocol.as_str().to_string(),
                 status: match write.status {
-                    fragcap::deep_capture::FactWriteStatus::Appended => "performed",
-                    fragcap::deep_capture::FactWriteStatus::Skipped { .. } => "skipped",
-                    fragcap::deep_capture::FactWriteStatus::Failed { .. } => "failed",
+                    deep_capture_api::FactWriteStatus::Appended => "performed",
+                    deep_capture_api::FactWriteStatus::Skipped { .. } => "skipped",
+                    deep_capture_api::FactWriteStatus::Failed { .. } => "failed",
                     _ => "failed",
                 }
                 .to_string(),
                 reason: match &write.status {
-                    fragcap::deep_capture::FactWriteStatus::Appended => None,
-                    fragcap::deep_capture::FactWriteStatus::Skipped { reason } => {
-                        Some(reason.clone())
-                    }
-                    fragcap::deep_capture::FactWriteStatus::Failed { detail, .. } => {
+                    deep_capture_api::FactWriteStatus::Appended => None,
+                    deep_capture_api::FactWriteStatus::Skipped { reason } => Some(reason.clone()),
+                    deep_capture_api::FactWriteStatus::Failed { detail, .. } => {
                         Some(detail.clone())
                     }
                     _ => Some("unrecognized library fact-write status".to_string()),
@@ -1148,11 +1126,11 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             })
             .collect();
         let calibration = match snapshot.mode {
-            fragcap::deep_capture::SessionMode::ReachabilityCalibration => {
+            deep_capture_api::SessionMode::ReachabilityCalibration => {
                 Some(CalibrationPhase::Reachability)
             }
-            fragcap::deep_capture::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
-            fragcap::deep_capture::SessionMode::Capture => None,
+            deep_capture_api::SessionMode::TlsCalibration => Some(CalibrationPhase::Tls),
+            deep_capture_api::SessionMode::Capture => None,
             _ => None,
         };
         let outcome = calibration.map(|phase| {
@@ -1165,10 +1143,10 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             )
         });
         let session_state = match snapshot.outcome {
-            fragcap::deep_capture::SessionOutcome::Complete => "complete",
-            fragcap::deep_capture::SessionOutcome::Partial
-            | fragcap::deep_capture::SessionOutcome::Interrupted => "partial",
-            fragcap::deep_capture::SessionOutcome::Failed => "failed",
+            deep_capture_api::SessionOutcome::Complete => "complete",
+            deep_capture_api::SessionOutcome::Partial
+            | deep_capture_api::SessionOutcome::Interrupted => "partial",
+            deep_capture_api::SessionOutcome::Failed => "failed",
             _ => "failed",
         };
         let context = BundleContext {
@@ -1193,47 +1171,47 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             (
                 "pcapng",
                 "capture.fcapng",
-                fragcap::deep_capture::Sensitivity::Metadata,
+                deep_capture_api::Sensitivity::Metadata,
             ),
             (
                 "application-jsonl",
                 "application.jsonl",
-                fragcap::deep_capture::Sensitivity::Payload,
+                deep_capture_api::Sensitivity::Payload,
             ),
             (
                 "proxy-lifecycle",
                 "proxy.jsonl",
-                fragcap::deep_capture::Sensitivity::Payload,
+                deep_capture_api::Sensitivity::Payload,
             ),
             (
                 "cleanup-lifecycle",
                 "cleanup.jsonl",
-                fragcap::deep_capture::Sensitivity::Metadata,
+                deep_capture_api::Sensitivity::Metadata,
             ),
             (
                 "resource-journal",
                 "resource-journal.jsonl",
-                fragcap::deep_capture::Sensitivity::Secret,
+                deep_capture_api::Sensitivity::Secret,
             ),
             (
                 "process-trace",
                 "process-trace.jsonl",
-                fragcap::deep_capture::Sensitivity::Payload,
+                deep_capture_api::Sensitivity::Payload,
             ),
             (
                 "compatibility",
                 "compatibility.json",
-                fragcap::deep_capture::Sensitivity::Metadata,
+                deep_capture_api::Sensitivity::Metadata,
             ),
             (
                 "cleanup-summary",
                 "cleanup.json",
-                fragcap::deep_capture::Sensitivity::Metadata,
+                deep_capture_api::Sensitivity::Metadata,
             ),
             (
                 "manifest",
                 "manifest.json",
-                fragcap::deep_capture::Sensitivity::Metadata,
+                deep_capture_api::Sensitivity::Metadata,
             ),
         ];
         let mut results: Vec<_> = roles
@@ -1241,18 +1219,18 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             .map(|(role, path, sensitivity)| {
                 let full = bundle.join(path);
                 let status = if full.is_file() {
-                    fragcap::deep_capture::ArtifactStatus::Written
+                    deep_capture_api::ArtifactStatus::Written
                 } else if let Err(error) = &write_result {
-                    fragcap::deep_capture::ArtifactStatus::Failed {
+                    deep_capture_api::ArtifactStatus::Failed {
                         code: "bundle-write".to_string(),
                         detail: error.to_string(),
                     }
                 } else {
-                    fragcap::deep_capture::ArtifactStatus::Omitted {
+                    deep_capture_api::ArtifactStatus::Omitted {
                         reason: "artifact was not produced".to_string(),
                     }
                 };
-                fragcap::deep_capture::ArtifactResult {
+                deep_capture_api::ArtifactResult {
                     role: role.to_string(),
                     path: full,
                     sensitivity,
@@ -1262,12 +1240,12 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
             })
             .collect();
         if let Err(error) = write_result {
-            results.push(fragcap::deep_capture::ArtifactResult {
+            results.push(deep_capture_api::ArtifactResult {
                 role: "bundle-finalization".to_string(),
                 path: bundle.to_path_buf(),
-                sensitivity: fragcap::deep_capture::Sensitivity::Metadata,
+                sensitivity: deep_capture_api::Sensitivity::Metadata,
                 required: true,
-                status: fragcap::deep_capture::ArtifactStatus::Failed {
+                status: deep_capture_api::ArtifactStatus::Failed {
                     code: "bundle-write".to_string(),
                     detail: error.to_string(),
                 },
@@ -1279,8 +1257,8 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
     fn reconcile(
         &mut self,
         bundle: &Path,
-        snapshot: &fragcap::deep_capture::TerminalSnapshot,
-    ) -> Vec<fragcap::deep_capture::ArtifactResult> {
+        snapshot: &deep_capture_api::TerminalSnapshot,
+    ) -> Vec<deep_capture_api::ArtifactResult> {
         let result = (|| -> Result<(), CliError> {
             let cleanup = cleanup_from_lifecycle(&bundle.join("cleanup.jsonl"))?;
             write_file(
@@ -1306,12 +1284,12 @@ impl fragcap::deep_capture::ArtifactSink for LibraryArtifactAdapter<'_, '_> {
         })();
         match result {
             Ok(()) => Vec::new(),
-            Err(error) => vec![fragcap::deep_capture::ArtifactResult {
+            Err(error) => vec![deep_capture_api::ArtifactResult {
                 role: "lifecycle-reconciliation".to_string(),
                 path: bundle.to_path_buf(),
-                sensitivity: fragcap::deep_capture::Sensitivity::Metadata,
+                sensitivity: deep_capture_api::Sensitivity::Metadata,
                 required: true,
-                status: fragcap::deep_capture::ArtifactStatus::Failed {
+                status: deep_capture_api::ArtifactStatus::Failed {
                     code: "lifecycle-reconciliation".to_string(),
                     detail: error.to_string(),
                 },
@@ -1329,14 +1307,14 @@ struct LibraryEventAdapter<'a, 'e, 'w> {
     bundle: PathBuf,
 }
 
-impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
+impl deep_capture_api::EventSink for LibraryEventAdapter<'_, '_, '_> {
     fn emit(
         &mut self,
-        event: &fragcap::deep_capture::DeepCaptureEvent,
-    ) -> Result<(), fragcap::deep_capture::StageFailure> {
+        event: &deep_capture_api::DeepCaptureEvent,
+    ) -> Result<(), deep_capture_api::StageFailure> {
         let mut emitter = self.emitter.borrow_mut();
         match event {
-            fragcap::deep_capture::DeepCaptureEvent::Plan { plan, .. } => {
+            deep_capture_api::DeepCaptureEvent::Plan { plan, .. } => {
                 {
                     let mut runtime = self.runtime.borrow_mut();
                     runtime.backend = Some(ProxyBackend {
@@ -1393,7 +1371,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     });
                 }
             }
-            fragcap::deep_capture::DeepCaptureEvent::ProxyStarted { session_id, .. } => {
+            deep_capture_api::DeepCaptureEvent::ProxyStarted { session_id, .. } => {
                 let runtime = self.runtime.borrow();
                 let backend = runtime
                     .backend
@@ -1419,7 +1397,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     });
                 }
             }
-            fragcap::deep_capture::DeepCaptureEvent::TrustAcquired { session_id, .. } => {
+            deep_capture_api::DeepCaptureEvent::TrustAcquired { session_id, .. } => {
                 let runtime = self.runtime.borrow();
                 let trust = runtime.trust.clone().unwrap_or(TrustOutcome {
                     state: "not-requested".to_string(),
@@ -1433,7 +1411,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     thumbprint: trust.thumbprint,
                 });
             }
-            fragcap::deep_capture::DeepCaptureEvent::LaunchStarted { session_id, .. } => {
+            deep_capture_api::DeepCaptureEvent::LaunchStarted { session_id, .. } => {
                 let target = self
                     .selected
                     .borrow()
@@ -1451,8 +1429,8 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     target: target.handle,
                 });
             }
-            fragcap::deep_capture::DeepCaptureEvent::Started { .. } => {}
-            fragcap::deep_capture::DeepCaptureEvent::Observation {
+            deep_capture_api::DeepCaptureEvent::Started { .. } => {}
+            deep_capture_api::DeepCaptureEvent::Observation {
                 session_id,
                 observation,
                 ..
@@ -1470,8 +1448,8 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     .reason()
                     .map(|reason| reason.as_str().to_string()),
             }),
-            fragcap::deep_capture::DeepCaptureEvent::Cleanup { .. } => {}
-            fragcap::deep_capture::DeepCaptureEvent::Terminal { report, .. } => {
+            deep_capture_api::DeepCaptureEvent::Cleanup { .. } => {}
+            deep_capture_api::DeepCaptureEvent::Terminal { report, .. } => {
                 let classification_summary = report.classification_summary();
                 if let Some(phase) = self.args.calibrate.map(calibration_phase) {
                     let runtime = self.runtime.borrow();
@@ -1534,16 +1512,16 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                     });
                 }
                 let status = match report.outcome {
-                    fragcap::deep_capture::SessionOutcome::Complete => "complete",
-                    fragcap::deep_capture::SessionOutcome::Partial
-                    | fragcap::deep_capture::SessionOutcome::Interrupted => "partial",
+                    deep_capture_api::SessionOutcome::Complete => "complete",
+                    deep_capture_api::SessionOutcome::Partial
+                    | deep_capture_api::SessionOutcome::Interrupted => "partial",
                     _ => "failed",
                 };
                 let cleanup_status = if report.cleanup.iter().all(|result| {
                     matches!(
                         result.status,
-                        fragcap::deep_capture::CleanupStatus::Released
-                            | fragcap::deep_capture::CleanupStatus::NotNeeded
+                        deep_capture_api::CleanupStatus::Released
+                            | deep_capture_api::CleanupStatus::NotNeeded
                     )
                 }) {
                     "succeeded"
@@ -1625,7 +1603,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
                 if report
                     .failures
                     .iter()
-                    .any(|failure| failure.stage == fragcap::deep_capture::Stage::Bundle)
+                    .any(|failure| failure.stage == deep_capture_api::Stage::Bundle)
                 {
                     emitter.progress("Deep Capture bundle finalization failed");
                 } else {
@@ -1644,7 +1622,7 @@ impl fragcap::deep_capture::EventSink for LibraryEventAdapter<'_, '_, '_> {
 /// Run `deep-capture` through the public library coordinator.
 fn load_client_identity(
     args: &DeepCaptureArgs,
-) -> Result<Option<fragcap::deep_capture::ClientIdentity>, CliError> {
+) -> Result<Option<deep_capture_api::ClientIdentity>, CliError> {
     let (Some(certificate_path), Some(private_key_path)) =
         (&args.client_certificate, &args.client_private_key)
     else {
@@ -1662,7 +1640,7 @@ fn load_client_identity(
             private_key_path.display()
         ))
     })?;
-    let identity = fragcap::deep_capture::ClientIdentity::from_bytes(&certificate, &private_key)
+    let identity = deep_capture_api::ClientIdentity::from_bytes(&certificate, &private_key)
         .map_err(|error| CliError::failure(format!("client identity is invalid: {}", error.code)));
     certificate.fill(0);
     private_key.fill(0);
@@ -1725,11 +1703,11 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         )?;
     }
     let mode = match calibration {
-        None => fragcap::deep_capture::SessionMode::Capture,
+        None => deep_capture_api::SessionMode::Capture,
         Some(CalibrationPhase::Reachability) => {
-            fragcap::deep_capture::SessionMode::ReachabilityCalibration
+            deep_capture_api::SessionMode::ReachabilityCalibration
         }
-        Some(CalibrationPhase::Tls) => fragcap::deep_capture::SessionMode::TlsCalibration,
+        Some(CalibrationPhase::Tls) => deep_capture_api::SessionMode::TlsCalibration,
     };
     let target_label = args
         .selector
@@ -1742,7 +1720,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let restart = run_warm_restart(args, &store.borrow(), emitter)?;
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
-    let config = fragcap::deep_capture::SessionConfig {
+    let config = deep_capture_api::SessionConfig {
         target: target_label,
         launch_case: args
             .launch_case
@@ -1758,8 +1736,8 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         key_log: args.key_log,
         client_identity: args.client_certificate.is_some(),
         proxy_bypass: args.proxy_bypass.clone(),
-        sensitive_retention: fragcap::deep_capture::SensitiveRetention::Retain,
-        deadlines: fragcap::deep_capture::Deadlines {
+        sensitive_retention: deep_capture_api::SensitiveRetention::Retain,
+        deadlines: deep_capture_api::Deadlines {
             launch: deadlines.launch,
             observation: deadlines.observation,
             shutdown: deadlines.shutdown,
@@ -1770,11 +1748,11 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let selected = Rc::new(RefCell::new(None));
     let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
-    let observation_context = fragcap::deep_capture::NativeObservationContext::default();
+    let observation_context = deep_capture_api::NativeObservationContext::default();
     let client_identity = load_client_identity(args)?;
-    let listener_reservation = fragcap::deep_capture::NativeListenerReservation::default();
+    let listener_reservation = deep_capture_api::NativeListenerReservation::default();
     let emitter = Rc::new(RefCell::new(emitter));
-    let mut adapters = fragcap::deep_capture::AdapterSet {
+    let mut adapters = deep_capture_api::AdapterSet {
         boundaries: Box::new(fragcap::deep_capture::AllowBoundaries),
         targets: Box::new(LibraryTargetAdapter {
             args,
@@ -1791,7 +1769,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         }),
         identifiers: Box::new(LibraryIdentifierAdapter),
         proxy: Box::new({
-            let mut proxy = fragcap::deep_capture::NativeProxyAdapter::default()
+            let mut proxy = deep_capture_api::NativeProxyAdapter::default()
                 .with_observation_context(observation_context.clone())
                 .with_application_artifact(bundle.join("application.jsonl"))
                 .with_proxy_lifecycle_artifact(bundle.join("proxy.jsonl"))
@@ -1807,7 +1785,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             controlled: args.controlled_target,
             runtime: Rc::clone(&runtime),
         }),
-        routing: Box::new(fragcap::deep_capture::ChildEnvironmentRouting),
+        routing: Box::new(deep_capture_api::ChildEnvironmentRouting),
         launch: Box::new(LibraryLaunchAdapter),
         capture: Box::new(LibraryCaptureAdapter {
             args,
@@ -1844,7 +1822,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             bundle: bundle.clone(),
         }),
     };
-    let prepared = match fragcap::deep_capture::DeepCapture::preflight(config, &mut adapters) {
+    let prepared = match deep_capture_api::DeepCapture::preflight(config, &mut adapters) {
         Ok(prepared) => prepared,
         Err(refusal) => {
             if let Some(restart) = &restart {
@@ -2000,7 +1978,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         }
     }
 
-    let authorization = fragcap::deep_capture::Authorization::approved(prepared.plan().id.clone());
+    let authorization = deep_capture_api::Authorization::approved(prepared.plan().id.clone());
     let report = prepared
         .into_session(adapters)
         .run_to_completion(authorization);
@@ -2017,7 +1995,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     }
 }
 
-fn cli_error_from_library_refusal(refusal: fragcap::deep_capture::PreflightRefusal) -> CliError {
+fn cli_error_from_library_refusal(refusal: deep_capture_api::PreflightRefusal) -> CliError {
     match refusal.code.as_str() {
         "launch-case-mismatch"
         | "launch-case"
@@ -2043,7 +2021,7 @@ struct DeepCaptureSession {
     launch_case: CompatibilityLaunchCase,
     address_family: CompatibilityAddressFamily,
     protocol: Option<CompatibilityProtocol>,
-    routing: fragcap::deep_capture::RoutingPlan,
+    routing: deep_capture_api::RoutingPlan,
     listen_addr: String,
     listen_port: u16,
     started_at: SystemTime,
@@ -2647,15 +2625,15 @@ fn controlled_process_evidence(process_id: u32) -> fragcap::deep_capture::Captur
             },
         ],
         stage_transitions: vec![
-            fragcap::deep_capture::StageTransition {
-                kind: fragcap::deep_capture::StageTransitionKind::Matched,
+            deep_capture_api::StageTransition {
+                kind: deep_capture_api::StageTransitionKind::Matched,
                 pid: process_id,
                 role: "client".to_string(),
                 stage: Some("client".to_string()),
                 at: started,
             },
-            fragcap::deep_capture::StageTransition {
-                kind: fragcap::deep_capture::StageTransitionKind::Exited,
+            deep_capture_api::StageTransition {
+                kind: deep_capture_api::StageTransitionKind::Exited,
                 pid: process_id,
                 role: "client".to_string(),
                 stage: Some("client".to_string()),
@@ -2669,7 +2647,7 @@ fn controlled_process_evidence(process_id: u32) -> fragcap::deep_capture::Captur
 }
 
 fn run_controlled_target_harness(
-    route: &fragcap::deep_capture::AppliedRoute,
+    route: &deep_capture_api::AppliedRoute,
     calibration: Option<CalibrationPhase>,
     execution_timeout: Duration,
     on_started: impl FnOnce(u32),
@@ -2798,7 +2776,7 @@ pub fn run_controlled_target(_args: &ControlledTargetArgs) -> Result<Exit, CliEr
         &std::env::var("FRAGCAP_CONTROLLED_CA_DER")
             .map_err(|_| CliError::failure("controlled target did not inherit the session CA"))?,
     )?;
-    fragcap::deep_capture::run_controlled_native_requests(
+    deep_capture_api::run_controlled_native_requests(
         address,
         &authorization,
         http_origin,
@@ -2853,7 +2831,7 @@ struct BundleContext<'a> {
     controlled: bool,
     har_requested: bool,
     key_log_requested: bool,
-    sensitive_retention: fragcap::deep_capture::SensitiveRetention,
+    sensitive_retention: deep_capture_api::SensitiveRetention,
     observations: &'a [Observation],
     trust: &'a TrustOutcome,
     session_state: &'a str,
@@ -3189,7 +3167,7 @@ fn application_jsonl(
     out
 }
 
-fn classification_json(value: &fragcap::deep_capture::ProtocolClassification) -> serde_json::Value {
+fn classification_json(value: &deep_capture_api::ProtocolClassification) -> serde_json::Value {
     json!({
         "schema_version": value.schema_version(),
         "family": value.family().as_str(),
@@ -3199,7 +3177,7 @@ fn classification_json(value: &fragcap::deep_capture::ProtocolClassification) ->
     })
 }
 
-fn routing_policy_json(plan: &fragcap::deep_capture::RoutingPlan) -> serde_json::Value {
+fn routing_policy_json(plan: &deep_capture_api::RoutingPlan) -> serde_json::Value {
     let bypass = plan
         .bypass
         .as_ref()
@@ -3988,7 +3966,7 @@ mod tests {
             attribution: None,
             packet_observations: 1,
             packet_observations_unretained: 0,
-            correlation_state: fragcap::deep_capture::CorrelationState::FlowOnly,
+            correlation_state: deep_capture_api::CorrelationState::FlowOnly,
             correlation_reason: "test-flow".to_string(),
             protocol: "https".to_string(),
             inspectability: Inspectability::Full,
@@ -3996,10 +3974,10 @@ mod tests {
             url: Some("https://127.0.0.1/controlled".to_string()),
             status: Some(200),
             reason: None,
-            classification: fragcap::deep_capture::ProtocolClassification::new(
-                fragcap::deep_capture::TrafficFamily::Https,
-                fragcap::deep_capture::DetectionState::Identified,
-                fragcap::deep_capture::InspectabilityState::Full,
+            classification: deep_capture_api::ProtocolClassification::new(
+                deep_capture_api::TrafficFamily::Https,
+                deep_capture_api::DetectionState::Identified,
+                deep_capture_api::InspectabilityState::Full,
                 None,
             )
             .unwrap(),
@@ -4098,11 +4076,11 @@ mod tests {
         let mut pinned = client.clone();
         pinned.inspectability = Inspectability::Inconclusive;
         pinned.reason = Some("certificate-pinned".to_string());
-        pinned.classification = fragcap::deep_capture::ProtocolClassification::new(
-            fragcap::deep_capture::TrafficFamily::Https,
-            fragcap::deep_capture::DetectionState::Identified,
-            fragcap::deep_capture::InspectabilityState::Unavailable,
-            Some(fragcap::deep_capture::ClassificationReason::CertificatePinned),
+        pinned.classification = deep_capture_api::ProtocolClassification::new(
+            deep_capture_api::TrafficFamily::Https,
+            deep_capture_api::DetectionState::Identified,
+            deep_capture_api::InspectabilityState::Unavailable,
+            Some(deep_capture_api::ClassificationReason::CertificatePinned),
         )
         .unwrap();
         assert_eq!(
@@ -4112,10 +4090,10 @@ mod tests {
         let mut metadata = client.clone();
         metadata.inspectability = Inspectability::MetadataOnly;
         metadata.protocol = "non-http-tls".to_string();
-        metadata.classification = fragcap::deep_capture::ProtocolClassification::new(
-            fragcap::deep_capture::TrafficFamily::NonHttpTls,
-            fragcap::deep_capture::DetectionState::Identified,
-            fragcap::deep_capture::InspectabilityState::MetadataOnly,
+        metadata.classification = deep_capture_api::ProtocolClassification::new(
+            deep_capture_api::TrafficFamily::NonHttpTls,
+            deep_capture_api::DetectionState::Identified,
+            deep_capture_api::InspectabilityState::MetadataOnly,
             None,
         )
         .unwrap();
@@ -4126,11 +4104,11 @@ mod tests {
         let mut unsupported = client;
         unsupported.inspectability = Inspectability::Unsupported;
         unsupported.protocol = "quic".to_string();
-        unsupported.classification = fragcap::deep_capture::ProtocolClassification::new(
-            fragcap::deep_capture::TrafficFamily::Quic,
-            fragcap::deep_capture::DetectionState::Unsupported,
-            fragcap::deep_capture::InspectabilityState::Unavailable,
-            Some(fragcap::deep_capture::ClassificationReason::UnsupportedVersion),
+        unsupported.classification = deep_capture_api::ProtocolClassification::new(
+            deep_capture_api::TrafficFamily::Quic,
+            deep_capture_api::DetectionState::Unsupported,
+            deep_capture_api::InspectabilityState::Unavailable,
+            Some(deep_capture_api::ClassificationReason::UnsupportedVersion),
         )
         .unwrap();
         assert_eq!(
@@ -4320,8 +4298,8 @@ mod tests {
             CompatibilityProtocol::Https,
         );
         let validate = |facts: &[CompatibilityFact]| {
-            fragcap::deep_capture::validate_compatibility_prerequisites(
-                fragcap::deep_capture::SessionMode::TlsCalibration,
+            deep_capture_api::validate_compatibility_prerequisites(
+                deep_capture_api::SessionMode::TlsCalibration,
                 false,
                 facts,
                 library_launch_case(selected),
@@ -4375,8 +4353,8 @@ mod tests {
                 DeepCaptureProxyFamilyArg::Ipv4,
                 CompatibilityProtocol::Https,
             );
-            fragcap::deep_capture::validate_compatibility_prerequisites(
-                fragcap::deep_capture::SessionMode::Capture,
+            deep_capture_api::validate_compatibility_prerequisites(
+                deep_capture_api::SessionMode::Capture,
                 false,
                 &routing_facts(launch_case, false),
                 library_launch_case(launch_case),
@@ -4403,19 +4381,19 @@ mod tests {
     #[test]
     fn real_calibration_accepts_a_cold_direct_executable() {
         for mode in [
-            fragcap::deep_capture::SessionMode::ReachabilityCalibration,
-            fragcap::deep_capture::SessionMode::TlsCalibration,
+            deep_capture_api::SessionMode::ReachabilityCalibration,
+            deep_capture_api::SessionMode::TlsCalibration,
         ] {
             let current = current_compatibility_case(
                 CompatibilityLaunchCase::DirectExeCold,
                 DeepCaptureProxyFamilyArg::Ipv4,
                 CompatibilityProtocol::Https,
             );
-            let result = fragcap::deep_capture::validate_compatibility_prerequisites(
+            let result = deep_capture_api::validate_compatibility_prerequisites(
                 mode,
                 false,
                 &routing_facts(CompatibilityLaunchCase::DirectExeCold, false),
-                fragcap::deep_capture::LaunchCase::DirectExeCold,
+                deep_capture_api::LaunchCase::DirectExeCold,
                 &current,
             );
             assert!(

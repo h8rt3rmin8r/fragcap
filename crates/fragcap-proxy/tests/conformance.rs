@@ -26,6 +26,8 @@ impl ApplicationEventSink for Collector {
     }
 }
 
+mod support;
+
 fn config(session: &str) -> NativeProxyConfig {
     NativeProxyConfig::new(
         "127.0.0.1:0".parse().unwrap(),
@@ -36,6 +38,11 @@ fn config(session: &str) -> NativeProxyConfig {
     .unwrap()
     .with_session_id(session)
     .unwrap()
+}
+
+fn isolated_backend(session: &str) -> NativeProxyBackend {
+    NativeProxyBackend::new(config(session))
+        .with_tls_client_config(support::isolated_tls_client_config())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -59,7 +66,7 @@ async fn hyper_http1_client_and_origin_interoperate_through_native_proxy() {
     });
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
-    let mut lease = NativeProxyBackend::new(config("s110-hyper-http1"))
+    let mut lease = isolated_backend("s110-hyper-http1")
         .with_destination_policy(policy)
         .start(Duration::from_secs(2))
         .unwrap();
@@ -109,7 +116,7 @@ async fn wire_http1_sse_client_and_origin_interoperate_through_native_proxy() {
     let collector = Arc::new(Collector::default());
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
-    let mut lease = NativeProxyBackend::new(config("s110-wire-sse"))
+    let mut lease = isolated_backend("s110-wire-sse")
         .with_destination_policy(policy)
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
@@ -195,7 +202,7 @@ async fn hyper_https_client_and_origin_interoperate_through_native_proxy() {
     let collector = Arc::new(Collector::default());
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
-    let mut lease = NativeProxyBackend::new(config("s110-hyper-https"))
+    let mut lease = isolated_backend("s110-hyper-https")
         .with_destination_policy(policy)
         .with_tls_client_config(tls_client_config_with_roots(roots).unwrap())
         .with_application_event_sink(collector.clone())
@@ -341,7 +348,7 @@ async fn raw_http2_client_multiplexes_through_native_proxy() {
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
     let collector = Arc::new(Collector::default());
-    let mut lease = NativeProxyBackend::new(config("s110-raw-h2"))
+    let mut lease = isolated_backend("s110-raw-h2")
         .with_destination_policy(policy)
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
@@ -469,7 +476,7 @@ async fn h2_grpc_client_interoperates_with_raw_http2_origin_through_native_proxy
 
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
-    let mut lease = NativeProxyBackend::new(config("s110-raw-h2-origin"))
+    let mut lease = isolated_backend("s110-raw-h2-origin")
         .with_destination_policy(policy)
         .start(Duration::from_secs(2))
         .unwrap();
@@ -547,7 +554,7 @@ async fn h2_sse_and_grpc_peers_interoperate_through_native_proxy() {
     let collector = Arc::new(Collector::default());
     let mut policy = DestinationPolicy::new("127.0.0.1:0".parse().unwrap());
     policy.grant_for_test(origin);
-    let mut lease = NativeProxyBackend::new(config("s110-h2-streaming"))
+    let mut lease = isolated_backend("s110-h2-streaming")
         .with_destination_policy(policy)
         .with_application_event_sink(collector.clone())
         .start(Duration::from_secs(2))
