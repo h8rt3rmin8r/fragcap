@@ -561,6 +561,12 @@ Param(
         $cleanEnvironment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = (Join-Path $testProfile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $testProfile 'AppData\Local'); FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $zipExe; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
+        $smokeProfile = Join-Path $scratch 'SmokeUser'
+        $smokeEnvironment = $cleanEnvironment.Clone()
+        $smokeEnvironment.APPDATA = Join-Path $smokeProfile 'AppData\Roaming'
+        $smokeEnvironment.LOCALAPPDATA = Join-Path $smokeProfile 'AppData\Local'
+        [void][System.IO.Directory]::CreateDirectory($smokeEnvironment.APPDATA)
+        [void][System.IO.Directory]::CreateDirectory($smokeEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
         $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
         if (-not $buildIdentity.official -or $buildIdentity.target -ne $contract.release_identity.target -or $buildIdentity.architecture -ne $contract.release_identity.architecture -or $buildIdentity.deep_capture_backend -ne $contract.release_identity.deep_capture_backend -or (Compare-Object -ReferenceObject @($contract.release_identity.features | Sort-Object) -DifferenceObject @($buildIdentity.features | Sort-Object))) { throw 'packaged binary build identity differs from the release contract' }
@@ -578,7 +584,7 @@ Param(
         $smokeFirewallRuleName = "fragcap-package-certification-$([guid]::NewGuid().ToString('N'))"
         if (-not $PSCmdlet.ShouldProcess($zipExe, 'Block non-loopback smoke traffic for the exact packaged executable')) { throw 'smoke network containment was not established' }
         [void](New-NetFirewallRule -Name $smokeFirewallRuleName -DisplayName $smokeFirewallRuleName -Direction Outbound -Action Block -Program $zipExe -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
-        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $smokeEnvironment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
         if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw 'packaged controlled native smoke did not produce expected evidence' }
         if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "packaged controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
         if ($smoke.Observation.process_paths.Count -lt 1) { throw 'packaged controlled native smoke recorded no executable path' }
@@ -677,7 +683,15 @@ Param(
         if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }
         if (-not (Test-Path -LiteralPath $userFixturePaths['extcap-registration'])) { throw 'fresh start removed independently managed Wireshark extcap registration' }
         if (-not (Test-Path -LiteralPath $localDb) -or -not (Test-Path -LiteralPath $bundle)) { throw 'fresh start removed custom database or bundle paths' }
-        [void](Invoke-MsiOperation -Case 'fresh-start-test-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'fresh-start-uninstall.log'))
+        $msiRoamingRoot = Join-Path $env:APPDATA 'fragcap'
+        $msiLocalRoot = Join-Path $env:LOCALAPPDATA 'fragcap'
+        if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
+        [void][System.IO.Directory]::CreateDirectory($msiRoamingRoot)
+        [void][System.IO.Directory]::CreateDirectory($msiLocalRoot)
+        [System.IO.File]::WriteAllText((Join-Path $msiRoamingRoot 'settings.json'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText((Join-Path $msiLocalRoot 'cache.bin'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))
+        [void](Invoke-MsiOperation -Case 'fresh-start-test-uninstall' -Arguments @('/x', $candidateMsi[0].FullName, 'FRAGCAP_FRESH_START=1', 'FRAGCAP_FRESH_START_SCOPE=current-user') -LogPath (Join-Path $scratch 'fresh-start-uninstall.log'))
+        if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot) -or (Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'MSI fresh-start uninstall did not remove exact initiating-user and installer-owned state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-after-fresh-start' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-reinstall.log'))
         $cleanLocalDb = Join-Path $cleanEnvironment.APPDATA 'fragcap\local.db'
         $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list') -Environment $cleanEnvironment

@@ -726,9 +726,14 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
                 continue;
             }
         };
+        let recovery_updated_journal = is_session
+            && recovery_succeeded.contains(&entry.root)
+            && entry.relative.rsplit('/').next().is_some_and(|name| {
+                name.eq_ignore_ascii_case(fragcap::deep_capture::RESOURCE_JOURNAL)
+            });
         let changed = is_redirected(&current)
             || current.is_dir() != entry.directory
-            || (!(entry.directory || is_session && recovery_succeeded.contains(&entry.root))
+            || (!(entry.directory || recovery_updated_journal)
                 && (current.len() != entry.len || modified_ns(&current) != entry.modified_ns));
         if changed {
             outcomes.push(ItemOutcome {
@@ -1337,7 +1342,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let profile = roots(temp.path());
         let sessions = profile.roaming.join("sessions");
-        let bundle = temp.path().join("completed-bundle");
+        let bundle = sessions.join("completed-bundle");
         fs::create_dir_all(&bundle).unwrap();
         fs::create_dir_all(&profile.local).unwrap();
         let lease = crate::doctor::fix::register_session_owner(&sessions, &bundle).unwrap();
@@ -1358,7 +1363,65 @@ mod tests {
         }));
         assert!(!profile.roaming.exists());
         assert!(!profile.local.exists());
-        assert!(bundle.exists());
+    }
+
+    #[test]
+    fn fresh_start_recovery_does_not_follow_a_custom_bundle_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = roots(temp.path());
+        let sessions = profile.roaming.join("sessions");
+        let bundle = temp.path().join("custom-bundle");
+        let journal_path = {
+            let journal = fragcap::deep_capture::ResourceJournal::create(
+                &bundle,
+                "custom-session",
+                "custom-plan",
+            )
+            .unwrap();
+            journal.path().to_path_buf()
+        };
+        let before = fs::read(&journal_path).unwrap();
+        fs::create_dir_all(&profile.local).unwrap();
+        let lease = crate::doctor::fix::register_session_owner(&sessions, &bundle).unwrap();
+        drop(lease);
+        let inventory = build_inventory("current-user", std::slice::from_ref(&profile)).unwrap();
+
+        let outcomes = execute_inventory(&inventory, &mut io::sink());
+
+        assert!(outcomes.iter().any(|item| {
+            item.operation == "deep-capture-recovery"
+                && item.status == "retained"
+                && item.detail.contains("custom bundle")
+        }));
+        assert_eq!(fs::read(journal_path).unwrap(), before);
+        assert!(sessions.exists());
+        assert!(!profile.local.exists());
+    }
+
+    #[test]
+    fn successful_recovery_does_not_exempt_unrelated_session_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = roots(temp.path());
+        let manifest = profile
+            .roaming
+            .join("sessions")
+            .join("completed")
+            .join("manifest.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::create_dir_all(&profile.local).unwrap();
+        fs::write(&manifest, b"previewed").unwrap();
+        let inventory = build_inventory("current-user", std::slice::from_ref(&profile)).unwrap();
+        fs::write(&manifest, b"changed after preview").unwrap();
+
+        let outcomes = execute_inventory(&inventory, &mut io::sink());
+
+        assert!(outcomes.iter().any(|item| {
+            item.path.ends_with("manifest.json")
+                && item.status == "refused"
+                && item.detail.contains("changed")
+        }));
+        assert_eq!(fs::read(manifest).unwrap(), b"changed after preview");
+        assert!(!profile.local.exists());
     }
 
     #[test]

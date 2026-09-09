@@ -341,7 +341,7 @@ pub(crate) fn recover_deep_capture_journals(
     root: &Path,
     out: &mut dyn Write,
 ) -> Result<(), Vec<String>> {
-    recover_deep_capture_journals_inner(root, out, false, false)
+    recover_deep_capture_journals_inner(root, out, false, false, false)
 }
 
 /// Inspect prior Deep Capture ownership without replaying or retiring anything.
@@ -419,7 +419,7 @@ fn recover_deep_capture_journals_with_legacy_confirmation(
     root: &Path,
     out: &mut dyn Write,
 ) -> Result<(), Vec<String>> {
-    recover_deep_capture_journals_inner(root, out, true, false)
+    recover_deep_capture_journals_inner(root, out, true, false, false)
 }
 
 /// Replay only Doctor's unambiguous exact recovery authority for fresh start.
@@ -427,7 +427,7 @@ fn recover_deep_capture_journals_with_legacy_confirmation(
 /// Ambiguous legacy ownership remains evidence for an explicit Doctor review;
 /// confirming data deletion does not broaden recovery authority.
 pub(crate) fn recover_for_fresh_start(root: &Path, out: &mut dyn Write) -> Result<(), Vec<String>> {
-    recover_deep_capture_journals_inner(root, out, false, true)
+    recover_deep_capture_journals_inner(root, out, false, true, true)
 }
 
 fn recover_deep_capture_journals_inner(
@@ -435,6 +435,7 @@ fn recover_deep_capture_journals_inner(
     out: &mut dyn Write,
     legacy_confirmed: bool,
     active_is_blocking: bool,
+    canonical_bundles_only: bool,
 ) -> Result<(), Vec<String>> {
     let _recovery_lock = RecoveryLock::acquire(root).map_err(|error| {
         vec![format!(
@@ -448,6 +449,14 @@ fn recover_deep_capture_journals_inner(
     match registered_session_owners(root) {
         Ok(entries) => {
             for entry in entries {
+                if canonical_bundles_only && !bundle_is_within_recovery_root(root, &entry.bundle) {
+                    failed.push(format!(
+                        "session owner {} names a custom bundle outside the canonical fresh-start sessions root",
+                        entry.registry_path.display()
+                    ));
+                    active_bundles.push(entry.bundle);
+                    continue;
+                }
                 match owner_is_active(&entry) {
                     Ok(true) => {
                         if active_is_blocking {
@@ -581,6 +590,19 @@ fn recover_deep_capture_journals_inner(
     } else {
         Err(failed)
     }
+}
+
+fn bundle_is_within_recovery_root(root: &Path, bundle: &Path) -> bool {
+    let Ok(canonical_root) = root.canonicalize() else {
+        return false;
+    };
+    bundle.strip_prefix(canonical_root).is_ok_and(|relative| {
+        let mut components = relative.components();
+        components
+            .next()
+            .is_some_and(|component| matches!(component, std::path::Component::Normal(_)))
+            && components.all(|component| matches!(component, std::path::Component::Normal(_)))
+    })
 }
 
 fn legacy_owner_is_terminal(owner: &super::residue::SessionOwner) -> bool {
