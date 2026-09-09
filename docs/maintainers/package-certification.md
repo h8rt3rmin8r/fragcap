@@ -12,13 +12,15 @@ Run `.agents/skills/shruggie-powershell/scripts/Test-ScriptCompliance.ps1 -Path 
 
 Treat `integration/windows-package-contract-v1.json` as reviewed release policy. A new package entry, import, artifact, lifecycle result, tool version, predecessor, or size ceiling requires a dated decision fragment and the matching specification change. Do not widen a ceiling or import list solely to make an unexplained candidate pass. Inspect the actual final bytes and explain the reason.
 
-The current primary artifacts are the versioned portable ZIP, versioned MSI, and standalone `catalog.db`. Each gets one `.sha256` sidecar. The ZIP and MSI carry the same six payload files. Checksum sidecars are not recursively checksummed, and the certification report is CI evidence rather than another public release download.
+The current primary artifacts are the versioned portable ZIP, versioned MSI, and standalone `catalog.db`. Each gets one `.sha256` sidecar. The ZIP and MSI carry the same six payload files. Checksum sidecars are not recursively checksummed, and the schema-version-2 certification report is CI evidence rather than another public release download.
 
 ## Installer ownership
 
 The MSI owns its fixed Program Files payload, related-product registration, exact system PATH entry, and only a Defender exclusion whose exact normalized path is recorded by its private ownership marker after successful creation. The marker is cleared only after the exclusion is observed absent, so a failed removal retains exact cleanup authority. A pre-existing administrator-owned exclusion has no marker and survives uninstall. The matrix seeds and hashes the isolated `%APPDATA%` catalog, local database, session bundle, and personal Wireshark extcap paths plus an isolated `%LOCALAPPDATA%` capture path because those are the user-owned locations the installer must preserve.
 
 The real matrix covers clean install, repair after controlled file damage, exact-byte same-version reinstall, upgrade from the digest-pinned v0.8.0 MSI, refusal of that predecessor as a downgrade after the candidate is current, and uninstall. Every Windows Installer invocation has a 600-second ceiling and local verbose log. A skipped, timed-out, warning-only, or unreconciled row fails.
+
+S137 extends the report with a closed fresh-start proof. The real ordinary uninstall still hashes and preserves every seeded user fixture. The packaged executable then operates only on a synthetic `User\AppData\Roaming\fragcap` and `User\AppData\Local\fragcap` pair, proving current-user cleanup, Doctor recovery, custom database and bundle exclusion, independent Wireshark registration preservation, and clean reinstall. The MSI wiring is checked statically rather than pointed at the runner account's real shell folders. Never weaken that isolation to make an installer action easier to exercise.
 
 ## Current integrity policy
 

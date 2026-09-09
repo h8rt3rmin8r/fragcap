@@ -158,6 +158,35 @@
                   Return="ignore" />
 
     <!--
+      Explicit fresh-start removal (S137, issue #377). Both public properties are
+      unset by default. Interactive UI sets the scope only after the operator
+      selects the unchecked current-user option; silent removal must provide both
+      exact values. The immediate action captures the initiating user's exact
+      AppData roots into CustomActionData. The deferred action impersonates that
+      user, previews the exact supplied inventory, and passes its identifier into
+      fragcap's shared recovery, deletion, and report authority before the
+      installed executable is removed. No installer-only confirmation bypass
+      exists on the public process boundary.
+
+      All-users cleanup is deliberately not a static MSI checkbox. It requires the
+      separately previewed and digest-bound all-users fresh-start command
+      workflow, because this dialog cannot truthfully render a dynamic profile
+      inventory before confirmation.
+    -->
+    <Property Id="FRAGCAP_FRESH_START" Secure="yes" />
+    <Property Id="FRAGCAP_FRESH_START_SCOPE" Secure="yes" />
+    <CustomAction Id="SetFreshStartCurrentUser"
+                  Property="FreshStartCurrentUser"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($exe,$roaming,$local,$temp) $roots=@('--installer-adapter','--roaming-root',$roaming,'--local-root',$local); $preview=&amp; $exe --json fresh-start --scope current-user --preview @roots | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id){exit 1}; $report=Join-Path $temp ('fragcap-fresh-start-'+$PID+'-'+(Get-Date).Ticks+'.json'); &amp; $exe fresh-start --scope current-user @roots --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE}&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]fragcap&quot; &quot;[LocalAppDataFolder]fragcap&quot; &quot;[TempFolder].&quot;"
+                  Execute="immediate" />
+    <CustomAction Id="FreshStartCurrentUser"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="check" />
+
+    <!--
       Optional Wireshark extcap registration (slice 043). Two independent opt-ins,
       both off by default and never forced. They drive the installed binary's own
       `fragcap extcap install`, so no registration logic lives in the installer.
@@ -246,7 +275,13 @@
            outgoing product before its files are removed. The incoming product
            may then establish ownership for its own selected INSTALLDIR. extcap
            registration is intentionally left in place (see above). -->
-      <Custom Action="SetDefenderRemove" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <!-- Fresh start is removal-only, explicit, current-user-only, and excluded
+           from major upgrade removal. Return="check" stops ordinary uninstall
+           before program files disappear if cleanup is partial, preserving both
+           the executable and recovery evidence for a retry. -->
+      <Custom Action="SetFreshStartCurrentUser" Before="RemoveFiles">REMOVE="ALL" AND FRAGCAP_FRESH_START = 1 AND FRAGCAP_FRESH_START_SCOPE = "current-user" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="FreshStartCurrentUser" After="SetFreshStartCurrentUser">REMOVE="ALL" AND FRAGCAP_FRESH_START = 1 AND FRAGCAP_FRESH_START_SCOPE = "current-user" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetDefenderRemove" After="FreshStartCurrentUser">REMOVE="ALL"</Custom>
       <Custom Action="DefenderRemove" After="SetDefenderRemove">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
 
@@ -351,6 +386,36 @@
         </Control>
       </Dialog>
 
+      <!-- Explicit current-user destructive choice for interactive product
+           removal. The exact roots are resolved by the MSI client, displayed
+           before confirmation, and passed unchanged to the impersonated action.
+           The checkbox property is intentionally unset, so it is unchecked. -->
+      <Dialog Id="FreshStartDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Fresh-start data removal (optional)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="Choose whether to preserve or irreversibly remove your fragcap data." />
+
+        <Control Id="FreshStartCheckBox" Type="CheckBox" X="20" Y="58" Width="335" Height="30" Property="FRAGCAP_FRESH_START" CheckBoxValue="1" Text="Remove all fragcap application and user data for my account for a fresh start" />
+        <Control Id="Warning" Type="Text" X="35" Y="91" Width="320" Height="26" NoPrefix="yes" Text="Irreversible. This includes local.db, learned targets, profiles, catalog state, settings, caches, logs, captures, and sensitive Deep Capture evidence." />
+        <Control Id="RoamingRoot" Type="Text" X="35" Y="122" Width="320" Height="18" NoPrefix="yes" Text="Roaming root: [AppDataFolder]fragcap" />
+        <Control Id="LocalRoot" Type="Text" X="35" Y="143" Width="320" Height="18" NoPrefix="yes" Text="Local root: [LocalAppDataFolder]fragcap" />
+        <Control Id="Exclusions" Type="Text" X="35" Y="164" Width="320" Height="29" NoPrefix="yes" Text="Custom paths, Npcap, Wireshark configuration, and independently managed extcap registrations are excluded." />
+        <Control Id="AllUsers" Type="Text" X="35" Y="198" Width="320" Height="29" NoPrefix="yes" Text="Administrators: preview the distinct all-users scope with `fragcap fresh-start --scope all-users --preview`." />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Property="FRAGCAP_FRESH_START_SCOPE" Value="current-user">FRAGCAP_FRESH_START = 1</Publish>
+          <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
       <!-- Splice ExtcapDlg into the WixUI_InstallDir flow after the install
            directory is chosen. In WiX 3 WixUI_InstallDir the InstallDirDlg Next
            button's terminal NewDialog -> VerifyReadyDlg is at Order 4 (after
@@ -362,6 +427,7 @@
            at Order 1, which an appended event cannot preempt); the checkbox state
            persists in the properties, so clicking Next returns through ExtcapDlg. -->
       <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ExtcapDlg" Order="3">WIXUI_INSTALLDIR_VALID="1"</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="Next" Event="NewDialog" Value="FreshStartDlg" Order="3">WixUI_InstallMode = "Remove"</Publish>
     </UI>
 
   </Product>

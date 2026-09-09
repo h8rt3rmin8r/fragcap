@@ -399,7 +399,21 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "Schedule=\"afterInstallInitialize\"",
             "FRAGCAP_DEFENDER_EXCLUSION_OWNER",
             "if(-not ((Get-MpPreference).ExclusionPath -contains $p)){Remove-ItemProperty",
-            "SetDefenderRemove\" Before=\"RemoveFiles\">REMOVE=\"ALL\"",
+            "SetDefenderRemove\" After=\"FreshStartCurrentUser\">REMOVE=\"ALL\"",
+            "<Property Id=\"FRAGCAP_FRESH_START\" Secure=\"yes\" />",
+            "<Property Id=\"FRAGCAP_FRESH_START_SCOPE\" Secure=\"yes\" />",
+            "Property=\"FreshStartCurrentUser\"",
+            "--scope current-user --preview @roots | ConvertFrom-Json",
+            "--installer-adapter",
+            "'--roaming-root',$roaming,'--local-root',$local",
+            "--confirm $preview.inventory_id --yes --report $report",
+            "Execute=\"deferred\"",
+            "Impersonate=\"yes\"",
+            "Return=\"check\"",
+            "REMOVE=\"ALL\" AND FRAGCAP_FRESH_START = 1 AND FRAGCAP_FRESH_START_SCOPE = \"current-user\" AND NOT UPGRADINGPRODUCTCODE",
+            "Property=\"FRAGCAP_FRESH_START\" CheckBoxValue=\"1\"",
+            "Irreversible. This includes local.db",
+            "WixUI_InstallMode = \"Remove\"",
             "Name=\"fragcap.exe\"",
             "Name=\"catalog.db\"",
             "Name=\"LICENSE\"",
@@ -468,6 +482,14 @@ fn validate_repository(root: &Path, contract: &Value) -> Vec<String> {
             "clean-install",
             "same-version-reinstall",
             "downgrade-refusal",
+            "fresh-start-test-install",
+            "$freshStartPreview",
+            "--installer-adapter",
+            "$freshStartInventory.inventory_id",
+            "confirmed current-user fresh start left canonical fragcap data",
+            "fresh start removed independently managed Wireshark extcap registration",
+            "clean-reinstall-after-fresh-start",
+            "preserve_by_default = $true",
             "## End of script",
         ],
         &mut problems,
@@ -529,14 +551,15 @@ fn validate_report(
             "pe_inspections",
             "smoke",
             "lifecycle",
+            "fresh_start",
             "findings",
             "complete",
         ],
         "certification report",
         &mut problems,
     );
-    if report["schema_version"] != 1 {
-        problems.push("report schema_version must be 1".into());
+    if report["schema_version"] != 2 {
+        problems.push("report schema_version must be 2".into());
     }
     if report["contract_sha256"] != sha256(contract_bytes) {
         problems.push("report contract digest does not match current contract".into());
@@ -546,6 +569,31 @@ fn validate_report(
     }
     validate_build_identity(contract, &report["build_identity"], &mut problems);
     validate_report_rows(contract, &report, &mut problems);
+    exact_keys(
+        &report["fresh_start"],
+        &[
+            "preserve_by_default",
+            "current_user_cleanup",
+            "custom_paths_preserved",
+            "deep_capture_reconciled",
+            "clean_reinstall",
+            "complete",
+        ],
+        "fresh-start report",
+        &mut problems,
+    );
+    for field in [
+        "preserve_by_default",
+        "current_user_cleanup",
+        "custom_paths_preserved",
+        "deep_capture_reconciled",
+        "clean_reinstall",
+        "complete",
+    ] {
+        if report["fresh_start"][field] != true {
+            problems.push(format!("fresh-start report does not prove {field}"));
+        }
+    }
     let findings = report["findings"].as_array();
     if findings.is_none_or(|rows| !rows.is_empty()) {
         problems.push("certification report contains findings or lacks a findings array".into());
@@ -1148,7 +1196,7 @@ mod tests {
         let portable_pe = serde_json::json!({"surface": "portable-zip", "machine": "8664", "ordinary_imports": contract["pe_imports"]["ordinary"], "delayed_imports": contract["pe_imports"]["delayed"], "file_version": "0.9.0.0", "product_version": "0.9.0", "product_name": "fragcap", "original_filename": "fragcap.exe", "signature": "not_signed", "complete": true});
         let mut installed_pe = portable_pe.clone();
         installed_pe["surface"] = Value::String("installed-msi".into());
-        let mut value = serde_json::json!({"schema_version": 1, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "complete": true}, "lifecycle": lifecycle, "findings": [], "complete": true});
+        let mut value = serde_json::json!({"schema_version": 2, "contract_sha256": sha256(contract_bytes), "release_identity": contract["release_identity"], "build_identity": build_identity, "artifacts": artifacts, "entries": entries, "pe_inspections": [portable_pe, installed_pe], "smoke": {"backend": "fragcap-native", "network": "loopback-only", "process_observation": "complete", "network_observation": "firewall-contained-and-socket-observed", "samples": 1, "observed_product_process_count": 1, "observed_system_process_count": 0, "observed_endpoint_count": 1, "observed_non_loopback_attempt_count": 0, "loopback_socket_observed": true, "complete": true}, "lifecycle": lifecycle, "fresh_start": {"preserve_by_default": true, "current_user_cleanup": true, "custom_paths_preserved": true, "deep_capture_reconciled": true, "clean_reinstall": true, "complete": true}, "findings": [], "complete": true});
         let path = std::env::temp_dir().join(format!(
             "fragcap-package-report-{}.json",
             std::process::id()

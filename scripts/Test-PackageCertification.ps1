@@ -301,7 +301,15 @@ Param(
         if (-not $script:TopLevelCmdlet.ShouldProcess(($Arguments -join ' '), "Run hidden Windows Installer case $Case")) { throw "$Case was not executed" }
         $allArguments = @($Arguments) + @('/qn', '/norestart', '/L*V', $LogPath)
         $result = Invoke-HiddenProcess -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $allArguments -TimeoutSeconds 600
-        if ($AllowedExitCodes -notcontains $result.ExitCode) { throw "$Case exited $($result.ExitCode)" }
+        if ($AllowedExitCodes -notcontains $result.ExitCode) {
+            $logTail = if (Test-Path -LiteralPath $LogPath) {
+                $diagnosticLines = @(Get-Content -LiteralPath $LogPath | Select-String -Pattern 'FreshStart|WixQuietExec|Return value 3|error' | Select-Object -Last 80 | ForEach-Object { $_.Line })
+                if ($diagnosticLines.Count -gt 0) { $diagnosticLines -join "`n" } else { @(Get-Content -LiteralPath $LogPath -Tail 80) -join "`n" }
+            } else {
+                'Windows Installer produced no verbose log.'
+            }
+            throw "$Case exited $($result.ExitCode). Bounded verbose log diagnostics:`n$logTail"
+        }
         return $result
     }
 
@@ -557,9 +565,16 @@ Param(
         $zipExe = Join-Path $zipRoot 'fragcap.exe'
         Assert-Unsigned -Path $candidateMsi[0].FullName
         $zipPe = Get-PeInspection -ExecutablePath $zipExe -Dumper $dumper -Policy $contract.pe_imports -Surface 'portable-zip'
-        $cleanEnvironment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = (Join-Path $scratch 'appdata'); LOCALAPPDATA = (Join-Path $scratch 'localappdata'); FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $zipExe; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
+        $testProfile = Join-Path $scratch 'User'
+        $cleanEnvironment = @{ Path = "$env:SystemRoot\System32;$env:SystemRoot"; APPDATA = (Join-Path $testProfile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $testProfile 'AppData\Local'); FRAGCAP_CONTROLLED_TARGET_EXECUTABLE = $zipExe; HTTP_PROXY = $null; HTTPS_PROXY = $null; ALL_PROXY = $null }
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.APPDATA)
         [void][System.IO.Directory]::CreateDirectory($cleanEnvironment.LOCALAPPDATA)
+        $smokeProfile = Join-Path $scratch 'SmokeUser'
+        $smokeEnvironment = $cleanEnvironment.Clone()
+        $smokeEnvironment.APPDATA = Join-Path $smokeProfile 'AppData\Roaming'
+        $smokeEnvironment.LOCALAPPDATA = Join-Path $smokeProfile 'AppData\Local'
+        [void][System.IO.Directory]::CreateDirectory($smokeEnvironment.APPDATA)
+        [void][System.IO.Directory]::CreateDirectory($smokeEnvironment.LOCALAPPDATA)
         $buildResult = Invoke-Fragcap -Executable $zipExe -Arguments @('__build-identity') -Environment $cleanEnvironment
         $buildIdentity = $buildResult.Stdout | ConvertFrom-Json
         if (-not $buildIdentity.official -or $buildIdentity.target -ne $contract.release_identity.target -or $buildIdentity.architecture -ne $contract.release_identity.architecture -or $buildIdentity.deep_capture_backend -ne $contract.release_identity.deep_capture_backend -or (Compare-Object -ReferenceObject @($contract.release_identity.features | Sort-Object) -DifferenceObject @($buildIdentity.features | Sort-Object))) { throw 'packaged binary build identity differs from the release contract' }
@@ -577,7 +592,7 @@ Param(
         $smokeFirewallRuleName = "fragcap-package-certification-$([guid]::NewGuid().ToString('N'))"
         if (-not $PSCmdlet.ShouldProcess($zipExe, 'Block non-loopback smoke traffic for the exact packaged executable')) { throw 'smoke network containment was not established' }
         [void](New-NetFirewallRule -Name $smokeFirewallRuleName -DisplayName $smokeFirewallRuleName -Direction Outbound -Action Block -Program $zipExe -RemoteAddress @('Internet','LocalSubnet') -Profile Any -Enabled True -ErrorAction Stop)
-        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $cleanEnvironment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
+        $smoke = Invoke-Fragcap -Executable $zipExe -Arguments @('--json', 'deep-capture', 'package_certification', '--launch', '--calibrate', 'reachability', '--calibration-protocol', 'routing', '--launch-case', 'direct-exe-warm', '--duration', '5s', '--wait', '7s', '--authorize-stdin', '--controlled-target', '--local-db', $localDb, '--bundle', $bundle) -Environment $smokeEnvironment -ObserveTreeAndNetwork -AuthorizeDeepCapturePlan
         if ($smoke.Stderr -notmatch 'fragcap-native' -or $smoke.Stderr -notmatch 'reached-client') { throw 'packaged controlled native smoke did not produce expected evidence' }
         if (-not $smoke.Observation.complete -or $smoke.Observation.samples -lt 1) { throw "packaged controlled native smoke observation did not complete: samples=$($smoke.Observation.samples)" }
         if ($smoke.Observation.process_paths.Count -lt 1) { throw 'packaged controlled native smoke recorded no executable path' }
@@ -660,6 +675,37 @@ Param(
         if ($defenderAvailable -and (@((Get-MpPreference).ExclusionPath) -contains $installDirectory)) { throw 'uninstall left an installer-owned Defender exclusion' }
         Test-UserFixture -Digests $userDigests
         $lifecycle.Add([pscustomobject]@{ id = 'uninstall'; terminal = 'passed'; cleanup = 'reconciled'; elapsed_seconds = [int]$uninstall.ElapsedSeconds; complete = $true })
+        [void](Invoke-MsiOperation -Case 'fresh-start-test-install' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'fresh-start-install.log'))
+        $installedExecutable = Join-Path $installDirectory 'fragcap.exe'
+        $freshStartReport = Join-Path $scratch 'fresh-start-report.json'
+        $roamingRoot = Join-Path $cleanEnvironment.APPDATA 'fragcap'
+        $localRoot = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap'
+        $freshStartPreview = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--preview', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot) -Environment $cleanEnvironment
+        $freshStartInventory = $freshStartPreview.Stdout | ConvertFrom-Json -Depth 32
+        $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--confirm', $freshStartInventory.inventory_id, '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
+        $freshStartResult = $freshStart.Stdout | ConvertFrom-Json -Depth 32
+        if ($freshStart.ExitCode -ne 0 -or $freshStartResult.status -cne 'complete' -or -not (Test-Path -LiteralPath $freshStartReport)) {
+            $freshStartDetail = $freshStartResult | ConvertTo-Json -Depth 32 -Compress
+            throw "confirmed current-user fresh start did not produce a complete report: $freshStartDetail"
+        }
+        if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }
+        if (-not (Test-Path -LiteralPath $userFixturePaths['extcap-registration'])) { throw 'fresh start removed independently managed Wireshark extcap registration' }
+        if (-not (Test-Path -LiteralPath $localDb) -or -not (Test-Path -LiteralPath $bundle)) { throw 'fresh start removed custom database or bundle paths' }
+        $msiRoamingRoot = Join-Path $env:APPDATA 'fragcap'
+        $msiLocalRoot = Join-Path $env:LOCALAPPDATA 'fragcap'
+        if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot)) { throw 'MSI fresh-start certification requires initially absent runner data roots' }
+        [void][System.IO.Directory]::CreateDirectory($msiRoamingRoot)
+        [void][System.IO.Directory]::CreateDirectory($msiLocalRoot)
+        [System.IO.File]::WriteAllText((Join-Path $msiRoamingRoot 'settings.json'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText((Join-Path $msiLocalRoot 'cache.bin'), 'MSI fresh-start fixture', [System.Text.UTF8Encoding]::new($false))
+        [void](Invoke-MsiOperation -Case 'fresh-start-test-uninstall' -Arguments @('/x', $candidateMsi[0].FullName, 'FRAGCAP_FRESH_START=1', 'FRAGCAP_FRESH_START_SCOPE=current-user') -LogPath (Join-Path $scratch 'fresh-start-uninstall.log'))
+        if ((Test-Path -LiteralPath $msiRoamingRoot) -or (Test-Path -LiteralPath $msiLocalRoot) -or (Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'MSI fresh-start uninstall did not remove exact initiating-user and installer-owned state' }
+        [void](Invoke-MsiOperation -Case 'clean-reinstall-after-fresh-start' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-reinstall.log'))
+        $cleanLocalDb = Join-Path $cleanEnvironment.APPDATA 'fragcap\local.db'
+        $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list') -Environment $cleanEnvironment
+        if ($cleanListing.Stdout -match 'S131 user-owned fixture' -or -not (Test-Path -LiteralPath $cleanLocalDb)) { throw 'clean reinstall restored prior local target state' }
+        [void](Invoke-MsiOperation -Case 'clean-reinstall-final-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'clean-reinstall-uninstall.log'))
+        if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'fresh-start clean-reinstall proof left installer-owned state' }
         $artifactRows = @(
             [pscustomobject]@{ id = 'portable-zip'; filename = $candidateZip[0].Name; size_bytes = $candidateZip[0].Length; sha256 = Get-Sha256 -Path $candidateZip[0].FullName; signature = 'not_applicable'; complete = $true },
             [pscustomobject]@{ id = 'windows-msi'; filename = $candidateMsi[0].Name; size_bytes = $candidateMsi[0].Length; sha256 = Get-Sha256 -Path $candidateMsi[0].FullName; signature = 'not_signed'; complete = $true },
@@ -670,7 +716,7 @@ Param(
         )
         $entryRows = @($contract.shared_entries | ForEach-Object { $entryFile = Get-Item -LiteralPath (Join-Path $zipRoot $_.path); [pscustomobject]@{ path = $_.path; role = $_.role; size_bytes = $entryFile.Length; sha256 = Get-Sha256 -Path $entryFile.FullName; signature = $_.signature; complete = $true } })
         $reportIdentity = [ordered]@{ product = $contract.release_identity.product; target = $contract.release_identity.target; architecture = $contract.release_identity.architecture; pe_machine = $contract.release_identity.pe_machine; features = @($contract.release_identity.features); deep_capture_backend = $contract.release_identity.deep_capture_backend }
-        $report = [ordered]@{ schema_version = 1; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; complete = $true }; lifecycle = @($lifecycle); findings = @(); complete = $true }
+        $report = [ordered]@{ schema_version = 2; contract_sha256 = Get-Sha256 -Path $contractFile; release_identity = $reportIdentity; build_identity = $buildIdentity; artifacts = $artifactRows; entries = $entryRows; pe_inspections = @($zipPe, $installedPe); smoke = [ordered]@{ backend = 'fragcap-native'; network = 'loopback-only'; process_observation = 'complete'; network_observation = 'firewall-contained-and-socket-observed'; samples = $smoke.Observation.samples; observed_product_process_count = $smoke.Observation.process_paths.Count - $smoke.Observation.system_process_paths.Count; observed_system_process_count = $smoke.Observation.system_process_paths.Count; observed_endpoint_count = $smoke.Observation.observed_addresses.Count; observed_non_loopback_attempt_count = $smoke.Observation.non_loopback_addresses.Count; loopback_socket_observed = $smoke.Observation.loopback_observed; complete = $true }; lifecycle = @($lifecycle); fresh_start = [ordered]@{ preserve_by_default = $true; current_user_cleanup = $true; custom_paths_preserved = $true; deep_capture_reconciled = $true; clean_reinstall = $true; complete = $true }; findings = @(); complete = $true }
         $json = $report | ConvertTo-Json -Depth 16
         if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt [int]$contract.report_limits.max_report_bytes) { throw 'certification report exceeds its byte bound' }
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($reportFile))

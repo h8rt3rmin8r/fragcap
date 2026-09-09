@@ -1,0 +1,2 @@
+<!-- spec-impact: 15.3, 24.5, 25.5, 26.3, 28.1 -->
+Windows uninstall now offers an unchecked current-user fresh-start choice backed by exact canonical-root inventory and confirmation, Doctor-owned Deep Capture recovery, active-owner and reparse-safe retention, truthful partial reporting, explicit silent properties, and a separate preview-bound all-users administrator flow. Ordinary uninstall and maintenance continue to preserve user data.

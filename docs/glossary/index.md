@@ -88,6 +88,7 @@ the owning category page.
 - [Flow key](capture-and-networking.md#flow-key)
 - [Fragment identity](capture-and-networking.md#fragment-identity)
 - [Fragment identity table](capture-and-networking.md#fragment-identity-table)
+- [Fresh-start cleanup](platform-and-distribution.md#fresh-start-cleanup)
 - [Fuzz surface](capture-and-networking.md#fuzz-surface)
 - [Fuzz target](capture-and-networking.md#fuzz-target)
 - [Game profile](platform-and-distribution.md#game-profile)

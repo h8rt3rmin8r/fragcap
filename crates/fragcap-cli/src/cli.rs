@@ -66,6 +66,7 @@ Commands:
     catalog       Maintain the shipped catalog store (catalog.db)
     schema        Validate JSON artifacts against the master schema
     bundle        Clean or prepare a Deep Capture bundle for sharing
+    fresh-start   Preview or remove canonical fragcap user data
 
 Options:
 {options}"
@@ -170,8 +171,55 @@ pub enum Command {
     Extcap(Box<ExtcapArgs>),
     /// Maintain the catalog store (catalog.db): import, export, and seed.
     Catalog(CatalogArgs),
+    /// Preview or remove canonical fragcap user data for a clean reinstall.
+    FreshStart(FreshStartArgs),
     /// Validate JSON artifacts against the master schema, or print it.
     Schema(SchemaArgs),
+}
+
+/// Scope for an explicitly confirmed fresh-start cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum FreshStartScopeArg {
+    /// Only the current or explicitly supplied initiating user.
+    CurrentUser,
+    /// Every eligible Windows user profile, after an exact preview.
+    AllUsers,
+}
+
+/// Arguments to `fresh-start`.
+#[derive(Debug, Args)]
+pub struct FreshStartArgs {
+    /// Data scope to inventory or remove.
+    #[arg(long, value_enum, default_value = "current-user")]
+    pub scope: FreshStartScopeArg,
+
+    /// Preview exact roots and categories without deleting anything.
+    #[arg(long, conflicts_with_all = ["confirm", "yes"])]
+    pub preview: bool,
+
+    /// Execute only if the current inventory matches this preview identifier.
+    #[arg(long, value_name = "INVENTORY-ID")]
+    pub confirm: Option<String>,
+
+    /// Confirm the irreversible cleanup operation.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Write the versioned cleanup report to this local path.
+    #[arg(long, value_name = "PATH")]
+    pub report: Option<PathBuf>,
+
+    /// Exact initiating-user roaming data root supplied by the installer.
+    #[arg(long, hide = true, requires = "local_root")]
+    pub roaming_root: Option<PathBuf>,
+
+    /// Exact initiating-user local data root supplied by the installer.
+    #[arg(long, hide = true, requires = "roaming_root")]
+    pub local_root: Option<PathBuf>,
+
+    /// Verify exact initiating-user roots supplied by the MSI adapter.
+    #[arg(long, hide = true)]
+    pub installer_adapter: bool,
 }
 
 /// What a capture writes out, as distinct from what it observes.

@@ -262,3 +262,18 @@ fragcap doctor --fix
 Cleanup actions remain individually confirmed. If trust cleanup is incomplete, fragcap preserves the manifest ownership evidence instead of presenting a false clean state. Re-run plain `doctor` and keep any remaining bundle and cleanup records until the report is clean.
 
 You now have both first-run outcomes: ordinary packet truth from Capture, and, only for a target whose current facts support the exact launch path, additional application observations and auditable cleanup from Deep Capture.
+
+## 9. Uninstall or start fresh
+
+Ordinary MSI uninstall removes the program and its installer-owned machine effects while preserving your targets, writable catalog, profiles, captures, logs, settings, and Deep Capture bundles.
+
+If you deliberately want a clean account, select the unchecked **Remove all fragcap application and user data for my account for a fresh start** option during interactive removal. The dialog shows the exact `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap` roots. The operation is irreversible. fragcap reconciles exact recorded Deep Capture obligations first, then deletes accepted entries without following links or reparse points. Custom paths, exports, Npcap, Wireshark configuration, and independently managed extcap registrations remain untouched.
+
+Silent current-user removal requires both `FRAGCAP_FRESH_START=1` and `FRAGCAP_FRESH_START_SCOPE=current-user`. Administrators handling multiple profiles use a separate preview-bound flow:
+
+```powershell
+fragcap fresh-start --scope all-users --preview
+fragcap fresh-start --scope all-users --confirm <inventory-id> --yes --report .\fresh-start-report.json
+```
+
+Review every SID and exact root before the second command. If any profile, root, or entry changed, fragcap refuses and requires a new preview. Another profile's Deep Capture evidence remains because its Windows CurrentUser trust must be reconciled under that profile identity. Run current-user fresh-start or `fragcap doctor --fix` while signed in as the named user, confirm only the exact actions it offers, and retry before calling the account clean.

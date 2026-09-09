@@ -249,6 +249,15 @@ Defender, and links the npcap download page on completion.
 [Windows Defender exclusion](platform-and-distribution.md#windows-defender-exclusion),
 [npcap](platform-and-distribution.md#npcap)
 
+## Fresh-start cleanup
+
+An explicit irreversible removal of canonical fragcap user state, separate from ordinary uninstall. Current-user cleanup is unchecked by default, limited to the exact displayed roaming and local fragcap roots, and bound to a current inventory identifier even when launched by MSI. All-users cleanup requires an elevated exact inventory preview and a matching confirmation identifier. Deep Capture recovery runs before session evidence can be deleted; active owners, redirections, changed roots, and ambiguous obligations are retained and reported.
+
+{: .matters }
+> Ordinary uninstall, repair, reinstall, upgrade, and rollback never imply fresh-start consent. Custom paths, Npcap, Wireshark configuration, and independently managed extcap registration remain outside the cleanup authority.
+
+**See also:** [MSI installer](platform-and-distribution.md#msi-installer), [Package certification](platform-and-distribution.md#package-certification)
+
 ## Unsigned installer
 
 A distribution installer published without an Authenticode code signature.

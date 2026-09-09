@@ -212,6 +212,10 @@ The installer places fragcap under `Program Files`, adds it to your `PATH` (so `
 
 The `PATH` entry takes effect in newly opened terminals, not the one that was already open. The bundled catalog is seeded offline with the shipped detection signatures; its writable per-user copy can grow independently without being owned or removed by the installer.
 
+Ordinary uninstall preserves your targets, writable catalog, profiles, captures, logs, settings, and Deep Capture bundles. Interactive removal also shows an unchecked **Remove all fragcap application and user data for my account for a fresh start** choice. Selecting it is irreversible: fragcap first reconciles exact recorded Deep Capture obligations, then removes only the displayed `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap` roots without following links or reparse points. Custom paths, Npcap, Wireshark configuration, and independently managed extcap registrations are excluded.
+
+For silent current-user removal, both properties are required: `FRAGCAP_FRESH_START=1 FRAGCAP_FRESH_START_SCOPE=current-user`. Omit either one to preserve data. Administrators must preview the distinct all-users scope with `fragcap fresh-start --scope all-users --preview`, then execute the unchanged inventory identifier with `--confirm <inventory-id> --yes --report <path>` before ordinary uninstall. Deep Capture evidence for another profile remains for current-user recovery in that profile because Windows CurrentUser trust cannot be reconciled safely as the elevated administrator. If cleanup is partial, keep the named evidence, run the named current-user cleanup or `fragcap doctor --fix`, and retry.
+
 ## Prerequisite: npcap
 
 **fragcap requires [npcap](https://npcap.com) to be installed separately,

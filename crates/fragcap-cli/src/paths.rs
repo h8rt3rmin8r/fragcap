@@ -232,6 +232,16 @@ pub fn default_local_db_path() -> Option<PathBuf> {
     default_db_from(env::var_os("APPDATA").map(PathBuf::from), "local.db")
 }
 
+/// The canonical current-user roaming data root used by fresh-start cleanup.
+pub fn default_roaming_data_root() -> Option<PathBuf> {
+    env::var_os("APPDATA").map(|base| PathBuf::from(base).join("fragcap"))
+}
+
+/// The canonical current-user local data root used by fresh-start cleanup.
+pub fn default_local_data_root() -> Option<PathBuf> {
+    env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("fragcap"))
+}
+
 /// The default Deep Capture session-bundle root, or `None` when the platform
 /// application-data base cannot be determined.
 ///
