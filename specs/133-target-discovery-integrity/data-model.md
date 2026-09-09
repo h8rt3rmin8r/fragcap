@@ -40,6 +40,7 @@ A path matches when it equals the root or begins with the root followed by a pat
 ## PlatformInventory
 
 - `client_roots`: exact platform-client roots.
+- `infrastructure_roots`: affirmative exact roots for platform-owned non-title infrastructure.
 - `authoritative_installs`: application anchor plus exact install root for every currently observed platform title.
 
 This is an injected value. `fragcap-targets` does not depend on Steam.

@@ -22,6 +22,8 @@ pub struct AuthoritativePlatformInstall {
 pub struct PlatformInventory {
     /// Exact platform-client roots.
     pub client_roots: Vec<String>,
+    /// Exact platform-owned infrastructure roots that cannot be title installs.
+    pub infrastructure_roots: Vec<String>,
     /// Exact installed-title identities and roots.
     pub authoritative_installs: Vec<AuthoritativePlatformInstall>,
     /// Platform records omitted because their metadata was malformed or bounded.
@@ -130,6 +132,11 @@ pub fn plan_reconciliation(
         .iter()
         .map(|path| normalized_dir_key(path))
         .collect();
+    let infrastructure: Vec<String> = inventory
+        .infrastructure_roots
+        .iter()
+        .map(|path| normalized_dir_key(path))
+        .collect();
     let installs: HashMap<String, String> = inventory
         .authoritative_installs
         .iter()
@@ -201,7 +208,10 @@ pub fn plan_reconciliation(
             // but it is not a duplicate until a matching anchored row is stored.
             Some(_) => None,
             None if roots.contains(&root) => Some(ReconciliationRemovalReason::PlatformClientRoot),
-            None if roots.iter().any(|client| is_descendant(&root, client)) => {
+            None if infrastructure
+                .iter()
+                .any(|owned| root == *owned || is_descendant(&root, owned)) =>
+            {
                 Some(ReconciliationRemovalReason::PlatformInfrastructure)
             }
             None if engine_product_count(entry) > 1 => {
@@ -297,6 +307,7 @@ mod tests {
     fn inventory() -> PlatformInventory {
         PlatformInventory {
             client_roots: vec!["C:/Games/Steam".to_string()],
+            infrastructure_roots: vec!["C:/Games/Steam/steamui".to_string()],
             authoritative_installs: vec![AuthoritativePlatformInstall {
                 anchor: "steam:620".to_string(),
                 install_root: "C:/Games/Steam/steamapps/common/Portal 2".to_string(),
@@ -341,6 +352,17 @@ mod tests {
     #[test]
     fn manifest_inventory_alone_does_not_make_the_only_stored_target_a_duplicate() {
         let row = entry(1, Some("C:/Games/Steam/steamapps/common/Portal 2"));
+        let plan = plan_reconciliation(&[row], &inventory());
+        assert!(plan.removable.is_empty());
+        assert_eq!(
+            plan.preserved[0].reason,
+            ReconciliationPreservationReason::LocationOnlyAmbiguous
+        );
+    }
+
+    #[test]
+    fn unrecognized_platform_descendant_is_preserved_without_infrastructure_evidence() {
+        let row = entry(1, Some("C:/Games/Steam/steamapps/common/Orphaned Title"));
         let plan = plan_reconciliation(&[row], &inventory());
         assert!(plan.removable.is_empty());
         assert_eq!(

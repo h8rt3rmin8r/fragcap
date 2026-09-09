@@ -826,9 +826,10 @@ case, and path-component boundaries. The authoritative platform source remains
 responsible for installed titles, including titles with no engine signature.
 Historical cleanup is a separate previewed operation. A row is removable only when
 its complete provenance proves the legacy tool-owned known-roots path and exact
-platform-root, authoritative-install duplicate, or multi-engine aggregate evidence
-proves the residue class. Authored, anchored, changed, incompletely inventoried, or
-otherwise ambiguous rows are preserved. Confirmation rechecks complete previewed
+client-root, affirmative infrastructure-root, authoritative-install duplicate, or
+multi-engine aggregate evidence proves the residue class. An unrecognized client
+descendant is ambiguous even when its manifest is absent. Authored, anchored,
+changed, incompletely inventoried, or otherwise ambiguous rows are preserved. Confirmation rechecks complete previewed
 rows and deletes the exact unchanged set in one transaction; stale or missing rows
 abort the whole operation.
 

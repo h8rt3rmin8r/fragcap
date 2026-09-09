@@ -123,8 +123,17 @@ pub fn steam_platform_inventory(
             }
         })
         .collect();
+    const INFRASTRUCTURE_DIRS: &[&str] = &[
+        "appcache", "config", "logs", "package", "resource", "steamui", "userdata",
+    ];
+    let client_root = installation.root.display().to_string();
+    let infrastructure_roots = INFRASTRUCTURE_DIRS
+        .iter()
+        .map(|name| installation.root.join(name).display().to_string())
+        .collect();
     Ok(PlatformInventory {
-        client_roots: vec![installation.root.display().to_string()],
+        client_roots: vec![client_root],
+        infrastructure_roots,
         authoritative_installs,
         truncated,
     })

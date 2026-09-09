@@ -134,6 +134,10 @@ fn reconciliation_inventory_carries_exact_root_installs_and_incomplete_count() {
         inventory.client_roots,
         vec![tree.path().display().to_string()]
     );
+    assert!(inventory
+        .infrastructure_roots
+        .iter()
+        .any(|root| root.ends_with("steamui")));
     assert_eq!(inventory.authoritative_installs.len(), 3);
     assert!(
         inventory
