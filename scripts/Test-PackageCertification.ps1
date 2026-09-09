@@ -301,7 +301,14 @@ Param(
         if (-not $script:TopLevelCmdlet.ShouldProcess(($Arguments -join ' '), "Run hidden Windows Installer case $Case")) { throw "$Case was not executed" }
         $allArguments = @($Arguments) + @('/qn', '/norestart', '/L*V', $LogPath)
         $result = Invoke-HiddenProcess -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $allArguments -TimeoutSeconds 600
-        if ($AllowedExitCodes -notcontains $result.ExitCode) { throw "$Case exited $($result.ExitCode)" }
+        if ($AllowedExitCodes -notcontains $result.ExitCode) {
+            $logTail = if (Test-Path -LiteralPath $LogPath) {
+                @(Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+            } else {
+                'Windows Installer produced no verbose log.'
+            }
+            throw "$Case exited $($result.ExitCode). Verbose log tail:`n$logTail"
+        }
         return $result
     }
 
