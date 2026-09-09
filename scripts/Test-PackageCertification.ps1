@@ -303,11 +303,12 @@ Param(
         $result = Invoke-HiddenProcess -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $allArguments -TimeoutSeconds 600
         if ($AllowedExitCodes -notcontains $result.ExitCode) {
             $logTail = if (Test-Path -LiteralPath $LogPath) {
-                @(Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+                $diagnosticLines = @(Get-Content -LiteralPath $LogPath | Select-String -Pattern 'FreshStart|WixQuietExec|Return value 3|error' | Select-Object -Last 80 | ForEach-Object { $_.Line })
+                if ($diagnosticLines.Count -gt 0) { $diagnosticLines -join "`n" } else { @(Get-Content -LiteralPath $LogPath -Tail 80) -join "`n" }
             } else {
                 'Windows Installer produced no verbose log.'
             }
-            throw "$Case exited $($result.ExitCode). Verbose log tail:`n$logTail"
+            throw "$Case exited $($result.ExitCode). Bounded verbose log diagnostics:`n$logTail"
         }
         return $result
     }
