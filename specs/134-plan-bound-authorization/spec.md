@@ -96,12 +96,12 @@ An operator or script that still supplies Deep Capture `--trust-ca` or `--yes` r
 - **FR-005**: The complete plan MUST be emitted in human or structured form before listener bind, bundle creation, proxy start, trust mutation, routing application, target launch, packet capture start, artifact persistence, or compatibility fact append.
 - **FR-006**: Every plan MUST have one complete canonical identifier that changes when any authorization-relevant field changes, including target identity, launch authority, certificate, paths, routing policy, deadlines, artifact selection, backend version, or product version.
 - **FR-007**: Interactive use MUST request exactly one affirmative authorization for the complete plan and MUST NOT request a second confirmation for the trust action already described by that plan.
-- **FR-008**: A negative answer, unrecognized answer, end-of-input, input error, output error, or interruption during authorization MUST refuse with no session effects.
+- **FR-008**: A negative answer, unrecognized answer, incomplete input line, end-of-input, input error, plan or prompt write error, flush error, or interruption during authorization MUST refuse with no session effects.
 - **FR-009**: Structured output MUST never emit an interactive prompt and MUST require the dedicated exact-plan authorization input.
 - **FR-010**: Redirected automation MUST return the complete current plan identifier through the dedicated input; no constant, wildcard, abbreviation, reusable preference, installation state, or generic boolean may authorize a plan.
 - **FR-011**: The plan identifier comparison MUST accept only the exact identifier after removing the input line ending and MUST use a comparison suitable for authorization-sensitive values.
 - **FR-012**: Authorization MUST be single-use and bound to the in-memory prepared plan that emitted the identifier.
-- **FR-013**: fragcap MUST revalidate target identity, launch authority, trust identity, paths, routing policy, deadlines, artifacts, and versions before the first session effect and refuse any drift.
+- **FR-013**: fragcap MUST revalidate target identity and launch authority both immediately after approval and inside the facade's final target resolver before endpoint or Capture preparation, MUST revalidate trust identity, validity, paths, routing policy, deadlines, artifacts, and versions before the first session effect, and MUST refuse any drift or expired prepared authority.
 - **FR-014**: Selecting and binding the concrete listener after authorization MUST remain inside the displayed loopback family and scope; failure to realize that scope MUST refuse without widening or fallback.
 - **FR-015**: Declined or failed authorization MUST leave generated session and certificate material unpersisted and MUST create no cleanup obligation.
 - **FR-016**: Deep Capture `--trust-ca` and Deep Capture `--yes` MUST be absent from normal help and MUST NOT authorize any behavior.
@@ -109,8 +109,8 @@ An operator or script that still supplies Deep Capture `--trust-ca` or `--yes` r
 - **FR-018**: Unrelated command-specific `--yes` options for Doctor repair, bundle cleanup, and target reconciliation MUST remain unchanged.
 - **FR-019**: The warm-to-cold workflow MUST preserve its operator-owned normal-shutdown boundary, MUST prepare a fresh cold plan after shutdown, and MUST use the same final exact-plan authorization as every other session.
 - **FR-020**: Authorization outcomes MUST be represented in structured and human reporting without exposing private certificate material, proxy credentials, local target inventory beyond the selected target, or captured payloads.
-- **FR-021**: Cleanup and crash recovery MUST retain the existing exact certificate ownership, journal, retained-evidence, and truthful terminal-report guarantees after authorization succeeds.
-- **FR-022**: Tests MUST cover human, structured, redirected-input, narrow-terminal, decline, end-of-input, mismatch, replay, plan drift, warm restart, reachability, TLS, cleanup failure, and controlled automation without real trust mutation, game launch, capture driver, or elevated privilege.
+- **FR-021**: Cleanup and crash recovery MUST retain the existing exact certificate ownership, journal, retained-evidence, and truthful terminal-report guarantees after authorization succeeds. A new Deep Capture invocation MUST inspect prior-session recovery authority without mutation and MUST direct the operator to Doctor before emitting a new plan when pending recovery actions exist.
+- **FR-022**: Tests MUST cover human, structured, redirected-input, narrow-terminal, decline, incomplete-line end-of-input, plan write failure with successful flush, mismatch, replay, plan drift at both resolver boundaries, prepared-authority expiry, pending prior recovery, warm restart, reachability, TLS, cleanup failure, and controlled automation without real trust mutation, game launch, capture driver, or elevated privilege.
 - **FR-023**: S134 MUST NOT implement the guided one-game calibration flow owned by #380, the complete embedded-help rewrite owned by #379, broader first-run UX owned by #332, or final documentation and completion gates owned by #331 through #334.
 
 ### Key Entities
@@ -118,7 +118,7 @@ An operator or script that still supplies Deep Capture `--trust-ca` or `--yes` r
 - **Authorization Plan**: The complete immutable review object containing every authorization-relevant session field and one canonical identifier.
 - **Plan Identifier**: The complete single-use authorization value derived from the canonical plan and compared exactly against the operator or automation response.
 - **Trust Action**: The exact certificate identity, current-user store scope, temporary lifetime, and cleanup obligation, or an explicit statement that no trust action exists.
-- **Authorization Decision**: An exact approval, decline, interruption, invalid response, input failure, or plan-drift refusal associated with one plan.
+- **Authorization Decision**: An exact approval, decline, interruption, invalid response, input or output failure, plan-drift refusal, or expired-plan refusal associated with one plan.
 - **Plan Realization**: The post-authorization conversion of the approved scope into an exact listener, proxy route, launch, artifacts, and lifecycle resources without widening any displayed boundary.
 
 ## Success Criteria *(mandatory)*

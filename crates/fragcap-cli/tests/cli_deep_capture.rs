@@ -62,6 +62,34 @@ impl fragcap_cli::DeepCaptureAuthorizationInput for DriftingAuthorization {
     }
 }
 
+#[derive(Default)]
+struct CountingAuthorization {
+    reads: usize,
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for CountingAuthorization {
+    fn is_terminal(&self) -> bool {
+        true
+    }
+
+    fn read_response(&mut self, _plan_id: &str, _exact: bool) -> std::io::Result<Vec<u8>> {
+        self.reads += 1;
+        Ok(b"yes\n".to_vec())
+    }
+}
+
+struct RejectWritesFlushOk;
+
+impl std::io::Write for RejectWritesFlushOk {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("controlled diagnostic write failure"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
     seed_target_with_executable(local, with_compatibility, "client.exe")
 }
@@ -198,6 +226,78 @@ fn interactive_decline_is_successful_and_effect_free() {
     assert_eq!(code, 0, "stderr:\n{err}");
     assert_eq!(err.matches("Authorize exact plan").count(), 1);
     assert!(err.contains("Deep Capture authorization plan"));
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn interactive_affirmative_terminated_by_eof_is_refused_without_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let mut authorization = FixedAuthorization {
+        terminal: true,
+        response: Some(b"yes".to_vec()),
+        fail: false,
+    };
+    let (code, _out, err) = run_with_authorization(
+        &[
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert!(err.contains("closed before a complete line"));
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn authorization_plan_write_failure_never_reads_approval_or_starts_effects() {
+    let _guard = controlled_environment().lock().unwrap();
+    let _ = run(&["--version"]);
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let mut authorization = CountingAuthorization::default();
+    let mut out = Vec::new();
+    let mut err = RejectWritesFlushOk;
+    let exit = fragcap_cli::run_with_authorization(
+        common::argv(&[
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ]),
+        &mut authorization,
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(exit.code(), 2);
+    assert_eq!(authorization.reads, 0);
     assert!(!bundle.exists());
 }
 

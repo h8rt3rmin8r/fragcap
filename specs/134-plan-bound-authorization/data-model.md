@@ -52,6 +52,7 @@ One response associated with one emitted plan.
 | closed | Input ended before exact approval | None |
 | interrupted | Cancellation arrived during authorization | None |
 | drifted | Mutable authority no longer matches | None |
+| expired | Prepared certificate authority reached its displayed expiry | None |
 | realization-failed | Post-authorization listener or adapter preparation stayed within scope but failed | Only already recorded post-authorization cleanup |
 
 ## State Transitions
@@ -61,11 +62,12 @@ validated request
   -> exact target and launch snapshot
   -> process-local CA preparation
   -> canonical plan and plan_id
-  -> plan emitted and flushed
+  -> pending prior recovery refusal | plan emitted and flushed
   -> declined | invalid | closed | interrupted
   -> exact approval
-  -> launch-authority revalidation
-  -> drifted | facade preflight and exact listener reservation
+  -> launch-authority and prepared-authority revalidation
+  -> drifted | expired | facade final target revalidation
+  -> drifted | exact listener reservation
   -> library Authorization::Approved(plan_id)
   -> existing checked Deep Capture lifecycle
 ```

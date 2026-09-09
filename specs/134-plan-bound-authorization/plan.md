@@ -22,7 +22,7 @@ Close issue #382 by replacing Deep Capture's overlapping `--trust-ca` and `--yes
 
 **Project Type**: Rust workspace library plus thin CLI consumer
 
-**Performance Goals**: One bounded canonical serialization and digest per prepared plan; no filesystem scan, network request, target launch, listener bind, or bundle write before authorization
+**Performance Goals**: One bounded read-only prior-session recovery inspection plus one canonical serialization and digest per prepared plan; no recovery replay, network request, target launch, listener bind, or bundle write before authorization
 
 **Constraints**: No generic approval, no persistent consent, no private key serialization, no system proxy fallback, no real trust mutation in ordinary tests, no public API removal, no new lockfile package, and no scope from #379, #380, #332, or #331 through #334
 
@@ -112,10 +112,11 @@ changelog.d/
 1. Add failing canonical-plan, exact-input, help, legacy migration, no-effect refusal, reachability, drift, and native certificate-identity tests.
 2. Add a process-local prepared native CA value and teach the runtime to consume it exactly once while preserving its current fallback for existing library consumers.
 3. Add the versioned canonical authorization plan, deterministic digest, complete human and JSON rendering, and exact-input authorizer seam.
-4. Move ordinary and calibration authorization ahead of facade preflight, bind the facade plan id to the digest, revalidate target launch authority, and retain one final plan decision after warm restart.
+4. Move ordinary and calibration authorization ahead of facade preflight, bind the facade plan id to the digest, revalidate target launch authority both after approval and in the facade's final resolver, reject an expired prepared CA, and retain one final plan decision after warm restart.
 5. Hide and reject legacy Deep Capture flags with migration guidance while preserving Doctor, bundle, and target-reconciliation `--yes` behavior.
 6. Synchronize specification, outline, roadmap, site references, changelog, and the controlled validation guide.
 7. Run analyze, focused security and lifecycle tests, full CI parity, dependency stability, encoding and mojibake checks, and diff review.
+8. Apply first-round review remediation: make plan and prompt writes authoritative, require complete interactive lines, refuse expired authorities, move prior-session recovery to Doctor, and rerun the gates.
 
 ## Complexity Tracking
 

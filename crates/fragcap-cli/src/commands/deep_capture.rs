@@ -199,10 +199,15 @@ struct AuthorizationPlan {
     canonical: Value,
     canonical_json: String,
     target_authority: AuthorizationTargetAuthority,
+    authority_expires: SystemTime,
 }
 
 impl AuthorizationPlan {
-    fn new(canonical: Value, target_authority: AuthorizationTargetAuthority) -> Self {
+    fn new(
+        canonical: Value,
+        target_authority: AuthorizationTargetAuthority,
+        authority_expires: SystemTime,
+    ) -> Self {
         let canonical_json = serde_json::to_string(&canonical)
             .expect("the authorization plan contains only serializable values");
         let digest = blake3::hash(canonical_json.as_bytes()).to_hex();
@@ -211,20 +216,33 @@ impl AuthorizationPlan {
             canonical,
             canonical_json,
             target_authority,
+            authority_expires,
         }
     }
 
-    fn emit(&self, emitter: &mut Emitter) {
-        emitter.event(&Event::DeepCaptureAuthorizationPlan {
-            plan_id: self.id.clone(),
-            canonical_json: self.canonical_json.clone(),
-        });
+    fn emit(&self, emitter: &mut Emitter) -> Result<(), CliError> {
+        emitter
+            .event_checked(&Event::DeepCaptureAuthorizationPlan {
+                plan_id: self.id.clone(),
+                canonical_json: self.canonical_json.clone(),
+            })
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the Deep Capture authorization plan: {error}"
+                ))
+            })?;
         let rendered = serde_json::to_string_pretty(&self.canonical)
             .expect("the authorization plan contains only serializable values");
-        emitter.required_human(&format!(
-            "Deep Capture authorization plan\n  plan id: {}\n{}\n",
-            self.id, rendered
-        ));
+        emitter
+            .required_human_checked(&format!(
+                "Deep Capture authorization plan\n  plan id: {}\n{}\n",
+                self.id, rendered
+            ))
+            .map_err(|error| {
+                CliError::usage(format!(
+                    "could not write the Deep Capture authorization plan: {error}"
+                ))
+            })
     }
 }
 
@@ -240,15 +258,23 @@ fn authorization_outcome(
     plan: &AuthorizationPlan,
     status: &str,
     reason: &str,
-) {
-    emitter.event(&Event::DeepCaptureAuthorization {
-        plan_id: plan.id.clone(),
-        status: status.to_string(),
-        reason: reason.to_string(),
-    });
-    emitter.required_human(&format!(
-        "Deep Capture authorization: {status} ({reason})\n"
-    ));
+) -> Result<(), CliError> {
+    emitter
+        .event_checked(&Event::DeepCaptureAuthorization {
+            plan_id: plan.id.clone(),
+            status: status.to_string(),
+            reason: reason.to_string(),
+        })
+        .and_then(|()| {
+            emitter.required_human_checked(&format!(
+                "Deep Capture authorization: {status} ({reason})\n"
+            ))
+        })
+        .map_err(|error| {
+            CliError::usage(format!(
+                "could not write the Deep Capture authorization outcome: {error}"
+            ))
+        })
 }
 
 fn refuse_interrupted_authorization(
@@ -261,7 +287,7 @@ fn refuse_interrupted_authorization(
             plan,
             "interrupted",
             "interrupt requested before authorization completed",
-        );
+        )?;
         Err(CliError::failure(
             "Deep Capture authorization was interrupted; no effects were applied",
         ))
@@ -276,7 +302,7 @@ fn authorize_plan(
     emitter: &mut Emitter,
     plan: &AuthorizationPlan,
 ) -> Result<bool, CliError> {
-    plan.emit(emitter);
+    plan.emit(emitter)?;
     refuse_interrupted_authorization(emitter, plan)?;
     if args.authorize_stdin {
         emitter.flush().map_err(|error| {
@@ -284,12 +310,15 @@ fn authorize_plan(
                 "could not flush the authorization plan before input: {error}"
             ))
         })?;
-        let response = authorization
-            .read_response(&plan.id, true)
-            .map_err(|error| {
-                authorization_outcome(emitter, plan, "invalid", "authorization input failed");
-                CliError::usage(format!("could not read exact plan authorization: {error}"))
-            })?;
+        let response = match authorization.read_response(&plan.id, true) {
+            Ok(response) => response,
+            Err(error) => {
+                authorization_outcome(emitter, plan, "invalid", "authorization input failed")?;
+                return Err(CliError::usage(format!(
+                    "could not read exact plan authorization: {error}"
+                )));
+            }
+        };
         refuse_interrupted_authorization(emitter, plan)?;
         if authorization_answer_is_exact(&response, &plan.id) {
             return Ok(true);
@@ -304,36 +333,61 @@ fn authorize_plan(
             plan,
             status,
             "exact current plan identifier was not supplied",
-        );
+        )?;
         return Err(CliError::usage(
             "Deep Capture authorization did not match the exact current plan identifier; no effects were applied",
         ));
     }
 
-    emitter.required_human(&format!("Authorize exact plan {}? [y/N] ", plan.id));
+    emitter
+        .required_human_checked(&format!("Authorize exact plan {}? [y/N] ", plan.id))
+        .map_err(|error| {
+            CliError::usage(format!(
+                "could not write the Deep Capture authorization prompt: {error}"
+            ))
+        })?;
     emitter.flush().map_err(|error| {
         CliError::usage(format!(
             "could not flush the authorization plan before input: {error}"
         ))
     })?;
-    let response = authorization
-        .read_response(&plan.id, false)
-        .map_err(|error| {
-            authorization_outcome(emitter, plan, "invalid", "authorization input failed");
-            CliError::usage(format!("could not read plan authorization: {error}"))
-        })?;
+    let response = match authorization.read_response(&plan.id, false) {
+        Ok(response) => response,
+        Err(error) => {
+            authorization_outcome(emitter, plan, "invalid", "authorization input failed")?;
+            return Err(CliError::usage(format!(
+                "could not read plan authorization: {error}"
+            )));
+        }
+    };
     refuse_interrupted_authorization(emitter, plan)?;
     if response.is_empty() {
-        authorization_outcome(emitter, plan, "closed", "authorization input closed");
+        authorization_outcome(emitter, plan, "closed", "authorization input closed")?;
         return Ok(false);
     }
-    let answer = std::str::from_utf8(&response).unwrap_or_default();
+    let Some(answer) = complete_authorization_line(&response) else {
+        authorization_outcome(
+            emitter,
+            plan,
+            "closed",
+            "authorization input closed before a complete line",
+        )?;
+        return Ok(false);
+    };
     if calibration_answer_is_affirmative(answer) {
         Ok(true)
     } else {
-        authorization_outcome(emitter, plan, "declined", "operator declined exact plan");
+        authorization_outcome(emitter, plan, "declined", "operator declined exact plan")?;
         Ok(false)
     }
+}
+
+fn authorization_authority_is_current(expires: SystemTime, now: SystemTime) -> bool {
+    now < expires
+}
+
+fn complete_authorization_line(response: &[u8]) -> Option<&str> {
+    std::str::from_utf8(response.strip_suffix(b"\n")?).ok()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -670,8 +724,23 @@ fn run_warm_restart(
 struct LibraryTargetAdapter<'a> {
     args: &'a DeepCaptureArgs,
     store: Rc<RefCell<Store>>,
+    authorized: AuthorizationTargetAuthority,
     selected: Rc<RefCell<Option<TargetEntry>>>,
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
+}
+
+fn require_authorized_target(
+    authorized: &AuthorizationTargetAuthority,
+    current: &AuthorizationTargetAuthority,
+) -> Result<(), deep_capture_api::PreflightRefusal> {
+    if current == authorized {
+        Ok(())
+    } else {
+        Err(deep_capture_api::PreflightRefusal::new(
+            "authorization-target-drift",
+            "facade preflight resolved a different target launch authority than the reviewed plan",
+        ))
+    }
 }
 
 impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_> {
@@ -689,6 +758,8 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_> {
         })?;
         let launch_case = effective_launch_case(&target, self.args.controlled_target)
             .map_err(|error| library_refusal("launch-case", error))?;
+        let current_authority = AuthorizationTargetAuthority::from_target(&target, launch_case);
+        require_authorized_target(&self.authorized, &current_authority)?;
         *self.selected_launch_case.borrow_mut() = Some(launch_case);
         let prepared = deep_capture_api::PreparedTarget {
             id,
@@ -1888,7 +1959,11 @@ fn build_authorization_plan(
             "proxy": env!("CARGO_PKG_VERSION"),
         },
     });
-    Ok(AuthorizationPlan::new(canonical, target_authority))
+    Ok(AuthorizationPlan::new(
+        canonical,
+        target_authority,
+        authority_created + authority.lifetime(),
+    ))
 }
 
 fn validate_authorization_target(
@@ -2011,6 +2086,25 @@ pub fn run(
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
     validate_bundle_root(&bundle)?;
+    if let Some(root) = paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
+        let root = root.canonicalize().map_err(|error| {
+            CliError::failure(format!(
+                "cannot inspect prior Deep Capture sessions: {error}"
+            ))
+        })?;
+        let pending = crate::doctor::fix::pending_deep_capture_recovery(&root).map_err(|errors| {
+            CliError::failure(format!(
+                "cannot prove prior Deep Capture sessions are settled; run `fragcap doctor --fix`: {}",
+                errors.join("; ")
+            ))
+        })?;
+        if !pending.is_empty() {
+            return Err(CliError::usage(format!(
+                "prior Deep Capture recovery is required before a new plan can be authorized; run `fragcap doctor --fix`: {}",
+                pending.join("; ")
+            )));
+        }
+    }
     deep_capture_api::BypassPolicy::validate_inputs(&args.proxy_bypass)
         .map_err(cli_error_from_library_refusal)?;
     let target_authority =
@@ -2048,9 +2142,21 @@ pub fn run(
             &authorization_plan,
             "drifted",
             "target launch authority changed after authorization",
-        );
+        )?;
         return Err(CliError::usage(
             "the target launch authority changed after authorization; no effects were applied",
+        ));
+    }
+    if !authorization_authority_is_current(authorization_plan.authority_expires, SystemTime::now())
+    {
+        authorization_outcome(
+            emitter,
+            &authorization_plan,
+            "expired",
+            "prepared certificate authority expired before execution",
+        )?;
+        return Err(CliError::usage(
+            "the Deep Capture authorization plan expired before execution; prepare and authorize a fresh plan",
         ));
     }
     authorization_outcome(
@@ -2062,22 +2168,7 @@ pub fn run(
         } else {
             "operator approved exact plan and target authority remained current"
         },
-    );
-    if let Some(root) = paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
-        let root = root.canonicalize().map_err(|error| {
-            CliError::failure(format!(
-                "cannot inspect prior Deep Capture sessions: {error}"
-            ))
-        })?;
-        crate::doctor::fix::recover_deep_capture_journals(&root, &mut std::io::sink()).map_err(
-            |errors| {
-                CliError::failure(format!(
-                    "prior Deep Capture recovery is incomplete; run `fragcap doctor --fix`: {}",
-                    errors.join("; ")
-                ))
-            },
-        )?;
-    }
+    )?;
     let config = deep_capture_api::SessionConfig {
         target: target_label,
         launch_case: args
@@ -2113,6 +2204,7 @@ pub fn run(
         targets: Box::new(LibraryTargetAdapter {
             args,
             store: Rc::clone(&store),
+            authorized: authorization_plan.target_authority.clone(),
             selected: Rc::clone(&selected),
             selected_launch_case: Rc::clone(&selected_launch_case),
         }),
@@ -4207,6 +4299,37 @@ mod tests {
     }
 
     #[test]
+    fn interactive_authorization_requires_a_complete_utf8_line() {
+        assert_eq!(complete_authorization_line(b"yes\n"), Some("yes"));
+        assert_eq!(complete_authorization_line(b"yes"), None);
+        assert_eq!(complete_authorization_line(b"\xff\n"), None);
+    }
+
+    #[test]
+    fn authorization_expires_with_the_prepared_certificate_authority() {
+        let expires = UNIX_EPOCH + Duration::from_secs(60);
+        assert!(authorization_authority_is_current(
+            expires,
+            expires - Duration::from_secs(1)
+        ));
+        assert!(!authorization_authority_is_current(expires, expires));
+        assert!(!authorization_authority_is_current(
+            expires,
+            expires + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn facade_target_resolution_must_match_the_authorized_authority() {
+        let authorized = authorization_target();
+        assert!(require_authorized_target(&authorized, &authorized).is_ok());
+        let mut changed = authorized.clone();
+        changed.launch_entries = Some(json!([{"path":"changed.exe","role":"client"}]));
+        let refusal = require_authorized_target(&authorized, &changed).unwrap_err();
+        assert_eq!(refusal.code, "authorization-target-drift");
+    }
+
+    #[test]
     fn authorization_digest_is_deterministic_and_sensitive_to_each_plan_section() {
         let base = json!({
             "artifacts": {"bundle":"bundle"},
@@ -4224,8 +4347,9 @@ mod tests {
             "trust": {"action":"ensure"},
             "versions": {"fragcap":"0.9.0"},
         });
-        let first = AuthorizationPlan::new(base.clone(), authorization_target());
-        let second = AuthorizationPlan::new(base.clone(), authorization_target());
+        let expires = UNIX_EPOCH + Duration::from_secs(60);
+        let first = AuthorizationPlan::new(base.clone(), authorization_target(), expires);
+        let second = AuthorizationPlan::new(base.clone(), authorization_target(), expires);
         assert_eq!(first.id, second.id);
         assert_eq!(first.canonical_json, second.canonical_json);
 
@@ -4235,7 +4359,7 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .insert(key.clone(), json!({"changed":true}));
-            let changed = AuthorizationPlan::new(changed, authorization_target());
+            let changed = AuthorizationPlan::new(changed, authorization_target(), expires);
             assert_ne!(first.id, changed.id, "section {key} must bind the id");
         }
     }

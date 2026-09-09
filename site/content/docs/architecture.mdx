@@ -87,13 +87,13 @@ After preflight, fragcap starts its native loopback proxy, manages any authorize
 | Boundary | Trigger | Scope and owner | Cleanup or refusal |
 | --- | --- | --- | --- |
 | Compatibility | Current exact routing facts for the selected cold Steam or direct-executable launch case | One selected stored target and launch case, evaluated by fragcap | Refusal occurs before the proxy, trust, launch, or bundle side effects |
-| Authorization | Exact versioned plan identifier | One target launch authority, process-local CA, routing policy, artifact set, deadline set, and cleanup contract | Decline, mismatch, malformed input, EOF, or drift leaves session effects absent |
+| Authorization | Exact versioned plan identifier | One target launch authority, process-local CA, routing policy, artifact set, deadline set, and cleanup contract | Output failure, decline, incomplete input, mismatch, expiry, or drift leaves session effects absent |
 | Calibration | Exact complete plan for one phase | One selected stored target and declared launch case | Reachability changes no trust; TLS requires prior same-case final-client routing |
 | Proxy | Successful authorization and resource preflight | One fragcap-owned native listener and bounded task set on a loopback port | The listener, tasks, and ephemeral proxy material receive recorded cleanup outcomes |
 | CA trust | The exact trust action inside the authorized plan | The exact fragcap-owned CA in the current user's Root store | fragcap attempts removal and records the exact identity and result |
 | Target routing | Prepared managed launch | Proxy environment for the selected launch session | No system-wide proxy fallback is attempted |
 
-Interactive execution displays and confirms one complete plan. Structured execution uses `--authorize-stdin` and returns only the exact current plan identifier in the same process. Trust is never silently added to the local-machine store or broadened to an unrelated CA. The former Deep Capture `--trust-ca` and `--yes` booleans are rejected migration inputs.
+Interactive execution displays and confirms one complete plan on a complete input line. Structured execution uses `--authorize-stdin` and returns only the exact current plan identifier in the same process. A failed plan write, expired prepared CA, or target change at either revalidation boundary refuses. Before producing a new plan, fragcap inspects prior-session recovery records without mutation and directs pending recovery to `fragcap doctor --fix`; approval for a new session never authorizes cleanup from an older one. Trust is never silently added to the local-machine store or broadened to an unrelated CA. The former Deep Capture `--trust-ca` and `--yes` booleans are rejected migration inputs.
 
 Proxy visibility depends on actual target behavior. A flow that bypasses the proxy still belongs to ordinary Capture, but it produces no proxy semantics. HTTPS inspection also depends on the target accepting the fragcap-owned CA. Certificate-pinned traffic is not bypassed, and unsupported non-HTTP protocols remain metadata-only or unsupported according to what the proxy actually observed.
 

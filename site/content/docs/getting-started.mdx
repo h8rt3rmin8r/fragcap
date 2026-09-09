@@ -207,7 +207,7 @@ For a target that passed the eligibility check, run:
 fragcap deep-capture sample-target --launch --duration 5m --har
 ```
 
-Answer the one prompt only after reviewing the exact plan identifier and every effect. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Automation and JSON consumers use `--authorize-stdin`, read the emitted plan event, and return its exact identifier plus one LF without restarting the process. The former Deep Capture `--trust-ca` and `--yes` booleans no longer authorize a run.
+Answer the one prompt with a complete line only after reviewing the exact plan identifier and every effect. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Automation and JSON consumers use `--authorize-stdin`, read the emitted plan event, and return its exact identifier plus one LF without restarting the process. If prior-session recovery is pending, fragcap refuses before showing a new plan and directs you to `fragcap doctor --fix`. A plan also refuses if its prepared CA expires or its target authority changes while it is reviewed. The former Deep Capture `--trust-ca` and `--yes` booleans no longer authorize a run.
 
 Run `fragcap deep-capture --help` to review the current launch, duration, trust, and artifact options before changing this command.
 

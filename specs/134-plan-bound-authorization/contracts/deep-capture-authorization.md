@@ -27,11 +27,11 @@ Human output prints one headed authorization plan before any session effect. It 
 
 Values may wrap at narrow terminal widths but may not be truncated or omitted.
 
-The interactive prompt names the exact plan identifier and accepts only the existing documented affirmative answer grammar. Every other response declines. The complete plan is flushed before input is read.
+The interactive prompt names the exact plan identifier and accepts only the existing documented affirmative answer grammar on one complete LF-terminated line. Every other response declines. The plan and prompt writes must succeed, and the complete plan is flushed before input is read.
 
 ## Structured events
 
-The JSON stream emits `deep_capture.authorization_plan` with `schema: 1`, every canonical field, and `plan_id` before reading authorization. It emits one `deep_capture.authorization` outcome with the same `plan_id` and one of `authorized`, `declined`, `invalid`, `closed`, `interrupted`, or `drifted`. Secret key bytes, proxy credentials, unrelated targets, and captured payloads never appear.
+The JSON stream emits `deep_capture.authorization_plan` with `schema: 1`, every canonical field, and `plan_id` before reading authorization. It emits one `deep_capture.authorization` outcome with the same `plan_id` and one of `authorized`, `declined`, `invalid`, `closed`, `interrupted`, `drifted`, or `expired`. Secret key bytes, proxy credentials, unrelated targets, and captured payloads never appear.
 
 JSON without `--authorize-stdin` exits 2 after request validation but before session effects, with guidance that structured execution requires the dedicated exact-plan input.
 
@@ -46,6 +46,8 @@ plan-v1:<64 lowercase hexadecimal digits>\n
 Only the exact current identifier matches. The line ending is removed. No other leading or trailing whitespace is removed. Input is bounded to the identifier length plus the line ending. Extra bytes, a second line, EOF, malformed UTF-8, I/O error, abbreviation, case change, stale id, or different id refuses before effects. Identifier comparison is exact and authorization-sensitive.
 
 The caller must keep the process running while reading the plan and returning the identifier. No plan private material is written for a later invocation.
+
+Before any plan is emitted, a bounded read-only inspection checks prior Deep Capture owner records and resource journals. Pending recovery actions refuse with `fragcap doctor --fix` guidance. A new plan never authorizes replay, trust removal, artifact deletion, or registry retirement belonging to an older session. After approval, the target authority is compared again inside the facade's final resolver before endpoint or Capture preparation, and the prepared CA must remain within its displayed validity period.
 
 ## Reachability calibration
 

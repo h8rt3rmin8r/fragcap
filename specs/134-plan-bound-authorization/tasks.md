@@ -139,6 +139,18 @@
 
 ---
 
+## Phase 8: First-Round Review Remediation
+
+**Purpose**: Close every first-round Codex finding without widening the authorized session.
+
+- [x] T043 Propagate authorization plan, prompt, and terminal-outcome write failures and prove a writer whose write fails but flush succeeds never reaches input or effects in `crates/fragcap-cli/src/emit.rs`, `crates/fragcap-cli/src/commands/deep_capture.rs`, and `crates/fragcap-cli/tests/cli_deep_capture.rs`
+- [x] T044 Require one complete LF-terminated interactive authorization line and add affirmative-at-EOF refusal coverage in `crates/fragcap-cli/src/commands/deep_capture.rs` and `crates/fragcap-cli/tests/cli_deep_capture.rs`
+- [x] T045 Enforce the exact reviewed target authority inside the facade's final resolver before endpoint and Capture preparation in `crates/fragcap-cli/src/commands/deep_capture.rs`
+- [x] T046 Refuse expired prepared authorities and pending prior-session recovery, delegating the latter to Doctor through a bounded read-only inspection in `crates/fragcap-cli/src/commands/deep_capture.rs` and `crates/fragcap-cli/src/doctor/fix.rs`
+- [x] T047 Synchronize S134 contracts and user documentation, then rerun focused and full repository gates
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -150,6 +162,7 @@
 - **User Story 3 (Phase 5)**: Depends on the common authorization flow from User Stories 1 and 2.
 - **User Story 4 (Phase 6)**: Depends on the replacement command contract being functional.
 - **Documentation and Verification (Phase 7)**: Depends on all user stories.
+- **First-Round Review Remediation (Phase 8)**: Depends on the first published review and Phase 7 completion.
 
 ### User Story Dependencies
 
