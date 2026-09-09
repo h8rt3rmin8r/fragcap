@@ -108,11 +108,20 @@ fn run_with_terminal(
 }
 
 fn selected_human_width(stdout_terminal: bool) -> usize {
-    let reported = stdout_terminal
-        .then(|| terminal_size::terminal_size_of(std::io::stdout()))
-        .flatten()
-        .map(|(width, _)| usize::from(width.0));
+    let reported = stdout_terminal.then(reported_terminal_width).flatten();
     human_width(stdout_terminal, reported)
+}
+
+#[cfg(windows)]
+fn reported_terminal_width() -> Option<usize> {
+    terminal_size::terminal_size_of(std::io::stdout()).map(|(width, _)| usize::from(width.0))
+}
+
+#[cfg(not(windows))]
+fn reported_terminal_width() -> Option<usize> {
+    // fragcap is a Windows product. Keep unsupported-host builds deterministic
+    // without broadening the Windows-only terminal_size dependency.
+    None
 }
 
 fn human_width(stdout_terminal: bool, reported: Option<usize>) -> usize {
