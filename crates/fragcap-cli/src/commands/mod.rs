@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod deep_capture;
 pub mod doctor;
 pub mod extcap;
+pub mod fresh_start;
 pub mod schema;
 pub mod steam;
 pub mod stub;

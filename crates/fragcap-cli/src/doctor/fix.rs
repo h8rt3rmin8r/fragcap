@@ -422,6 +422,14 @@ fn recover_deep_capture_journals_with_legacy_confirmation(
     recover_deep_capture_journals_inner(root, out, true)
 }
 
+/// Replay only Doctor's unambiguous exact recovery authority for fresh start.
+///
+/// Ambiguous legacy ownership remains evidence for an explicit Doctor review;
+/// confirming data deletion does not broaden recovery authority.
+pub(crate) fn recover_for_fresh_start(root: &Path, out: &mut dyn Write) -> Result<(), Vec<String>> {
+    recover_deep_capture_journals_inner(root, out, false)
+}
+
 fn recover_deep_capture_journals_inner(
     root: &Path,
     out: &mut dyn Write,

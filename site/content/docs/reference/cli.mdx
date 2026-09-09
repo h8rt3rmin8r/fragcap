@@ -466,6 +466,25 @@ fragcap bundle export .\fragcap-session --out .\fragcap-session-share
 | --- | --- | --- | --- | --- |
 | `--out` | open | none | all | Required destination directory for the new share copy. |
 
+### `fresh-start`
+
+Preview or irreversibly remove canonical fragcap user data. Preview is read-only and emits an inventory identifier. Execution requires both `--confirm` with that exact unchanged identifier and `--yes`. Current-user scope covers only `%APPDATA%\fragcap` and `%LOCALAPPDATA%\fragcap`. All-users scope requires an elevated Administrator session and a report path. It enumerates Windows profiles through the operating system profile authority rather than searching the filesystem. Deep Capture evidence in another profile remains for current-user recovery under that profile's Windows trust identity, so such an all-users result is partial until that recovery is complete.
+
+```powershell
+fragcap fresh-start --scope current-user --preview
+fragcap fresh-start --scope current-user --confirm <inventory-id> --yes --report .\fresh-start-report.json
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--confirm` | open | none | all | Require the unchanged identifier emitted by the exact preview. |
+| `--preview` | open | `false` | all | List exact roots, categories, and inventory identity without mutation. |
+| `--report` | open | none | all | Write the bounded versioned cleanup result to a new local path outside cleanup roots. Required for all-users execution. |
+| `--scope` | `all-users`, `current-user` | `current-user` | all | Select one caller profile or the distinct elevated all-users inventory. |
+| `--yes` | open | `false` | all | Confirm irreversible execution after reviewing the inventory. |
+
+Deep Capture session evidence is removed only after Doctor's exact recovery authority reaches safe terminal states. Custom paths, Npcap, Wireshark configuration, and independently managed extcap registrations are excluded. A redirection or recovery failure remains in the report and makes the result partial.
+
 Catalog store options resolve from explicit `--db`, then
 `FRAGCAP_CATALOG_DB`, then `%APPDATA%\fragcap\catalog.db`. The managed path is
 the ordinary fallback, not a required argument.

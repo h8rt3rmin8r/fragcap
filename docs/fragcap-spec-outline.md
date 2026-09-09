@@ -426,6 +426,7 @@ S132 adds the versioned `fragcap::deep_capture::api` integration boundary, check
 S133 deliberately prioritizes target-discovery integrity issue #375 over the earlier assignment to #331. It separates discovery from automatic persistence, excludes exact platform subtrees, adds count-only validation, and requires exact confirmed reconciliation for historical tool-owned residue. Issue #331 remains open.
 S134 binds every Deep Capture effect to one canonical reviewed plan, one process-local CA, exact fully resolved launch authority, and one interactive or structured plan decision before effects. Prior-session recovery remains Doctor-owned.
 S135 makes Doctor's native residue findings understandable and width-stable while preserving exact machine identity, structured recovery facts, and the existing cleanup authority.
+S137 adds preserve-by-default uninstall cleanup with an unchecked current-user choice, exact initiating-user roots, one contained inventory and deletion authority, Doctor recovery before session removal, truthful partial reports, and a separate preview-bound all-users administrator flow.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

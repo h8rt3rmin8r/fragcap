@@ -256,6 +256,7 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
                 | "doctor"
                 | "extcap"
                 | "catalog"
+                | "fresh-start"
                 | "schema"
                 | "help"
                 | "-h"
@@ -292,6 +293,7 @@ fn dispatch(
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::BuildIdentity => commands::build_identity::run(out),
         Command::Doctor(args) => commands::doctor::run(&args, json, out, emitter),
+        Command::FreshStart(args) => commands::fresh_start::run(&args, json, out),
         Command::Replay(_) => commands::stub::run(Stub::Replay),
         Command::Steam(args) => commands::steam::run(&args, json, out, emitter),
         Command::Schema(args) => commands::schema::run(&args, out),
