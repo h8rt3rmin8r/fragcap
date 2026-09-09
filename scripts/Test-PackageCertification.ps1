@@ -668,9 +668,12 @@ Param(
         $localRoot = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap'
         $freshStartPreview = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--preview', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot) -Environment $cleanEnvironment
         $freshStartInventory = $freshStartPreview.Stdout | ConvertFrom-Json -Depth 32
-        $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--confirm', $freshStartInventory.inventory_id, '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment
+        $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--confirm', $freshStartInventory.inventory_id, '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment -AllowedExitCodes @(0, 1)
         $freshStartResult = $freshStart.Stdout | ConvertFrom-Json -Depth 32
-        if ($freshStartResult.status -cne 'complete' -or -not (Test-Path -LiteralPath $freshStartReport)) { throw 'confirmed current-user fresh start did not produce a complete report' }
+        if ($freshStart.ExitCode -ne 0 -or $freshStartResult.status -cne 'complete' -or -not (Test-Path -LiteralPath $freshStartReport)) {
+            $freshStartDetail = $freshStartResult | ConvertTo-Json -Depth 32 -Compress
+            throw "confirmed current-user fresh start did not produce a complete report: $freshStartDetail"
+        }
         if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }
         if (-not (Test-Path -LiteralPath $userFixturePaths['extcap-registration'])) { throw 'fresh start removed independently managed Wireshark extcap registration' }
         if (-not (Test-Path -LiteralPath $localDb) -or -not (Test-Path -LiteralPath $bundle)) { throw 'fresh start removed custom database or bundle paths' }
