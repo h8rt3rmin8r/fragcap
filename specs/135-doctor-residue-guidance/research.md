@@ -14,6 +14,8 @@
 
 **Rationale**: S124 already owns classification. Typed matching makes the abandoned-owner regression exact and keeps active, unknown, unsupported, and failed cases truthful.
 
+A terminal resource can coexist with a generation-proven active session because resource health is assigned before owner activity. Healthy wording therefore reports that ownership is not determined by the terminal resource state; it does not infer that an active owner is absent. An abandoned owner is recognized by the inventory's stable `resource_id` (`session-owner`), while its `kind` remains the broader `owner` value.
+
 **Alternatives considered**: Reformatting the current flattened key-value string was rejected because it remains implementation-facing. Parsing `detail` was rejected because prose is not an authority. Reclassifying findings in the CLI was rejected because it creates a second recovery policy.
 
 ## D3. Make structured native context additive and non-secret

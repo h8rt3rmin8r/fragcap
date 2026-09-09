@@ -660,7 +660,7 @@ fn native_residue_diagnosis(
 ) -> String {
     let condition = match finding.health {
         super::residue::ResidueHealth::Healthy => format!(
-            "Completed Deep Capture history is retained for the {} record. No active owner is proven or required, no cleanup is needed, and this record does not block Deep Capture.",
+            "Completed Deep Capture history is retained for the {} record. This terminal resource state does not determine whether the session still has an active owner. No cleanup is needed, and this record does not block Deep Capture.",
             finding.kind
         ),
         super::residue::ResidueHealth::Active => format!(
@@ -668,7 +668,7 @@ fn native_residue_diagnosis(
             finding.kind
         ),
         super::residue::ResidueHealth::Stale
-            if finding.kind == "session-owner" && finding.state == "abandoned" =>
+            if finding.resource_id == "session-owner" && finding.state == "abandoned" =>
         {
             "An earlier Deep Capture session ended without retiring its owner record. No active owner was proven, so Deep Capture is blocked until this exact record is reviewed and confirmed for cleanup."
                 .to_string()
@@ -1336,6 +1336,12 @@ mod tests {
                 check.native_resource.as_ref().unwrap().recovery_eligible,
                 recoverable
             );
+            if health == ResidueHealth::Healthy {
+                assert!(human
+                    .detail
+                    .contains("does not determine whether the session still has an active owner"));
+                assert!(!human.detail.contains("No active owner is proven"));
+            }
             let json = crate::doctor::Report {
                 checks: vec![check],
             }
@@ -1354,7 +1360,7 @@ mod tests {
                 session_id: "old-session".to_string(),
                 bundle: std::path::PathBuf::from("C:\\sessions\\old-session"),
                 resource_id: "session-owner".to_string(),
-                kind: "session-owner".to_string(),
+                kind: "owner".to_string(),
                 state: "abandoned".to_string(),
                 health: crate::doctor::residue::ResidueHealth::Stale,
                 recoverable: true,

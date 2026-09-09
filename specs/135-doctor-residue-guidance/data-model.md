@@ -53,7 +53,7 @@ The selected width is 40 through 80 display cells. An indivisible exact token ma
 
 | Health or state | Required human meaning |
 | --- | --- |
-| Healthy | Completed retained history; no cleanup required; non-blocking |
+| Healthy | Completed retained history; no cleanup required; non-blocking; terminal resource state alone does not determine live session ownership |
 | Active | Current active ownership is proven; no cleanup offered |
 | Stale abandoned session owner | Earlier session ended without retiring owner record; no active owner proven; Deep Capture blocked pending confirmed exact cleanup |
 | Other stale | Earlier session left cleanup incomplete; no active owner proven; blocking consequence and exact eligibility |
