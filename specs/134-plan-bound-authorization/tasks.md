@@ -151,6 +151,16 @@
 
 ---
 
+## Phase 9: Second-Round Review Remediation
+
+**Purpose**: Close every finding from the single authorized second review without requesting a third round.
+
+- [x] T048 Bind the fully resolved profile, executable paths, platform root, dispatch, and managed launch authority into the plan; independently prepare and compare it in facade target preflight before endpoint selection; retain that exact preparation for execution in `crates/fragcap-cli/src/commands/capture.rs` and `crates/fragcap-cli/src/commands/deep_capture.rs`
+- [x] T049 Serialize authorization deadlines at exact millisecond precision and prove subsecond `--duration` and `--wait` values remain distinct in `crates/fragcap-cli/src/commands/deep_capture.rs` and `crates/fragcap-cli/tests/cli_deep_capture.rs`
+- [x] T050 Synchronize the S134 contract, master specification, changelog decision, and user documentation, record atomic owner-registry publication discovered by the full gate, then rerun focused and full repository gates
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -163,6 +173,7 @@
 - **User Story 4 (Phase 6)**: Depends on the replacement command contract being functional.
 - **Documentation and Verification (Phase 7)**: Depends on all user stories.
 - **First-Round Review Remediation (Phase 8)**: Depends on the first published review and Phase 7 completion.
+- **Second-Round Review Remediation (Phase 9)**: Depends on the single authorized second review and Phase 8 completion.
 
 ### User Story Dependencies
 

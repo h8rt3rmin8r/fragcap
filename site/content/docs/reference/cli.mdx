@@ -162,7 +162,7 @@ fragcap deep-capture sample-target --launch --har --key-log
 
 Deep Capture hides and rejects the former `--trust-ca` and `--yes` inputs for one release. The migration error points to the complete interactive plan or `--authorize-stdin`. Other commands retain their separately scoped `--yes` confirmations.
 
-Authorization plan and prompt writes must succeed before input is read. Interactive approval requires a complete LF-terminated line. The prepared CA must remain within its displayed validity period, and the selected target authority must match both the immediate post-approval check and the facade's final resolver. Before constructing a new plan, a bounded read-only inspection refuses any pending prior-session recovery and directs the operator to `fragcap doctor --fix`; the new plan never authorizes effects against an older session.
+Authorization plan and prompt writes must succeed before input is read. Interactive approval requires a complete LF-terminated line, and effective deadlines are bound at exact millisecond precision. The prepared CA must remain within its displayed validity period. Stored target authority is checked immediately after approval, then the facade independently resolves and compares the exact profile, executable paths, platform root, dispatch, and managed launch before endpoint selection. Before constructing a new plan, a bounded read-only inspection refuses any pending prior-session recovery and directs the operator to `fragcap doctor --fix`; the new plan never authorizes effects against an older session.
 
 Read [Output formats and session bundles](/docs/reference/output-formats) for
 artifact authority, sensitivity, omission, correlation, retention, and cleanup.

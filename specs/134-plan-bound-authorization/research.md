@@ -34,7 +34,7 @@
 
 ## D5. Revalidate mutable launch authority before the first session effect
 
-**Decision**: Retain a complete target launch-authority snapshot in the plan, resolve it immediately after authorization, and require the facade's final target resolver to compare its independently refreshed result before endpoint or Capture preparation. Stable id, anchor, install root, launch entries, observed launch case, selected paths, bundle, policy, artifacts, deadlines, versions, and prepared certificate identity must still match. The prepared CA must remain inside its displayed validity period when execution begins.
+**Decision**: Retain a complete target launch-authority snapshot in the plan, including the fully resolved profile, exact client executable, platform root, application dispatch, and managed launch arguments. Resolve it independently inside the facade's final target resolver, compare it before endpoint selection, and retain that exact Capture preparation for execution. Stable id, anchor, install root, launch entries, observed launch case, selected paths, bundle, policy, artifacts, exact millisecond deadlines, versions, and prepared certificate identity must still match. The prepared CA must remain inside its displayed validity period when execution begins.
 
 **Rationale**: The in-memory plan is immutable, but the target store and running-process state can change while a person reviews it. Refusing drift before listener reservation preserves the meaning of exact authorization without silently rebuilding a different plan.
 
@@ -56,9 +56,9 @@
 
 ## D8. Refuse prior-session recovery before constructing a new plan
 
-**Decision**: Perform one bounded, read-only inspection of the existing Deep Capture owner registry and resource journals before preparing or emitting a new authorization plan. If an inactive prior session has recovery actions or refusals, stop and direct the operator to `fragcap doctor --fix`. Never replay prior recovery from the new session path.
+**Decision**: Publish each owner-registry record atomically only after its complete contents reach stable storage, then perform one bounded, read-only inspection of the existing Deep Capture owner registry and resource journals before preparing or emitting a new authorization plan. If an inactive prior session has recovery actions or refusals, stop and direct the operator to `fragcap doctor --fix`. Never replay prior recovery from the new session path.
 
-**Rationale**: Automatic recovery can remove a prior CA, terminalize journals, or retire ownership records. Those effects belong to the prior session and are absent from the new session's plan, so accepting the new plan cannot authorize them. This deliberately supersedes the initial assumption that every filesystem scan must wait until after authorization: a bounded read-only authority check is not a session effect and is required to keep unrelated recovery outside the plan.
+**Rationale**: Automatic recovery can remove a prior CA, terminalize journals, or retire ownership records. Those effects belong to the prior session and are absent from the new session's plan, so accepting the new plan cannot authorize them. A reader must never mistake a concurrently created partial record for residue corruption. This deliberately supersedes the initial assumption that every filesystem scan must wait until after authorization: a bounded read-only authority check is not a session effect and is required to keep unrelated recovery outside the plan.
 
 **Alternatives considered**: Listing every prior recovery action in the new plan was rejected because it couples unrelated sessions and can make the plan change while it is reviewed. Continuing automatic recovery after approval was rejected because it silently widens authority. Ignoring pending recovery was rejected because stale trust or incomplete ownership can conflict with a new run.
 

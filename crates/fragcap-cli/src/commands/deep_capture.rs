@@ -163,6 +163,7 @@ struct AuthorizationTargetAuthority {
     install_root: Option<String>,
     launch_entries: Option<Value>,
     launch_case: CompatibilityLaunchCase,
+    resolved_launch: Value,
 }
 
 impl AuthorizationTargetAuthority {
@@ -176,6 +177,7 @@ impl AuthorizationTargetAuthority {
             install_root: target.install_root.clone(),
             launch_entries: target.launch_entries.clone(),
             launch_case,
+            resolved_launch: Value::Null,
         }
     }
 
@@ -187,6 +189,7 @@ impl AuthorizationTargetAuthority {
             "launch_case": self.launch_case.as_str(),
             "launch_entries": self.launch_entries,
             "name": self.name,
+            "resolved_launch": self.resolved_launch,
             "row_id": self.row_id,
             "stable_id": self.stable_id,
         })
@@ -410,6 +413,10 @@ impl CalibrationDeadlines {
 
     fn seconds(duration: Duration) -> u64 {
         u64::try_from(duration.as_millis().saturating_add(999) / 1_000).unwrap_or(u64::MAX)
+    }
+
+    fn milliseconds(duration: Duration) -> u64 {
+        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
     }
 }
 
@@ -721,10 +728,14 @@ fn run_warm_restart(
     Ok(Some(context))
 }
 
-struct LibraryTargetAdapter<'a> {
+struct LibraryTargetAdapter<'a, 'e, 'w> {
     args: &'a DeepCaptureArgs,
     store: Rc<RefCell<Store>>,
     authorized: AuthorizationTargetAuthority,
+    bundle: PathBuf,
+    deadlines: CalibrationDeadlines,
+    emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
+    prepared_capture: Rc<RefCell<Option<(CaptureArgs, capture::PreparedCapture)>>>,
     selected: Rc<RefCell<Option<TargetEntry>>>,
     selected_launch_case: Rc<RefCell<Option<CompatibilityLaunchCase>>>,
 }
@@ -743,7 +754,16 @@ fn require_authorized_target(
     }
 }
 
-impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_> {
+fn stored_target_authority_matches(
+    authorized: &AuthorizationTargetAuthority,
+    current: &AuthorizationTargetAuthority,
+) -> bool {
+    let mut current = current.clone();
+    current.resolved_launch = authorized.resolved_launch.clone();
+    &current == authorized
+}
+
+impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_, '_, '_> {
     fn resolve(
         &mut self,
         _config: &deep_capture_api::SessionConfig,
@@ -758,7 +778,21 @@ impl deep_capture_api::TargetResolver for LibraryTargetAdapter<'_> {
         })?;
         let launch_case = effective_launch_case(&target, self.args.controlled_target)
             .map_err(|error| library_refusal("launch-case", error))?;
-        let current_authority = AuthorizationTargetAuthority::from_target(&target, launch_case);
+        let mut current_authority = AuthorizationTargetAuthority::from_target(&target, launch_case);
+        if self.args.controlled_target {
+            current_authority.resolved_launch = controlled_launch_authority();
+        } else {
+            let (capture_args, prepared, authority) = prepare_capture_authority(
+                self.args,
+                &self.bundle,
+                self.deadlines,
+                launch_case,
+                &mut self.emitter.borrow_mut(),
+            )
+            .map_err(|error| library_refusal("capture-authority", error))?;
+            current_authority.resolved_launch = authority;
+            *self.prepared_capture.borrow_mut() = Some((capture_args, prepared));
+        }
         require_authorized_target(&self.authorized, &current_authority)?;
         *self.selected_launch_case.borrow_mut() = Some(launch_case);
         let prepared = deep_capture_api::PreparedTarget {
@@ -975,7 +1009,7 @@ impl deep_capture_api::LaunchLease for LibraryLaunchLease {
 struct LibraryCaptureAdapter<'a, 'e, 'w> {
     args: &'a DeepCaptureArgs,
     emitter: Rc<RefCell<&'e mut Emitter<'w>>>,
-    prepared: Option<(CaptureArgs, capture::PreparedCapture)>,
+    prepared: Rc<RefCell<Option<(CaptureArgs, capture::PreparedCapture)>>>,
     runtime: Rc<RefCell<LibraryRuntime>>,
     observation_context: deep_capture_api::NativeObservationContext,
     mode: deep_capture_api::SessionMode,
@@ -985,29 +1019,15 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
     fn prepare(
         &mut self,
         config: &deep_capture_api::SessionConfig,
-        target: &deep_capture_api::PreparedTarget,
+        _target: &deep_capture_api::PreparedTarget,
         _endpoint: deep_capture_api::LoopbackEndpoint,
     ) -> Result<deep_capture_api::PreparedCapture, deep_capture_api::PreflightRefusal> {
         self.mode = config.mode;
-        if !self.args.controlled_target {
-            let deadlines = CalibrationDeadlines {
-                launch: config.deadlines.launch,
-                observation: config.deadlines.observation,
-                shutdown: config.deadlines.shutdown,
-                cleanup: config.deadlines.cleanup,
-            };
-            let mut capture_args = real_capture_args(self.args, &config.bundle, deadlines);
-            if target.launch_case == deep_capture_api::LaunchCase::SteamProtocolCold {
-                capture_args.wait = owned_platform_wait(capture_args.wait, config.deadlines.launch);
-            }
-            let prepared = if target.launch_case == deep_capture_api::LaunchCase::SteamProtocolCold
-            {
-                capture::prepare_owned_platform(&capture_args, &mut self.emitter.borrow_mut())
-            } else {
-                capture::prepare(&capture_args, &mut self.emitter.borrow_mut())
-            }
-            .map_err(|error| library_refusal("capture-prepare", error))?;
-            self.prepared = Some((capture_args, prepared));
+        if !self.args.controlled_target && self.prepared.borrow().is_none() {
+            return Err(deep_capture_api::PreflightRefusal::new(
+                "capture-authority-missing",
+                "target preflight did not retain the exact authorized Capture preparation",
+            ));
         }
         Ok(deep_capture_api::PreparedCapture {
             token: "ordinary-capture".to_string(),
@@ -1048,7 +1068,7 @@ impl deep_capture_api::CaptureRunner for LibraryCaptureAdapter<'_, '_, '_> {
                 interrupted: false,
             });
         }
-        let (capture_args, mut prepared) = self.prepared.take().ok_or_else(|| {
+        let (capture_args, mut prepared) = self.prepared.borrow_mut().take().ok_or_else(|| {
             deep_capture_api::StageFailure::new(
                 deep_capture_api::Stage::Capture,
                 "capture-not-prepared",
@@ -1914,11 +1934,11 @@ fn build_authorization_plan(
             "zero process-local private authority material when ownership ends",
             "retain truthful recovery records for any incomplete obligation"
         ],
-        "deadlines_seconds": {
-            "cleanup": CalibrationDeadlines::seconds(deadlines.cleanup),
-            "launch": CalibrationDeadlines::seconds(deadlines.launch),
-            "observation": CalibrationDeadlines::seconds(deadlines.observation),
-            "shutdown": CalibrationDeadlines::seconds(deadlines.shutdown),
+        "deadlines_milliseconds": {
+            "cleanup": CalibrationDeadlines::milliseconds(deadlines.cleanup),
+            "launch": CalibrationDeadlines::milliseconds(deadlines.launch),
+            "observation": CalibrationDeadlines::milliseconds(deadlines.observation),
+            "shutdown": CalibrationDeadlines::milliseconds(deadlines.shutdown),
         },
         "facts": {
             "authority": "append-only directly observed compatibility facts",
@@ -2107,8 +2127,21 @@ pub fn run(
     }
     deep_capture_api::BypassPolicy::validate_inputs(&args.proxy_bypass)
         .map_err(cli_error_from_library_refusal)?;
-    let target_authority =
+    let mut target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
+    if args.controlled_target {
+        target_authority.resolved_launch = controlled_launch_authority();
+    } else {
+        let (_, prepared, authority) = prepare_capture_authority(
+            args,
+            &bundle,
+            deadlines,
+            target_authority.launch_case,
+            emitter,
+        )?;
+        target_authority.resolved_launch = authority;
+        drop(prepared);
+    }
     let client_identity = load_client_identity(args)?;
     let authority_created = SystemTime::now();
     let prepared_authority = deep_capture_api::NativeProxyAdapter::prepare_authority(
@@ -2136,7 +2169,10 @@ pub fn run(
     }
     let current_target_authority =
         validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
-    if current_target_authority != authorization_plan.target_authority {
+    if !stored_target_authority_matches(
+        &authorization_plan.target_authority,
+        &current_target_authority,
+    ) {
         authorization_outcome(
             emitter,
             &authorization_plan,
@@ -2199,12 +2235,17 @@ pub fn run(
     let observation_context = deep_capture_api::NativeObservationContext::default();
     let listener_reservation = deep_capture_api::NativeListenerReservation::default();
     let emitter = Rc::new(RefCell::new(emitter));
+    let prepared_capture = Rc::new(RefCell::new(None));
     let mut adapters = deep_capture_api::AdapterSet {
         boundaries: Box::new(fragcap::deep_capture::AllowBoundaries),
         targets: Box::new(LibraryTargetAdapter {
             args,
             store: Rc::clone(&store),
             authorized: authorization_plan.target_authority.clone(),
+            bundle: bundle.clone(),
+            deadlines,
+            emitter: Rc::clone(&emitter),
+            prepared_capture: Rc::clone(&prepared_capture),
             selected: Rc::clone(&selected),
             selected_launch_case: Rc::clone(&selected_launch_case),
         }),
@@ -2242,7 +2283,7 @@ pub fn run(
         capture: Box::new(LibraryCaptureAdapter {
             args,
             emitter: Rc::clone(&emitter),
-            prepared: None,
+            prepared: Rc::clone(&prepared_capture),
             runtime: Rc::clone(&runtime),
             observation_context,
             mode,
@@ -2949,6 +2990,30 @@ fn real_capture_args(
         launch: true,
         offline: OfflineArgs::default(),
     }
+}
+
+fn controlled_launch_authority() -> Value {
+    json!({"kind": "controlled-test-harness"})
+}
+
+fn prepare_capture_authority(
+    args: &DeepCaptureArgs,
+    bundle: &Path,
+    deadlines: CalibrationDeadlines,
+    launch_case: CompatibilityLaunchCase,
+    emitter: &mut Emitter,
+) -> Result<(CaptureArgs, capture::PreparedCapture, Value), CliError> {
+    let mut capture_args = real_capture_args(args, bundle, deadlines);
+    if launch_case == CompatibilityLaunchCase::SteamProtocolCold {
+        capture_args.wait = owned_platform_wait(capture_args.wait, deadlines.launch);
+    }
+    let prepared = if launch_case == CompatibilityLaunchCase::SteamProtocolCold {
+        capture::prepare_owned_platform(&capture_args, emitter)
+    } else {
+        capture::prepare(&capture_args, emitter)
+    }?;
+    let authority = prepared.authorization_authority();
+    Ok((capture_args, prepared, authority))
 }
 
 fn owned_platform_wait(current: Option<Duration>, launch_deadline: Duration) -> Option<Duration> {
@@ -4275,6 +4340,7 @@ mod tests {
             install_root: Some("C:\\Games\\Target".to_string()),
             launch_entries: Some(json!([{"path":"target.exe","role":"client"}])),
             launch_case: CompatibilityLaunchCase::DirectExeCold,
+            resolved_launch: json!({"kind":"direct"}),
         }
     }
 
@@ -4327,6 +4393,14 @@ mod tests {
         changed.launch_entries = Some(json!([{"path":"changed.exe","role":"client"}]));
         let refusal = require_authorized_target(&authorized, &changed).unwrap_err();
         assert_eq!(refusal.code, "authorization-target-drift");
+
+        let mut changed = authorized.clone();
+        changed.resolved_launch = json!({
+            "kind": "platform",
+            "root": {"executable": "C:\\Changed\\steam.exe"}
+        });
+        let refusal = require_authorized_target(&authorized, &changed).unwrap_err();
+        assert_eq!(refusal.code, "authorization-target-drift");
     }
 
     #[test]
@@ -4335,7 +4409,7 @@ mod tests {
             "artifacts": {"bundle":"bundle"},
             "capture": {"payload_retention":true},
             "cleanup": ["cleanup"],
-            "deadlines_seconds": {"launch":30},
+            "deadlines_milliseconds": {"launch":30000},
             "facts": {"authority":"append-only"},
             "launch": {"declared_case":"direct-exe-cold"},
             "mode": "capture",

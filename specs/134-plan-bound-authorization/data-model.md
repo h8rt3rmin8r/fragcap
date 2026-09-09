@@ -9,11 +9,11 @@ One immutable, versioned, canonically serialized review value.
 | schema | Authorization plan contract version | A version change changes the identifier |
 | session_id | Pending session identity | Exact and single-use |
 | target | Stable id, local row id, handle, and selected name | Any identity change refuses |
-| launch | Requested case, observed case, and exact stored launch authority | Any state or declaration change refuses |
+| launch | Requested case, observed case, exact stored authority, resolved profile, executable paths, platform root, and dispatch | Any state, declaration, or live resolution change refuses |
 | proxy | Backend and product versions, loopback family, route strategy, normalized bypass, environment ownership, and no-fallback boundary | Scope may be realized only inside these fields |
 | trust | None, or current-user Root action, SHA-1 thumbprint, SHA-256 fingerprint, validity, and cleanup promise | Exact prepared CA must reach runtime and trust adapter |
 | artifacts | Bundle path, packet output, application stream, optional HAR, optional key log, and sensitivity | Selection or path change refuses |
-| deadlines | Effective launch, observation, shutdown, and cleanup bounds | Any bound change refuses |
+| deadlines | Exact millisecond launch, observation, shutdown, and cleanup bounds | Any bound change refuses |
 | facts | Possible append-only compatibility fact families | No undeclared family may be written |
 | cleanup | Listener, proxy, route, launch, trust, private material, writers, journal, and retained-evidence obligations | Existing exact lifecycle remains authoritative |
 | refusals | No system proxy, no wildcard endpoint, no pinning bypass, no unrelated target, and no silent fallback | A realization that needs widening refuses |

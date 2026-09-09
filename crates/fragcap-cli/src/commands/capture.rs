@@ -29,6 +29,7 @@
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{resolved_client_launch, Store};
 use fragcap::{CaptureScope, FlowRegistry};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::assemble;
@@ -54,6 +55,15 @@ pub(crate) struct PreparedCapture {
 }
 
 impl PreparedCapture {
+    /// Canonical, secret-free authority for the exact resolved profile and
+    /// managed launch that this preparation would execute.
+    pub(crate) fn authorization_authority(&self) -> Value {
+        json!({
+            "managed_launch": managed_launch_authority(self.config.launch.as_ref()),
+            "profile": profile_authority(&self.profile),
+        })
+    }
+
     /// Add child-only environment values to a retained direct launch.
     pub(crate) fn with_launch_environment<I, K, V>(&mut self, entries: I) -> Result<(), CliError>
     where
@@ -70,6 +80,92 @@ impl PreparedCapture {
                 .map_err(|error| CliError::usage(error.to_string()))?,
         );
         Ok(())
+    }
+}
+
+fn profile_authority(profile: &fragcap::Profile) -> Value {
+    let game = profile.game();
+    let stages = profile
+        .stages()
+        .iter()
+        .map(|stage| {
+            let predicates = stage.predicates();
+            json!({
+                "lifecycle": match stage.lifecycle() {
+                    fragcap::profile::Lifecycle::Transient => "transient",
+                    fragcap::profile::Lifecycle::Session => "session",
+                    fragcap::profile::Lifecycle::Service => "service",
+                },
+                "match": {
+                    "cmdline_contains": predicates.cmdline_contains(),
+                    "descends_from": predicates.descends_from(),
+                    "exe": predicates.exe().map(|value| value.as_str()),
+                    "path_contains": predicates.path_contains(),
+                    "path_regex": predicates.path_regex().map(|value| value.as_str()),
+                },
+                "role": stage.role(),
+                "terminal": stage.is_terminal(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "fidelity": profile.fidelity().as_str(),
+        "game": {
+            "app_id": game.app_id(),
+            "id": game.id().as_str(),
+            "name": game.name(),
+            "platform": game.platform(),
+        },
+        "stages": stages,
+    })
+}
+
+fn direct_launch_authority(launch: &fragcap::managed_launch::DirectExecutableLaunch) -> Value {
+    json!({
+        "arguments": launch
+            .arguments()
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        "executable": launch.executable().display().to_string(),
+        "working_directory": launch.working_directory().display().to_string(),
+    })
+}
+
+fn managed_launch_authority(launch: Option<&fragcap::managed_launch::ManagedLaunch>) -> Value {
+    use fragcap::managed_launch::ManagedLaunch;
+
+    match launch {
+        None => Value::Null,
+        Some(ManagedLaunch::Steam(request)) => json!({
+            "application_id": request.app_id,
+            "kind": "steam-protocol",
+            "url": request.url,
+        }),
+        Some(ManagedLaunch::Platform(platform)) => json!({
+            "application_id": platform.application_id(),
+            "kind": "platform",
+            "platform": platform.platform(),
+            "root": direct_launch_authority(platform.root()),
+        }),
+        Some(ManagedLaunch::Direct(direct)) => json!({
+            "kind": "direct",
+            "root": direct_launch_authority(direct),
+        }),
+        Some(ManagedLaunch::Publisher(publisher)) => json!({
+            "kind": "publisher",
+            "root": direct_launch_authority(publisher.root()),
+            "stages": publisher
+                .stages()
+                .iter()
+                .map(|stage| json!({
+                    "executable": stage.executable().display().to_string(),
+                    "parent_role": stage.parent_role(),
+                    "role": stage.role(),
+                    "terminal": stage.is_terminal(),
+                }))
+                .collect::<Vec<_>>(),
+        }),
     }
 }
 
@@ -294,5 +390,52 @@ fn promote_if_observed(
             "captured, but the target row was not found to promote (it may have been removed)",
         ),
         Err(e) => emitter.warn(&format!("captured, but could not promote the target: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::*;
+
+    #[test]
+    fn authorization_authority_names_profile_predicates_and_exact_launch() {
+        let profile =
+            target_resolve::synthesize_named_profile("client.exe", Some("\\Games\\Sample"), None)
+                .expect("profile");
+        let profile_value = profile_authority(&profile);
+        assert_eq!(profile_value["stages"][0]["match"]["exe"], "client.exe");
+        assert_eq!(
+            profile_value["stages"][0]["match"]["path_contains"],
+            "\\Games\\Sample"
+        );
+
+        let executable = std::env::current_exe().expect("current executable");
+        let working_directory = executable
+            .parent()
+            .expect("executable parent")
+            .to_path_buf();
+        let direct = fragcap::managed_launch::DirectExecutableLaunch::new(
+            executable.clone(),
+            working_directory.clone(),
+            vec!["--probe".into()],
+        )
+        .expect("direct launch");
+        let value = managed_launch_authority(Some(
+            &fragcap::managed_launch::ManagedLaunch::Direct(direct),
+        ));
+        assert_eq!(value["kind"], "direct");
+        assert_eq!(
+            value["root"]["executable"],
+            executable.canonicalize().unwrap().display().to_string()
+        );
+        assert_eq!(
+            value["root"]["working_directory"],
+            working_directory
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(value["root"]["arguments"], json!(["--probe"]));
     }
 }

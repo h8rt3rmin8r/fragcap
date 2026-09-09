@@ -215,6 +215,10 @@ fn interactive_decline_is_successful_and_effect_free() {
             "routing",
             "--launch-case",
             "direct-exe-warm",
+            "--duration",
+            "500ms",
+            "--wait",
+            "750ms",
             "--controlled-target",
             "--local-db",
             local.to_str().unwrap(),
@@ -226,6 +230,14 @@ fn interactive_decline_is_successful_and_effect_free() {
     assert_eq!(code, 0, "stderr:\n{err}");
     assert_eq!(err.matches("Authorize exact plan").count(), 1);
     assert!(err.contains("Deep Capture authorization plan"));
+    assert!(
+        err.contains("\"launch\": 750"),
+        "exact launch deadline: {err}"
+    );
+    assert!(
+        err.contains("\"observation\": 500"),
+        "exact observation deadline: {err}"
+    );
     assert!(!bundle.exists());
 }
 
@@ -520,8 +532,8 @@ fn controlled_calibration_runs_reachability_then_tls() {
         .map(|line| serde_json::from_str(line).unwrap())
         .find(|event: &serde_json::Value| event["event"] == "deep_capture.authorization_plan")
         .unwrap();
-    assert_eq!(plan["plan"]["deadlines_seconds"]["launch"], 7);
-    assert_eq!(plan["plan"]["deadlines_seconds"]["observation"], 5);
+    assert_eq!(plan["plan"]["deadlines_milliseconds"]["launch"], 7_000);
+    assert_eq!(plan["plan"]["deadlines_milliseconds"]["observation"], 5_000);
     assert_eq!(
         plan["plan"]["proxy"]["routing_scope"],
         "managed child environment only"

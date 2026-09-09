@@ -16,12 +16,12 @@ Human output prints one headed authorization plan before any session effect. It 
 
 - the complete plan identifier;
 - selected target and exact stored identity;
-- requested and observed launch case plus the declared launch chain;
+- requested and observed launch case plus the declared chain, fully resolved profile, exact client executable, and managed platform root and dispatch where applicable;
 - native backend and fragcap versions;
 - IPv4 or IPv6 loopback-only proxy scope, target-scoped environment, normalized bypass policy, and no system fallback;
 - current-user Root-store action, exact certificate thumbprint and fingerprint, validity, and removal promise, or `none` for reachability;
 - bundle and requested artifact paths plus sensitivity;
-- effective launch, observation, shutdown, and cleanup deadlines;
+- exact millisecond effective launch, observation, shutdown, and cleanup deadlines;
 - possible append-only compatibility facts;
 - cleanup obligations and important refusal boundaries.
 
@@ -47,7 +47,7 @@ Only the exact current identifier matches. The line ending is removed. No other 
 
 The caller must keep the process running while reading the plan and returning the identifier. No plan private material is written for a later invocation.
 
-Before any plan is emitted, a bounded read-only inspection checks prior Deep Capture owner records and resource journals. Pending recovery actions refuse with `fragcap doctor --fix` guidance. A new plan never authorizes replay, trust removal, artifact deletion, or registry retirement belonging to an older session. After approval, the target authority is compared again inside the facade's final resolver before endpoint or Capture preparation, and the prepared CA must remain within its displayed validity period.
+Before any plan is emitted, a bounded read-only inspection checks prior Deep Capture owner records and resource journals. Pending recovery actions refuse with `fragcap doctor --fix` guidance. A new plan never authorizes replay, trust removal, artifact deletion, or registry retirement belonging to an older session. After approval, stored authority is checked immediately, then the fully resolved profile and managed launch are independently prepared and compared inside the facade's final resolver before endpoint selection. That exact retained Capture preparation is consumed during execution. The prepared CA must remain within its displayed validity period.
 
 ## Reachability calibration
 
