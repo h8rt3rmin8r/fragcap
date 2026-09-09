@@ -16,6 +16,46 @@ pub(crate) fn pad_display(value: &str, width: usize) -> String {
     padded
 }
 
+/// Represent controls that would otherwise become terminal layout syntax.
+pub(crate) fn human_display_value(value: &str) -> String {
+    let mut displayed = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\t' => displayed.push_str("\\t"),
+            '\r' => displayed.push_str("\\r"),
+            '\n' => displayed.push_str("\\n"),
+            _ => displayed.push(character),
+        }
+    }
+    displayed
+}
+
+/// Select the bounded width used by human stdout reports.
+pub(crate) fn selected_stdout_width(stdout_terminal: bool) -> usize {
+    let reported = stdout_terminal.then(reported_stdout_width).flatten();
+    human_width(stdout_terminal, reported)
+}
+
+#[cfg(windows)]
+fn reported_stdout_width() -> Option<usize> {
+    terminal_size::terminal_size_of(std::io::stdout()).map(|(width, _)| usize::from(width.0))
+}
+
+#[cfg(not(windows))]
+fn reported_stdout_width() -> Option<usize> {
+    // fragcap is a Windows product. Keep unsupported-host builds deterministic
+    // without broadening the Windows-only terminal_size dependency.
+    None
+}
+
+fn human_width(stdout_terminal: bool, reported: Option<usize>) -> usize {
+    if stdout_terminal {
+        reported.unwrap_or(80).clamp(40, 80)
+    } else {
+        80
+    }
+}
+
 fn display_cell_width(c: char) -> usize {
     let u = c as u32;
     if c.is_control()
@@ -87,7 +127,7 @@ fn display_cell_width(c: char) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_width, pad_display};
+    use super::{display_width, human_display_value, human_width, pad_display};
 
     #[test]
     fn counts_terminal_cells_for_supported_character_classes() {
@@ -98,5 +138,23 @@ mod tests {
         assert_eq!(display_width("Ａ"), 2);
         assert_eq!(display_width("🎮"), 2);
         assert_eq!(pad_display("界", 4), "界  ");
+    }
+
+    #[test]
+    fn represents_layout_controls_without_changing_other_characters() {
+        assert_eq!(
+            human_display_value("界\tline\r\ne\u{301}"),
+            "界\\tline\\r\\ne\u{301}"
+        );
+    }
+
+    #[test]
+    fn bounds_interactive_width_and_defaults_other_output() {
+        assert_eq!(human_width(true, Some(20)), 40);
+        assert_eq!(human_width(true, Some(63)), 63);
+        assert_eq!(human_width(true, Some(120)), 80);
+        assert_eq!(human_width(true, None), 80);
+        assert_eq!(human_width(false, Some(50)), 80);
+        assert_eq!(human_width(false, None), 80);
     }
 }

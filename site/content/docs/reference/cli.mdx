@@ -354,6 +354,8 @@ List installed Steam titles. Register one with `targets add --steam <app_id>`.
 fragcap steam list
 ```
 
+Human output contains no tab separators. It uses an aligned `APP ID`, `NAME`, `STATE`, and `TARGET` table when every complete row fits the selected 40-through-80 display-column width, then switches the entire result to labeled vertical records when a long or localized value would not fit. Values are never truncated, and positioned, registered without a current listing position, and unregistered titles remain distinct. Use global `--json` for the unchanged JSON Lines machine interface.
+
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 
