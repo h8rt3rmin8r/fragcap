@@ -669,6 +669,31 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
             });
             continue;
         }
+        let recovery_removed_owner_record =
+            if is_session && recovery_succeeded.contains(&entry.root) {
+                let mut parts = entry.relative.split('/');
+                parts
+                    .next()
+                    .is_some_and(|part| part.eq_ignore_ascii_case("sessions"))
+                    && parts
+                        .next()
+                        .is_some_and(|part| part.eq_ignore_ascii_case("session-owners"))
+                    && parts.next().is_some()
+            } else {
+                false
+            };
+        if recovery_removed_owner_record
+            && fs::symlink_metadata(&path)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        {
+            outcomes.push(ItemOutcome {
+                path,
+                operation: "remove",
+                status: "absent",
+                detail: "session-owner record was retired during exact recovery".to_string(),
+            });
+            continue;
+        }
         if let Err(error) = validate_deletion_ancestors(&root.path, &path) {
             outcomes.push(ItemOutcome {
                 path,
@@ -1305,6 +1330,35 @@ mod tests {
         }));
         assert!(profile.roaming.join("sessions").exists());
         assert!(!profile.local.exists());
+    }
+
+    #[test]
+    fn successful_recovery_accepts_a_retired_session_owner_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = roots(temp.path());
+        let sessions = profile.roaming.join("sessions");
+        let bundle = temp.path().join("completed-bundle");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::create_dir_all(&profile.local).unwrap();
+        let lease = crate::doctor::fix::register_session_owner(&sessions, &bundle).unwrap();
+        drop(lease);
+        let inventory = build_inventory("current-user", std::slice::from_ref(&profile)).unwrap();
+
+        let outcomes = execute_inventory(&inventory, &mut io::sink());
+
+        assert!(outcomes
+            .iter()
+            .all(|item| matches!(item.status, "removed" | "absent")));
+        assert!(outcomes.iter().any(|item| {
+            item.path
+                .parent()
+                .is_some_and(|parent| parent.ends_with("session-owners"))
+                && item.status == "absent"
+                && item.detail.contains("retired during exact recovery")
+        }));
+        assert!(!profile.roaming.exists());
+        assert!(!profile.local.exists());
+        assert!(bundle.exists());
     }
 
     #[test]
