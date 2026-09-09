@@ -178,11 +178,12 @@ pub fn run_fix(
     caps: Capabilities,
     yes: bool,
     color: bool,
+    width: usize,
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Exit {
     let report = checks::run(&probe::gather());
-    let _ = write!(out, "{}", report.render_human_with(color));
+    let _ = write!(out, "{}", report.render_human_with_width(color, width));
 
     let offered = offered_actions(&report, caps);
     if offered.is_empty() {
