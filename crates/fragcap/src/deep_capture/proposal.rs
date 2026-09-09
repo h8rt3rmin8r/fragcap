@@ -217,6 +217,7 @@ pub struct DeferredCalibrationProtocol {
     pub reason: CalibrationProposalReason,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CalibrationProposal {
     pub topology: Option<CalibrationTopologyKind>,
@@ -436,10 +437,17 @@ fn validate_raw_launch_entries(target: &TargetEntry) -> Result<(), CalibrationPr
         ));
     };
     for entry in entries {
-        let windows = entry
-            .get("os")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|os| os.eq_ignore_ascii_case("windows"));
+        let windows = match entry.get("os") {
+            None => true,
+            Some(serde_json::Value::String(os)) => os.eq_ignore_ascii_case("windows"),
+            Some(_) => {
+                return Err(limitation(
+                    CalibrationProposalLimitationKind::MissingLaunchDeclaration,
+                    "a launch declaration has a non-string operating-system filter",
+                    Vec::new(),
+                ));
+            }
+        };
         if !windows {
             continue;
         }
@@ -927,6 +935,7 @@ mod tests {
         for launches in [
             serde_json::Value::Null,
             json!([{ "os": "windows", "executable": "" }]),
+            json!([{ "os": 1, "executable": "Game.exe" }]),
             json!([{ "os": "linux", "executable": "game" }]),
         ] {
             let mut target = direct_target();
