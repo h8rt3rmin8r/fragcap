@@ -366,7 +366,14 @@ fn render_target_groups(targets: &[TargetEntry], ready_count: usize, out: &mut d
 fn render_table(targets: &[TargetEntry], start_row: usize, out: &mut dyn Write) {
     let num_w = (start_row + targets.len() - 1).to_string().len().max(1);
     let target_w = width_of(targets.iter().map(|t| t.handle.clone()), "TARGET");
-    let capture_w = "needs a target".len();
+    let capture_w = width_of(
+        targets.iter().map(|target| {
+            fragcap::targets::capture_readiness(target)
+                .label()
+                .to_string()
+        }),
+        "CAPTURE",
+    );
     let engine_w = width_of(
         targets.iter().map(fragcap::targets::engine_summary),
         "ENGINE",
@@ -1729,6 +1736,27 @@ mod tests {
             .collect();
         assert_eq!(rows[0][..2], ["9", "alpha"]);
         assert_eq!(rows[1][..2], ["10", "bravo"]);
+    }
+
+    #[test]
+    fn table_renderer_sizes_capture_from_only_its_group() {
+        let ready = [listing_target(1, "alpha", Some("steam:1"))];
+        let setup = [listing_target(2, "alpha", None)];
+        let mut ready_out = Vec::new();
+        let mut setup_out = Vec::new();
+
+        render_table(&ready, 1, &mut ready_out);
+        render_table(&setup, 2, &mut setup_out);
+
+        let ready_text = String::from_utf8(ready_out).expect("utf-8");
+        let setup_text = String::from_utf8(setup_out).expect("utf-8");
+        let ready_heading = ready_text.lines().next().expect("ready heading");
+        let setup_heading = setup_text.lines().next().expect("setup heading");
+        assert_eq!(
+            setup_heading.find("ENGINE").expect("setup engine column")
+                - ready_heading.find("ENGINE").expect("ready engine column"),
+            "needs a target".len() - "CAPTURE".len()
+        );
     }
 
     #[test]
