@@ -680,7 +680,7 @@ Param(
         [void](Invoke-MsiOperation -Case 'fresh-start-test-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'fresh-start-uninstall.log'))
         [void](Invoke-MsiOperation -Case 'clean-reinstall-after-fresh-start' -Arguments @('/i', $candidateMsi[0].FullName, "INSTALLDIR=$installDirectory\") -LogPath (Join-Path $scratch 'clean-reinstall.log'))
         $cleanLocalDb = Join-Path $cleanEnvironment.APPDATA 'fragcap\local.db'
-        $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list', '--db', $cleanLocalDb) -Environment $cleanEnvironment
+        $cleanListing = Invoke-Fragcap -Executable (Join-Path $installDirectory 'fragcap.exe') -Arguments @('targets', 'list') -Environment $cleanEnvironment
         if ($cleanListing.Stdout -match 'S131 user-owned fixture' -or -not (Test-Path -LiteralPath $cleanLocalDb)) { throw 'clean reinstall restored prior local target state' }
         [void](Invoke-MsiOperation -Case 'clean-reinstall-final-uninstall' -Arguments @('/x', $candidateMsi[0].FullName) -LogPath (Join-Path $scratch 'clean-reinstall-uninstall.log'))
         if ((Get-ProductRegistrationCount -ProductCode $currentProductCode) -ne 0 -or (Test-Path -LiteralPath $installDirectory)) { throw 'fresh-start clean-reinstall proof left installer-owned state' }
