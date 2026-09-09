@@ -43,6 +43,7 @@ pub mod import;
 pub mod machine_probe;
 pub mod model;
 pub mod readiness;
+pub mod reconcile;
 pub mod register;
 pub mod schema;
 pub mod seed;
@@ -96,7 +97,17 @@ pub use readiness::{
     capture_readiness, engine_summary, install_presence, name_divergence, sensitivities_summary,
     CaptureReadiness, InstallPresence, NameDivergence, INSTALL_MISSING_NOTE,
 };
-pub use register::{register_candidate, register_candidates, RegistrationOutcome};
+pub use reconcile::{
+    plan_reconciliation, AuthoritativePlatformInstall, PlatformInventory, ReconciliationPlan,
+    ReconciliationPreservation, ReconciliationPreservationReason, ReconciliationRemoval,
+    ReconciliationRemovalReason,
+};
+pub use register::{
+    automatic_registration_decision, automatic_registration_plan, register_automatic_candidates,
+    register_candidate, register_candidates, AutomaticRegistrationBasis,
+    AutomaticRegistrationDecision, AutomaticRegistrationOutcome, AutomaticRegistrationPlan,
+    AutomaticRegistrationRefusal, RefusedAutomaticCandidate, RegistrationOutcome,
+};
 pub use seed::{seed_catalog, seed_engine, SeedSummary};
 pub use selector::{is_row_index, resolve_id, resolve_positional, Selection};
 pub use signatures::{parse_seed_document, seed_bundled, BUNDLED_SIGNATURES};

@@ -3,7 +3,7 @@
 //! Tier 2: the known-roots walk (slice S052), spec 7.2.
 //!
 //! A machine without Steam must still show games. [`KnownRootsSource`] enumerates a
-//! fixed, hard-coded list of directories that only ever contain games, across
+//! fixed, hard-coded list of conventional game-library locations, across
 //! every eligible fixed volume (a second or third drive holds games as often as
 //! the system drive). Exhaustive enumeration of every executable on the machine is
 //! rejected (FR-009): a normal machine carries thousands of updaters, uninstallers,
@@ -22,10 +22,9 @@ use crate::sources::{base_name, DirListing, DirectoryLister};
 use crate::volume::VolumeInventory;
 use crate::TargetsError;
 
-/// The fixed v0.5.0 known-root list (FR-007): directories that only ever contain
-/// games, each a path relative to a volume root. The walk applies all of them to
-/// every eligible volume. A separator-normalized relative form is used so the same
-/// constant drives both the real filesystem walk and the fixture tree.
+/// The fixed v0.5.0 known-root list (FR-007): conventional game-library and
+/// install locations, each relative to a volume root. Location bounds the walk but
+/// does not itself authorize automatic registration (S133).
 pub const KNOWN_ROOTS: &[&str] = &[
     "SteamLibrary/steamapps/common",
     "Program Files (x86)/Steam/steamapps/common",
@@ -79,10 +78,9 @@ impl<'a> KnownRootsSource<'a> {
         }
     }
 
-    /// Exclude exact directory roots that another, more authoritative platform
-    /// source has already identified as non-game. This keeps a Steam utility under
-    /// `steamapps/common` from being reintroduced by the known-roots structural
-    /// prior while leaving siblings untouched.
+    /// Exclude exact directory roots and their descendants when a more
+    /// authoritative platform source owns that subtree. Component boundaries are
+    /// significant, so excluding `Steam` does not exclude `Steamship`.
     pub fn with_excluded_dirs(mut self, dirs: impl IntoIterator<Item = String>) -> Self {
         self.excluded_dirs = dirs
             .into_iter()
@@ -97,6 +95,11 @@ impl<'a> KnownRootsSource<'a> {
     /// and, while depth remains, descended one level (a launcher-nested layout).
     /// `Absent` contributes nothing (FR-010); an access error is counted.
     fn walk(&self, dir: &str, depth: usize, out: &mut Discovery) {
+        if self.is_excluded(dir) {
+            out.account.considered += 1;
+            out.account.considered_not_a_game += 1;
+            return;
+        }
         match self.lister.subdirectories(dir) {
             DirListing::Absent => {}
             DirListing::AccessError => {
@@ -111,7 +114,7 @@ impl<'a> KnownRootsSource<'a> {
             DirListing::Present(children) => {
                 for child in children {
                     out.account.considered += 1;
-                    if self.excluded_dirs.contains(&normalized_dir_key(&child)) {
+                    if self.is_excluded(&child) {
                         out.account.considered_not_a_game += 1;
                         continue;
                     }
@@ -167,12 +170,28 @@ impl<'a> KnownRootsSource<'a> {
             }
         }
     }
+
+    fn is_excluded(&self, dir: &str) -> bool {
+        let key = normalized_dir_key(dir);
+        self.excluded_dirs.iter().any(|root| {
+            key == *root
+                || key
+                    .strip_prefix(root)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        })
+    }
 }
 
 fn normalized_dir_key(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
+    let normalized = path.replace('\\', "/");
+    let normalized = if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = normalized.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        normalized
+    };
+    normalized.trim_end_matches('/').to_ascii_lowercase()
 }
 
 impl TargetSource for KnownRootsSource<'_> {
@@ -201,5 +220,76 @@ impl TargetSource for KnownRootsSource<'_> {
 
     fn default_fidelity(&self) -> FidelityTier {
         FidelityTier::HeuristicUnverified
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DriveType, FixtureClassifier, FixtureInventory, FixtureTree, Volume};
+
+    fn inventory() -> FixtureInventory {
+        FixtureInventory::new(vec![Volume {
+            identity: "volume-a".to_string(),
+            mount_point: "A:".to_string(),
+            drive_type: DriveType::Fixed,
+        }])
+    }
+
+    fn eligible() -> HashSet<String> {
+        HashSet::from(["volume-a".to_string()])
+    }
+
+    #[test]
+    fn excluded_platform_root_prunes_the_complete_client_fixture_before_listing() {
+        let common = "A:/Program Files (x86)/Steam/steamapps/common";
+        let children = [
+            "appcache",
+            "config",
+            "logs",
+            "package",
+            "resource",
+            "steamui",
+            "userdata",
+            "Supported Game",
+            "Unsupported Game",
+        ]
+        .map(|name| format!("{common}/{name}"));
+        let child_refs = children.iter().map(String::as_str).collect::<Vec<_>>();
+        let tree = FixtureTree::new().with_dir(common, &child_refs);
+        let classifier = FixtureClassifier::new(children.to_vec());
+        let inventory = inventory();
+        let eligible = eligible();
+        let source = KnownRootsSource::new(&inventory, &eligible, &tree, &classifier)
+            .with_excluded_dirs(["\\\\?\\a:\\PROGRAM FILES (X86)\\STEAM\\".to_string()]);
+
+        let discovery = source.discover().expect("discover");
+        assert!(discovery.candidates.is_empty());
+        assert_eq!(discovery.account.considered, 1);
+        assert_eq!(discovery.account.considered_not_a_game, 1);
+        assert!(discovery.account.is_conserved());
+    }
+
+    #[test]
+    fn excluded_platform_root_prunes_nested_generic_games_child_but_not_prefix_sibling() {
+        let games = "A:/Games";
+        let steam = "A:/Games/Steam";
+        let prefix_sibling = "A:/Games/Steamship";
+        let tree = FixtureTree::new().with_dir(games, &[steam, prefix_sibling]);
+        let classifier =
+            FixtureClassifier::new(vec![steam.to_string(), prefix_sibling.to_string()]);
+        let inventory = inventory();
+        let eligible = eligible();
+        let source = KnownRootsSource::new(&inventory, &eligible, &tree, &classifier)
+            .with_excluded_dirs(["A:/Games/Steam".to_string()]);
+
+        let discovery = source.discover().expect("discover");
+        assert_eq!(discovery.candidates.len(), 1);
+        assert_eq!(
+            discovery.candidates[0].install_root.as_deref(),
+            Some(prefix_sibling)
+        );
+        assert_eq!(discovery.account.considered_not_a_game, 1);
+        assert!(discovery.account.is_conserved());
     }
 }

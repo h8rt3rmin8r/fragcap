@@ -27,7 +27,7 @@ use fragcap::targets::{
 
 use crate::cli::{
     TargetsAddArgs, TargetsArgs, TargetsCommand, TargetsDiscoverArgs, TargetsExportArgs,
-    TargetsShowArgs,
+    TargetsReconcileArgs, TargetsShowArgs,
 };
 use crate::color::{use_color, Stream, RESET, WARN};
 use crate::commands::target_resolve;
@@ -62,6 +62,7 @@ pub fn run(
         }
         TargetsCommand::Show(args) => show(args, out),
         TargetsCommand::Discover(args) => discover(args, out, emitter),
+        TargetsCommand::Reconcile(args) => reconcile(args, out),
         TargetsCommand::Scan {
             dir,
             catalog_db,
@@ -416,7 +417,10 @@ fn width_of(values: impl Iterator<Item = String>, heading: &str) -> usize {
 /// there is simply nothing to classify against, so it returns `Ok(0)`. A discovery
 /// composition failure or a registration failure is a real error and is returned,
 /// so a caller that must report an honest outcome (the `doctor --fix` action) can.
-fn discover_and_register(store: &mut Store, emitter: &mut Emitter) -> Result<usize, CliError> {
+fn discover_and_register(
+    store: &mut Store,
+    emitter: &mut Emitter,
+) -> Result<fragcap::targets::AutomaticRegistrationOutcome, CliError> {
     // Resolve and, on first run, seed the per-user catalog from the template shipped
     // beside the executable, through the same helper the capture path uses. Without
     // this the shipped catalog was never copied into the per-user location for the
@@ -432,18 +436,19 @@ fn discover_and_register(store: &mut Store, emitter: &mut Emitter) -> Result<usi
         }
     };
     let Some(catalog_db) = catalog_db else {
-        return Ok(0);
+        return Ok(Default::default());
     };
     if !catalog_db.exists() {
-        return Ok(0);
+        return Ok(Default::default());
     }
     let discovery = compose_and_discover(&catalog_db, store, None)?;
     for warning in &discovery.warnings {
         emitter.warn(warning);
     }
-    let outcome = fragcap::targets::register_candidates(store, &discovery.candidates)
+    let outcome = fragcap::targets::register_automatic_candidates(store, &discovery.candidates)
         .map_err(|e| CliError::failure(e.to_string()))?;
-    Ok(outcome.registered)
+    debug_assert!(outcome.is_conserved());
+    Ok(outcome)
 }
 
 /// The hero listing's best-effort bootstrap: discover and register, but never let a
@@ -451,10 +456,11 @@ fn discover_and_register(store: &mut Store, emitter: &mut Emitter) -> Result<usi
 /// listing continues with whatever is already registered.
 fn register_from_discovery(store: &mut Store, out: &mut dyn Write, emitter: &mut Emitter) {
     match discover_and_register(store, emitter) {
-        Ok(registered) if registered > 0 => {
+        Ok(result) if result.registered > 0 || result.refused > 0 => {
             let _ = writeln!(
                 out,
-                "  registered {registered} newly discovered target(s).\n"
+                "  discovery: {} registered, {} already present, {} withheld.\n",
+                result.registered, result.already_present, result.refused
             );
         }
         Ok(_) => {}
@@ -477,8 +483,12 @@ pub(crate) fn run_discovery_default(
     let db = default_local_store()
         .ok_or_else(|| CliError::failure("the local store path could not be determined"))?;
     let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
-    let registered = discover_and_register(&mut store, emitter)?;
-    let _ = writeln!(out, "  discovery registered {registered} target(s).");
+    let result = discover_and_register(&mut store, emitter)?;
+    let _ = writeln!(
+        out,
+        "  discovery: {} eligible, {} withheld, {} registered, {} already present.",
+        result.eligible, result.refused, result.registered, result.already_present
+    );
     Ok(Exit::SUCCESS)
 }
 
@@ -681,13 +691,105 @@ fn discover(
     // while writing volume eligibility to the other, so an operator who cannot
     // see which is which cannot tell what was consulted or what was touched
     // (FR-005, raised in review of PR #190).
-    let _ = writeln!(out, "Discovery stores:");
-    let _ = writeln!(out, "  catalog: {}", catalog_db.display());
-    let _ = writeln!(out, "  local:   {}", local_db.display());
+    if !args.summary {
+        let _ = writeln!(out, "Discovery stores:");
+        let _ = writeln!(out, "  catalog: {}", catalog_db.display());
+        let _ = writeln!(out, "  local:   {}", local_db.display());
+    }
     let mut local = Store::open(&local_db).map_err(|e| CliError::failure(e.to_string()))?;
     let discovery = compose_and_discover(&catalog_db, &mut local, args.steam_root.as_deref())?;
-    print_discovery(&discovery, out, emitter);
+    if args.summary {
+        print_discovery_summary(&discovery, out);
+    } else {
+        print_discovery(&discovery, out, emitter);
+    }
     Ok(Exit::SUCCESS)
+}
+
+/// Preview or confirm conservative cleanup of historical tool-owned discovery
+/// residue. The preview is a pure plan; `--yes` rebuilds both platform inventory
+/// and the plan, then the store compares complete rows and deletes them in one
+/// transaction.
+fn reconcile(args: &TargetsReconcileArgs, out: &mut dyn Write) -> Result<Exit, CliError> {
+    let db = resolve_store(args.db.as_deref())?;
+    let steam_root = match &args.steam_root {
+        Some(root) => root.clone(),
+        None => {
+            fragcap::steam::discover()
+                .map_err(|e| CliError::failure(format!("Steam installation not available: {e}")))?
+                .root
+        }
+    };
+    let inventory = fragcap::steam_platform_inventory(&steam_root)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    let mut store = Store::open(&db).map_err(|e| CliError::failure(e.to_string()))?;
+    let rows = store
+        .targets()
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    let preview = fragcap::targets::plan_reconciliation(&rows, &inventory);
+    debug_assert!(preview.is_conserved(rows.len()));
+    render_reconciliation_plan(&preview, out);
+
+    if !args.yes {
+        let _ = writeln!(
+            out,
+            "preview only; re-run with --yes to remove these exact rows"
+        );
+        return Ok(Exit::SUCCESS);
+    }
+    if preview.inventory_truncated > 0 {
+        return Err(CliError::failure(format!(
+            "platform inventory is incomplete ({} record(s) unavailable); no rows were removed",
+            preview.inventory_truncated
+        )));
+    }
+
+    let current_inventory = fragcap::steam_platform_inventory(&steam_root)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    let current_rows = store
+        .targets()
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    let current = fragcap::targets::plan_reconciliation(&current_rows, &current_inventory);
+    if current.removable != preview.removable {
+        return Err(CliError::failure(
+            "reconciliation preview changed before confirmation; no rows were removed",
+        ));
+    }
+    let expected: Vec<TargetEntry> = preview
+        .removable
+        .iter()
+        .map(|item| item.entry.clone())
+        .collect();
+    let removed = store
+        .delete_targets_if_unchanged(&expected)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    let _ = writeln!(out, "removed {removed} historical target row(s)");
+    Ok(Exit::SUCCESS)
+}
+
+fn render_reconciliation_plan(plan: &fragcap::targets::ReconciliationPlan, out: &mut dyn Write) {
+    let _ = writeln!(out, "Reconciliation preview:");
+    if plan.removable.is_empty() {
+        let _ = writeln!(out, "  removable: 0");
+    } else {
+        for item in &plan.removable {
+            let _ = writeln!(
+                out,
+                "  remove {}\t{}\t{}",
+                item.entry.stable_id,
+                item.entry.handle,
+                item.reason.as_str()
+            );
+        }
+    }
+    let mut preserved = std::collections::BTreeMap::<&str, usize>::new();
+    for item in &plan.preserved {
+        *preserved.entry(item.reason.as_str()).or_default() += 1;
+    }
+    for (reason, count) in preserved {
+        let _ = writeln!(out, "  preserve {reason}: {count}");
+    }
+    let _ = writeln!(out, "  inventory truncated: {}", plan.inventory_truncated);
 }
 
 /// Compose the discovery sources (Steam tier 1, and on Windows the known-roots tier
@@ -765,6 +867,12 @@ fn compose_and_discover(
         })
         .transpose()?
         .unwrap_or_default();
+    #[cfg(windows)]
+    let steam_excluded_dirs = steam_root
+        .iter()
+        .map(|root| root.display().to_string())
+        .chain(steam_excluded_dirs)
+        .collect::<Vec<_>>();
     #[cfg(windows)]
     let known_roots =
         fragcap::targets::KnownRootsSource::new(&inventory, &eligible, &lister, &classifier)
@@ -853,6 +961,7 @@ fn print_discovery(discovery: &Discovery, out: &mut dyn Write, emitter: &mut Emi
         render_discovery_table(&discovery.candidates, out);
     }
     render_discovery_account(&discovery.account, out);
+    render_automatic_registration_account(discovery, out);
     // Surface the named diagnostics so a loss the account counts (an unreadable
     // root, a malformed manifest) is recoverable to which one failed (P-4).
     for warning in &discovery.warnings {
@@ -867,24 +976,37 @@ fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out:
         candidates.iter().map(|c| c.fidelity.as_str().to_string()),
         "FIDELITY",
     );
+    let automatic_w = "ELIGIBLE".len().max("REFUSED".len()).max("AUTO".len());
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "  {}  {}  {}  NAME",
+        "  {}  {}  {}  {}  NAME",
         pad_display("SOURCE", source_w),
         pad_display("IDENTITY", identity_w),
-        pad_display("FIDELITY", fidelity_w)
+        pad_display("FIDELITY", fidelity_w),
+        pad_display("AUTO", automatic_w)
     );
     for c in candidates {
         let identity = discovery_identity(c);
+        let decision = fragcap::targets::automatic_registration_decision(c);
+        let automatic = match decision {
+            fragcap::targets::AutomaticRegistrationDecision::Eligible(_) => "eligible",
+            fragcap::targets::AutomaticRegistrationDecision::Refused(_) => "refused",
+        };
         let _ = writeln!(
             out,
-            "  {}  {}  {}  {}",
+            "  {}  {}  {}  {}  {}",
             pad_display(&c.source_name, source_w),
             pad_display(&identity, identity_w),
             pad_display(c.fidelity.as_str(), fidelity_w),
+            pad_display(automatic, automatic_w),
             c.display_name
         );
+        let reason = match decision {
+            fragcap::targets::AutomaticRegistrationDecision::Eligible(reason) => reason.as_str(),
+            fragcap::targets::AutomaticRegistrationDecision::Refused(reason) => reason.as_str(),
+        };
+        let _ = writeln!(out, "    automatic registration: {reason}");
         // Detected technologies ride as neutral evidence (slice S053): a fact per
         // line, never a status that frames the title as off limits (spec 3.6).
         for f in &c.evidence {
@@ -897,6 +1019,40 @@ fn render_discovery_table(candidates: &[fragcap::targets::CandidateTarget], out:
             );
         }
     }
+}
+
+fn render_automatic_registration_account(discovery: &Discovery, out: &mut dyn Write) {
+    let plan = fragcap::targets::automatic_registration_plan(&discovery.candidates);
+    debug_assert!(plan.is_conserved());
+    let _ = writeln!(out, "Automatic registration account:");
+    let _ = writeln!(out, "  eligible: {}", plan.accepted.len());
+    let _ = writeln!(out, "  refused: {}", plan.refused.len());
+}
+
+fn print_discovery_summary(discovery: &Discovery, out: &mut dyn Write) {
+    let plan = fragcap::targets::automatic_registration_plan(&discovery.candidates);
+    let account = &discovery.account;
+    let _ = writeln!(out, "Discovery summary:");
+    let _ = writeln!(out, "  considered: {}", account.considered);
+    let _ = writeln!(out, "  produced: {}", account.produced);
+    let _ = writeln!(out, "  eligible: {}", plan.accepted.len());
+    let _ = writeln!(out, "  refused: {}", plan.refused.len());
+    let _ = writeln!(out, "  parse failed: {}", account.parse_failed);
+    let _ = writeln!(out, "  not a game: {}", account.considered_not_a_game);
+    let _ = writeln!(out, "  declined: {}", account.declined_by_user);
+    let _ = writeln!(
+        out,
+        "  container descended: {}",
+        account.container_descended
+    );
+    let _ = writeln!(
+        out,
+        "  container descent truncated: {}",
+        account.container_descent_truncated
+    );
+    let _ = writeln!(out, "  volume skipped: {}", account.volume_skipped);
+    let _ = writeln!(out, "  access error: {}", account.access_error);
+    let _ = writeln!(out, "  warnings: {}", discovery.warnings.len());
 }
 
 /// Display-cell width for the discovery table. This is deliberately narrower than
@@ -1550,9 +1706,10 @@ mod tests {
     use super::{
         display_width, evidence_from_scan, filter_platform_non_game_steam_targets,
         hero_listing_with_machine_probe, print_compatibility, print_discovery,
-        render_machine_section, render_table, steam_add_metadata, CandidateIdentity,
-        ClassificationSource, CompatibilityMatrix, DetectionScan, ExeScan, FidelityTier,
-        SteamNonGameExclusions, TargetClassification, TargetEntry,
+        print_discovery_summary, reconcile, render_machine_section, render_table,
+        steam_add_metadata, CandidateIdentity, ClassificationSource, CompatibilityMatrix,
+        DetectionScan, Discovery, ExeScan, FidelityTier, SteamNonGameExclusions, Store,
+        TargetClassification, TargetEntry, TargetsReconcileArgs,
     };
     use crate::emit::{Emitter, Format, Verbosity};
 
@@ -1632,13 +1789,14 @@ mod tests {
 
         let text = String::from_utf8(out).expect("utf-8");
         assert!(
-            text.contains("  SOURCE  IDENTITY   FIDELITY              NAME"),
+            text.contains("  SOURCE  IDENTITY   FIDELITY              AUTO      NAME"),
             "header names the discovery fields:\n{text}"
         );
         assert!(
-            text.contains("  steam   steam:620  heuristic-unverified  Portal 2"),
+            text.contains("  steam   steam:620  heuristic-unverified  eligible  Portal 2"),
             "candidate row is aligned and classification-free:\n{text}"
         );
+        assert!(text.contains("    automatic registration: authoritative-platform-identity"));
         assert!(
             text.contains("    engine: Source (verified)"),
             "evidence remains under its candidate with fidelity:\n{text}"
@@ -1647,6 +1805,107 @@ mod tests {
             !text.contains('\t'),
             "human discovery output uses spaces, not tabs:\n{text}"
         );
+    }
+
+    #[test]
+    fn discovery_summary_contains_counts_and_no_private_candidate_or_warning_values() {
+        let discovery = Discovery {
+            candidates: vec![discovery_candidate(
+                "C:/Private/Games/Secret Title",
+                "Secret Title",
+            )],
+            account: fragcap::targets::DiscoveryAccount {
+                considered: 2,
+                produced: 1,
+                access_error: 1,
+                ..Default::default()
+            },
+            warnings: vec!["could not read C:/Private/Account/Library".to_string()],
+        };
+        let mut out = Vec::new();
+        print_discovery_summary(&discovery, &mut out);
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(text.contains("produced: 1"));
+        assert!(text.contains("warnings: 1"));
+        for private in ["Secret Title", "C:/", "Account", "Library"] {
+            assert!(
+                !text.contains(private),
+                "summary leaked {private:?}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconciliation_previews_without_mutation_and_yes_removes_the_exact_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let steam_root = dir.path().join("Steam");
+        let steamapps = steam_root.join("steamapps");
+        std::fs::create_dir_all(&steamapps).expect("steamapps");
+        let escaped = steam_root.display().to_string().replace('\\', "\\\\");
+        std::fs::write(
+            steamapps.join("libraryfolders.vdf"),
+            format!("\"libraryfolders\"\n{{\n  \"0\" {{ \"path\" \"{escaped}\" }}\n}}\n"),
+        )
+        .expect("library folders");
+        let db = dir.path().join("local.db");
+        let mut store = Store::open(&db).expect("store");
+        store
+            .insert_target(&TargetEntry {
+                id: None,
+                stable_id: 123,
+                handle: "legacy_steam".to_string(),
+                name: "Legacy Steam".to_string(),
+                classification: TargetClassification::Game,
+                classification_source: ClassificationSource::Platform,
+                fidelity: FidelityTier::HeuristicUnverified,
+                provenance: Some(serde_json::json!({"source": "known-roots"})),
+                anchor: None,
+                launch_entries: None,
+                install_root: Some(steam_root.display().to_string()),
+                evidence: None,
+                detection_scan: None,
+                folder_name: None,
+                executable_hint: None,
+            })
+            .expect("insert");
+        drop(store);
+
+        let mut preview = Vec::new();
+        reconcile(
+            &TargetsReconcileArgs {
+                db: Some(db.clone()),
+                steam_root: Some(steam_root.clone()),
+                yes: false,
+            },
+            &mut preview,
+        )
+        .expect("preview");
+        let preview = String::from_utf8(preview).expect("utf-8");
+        assert!(preview.contains("remove 123\tlegacy_steam\tplatform-client-root"));
+        assert_eq!(
+            Store::open(&db)
+                .expect("store")
+                .targets()
+                .expect("rows")
+                .len(),
+            1
+        );
+
+        let mut applied = Vec::new();
+        reconcile(
+            &TargetsReconcileArgs {
+                db: Some(db.clone()),
+                steam_root: Some(steam_root),
+                yes: true,
+            },
+            &mut applied,
+        )
+        .expect("apply");
+        assert!(Store::open(&db)
+            .expect("store")
+            .targets()
+            .expect("rows")
+            .is_empty());
     }
 
     fn discovery_candidate(identity: &str, name: &str) -> fragcap::targets::CandidateTarget {

@@ -711,6 +711,8 @@ pub enum TargetsCommand {
     /// Reads only; a candidate becomes a stored target when acted on
     /// (`targets add`).
     Discover(TargetsDiscoverArgs),
+    /// Preview or confirm conservative cleanup of historical discovery residue.
+    Reconcile(TargetsReconcileArgs),
     /// Scan one directory and list it as a single candidate.
     ///
     /// Backs pointing discovery straight at a known game folder. With
@@ -759,6 +761,9 @@ pub enum TargetsCommand {
 /// Arguments to `targets discover`.
 #[derive(Debug, Args)]
 pub struct TargetsDiscoverArgs {
+    /// Print aggregate counts only, omitting local inventory and store details.
+    #[arg(long)]
+    pub summary: bool,
     /// The catalog store (`catalog.db`) whose appids classify Steam titles.
     #[arg(long)]
     pub catalog_db: Option<PathBuf>,
@@ -771,6 +776,20 @@ pub struct TargetsDiscoverArgs {
     /// none is installed.
     #[arg(long)]
     pub steam_root: Option<PathBuf>,
+}
+
+/// Arguments to `targets reconcile`.
+#[derive(Debug, Args)]
+pub struct TargetsReconcileArgs {
+    /// The local target store to inspect and, with confirmation, update.
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+    /// The exact Steam installation root.
+    #[arg(long)]
+    pub steam_root: Option<PathBuf>,
+    /// Confirm deletion of the exact rows shown by the recomputed preview.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Arguments to `targets add`.
@@ -1147,6 +1166,39 @@ mod tests {
                 assert!(!args.yes);
             }
             other => panic!("expected doctor command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn target_discovery_integrity_flags_parse() {
+        let discover = Cli::try_parse_from(["fragcap", "targets", "discover", "--summary"])
+            .expect("parse discover");
+        let reconcile = Cli::try_parse_from([
+            "fragcap",
+            "targets",
+            "reconcile",
+            "--db",
+            "local.db",
+            "--steam-root",
+            "Steam",
+            "--yes",
+        ])
+        .expect("parse reconcile");
+        match discover.command {
+            Some(Command::Targets(TargetsArgs {
+                command: Some(TargetsCommand::Discover(args)),
+            })) => assert!(args.summary),
+            other => panic!("expected targets discover, got {other:?}"),
+        }
+        match reconcile.command {
+            Some(Command::Targets(TargetsArgs {
+                command: Some(TargetsCommand::Reconcile(args)),
+            })) => {
+                assert_eq!(args.db, Some(PathBuf::from("local.db")));
+                assert_eq!(args.steam_root, Some(PathBuf::from("Steam")));
+                assert!(args.yes);
+            }
+            other => panic!("expected targets reconcile, got {other:?}"),
         }
     }
 

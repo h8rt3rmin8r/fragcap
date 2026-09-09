@@ -242,13 +242,34 @@ fragcap targets show sample-target
 ### `targets discover`
 
 Read installed-game candidates from Steam and known roots without registering
-the candidates.
+the candidates. Detailed output reports whether each candidate is eligible for
+automatic registration and why. `--summary` emits aggregate counts only and is
+safe to retain as validation evidence without publishing local inventory.
 
 | Option | Values | Default | Availability | Meaning |
 | --- | --- | --- | --- | --- |
 | `--catalog-db` | open | none | all | Override `FRAGCAP_CATALOG_DB`, then the managed per-user catalog store used to classify Steam titles. |
 | `--local-db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user store holding volume eligibility. |
 | `--steam-root` | open | none | all | Override automatic Steam installation discovery. |
+| `--summary` | open | `false` | all | Emit aggregate discovery and eligibility counts without local names, identities, paths, or warning text. |
+
+### `targets reconcile`
+
+Preview conservative cleanup of historical tool-owned discovery residue. The
+default is non-mutating. `--yes` rebuilds the preview and atomically removes only
+exact rows whose complete stored value is unchanged; authored, anchored,
+ambiguous, or incompletely inventoried rows remain.
+
+```powershell
+fragcap targets reconcile
+fragcap targets reconcile --yes
+```
+
+| Option | Values | Default | Availability | Meaning |
+| --- | --- | --- | --- | --- |
+| `--db` | open | none | all | Override `FRAGCAP_LOCAL_DB`, then the managed per-user local store. |
+| `--steam-root` | open | none | all | Override automatic Steam installation discovery for the exact platform inventory. |
+| `--yes` | open | `false` | all | Confirm removal of the exact rows reported by the recomputed preview. |
 
 ### `targets scan`
 

@@ -96,10 +96,10 @@ pub trait DirectoryClassifier {
 }
 
 /// The S052 placeholder classifier: every immediate subdirectory of a known root is
-/// a game, because a known root is a directory that only ever contains games
-/// (FR-007). It carries no signature logic and stamps `heuristic-unverified` with no
-/// evidence. Retained for the known-roots-only path where no catalog is available;
-/// [`SignatureClassifier`] supersedes it when a signature set is loaded.
+/// emitted as a heuristic candidate for explicit discovery. It carries no signature
+/// logic and stamps `heuristic-unverified` with no evidence; S133's separate
+/// registration policy withholds that location-only candidate from automatic
+/// persistence. [`SignatureClassifier`] supersedes it when signatures are available.
 pub struct KnownRootChildIsGame;
 
 impl DirectoryClassifier for KnownRootChildIsGame {
@@ -120,9 +120,9 @@ impl DirectoryClassifier for KnownRootChildIsGame {
 ///
 /// It has two modes, because tiers 2 and 3 rest on different priors:
 ///
-/// - **Known-root mode** ([`SignatureClassifier::for_known_root`]): a child of a
-///   known game-only root is a game by structure (S052 FR-007), so every child is a
-///   `Hit`. Detection only enriches it: a detected engine raises the fidelity to
+/// - **Known-root mode** ([`SignatureClassifier::for_known_root`]): every child is a
+///   discovery `Hit` under the shallow location bound. Detection enriches it and is
+///   the separate evidence S133 requires for automatic persistence: an engine raises fidelity to
 ///   what its signature earns (a definitive marker is [`FidelityTier::Verified`],
 ///   P-9) and attaches the engine plus any anti-cheat or DRM as neutral evidence; a
 ///   child with no detected engine is still a game, at `heuristic-unverified`.

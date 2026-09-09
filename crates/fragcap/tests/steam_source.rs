@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use fragcap::profile::FidelityTier;
 use fragcap::steam::discover_in;
 use fragcap::targets::{CandidateIdentity, Store, TargetClassification, TargetSource};
-use fragcap::SteamSource;
+use fragcap::{steam_platform_inventory, SteamSource};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -123,6 +123,33 @@ fn steam_source_produces_one_candidate_per_numeric_title() {
         assert_eq!(c.fidelity, FidelityTier::HeuristicUnverified);
         assert_eq!(c.source_name, "steam");
     }
+}
+
+#[test]
+fn reconciliation_inventory_carries_exact_root_installs_and_incomplete_count() {
+    let tree = TempTree::new();
+    fixture_steam_root(&tree);
+    let inventory = steam_platform_inventory(tree.path()).expect("inventory");
+    assert_eq!(
+        inventory.client_roots,
+        vec![tree.path().display().to_string()]
+    );
+    assert!(inventory
+        .infrastructure_roots
+        .iter()
+        .any(|root| root.ends_with("steamui")));
+    assert_eq!(inventory.authoritative_installs.len(), 3);
+    assert!(
+        inventory
+            .authoritative_installs
+            .iter()
+            .any(|install| install.anchor == "steam:620"
+                && install.install_root.ends_with("Portal 2"))
+    );
+    assert_eq!(
+        inventory.truncated, 1,
+        "the invalid app id removes cleanup authority"
+    );
 }
 
 #[test]

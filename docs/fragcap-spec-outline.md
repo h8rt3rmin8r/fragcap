@@ -133,6 +133,14 @@ modes from the original brief, plus the additions agreed during design:
 - **FR-5 Managed launch.** Start the target through fragcap so the
   detector is attached before the process chain begins.
 
+Target acquisition also separates broad, bounded discovery from automatic
+persistence. Authoritative platform identity or verified local engine evidence is
+required for automatic registration; known-root location alone is not authority.
+Exact platform-client subtrees are excluded before generic classification, explicit
+discovery remains non-persistent with a count-only privacy view, and historical
+tool-owned residue is removed only through previewed, confirmed, exact-row
+reconciliation.
+
 ## 8. System Architecture
 
 The crate topology, the trait seams, and the data flow. The central
@@ -232,7 +240,7 @@ effects; Steam environment handoff remains compatibility-dependent.
 
 ## 17. Command Line Interface
 
-Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, the two-phase compatibility calibration plan and confirmation contract, target management, doctor, and integration commands.
+Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, the two-phase compatibility calibration plan and confirmation contract, high-precision automatic target registration, non-persistent detailed and count-only discovery, confirmed historical target reconciliation, doctor, and integration commands.
 
 ## 18. Shell Wrappers
 
@@ -419,6 +427,7 @@ archive behavior remains #329; the remaining completion gates are #328 through
 S130 adds one closed dependency policy over complete Windows/Linux graphs and the exact shipped Windows closure, blocking fresh ecosystem audit automation, finite exception and maintenance governance, and validated CycloneDX plus third-party notices embedded in both release packages. Final package certification remains #329; the remaining completion gates are #329 through #334.
 S131 adds a closed final Windows package contract, exact native build and PE identity, final-content and checksum reconciliation, determinate unsigned-state validation, and a blocking real installer lifecycle over the bytes that release publication later consumes. Package certification #329 is closed; the remaining completion gates are #330 through #334.
 S132 adds the versioned `fragcap::deep_capture::api` integration boundary, checked session and adapter builders, explicit serial ownership, thread-safe cooperative cancellation, standard Rust error interoperability, a reviewed stable inventory, CLI policy-path coverage, and a runnable production-native loopback example. Stable Rust API issue #330 is closed; the remaining completion gates are #331 through #334.
+S133 deliberately prioritizes target-discovery integrity issue #375 over the earlier assignment to #331. It separates discovery from automatic persistence, excludes exact platform subtrees, adds count-only validation, and requires exact confirmed reconciliation for historical tool-owned residue. Issue #331 remains open.
 Broader launch and transport coverage,
 packaging, independent review, and the final #334 gate remain open. Additional
 platforms, richer attribution backends, dissector

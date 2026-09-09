@@ -86,19 +86,22 @@ pub mod targets {
         capture_readiness, engine_summary, entry_windows_clients, entry_windows_launch_entries,
         entry_windows_launch_paths, export, export_targets, import, import_targets,
         install_presence, is_row_index, launch_entries_for, launch_is_unresolved, name_divergence,
-        observed_executable, register_candidate, register_candidates, resolve_id,
-        resolve_positional, resolved_client_launch, seed_catalog, seed_engine,
-        sensitivities_summary, CaptureReadiness, CatalogBatch, CatalogEntry, CatalogSource,
-        Classification, ClassificationSource, CompatibilityAddressFamily,
-        CompatibilityApplicability, CompatibilityCase, CompatibilityEvidenceSource,
-        CompatibilityFact, CompatibilityFactKey, CompatibilityFreshness, CompatibilityLaunchCase,
-        CompatibilityMatrix, CompatibilityMatrixRow, CompatibilityProtocol,
-        CompatibilityRoutingStrategy, CorpusGate, DetectionScan, Engine, EngineBatch,
-        EngineConfidence, EngineEntry, EngineFeed, EngineSource, FixtureCatalog, FixtureEngineFeed,
-        Game, HintDatabaseProvider, ImportSummary, InstallPresence, LaunchEntry, NameDivergence,
-        RegistrationOutcome, ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection,
-        SocketHolderAnswer, Store, TargetClassification, TargetEntry, TargetsError, TechCategory,
-        Technology, DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
+        observed_executable, plan_reconciliation, register_automatic_candidates,
+        register_candidate, register_candidates, resolve_id, resolve_positional,
+        resolved_client_launch, seed_catalog, seed_engine, sensitivities_summary,
+        AutomaticRegistrationDecision, AutomaticRegistrationOutcome, CaptureReadiness,
+        CatalogBatch, CatalogEntry, CatalogSource, Classification, ClassificationSource,
+        CompatibilityAddressFamily, CompatibilityApplicability, CompatibilityCase,
+        CompatibilityEvidenceSource, CompatibilityFact, CompatibilityFactKey,
+        CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityMatrix,
+        CompatibilityMatrixRow, CompatibilityProtocol, CompatibilityRoutingStrategy, CorpusGate,
+        DetectionScan, Engine, EngineBatch, EngineConfidence, EngineEntry, EngineFeed,
+        EngineSource, FixtureCatalog, FixtureEngineFeed, Game, HintDatabaseProvider, ImportSummary,
+        InstallPresence, LaunchEntry, NameDivergence, PlatformInventory, ReconciliationPlan,
+        ReconciliationPreservationReason, ReconciliationRemovalReason, RegistrationOutcome,
+        ResolvedEngine, SeedState, SeedSummary, SeedTier, Selection, SocketHolderAnswer, Store,
+        TargetClassification, TargetEntry, TargetsError, TechCategory, Technology,
+        DEFAULT_ENGINE_CONFIDENCE, DEFAULT_MIN_REVIEWS, INSTALL_MISSING_NOTE,
     };
 
     /// The machine-wide anti-cheat presence seam (slice S068). The one real
@@ -111,7 +114,8 @@ pub mod targets {
     /// the candidate and account types, the discovery tiers, the classifier seam,
     /// and the volume eligibility vocabulary.
     pub use fragcap_targets::{
-        discover_all, CandidateIdentity, CandidateTarget, ClassifierVerdict, Confirm, DirListing,
+        automatic_registration_decision, automatic_registration_plan, discover_all,
+        CandidateIdentity, CandidateTarget, ClassifierVerdict, Confirm, DirListing,
         DirectoryClassifier, DirectorySource, Discovery, DiscoveryAccount, DriveType,
         EligibilityReason, FixtureClassifier, FixtureInventory, FixtureSource, FixtureTree,
         FsDirectoryLister, InteractiveSource, KnownRootChildIsGame, KnownRootsSource,
@@ -153,10 +157,10 @@ pub use accumulate::{
 /// pure discovery model and the other tiers live in `fragcap-targets`.
 #[cfg(feature = "targets")]
 pub mod discovery;
-#[cfg(feature = "targets")]
-pub use discovery::SteamSource;
 #[cfg(all(feature = "targets", windows))]
 pub use discovery::WindowsVolumeInventory;
+#[cfg(feature = "targets")]
+pub use discovery::{steam_platform_inventory, SteamSource};
 
 /// The real Windows machine-wide anti-cheat probe (slice S068). The seam it
 /// implements lives in `fragcap-targets`; see [`targets::MachineAntiCheatProbe`].

@@ -147,6 +147,7 @@ enforcement.
 | 0.1.52-draft | 2026-09-04 | W. Thompson | **Adds the finite native Windows integration authority (issue #327).** Extends sections 24.3, 25.5, and 28.1. A closed registry maps every required Windows completion domain to exact hosted or physical evidence. The hosted gate builds the official feature set from a temporary Npcap SDK, exercises a relocated staged binary, and publishes only a sanitized summary. Explicitly authorized physical evidence covers non-admin refusal, installed Npcap, current-user trust cleanup, unmodified analyzer use, and zero owned residue. S129 validates the staged install layout while final installer and archive behavior remains #329. |
 | 0.1.53-draft | 2026-09-05 | W. Thompson | **Adds the native dependency and supply-chain release authority (issue #328).** Extends sections 24.3, 25.5, 27, and 28.1. A versioned policy binds the locked all-feature Linux and Windows graphs plus the exact shipped Windows runtime closure, rejects ungoverned compatibility lines, unsupported sources, stale critical reviews, expired exceptions, checksum drift, and advisory or license failures, and generates validated CycloneDX and third-party notice artifacts for both official package formats. Exact-pinned audit and evidence tools run on pull requests, main, release, a weekly schedule, and manual dispatch. S130 adds no product dependency or runtime behavior; final installer and archive certification remains #329. |
 | 0.1.54-draft | 2026-09-05 | W. Thompson | **Adds final native Windows package certification (issue #329).** Extends sections 24.3, 24.5, 25.5, 26.3, and 28.1. A closed contract binds the final ZIP, MSI, standalone catalog, and checksum bytes to exact contents, size ceilings, PE identity and imports, machine-readable native build identity, current unsigned policy, and a finite real installer lifecycle. Certification is blocking on pull requests and releases, and the exact certified bytes are independently revalidated before GitHub release creation or crate publication. |
+| 0.1.55-draft | 2026-09-09 | W. Thompson | **Corrects automatic target discovery integrity (issue #375).** Extends sections 7.1 and 17.7. The hero and Doctor paths now persist only authoritative platform identities or paths with verified engine evidence, exact platform-client subtrees are pruned from generic known-root discovery, explicit discovery reports the admission decision and offers privacy-safe aggregate output, and confirmed reconciliation removes only exact unchanged legacy tool-owned residue. |
 
 ## 2. Purpose and Problem Statement
 
@@ -777,12 +778,13 @@ durable except the volume eligibility table below.
 
 **FR-6b. Discovery tiers.** Discovery runs in three tiers ordered by how directly
 each names a game. Tier 1 is the platform walkers (Steam today). Tier 2 is the
-known-roots source, which walks a fixed list of directories that only ever contain
-games across every eligible fixed volume, so a machine without Steam still lists
-games and a second or third drive is walked as readily as the system drive. Tier 3
-is the user-pointed directory and interactive sources. Exhaustive enumeration of
-every executable on the machine is rejected: a normal machine carries thousands of
-non-Windows executables that would bury the game.
+known-roots source, which walks a fixed list of conventional game-library and
+install locations across every eligible fixed volume, so a machine without Steam
+can still find games and a second or third drive is walked as readily as the system
+drive. Membership in one of those locations is a search bound, not proof that a
+child is a game. Tier 3 is the user-pointed directory and interactive sources.
+Exhaustive enumeration of every executable on the machine is rejected: a normal
+machine carries thousands of non-Windows executables that would bury the game.
 
 **FR-6c. Directory-shape descent.** Tiers 2 and 3 classify a directory by its
 shape (an engine signature such as a Unity player library or an Unreal
@@ -805,6 +807,31 @@ present; afterward a later-appearing or misreporting volume is walked only after
 explicit user opt-in. Each volume is keyed on a stable identity (its volume GUID
 path), never its reassignable drive letter, and each eligibility decision is
 recoverable rather than silent (constitution P-9, P-4).
+
+**FR-6e. Automatic registration precision.** Discovery production and automatic
+persistence are separate decisions. The hero command and Doctor may persist a
+candidate automatically only when a platform source supplies a durable application
+identity or a path candidate carries positive engine-category evidence at verified
+or stronger fidelity. A directory name, classification, source name, parent
+location, known-root membership, anti-cheat finding, or DRM finding does not grant
+automatic registration. Every produced candidate is counted as eligible or
+withheld, and every eligible candidate is counted as newly registered or already
+present. Explicit `targets discover` remains non-persistent, while the deliberate
+`targets scan` action retains the operator authority it already had.
+
+**FR-6f. Platform subtree ownership and reconciliation.** When an exact platform
+client root is available, generic known-roots discovery excludes that root and all
+descendants before listing or classification, using normalized separators, Windows
+case, and path-component boundaries. The authoritative platform source remains
+responsible for installed titles, including titles with no engine signature.
+Historical cleanup is a separate previewed operation. A row is removable only when
+its complete provenance proves the legacy tool-owned known-roots path and exact
+client-root, affirmative infrastructure-root, authoritative-install duplicate, or
+multi-engine aggregate evidence proves the residue class. An unrecognized client
+descendant is ambiguous even when its manifest is absent. Authored, anchored,
+changed, incompletely inventoried, or otherwise ambiguous rows are preserved. Confirmation rechecks complete previewed
+rows and deletes the exact unchanged set in one transaction; stale or missing rows
+abort the whole operation.
 
 Deep filesystem scanning beyond the shallow known-roots walk is deferred to a later
 release, and three hazards it must handle are recorded here so they are not
@@ -3224,7 +3251,8 @@ suppressed.
 `fragcap targets` is the hero command: the one command a new user runs
 successfully on their own machine that makes attribution concrete using their
 own data. With no subcommand it runs discovery across its tiers, registers any
-newly found titles into `local.db` idempotently, and lists the registered
+newly found high-confidence titles into `local.db` idempotently, withholds
+location-only candidates under FR-6e, and lists the registered
 targets as a numbered table:
 
 ```text
@@ -3324,11 +3352,20 @@ target need no store path unless one is named explicitly.
   detection coverage state, so a machine reader can make the same partition, mark
   the same uncertain products, and draw the same coverage conclusion the listing
   does. An out-of-set coverage value is rejected at import and nothing is applied.
+- `targets reconcile [--steam-root <PATH>] [--yes]` previews historical rows that
+  exact provenance and platform inventory prove are legacy tool-owned residue. The
+  preview names each removable row's stable identifier, handle, and reason and
+  summarizes every preserved reason. Without `--yes` it never mutates the store.
+  With `--yes` it rebuilds the preview, requires a complete platform inventory, and
+  atomically deletes only complete rows that remain byte-for-value unchanged.
+  Folder names, display names, and location alone never establish ownership.
 - `targets show <SELECTOR>` and `targets discover` are read-only inspections;
   `discover`, unlike the listing, registers nothing. Human `targets discover`
   output names the catalog and local stores as labelled lines, then prints a
   headed, aligned candidate table whose visible columns are SOURCE, IDENTITY,
-  FIDELITY, and NAME. It does not print the candidate classification as a human
+  FIDELITY, AUTO, and NAME. The AUTO column and its indented stable reason report
+  whether the hero path would persist that candidate. It does not print the
+  candidate classification as a human
   table column, because a stock barebones catalog commonly makes that column
   read `unknown` for every row while adding no operator value. Candidate
   evidence prints directly under the owning row as indented category, product,
@@ -3338,8 +3375,12 @@ target need no store path unless one is named explicitly.
   block: `considered` and `produced` always appear, non-zero outcome buckets
   appear on individual lines, and zero-valued outcomes may be grouped on one
   `zero:` line. `container descended` and `container descent truncated` remain
-  separately named. Warnings stay diagnostics on the emitter path, not in the
-  command-result stream. `targets show` appends the selected target's Deep
+  separately named. The following automatic-registration account reports eligible
+  and refused totals. Warnings stay diagnostics on the emitter path, not in the
+  command-result stream. `targets discover --summary` instead emits aggregate
+  discovery, eligibility, refusal, coverage, and warning counts only; it emits no
+  store path, candidate identity, application id, title, installation path, warning
+  text, account, hostname, or volume identity. `targets show` appends the selected target's Deep
   Capture compatibility matrix from local facts. It renders every row with its
   evidence source and freshness, reports `unknown` only when a successful read
   finds no facts, and performs no launch, proxy, trust, catalog, network, or
@@ -4925,6 +4966,7 @@ S130 closes #328 at the native supply-chain and compatibility boundary. One vers
 S131 closes #329 at the final Windows package-certification boundary. One versioned contract names the three primary downloads and checksum sidecars, exact six-file ZIP/MSI payload, reviewed size ceilings, x86_64 PE machine and import allowlist, machine-readable native release build identity, determinate unsigned Authenticode state, exact installer ownership, six finite lifecycle cases, public report bounds, and publication order. Pull-request and release automation build candidate bytes once, certify those final bytes and real install, repair, reinstall, upgrade, downgrade-refusal, and uninstall behavior on a fresh Windows runner, then upload the certified bundle. Tag identity now precedes packaging, and the release job independently revalidates the transferred checksums and report before GitHub release creation; crate publication remains last and separately approved. Npcap remains a separately installed Capture prerequisite, Python and external proxy runtimes remain absent from the official closure, and Deep Capture completion remains #334.
 
 S132 closes #330 at the stable public Rust API boundary. The versioned `fragcap::deep_capture::api` module exposes product concepts, narrow effect seams, a production native entry point, checked configuration and adapter builders, explicit thread confinement, cooperative cancellation, standard Rust errors, recovery, and terminal reporting. A compile contract freezes the curated inventory and CLI policy path, while a runnable no-CLI controlled example exercises the production backend against local HTTP and TLS origins with exact cleanup. S132 adds no dependency or package-format change, and Deep Capture remains incomplete until #334.
+S133 closes #375 at the target-discovery integrity boundary. It deliberately takes priority over the prior plan to assign that slice number to #331: broad discovery no longer grants automatic persistence, exact Steam client subtrees stay under the authoritative Steam source, count-only validation publishes no local inventory, and legacy tool-owned residue requires previewed atomic reconciliation. Issue #331 remains open for later final documentation work, and Deep Capture remains incomplete until #334.
 
 The required dependency direction is:
 
