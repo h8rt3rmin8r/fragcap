@@ -2,7 +2,7 @@
 
 //! Conservative planning for historical discovery residue (slice S133).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use fragcap_profile::{FidelityTier, SignatureCategory};
 
@@ -130,10 +130,24 @@ pub fn plan_reconciliation(
         .iter()
         .map(|path| normalized_dir_key(path))
         .collect();
-    let installs: HashSet<String> = inventory
+    let installs: HashMap<String, String> = inventory
         .authoritative_installs
         .iter()
-        .map(|install| normalized_dir_key(&install.install_root))
+        .map(|install| {
+            (
+                normalized_dir_key(&install.install_root),
+                crate::identifier::canonicalize_anchor(&install.anchor),
+            )
+        })
+        .collect();
+    let stored_authoritative: HashSet<(String, String)> = entries
+        .iter()
+        .filter_map(|entry| {
+            Some((
+                crate::identifier::canonicalize_anchor(entry.anchor.as_deref()?),
+                normalized_dir_key(entry.install_root.as_deref()?),
+            ))
+        })
         .collect();
     let mut plan = ReconciliationPlan {
         inventory_truncated: inventory.truncated,
@@ -179,16 +193,21 @@ pub fn plan_reconciliation(
             continue;
         };
         let root = normalized_dir_key(install_root);
-        let reason = if installs.contains(&root) {
-            Some(ReconciliationRemovalReason::DuplicateAuthoritativeInstall)
-        } else if roots.contains(&root) {
-            Some(ReconciliationRemovalReason::PlatformClientRoot)
-        } else if roots.iter().any(|client| is_descendant(&root, client)) {
-            Some(ReconciliationRemovalReason::PlatformInfrastructure)
-        } else if engine_product_count(entry) > 1 {
-            Some(ReconciliationRemovalReason::MultiTitleAggregate)
-        } else {
-            None
+        let reason = match installs.get(&root) {
+            Some(anchor) if stored_authoritative.contains(&(anchor.clone(), root.clone())) => {
+                Some(ReconciliationRemovalReason::DuplicateAuthoritativeInstall)
+            }
+            // A platform manifest proves this is a title path, not infrastructure,
+            // but it is not a duplicate until a matching anchored row is stored.
+            Some(_) => None,
+            None if roots.contains(&root) => Some(ReconciliationRemovalReason::PlatformClientRoot),
+            None if roots.iter().any(|client| is_descendant(&root, client)) => {
+                Some(ReconciliationRemovalReason::PlatformInfrastructure)
+            }
+            None if engine_product_count(entry) > 1 => {
+                Some(ReconciliationRemovalReason::MultiTitleAggregate)
+            }
+            None => None,
         };
         match reason {
             Some(reason) => plan.removable.push(ReconciliationRemoval {
@@ -293,11 +312,14 @@ mod tests {
             {"category": "engine", "product": "Unity"},
             {"category": "engine", "product": "Unreal"}
         ]));
+        let mut authoritative = entry(5, Some("C:/Games/Steam/steamapps/common/Portal 2"));
+        authoritative.anchor = Some("steam:620".to_string());
         let rows = vec![
             entry(1, Some("C:/Games/Steam")),
             entry(2, Some("C:/Games/Steam/steamui")),
             aggregate,
             entry(4, Some("C:/Games/Steam/steamapps/common/Portal 2")),
+            authoritative,
         ];
         let plan = plan_reconciliation(&rows, &inventory());
         assert!(plan.is_conserved(rows.len()));
@@ -313,6 +335,17 @@ mod tests {
                 ReconciliationRemovalReason::MultiTitleAggregate,
                 ReconciliationRemovalReason::DuplicateAuthoritativeInstall,
             ]
+        );
+    }
+
+    #[test]
+    fn manifest_inventory_alone_does_not_make_the_only_stored_target_a_duplicate() {
+        let row = entry(1, Some("C:/Games/Steam/steamapps/common/Portal 2"));
+        let plan = plan_reconciliation(&[row], &inventory());
+        assert!(plan.removable.is_empty());
+        assert_eq!(
+            plan.preserved[0].reason,
+            ReconciliationPreservationReason::LocationOnlyAmbiguous
         );
     }
 
