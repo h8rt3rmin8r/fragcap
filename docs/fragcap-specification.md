@@ -3258,8 +3258,8 @@ targets as readiness-grouped numbered tables:
 
 ```text
 Ready to capture:
-  #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
-  1  sample_adventure  ready           Sample Engine  not scanned
+  #  TARGET            CAPTURE  ENGINE         SENSITIVITIES
+  1  sample_adventure  ready    Sample Engine  not scanned
 
 Needs setup:
   #  TARGET        CAPTURE         ENGINE       SENSITIVITIES
