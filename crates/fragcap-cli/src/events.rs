@@ -82,6 +82,17 @@ pub enum Event {
         infrastructure: String,
         environment_variables: Vec<String>,
     },
+    /// The complete immutable Deep Capture plan offered for authorization.
+    DeepCaptureAuthorizationPlan {
+        plan_id: String,
+        canonical_json: String,
+    },
+    /// The terminal decision for one offered Deep Capture plan.
+    DeepCaptureAuthorization {
+        plan_id: String,
+        status: String,
+        reason: String,
+    },
     /// A complete compatibility calibration plan, emitted before confirmation.
     DeepCaptureCalibrationPlan {
         target: String,
@@ -243,6 +254,8 @@ impl Event {
             Event::RingEvicted { .. } => "ring.evicted",
             Event::DeepCapturePreflight { .. } => "deep_capture.preflight",
             Event::DeepCaptureRoutingPlan { .. } => "deep_capture.routing_plan",
+            Event::DeepCaptureAuthorizationPlan { .. } => "deep_capture.authorization_plan",
+            Event::DeepCaptureAuthorization { .. } => "deep_capture.authorization",
             Event::DeepCaptureCalibrationPlan { .. } => "deep_capture.calibration_plan",
             Event::DeepCaptureCalibrationPhase { .. } => "deep_capture.calibration_phase",
             Event::DeepCaptureRestartPlan { .. } => "deep_capture.restart_plan",
@@ -385,6 +398,27 @@ impl Event {
                     write_json_string(variable, &mut line);
                 }
                 line.push_str("],\"dns_matching\":\"requested-authority-before-resolution\",\"resolved_address_policy\":\"evaluate-every-answer-every-attempt\",\"fallback\":\"none\"");
+            }
+            Event::DeepCaptureAuthorizationPlan {
+                plan_id,
+                canonical_json,
+            } => {
+                line.push_str(",\"schema\":1,\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"plan\":");
+                line.push_str(canonical_json);
+            }
+            Event::DeepCaptureAuthorization {
+                plan_id,
+                status,
+                reason,
+            } => {
+                line.push_str(",\"schema\":1,\"plan_id\":");
+                write_json_string(plan_id, &mut line);
+                line.push_str(",\"status\":");
+                write_json_string(status, &mut line);
+                line.push_str(",\"reason\":");
+                write_json_string(reason, &mut line);
             }
             Event::DeepCaptureCalibrationPlan {
                 target,
@@ -870,6 +904,24 @@ mod tests {
         assert!(key_log.contains("\"event\":\"deep_capture.key_log_ready\""));
         assert!(key_log.contains("\"session_id\":\"session-1\""));
         assert!(key_log.contains("\"path\":\"/session/tls-keylog.log\""));
+
+        let authorization_plan = Event::DeepCaptureAuthorizationPlan {
+            plan_id: "plan-v1:abcd".to_string(),
+            canonical_json: "{\"schema\":1,\"trust\":{\"action\":\"none\"}}".to_string(),
+        }
+        .render(now);
+        assert!(authorization_plan.contains("\"event\":\"deep_capture.authorization_plan\""));
+        assert!(authorization_plan.contains("\"plan_id\":\"plan-v1:abcd\""));
+        assert!(authorization_plan.contains("\"plan\":{\"schema\":1"));
+
+        let authorization = Event::DeepCaptureAuthorization {
+            plan_id: "plan-v1:abcd".to_string(),
+            status: "authorized".to_string(),
+            reason: "exact match".to_string(),
+        }
+        .render(now);
+        assert!(authorization.contains("\"event\":\"deep_capture.authorization\""));
+        assert!(authorization.contains("\"status\":\"authorized\""));
 
         let plan = Event::DeepCaptureCalibrationPlan {
             target: "sample-target".to_string(),

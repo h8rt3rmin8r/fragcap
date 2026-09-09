@@ -137,8 +137,8 @@ impl<'w> Emitter<'w> {
     }
 
     /// Flush the diagnostic stream before reading an interactive answer.
-    pub fn flush(&mut self) {
-        let _ = self.err.flush();
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.err.flush()
     }
 
     /// Whether this emitter is producing the structured event stream.

@@ -3,7 +3,7 @@
 #![cfg(feature = "deep-capture")]
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use fragcap::deep_capture::{
     run_controlled_native_requests, ArtifactRequests, BackendDescriptor, Budget, CleanupStatus,
@@ -85,6 +85,41 @@ fn public_native_adapter_runs_real_controlled_http_and_tls_without_leaking_route
         .unwrap();
     assert_eq!(https.classification.family().as_str(), "https");
     assert_eq!(https.classification.inspectability().as_str(), "full");
+    assert!(lease
+        .cleanup(Budget::new(Duration::from_secs(2)))
+        .iter()
+        .all(|result| result.status == CleanupStatus::Released));
+}
+
+#[test]
+fn prepared_authority_is_the_exact_runtime_authority() {
+    let prepared = NativeProxyAdapter::prepare_authority(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
+        Duration::from_secs(24 * 60 * 60),
+    )
+    .unwrap();
+    let sha1 = prepared.sha1_thumbprint().to_string();
+    let sha256 = prepared.sha256_fingerprint().to_string();
+    assert_ne!(sha1, sha256);
+
+    let debug = format!("{prepared:?}");
+    assert!(debug.contains(&sha1));
+    assert!(debug.contains(&sha256));
+    assert!(!debug.contains("private"));
+
+    let mut adapter = NativeProxyAdapter::default().with_prepared_authority(prepared);
+    let mut lease = adapter
+        .start(
+            &plan("s134-prepared-authority"),
+            Budget::new(Duration::from_secs(2)),
+        )
+        .unwrap();
+    let route = lease.route().unwrap();
+    assert_eq!(route.ca_sha1_thumbprint(), sha1);
+    assert_eq!(
+        lease.stop(Budget::new(Duration::from_secs(2))).status,
+        CleanupStatus::Released
+    );
     assert!(lease
         .cleanup(Budget::new(Duration::from_secs(2)))
         .iter()

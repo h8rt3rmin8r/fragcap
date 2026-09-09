@@ -50,6 +50,8 @@ fragcap              = { workspace = true, features = ["deep-capture"] }
 clap.workspace       = true
 ctrlc.workspace      = true
 serde_json.workspace = true
+blake3.workspace = true
+subtle.workspace = true
 # The HTTP client for the `doctor --fix` npcap installer fetch, behind `net`. Off
 # by default, so the shipped end-user build never compiles it (slice S056).
 http_req             = { workspace = true, optional = true }

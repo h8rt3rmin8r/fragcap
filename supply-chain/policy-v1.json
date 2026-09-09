@@ -5,9 +5,9 @@
   "release_features": ["etw", "live", "socket-table"],
   "workspace_msrv": "1.88",
   "graph_views": [
-    {"name": "linux-all", "digest": "35a36bcbbd184f29dc8c6c60b670015113b04317a62fbda14647b30101abe1f5", "packages": 187, "edges": 446},
-    {"name": "windows-all", "digest": "c657c64f75e0ab60ec843a74b2ba85c34f6a236c1fc931203b53efa5e4596862", "packages": 186, "edges": 422},
-    {"name": "windows-release", "digest": "057590c92cd6898c336f63f724741321c66563e99f16c6ab5857b4ccf8ba18f1", "packages": 148, "edges": 315}
+    {"name": "linux-all", "digest": "90ea96a9642455a97417a31d432efc5c2f2b694db84f27eb7068b64e2acd6034", "packages": 187, "edges": 448},
+    {"name": "windows-all", "digest": "9837905b80c9b4743b9b3f9bb5a34af45f90c0b80b761c098acaddfcef240bc7", "packages": 186, "edges": 424},
+    {"name": "windows-release", "digest": "be72e986d727b3259793b5b38d12f99eeca32e38a2c5a986933b25cea0251544", "packages": 148, "edges": 317}
   ],
   "allowed_sources": ["registry+https://github.com/rust-lang/crates.io-index"],
   "tools": [
@@ -43,7 +43,7 @@
     {"name": "syn", "lines": ["2", "3"], "owner": "project-maintainers", "rationale": "Current proc-macro dependencies have not converged on syn 3.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "All reachable proc-macro packages converge on syn 3."},
     {"name": "windows-sys", "lines": ["0.36", "0.61"], "owner": "project-maintainers", "rationale": "The existing pcap and platform binding remains on 0.36 while native proxy dependencies use 0.61.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "The pcap and platform binding can move to the current Windows binding line without ABI or scope churn."}
   ],
-  "unsafe_review": {"graph_view": "windows-all", "graph_digest": "c657c64f75e0ab60ec843a74b2ba85c34f6a236c1fc931203b53efa5e4596862", "owner": "project-maintainers", "reviewed": "2026-09-05", "expires": "2026-12-04", "rationale": "Unsafe implementation is confined to reviewed cryptography, platform FFI, allocators, and optimized transitive packages; graph drift requires renewed review."},
+  "unsafe_review": {"graph_view": "windows-all", "graph_digest": "9837905b80c9b4743b9b3f9bb5a34af45f90c0b80b761c098acaddfcef240bc7", "owner": "project-maintainers", "reviewed": "2026-09-09", "expires": "2026-12-08", "rationale": "Unsafe implementation is confined to reviewed cryptography, platform FFI, allocators, and optimized transitive packages; S134 adds only direct blake3 and subtle edges already present in the reviewed graph."},
   "exceptions": [
     {"id": "S130-TOOL-001", "rule": "tool-yanked", "package": "xml-rs@0.8.19", "tool": "cargo-cyclonedx", "tool_version": "0.5.9", "owner": "project-maintainers", "rationale": "The current official cargo-cyclonedx 0.5.9 locked tool graph retains this yanked XML writer; it runs only during SBOM generation, is not linked or shipped, and has no advisory.", "created": "2026-09-05", "expires": "2026-12-04", "removal_condition": "Upgrade cargo-cyclonedx when an official release removes xml-rs 0.8.19 from its locked generator graph."}
   ]

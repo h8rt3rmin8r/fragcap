@@ -240,7 +240,7 @@ effects; Steam environment handoff remains compatibility-dependent.
 
 ## 17. Command Line Interface
 
-Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, the two-phase compatibility calibration plan and confirmation contract, high-precision automatic target registration, non-persistent detailed and count-only discovery, confirmed historical target reconciliation, doctor, and integration commands.
+Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, exact interactive and structured plan-bound authorization, the two-phase compatibility calibration contract, high-precision automatic target registration, non-persistent detailed and count-only discovery, confirmed historical target reconciliation, doctor, and integration commands.
 
 ## 18. Shell Wrappers
 

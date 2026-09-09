@@ -10,7 +10,7 @@ mod common;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use common::run;
+use common::{run, run_with_authorization};
 use fragcap::profile::FidelityTier;
 use fragcap::targets::{
     resolved_client_launch, ClassificationSource, CompatibilityAddressFamily,
@@ -22,6 +22,44 @@ use fragcap::targets::{
 fn controlled_environment() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct FixedAuthorization {
+    terminal: bool,
+    response: Option<Vec<u8>>,
+    fail: bool,
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for FixedAuthorization {
+    fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    fn read_response(&mut self, _plan_id: &str, _exact: bool) -> std::io::Result<Vec<u8>> {
+        if self.fail {
+            Err(std::io::Error::other("controlled input failure"))
+        } else {
+            Ok(self.response.take().unwrap_or_default())
+        }
+    }
+}
+
+struct DriftingAuthorization {
+    local: std::path::PathBuf,
+}
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for DriftingAuthorization {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+
+    fn read_response(&mut self, plan_id: &str, _exact: bool) -> std::io::Result<Vec<u8>> {
+        let mut store = Store::open(&self.local).unwrap();
+        let mut target = store.target_by_handle("sample-target").unwrap().unwrap();
+        target.name = "Changed Target Authority".to_string();
+        assert!(store.update_target(&target).unwrap());
+        Ok(format!("{plan_id}\n").into_bytes())
+    }
 }
 
 fn seed_target(local: &Path, with_compatibility: bool) -> i64 {
@@ -80,6 +118,126 @@ fn deep_capture_is_listed_on_the_root_help() {
 }
 
 #[test]
+fn json_deep_capture_requires_the_exact_input_mode() {
+    let (code, _out, err) = run(&["--json", "deep-capture", "sample-target", "--launch"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--authorize-stdin"), "guidance: {err}");
+}
+
+#[test]
+fn structured_mismatch_emits_one_terminal_refusal_before_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let stale = format!("plan-v1:{}\n", "0".repeat(64)).into_bytes();
+    let mut authorization = FixedAuthorization {
+        terminal: false,
+        response: Some(stale),
+        fail: false,
+    };
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--authorize-stdin",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 2, "events:\n{events}");
+    assert_eq!(events.matches("deep_capture.authorization_plan").count(), 1);
+    assert_eq!(events.matches("deep_capture.authorization\"").count(), 1);
+    assert!(events.contains("\"status\":\"invalid\""));
+    assert!(!events.contains("PRIVATE KEY"));
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn interactive_decline_is_successful_and_effect_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let mut authorization = FixedAuthorization {
+        terminal: true,
+        response: Some(b"no\n".to_vec()),
+        fail: false,
+    };
+    let (code, _out, err) = run_with_authorization(
+        &[
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 0, "stderr:\n{err}");
+    assert_eq!(err.matches("Authorize exact plan").count(), 1);
+    assert!(err.contains("Deep Capture authorization plan"));
+    assert!(!bundle.exists());
+}
+
+#[test]
+fn exact_approval_refuses_target_authority_drift_before_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.db");
+    let bundle = dir.path().join("bundle");
+    seed_target(&local, false);
+    let mut authorization = DriftingAuthorization {
+        local: local.clone(),
+    };
+    let (code, _out, events) = run_with_authorization(
+        &[
+            "--json",
+            "deep-capture",
+            "sample-target",
+            "--launch",
+            "--authorize-stdin",
+            "--calibrate",
+            "reachability",
+            "--calibration-protocol",
+            "routing",
+            "--launch-case",
+            "direct-exe-warm",
+            "--controlled-target",
+            "--local-db",
+            local.to_str().unwrap(),
+            "--bundle",
+            bundle.to_str().unwrap(),
+        ],
+        &mut authorization,
+    );
+    assert_eq!(code, 2, "events:\n{events}");
+    assert!(events.contains("\"status\":\"drifted\""));
+    assert!(!events.contains("\"status\":\"authorized\""));
+    assert!(!bundle.exists());
+}
+
+#[test]
 fn deep_capture_help_exposes_the_operator_contract() {
     let (code, out, err) = run(&["deep-capture", "--help"]);
     assert_eq!(code, 0, "stderr:\n{err}");
@@ -92,7 +250,7 @@ fn deep_capture_help_exposes_the_operator_contract() {
         "--max-bytes",
         "--interface",
         "--no-payload",
-        "--trust-ca",
+        "--authorize-stdin",
         "--restart-warm",
         "--calibrate",
         "--launch-case",
@@ -110,6 +268,8 @@ fn deep_capture_help_exposes_the_operator_contract() {
     }
     assert!(!out.contains("--controlled-target"));
     assert!(!out.contains("--proxy-backend"));
+    assert!(!out.contains("--trust-ca"));
+    assert!(!out.contains("--yes"));
 }
 
 #[test]
@@ -178,7 +338,7 @@ fn calibration_phase_requires_an_exact_compatible_protocol() {
             protocol,
             "--launch-case",
             "direct-exe-cold",
-            "--yes",
+            "--authorize-stdin",
         ]);
         assert_eq!(code, 2);
         assert!(err.contains(expected), "phase refusal: {err}");
@@ -230,7 +390,7 @@ fn controlled_calibration_runs_reachability_then_tls() {
         "5s",
         "--wait",
         "7s",
-        "--yes",
+        "--authorize-stdin",
         "--proxy-bypass",
         ".example.invalid,192.0.2.0/24",
         "--controlled-target",
@@ -241,7 +401,7 @@ fn controlled_calibration_runs_reachability_then_tls() {
     ]);
     assert_eq!(code, 0, "reachability events:\n{reachability_events}");
     assert!(out.is_empty());
-    assert!(reachability_events.contains("deep_capture.calibration_plan"));
+    assert!(reachability_events.contains("deep_capture.authorization_plan"));
     let routing_plan: serde_json::Value = reachability_events
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -258,17 +418,26 @@ fn controlled_calibration_runs_reachability_then_tls() {
     let plan: serde_json::Value = reachability_events
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
-        .find(|event: &serde_json::Value| event["event"] == "deep_capture.calibration_plan")
+        .find(|event: &serde_json::Value| event["event"] == "deep_capture.authorization_plan")
         .unwrap();
-    assert_eq!(plan["launch_timeout_secs"], 7);
-    assert_eq!(plan["observation_timeout_secs"], 5);
-    assert_eq!(plan["routing_strategy"], "child-environment");
-    assert_eq!(plan["address_family"], "ipv4");
-    assert_eq!(plan["protocol"], "routing");
-    assert_eq!(plan["proxy_backend"], "fragcap-native");
-    assert_eq!(plan["proxy_backend_version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(plan["fragcap_version"], env!("CARGO_PKG_VERSION"));
-    assert!(plan["target_version"].is_null());
+    assert_eq!(plan["plan"]["deadlines_seconds"]["launch"], 7);
+    assert_eq!(plan["plan"]["deadlines_seconds"]["observation"], 5);
+    assert_eq!(
+        plan["plan"]["proxy"]["routing_scope"],
+        "managed child environment only"
+    );
+    assert_eq!(plan["plan"]["proxy"]["address_family"], "ipv4");
+    assert_eq!(plan["plan"]["facts"]["possible_protocol"], "routing");
+    assert_eq!(plan["plan"]["proxy"]["backend"], "fragcap-native");
+    assert_eq!(
+        plan["plan"]["proxy"]["backend_version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        plan["plan"]["versions"]["fragcap"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(plan["plan"]["trust"]["action"], "none");
     let phase_events = reachability_events
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
@@ -355,7 +524,7 @@ fn controlled_calibration_runs_reachability_then_tls() {
         "https",
         "--launch-case",
         "direct-exe-warm",
-        "--yes",
+        "--authorize-stdin",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -390,7 +559,7 @@ fn malformed_proxy_bypass_refuses_before_session_effects() {
         "routing",
         "--launch-case",
         "direct-exe-warm",
-        "--yes",
+        "--authorize-stdin",
         "--proxy-bypass",
         "*",
         "--controlled-target",
@@ -420,8 +589,7 @@ fn reachability_calibration_rejects_trust_and_tls_outputs_before_mutation() {
         "routing",
         "--launch-case",
         "direct-exe-warm",
-        "--trust-ca",
-        "--yes",
+        "--har",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -449,7 +617,7 @@ fn tls_calibration_requires_current_same_case_routing_before_mutation() {
         "https",
         "--launch-case",
         "direct-exe-warm",
-        "--yes",
+        "--authorize-stdin",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -480,18 +648,15 @@ fn deep_capture_requires_managed_launch_before_side_effects() {
 }
 
 #[test]
-fn deep_capture_requires_explicit_trust_confirmation() {
-    let (code, _out, err) = run(&[
-        "deep-capture",
-        "sample-target",
-        "--launch",
-        "--controlled-target",
-    ]);
-    assert_eq!(code, 2);
-    assert!(
-        err.contains("explicit CA trust confirmation"),
-        "the refusal names trust confirmation: {err}"
-    );
+fn legacy_authorization_flags_are_rejected() {
+    for legacy in ["--trust-ca", "--yes"] {
+        let (code, _out, err) = run(&["deep-capture", "sample-target", "--launch", legacy]);
+        assert_eq!(code, 2);
+        assert!(
+            err.contains("--authorize-stdin"),
+            "migration guidance: {err}"
+        );
+    }
 }
 
 #[test]
@@ -506,7 +671,6 @@ fn deep_capture_refuses_unknown_real_target_compatibility_before_backend_lookup(
         "deep-capture",
         "sample-target",
         "--launch",
-        "--trust-ca",
         "--local-db",
         local.to_str().unwrap(),
         "--bundle",
@@ -549,7 +713,6 @@ fn deep_capture_refuses_an_unlaunchable_direct_target_before_session_resources()
         "deep-capture",
         "sample-target",
         "--launch",
-        "--trust-ca",
         "--local-db",
         local.to_str().unwrap(),
         "--bundle",
@@ -580,7 +743,7 @@ fn deep_capture_refuses_a_nonempty_bundle_before_starting_the_proxy() {
         "deep-capture",
         "sample-target",
         "--launch",
-        "--trust-ca",
+        "--authorize-stdin",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -614,7 +777,7 @@ fn controlled_deep_capture_writes_a_bundle_and_compatibility_facts() {
         "deep-capture",
         "sample-target",
         "--launch",
-        "--trust-ca",
+        "--authorize-stdin",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -895,7 +1058,6 @@ fn controlled_human_summary_reports_shared_classification_counts() {
         "deep-capture",
         "sample-target",
         "--launch",
-        "--trust-ca",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -942,7 +1104,7 @@ fn partial_controlled_session_writes_observed_facts_and_manifest() {
         "deep-capture",
         "sample-target",
         "--launch",
-        "--trust-ca",
+        "--authorize-stdin",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),
@@ -1011,7 +1173,7 @@ fn partial_calibration_persists_the_same_failed_terminal_outcome_it_emits() {
         "https",
         "--launch-case",
         "direct-exe-warm",
-        "--yes",
+        "--authorize-stdin",
         "--controlled-target",
         "--local-db",
         local.to_str().unwrap(),

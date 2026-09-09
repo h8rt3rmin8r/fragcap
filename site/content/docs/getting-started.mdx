@@ -41,7 +41,7 @@ These tools have distinct jobs:
 
 - **Npcap is required for live packets.** fragcap never bundles, hosts, caches as its own, or redistributes Npcap. The published `doctor --fix` opens the official acquisition page after confirmation; a source build with the optional `net` feature may instead fetch and launch the vendor's signed installer after confirmation.
 - **Wireshark is recommended for analysis.** It opens `.fcapng` directly. The optional fragcap extcap integration adds a live fragcap source inside Wireshark.
-- **The Deep Capture proxy ships with fragcap.** Do not configure a system-wide proxy; fragcap prepares its target-scoped native proxy session and manages its own purpose-specific CA only when the command explicitly includes `--trust-ca`.
+- **The Deep Capture proxy ships with fragcap.** Do not configure a system-wide proxy. fragcap prepares its target-scoped native proxy and exact purpose-specific CA identity for the complete authorization plan, then applies only the reviewed effects.
 
 Capture records the payload bytes it observes unless you select `--no-payload`. fragcap does not guess whether those bytes are encrypted. Deep Capture can add HTTP semantics only for traffic that follows the scoped proxy route and, for HTTPS, accepts the fragcap-owned local CA. It does not bypass certificate pinning or extract keys from a target process.
 
@@ -190,7 +190,7 @@ fragcap deep-capture sample-target --launch --calibrate reachability --calibrati
 Review the resulting rows with `fragcap targets show sample-target`. When current same-case evidence says `proxy-routing = reached-client`, measure TLS behavior separately:
 
 ```powershell
-fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold --trust-ca
+fragcap deep-capture sample-target --launch --calibrate tls --calibration-protocol https --launch-case steam-protocol-cold
 ```
 
 Review the target again before ordinary Deep Capture. Calibration outcomes and fact rows preserve uncertainty; they do not create an aggregate compatibility verdict.
@@ -199,15 +199,15 @@ For a Steam target, Steam must be closed before the session begins. An already-r
 
 ## 7. Run a known-compatible Deep Capture
 
-Review the planned side effects before continuing: fragcap starts its native loopback proxy, starts ordinary packet Capture, prepares target-scoped proxy environment for the managed launch, may trust a purpose-specific CA in the current-user Root store when you authorize it with `--trust-ca`, writes a session bundle, and attempts to remove session-owned trust and tasks during cleanup. It never falls back to a system-wide proxy.
+Review the complete plan before continuing. It names the target launch authority, loopback and routing scope, exact session CA identity and current-user trust action, bundle and sensitive artifacts, deadlines, possible fact writes, cleanup obligations, and refusal boundaries. fragcap applies no listener, bundle, trust, launch, Capture, or fact effect until that exact plan is authorized. It never falls back to a system-wide proxy.
 
 For a target that passed the eligibility check, run:
 
 ```powershell
-fragcap deep-capture sample-target --launch --duration 5m --trust-ca --har
+fragcap deep-capture sample-target --launch --duration 5m --har
 ```
 
-`--trust-ca` is the trust confirmation. Adding it authorizes this run to make the stated current-user trust change when HTTPS inspection needs it; there is no second interactive trust prompt. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Do not substitute `--yes` on a first run because that broader flag pre-confirms Deep Capture prompts for unattended use.
+Answer the one prompt only after reviewing the exact plan identifier and every effect. Omit `--har` or `--key-log` when you do not need those sensitive optional artifacts. Automation and JSON consumers use `--authorize-stdin`, read the emitted plan event, and return its exact identifier plus one LF without restarting the process. The former Deep Capture `--trust-ca` and `--yes` booleans no longer authorize a run.
 
 Run `fragcap deep-capture --help` to review the current launch, duration, trust, and artifact options before changing this command.
 

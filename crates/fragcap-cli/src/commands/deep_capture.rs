@@ -15,7 +15,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -41,7 +41,8 @@ use fragcap::{
     CaptureStats, CapturedPacket, FlowKey, FlowRegistry, InterfaceDeclaration, InterfaceId,
     LinkType, Payload, PcapngWriter, Proto, RawPacket, Sink, StopReason, Timestamp,
 };
-use serde_json::json;
+use serde_json::{json, Value};
+use subtle::ConstantTimeEq;
 
 use crate::args::Direction;
 use crate::cli::{
@@ -54,6 +55,7 @@ use crate::emit::Emitter;
 use crate::events::{rfc3339_utc, Event};
 use crate::exit::{CliError, Exit};
 use crate::paths;
+use crate::DeepCaptureAuthorizationInput;
 
 const CONTROLLED_TARGET_HANDLE: &str = "sample-target";
 const CONTROLLED_TARGET_STABLE_ID: i64 = 75_000;
@@ -64,6 +66,9 @@ const CALIBRATION_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(60);
 const CALIBRATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const CALIBRATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
 const WARM_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const SESSION_CA_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+const PLAN_ID_PREFIX: &str = "plan-v1:";
+static NEXT_SESSION_NONCE: AtomicU64 = AtomicU64::new(1);
 
 fn calibration_phase(value: DeepCaptureCalibrationArg) -> CalibrationPhase {
     match value {
@@ -148,16 +153,187 @@ impl From<DeepCaptureLaunchCaseArg> for CompatibilityLaunchCase {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct AuthorizationTargetAuthority {
+    row_id: Option<i64>,
+    stable_id: i64,
+    handle: String,
+    name: String,
+    anchor: Option<String>,
+    install_root: Option<String>,
+    launch_entries: Option<Value>,
+    launch_case: CompatibilityLaunchCase,
+}
+
+impl AuthorizationTargetAuthority {
+    fn from_target(target: &TargetEntry, launch_case: CompatibilityLaunchCase) -> Self {
+        Self {
+            row_id: target.id,
+            stable_id: target.stable_id,
+            handle: target.handle.clone(),
+            name: target.name.clone(),
+            anchor: target.anchor.clone(),
+            install_root: target.install_root.clone(),
+            launch_entries: target.launch_entries.clone(),
+            launch_case,
+        }
+    }
+
+    fn canonical_value(&self) -> Value {
+        json!({
+            "anchor": self.anchor,
+            "handle": self.handle,
+            "install_root": self.install_root,
+            "launch_case": self.launch_case.as_str(),
+            "launch_entries": self.launch_entries,
+            "name": self.name,
+            "row_id": self.row_id,
+            "stable_id": self.stable_id,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
-struct CalibrationPlan {
-    target: String,
-    phase: CalibrationPhase,
-    declared_launch_case: CompatibilityLaunchCase,
-    observed_launch_case: CompatibilityLaunchCase,
-    protocol: CompatibilityProtocol,
-    address_family: CompatibilityAddressFamily,
-    bundle: PathBuf,
-    deadlines: CalibrationDeadlines,
+struct AuthorizationPlan {
+    id: String,
+    canonical: Value,
+    canonical_json: String,
+    target_authority: AuthorizationTargetAuthority,
+}
+
+impl AuthorizationPlan {
+    fn new(canonical: Value, target_authority: AuthorizationTargetAuthority) -> Self {
+        let canonical_json = serde_json::to_string(&canonical)
+            .expect("the authorization plan contains only serializable values");
+        let digest = blake3::hash(canonical_json.as_bytes()).to_hex();
+        Self {
+            id: format!("{PLAN_ID_PREFIX}{digest}"),
+            canonical,
+            canonical_json,
+            target_authority,
+        }
+    }
+
+    fn emit(&self, emitter: &mut Emitter) {
+        emitter.event(&Event::DeepCaptureAuthorizationPlan {
+            plan_id: self.id.clone(),
+            canonical_json: self.canonical_json.clone(),
+        });
+        let rendered = serde_json::to_string_pretty(&self.canonical)
+            .expect("the authorization plan contains only serializable values");
+        emitter.required_human(&format!(
+            "Deep Capture authorization plan\n  plan id: {}\n{}\n",
+            self.id, rendered
+        ));
+    }
+}
+
+fn authorization_answer_is_exact(response: &[u8], expected: &str) -> bool {
+    let Some(candidate) = response.strip_suffix(b"\n") else {
+        return false;
+    };
+    candidate.len() == expected.len() && candidate.ct_eq(expected.as_bytes()).unwrap_u8().eq(&1)
+}
+
+fn authorization_outcome(
+    emitter: &mut Emitter,
+    plan: &AuthorizationPlan,
+    status: &str,
+    reason: &str,
+) {
+    emitter.event(&Event::DeepCaptureAuthorization {
+        plan_id: plan.id.clone(),
+        status: status.to_string(),
+        reason: reason.to_string(),
+    });
+    emitter.required_human(&format!(
+        "Deep Capture authorization: {status} ({reason})\n"
+    ));
+}
+
+fn refuse_interrupted_authorization(
+    emitter: &mut Emitter,
+    plan: &AuthorizationPlan,
+) -> Result<(), CliError> {
+    if crate::orchestrator::INTERRUPT.load(Ordering::Relaxed) {
+        authorization_outcome(
+            emitter,
+            plan,
+            "interrupted",
+            "interrupt requested before authorization completed",
+        );
+        Err(CliError::failure(
+            "Deep Capture authorization was interrupted; no effects were applied",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn authorize_plan(
+    args: &DeepCaptureArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+    plan: &AuthorizationPlan,
+) -> Result<bool, CliError> {
+    plan.emit(emitter);
+    refuse_interrupted_authorization(emitter, plan)?;
+    if args.authorize_stdin {
+        emitter.flush().map_err(|error| {
+            CliError::usage(format!(
+                "could not flush the authorization plan before input: {error}"
+            ))
+        })?;
+        let response = authorization
+            .read_response(&plan.id, true)
+            .map_err(|error| {
+                authorization_outcome(emitter, plan, "invalid", "authorization input failed");
+                CliError::usage(format!("could not read exact plan authorization: {error}"))
+            })?;
+        refuse_interrupted_authorization(emitter, plan)?;
+        if authorization_answer_is_exact(&response, &plan.id) {
+            return Ok(true);
+        }
+        let status = if response.is_empty() {
+            "closed"
+        } else {
+            "invalid"
+        };
+        authorization_outcome(
+            emitter,
+            plan,
+            status,
+            "exact current plan identifier was not supplied",
+        );
+        return Err(CliError::usage(
+            "Deep Capture authorization did not match the exact current plan identifier; no effects were applied",
+        ));
+    }
+
+    emitter.required_human(&format!("Authorize exact plan {}? [y/N] ", plan.id));
+    emitter.flush().map_err(|error| {
+        CliError::usage(format!(
+            "could not flush the authorization plan before input: {error}"
+        ))
+    })?;
+    let response = authorization
+        .read_response(&plan.id, false)
+        .map_err(|error| {
+            authorization_outcome(emitter, plan, "invalid", "authorization input failed");
+            CliError::usage(format!("could not read plan authorization: {error}"))
+        })?;
+    refuse_interrupted_authorization(emitter, plan)?;
+    if response.is_empty() {
+        authorization_outcome(emitter, plan, "closed", "authorization input closed");
+        return Ok(false);
+    }
+    let answer = std::str::from_utf8(&response).unwrap_or_default();
+    if calibration_answer_is_affirmative(answer) {
+        Ok(true)
+    } else {
+        authorization_outcome(emitter, plan, "declined", "operator declined exact plan");
+        Ok(false)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -196,102 +372,19 @@ fn calibration_answer_is_affirmative(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-impl CalibrationPlan {
-    fn emit(&self, emitter: &mut Emitter) {
-        emitter.event(&Event::DeepCaptureCalibrationPlan {
-            target: self.target.clone(),
-            phase: self.phase.as_str().to_string(),
-            declared_launch_case: self.declared_launch_case.as_str().to_string(),
-            observed_launch_case: self.observed_launch_case.as_str().to_string(),
-            proxy_backend: "fragcap-native".to_string(),
-            proxy_backend_version: env!("CARGO_PKG_VERSION").to_string(),
-            routing_strategy: CompatibilityRoutingStrategy::ChildEnvironment
-                .as_str()
-                .to_string(),
-            address_family: self.address_family.as_str().to_string(),
-            protocol: self.protocol.as_str().to_string(),
-            fragcap_version: env!("CARGO_PKG_VERSION").to_string(),
-            target_version: None,
-            bundle: self.bundle.display().to_string(),
-            trust_action: if self.phase == CalibrationPhase::Tls {
-                "session-owned current-user CA trust"
-            } else {
-                "none"
-            }
-            .to_string(),
-            launch_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.launch),
-            observation_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.observation),
-            shutdown_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.shutdown),
-            cleanup_timeout_secs: CalibrationDeadlines::seconds(self.deadlines.cleanup),
-        });
-        emitter.required_human(&format!(
-            "Compatibility calibration plan\n  target: {}\n  phase: {}\n  launch case: {} (observed {})\n  case: route={}, family={}, protocol={}\n  versions: backend=fragcap-native {}, fragcap={}, target=unavailable\n  proxy: loopback only, launch-scoped environment\n  bundle: {}\n  deadlines: launch {}s, observation {}s, shutdown {}s, cleanup {}s\n  trust action: {}\n  facts: append only directly observed rows to the selected target\n  cleanup: proxy process, listener, private CA material, and session trust if created\n  system proxy change: none\n  evidence publication: none\n",
-            self.target,
-            self.phase.as_str(),
-            self.declared_launch_case.as_str(),
-            self.observed_launch_case.as_str(),
-            CompatibilityRoutingStrategy::ChildEnvironment.as_str(),
-            self.address_family.as_str(),
-            self.protocol.as_str(),
-            env!("CARGO_PKG_VERSION"),
-            env!("CARGO_PKG_VERSION"),
-            self.bundle.display(),
-            CalibrationDeadlines::seconds(self.deadlines.launch),
-            CalibrationDeadlines::seconds(self.deadlines.observation),
-            CalibrationDeadlines::seconds(self.deadlines.shutdown),
-            CalibrationDeadlines::seconds(self.deadlines.cleanup),
-            if self.phase == CalibrationPhase::Tls {
-                "session-owned current-user CA trust"
-            } else {
-                "none"
-            }
-        ));
-    }
-}
-
-fn confirm_calibration(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<bool, CliError> {
-    if args.yes {
-        return Ok(true);
-    }
+fn confirm_warm_restart(emitter: &mut Emitter, prompt: &str) -> Result<bool, CliError> {
     if emitter.is_json() {
         return Err(CliError::usage(
-            "JSON compatibility calibration requires --yes because it cannot prompt",
+            "JSON warm restart is unavailable because the operator-close step requires a terminal",
         ));
     }
     if !std::io::stdin().is_terminal() {
-        return Err(CliError::usage(
-            "compatibility calibration requires interactive input or --yes",
-        ));
-    }
-    emitter.required_human("Proceed with this calibration? [y/N] ");
-    emitter.flush();
-    let mut answer = String::new();
-    match std::io::stdin().read_line(&mut answer) {
-        Ok(0) | Err(_) => Ok(false),
-        Ok(_) => Ok(calibration_answer_is_affirmative(&answer)),
-    }
-}
-
-fn confirm_warm_restart(
-    args: &DeepCaptureArgs,
-    emitter: &mut Emitter,
-    prompt: &str,
-) -> Result<bool, CliError> {
-    if args.yes {
-        return Ok(true);
-    }
-    if emitter.is_json() {
-        return Err(CliError::usage(
-            "JSON warm restart requires --yes because it cannot prompt",
-        ));
-    }
-    if !std::io::stdin().is_terminal() {
-        return Err(CliError::usage(
-            "warm restart requires interactive input or --yes",
-        ));
+        return Err(CliError::usage("warm restart requires interactive input"));
     }
     emitter.required_human(prompt);
-    emitter.flush();
+    emitter
+        .flush()
+        .map_err(|error| CliError::usage(format!("could not flush warm restart plan: {error}")))?;
     let mut answer = String::new();
     match std::io::stdin().read_line(&mut answer) {
         Ok(0) | Err(_) => Ok(false),
@@ -425,7 +518,6 @@ fn run_warm_restart(
     ));
     crate::orchestrator::install_interrupt_handler();
     if !confirm_warm_restart(
-        args,
         emitter,
         "Wait while you close the application normally? [y/N] ",
     )? {
@@ -664,17 +756,26 @@ impl deep_capture_api::EndpointAllocator for LibraryEndpointAdapter {
     }
 }
 
-struct LibraryIdentifierAdapter;
+struct LibraryIdentifierAdapter {
+    session_id: Option<String>,
+    plan_id: Option<String>,
+}
 
 impl deep_capture_api::IdentifierSource for LibraryIdentifierAdapter {
     fn next_id(
         &mut self,
         kind: &'static str,
     ) -> Result<String, deep_capture_api::PreflightRefusal> {
-        Ok(if kind == "session" {
-            session_id()
-        } else {
-            format!("plan-{}", session_id())
+        let value = match kind {
+            "session" => self.session_id.take(),
+            "plan" => self.plan_id.take(),
+            _ => None,
+        };
+        value.ok_or_else(|| {
+            deep_capture_api::PreflightRefusal::new(
+                "identifier-consumed",
+                format!("the authorized {kind} identifier is unavailable or already consumed"),
+            )
         })
     }
 }
@@ -1647,10 +1748,211 @@ fn load_client_identity(
     identity.map(Some)
 }
 
-pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliError> {
+fn session_mode_name(mode: deep_capture_api::SessionMode) -> &'static str {
+    match mode {
+        deep_capture_api::SessionMode::Capture => "capture",
+        deep_capture_api::SessionMode::ReachabilityCalibration => "reachability-calibration",
+        deep_capture_api::SessionMode::TlsCalibration => "tls-calibration",
+        _ => "future",
+    }
+}
+
+struct AuthorizationPlanContext<'a> {
+    args: &'a DeepCaptureArgs,
+    mode: deep_capture_api::SessionMode,
+    protocol: Option<CompatibilityProtocol>,
+    session_id: &'a str,
+    bundle: &'a Path,
+    deadlines: CalibrationDeadlines,
+    target_authority: AuthorizationTargetAuthority,
+    authority_created: SystemTime,
+}
+
+fn build_authorization_plan(
+    context: AuthorizationPlanContext<'_>,
+    authority: &deep_capture_api::PreparedNativeAuthority,
+) -> Result<AuthorizationPlan, CliError> {
+    let AuthorizationPlanContext {
+        args,
+        mode,
+        protocol,
+        session_id,
+        bundle,
+        deadlines,
+        target_authority,
+        authority_created,
+    } = context;
+    let endpoint =
+        deep_capture_api::LoopbackEndpoint::new(loopback_bind_address(args.proxy_family))
+            .map_err(cli_error_from_library_refusal)?;
+    let routing = deep_capture_api::RoutingPlan::child_environment(endpoint, &args.proxy_bypass)
+        .map_err(cli_error_from_library_refusal)?;
+    let bypass = routing
+        .bypass
+        .as_ref()
+        .expect("child environment routing has a bypass policy");
+    let operator_rules = bypass
+        .operator_rules()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let environment_variables = routing
+        .effects
+        .iter()
+        .map(|effect| effect.destination.clone())
+        .collect::<Vec<_>>();
+    let trust = if mode == deep_capture_api::SessionMode::ReachabilityCalibration {
+        json!({
+            "action": "none",
+            "certificate_fingerprint_sha256": null,
+            "certificate_thumbprint_sha1": null,
+            "store": null,
+        })
+    } else {
+        json!({
+            "action": "ensure exact session CA, then remove if added by this session",
+            "certificate_fingerprint_sha256": authority.sha256_fingerprint(),
+            "certificate_thumbprint_sha1": authority.sha1_thumbprint(),
+            "not_after": rfc3339_utc(authority_created + authority.lifetime()),
+            "not_before": rfc3339_utc(authority_created - Duration::from_secs(300)),
+            "store": "current-user Root",
+        })
+    };
+    let canonical = json!({
+        "artifacts": {
+            "application_jsonl": bundle.join("application.jsonl").display().to_string(),
+            "bundle": bundle.display().to_string(),
+            "capture": bundle.join("capture.fcapng").display().to_string(),
+            "client_certificate": args.client_certificate.as_ref().map(|path| path.display().to_string()),
+            "client_identity_ownership": if args.client_certificate.is_some() { "validated and retained in process before authorization" } else { "none" },
+            "client_private_key": args.client_private_key.as_ref().map(|path| path.display().to_string()),
+            "har": if args.har { Some(bundle.join("capture.har").display().to_string()) } else { None },
+            "key_log": if args.key_log { Some(bundle.join("tls-keylog.log").display().to_string()) } else { None },
+            "sensitivity": "bundle may contain plaintext application traffic and credentials",
+        },
+        "capture": {
+            "interfaces": args.interface,
+            "max_bytes": args.max_bytes,
+            "max_packets": args.max_packets,
+            "payload_retention": !args.no_payload,
+            "scope": "selected target process tree",
+        },
+        "cleanup": [
+            "stop proxy and capture within their deadlines",
+            "remove current-user trust only when added by this session",
+            "zero process-local private authority material when ownership ends",
+            "retain truthful recovery records for any incomplete obligation"
+        ],
+        "deadlines_seconds": {
+            "cleanup": CalibrationDeadlines::seconds(deadlines.cleanup),
+            "launch": CalibrationDeadlines::seconds(deadlines.launch),
+            "observation": CalibrationDeadlines::seconds(deadlines.observation),
+            "shutdown": CalibrationDeadlines::seconds(deadlines.shutdown),
+        },
+        "facts": {
+            "authority": "append-only directly observed compatibility facts",
+            "possible_protocol": protocol.map(|value| value.as_str()),
+            "target_stable_id": target_authority.stable_id,
+        },
+        "launch": {
+            "declared_case": args.launch_case.map(CompatibilityLaunchCase::from).map(|value| value.as_str()),
+            "observed_case": target_authority.launch_case.as_str(),
+            "process_control": "managed launch only; no process handle or forced termination",
+        },
+        "mode": session_mode_name(mode),
+        "proxy": {
+            "address_family": compatibility_address_family(args.proxy_family).as_str(),
+            "backend": "fragcap-native",
+            "backend_version": env!("CARGO_PKG_VERSION"),
+            "dns_policy": "match requested authority before resolution and check every answer",
+            "environment_variables": environment_variables,
+            "fallback": "none",
+            "listener": "exact loopback address; concrete ephemeral port selected after authorization",
+            "normalized_bypass_rules": operator_rules,
+            "routing_scope": "managed child environment only",
+            "system_proxy_change": false,
+        },
+        "refusal_boundaries": [
+            "target or launch authority drift",
+            "listener reservation or routing collision",
+            "compatibility prerequisite failure",
+            "certificate trust mismatch",
+            "capture preparation failure"
+        ],
+        "schema": 1,
+        "session_id": session_id,
+        "target": target_authority.canonical_value(),
+        "trust": trust,
+        "versions": {
+            "fragcap": env!("CARGO_PKG_VERSION"),
+            "proxy": env!("CARGO_PKG_VERSION"),
+        },
+    });
+    Ok(AuthorizationPlan::new(canonical, target_authority))
+}
+
+fn validate_authorization_target(
+    store: &Store,
+    args: &DeepCaptureArgs,
+    mode: deep_capture_api::SessionMode,
+    protocol: Option<CompatibilityProtocol>,
+) -> Result<AuthorizationTargetAuthority, CliError> {
+    let target = resolve_target(store, args)?;
+    let target_id = target
+        .id
+        .ok_or_else(|| CliError::usage("resolved target has no local row id"))?;
+    if args.controlled_target {
+        require_controlled_target(&target)?;
+    }
+    let launch_case = effective_launch_case(&target, args.controlled_target)?;
+    if args
+        .launch_case
+        .map(CompatibilityLaunchCase::from)
+        .is_some_and(|declared| declared != launch_case)
+    {
+        return Err(CliError::usage(
+            "declared launch case does not match the resolved target",
+        ));
+    }
+    let facts = store
+        .compatibility_facts_for_target(target_id)
+        .map_err(|error| CliError::failure(error.to_string()))?;
+    deep_capture_api::validate_compatibility_prerequisites(
+        mode,
+        args.controlled_target,
+        &facts,
+        library_launch_case(launch_case),
+        &current_compatibility_case(
+            launch_case,
+            args.proxy_family,
+            protocol.unwrap_or(CompatibilityProtocol::Routing),
+        ),
+    )
+    .map_err(cli_error_from_library_refusal)?;
+    Ok(AuthorizationTargetAuthority::from_target(
+        &target,
+        launch_case,
+    ))
+}
+
+pub fn run(
+    args: &DeepCaptureArgs,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    emitter: &mut Emitter,
+) -> Result<Exit, CliError> {
     if !args.launch {
         return Err(CliError::usage(
             "Deep Capture requires --launch so scoped proxy configuration is owned by the session",
+        ));
+    }
+    if args.legacy_trust_ca || args.legacy_yes {
+        return Err(CliError::usage(
+            "Deep Capture --trust-ca and --yes no longer authorize a session; review the complete interactive plan or use --authorize-stdin and return its exact plan identifier",
+        ));
+    }
+    if args.restart_warm && args.authorize_stdin {
+        return Err(CliError::usage(
+            "--restart-warm requires its operator-close step in an interactive terminal and cannot use --authorize-stdin",
         ));
     }
     let calibration = args.calibrate.map(calibration_phase);
@@ -1675,32 +1977,20 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         ));
     }
     let deadlines = CalibrationDeadlines::from_args(args);
-    if calibration == Some(CalibrationPhase::Reachability)
-        && (args.trust_ca || args.har || args.key_log)
-    {
+    if calibration == Some(CalibrationPhase::Reachability) && (args.har || args.key_log) {
         return Err(CliError::usage(
             "reachability calibration does not change trust or produce HAR or TLS key logs",
         ));
     }
-    if calibration != Some(CalibrationPhase::Reachability) && !(args.trust_ca || args.yes) {
+    if emitter.is_json() && !args.authorize_stdin {
         return Err(CliError::usage(
-            "Deep Capture HTTPS inspection requires explicit CA trust confirmation; pass --trust-ca or --yes",
+            "JSON Deep Capture requires --authorize-stdin and the exact emitted plan identifier",
         ));
     }
-    if let Some(root) = paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
-        let root = root.canonicalize().map_err(|error| {
-            CliError::failure(format!(
-                "cannot inspect prior Deep Capture sessions: {error}"
-            ))
-        })?;
-        crate::doctor::fix::recover_deep_capture_journals(&root, &mut std::io::sink()).map_err(
-            |errors| {
-                CliError::failure(format!(
-                    "prior Deep Capture recovery is incomplete; run `fragcap doctor --fix`: {}",
-                    errors.join("; ")
-                ))
-            },
-        )?;
+    if !args.authorize_stdin && !authorization.is_terminal() {
+        return Err(CliError::usage(
+            "Deep Capture requires an interactive terminal or --authorize-stdin",
+        ));
     }
     let mode = match calibration {
         None => deep_capture_api::SessionMode::Capture,
@@ -1720,6 +2010,74 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let restart = run_warm_restart(args, &store.borrow(), emitter)?;
     let pending_session_id = session_id();
     let bundle = bundle_root(args.bundle.as_deref(), &pending_session_id)?;
+    validate_bundle_root(&bundle)?;
+    deep_capture_api::BypassPolicy::validate_inputs(&args.proxy_bypass)
+        .map_err(cli_error_from_library_refusal)?;
+    let target_authority =
+        validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
+    let client_identity = load_client_identity(args)?;
+    let authority_created = SystemTime::now();
+    let prepared_authority = deep_capture_api::NativeProxyAdapter::prepare_authority(
+        authority_created,
+        SESSION_CA_LIFETIME,
+    )
+    .map_err(cli_error_from_library_refusal)?;
+    let authorization_plan = build_authorization_plan(
+        AuthorizationPlanContext {
+            args,
+            mode,
+            protocol: selected_protocol,
+            session_id: &pending_session_id,
+            bundle: &bundle,
+            deadlines,
+            target_authority,
+            authority_created,
+        },
+        &prepared_authority,
+    )?;
+    crate::orchestrator::install_interrupt_handler();
+    if !authorize_plan(args, authorization, emitter, &authorization_plan)? {
+        emitter.progress("Deep Capture declined; no effects were applied");
+        return Ok(Exit::SUCCESS);
+    }
+    let current_target_authority =
+        validate_authorization_target(&store.borrow(), args, mode, selected_protocol)?;
+    if current_target_authority != authorization_plan.target_authority {
+        authorization_outcome(
+            emitter,
+            &authorization_plan,
+            "drifted",
+            "target launch authority changed after authorization",
+        );
+        return Err(CliError::usage(
+            "the target launch authority changed after authorization; no effects were applied",
+        ));
+    }
+    authorization_outcome(
+        emitter,
+        &authorization_plan,
+        "authorized",
+        if args.authorize_stdin {
+            "exact plan identifier matched and target authority remained current"
+        } else {
+            "operator approved exact plan and target authority remained current"
+        },
+    );
+    if let Some(root) = paths::deep_capture_session_dir().filter(|path| path.is_dir()) {
+        let root = root.canonicalize().map_err(|error| {
+            CliError::failure(format!(
+                "cannot inspect prior Deep Capture sessions: {error}"
+            ))
+        })?;
+        crate::doctor::fix::recover_deep_capture_journals(&root, &mut std::io::sink()).map_err(
+            |errors| {
+                CliError::failure(format!(
+                    "prior Deep Capture recovery is incomplete; run `fragcap doctor --fix`: {}",
+                    errors.join("; ")
+                ))
+            },
+        )?;
+    }
     let config = deep_capture_api::SessionConfig {
         target: target_label,
         launch_case: args
@@ -1730,8 +2088,7 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         calibration_protocol: selected_protocol,
         controlled: args.controlled_target,
         bundle: bundle.clone(),
-        trust_ca: calibration != Some(CalibrationPhase::Reachability)
-            && (args.trust_ca || args.yes),
+        trust_ca: calibration != Some(CalibrationPhase::Reachability),
         har: args.har,
         key_log: args.key_log,
         client_identity: args.client_certificate.is_some(),
@@ -1749,7 +2106,6 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
     let selected_launch_case = Rc::new(RefCell::new(None));
     let runtime = Rc::new(RefCell::new(LibraryRuntime::default()));
     let observation_context = deep_capture_api::NativeObservationContext::default();
-    let client_identity = load_client_identity(args)?;
     let listener_reservation = deep_capture_api::NativeListenerReservation::default();
     let emitter = Rc::new(RefCell::new(emitter));
     let mut adapters = deep_capture_api::AdapterSet {
@@ -1767,9 +2123,13 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
         clock: Box::new(LibraryClockAdapter {
             started: Instant::now(),
         }),
-        identifiers: Box::new(LibraryIdentifierAdapter),
+        identifiers: Box::new(LibraryIdentifierAdapter {
+            session_id: Some(pending_session_id.clone()),
+            plan_id: Some(authorization_plan.id.clone()),
+        }),
         proxy: Box::new({
             let mut proxy = deep_capture_api::NativeProxyAdapter::default()
+                .with_prepared_authority(prepared_authority)
                 .with_observation_context(observation_context.clone())
                 .with_application_artifact(bundle.join("application.jsonl"))
                 .with_proxy_lifecycle_artifact(bundle.join("proxy.jsonl"))
@@ -1901,81 +2261,14 @@ pub fn run(args: &DeepCaptureArgs, emitter: &mut Emitter) -> Result<Exit, CliErr
             Some(restart.plan.cold_case()),
             "ordinary preflight retained the exact cold target authority and accepted the plan",
         );
-        emitter.borrow_mut().required_human(&format!(
-            "Cold Deep Capture plan re-prepared\n  target: {}\n  launch case: {}\n  plan: {}\n  process control: none\n",
-            restart.target,
-            restart.plan.cold_case().as_str(),
-            prepared.plan().id,
-        ));
-        if !confirm_warm_restart(
-            args,
-            &mut emitter.borrow_mut(),
-            "Authorize this newly prepared cold session? [y/N] ",
-        )? {
-            if warm_restart_interrupted(&crate::orchestrator::INTERRUPT) {
-                emit_restart_outcome(
-                    &mut emitter.borrow_mut(),
-                    restart,
-                    "launch-authorization",
-                    "interrupted",
-                    Some(restart.plan.cold_case()),
-                    "the operator interrupted authorization; no effects were applied",
-                );
-                return Err(CliError::failure(
-                    "cold session authorization was interrupted; no effects were applied",
-                ));
-            }
-            emit_restart_outcome(
-                &mut emitter.borrow_mut(),
-                restart,
-                "launch-authorization",
-                "declined",
-                Some(restart.plan.cold_case()),
-                "operator declined the re-prepared cold session; no effects were applied",
-            );
-            return Err(CliError::usage(
-                "the re-prepared cold session was declined; no effects were applied",
-            ));
-        }
         emit_restart_outcome(
             &mut emitter.borrow_mut(),
             restart,
             "launch-authorization",
             "authorized",
             Some(restart.plan.cold_case()),
-            "operator authorized the exact re-prepared cold plan",
+            "the exact re-prepared cold plan was authorized by the common session decision",
         );
-    }
-
-    if let Some(phase) = calibration {
-        let target = selected
-            .borrow()
-            .as_ref()
-            .expect("preflight retained target")
-            .clone();
-        let observed_launch_case = selected_launch_case
-            .borrow()
-            .expect("preflight retained launch case");
-        let plan = CalibrationPlan {
-            target: target.handle,
-            phase,
-            declared_launch_case: args
-                .launch_case
-                .map(CompatibilityLaunchCase::from)
-                .expect("clap requires launch-case with calibration"),
-            observed_launch_case,
-            protocol: selected_protocol.expect("calibration protocol validated"),
-            address_family: compatibility_address_family(args.proxy_family),
-            bundle: bundle.clone(),
-            deadlines,
-        };
-        plan.emit(&mut emitter.borrow_mut());
-        if !confirm_calibration(args, &mut emitter.borrow_mut())? {
-            emitter
-                .borrow_mut()
-                .progress("compatibility calibration declined; no effects were applied");
-            return Ok(Exit::SUCCESS);
-        }
     }
 
     let authorization = deep_capture_api::Authorization::approved(prepared.plan().id.clone());
@@ -2323,11 +2616,12 @@ fn bundle_root(flag: Option<&Path>, session_id: &str) -> Result<PathBuf, CliErro
 }
 
 fn session_id() -> String {
-    let secs = SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("fcap-session-{secs}-{}", std::process::id())
+    let nonce = NEXT_SESSION_NONCE.fetch_add(1, Ordering::Relaxed);
+    format!("fcap-session-{nanos}-{}-{nonce}", std::process::id())
 }
 
 fn launch_case(target: &TargetEntry) -> Result<CompatibilityLaunchCase, CliError> {
@@ -3878,6 +4172,73 @@ fn write_controlled_pcapng(path: &Path, observations: &[Observation]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn authorization_target() -> AuthorizationTargetAuthority {
+        AuthorizationTargetAuthority {
+            row_id: Some(7),
+            stable_id: 77,
+            handle: "target".to_string(),
+            name: "Target".to_string(),
+            anchor: Some("test:77".to_string()),
+            install_root: Some("C:\\Games\\Target".to_string()),
+            launch_entries: Some(json!([{"path":"target.exe","role":"client"}])),
+            launch_case: CompatibilityLaunchCase::DirectExeCold,
+        }
+    }
+
+    #[test]
+    fn exact_authorization_input_accepts_only_the_current_identifier_and_lf() {
+        let id = format!("{PLAN_ID_PREFIX}{}", "a".repeat(64));
+        assert!(authorization_answer_is_exact(
+            format!("{id}\n").as_bytes(),
+            &id
+        ));
+        for invalid in [
+            id.as_bytes().to_vec(),
+            format!(" {id}\n").into_bytes(),
+            format!("{id} \n").into_bytes(),
+            format!("{}\n", id.to_ascii_uppercase()).into_bytes(),
+            format!("{id}\r\n").into_bytes(),
+            format!("{id}\n{id}\n").into_bytes(),
+            b"\xff\n".to_vec(),
+        ] {
+            assert!(!authorization_answer_is_exact(&invalid, &id));
+        }
+    }
+
+    #[test]
+    fn authorization_digest_is_deterministic_and_sensitive_to_each_plan_section() {
+        let base = json!({
+            "artifacts": {"bundle":"bundle"},
+            "capture": {"payload_retention":true},
+            "cleanup": ["cleanup"],
+            "deadlines_seconds": {"launch":30},
+            "facts": {"authority":"append-only"},
+            "launch": {"declared_case":"direct-exe-cold"},
+            "mode": "capture",
+            "proxy": {"address_family":"ipv4"},
+            "refusal_boundaries": ["drift"],
+            "schema": 1,
+            "session_id": "session",
+            "target": authorization_target().canonical_value(),
+            "trust": {"action":"ensure"},
+            "versions": {"fragcap":"0.9.0"},
+        });
+        let first = AuthorizationPlan::new(base.clone(), authorization_target());
+        let second = AuthorizationPlan::new(base.clone(), authorization_target());
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.canonical_json, second.canonical_json);
+
+        for key in base.as_object().unwrap().keys() {
+            let mut changed = base.clone();
+            changed
+                .as_object_mut()
+                .unwrap()
+                .insert(key.clone(), json!({"changed":true}));
+            let changed = AuthorizationPlan::new(changed, authorization_target());
+            assert_ne!(first.id, changed.id, "section {key} must bind the id");
+        }
+    }
 
     #[test]
     fn publisher_process_inventory_keeps_cold_and_warm_states_distinct() {

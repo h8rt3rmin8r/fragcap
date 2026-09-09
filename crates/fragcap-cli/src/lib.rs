@@ -52,7 +52,7 @@ mod paths;
 mod windows_cert;
 
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 
 use clap::Parser;
 
@@ -61,6 +61,64 @@ use commands::stub::Stub;
 use emit::{Emitter, Format, Verbosity};
 
 pub use exit::{CliError, Exit};
+
+/// Injectable input boundary for the one-shot Deep Capture plan decision.
+///
+/// This is public only so tier-1 tests and embedders can exercise the command
+/// without spawning a terminal. Production uses standard input.
+#[doc(hidden)]
+pub trait DeepCaptureAuthorizationInput {
+    fn is_terminal(&self) -> bool;
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> io::Result<Vec<u8>>;
+}
+
+struct StdinAuthorizationInput<'a> {
+    input: io::StdinLock<'a>,
+    terminal: bool,
+}
+
+impl DeepCaptureAuthorizationInput for StdinAuthorizationInput<'_> {
+    fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    fn read_response(&mut self, plan_id: &str, _exact: bool) -> io::Result<Vec<u8>> {
+        let limit = plan_id.len().saturating_add(2);
+        let mut response = Vec::with_capacity(limit);
+        loop {
+            let (chunk, consumed, complete, extra) = {
+                let available = self.input.fill_buf()?;
+                if available.is_empty() {
+                    break;
+                }
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let available_to_line = newline.map_or(available.len(), |index| index + 1);
+                let remaining = limit.saturating_sub(response.len());
+                let copied = available_to_line.min(remaining);
+                (
+                    available[..copied].to_vec(),
+                    available_to_line,
+                    newline.is_some(),
+                    newline.is_some_and(|index| index + 1 < available.len()),
+                )
+            };
+            response.extend_from_slice(&chunk);
+            self.input.consume(consumed);
+            if complete {
+                if extra {
+                    response.push(0);
+                }
+                break;
+            }
+            if response.len() >= limit {
+                response.push(0);
+                break;
+            }
+        }
+        Ok(response)
+    }
+}
 
 /// The clap command tree.
 ///
@@ -86,11 +144,17 @@ pub fn run<I>(args: I) -> Exit
 where
     I: IntoIterator<Item = OsString>,
 {
+    let stdin = io::stdin();
     let stdout = io::stdout();
     let stderr = io::stderr();
+    let terminal = stdin.is_terminal();
+    let mut authorization = StdinAuthorizationInput {
+        input: stdin.lock(),
+        terminal,
+    };
     let mut out = stdout.lock();
     let mut err = stderr.lock();
-    run_with(args, &mut out, &mut err)
+    run_with_authorization(args, &mut authorization, &mut out, &mut err)
 }
 
 /// Run the command surface with explicit output and error streams.
@@ -100,6 +164,26 @@ where
 /// warnings and errors. Separating them is what makes the whole surface, the
 /// event stream and the summary included, assertable from a tier-1 test.
 pub fn run_with<I>(args: I, out: &mut dyn Write, err: &mut dyn Write) -> Exit
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let stdin = io::stdin();
+    let terminal = stdin.is_terminal();
+    let mut authorization = StdinAuthorizationInput {
+        input: stdin.lock(),
+        terminal,
+    };
+    run_with_authorization(args, &mut authorization, out, err)
+}
+
+/// Run the command surface with an explicit Deep Capture authorization input.
+#[doc(hidden)]
+pub fn run_with_authorization<I>(
+    args: I,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Exit
 where
     I: IntoIterator<Item = OsString>,
 {
@@ -129,7 +213,7 @@ where
 
     let mut emitter = Emitter::new(err, format, verbosity);
     let result = match cli.command {
-        Some(command) => dispatch(command, json, out, &mut emitter),
+        Some(command) => dispatch(command, json, authorization, out, &mut emitter),
         // A bare invocation lists registered targets and points at `--help`
         // (section 17.4). The footer distinguishes it from an explicit `targets`.
         None => commands::targets::list_default(out, true, &mut emitter),
@@ -196,12 +280,13 @@ fn route_extcap(mut args: Vec<OsString>) -> Vec<OsString> {
 fn dispatch(
     command: Command,
     json: bool,
+    authorization: &mut dyn DeepCaptureAuthorizationInput,
     out: &mut dyn Write,
     emitter: &mut Emitter,
 ) -> Result<Exit, CliError> {
     match command {
         Command::Capture(args) => commands::capture::run(&args, emitter),
-        Command::DeepCapture(args) => commands::deep_capture::run(&args, emitter),
+        Command::DeepCapture(args) => commands::deep_capture::run(&args, authorization, emitter),
         Command::Bundle(args) => commands::bundle::run(&args, out),
         Command::ControlledTarget(args) => commands::deep_capture::run_controlled_target(&args),
         Command::BuildIdentity => commands::build_identity::run(out),

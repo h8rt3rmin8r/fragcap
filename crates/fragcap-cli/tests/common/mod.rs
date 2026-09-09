@@ -14,6 +14,22 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+struct ExactTestAuthorization;
+
+impl fragcap_cli::DeepCaptureAuthorizationInput for ExactTestAuthorization {
+    fn is_terminal(&self) -> bool {
+        true
+    }
+
+    fn read_response(&mut self, plan_id: &str, exact: bool) -> std::io::Result<Vec<u8>> {
+        Ok(if exact {
+            format!("{plan_id}\n").into_bytes()
+        } else {
+            b"yes\n".to_vec()
+        })
+    }
+}
+
 /// Build an argv, prepending the program name clap expects at position zero.
 pub fn argv(list: &[&str]) -> Vec<OsString> {
     std::iter::once("fragcap".to_string())
@@ -56,10 +72,18 @@ fn isolate_from_machine_state() {
 /// Run the command surface, returning the exit code, the stdout result stream,
 /// and the stderr diagnostics stream.
 pub fn run(list: &[&str]) -> (u8, String, String) {
+    run_with_authorization(list, &mut ExactTestAuthorization)
+}
+
+/// Run with a caller-controlled Deep Capture authorization boundary.
+pub fn run_with_authorization(
+    list: &[&str],
+    authorization: &mut dyn fragcap_cli::DeepCaptureAuthorizationInput,
+) -> (u8, String, String) {
     isolate_from_machine_state();
     let mut out: Vec<u8> = Vec::new();
     let mut err: Vec<u8> = Vec::new();
-    let exit = fragcap_cli::run_with(argv(list), &mut out, &mut err);
+    let exit = fragcap_cli::run_with_authorization(argv(list), authorization, &mut out, &mut err);
     (
         exit.code(),
         String::from_utf8(out).expect("stdout is UTF-8"),
