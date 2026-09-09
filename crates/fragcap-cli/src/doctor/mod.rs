@@ -294,6 +294,7 @@ pub struct NativeResourceContext {
     pub state: String,
     pub health: String,
     pub ownership_authority: String,
+    /// Whether this check offers Doctor's shared cleanup action.
     pub recovery_eligible: bool,
 }
 
@@ -719,7 +720,7 @@ mod presentation_tests {
                     detail: "An earlier session left cleanup incomplete for 界🎮 evidence. No active owner was proven, so Deep Capture is blocked. Session a-very-long-session-identity; resource trust-record."
                         .to_string(),
                     remediation: Some(
-                        "Run `fragcap doctor --fix` to review and confirm cleanup of this exact record."
+                        "Run `fragcap doctor --fix` to review and confirm cleanup of all eligible inactive Deep Capture records."
                             .to_string(),
                     ),
                 },

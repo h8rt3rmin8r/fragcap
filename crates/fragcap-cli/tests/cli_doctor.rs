@@ -542,6 +542,7 @@ fn deep_capture_residue_is_machine_readable_and_offers_cleanup() {
     assert!(human_words.contains("No active owner was proven"));
     assert!(human_words.contains("Deep Capture is blocked"));
     assert!(human_words.contains("review and confirm cleanup"));
+    assert!(human_words.contains("all eligible inactive Deep Capture records"));
     assert!(!human.contains("session=s1"));
     assert!(!human.contains("recovery authority"));
 }

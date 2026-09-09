@@ -10,13 +10,13 @@ Every native resource check uses the stable human label `native residue`. Its di
 - stable session and resource identity as secondary context; and
 - the safe next action, when one exists.
 
-Exact recoverable findings use this remediation meaning:
+Findings with an available Doctor cleanup action use this remediation meaning:
 
 ```text
-Run fragcap doctor --fix to review and confirm cleanup of this exact record.
+Run fragcap doctor --fix to review and confirm cleanup of all eligible inactive Deep Capture records.
 ```
 
-An abandoned session-owner diagnosis states that an earlier session ended without retiring its owner record, no active owner was proven, and Deep Capture remains blocked until exact cleanup is reviewed and confirmed. Active records never receive abandoned wording or cleanup guidance. Unknown and unsupported records never claim safety.
+An abandoned session-owner diagnosis states that an earlier session ended without retiring its owner record, no active owner was proven, and Deep Capture remains blocked until all eligible inactive Deep Capture records are reviewed and confirmed for cleanup. Active records never receive abandoned wording, cleanup guidance, or `recovery_eligible: true`. Unknown and unsupported records never claim safety.
 
 The aligned and compact layouts preserve the existing section order, status words, Capture verdict, and Deep Capture verdict. Output supports 40 through 80 display columns. Values are not truncated. An indivisible exact token may exceed the selected width.
 
@@ -44,7 +44,7 @@ Existing common fields remain present. A native residue check additionally conta
 }
 ```
 
-The nested object is omitted for non-native checks. Records remain one valid JSON value per line. The object never includes bundle paths, certificate material, capabilities, credentials, payloads, or cleanup confirmation state.
+The nested object is omitted for non-native checks. `recovery_eligible` is true exactly when the check offers Doctor's cleanup action, not merely when the underlying journal contains a recovery plan. Records remain one valid JSON value per line. The object never includes bundle paths, certificate material, capabilities, credentials, payloads, or cleanup confirmation state.
 
 ## Recovery compatibility
 

@@ -13,7 +13,7 @@ cargo test -p fragcap-cli doctor
 cargo test -p fragcap-cli --test cli_doctor
 ```
 
-Expected: every residue health class has truthful plain-language guidance, the abandoned owner regression is explicit, and action selection matches the existing recoverability facts.
+Expected: every residue health class has truthful plain-language guidance, the abandoned owner regression is explicit, and structured eligibility matches the unchanged Doctor action selection, including the active-resource case.
 
 ## 2. Inspect human layouts
 

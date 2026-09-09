@@ -629,11 +629,12 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                 },
                 |_| {
                     Some(
-                        "Run `fragcap doctor --fix` to review and confirm cleanup of this exact record."
+                        "Run `fragcap doctor --fix` to review and confirm cleanup of all eligible inactive Deep Capture records."
                             .to_string(),
                     )
                 },
             );
+            let recovery_eligible = check.action.is_some();
             check.with_native_presentation(
                 HumanPresentation {
                     name: "native residue".to_string(),
@@ -647,7 +648,7 @@ fn native_residue_checks(inventory: &super::residue::NativeResidueInventory) -> 
                     state: finding.state.clone(),
                     health: finding.health.as_str().to_string(),
                     ownership_authority: finding.ownership_authority.clone(),
-                    recovery_eligible: finding.recoverable,
+                    recovery_eligible,
                 },
             )
         })
@@ -670,7 +671,7 @@ fn native_residue_diagnosis(
         super::residue::ResidueHealth::Stale
             if finding.resource_id == "session-owner" && finding.state == "abandoned" =>
         {
-            "An earlier Deep Capture session ended without retiring its owner record. No active owner was proven, so Deep Capture is blocked until this exact record is reviewed and confirmed for cleanup."
+            "An earlier Deep Capture session ended without retiring its owner record. No active owner was proven, so Deep Capture is blocked until all eligible inactive Deep Capture records are reviewed and confirmed for cleanup."
                 .to_string()
         }
         super::residue::ResidueHealth::Stale => format!(
@@ -1279,7 +1280,7 @@ mod tests {
                 "Completed",
                 false,
             ),
-            (ResidueHealth::Active, "held", false, "active", false),
+            (ResidueHealth::Active, "held", true, "active", false),
             (
                 ResidueHealth::Stale,
                 "applied",
@@ -1334,7 +1335,7 @@ mod tests {
             assert_eq!(check.action.is_some(), expects_action, "{health:?}");
             assert_eq!(
                 check.native_resource.as_ref().unwrap().recovery_eligible,
-                recoverable
+                expects_action
             );
             if health == ResidueHealth::Healthy {
                 assert!(human
@@ -1349,7 +1350,10 @@ mod tests {
             let record: serde_json::Value =
                 serde_json::from_str(json.lines().next().unwrap()).unwrap();
             assert_eq!(record["native_resource"]["health"], health.as_str());
-            assert_eq!(record["native_resource"]["recovery_eligible"], recoverable);
+            assert_eq!(
+                record["native_resource"]["recovery_eligible"],
+                expects_action
+            );
         }
     }
 

@@ -40,7 +40,7 @@ Close issue #373 by separating Doctor's human residue presentation from its stab
 - **P-6 Glossary first**: Pass. Doctor, residue, session owner, recovery, and Deep Capture are established terms. The implementation introduces no new domain term.
 - **P-7 Wrappers stay thin**: Pass. No wrapper changes.
 - **P-8 House standards apply**: Pass. UTF-8 without BOM, LF, formatting, lint, tests, docs, privacy, and changelog gates remain blocking.
-- **P-9 The instrument does not lie**: Pass. Wording is derived from the exact S124 state, health, ownership authority, and recoverability facts, and ambiguous records remain explicitly unproven.
+- **P-9 The instrument does not lie**: Pass. Wording is derived from the exact S124 state, health, ownership authority, and recoverability facts; structured eligibility follows the actual Doctor action, and ambiguous records remain explicitly unproven.
 - **P-10 One path to a target**: Pass. Target resolution and storage do not change.
 - **P-11 The specification describes what shipped**: Pass. Master specification, outline, roadmap, site reference, and changelog move with the implementation without claiming Deep Capture completion.
 

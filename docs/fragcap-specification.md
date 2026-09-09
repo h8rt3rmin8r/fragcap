@@ -4564,9 +4564,10 @@ proven, the consequence for Deep Capture readiness, and the safe next action.
 Session and resource identities remain secondary context and cannot move the
 status column. An abandoned session-owner record explicitly says that the
 earlier session ended without retiring its owner record, no active owner was
-proven, and Deep Capture is blocked until the exact cleanup is reviewed and
-confirmed through `fragcap doctor --fix`. Active records never receive cleanup
-guidance, and unknown or unsupported records never imply safety.
+proven, and Deep Capture is blocked until all eligible inactive Deep Capture
+records are reviewed and confirmed for cleanup through `fragcap doctor --fix`.
+Active records never receive cleanup guidance, and unknown or unsupported
+records never imply safety.
 
 The human report defaults to 80 display columns for deterministic redirected
 output. A terminal width is bounded to 40 through 80 columns. Ordinary widths
@@ -4579,8 +4580,10 @@ JSON check records keep their existing `section`, machine `name`, machine
 `detail`, `status`, `scope`, and optional `remediation`. Every native residue
 check also carries a `native_resource` object with stable `session_id`,
 `resource_id`, `kind`, `state`, `health`, `ownership_authority`, and
-`recovery_eligible` fields. This additive object contains no bundle path or
-secret. Verdict records and cleanup action selection remain unchanged.
+`recovery_eligible` fields. Eligibility is true exactly when that check offers
+Doctor's shared cleanup action; an active resource can retain an exact journal
+plan without becoming eligible. This additive object contains no bundle path
+or secret. Verdict records and cleanup action selection remain unchanged.
 
 An active session is proven by an opaque generation-specific synchronization
 lease held for the session adapter lifetime. The recorded PID is diagnostic and

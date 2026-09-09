@@ -36,13 +36,13 @@
 
 **Goal**: Explain each native resource condition, ownership proof, readiness consequence, identity, and safe next action in plain language.
 
-**Independent Test**: An abandoned session-owner report alone communicates the earlier incomplete session, unretired record, absent active-owner proof, blocking consequence, and exact confirmed Doctor cleanup path.
+**Independent Test**: An abandoned session-owner report alone communicates the earlier incomplete session, unretired record, absent active-owner proof, blocking consequence, and the full scope of Doctor's confirmed cleanup path.
 
 ### Tests for User Story 1
 
 - [x] T007 [US1] Add failing diagnosis tests for healthy, active, stale, cleanup-failed, unknown, unsupported, recoverable, and non-recoverable findings in `crates/fragcap-cli/src/doctor/checks.rs`
 - [x] T008 [US1] Add the failing abandoned session-owner regression and assert all required meanings plus absence of internal key-value prose and `recovery authority` in `crates/fragcap-cli/tests/cli_doctor.rs`
-- [x] T009 [US1] Add cleanup-action parity tests proving the before-and-after action set depends only on existing recoverability in `crates/fragcap-cli/src/doctor/checks.rs`
+- [x] T009 [US1] Add cleanup-action parity tests proving structured eligibility matches the unchanged Doctor action set, including an active finding whose journal still has a recovery plan, in `crates/fragcap-cli/src/doctor/checks.rs`
 
 ### Implementation for User Story 1
 

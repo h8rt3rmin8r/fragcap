@@ -24,7 +24,7 @@ Exact non-secret machine context copied from one inventory finding.
 | `state` | string | Existing lifecycle state |
 | `health` | string | Existing residue health vocabulary |
 | `ownership_authority` | string | Existing observation or recovery authority identifier |
-| `recovery_eligible` | boolean | Exact existing recoverability fact |
+| `recovery_eligible` | boolean | Whether this check actually offers Doctor's shared cleanup action |
 
 The context excludes bundle paths, secrets, capabilities, payloads, and cleanup implementation state.
 
@@ -36,7 +36,7 @@ The existing Doctor `Check` retains `section`, machine `name`, machine `detail`,
 
 - Human presentation never changes status, scope, action, verdict, or exit code.
 - A native resource context is present on every native residue check and absent elsewhere.
-- `recovery_eligible` equals the finding's existing `recoverable` value.
+- `recovery_eligible` equals `Check.action.is_some()`; an active resource can retain an exact journal plan while remaining ineligible for Doctor cleanup.
 - `Action::Cleanup` is offered under the same condition as before S135.
 - Common JSON fields preserve their existing machine values.
 
@@ -55,7 +55,7 @@ The selected width is 40 through 80 display cells. An indivisible exact token ma
 | --- | --- |
 | Healthy | Completed retained history; no cleanup required; non-blocking; terminal resource state alone does not determine live session ownership |
 | Active | Current active ownership is proven; no cleanup offered |
-| Stale abandoned session owner | Earlier session ended without retiring owner record; no active owner proven; Deep Capture blocked pending confirmed exact cleanup |
+| Stale abandoned session owner | Earlier session ended without retiring owner record; no active owner proven; Deep Capture blocked pending review and confirmed cleanup of all eligible inactive records |
 | Other stale | Earlier session left cleanup incomplete; no active owner proven; blocking consequence and exact eligibility |
 | Cleanup failed | A cleanup attempt failed; retained record and exact retry eligibility remain visible |
 | Unknown or ambiguous | Required lifecycle or ownership fact could not be proven; no safety claim |

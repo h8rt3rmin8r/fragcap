@@ -56,11 +56,11 @@ An automation consumer continues to receive stable exact residue identity and li
 
 **Why this priority**: Human simplification must not hide observation authority, invent safety, or create a second recovery policy.
 
-**Independent Test**: Render controlled healthy, active, stale, cleanup-failed, and unknown findings in machine-readable mode, then compare offered actions before and after the presentation change. Exact identity, state, health, ownership authority, and recovery eligibility remain available, and the action set is identical.
+**Independent Test**: Render controlled healthy, active, stale, cleanup-failed, and unknown findings in machine-readable mode, then compare offered actions before and after the presentation change. Exact identity, state, health, ownership authority, and actual Doctor cleanup-action eligibility remain available, and the action set is identical.
 
 **Acceptance Scenarios**:
 
-1. **Given** any native residue finding, **when** machine-readable output is selected, **then** its stable session identity, resource identity, resource kind, lifecycle state, health, ownership authority, and exact recovery eligibility are available as structured non-secret values.
+1. **Given** any native residue finding, **when** machine-readable output is selected, **then** its stable session identity, resource identity, resource kind, lifecycle state, health, ownership authority, and actual Doctor cleanup-action eligibility are available as structured non-secret values.
 2. **Given** recoverable and non-recoverable findings, **when** Doctor determines actions, **then** only the same exact recoverable findings offer the existing cleanup action.
 3. **Given** a partial or failed cleanup record, **when** human wording is produced, **then** retained evidence and the exact retry boundary remain visible without claiming successful cleanup.
 4. **Given** the improved presentation, **when** Doctor runs read-only, **then** it creates no filesystem, trust, routing, listener, process-control, or cleanup effect.
@@ -84,19 +84,19 @@ An automation consumer continues to receive stable exact residue identity and li
 - **FR-001**: Human native residue findings MUST lead with a short stable label and a plain-language diagnosis rather than a dynamic session/resource name or flattened internal key-value sequence.
 - **FR-002**: Every human residue diagnosis MUST explain what was observed, its consequence for Deep Capture readiness, and whether active ownership was proven.
 - **FR-003**: Stable session and resource identity MUST remain available as secondary human context without controlling the report's status-column position.
-- **FR-004**: Abandoned session-owner guidance MUST state that the earlier session ended without retiring its owner record, that no active owner was proven, and that Deep Capture is blocked pending exact confirmed cleanup.
+- **FR-004**: Abandoned session-owner guidance MUST state that the earlier session ended without retiring its owner record, that no active owner was proven, and that Deep Capture is blocked pending review and confirmed cleanup of all eligible inactive Deep Capture records.
 - **FR-005**: A generation-proven active owner MUST be described as active, MUST remain non-blocking when current policy says it is healthy, and MUST NOT receive a cleanup action.
 - **FR-006**: Healthy retained history MUST be described as completed history and MUST NOT be presented as residue requiring cleanup.
 - **FR-007**: Stale and cleanup-failed resources MUST distinguish incomplete cleanup from a failed cleanup attempt and MUST state exact recovery availability truthfully.
 - **FR-008**: Unknown, unsupported, ambiguous, and non-recoverable findings MUST explain their limitation without claiming absence, safety, or cleanup eligibility.
-- **FR-009**: Human remediation for an exact recoverable finding MUST tell the operator to run `fragcap doctor --fix` to review and confirm cleanup of the exact record, without requiring internal terms such as recovery authority.
+- **FR-009**: Human remediation for a finding with an available Doctor cleanup action MUST tell the operator to run `fragcap doctor --fix` and disclose that one review and confirmation covers all eligible inactive Deep Capture records, without requiring internal terms such as recovery authority.
 - **FR-010**: The human report MUST preserve its existing section ordering, status vocabulary, separate Capture and Deep Capture verdicts, and ordinary non-residue check meaning.
 - **FR-011**: The default human report MUST keep ordinary lines within 80 display columns except an indivisible token that cannot fit without altering its value.
 - **FR-012**: The human renderer MUST support widths of 40 display columns and greater and MUST use a compact readable layout at and below the width where aligned columns cannot retain useful detail space.
 - **FR-013**: Wrapped detail, secondary context, and remediation continuations MUST align to the actual selected layout rather than a constant belonging to a different layout.
 - **FR-014**: Visible alignment and wrapping MUST count terminal display cells, preserve complete Unicode scalar values, and ignore non-printing color sequences.
 - **FR-015**: Human output MUST retain every observed non-secret identity value without silent truncation or normalization.
-- **FR-016**: Machine-readable output for every native residue finding MUST expose stable session identity, resource identity, resource kind, lifecycle state, health, ownership authority, and recovery eligibility as structured fields.
+- **FR-016**: Machine-readable output for every native residue finding MUST expose stable session identity, resource identity, resource kind, lifecycle state, health, ownership authority, and actual Doctor cleanup-action eligibility as structured fields.
 - **FR-017**: Machine-readable output MUST remain one valid record per line, retain the existing common check fields and verdict records, and expose no private key, capability, payload, or newly added local path.
 - **FR-018**: Cleanup action selection, confirmation, execution, shared recovery authority, active-resource preservation, partial-failure behavior, and exit semantics MUST remain unchanged.
 - **FR-019**: Read-only Doctor execution MUST remain free of filesystem, trust-store, routing, listener, process-control, and cleanup effects.
@@ -117,7 +117,7 @@ An automation consumer continues to receive stable exact residue identity and li
 ### Measurable Outcomes
 
 - **SC-001**: One hundred percent of controlled residue health and recovery combinations produce a human diagnosis that states the observed condition, active-ownership truth, readiness consequence, and available next action without flattened key-value prose.
-- **SC-002**: The abandoned session-owner regression report contains all four required meanings: earlier incomplete session, unretired owner record, no proven active owner, and confirmed exact cleanup guidance.
+- **SC-002**: The abandoned session-owner regression report contains all four required meanings: earlier incomplete session, unretired owner record, no proven active owner, and review and confirmation of all eligible inactive Deep Capture records.
 - **SC-003**: One hundred percent of ordinary human report lines fit the selected default or supported narrow display width, except indivisible tokens whose exact preservation is explicitly permitted.
 - **SC-004**: Plain and colorized renderings have identical visible text, alignment, and wrapping for every controlled layout case.
 - **SC-005**: One hundred percent of controlled native residue records expose all seven required structured machine facts and parse as one valid record per line.
@@ -127,7 +127,7 @@ An automation consumer continues to receive stable exact residue identity and li
 
 ## Assumptions
 
-- The S124 native residue inventory remains the sole authority for health, ownership, and recovery eligibility.
+- The S124 native residue inventory remains the sole authority for health, ownership, and recorded recovery plans; existing Doctor action selection remains the authority for whether cleanup is offered.
 - The S109 and S124 shared recovery planner remains the sole source of cleanup actions.
 - The existing 80-column default is retained and 40 display columns is the minimum supported human-report width.
 - Machine-readable output may add fields to native residue check records while retaining all existing common fields and verdict records.

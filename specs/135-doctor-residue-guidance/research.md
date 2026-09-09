@@ -10,7 +10,7 @@
 
 ## D2. Derive wording from exact residue facts, not text parsing
 
-**Decision**: Map the typed `state`, `health`, ownership authority, and recovery eligibility from `ResourceFinding` to health-specific diagnosis sentences. Preserve the inventory's original detail as secondary evidence where it adds facts, but never parse that prose to determine behavior.
+**Decision**: Map the typed `state`, `health`, ownership authority, and recorded recoverability from `ResourceFinding` to health-specific diagnosis sentences. Report structured eligibility from the cleanup action the existing Doctor policy actually offers. Preserve the inventory's original detail as secondary evidence where it adds facts, but never parse that prose to determine behavior.
 
 **Rationale**: S124 already owns classification. Typed matching makes the abandoned-owner regression exact and keeps active, unknown, unsupported, and failed cases truthful.
 
@@ -20,7 +20,7 @@ A terminal resource can coexist with a generation-proven active session because 
 
 ## D3. Make structured native context additive and non-secret
 
-**Decision**: Native residue check records gain `native_resource` with exactly `session_id`, `resource_id`, `kind`, `state`, `health`, `ownership_authority`, and `recovery_eligible`. Existing common fields and separate verdict records remain unchanged. Bundle paths and action internals are excluded.
+**Decision**: Native residue check records gain `native_resource` with exactly `session_id`, `resource_id`, `kind`, `state`, `health`, `ownership_authority`, and `recovery_eligible`. The eligibility field reflects whether that check actually offers Doctor's cleanup action. Existing common fields and separate verdict records remain unchanged. Bundle paths and action internals are excluded.
 
 **Rationale**: These seven facts let automation understand the finding without scraping human text and are already present in memory. Omitting bundle paths avoids adding a new local-path disclosure.
 
@@ -46,8 +46,8 @@ During extraction, S135 deliberately corrects one prior helper result: U+2764 fo
 
 ## D6. Keep recovery behavior completely outside presentation
 
-**Decision**: Continue to derive `Action::Cleanup` solely from existing `recoverable` findings and execute through the shared recovery planner. Human remediation says `Run fragcap doctor --fix to review and confirm cleanup of this exact record.` No presentation field participates in action selection.
+**Decision**: Continue to derive `Action::Cleanup` solely from existing `recoverable` findings and execute through the shared recovery planner. Human remediation says `Run fragcap doctor --fix to review and confirm cleanup of all eligible inactive Deep Capture records.` No presentation field participates in action selection.
 
-**Rationale**: Issue #373 is a comprehension defect. Cleanup authority, confirmation, partial-failure behavior, and active-resource preservation already have a security-reviewed owner.
+**Rationale**: Issue #373 is a comprehension defect. Cleanup authority, confirmation, partial-failure behavior, and active-resource preservation already have a security-reviewed owner. The shared action is offered once and processes every eligible inactive record, so row-level wording must disclose that full confirmation scope.
 
 **Alternatives considered**: Offering cleanup based on health wording was rejected because ambiguous and unsupported states need exact authority. Adding a residue-specific fixer was rejected because it would duplicate S109/S124 recovery logic.
