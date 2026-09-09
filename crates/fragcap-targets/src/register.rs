@@ -15,6 +15,172 @@ use crate::entry::{ClassificationSource, TargetEntry};
 use crate::source::{CandidateIdentity, CandidateTarget};
 use crate::store::Store;
 use crate::{handle, identifier, TargetsError};
+use fragcap_profile::{FidelityTier, SignatureCategory};
+
+/// Why a discovery candidate may be persisted without an explicit user choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticRegistrationBasis {
+    /// A platform source supplied its durable application identity.
+    AuthoritativePlatformIdentity,
+    /// A local path carries positive, verified engine evidence.
+    VerifiedEngineEvidence,
+}
+
+impl AutomaticRegistrationBasis {
+    /// Stable CLI spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthoritativePlatformIdentity => "authoritative-platform-identity",
+            Self::VerifiedEngineEvidence => "verified-engine-evidence",
+        }
+    }
+}
+
+/// Why a discovered candidate is visible but withheld from automatic persistence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticRegistrationRefusal {
+    /// The candidate has neither a platform identity nor verified engine evidence.
+    InsufficientTitleEvidence,
+}
+
+impl AutomaticRegistrationRefusal {
+    /// Stable CLI spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InsufficientTitleEvidence => "insufficient-title-evidence",
+        }
+    }
+}
+
+/// The automatic-registration decision for one discovery candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticRegistrationDecision {
+    /// Safe for automatic persistence for the named reason.
+    Eligible(AutomaticRegistrationBasis),
+    /// Available to explicit discovery but withheld from automatic persistence.
+    Refused(AutomaticRegistrationRefusal),
+}
+
+/// One withheld candidate and the exact refusal reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedAutomaticCandidate {
+    /// The original candidate, unchanged.
+    pub candidate: CandidateTarget,
+    /// The policy reason that withheld it.
+    pub reason: AutomaticRegistrationRefusal,
+}
+
+/// Conserved partition of one produced discovery set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomaticRegistrationPlan {
+    /// Candidates supplied by discovery.
+    pub produced: usize,
+    /// Candidates admitted to the single registration operation.
+    pub accepted: Vec<CandidateTarget>,
+    /// Candidates retained only for explicit discovery.
+    pub refused: Vec<RefusedAutomaticCandidate>,
+}
+
+/// Conserved result of policy admission followed by idempotent registration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AutomaticRegistrationOutcome {
+    /// Candidates evaluated.
+    pub produced: usize,
+    /// Candidates admitted by the precision policy.
+    pub eligible: usize,
+    /// Candidates withheld from automatic persistence.
+    pub refused: usize,
+    /// Eligible candidates newly inserted.
+    pub registered: usize,
+    /// Eligible candidates already represented.
+    pub already_present: usize,
+}
+
+impl AutomaticRegistrationOutcome {
+    /// Both policy and registration partitions reconcile exactly.
+    pub fn is_conserved(&self) -> bool {
+        self.produced == self.eligible + self.refused
+            && self.eligible == self.registered + self.already_present
+    }
+}
+
+impl AutomaticRegistrationPlan {
+    /// Total candidates decided by the policy.
+    pub fn considered(&self) -> usize {
+        self.produced
+    }
+
+    /// Whether every input candidate reached exactly one decision.
+    pub fn is_conserved(&self) -> bool {
+        self.produced == self.accepted.len() + self.refused.len()
+    }
+}
+
+/// Decide whether one produced candidate is safe to persist automatically.
+///
+/// Location, source membership, classification, anti-cheat, and DRM evidence do
+/// not grant admission. Steam owns its durable application identities; local path
+/// candidates need positive engine evidence at verified-or-stronger fidelity.
+pub fn automatic_registration_decision(
+    candidate: &CandidateTarget,
+) -> AutomaticRegistrationDecision {
+    if matches!(candidate.identity, CandidateIdentity::SteamAppId(_))
+        && candidate.source_name == "steam"
+    {
+        return AutomaticRegistrationDecision::Eligible(
+            AutomaticRegistrationBasis::AuthoritativePlatformIdentity,
+        );
+    }
+
+    if matches!(candidate.identity, CandidateIdentity::Path(_))
+        && candidate.evidence.iter().any(|finding| {
+            finding.category == SignatureCategory::Engine
+                && finding.fidelity >= FidelityTier::Verified
+        })
+    {
+        return AutomaticRegistrationDecision::Eligible(
+            AutomaticRegistrationBasis::VerifiedEngineEvidence,
+        );
+    }
+
+    AutomaticRegistrationDecision::Refused(AutomaticRegistrationRefusal::InsufficientTitleEvidence)
+}
+
+/// Partition a discovery set through [`automatic_registration_decision`].
+pub fn automatic_registration_plan(candidates: &[CandidateTarget]) -> AutomaticRegistrationPlan {
+    let mut plan = AutomaticRegistrationPlan {
+        produced: candidates.len(),
+        ..AutomaticRegistrationPlan::default()
+    };
+    for candidate in candidates {
+        match automatic_registration_decision(candidate) {
+            AutomaticRegistrationDecision::Eligible(_) => plan.accepted.push(candidate.clone()),
+            AutomaticRegistrationDecision::Refused(reason) => {
+                plan.refused.push(RefusedAutomaticCandidate {
+                    candidate: candidate.clone(),
+                    reason,
+                });
+            }
+        }
+    }
+    plan
+}
+
+/// Apply automatic admission and register only accepted candidates.
+pub fn register_automatic_candidates(
+    store: &mut Store,
+    candidates: &[CandidateTarget],
+) -> Result<AutomaticRegistrationOutcome, TargetsError> {
+    let plan = automatic_registration_plan(candidates);
+    let registration = register_candidates(store, &plan.accepted)?;
+    Ok(AutomaticRegistrationOutcome {
+        produced: plan.produced,
+        eligible: plan.accepted.len(),
+        refused: plan.refused.len(),
+        registered: registration.registered,
+        already_present: registration.already_present,
+    })
+}
 
 /// The result of registering a batch of candidates.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +320,7 @@ mod tests {
     use super::*;
     use crate::entry::TargetClassification;
     use crate::source::CandidateTarget;
-    use fragcap_profile::FidelityTier;
+    use fragcap_profile::{DetectionFinding, FidelityTier, SignatureCategory};
 
     fn steam_candidate(appid: u32, name: &str) -> CandidateTarget {
         CandidateTarget {
@@ -184,6 +350,96 @@ mod tests {
             folder_name: None,
             executable_hint: None,
         }
+    }
+
+    fn verified_engine_candidate(path: &str, name: &str) -> CandidateTarget {
+        let mut candidate = path_candidate(path, name);
+        candidate.fidelity = FidelityTier::Verified;
+        candidate.evidence.push(DetectionFinding {
+            category: SignatureCategory::Engine,
+            product: "Fixture Engine".to_string(),
+            evidence: "FixtureEngine.dll".to_string(),
+            fidelity: FidelityTier::Verified,
+        });
+        candidate
+    }
+
+    #[test]
+    fn automatic_registration_accepts_authoritative_platform_identity_without_engine_evidence() {
+        let decision = automatic_registration_decision(&steam_candidate(620, "Portal 2"));
+        assert_eq!(
+            decision,
+            AutomaticRegistrationDecision::Eligible(
+                AutomaticRegistrationBasis::AuthoritativePlatformIdentity
+            )
+        );
+    }
+
+    #[test]
+    fn automatic_registration_accepts_only_strong_engine_evidence_for_path_candidates() {
+        let strong = verified_engine_candidate("C:/Games/Foo", "Foo");
+        assert_eq!(
+            automatic_registration_decision(&strong),
+            AutomaticRegistrationDecision::Eligible(
+                AutomaticRegistrationBasis::VerifiedEngineEvidence
+            )
+        );
+
+        let mut weak = strong;
+        weak.evidence[0].fidelity = FidelityTier::HeuristicUnverified;
+        assert_eq!(
+            automatic_registration_decision(&weak),
+            AutomaticRegistrationDecision::Refused(
+                AutomaticRegistrationRefusal::InsufficientTitleEvidence
+            )
+        );
+
+        let mut non_engine = weak;
+        non_engine.evidence[0].category = SignatureCategory::AntiCheat;
+        non_engine.evidence[0].fidelity = FidelityTier::Verified;
+        assert_eq!(
+            automatic_registration_decision(&non_engine),
+            AutomaticRegistrationDecision::Refused(
+                AutomaticRegistrationRefusal::InsufficientTitleEvidence
+            )
+        );
+
+        let mut forged_platform = steam_candidate(42, "Not from Steam");
+        forged_platform.source_name = "known-roots".to_string();
+        assert_eq!(
+            automatic_registration_decision(&forged_platform),
+            AutomaticRegistrationDecision::Refused(
+                AutomaticRegistrationRefusal::InsufficientTitleEvidence
+            )
+        );
+    }
+
+    #[test]
+    fn location_alone_is_refused_and_batch_decisions_are_conserved() {
+        let candidates = vec![
+            steam_candidate(620, "Portal 2"),
+            verified_engine_candidate("C:/Games/Foo", "Foo"),
+            path_candidate("C:/Games/Browser Assets", "Browser Assets"),
+        ];
+        let plan = automatic_registration_plan(&candidates);
+        assert_eq!(plan.accepted.len(), 2);
+        assert_eq!(plan.refused.len(), 1);
+        assert_eq!(plan.considered(), candidates.len());
+        assert!(plan.is_conserved());
+        assert_eq!(
+            plan.refused[0].reason,
+            AutomaticRegistrationRefusal::InsufficientTitleEvidence
+        );
+
+        let mut store = Store::open_in_memory().expect("store");
+        let outcome = register_automatic_candidates(&mut store, &candidates).expect("register");
+        assert_eq!(outcome.produced, 3);
+        assert_eq!(outcome.eligible, 2);
+        assert_eq!(outcome.refused, 1);
+        assert_eq!(outcome.registered, 2);
+        assert_eq!(outcome.already_present, 0);
+        assert!(outcome.is_conserved());
+        assert_eq!(store.targets().expect("targets").len(), 2);
     }
 
     #[test]

@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use fragcap_profile::signature::SignatureSet;
 use fragcap_profile::{DetectionFinding, FidelityTier};
 use fragcap_targets::{
-    CandidateIdentity, CandidateTarget, DetectionScan, Discovery, DiscoveryAccount, Store,
-    TargetClassification, TargetSource, TargetsError,
+    AuthoritativePlatformInstall, CandidateIdentity, CandidateTarget, DetectionScan, Discovery,
+    DiscoveryAccount, PlatformInventory, Store, TargetClassification, TargetSource, TargetsError,
 };
 
 /// A Steam install that appinfo identifies as installed but not a capturable game
@@ -94,6 +94,39 @@ fn is_non_game_steam_app_type(app_type: Option<&str>) -> bool {
             t.to_ascii_lowercase().as_str(),
             "music" | "tool" | "application" | "config" | "video"
         )
+    })
+}
+
+/// Build the exact Steam facts consumed by the platform-neutral reconciliation
+/// planner. Malformed manifests and invalid application identities make the
+/// inventory incomplete and therefore remove cleanup authority.
+pub fn steam_platform_inventory(
+    steam_root: impl AsRef<Path>,
+) -> Result<PlatformInventory, TargetsError> {
+    let installation = fragcap_steam::discover_in(steam_root.as_ref())
+        .map_err(|e| TargetsError::Discovery(format!("steam discovery failed: {e}")))?;
+    let mut truncated = installation
+        .malformed_manifests
+        .max(installation.warnings.len() as u64);
+    let authoritative_installs = installation
+        .titles
+        .iter()
+        .filter(|title| !is_non_game_steam_app_type(title.app_type.as_deref()))
+        .filter_map(|title| match title.app_id.parse::<u32>() {
+            Ok(appid) => Some(AuthoritativePlatformInstall {
+                anchor: fragcap_targets::identifier::canonicalize_anchor(&format!("steam:{appid}")),
+                install_root: title.install_dir.display().to_string(),
+            }),
+            Err(_) => {
+                truncated += 1;
+                None
+            }
+        })
+        .collect();
+    Ok(PlatformInventory {
+        client_roots: vec![installation.root.display().to_string()],
+        authoritative_installs,
+        truncated,
     })
 }
 

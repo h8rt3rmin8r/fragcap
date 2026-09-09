@@ -778,6 +778,49 @@ impl Store {
         Ok(removed > 0)
     }
 
+    /// Delete exact previewed rows in one transaction.
+    ///
+    /// Every complete [`TargetEntry`] is re-read after the transaction begins. A
+    /// missing or changed row aborts the whole operation before any delete, so a
+    /// reconciliation confirmation can never apply a stale preview.
+    pub fn delete_targets_if_unchanged(
+        &mut self,
+        expected: &[TargetEntry],
+    ) -> Result<usize, TargetsError> {
+        let tx = self.conn.transaction()?;
+        for entry in expected {
+            let id = entry.id.ok_or_else(|| {
+                TargetsError::Model("previewed target has no database row id".to_string())
+            })?;
+            let current = tx
+                .query_row(
+                    "SELECT id, stable_id, handle, name, classification,
+                            classification_source, fidelity, provenance, anchor,
+                            launch_entries, install_root, evidence, detection_scan,
+                            folder_name, executable_hint
+                     FROM targets WHERE id = ?1",
+                    params![id],
+                    read_target_row,
+                )
+                .optional()?
+                .transpose_targets()?;
+            if current.as_ref() != Some(entry) {
+                return Err(TargetsError::Model(format!(
+                    "reconciliation preview is stale for target {} (row {id}); no rows were removed",
+                    entry.stable_id
+                )));
+            }
+        }
+        for entry in expected {
+            tx.execute(
+                "DELETE FROM targets WHERE id = ?1",
+                params![entry.id.expect("validated above")],
+            )?;
+        }
+        tx.commit()?;
+        Ok(expected.len())
+    }
+
     /// Overwrite the mutable fields of the target whose `stable_id` matches
     /// `entry.stable_id`. Used by import to merge an incoming record onto an
     /// existing row in place (identity preserved, no duplicate). The handle,
@@ -2209,6 +2252,56 @@ mod tests {
             !store.delete_target(id).expect("delete again"),
             "second delete is a no-op"
         );
+    }
+
+    #[test]
+    fn exact_batch_delete_is_atomic_and_refuses_stale_or_missing_rows() {
+        let mut store = Store::open_in_memory().expect("store");
+        let first_id = store
+            .insert_target(&sample_target(
+                "first",
+                Some("steam:41"),
+                FidelityTier::Authored,
+            ))
+            .expect("insert first");
+        let second_id = store
+            .insert_target(&sample_target(
+                "second",
+                Some("steam:42"),
+                FidelityTier::Authored,
+            ))
+            .expect("insert second");
+        let preview = vec![
+            store.target(first_id).expect("read").expect("first"),
+            store.target(second_id).expect("read").expect("second"),
+        ];
+
+        let mut changed = preview[1].clone();
+        changed.name = "changed after preview".to_string();
+        store.update_target(&changed).expect("change row");
+        assert!(store.delete_targets_if_unchanged(&preview).is_err());
+        assert_eq!(
+            store.targets().expect("rows").len(),
+            2,
+            "stale batch deletes none"
+        );
+
+        let current = store.targets().expect("current preview");
+        store
+            .delete_target(second_id)
+            .expect("remove second externally");
+        assert!(store.delete_targets_if_unchanged(&current).is_err());
+        assert!(
+            store.target(first_id).expect("read first").is_some(),
+            "missing row aborts before deleting the first"
+        );
+
+        let exact = vec![store.target(first_id).expect("read").expect("first")];
+        assert_eq!(
+            store.delete_targets_if_unchanged(&exact).expect("delete"),
+            1
+        );
+        assert!(store.targets().expect("rows").is_empty());
     }
 
     #[test]
