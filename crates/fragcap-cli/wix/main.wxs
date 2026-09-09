@@ -163,8 +163,10 @@
       selects the unchecked current-user option; silent removal must provide both
       exact values. The immediate action captures the initiating user's exact
       AppData roots into CustomActionData. The deferred action impersonates that
-      user and invokes fragcap's shared inventory, recovery, deletion, and report
-      authority before the installed executable is removed.
+      user, previews the exact supplied inventory, and passes its identifier into
+      fragcap's shared recovery, deletion, and report authority before the
+      installed executable is removed. No installer-only confirmation bypass
+      exists on the public process boundary.
 
       All-users cleanup is deliberately not a static MSI checkbox. It requires the
       separately previewed and digest-bound all-users fresh-start command
@@ -175,7 +177,7 @@
     <Property Id="FRAGCAP_FRESH_START_SCOPE" Secure="yes" />
     <CustomAction Id="SetFreshStartCurrentUser"
                   Property="FreshStartCurrentUser"
-                  Value="&quot;[INSTALLDIR]fragcap.exe&quot; fresh-start --scope current-user --roaming-root &quot;[AppDataFolder]fragcap&quot; --local-root &quot;[LocalAppDataFolder]fragcap&quot; --installer-confirmed --yes --report &quot;[TempFolder]fragcap-fresh-start-[ProductCode].json&quot;"
+                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;&amp; {param($exe,$roaming,$local,$temp) $roots=@('--installer-adapter','--roaming-root',$roaming,'--local-root',$local); $preview=&amp; $exe --json fresh-start --scope current-user --preview @roots | ConvertFrom-Json; if($LASTEXITCODE -ne 0 -or $null -eq $preview.inventory_id){exit 1}; $report=Join-Path $temp ('fragcap-fresh-start-'+[guid]::NewGuid().ToString('N')+'.json'); &amp; $exe fresh-start --scope current-user @roots --confirm $preview.inventory_id --yes --report $report; exit $LASTEXITCODE}&quot; &quot;[INSTALLDIR]fragcap.exe&quot; &quot;[AppDataFolder]fragcap&quot; &quot;[LocalAppDataFolder]fragcap&quot; &quot;[TempFolder].&quot;"
                   Execute="immediate" />
     <CustomAction Id="FreshStartCurrentUser"
                   BinaryKey="WixCA"

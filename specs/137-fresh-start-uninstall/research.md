@@ -28,7 +28,7 @@ Windows CurrentUser certificate trust is bound to the profile identity, not to t
 
 The inventory identifier is BLAKE3 over a versioned canonical serialization containing scope, profile identity, root kind, canonical root, entry kind, relative path, file type, and observed metadata used by validation. Sorting makes equivalent inventories stable. Execution recomputes the inventory and uses constant-time comparison through the existing `subtle` dependency. A changed path, owner, link status, category, or entry requires a new preview.
 
-A bare `--yes` was rejected for all-users scope because it authorizes a class of paths rather than the exact paths reviewed. The MSI current-user path may use `--yes` because the static dialog itself displays the two exact roots and passes them unchanged in the same transaction.
+A bare `--yes` is rejected for every scope because it authorizes a class of paths rather than the exact current inventory. The deferred MSI action previews the two displayed roots, extracts that inventory identifier, and passes it into the immediately following execution in the same transaction. Its hidden adapter only verifies that the supplied roots equal the impersonated initiating user's canonical roots; it does not bypass digest confirmation.
 
 ## Decision 6: Inventory without following redirections
 

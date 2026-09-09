@@ -194,7 +194,7 @@ pub struct FreshStartArgs {
     pub scope: FreshStartScopeArg,
 
     /// Preview exact roots and categories without deleting anything.
-    #[arg(long, conflicts_with_all = ["confirm", "yes", "installer_confirmed"])]
+    #[arg(long, conflicts_with_all = ["confirm", "yes"])]
     pub preview: bool,
 
     /// Execute only if the current inventory matches this preview identifier.
@@ -217,9 +217,9 @@ pub struct FreshStartArgs {
     #[arg(long, hide = true, requires = "roaming_root")]
     pub local_root: Option<PathBuf>,
 
-    /// Use the already-confirmed MSI current-user consent surface.
+    /// Verify exact initiating-user roots supplied by the MSI adapter.
     #[arg(long, hide = true)]
-    pub installer_confirmed: bool,
+    pub installer_adapter: bool,
 }
 
 /// What a capture writes out, as distinct from what it observes.

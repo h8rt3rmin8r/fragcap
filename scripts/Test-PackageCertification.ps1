@@ -666,7 +666,9 @@ Param(
         $freshStartReport = Join-Path $scratch 'fresh-start-report.json'
         $roamingRoot = Join-Path $cleanEnvironment.APPDATA 'fragcap'
         $localRoot = Join-Path $cleanEnvironment.LOCALAPPDATA 'fragcap'
-        $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--installer-confirmed', '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment
+        $freshStartPreview = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--preview', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot) -Environment $cleanEnvironment
+        $freshStartInventory = $freshStartPreview.Stdout | ConvertFrom-Json -Depth 32
+        $freshStart = Invoke-Fragcap -Executable $installedExecutable -Arguments @('--json', 'fresh-start', '--scope', 'current-user', '--installer-adapter', '--roaming-root', $roamingRoot, '--local-root', $localRoot, '--confirm', $freshStartInventory.inventory_id, '--yes', '--report', $freshStartReport) -Environment $cleanEnvironment
         $freshStartResult = $freshStart.Stdout | ConvertFrom-Json -Depth 32
         if ($freshStartResult.status -cne 'complete' -or -not (Test-Path -LiteralPath $freshStartReport)) { throw 'confirmed current-user fresh start did not produce a complete report' }
         if ((Test-Path -LiteralPath $roamingRoot) -or (Test-Path -LiteralPath $localRoot)) { throw 'confirmed current-user fresh start left canonical fragcap data' }

@@ -251,7 +251,7 @@ Defender, and links the npcap download page on completion.
 
 ## Fresh-start cleanup
 
-An explicit irreversible removal of canonical fragcap user state, separate from ordinary uninstall. Current-user cleanup is unchecked by default and limited to the exact displayed roaming and local fragcap roots. All-users cleanup requires an elevated exact inventory preview and a matching confirmation identifier. Deep Capture recovery runs before session evidence can be deleted; redirections and ambiguous obligations are retained and reported.
+An explicit irreversible removal of canonical fragcap user state, separate from ordinary uninstall. Current-user cleanup is unchecked by default, limited to the exact displayed roaming and local fragcap roots, and bound to a current inventory identifier even when launched by MSI. All-users cleanup requires an elevated exact inventory preview and a matching confirmation identifier. Deep Capture recovery runs before session evidence can be deleted; active owners, redirections, changed roots, and ambiguous obligations are retained and reported.
 
 {: .matters }
 > Ordinary uninstall, repair, reinstall, upgrade, and rollback never imply fresh-start consent. Custom paths, Npcap, Wireshark configuration, and independently managed extcap registration remain outside the cleanup authority.

@@ -94,25 +94,24 @@ pub fn run(
             "fresh-start cleanup is irreversible; preview it, then pass --confirm <inventory-id> --yes",
         ));
     }
-    if !args.installer_confirmed {
-        let supplied = args.confirm.as_deref().ok_or_else(|| {
-            CliError::usage("fresh-start execution requires --confirm <inventory-id>")
-        })?;
-        if !identifiers_equal(supplied, &inventory.identifier) {
-            return Err(CliError::failure(format!(
-                "fresh-start inventory changed; review a new preview (current {})",
-                inventory.identifier
-            )));
-        }
+    let supplied = args.confirm.as_deref().ok_or_else(|| {
+        CliError::usage("fresh-start execution requires --confirm <inventory-id>")
+    })?;
+    if !identifiers_equal(supplied, &inventory.identifier) {
+        return Err(CliError::failure(format!(
+            "fresh-start inventory changed; review a new preview (current {})",
+            inventory.identifier
+        )));
     }
 
     let report_target = args
         .report
         .as_deref()
-        .map(|path| ReportTarget::prepare(path, &inventory.roots, args.installer_confirmed))
+        .map(|path| ReportTarget::prepare(path, &inventory.roots))
         .transpose()
         .map_err(|error| CliError::failure(format!("fresh-start report failed: {error}")))?;
-    let outcomes = execute_inventory(&inventory, out);
+    let mut recovery_output = Vec::new();
+    let outcomes = execute_inventory(&inventory, &mut recovery_output);
     let complete = outcomes
         .iter()
         .all(|item| matches!(item.status, "removed" | "absent"));
@@ -121,6 +120,10 @@ pub fn run(
         target
             .publish(&report)
             .map_err(|error| CliError::failure(format!("fresh-start report failed: {error}")))?;
+    }
+    if !json_output {
+        out.write_all(&recovery_output)
+            .map_err(|error| CliError::failure(error.to_string()))?;
     }
     emit_result(&report, json_output, out)?;
     Ok(if complete {
@@ -131,21 +134,19 @@ pub fn run(
 }
 
 fn validate_authorization_shape(args: &FreshStartArgs) -> Result<(), CliError> {
-    if (args.roaming_root.is_some() || args.local_root.is_some()) && !args.installer_confirmed {
+    if (args.roaming_root.is_some() || args.local_root.is_some()) && !args.installer_adapter {
         return Err(CliError::usage(
             "explicit fresh-start roots are reserved for the installer adapter",
         ));
     }
-    if args.installer_confirmed
-        && (args.preview
-            || args.scope != FreshStartScopeArg::CurrentUser
+    if args.installer_adapter
+        && (args.scope != FreshStartScopeArg::CurrentUser
             || args.roaming_root.is_none()
             || args.local_root.is_none()
-            || !args.yes
-            || args.confirm.is_some())
+            || (!args.preview && !args.yes))
     {
         return Err(CliError::usage(
-            "installer confirmation requires current-user scope, both exact roots, and --yes",
+            "the installer adapter requires current-user scope, both exact roots, and preview or confirmed execution",
         ));
     }
     if args.preview {
@@ -169,16 +170,24 @@ fn scope_name(scope: FreshStartScopeArg) -> &'static str {
 fn resolve_profiles(args: &FreshStartArgs) -> Result<Vec<ProfileRoots>, CliError> {
     match args.scope {
         FreshStartScopeArg::CurrentUser => {
+            let default_roaming = crate::paths::default_roaming_data_root().ok_or_else(|| {
+                CliError::failure("the current user's roaming data root is unavailable")
+            })?;
+            let default_local = crate::paths::default_local_data_root().ok_or_else(|| {
+                CliError::failure("the current user's local data root is unavailable")
+            })?;
             let (roaming, local) = match (&args.roaming_root, &args.local_root) {
-                (Some(roaming), Some(local)) => (roaming.clone(), local.clone()),
-                (None, None) => (
-                    crate::paths::default_roaming_data_root().ok_or_else(|| {
-                        CliError::failure("the current user's roaming data root is unavailable")
-                    })?,
-                    crate::paths::default_local_data_root().ok_or_else(|| {
-                        CliError::failure("the current user's local data root is unavailable")
-                    })?,
-                ),
+                (Some(roaming), Some(local)) => {
+                    if !paths_equal_for_platform(roaming, &default_roaming)
+                        || !paths_equal_for_platform(local, &default_local)
+                    {
+                        return Err(CliError::failure(
+                            "installer roots do not match the initiating user's canonical data roots",
+                        ));
+                    }
+                    (roaming.clone(), local.clone())
+                }
+                (None, None) => (default_roaming, default_local),
                 _ => unreachable!("clap requires the explicit roots together"),
             };
             Ok(vec![ProfileRoots {
@@ -188,8 +197,7 @@ fn resolve_profiles(args: &FreshStartArgs) -> Result<Vec<ProfileRoots>, CliError
             }])
         }
         FreshStartScopeArg::AllUsers => {
-            if args.roaming_root.is_some() || args.local_root.is_some() || args.installer_confirmed
-            {
+            if args.roaming_root.is_some() || args.local_root.is_some() || args.installer_adapter {
                 return Err(CliError::usage(
                     "all-users scope does not accept the installer current-user adapter",
                 ));
@@ -204,6 +212,17 @@ fn resolve_profiles(args: &FreshStartArgs) -> Result<Vec<ProfileRoots>, CliError
             })
         }
     }
+}
+
+#[cfg(windows)]
+fn paths_equal_for_platform(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn paths_equal_for_platform(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 #[cfg(windows)]
@@ -650,6 +669,17 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
             });
             continue;
         }
+        if let Err(error) = validate_deletion_ancestors(&root.path, &path) {
+            outcomes.push(ItemOutcome {
+                path,
+                operation: "retain",
+                status: "refused",
+                detail: bounded_detail(&format!(
+                    "cleanup ancestor changed after inventory: {error}"
+                )),
+            });
+            continue;
+        }
         let current = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -681,6 +711,17 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
                 operation: "retain",
                 status: "refused",
                 detail: "item changed or became redirected after inventory".to_string(),
+            });
+            continue;
+        }
+        if let Err(error) = validate_deletion_ancestors(&root.path, &path) {
+            outcomes.push(ItemOutcome {
+                path,
+                operation: "retain",
+                status: "refused",
+                detail: bounded_detail(&format!(
+                    "cleanup ancestor changed before deletion: {error}"
+                )),
             });
             continue;
         }
@@ -716,12 +757,28 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
     }
     for (index, root) in inventory.roots.iter().enumerate() {
         if !root.present {
-            outcomes.push(ItemOutcome {
-                path: root.path.clone(),
-                operation: "remove-root",
-                status: "absent",
-                detail: "canonical root did not exist".to_string(),
-            });
+            match fs::symlink_metadata(&root.path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    outcomes.push(ItemOutcome {
+                        path: root.path.clone(),
+                        operation: "remove-root",
+                        status: "absent",
+                        detail: "canonical root did not exist".to_string(),
+                    });
+                }
+                Ok(_) => outcomes.push(ItemOutcome {
+                    path: root.path.clone(),
+                    operation: "retain-root",
+                    status: "refused",
+                    detail: "canonical root appeared after inventory".to_string(),
+                }),
+                Err(error) => outcomes.push(ItemOutcome {
+                    path: root.path.clone(),
+                    operation: "retain-root",
+                    status: "failed",
+                    detail: bounded_detail(&error.to_string()),
+                }),
+            }
             continue;
         }
         if root_blocked.contains(&index) {
@@ -761,6 +818,36 @@ fn execute_inventory(inventory: &Inventory, recovery_out: &mut dyn Write) -> Vec
         }
     }
     outcomes
+}
+
+fn validate_deletion_ancestors(root: &Path, target: &Path) -> io::Result<()> {
+    let relative = target.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "deletion target escaped its canonical root",
+        )
+    })?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let mut current = root.to_path_buf();
+    for component in std::iter::once(None).chain(parent.components().map(Some)) {
+        if let Some(component) = component {
+            current.push(component.as_os_str());
+        }
+        let metadata = fs::symlink_metadata(&current)?;
+        if !metadata.is_dir() || is_redirected(&metadata) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is redirected or not a directory", current.display()),
+            ));
+        }
+        if current.canonicalize()? != current {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} no longer resolves exactly", current.display()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn modified_ns(metadata: &fs::Metadata) -> u128 {
@@ -882,11 +969,10 @@ struct ReportTarget {
     destination: PathBuf,
     temporary: PathBuf,
     file: Option<fs::File>,
-    replace: bool,
 }
 
 impl ReportTarget {
-    fn prepare(path: &Path, roots: &[OwnedRoot], allow_replace: bool) -> io::Result<Self> {
+    fn prepare(path: &Path, roots: &[OwnedRoot]) -> io::Result<Self> {
         let parent = path
             .parent()
             .filter(|value| !value.as_os_str().is_empty())
@@ -906,20 +992,16 @@ impl ReportTarget {
                 "report path must be outside every fresh-start cleanup root",
             ));
         }
-        let replace = match fs::symlink_metadata(&destination) {
-            Ok(metadata) if allow_replace && metadata.is_file() && !is_redirected(&metadata) => {
-                fs::OpenOptions::new().write(true).open(&destination)?;
-                true
-            }
+        match fs::symlink_metadata(&destination) {
             Ok(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "fresh-start report destination already exists",
                 ));
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
-        };
+        }
         let temporary = destination.with_extension(format!(
             "tmp-{}-{}",
             std::process::id(),
@@ -936,7 +1018,6 @@ impl ReportTarget {
             destination,
             temporary,
             file: Some(file),
-            replace,
         })
     }
 
@@ -953,47 +1034,8 @@ impl ReportTarget {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        replace_report(&self.temporary, &self.destination, self.replace)
+        fs::rename(&self.temporary, &self.destination)
     }
-}
-
-#[cfg(windows)]
-fn replace_report(temporary: &Path, destination: &Path, replace: bool) -> io::Result<()> {
-    if !replace {
-        return fs::rename(temporary, destination);
-    }
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_IGNORE_MERGE_ERRORS};
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let temporary = temporary
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let replaced = unsafe {
-        ReplaceFileW(
-            destination.as_ptr(),
-            temporary.as_ptr(),
-            std::ptr::null(),
-            REPLACEFILE_IGNORE_MERGE_ERRORS,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if replaced == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn replace_report(temporary: &Path, destination: &Path, _replace: bool) -> io::Result<()> {
-    fs::rename(temporary, destination)
 }
 
 impl Drop for ReportTarget {
@@ -1296,7 +1338,6 @@ mod tests {
         let error = ReportTarget::prepare(
             &inventory.roots[0].path.join("cleanup-report.json"),
             &inventory.roots,
-            false,
         )
         .unwrap_err();
 
@@ -1304,19 +1345,33 @@ mod tests {
     }
 
     #[test]
-    fn direct_report_preserves_existing_file_and_installer_report_replaces_it() {
+    fn report_preserves_an_existing_destination() {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("fresh-start.json");
         fs::write(&destination, b"prior report").unwrap();
 
-        let error = ReportTarget::prepare(&destination, &[], false).unwrap_err();
+        let error = ReportTarget::prepare(&destination, &[]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&destination).unwrap(), b"prior report");
+    }
 
-        let target = ReportTarget::prepare(&destination, &[], true).unwrap();
-        target.publish(&json!({"status": "complete"})).unwrap();
-        let report: Value = serde_json::from_slice(&fs::read(destination).unwrap()).unwrap();
-        assert_eq!(report["status"], "complete");
+    #[test]
+    fn root_created_after_inventory_prevents_complete_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = roots(temp.path());
+        fs::create_dir_all(profile.roaming.parent().unwrap()).unwrap();
+        fs::create_dir_all(profile.local.parent().unwrap()).unwrap();
+        let inventory = build_inventory("current-user", std::slice::from_ref(&profile)).unwrap();
+        fs::create_dir(&profile.roaming).unwrap();
+
+        let outcomes = execute_inventory(&inventory, &mut io::sink());
+
+        assert!(outcomes.iter().any(|item| {
+            item.operation == "retain-root"
+                && item.status == "refused"
+                && item.detail.contains("appeared after inventory")
+        }));
+        assert!(profile.roaming.exists());
     }
 
     #[cfg(unix)]
@@ -1365,6 +1420,34 @@ mod tests {
             fs::read(outside.join("evidence.jsonl")).unwrap(),
             b"evidence"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_redirected_after_inventory_is_refused_before_child_deletion() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let profile = roots(temp.path());
+        let owned = profile.roaming.join("cache");
+        fs::create_dir_all(&owned).unwrap();
+        fs::create_dir_all(&profile.local).unwrap();
+        fs::write(owned.join("entry.bin"), b"owned").unwrap();
+        let inventory = build_inventory("current-user", std::slice::from_ref(&profile)).unwrap();
+        fs::rename(&owned, profile.roaming.join("cache-original")).unwrap();
+        let outside = temp.path().join("outside-cache");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("entry.bin"), b"outside").unwrap();
+        symlink(&outside, &owned).unwrap();
+
+        let outcomes = execute_inventory(&inventory, &mut io::sink());
+
+        assert!(outcomes.iter().any(|item| {
+            item.path.ends_with("cache/entry.bin")
+                && item.status == "refused"
+                && item.detail.contains("cleanup ancestor changed")
+        }));
+        assert_eq!(fs::read(outside.join("entry.bin")).unwrap(), b"outside");
     }
 
     #[cfg(unix)]

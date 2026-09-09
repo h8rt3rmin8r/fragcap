@@ -12,7 +12,7 @@ Installer invocation supplies `--roaming-root <exact-path>` and `--local-root <e
 
 `fragcap fresh-start --scope current-user --confirm <inventory-id> --yes [--report <path>]`
 
-Re-inventories both roots and refuses before deletion if the identifier changed. The MSI uses a hidden `--installer-confirmed` adapter instead of `--confirm`: its dialog already displays the same two exact roots, and the immediate action passes those roots unchanged to the deferred command in one uninstall transaction. That adapter is valid only for current-user scope with `--yes` and both explicit roots. A complete exit is zero; refused or partial cleanup is nonzero and retains an actionable report.
+Re-inventories both roots and refuses before deletion if the identifier changed. The MSI uses a hidden `--installer-adapter` option to pass the same two exact roots displayed by its dialog into both a deferred preview and the immediately following confirmed execution. The adapter verifies that those roots equal the impersonated initiating user's canonical roots, and it never bypasses `--confirm`. It is valid only for current-user scope with both explicit roots. A complete exit is zero; refused or partial cleanup is nonzero and retains an actionable report.
 
 ## All-users preview
 

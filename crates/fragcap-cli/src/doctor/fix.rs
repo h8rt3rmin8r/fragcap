@@ -341,7 +341,7 @@ pub(crate) fn recover_deep_capture_journals(
     root: &Path,
     out: &mut dyn Write,
 ) -> Result<(), Vec<String>> {
-    recover_deep_capture_journals_inner(root, out, false)
+    recover_deep_capture_journals_inner(root, out, false, false)
 }
 
 /// Inspect prior Deep Capture ownership without replaying or retiring anything.
@@ -419,7 +419,7 @@ fn recover_deep_capture_journals_with_legacy_confirmation(
     root: &Path,
     out: &mut dyn Write,
 ) -> Result<(), Vec<String>> {
-    recover_deep_capture_journals_inner(root, out, true)
+    recover_deep_capture_journals_inner(root, out, true, false)
 }
 
 /// Replay only Doctor's unambiguous exact recovery authority for fresh start.
@@ -427,13 +427,14 @@ fn recover_deep_capture_journals_with_legacy_confirmation(
 /// Ambiguous legacy ownership remains evidence for an explicit Doctor review;
 /// confirming data deletion does not broaden recovery authority.
 pub(crate) fn recover_for_fresh_start(root: &Path, out: &mut dyn Write) -> Result<(), Vec<String>> {
-    recover_deep_capture_journals_inner(root, out, false)
+    recover_deep_capture_journals_inner(root, out, false, true)
 }
 
 fn recover_deep_capture_journals_inner(
     root: &Path,
     out: &mut dyn Write,
     legacy_confirmed: bool,
+    active_is_blocking: bool,
 ) -> Result<(), Vec<String>> {
     let _recovery_lock = RecoveryLock::acquire(root).map_err(|error| {
         vec![format!(
@@ -448,7 +449,15 @@ fn recover_deep_capture_journals_inner(
         Ok(entries) => {
             for entry in entries {
                 match owner_is_active(&entry) {
-                    Ok(true) => active_bundles.push(entry.bundle),
+                    Ok(true) => {
+                        if active_is_blocking {
+                            failed.push(format!(
+                                "session owner {} still holds its generation lease",
+                                entry.registry_path.display()
+                            ));
+                        }
+                        active_bundles.push(entry.bundle);
+                    }
                     Ok(false) => {
                         roots.push(entry.bundle.clone());
                         recoverable_entries.push(entry);
@@ -1171,6 +1180,23 @@ mod tests {
         );
         assert_eq!(roots[0].bundle, bundle.canonicalize().unwrap());
         assert_eq!(roots[0].owner_pid, std::process::id());
+    }
+
+    #[test]
+    fn fresh_start_recovery_is_blocked_by_a_live_session_owner() {
+        let default = tempfile::tempdir().expect("default root");
+        let bundle = default.path().join("active-session");
+        std::fs::create_dir(&bundle).expect("active bundle");
+        let _lease = register_session_owner(default.path(), &bundle).expect("register owner");
+
+        let errors = recover_for_fresh_start(default.path(), &mut std::io::sink())
+            .expect_err("fresh start must retain live session evidence");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("generation lease")));
+        assert!(bundle.exists());
+        assert_eq!(registered_session_owners(default.path()).unwrap().len(), 1);
     }
 
     #[test]

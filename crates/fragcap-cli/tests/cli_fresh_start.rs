@@ -139,18 +139,75 @@ fn exact_preview_identifier_authorizes_direct_current_user_cleanup() {
 }
 
 #[test]
-fn installer_confirmed_current_user_removes_only_canonical_roots_and_reports() {
+fn json_cleanup_keeps_recovery_progress_out_of_structured_stdout() {
+    use fragcap::deep_capture::{ResourceJournal, ResourceKind, ResourceState, ResourceTransition};
+
     let temp = tempfile::tempdir().unwrap();
+    let _environment = CurrentUserEnvironment::set(&temp);
+    let (roaming, _local) = roots(&temp);
+    let bundle = PathLike::new(&roaming).join("sessions").join("refused");
+    fs::create_dir_all(&bundle).unwrap();
+    let mut journal = ResourceJournal::create(&bundle, "session", "plan").unwrap();
+    journal
+        .append(ResourceTransition::new(
+            "artifact",
+            ResourceKind::Artifact,
+            "session/session-output",
+            "",
+            "remove-artifact",
+            ResourceState::Applied,
+            "retained",
+        ))
+        .unwrap();
+    drop(journal);
+    let (preview_code, preview, preview_err) = run(&["--json", "fresh-start", "--preview"]);
+    assert_eq!(preview_code, 0, "preview failed: {preview_err}");
+    let preview: serde_json::Value = serde_json::from_str(preview.trim()).unwrap();
+
+    let (code, out, _err) = run(&[
+        "--json",
+        "fresh-start",
+        "--yes",
+        "--confirm",
+        preview["inventory_id"].as_str().unwrap(),
+    ]);
+
+    assert_eq!(code, 1);
+    let result: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(result["type"], "fresh-start.cleanup");
+    assert_eq!(result["status"], "partial");
+}
+
+#[test]
+fn installer_adapter_requires_preview_confirmation_and_removes_only_current_user_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let _environment = CurrentUserEnvironment::set(&temp);
     let (roaming, local) = roots(&temp);
     let excluded = temp.path().join("exported.fcapng");
     let report = temp.path().join("reports").join("fresh-start.json");
     fs::write(&excluded, b"outside evidence").unwrap();
 
+    let (preview_code, preview, preview_err) = run(&[
+        "--json",
+        "fresh-start",
+        "--preview",
+        "--installer-adapter",
+        "--roaming-root",
+        &roaming,
+        "--local-root",
+        &local,
+    ]);
+    assert_eq!(preview_code, 0, "preview failed: {preview_err}");
+    let preview: serde_json::Value = serde_json::from_str(preview.trim()).unwrap();
+    let identifier = preview["inventory_id"].as_str().unwrap();
+
     let (code, out, err) = run(&[
         "--json",
         "fresh-start",
         "--yes",
-        "--installer-confirmed",
+        "--confirm",
+        identifier,
+        "--installer-adapter",
         "--roaming-root",
         &roaming,
         "--local-root",
@@ -170,7 +227,7 @@ fn installer_confirmed_current_user_removes_only_canonical_roots_and_reports() {
 }
 
 #[test]
-fn installer_adapter_cannot_authorize_all_users() {
+fn installer_adapter_cannot_select_all_users() {
     let temp = tempfile::tempdir().unwrap();
     let (roaming, local) = roots(&temp);
     let report = temp.path().join("report.json");
@@ -180,7 +237,7 @@ fn installer_adapter_cannot_authorize_all_users() {
         "--scope",
         "all-users",
         "--yes",
-        "--installer-confirmed",
+        "--installer-adapter",
         "--roaming-root",
         &roaming,
         "--local-root",
@@ -190,7 +247,30 @@ fn installer_adapter_cannot_authorize_all_users() {
     ]);
 
     assert_eq!(code, 2);
-    assert!(err.contains("installer confirmation requires current-user scope"));
+    assert!(err.contains("installer adapter requires current-user scope"));
+    assert!(PathLike::new(&roaming).exists());
+    assert!(PathLike::new(&local).exists());
+}
+
+#[test]
+fn installer_adapter_rejects_roots_for_another_profile() {
+    let current = tempfile::tempdir().unwrap();
+    let _environment = CurrentUserEnvironment::set(&current);
+    let other = tempfile::tempdir().unwrap();
+    let (roaming, local) = roots(&other);
+
+    let (code, _out, err) = run(&[
+        "fresh-start",
+        "--preview",
+        "--installer-adapter",
+        "--roaming-root",
+        &roaming,
+        "--local-root",
+        &local,
+    ]);
+
+    assert_eq!(code, 1);
+    assert!(err.contains("do not match the initiating user's canonical data roots"));
     assert!(PathLike::new(&roaming).exists());
     assert!(PathLike::new(&local).exists());
 }
