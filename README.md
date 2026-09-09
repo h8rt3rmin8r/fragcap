@@ -142,9 +142,13 @@ ends by naming the next command.
 ```bash
 # The hero command: discover and list your own targets, then follow the hint
 fragcap targets
-#   #  TARGET            CAPTURE         ENGINE         SENSITIVITIES
-#   1  sample_adventure  ready           Sample Engine  not scanned
-#   2  sample_arena      needs a target  not scanned    Sample Protection
+# Ready to capture:
+#   #  TARGET            CAPTURE  ENGINE         SENSITIVITIES
+#   1  sample_adventure  ready    Sample Engine  not scanned
+#
+# Needs setup:
+#   #  TARGET        CAPTURE         ENGINE       SENSITIVITIES
+#   2  sample_arena  needs a target  not scanned  Sample Protection
 #
 # Next command:  fragcap capture 1
 
@@ -153,8 +157,7 @@ fragcap targets add --steam <APP_ID>
 fragcap targets add "Sample Adventure" --exe sample-game.exe  # asks who holds the sockets
 ```
 
-The row numbers `fragcap targets` shows are the numbers `fragcap capture <n>`
-honors, so `fragcap capture 1` captures what you just saw.
+Ready targets appear first, followed by targets that need setup, with handles sorted inside each group. The row numbers `fragcap targets` shows are the numbers `fragcap capture <n>` honors across the complete grouped listing, so `fragcap capture 1` captures what you just saw.
 
 Example capture invocations (see [the CLI reference](https://fragcap.com/docs/reference/cli)
 for the full surface):

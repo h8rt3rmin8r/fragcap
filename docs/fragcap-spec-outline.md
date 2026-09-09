@@ -236,7 +236,7 @@ folder and app manifest parsing, installed-title enumeration, its display-cell-a
 
 ## 17. Command Line Interface
 
-Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, exact interactive and structured plan-bound authorization with authoritative output, complete-line input, exact millisecond deadlines, expiry refusal, fully resolved profile and managed-launch drift checks before endpoint selection, and prior-recovery delegation to Doctor, the two-phase compatibility calibration contract, high-precision automatic target registration, non-persistent detailed and count-only discovery, confirmed historical target reconciliation, doctor, and integration commands.
+Full command surface, argument grammar, exit-code contract, and the machine-readable output mode that makes thin wrappers possible. Includes Capture, the library-backed Deep Capture adapter, exact interactive and structured plan-bound authorization with authoritative output, complete-line input, exact millisecond deadlines, expiry refusal, fully resolved profile and managed-launch drift checks before endpoint selection, and prior-recovery delegation to Doctor, the two-phase compatibility calibration contract, the ready-first hero target listing with continuous snapshot-backed row indexes, high-precision automatic target registration, non-persistent detailed and count-only discovery, confirmed historical target reconciliation, doctor, and integration commands.
 
 ## 18. Shell Wrappers
 

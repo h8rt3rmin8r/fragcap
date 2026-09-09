@@ -130,13 +130,14 @@ fragcap targets
 It discovers installed titles, registers new findings in the default local store, and prints the current stored targets. This synthetic specimen matches the current columns:
 
 ```text
-  #  TARGET         CAPTURE          ENGINE       SENSITIVITIES
-  1  sample-target  ready            not scanned  not scanned
+Ready to capture:
+  #  TARGET         CAPTURE  ENGINE       SENSITIVITIES
+  1  sample-target  ready    not scanned  not scanned
 
 Next command:  fragcap capture 1
 ```
 
-The row number is an ephemeral selector for the listing you just saw. The handle, such as `sample-target`, is stable for later human commands. `CAPTURE` reports whether fragcap has enough target information to start the passive path. `ENGINE` and `SENSITIVITIES` report detected products or an explicit scan-coverage state; neither column is a compatibility verdict.
+Ready targets appear first under `Ready to capture`; targets whose launch chain is unresolved follow under `Needs setup`. Empty groups are omitted, handles are sorted inside each group, and row numbers continue across the complete listing. A row number is an ephemeral selector for the listing you just saw. The handle, such as `sample-target`, is stable for later human commands. `CAPTURE` reports whether fragcap has enough target information to start the passive path. `ENGINE` and `SENSITIVITIES` report detected products or an explicit scan-coverage state; neither column is a compatibility verdict.
 
 If the desired target is absent, run `fragcap targets add --help` or `fragcap targets scan --help` for the supported registration forms. Database flags remain optional overrides. Do not substitute a Steam app identifier for a row number in `capture`; register the title first, then use its listed row or handle.
 

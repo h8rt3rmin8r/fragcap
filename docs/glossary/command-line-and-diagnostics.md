@@ -178,14 +178,7 @@ output.
 
 ## Hero listing
 
-The output of `fragcap targets` (and a bare `fragcap`): a numbered table of the
-user's registered, capturable targets, each row showing a 1-based index, the
-target handle, a capture-readiness status, and two neutral evidence columns (the
-detected engine, and the detected anti-cheat and DRM products), ending by naming
-the next command to run. Producing it runs discovery across its tiers and
-registers any newly found titles first, so a fresh install lists the user's own
-software; an empty result prints the commands that populate the store instead of
-an empty table.
+The output of `fragcap targets` (and a bare `fragcap`): readiness-grouped numbered tables of the user's registered, capturable targets. Non-empty `Ready to capture` rows appear before non-empty `Needs setup` rows, handles are sorted inside each group, and one continuous 1-based index spans both. Each row shows the target handle, capture-readiness status, and two neutral evidence columns (the detected engine, and the detected anti-cheat and DRM products), ending by naming the next command to run. Producing it runs discovery across its tiers and registers any newly found titles first, so a fresh install lists the user's own software; an empty result prints the commands that populate the store instead of an empty table.
 
 {: .matters }
 > The listing is the one command a new user runs successfully on their own
@@ -197,13 +190,7 @@ an empty table.
 
 ## Listing snapshot
 
-The ordered set of targets the most recent hero listing displayed, persisted to
-`local.db` so a bare-integer selector resolves to the row the user saw. A row
-index resolves through the snapshot (position to stable identifier to entry), not
-through the live store order, so `fragcap capture 3` names the row that occupied
-position 3 in the listing even after an intervening add or remove shifts the live
-order. A new listing replaces the snapshot; a position past it, or one taken
-before any listing has run, is an out-of-range usage error.
+The exact ready-then-setup ordered set of targets the most recent hero listing displayed, persisted to `local.db` so a bare-integer selector resolves to the row the user saw. A row index resolves through the snapshot (position to stable identifier to entry), not through the live store order, so `fragcap capture 3` names the row that occupied position 3 in the listing even after an intervening add or remove shifts the live store order. A new listing replaces the snapshot; a position past it, or one taken before any listing has run, is an out-of-range usage error.
 
 {: .matters }
 > Without the snapshot a row number would silently change meaning between the
@@ -214,16 +201,11 @@ before any listing has run, is an out-of-range usage error.
 
 ## Capture readiness
 
-The presentational status a hero listing shows for a target in its CAPTURE
-column: `ready` when the entry names a Windows client executable or carries an
-anchor a capture can resolve, or `needs a target` when its launch chain is
-unresolved and no anchor gives a client. Derived from the entry at listing time
-and stored nowhere.
+The presentational status a hero listing shows for a target in its CAPTURE column and readiness group: `ready` rows appear under `Ready to capture` when the entry names a Windows client executable or carries an anchor a capture can resolve; `needs a target` rows appear under `Needs setup` when the launch chain is unresolved and no anchor gives a client. Derived from the entry at listing time and stored nowhere.
 
 {: .matters }
 > Readiness reports how close a row is to a capture, never whether the row is
-> valid: every registered target is capturable in principle, and a `needs a
-> target` row becomes ready once a capture observes its socket holder.
+> valid: every registered target is capturable in principle, and a `needs a target` row becomes ready once a capture observes its socket holder.
 
 **See also:** [Unresolved launch chain](process-and-attribution.md#unresolved-launch-chain), [Hero listing](command-line-and-diagnostics.md#hero-listing)
 
