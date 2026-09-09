@@ -5,24 +5,30 @@
 use std::path::PathBuf;
 
 use fragcap::deep_capture::api::{
-    AdapterSetBuilder, CancellationToken, ClassificationReason, CompatibilityAddressFamily,
-    CompatibilityApplicability, CompatibilityCase, CompatibilityEvidenceSource,
-    CompatibilityFreshness, CompatibilityLaunchCase, CompatibilityRoutingStrategy, LaunchCase,
-    ResourceKind, SessionConfigBuilder, SessionMode, StoredCompatibilityFact, TargetsError,
-    TrustError, DEEP_CAPTURE_API_VERSION, STABLE_API_EXPORTS,
+    propose_calibration, AdapterSetBuilder, CalibrationProcessSnapshot, CalibrationProposal,
+    CalibrationProposalRequest, CalibrationTopologyKind, CancellationToken, ClassificationReason,
+    CompatibilityAddressFamily, CompatibilityApplicability, CompatibilityCase,
+    CompatibilityEvidenceSource, CompatibilityFreshness, CompatibilityLaunchCase,
+    CompatibilityProtocol, CompatibilityRoutingStrategy, LaunchCase, ResourceKind,
+    SessionConfigBuilder, SessionMode, StoredCompatibilityFact, TargetsError, TrustError,
+    DEEP_CAPTURE_API_VERSION, STABLE_API_EXPORTS,
 };
+use fragcap::profile::FidelityTier;
+use fragcap::targets::{ClassificationSource, TargetClassification, TargetEntry};
+use serde_json::json;
 
 fn assert_send_sync<T: Send + Sync>() {}
 
 #[test]
 fn version_one_inventory_is_curated_and_sorted() {
     assert_eq!(DEEP_CAPTURE_API_VERSION, 1);
-    assert_eq!(STABLE_API_EXPORTS.len(), 126);
+    assert_eq!(STABLE_API_EXPORTS.len(), 137);
     assert!(STABLE_API_EXPORTS.windows(2).all(|pair| pair[0] < pair[1]));
     for required in [
         "AdapterSetBuilder",
         "Authorization",
         "CancellationToken",
+        "CalibrationProposal",
         "ClassificationReason",
         "CompatibilityCase",
         "DEEP_CAPTURE_API_VERSION",
@@ -39,6 +45,7 @@ fn version_one_inventory_is_curated_and_sorted() {
         "TerminalReport",
         "TrafficFamily",
         "TrustError",
+        "propose_calibration",
     ] {
         assert!(
             STABLE_API_EXPORTS.binary_search(&required).is_ok(),
@@ -58,6 +65,43 @@ fn version_one_inventory_is_curated_and_sorted() {
             "implementation detail leaked into stable inventory: {implementation_detail}"
         );
     }
+}
+
+#[test]
+fn calibration_proposal_is_consumable_through_the_stable_module() {
+    let target = TargetEntry {
+        id: Some(7),
+        stable_id: 70,
+        handle: "game".into(),
+        name: "Game".into(),
+        classification: TargetClassification::Game,
+        classification_source: ClassificationSource::User,
+        fidelity: FidelityTier::Authored,
+        provenance: None,
+        anchor: None,
+        launch_entries: Some(json!([{ "executable": "Game.exe", "role": "client" }])),
+        install_root: Some("C:\\Games\\Game".into()),
+        evidence: None,
+        detection_scan: None,
+        folder_name: None,
+        executable_hint: None,
+    };
+    let request = CalibrationProposalRequest::new(target, "native", "0.9.0", "0.9.0")
+        .with_process_snapshot(CalibrationProcessSnapshot::complete(Vec::<String>::new()))
+        .with_protocol_candidates([CompatibilityProtocol::Https]);
+    let proposal: CalibrationProposal = propose_calibration(&request);
+
+    assert_eq!(proposal.topology, Some(CalibrationTopologyKind::Direct));
+    assert_eq!(
+        proposal.routing_strategy,
+        CompatibilityRoutingStrategy::ChildEnvironment
+    );
+    assert_eq!(proposal.address_family, CompatibilityAddressFamily::Ipv4);
+    assert_eq!(proposal.steps.len(), 1);
+    assert_eq!(
+        proposal.steps[0].case.protocol,
+        CompatibilityProtocol::Routing
+    );
 }
 
 #[test]

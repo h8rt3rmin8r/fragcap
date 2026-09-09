@@ -1,0 +1,2 @@
+<!-- spec-impact: 15, 17.2.1, 25, 28.1 -->
+S139 deliberately splits guided calibration issue #380 at the pure policy boundary. The stable facade owns proposal semantics now so later CLI and library workflows cannot diverge; target resolution, process enumeration, execution, persistence, and ordinary eligibility remain outside this child slice. Conflicting current exact facts conservatively require a retest instead of allowing row order to choose an answer.

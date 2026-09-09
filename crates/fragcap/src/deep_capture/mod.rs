@@ -27,6 +27,7 @@ mod model;
 mod native;
 mod policy;
 mod process;
+mod proposal;
 mod restart;
 mod routing;
 mod session;
@@ -53,6 +54,7 @@ pub use policy::{
     validate_compatibility_prerequisites,
 };
 pub use process::*;
+pub use proposal::*;
 pub use restart::*;
 pub use routing::*;
 pub use session::{DeepCapture, DeepCaptureSession, PreparedSession};
